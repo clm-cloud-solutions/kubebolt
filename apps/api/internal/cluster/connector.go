@@ -473,8 +473,14 @@ func (c *Connector) Start() {
 	c.rebuildTopology()
 }
 
-// Stop shuts down informers.
+// Stop shuts down informers and cancels pending timers.
 func (c *Connector) Stop() {
+	c.mu.Lock()
+	if c.topologyTimer != nil {
+		c.topologyTimer.Stop()
+		c.topologyTimer = nil
+	}
+	c.mu.Unlock()
 	close(c.stopCh)
 }
 
@@ -1956,12 +1962,14 @@ func (c *Connector) listGatewayResources(resource, namespace string) []map[strin
 		Version:  "v1",
 		Resource: resource,
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	var list *unstructured.UnstructuredList
 	var err error
 	if namespace != "" {
-		list, err = c.dynamicClient.Resource(gvr).Namespace(namespace).List(context.TODO(), metav1.ListOptions{})
+		list, err = c.dynamicClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})
 	} else {
-		list, err = c.dynamicClient.Resource(gvr).List(context.TODO(), metav1.ListOptions{})
+		list, err = c.dynamicClient.Resource(gvr).List(ctx, metav1.ListOptions{})
 	}
 	if err != nil {
 		// Gateway API not installed in this cluster — return empty

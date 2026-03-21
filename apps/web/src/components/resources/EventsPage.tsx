@@ -54,7 +54,7 @@ export function EventsPage() {
         {items.map((item, i) => {
           const eventType = (item.type as string) || 'Normal'
           return (
-            <div key={`${item.name}-${i}`} className="flex items-start gap-3 px-4 py-3 hover:bg-kb-card-hover transition-colors">
+            <div key={`${item.namespace}-${item.name}-${item.reason}-${item.createdAt}`} className="flex items-start gap-3 px-4 py-3 hover:bg-kb-card-hover transition-colors">
               <span
                 className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-[0.06em] ${
                   eventType === 'Warning'

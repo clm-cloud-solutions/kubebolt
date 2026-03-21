@@ -229,13 +229,13 @@ func evaluateInsights(connector *Connector, collector *metrics.Collector, engine
 
 // ReloadKubeconfig reloads the kubeconfig file to pick up new contexts.
 func (m *Manager) ReloadKubeconfig() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	kubeConfig, err := clientcmd.LoadFromFile(m.kubeconfigPath)
 	if err != nil {
 		return fmt.Errorf("reloading kubeconfig: %w", err)
 	}
-	m.mu.Lock()
 	m.kubeConfig = kubeConfig
-	m.mu.Unlock()
 	return nil
 }
 

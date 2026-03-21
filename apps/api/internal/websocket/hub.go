@@ -53,6 +53,7 @@ func (h *Hub) Run() {
 				continue
 			}
 			h.mu.RLock()
+			var slowClients []*Client
 			for client := range h.clients {
 				// Check if the client is subscribed to this message type
 				if !client.IsSubscribed(msg.Type) {
@@ -61,13 +62,14 @@ func (h *Hub) Run() {
 				select {
 				case client.send <- data:
 				default:
-					// Client buffer full, schedule for removal
-					go func(c *Client) {
-						h.unregister <- c
-					}(client)
+					slowClients = append(slowClients, client)
 				}
 			}
 			h.mu.RUnlock()
+			// Unregister slow clients synchronously to avoid goroutine leak
+			for _, c := range slowClients {
+				h.unregister <- c
+			}
 		}
 	}
 }

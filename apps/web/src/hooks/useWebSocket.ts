@@ -19,5 +19,6 @@ export function useWebSocket(resources: string[]) {
     return () => {
       unsubscribe()
     }
-  }, [resources, queryClient])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resources])
 }

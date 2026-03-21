@@ -27,11 +27,12 @@ var upgrader = gorilla.Upgrader{
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub  *Hub
-	conn *gorilla.Conn
-	send chan []byte
-	subs map[string]bool
-	mu   sync.RWMutex
+	hub       *Hub
+	conn      *gorilla.Conn
+	send      chan []byte
+	subs      map[string]bool
+	mu        sync.RWMutex
+	closeOnce sync.Once
 }
 
 // subscribeMessage is the incoming subscribe/unsubscribe request.
@@ -69,10 +70,16 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 	go client.readPump()
 }
 
+func (c *Client) close() {
+	c.closeOnce.Do(func() {
+		c.conn.Close()
+	})
+}
+
 func (c *Client) readPump() {
 	defer func() {
 		c.hub.unregister <- c
-		c.conn.Close()
+		c.close()
 	}()
 	c.conn.SetReadLimit(maxMessageSize)
 	c.conn.SetReadDeadline(time.Now().Add(pongWait))
@@ -111,7 +118,7 @@ func (c *Client) writePump() {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
 		ticker.Stop()
-		c.conn.Close()
+		c.close()
 	}()
 	for {
 		select {

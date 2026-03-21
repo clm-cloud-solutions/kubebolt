@@ -16,7 +16,7 @@ export function EventsFeed({ events }: EventsFeedProps) {
           <div className="text-xs text-[#555770] text-center py-6">No recent events</div>
         )}
         {events.map((event, i) => (
-          <div key={`${event.object}-${event.reason}-${i}`} className="flex items-start gap-2 py-1.5">
+          <div key={`${event.object}-${event.reason}-${event.timestamp}`} className="flex items-start gap-2 py-1.5">
             <span
               className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-[0.06em] ${
                 event.type === 'Warning'
