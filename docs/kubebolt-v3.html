@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KubeBolt — Kubernetes Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0a0b0f;--bgs:#101118;--card:#161720;--cardh:#1c1d2a;--elev:#22243a;--sbg:#0d0e14;
+  --bdr:rgba(255,255,255,0.06);--bdra:rgba(255,255,255,0.14);
+  --t1:#e8e9ed;--t2:#8b8d9a;--t3:#555770;--t4:#3a3c52;--t5:#2e3045;
+  --grn:#22d68a;--grnd:rgba(34,214,138,0.12);--grng:rgba(34,214,138,0.25);
+  --amb:#f5a623;--ambd:rgba(245,166,35,0.12);
+  --red:#ef4056;--redd:rgba(239,64,86,0.12);
+  --blu:#4c9aff;--blud:rgba(76,154,255,0.10);
+  --pur:#a78bfa;--purd:rgba(167,139,250,0.10);
+  --cyn:#22d3ee;--cynd:rgba(34,211,238,0.10);
+  --mono:'JetBrains Mono',monospace;--sans:'DM Sans',sans-serif;
+  --sb:220px;--tb:52px;
+}
+*{margin:0;padding:0;box-sizing:border-box;}
+html,body{width:100%;height:100%;overflow:hidden;background:var(--bg);font-family:var(--sans);color:var(--t1);}
+
+/* SIDEBAR */
+.sidebar{position:fixed;top:0;left:0;bottom:0;width:var(--sb);background:var(--sbg);border-right:1px solid var(--bdr);display:flex;flex-direction:column;z-index:110;overflow-y:auto;}
+.sidebar::-webkit-scrollbar{width:3px;}.sidebar::-webkit-scrollbar-thumb{background:var(--bdra);border-radius:2px;}
+.sb-logo{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--bdr);}
+.logo-ic{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--grn),var(--blu));display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;color:#0a0b0f;}
+.logo-tx{font-size:15px;font-weight:600;letter-spacing:-.02em;}.logo-vr{font-size:10px;font-family:var(--mono);color:var(--t3);margin-top:1px;}
+.sb-sec{padding:16px 0 4px;}.sb-lb{font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--t5);padding:0 18px;margin-bottom:6px;}
+.sb-it{display:flex;align-items:center;gap:10px;padding:7px 18px;font-size:13px;color:var(--t2);cursor:pointer;transition:.15s;position:relative;}
+.sb-it:hover{color:var(--t1);background:rgba(255,255,255,0.03);}
+.sb-it.act{color:var(--t1);background:rgba(76,154,255,0.08);}
+.sb-it.act::before{content:'';position:absolute;left:0;top:4px;bottom:4px;width:3px;border-radius:0 3px 3px 0;background:var(--blu);}
+.sb-ic{width:18px;height:18px;display:flex;align-items:center;justify-content:center;font-size:11px;opacity:.65;}
+.sb-it.act .sb-ic{opacity:1;}.sb-ct{margin-left:auto;font-size:10px;font-family:var(--mono);color:var(--t3);background:var(--elev);padding:1px 6px;border-radius:4px;}
+.sb-dv{height:1px;background:var(--bdr);margin:8px 18px;}
+
+/* TOPBAR */
+.topbar{position:fixed;top:0;left:var(--sb);right:0;height:var(--tb);display:flex;align-items:center;justify-content:space-between;padding:0 24px;background:rgba(10,11,15,0.88);backdrop-filter:blur(16px);border-bottom:1px solid var(--bdr);z-index:100;}
+.tb-l{display:flex;align-items:center;gap:14px;}
+.cl-sel{display:flex;align-items:center;gap:8px;padding:5px 14px;background:var(--card);border:1px solid var(--bdr);border-radius:7px;font-size:12px;color:var(--t2);cursor:pointer;transition:.2s;}
+.cl-sel:hover{border-color:var(--bdra);color:var(--t1);}
+.cl-dot{width:7px;height:7px;border-radius:50%;background:var(--grn);box-shadow:0 0 8px var(--grng);}
+.vw-tog{display:flex;background:var(--card);border:1px solid var(--bdr);border-radius:7px;overflow:hidden;}
+.vw-btn{padding:5px 14px;font-size:11px;font-family:var(--mono);color:var(--t3);cursor:pointer;border:none;background:transparent;transition:.15s;}
+.vw-btn.act{background:var(--blud);color:var(--blu);}.vw-btn:hover:not(.act){color:var(--t2);}
+.tb-r{display:flex;align-items:center;gap:10px;}
+.tb-b{padding:5px 12px;background:var(--card);border:1px solid var(--bdr);border-radius:7px;font-size:11px;font-family:var(--mono);color:var(--t2);cursor:pointer;transition:.2s;}
+.tb-b:hover{border-color:var(--bdra);color:var(--t1);}
+.tb-b.live{background:var(--grnd);border-color:rgba(34,214,138,0.18);color:var(--grn);}
+.tb-b.live::before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--grn);margin-right:5px;animation:pls 2s infinite;}
+@keyframes pls{0%,100%{opacity:1}50%{opacity:.35}}
+.srch{display:flex;align-items:center;gap:6px;padding:5px 12px;background:var(--card);border:1px solid var(--bdr);border-radius:7px;font-size:12px;color:var(--t3);cursor:pointer;min-width:170px;transition:.2s;}
+.srch:hover{border-color:var(--bdra);}
+.srch kbd{font-family:var(--mono);font-size:10px;background:var(--elev);padding:1px 5px;border-radius:3px;color:var(--t3);border:1px solid var(--bdr);}
+
+/* MAIN VIEWS */
+.view{position:fixed;top:var(--tb);left:var(--sb);right:0;bottom:0;overflow-y:auto;z-index:1;background:var(--bg);}
+.view::-webkit-scrollbar{width:5px;}.view::-webkit-scrollbar-thumb{background:var(--bdra);border-radius:2px;}
+.vct{padding:22px 24px 40px;}
+.pg-t{font-size:20px;font-weight:600;letter-spacing:-.02em;margin-bottom:18px;display:flex;align-items:center;gap:10px;}
+.pg-badge{font-size:10px;font-family:var(--mono);padding:3px 10px;border-radius:5px;background:var(--elev);color:var(--t3);}
+
+/* SUMMARY ROW */
+.sr{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:22px;}
+.sc{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:14px 16px;transition:.2s;cursor:default;}
+.sc:hover{border-color:var(--bdra);background:var(--cardh);}
+.sc-tp{display:flex;align-items:center;gap:10px;margin-bottom:8px;}
+.sc-ic{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px;}
+.sc-lb{font-size:12px;color:var(--t2);}.sc-vl{font-size:30px;font-weight:600;letter-spacing:-.03em;line-height:1;}
+.sc-sb{font-size:11px;color:var(--t3);margin-top:4px;display:flex;align-items:center;gap:5px;}
+.sc-sb .dt{width:6px;height:6px;border-radius:50%;}
+
+/* TWO COL */
+.two{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;}
+.rc{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:16px 18px;}
+.rc-t{font-size:14px;font-weight:600;margin-bottom:2px;}.rc-s{font-size:11px;font-family:var(--mono);color:var(--t3);margin-bottom:14px;}
+.rb{display:flex;flex-direction:column;gap:10px;}.rbr{display:flex;align-items:center;gap:12px;}
+.rbl{font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.04em;width:56px;flex-shrink:0;padding:3px 8px;border-radius:4px;text-align:center;font-weight:500;}
+.rbl.req{background:var(--blud);color:var(--blu);}.rbl.lim{background:var(--redd);color:var(--red);}
+.rbt{flex:1;height:8px;background:rgba(255,255,255,0.04);border-radius:4px;overflow:hidden;}
+.rbf{height:100%;border-radius:4px;transition:width 1.2s ease;}
+.rbv{font-size:11px;font-family:var(--mono);color:var(--t2);min-width:70px;text-align:right;}
+.rbp{font-size:10px;font-family:var(--mono);color:var(--t3);margin-top:2px;}
+.rav{font-size:11px;color:var(--t3);margin-top:4px;font-family:var(--mono);}
+.cc{background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:16px 18px;}
+.cc-t{font-size:13px;font-weight:600;margin-bottom:2px;}.cc-s{font-size:10px;font-family:var(--mono);color:var(--t3);margin-bottom:12px;}
+.cc-a{position:relative;height:100px;}
+
+/* EVENTS */
+.ev{display:flex;gap:10px;padding:9px 0;border-bottom:1px solid var(--bdr);align-items:flex-start;}
+.ev:last-child{border-bottom:none;}
+.ev-b{font-size:9px;font-family:var(--mono);font-weight:600;text-transform:uppercase;padding:2px 7px;border-radius:4px;flex-shrink:0;margin-top:2px;letter-spacing:.03em;}
+.ev-b.nr{background:var(--grnd);color:var(--grn);}.ev-b.wr{background:var(--ambd);color:var(--amb);}.ev-b.er{background:var(--redd);color:var(--red);}
+.ev-bd{flex:1;min-width:0;}.ev-tp{font-size:12px;font-weight:600;margin-bottom:2px;}
+.ev-mg{font-size:11px;color:var(--t2);line-height:1.4;}
+.ev-mg code{font-family:var(--mono);font-size:10px;color:var(--t1);background:var(--elev);padding:1px 5px;border-radius:3px;}
+.ev-tm{font-size:10px;font-family:var(--mono);color:var(--t3);margin-top:3px;}
+
+/* NS sections */
+.stl{font-size:11px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.08em;color:var(--t3);margin-bottom:12px;}
+.ns-sec{margin-bottom:18px;animation:fUp .4s ease both;}
+@keyframes fUp{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
+.ns-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px;padding-bottom:7px;border-bottom:1px solid var(--bdr);}
+.ns-nm{font-size:14px;font-weight:600;}.ns-bg{font-size:9px;font-family:var(--mono);padding:2px 8px;border-radius:4px;background:var(--elev);color:var(--t3);text-transform:uppercase;letter-spacing:.04em;}
+.ns-st{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--t3);}
+.dg{display:grid;grid-template-columns:repeat(auto-fill,minmax(195px,1fr));gap:9px;}
+.dp{background:var(--card);border:1px solid var(--bdr);border-radius:9px;padding:12px 14px;cursor:pointer;transition:.2s;position:relative;overflow:hidden;}
+.dp:hover{border-color:var(--bdra);background:var(--cardh);transform:translateY(-1px);}
+.dp::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:9px 0 0 9px;}
+.dp.sok::before{background:var(--grn);}.dp.swn::before{background:var(--amb);}.dp.ser::before{background:var(--red);}
+.dp-nm{font-size:12px;font-weight:500;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.dp-mt{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.dp-tp{font-size:9px;font-family:var(--mono);text-transform:uppercase;color:var(--t3);letter-spacing:.04em;}
+.dp-rp{font-size:10px;font-family:var(--mono);color:var(--t2);}
+.pds{display:flex;gap:4px;flex-wrap:wrap;}
+.pd{width:9px;height:9px;border-radius:50%;}.pd.r{background:var(--grn);box-shadow:0 0 5px var(--grng);}.pd.e{background:var(--red);}.pd.p{background:var(--amb);}
+.db{display:flex;gap:6px;margin-top:8px;}.dbi{flex:1;}.dbi-l{font-size:8px;font-family:var(--mono);color:var(--t3);text-transform:uppercase;margin-bottom:2px;}
+.dbi-t{height:3px;background:rgba(255,255,255,0.05);border-radius:2px;overflow:hidden;}.dbi-f{height:100%;border-radius:2px;transition:width 1s ease;}
+
+/* RESOURCE TABLE */
+.rtbl{width:100%;border-collapse:collapse;}
+.rtbl th{text-align:left;font-size:10px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em;color:var(--t4);padding:8px 12px;border-bottom:1px solid var(--bdr);font-weight:500;}
+.rtbl td{font-size:12px;padding:10px 12px;border-bottom:1px solid var(--bdr);vertical-align:middle;}
+.rtbl tr:hover td{background:var(--cardh);}
+.rtbl .nm{font-weight:500;color:var(--t1);}.rtbl .ns{color:var(--t3);font-family:var(--mono);font-size:10px;}
+.rtbl .st{display:inline-flex;align-items:center;gap:5px;font-size:10px;font-family:var(--mono);padding:2px 8px;border-radius:4px;}
+.rtbl .st.ok{background:var(--grnd);color:var(--grn);}.rtbl .st.wr{background:var(--ambd);color:var(--amb);}
+.rtbl .st.er{background:var(--redd);color:var(--red);}.rtbl .st.in{background:var(--blud);color:var(--blu);}
+.rtbl .st.nt{background:var(--elev);color:var(--t3);}
+.rtbl .mono{font-family:var(--mono);font-size:11px;color:var(--t2);}
+.rtbl .dim{color:var(--t3);font-size:11px;}
+.rtbl .bar{width:60px;height:4px;background:rgba(255,255,255,0.04);border-radius:2px;display:inline-block;overflow:hidden;vertical-align:middle;margin-right:6px;}
+.rtbl .bar-f{height:100%;border-radius:2px;}
+.rtbl .age{font-family:var(--mono);font-size:10px;color:var(--t3);}
+
+/* FILTER BAR */
+.fbar{display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;}
+.fbar-ns{padding:4px 12px;background:var(--card);border:1px solid var(--bdr);border-radius:6px;font-size:11px;font-family:var(--mono);color:var(--t2);cursor:pointer;transition:.2s;}
+.fbar-ns:hover{border-color:var(--bdra);color:var(--t1);}.fbar-ns.act{background:var(--blud);border-color:rgba(76,154,255,0.2);color:var(--blu);}
+.fbar-search{padding:5px 12px;background:var(--card);border:1px solid var(--bdr);border-radius:6px;font-size:11px;color:var(--t1);font-family:var(--sans);outline:none;width:200px;transition:.2s;}
+.fbar-search::placeholder{color:var(--t4);}.fbar-search:focus{border-color:var(--bdra);}
+.fbar-ct{margin-left:auto;font-size:10px;font-family:var(--mono);color:var(--t3);}
+
+/* PHASE 2 PLACEHOLDER */
+.ph2{border:1px dashed var(--t5);border-radius:9px;padding:24px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:6px;}
+.ph2-ic{font-size:24px;color:var(--t4);margin-bottom:4px;}.ph2-t{font-size:12px;font-family:var(--mono);color:var(--t3);}
+.ph2-s{font-size:10px;color:var(--t4);}.ph2-cmd{margin-top:8px;display:inline-block;padding:5px 14px;background:var(--blud);border:1px solid rgba(76,154,255,0.15);border-radius:6px;font-size:10px;font-family:var(--mono);color:var(--blu);}
+
+/* MAP */
+#mapView{position:fixed;top:var(--tb);left:var(--sb);right:0;bottom:0;overflow:hidden;z-index:0;background:var(--bg);cursor:grab;visibility:hidden;}
+#mapView::before{content:'';position:absolute;inset:0;pointer-events:none;z-index:0;background-image:linear-gradient(rgba(255,255,255,0.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,0.018) 1px,transparent 1px);background-size:36px 36px;}
+#mapView.dragging{cursor:grabbing;}
+#mapWorld{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;z-index:1;}
+#mapSvg{position:absolute;top:0;left:0;pointer-events:none;z-index:5;}
+@keyframes flowD{to{stroke-dashoffset:-20;}}
+.mn{position:absolute;width:158px;background:var(--card);border:1px solid var(--bdr);border-radius:10px;padding:10px 12px;cursor:pointer;transition:border-color .2s,background .2s,box-shadow .2s;z-index:10;user-select:none;}
+.mn:hover{border-color:var(--bdra);background:var(--cardh);box-shadow:0 6px 24px rgba(0,0,0,0.35);}
+.mn.sel{border-color:var(--blu);box-shadow:0 0 0 1px var(--blu),0 6px 24px rgba(76,154,255,0.15);}
+.mn::before{content:'';position:absolute;left:0;top:0;bottom:0;width:3px;border-radius:10px 0 0 10px;}
+.mn.sok::before{background:var(--grn);}.mn.swn::before{background:var(--amb);}.mn.ser::before{background:var(--red);}.mn.sin::before{background:var(--blu);}.mn.snt::before{background:var(--t5);}
+.mr{position:absolute;border-radius:18px;border:1px solid;}
+.mr-lb{position:absolute;top:12px;left:16px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.mr-bg{font-size:9px;font-family:var(--mono);padding:2px 7px;border-radius:4px;text-transform:uppercase;letter-spacing:.04em;}
+.mr-st{position:absolute;top:14px;right:16px;font-size:10px;font-family:var(--mono);color:var(--t3);}
+.m-zctrl{position:absolute;bottom:16px;right:16px;z-index:100;display:flex;flex-direction:column;gap:3px;}
+.m-zb{width:34px;height:34px;border-radius:7px;background:var(--card);border:1px solid var(--bdr);color:var(--t2);font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:.15s;}
+.m-zb:hover{border-color:var(--bdra);color:var(--t1);}.m-zlb{font-size:9px;font-family:var(--mono);color:var(--t3);text-align:center;padding:1px 0;}
+.m-mm{position:absolute;bottom:16px;left:16px;z-index:100;width:170px;height:110px;background:rgba(16,17,26,0.92);border:1px solid var(--bdr);border-radius:9px;padding:7px;overflow:hidden;}
+.m-mm-t{font-size:8px;font-family:var(--mono);color:var(--t5);text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px;}
+.m-mm-c{width:100%;height:calc(100% - 13px);position:relative;}
+.m-lgn{position:absolute;bottom:16px;left:206px;z-index:100;display:flex;gap:12px;flex-wrap:wrap;background:rgba(16,17,26,0.92);border:1px solid var(--bdr);border-radius:7px;padding:7px 14px;}
+.m-li{display:flex;align-items:center;gap:4px;font-size:8px;font-family:var(--mono);color:var(--t3);}.m-ll{width:16px;height:2px;border-radius:1px;}.m-ld{width:5px;height:5px;border-radius:50%;}
+.m-fly{position:absolute;top:0;right:0;bottom:0;width:320px;background:var(--card);border-left:1px solid var(--bdr);z-index:90;transform:translateX(100%);transition:transform .3s cubic-bezier(.16,1,.3,1);overflow-y:auto;}
+.m-fly.open{transform:translateX(0);}.m-fly::-webkit-scrollbar{width:3px;}.m-fly::-webkit-scrollbar-thumb{background:var(--bdra);border-radius:2px;}
+.mf-hd{padding:14px 16px;border-bottom:1px solid var(--bdr);display:flex;align-items:center;justify-content:space-between;}
+.mf-nm{font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px;}
+.mf-pl{font-size:8px;font-family:var(--mono);padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.04em;}
+.mf-pl.ok{background:var(--grnd);color:var(--grn);}.mf-pl.wn{background:var(--ambd);color:var(--amb);}.mf-pl.er{background:var(--redd);color:var(--red);}
+.mf-cl{width:24px;height:24px;border-radius:5px;border:1px solid var(--bdr);background:transparent;color:var(--t2);cursor:pointer;font-size:12px;display:flex;align-items:center;justify-content:center;transition:.15s;}
+.mf-cl:hover{color:var(--t1);background:var(--cardh);}
+.mf-sec{padding:12px 16px;border-bottom:1px solid var(--bdr);}.mf-lb{font-size:9px;font-family:var(--mono);color:var(--t5);text-transform:uppercase;letter-spacing:.06em;margin-bottom:7px;}
+.mf-mt{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;}.mf-mv{font-size:17px;font-weight:600;font-family:var(--mono);letter-spacing:-.02em;}.mf-ms{font-size:9px;font-family:var(--mono);color:var(--t3);}
+.mf-cn{display:flex;flex-direction:column;gap:5px;}
+.mf-ci{display:flex;align-items:center;gap:7px;padding:5px 9px;background:rgba(255,255,255,0.02);border-radius:5px;font-size:11px;cursor:pointer;transition:.15s;}
+.mf-ci:hover{background:rgba(255,255,255,0.05);}.mf-ct{font-size:8px;font-family:var(--mono);color:var(--t3);text-transform:uppercase;margin-left:auto;}
+
+.ai-fab{position:fixed;bottom:20px;right:20px;z-index:200;width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,var(--grn),var(--blu));display:flex;align-items:center;justify-content:center;cursor:pointer;box-shadow:0 4px 20px rgba(34,214,138,0.25);transition:.25s;font-size:20px;color:#0a0b0f;}
+.ai-fab:hover{transform:scale(1.08);}
+</style>
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<nav class="sidebar">
+  <div class="sb-logo"><div class="logo-ic">⚡</div><div><div class="logo-tx">KubeBolt</div><div class="logo-vr">v0.1.0 · beta</div></div></div>
+  <div class="sb-sec"><div class="sb-it act" data-v="overview" onclick="nav(this)"><div class="sb-ic">◎</div>Overview</div></div>
+  <div class="sb-dv"></div>
+  <div class="sb-sec"><div class="sb-lb">Pinned</div><div class="sb-it" data-v="pods" onclick="nav(this)"><div class="sb-ic">●</div>Pods<span class="sb-ct">47</span></div><div class="sb-it" data-v="nodes" onclick="nav(this)"><div class="sb-ic">▣</div>Nodes<span class="sb-ct">3</span></div></div>
+  <div class="sb-dv"></div>
+  <div class="sb-sec"><div class="sb-lb">Workloads</div><div class="sb-it" data-v="deployments" onclick="nav(this)"><div class="sb-ic">▦</div>Deployments<span class="sb-ct">12</span></div><div class="sb-it" data-v="statefulsets" onclick="nav(this)"><div class="sb-ic">▤</div>StatefulSets<span class="sb-ct">2</span></div><div class="sb-it" data-v="daemonsets" onclick="nav(this)"><div class="sb-ic">▥</div>DaemonSets<span class="sb-ct">3</span></div><div class="sb-it" data-v="jobs" onclick="nav(this)"><div class="sb-ic">▷</div>Jobs<span class="sb-ct">5</span></div><div class="sb-it" data-v="cronjobs" onclick="nav(this)"><div class="sb-ic">↻</div>Cron Jobs<span class="sb-ct">2</span></div></div>
+  <div class="sb-dv"></div>
+  <div class="sb-sec"><div class="sb-lb">Traffic</div><div class="sb-it" data-v="services" onclick="nav(this)"><div class="sb-ic">⇌</div>Services<span class="sb-ct">18</span></div><div class="sb-it" data-v="ingresses" onclick="nav(this)"><div class="sb-ic">⇢</div>Ingresses<span class="sb-ct">4</span></div><div class="sb-it" data-v="endpoints" onclick="nav(this)"><div class="sb-ic">◉</div>Endpoints<span class="sb-ct">8</span></div></div>
+  <div class="sb-dv"></div>
+  <div class="sb-sec"><div class="sb-lb">Storage</div><div class="sb-it" data-v="pvcs" onclick="nav(this)"><div class="sb-ic">▢</div>PVCs<span class="sb-ct">6</span></div><div class="sb-it" data-v="pvs" onclick="nav(this)"><div class="sb-ic">▣</div>PVs<span class="sb-ct">6</span></div><div class="sb-it" data-v="storageclasses" onclick="nav(this)"><div class="sb-ic">≡</div>Storage Classes<span class="sb-ct">3</span></div></div>
+  <div class="sb-dv"></div>
+  <div class="sb-sec"><div class="sb-lb">Config</div><div class="sb-it" data-v="configmaps" onclick="nav(this)"><div class="sb-ic">☰</div>ConfigMaps<span class="sb-ct">14</span></div><div class="sb-it" data-v="secrets" onclick="nav(this)"><div class="sb-ic">⚿</div>Secrets<span class="sb-ct">9</span></div><div class="sb-it" data-v="hpas" onclick="nav(this)"><div class="sb-ic">⇕</div>HPAs<span class="sb-ct">3</span></div></div>
+  <div class="sb-dv"></div>
+  <div class="sb-sec"><div class="sb-lb">Cluster</div><div class="sb-it" data-v="namespaces" onclick="nav(this)"><div class="sb-ic">◧</div>Namespaces<span class="sb-ct">5</span></div><div class="sb-it" data-v="rbac" onclick="nav(this)"><div class="sb-ic">⛊</div>RBAC</div><div class="sb-it" data-v="events" onclick="nav(this)"><div class="sb-ic">⚡</div>Events</div></div>
+  <div style="flex:1"></div><div class="sb-dv"></div>
+  <div class="sb-sec" style="padding-bottom:12px"><div class="sb-it" data-v="settings" onclick="nav(this)"><div class="sb-ic">⚙</div>Settings</div></div>
+</nav>
+
+<!-- TOPBAR -->
+<div class="topbar">
+  <div class="tb-l">
+    <div class="cl-sel"><div class="cl-dot"></div>production-eks-eu-west-1</div>
+    <div class="vw-tog"><button class="vw-btn act" id="vwDash" onclick="switchView('dash')">Dashboard</button><button class="vw-btn" id="vwMap" onclick="switchView('map')">Cluster Map</button></div>
+  </div>
+  <div class="tb-r">
+    <div class="srch"><svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="7" cy="7" r="5.5" stroke="currentColor" stroke-width="1.5"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>Search resources...<kbd>⌘K</kbd></div>
+    <div class="tb-b live">En vivo</div>
+    <div class="tb-b">3 nodos</div>
+  </div>
+</div>
+
+<!-- ═══════════════════════════════════════════ -->
+<!-- ALL DASHBOARD VIEWS -->
+<!-- ═══════════════════════════════════════════ -->
+<div id="dashViews">
+
+<!-- ═══ OVERVIEW ═══ -->
+<div class="view" id="v-overview">
+<div class="vct">
+  <div class="pg-t">Overview</div>
+  <div class="sr">
+    <div class="sc"><div class="sc-tp"><div class="sc-ic" style="background:var(--blud);color:var(--blu)">▣</div><div class="sc-lb">Nodes</div></div><div class="sc-vl">3</div><div class="sc-sb"><span class="dt" style="background:var(--grn)"></span>All ready</div></div>
+    <div class="sc"><div class="sc-tp"><div class="sc-ic" style="background:var(--grnd);color:var(--grn)">●</div><div class="sc-lb">Pods</div></div><div class="sc-vl">47</div><div class="sc-sb"><span class="dt" style="background:var(--grn)"></span>43 running <span class="dt" style="background:var(--amb);margin-left:4px"></span>4 issues</div></div>
+    <div class="sc"><div class="sc-tp"><div class="sc-ic" style="background:var(--purd);color:var(--pur)">◧</div><div class="sc-lb">Namespaces</div></div><div class="sc-vl">5</div><div class="sc-sb"><span class="dt" style="background:var(--grn)"></span>All active</div></div>
+    <div class="sc"><div class="sc-tp"><div class="sc-ic" style="background:var(--cynd);color:var(--cyn)">⇌</div><div class="sc-lb">Services</div></div><div class="sc-vl">18</div><div class="sc-sb"><span class="dt" style="background:var(--grn)"></span>All ready</div></div>
+  </div>
+  <div class="two">
+    <div class="rc"><div class="rc-t">CPU Usage</div><div class="rc-s">Requests: 2.9 / Limits: 12.7 / Total: 8.00 cores</div><div class="rb"><div class="rbr"><div class="rbl req">Requests</div><div class="rbt"><div class="rbf" style="width:36%;background:var(--blu)"></div></div><div class="rbv">2.9 cores</div></div><div class="rbp" style="padding-left:68px">36.1% of capacity</div><div class="rbr"><div class="rbl lim">Limits</div><div class="rbt"><div class="rbf" style="width:100%;background:var(--red)"></div></div><div class="rbv">12.7 cores</div></div><div class="rbp" style="padding-left:68px">158.8% of capacity</div></div><div class="rav">Available: 5.1 cores</div></div>
+    <div class="rc" style="padding-bottom:10px"><div class="rc-t">Recent Events</div><div class="rc-s">Latest cluster events</div><div style="max-height:180px;overflow-y:auto"><div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">Killing</div><div class="ev-mg">Stopping container in <code>kite-6b96c</code></div><div class="ev-tm">hace 3 min</div></div></div><div class="ev"><div class="ev-b wr">Warning</div><div class="ev-bd"><div class="ev-tp">OOMKilled</div><div class="ev-mg">Container <code>stripe-wh</code> exceeded 256Mi</div><div class="ev-tm">hace 12 min</div></div></div><div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">Scaled</div><div class="ev-mg"><code>worker-svc</code> replicas 5 → 4</div><div class="ev-tm">hace 28 min</div></div></div></div></div>
+  </div>
+  <div class="two">
+    <div class="rc"><div class="rc-t">Memory Usage</div><div class="rc-s">Requests: 5.0 / Limits: 22.2 / Total: 14.98 GiB</div><div class="rb"><div class="rbr"><div class="rbl req">Requests</div><div class="rbt"><div class="rbf" style="width:33.7%;background:var(--blu)"></div></div><div class="rbv">5.0 GiB</div></div><div class="rbp" style="padding-left:68px">33.7% of capacity</div><div class="rbr"><div class="rbl lim">Limits</div><div class="rbt"><div class="rbf" style="width:100%;background:var(--red)"></div></div><div class="rbv">22.2 GiB</div></div><div class="rbp" style="padding-left:68px">148.4% of capacity</div></div><div class="rav">Available: 9.9 GiB</div></div>
+    <div class="cc"><div class="cc-t">Network Usage</div><div class="cc-s">Bandwidth in / out</div><div class="cc-a" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;opacity:.5"><div class="ph2-ic">⚡</div><div class="ph2-t">Requires KubeBolt Agent</div><div class="ph2-s">Coming in Phase 2</div></div></div>
+  </div>
+  <div class="two" style="margin-bottom:22px">
+    <div class="cc"><div class="cc-t">Resource Utilization</div><div class="cc-s">CPU & Memory (last 6h)</div><div class="cc-a" style="display:flex;align-items:center;justify-content:center;flex-direction:column;gap:6px;opacity:.5"><div class="ph2-ic">⚡</div><div class="ph2-t">Historical metrics</div><div class="ph2-s">Requires KubeBolt Agent · Phase 2</div></div></div>
+    <div class="rc"><div class="rc-t">Workload Health</div><div class="rc-s">Status by type</div><div style="display:flex;flex-direction:column;gap:10px;margin-top:8px"><div style="display:flex;align-items:center;gap:10px"><span style="font-size:11px;width:90px;color:var(--t2)">Deployments</span><div class="rbt" style="flex:1;height:10px;display:flex;border-radius:5px;overflow:hidden"><div style="width:83%;background:var(--grn)"></div><div style="width:9%;background:var(--amb)"></div><div style="width:8%;background:var(--red)"></div></div><span style="font-size:10px;font-family:var(--mono);color:var(--t3);min-width:42px;text-align:right">10/12</span></div><div style="display:flex;align-items:center;gap:10px"><span style="font-size:11px;width:90px;color:var(--t2)">StatefulSets</span><div class="rbt" style="flex:1;height:10px;display:flex;border-radius:5px;overflow:hidden"><div style="width:100%;background:var(--grn)"></div></div><span style="font-size:10px;font-family:var(--mono);color:var(--t3);min-width:42px;text-align:right">2/2</span></div><div style="display:flex;align-items:center;gap:10px"><span style="font-size:11px;width:90px;color:var(--t2)">DaemonSets</span><div class="rbt" style="flex:1;height:10px;display:flex;border-radius:5px;overflow:hidden"><div style="width:100%;background:var(--grn)"></div></div><span style="font-size:10px;font-family:var(--mono);color:var(--t3);min-width:42px;text-align:right">3/3</span></div><div style="display:flex;align-items:center;gap:10px"><span style="font-size:11px;width:90px;color:var(--t2)">Jobs</span><div class="rbt" style="flex:1;height:10px;display:flex;border-radius:5px;overflow:hidden"><div style="width:80%;background:var(--grn)"></div><div style="width:20%;background:var(--amb)"></div></div><span style="font-size:10px;font-family:var(--mono);color:var(--t3);min-width:42px;text-align:right">4/5</span></div></div></div>
+  </div>
+  <div class="stl">Workloads por namespace</div>
+  <div class="ns-sec"><div class="ns-hd"><div class="ns-nm">default</div><div class="ns-bg">production</div><div class="ns-st">5 deployments · 18 pods</div></div><div class="dg">
+    <div class="dp sok"><div class="dp-nm">api-gateway</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">3/3</span></div><div class="pds"><div class="pd r"></div><div class="pd r"></div><div class="pd r"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:35%;background:var(--grn)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:48%;background:var(--grn)"></div></div></div></div></div>
+    <div class="dp swn"><div class="dp-nm">worker-service</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">4/5</span></div><div class="pds"><div class="pd r"></div><div class="pd r"></div><div class="pd r"></div><div class="pd r"></div><div class="pd e"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:87%;background:var(--red)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:72%;background:var(--amb)"></div></div></div></div></div>
+    <div class="dp sok"><div class="dp-nm">auth-service</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">2/2</span></div><div class="pds"><div class="pd r"></div><div class="pd r"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:22%;background:var(--grn)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:31%;background:var(--grn)"></div></div></div></div></div>
+    <div class="dp sok"><div class="dp-nm">notification-svc</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">2/2</span></div><div class="pds"><div class="pd r"></div><div class="pd r"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:15%;background:var(--grn)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:28%;background:var(--grn)"></div></div></div></div></div>
+  </div></div>
+  <div class="ns-sec" style="animation-delay:.1s"><div class="ns-hd"><div class="ns-nm">payments</div><div class="ns-bg">production</div><div class="ns-st">3 deployments · 11 pods</div></div><div class="dg">
+    <div class="dp sok"><div class="dp-nm">payment-processor</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">3/3</span></div><div class="pds"><div class="pd r"></div><div class="pd r"></div><div class="pd r"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:45%;background:var(--grn)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:63%;background:var(--amb)"></div></div></div></div></div>
+    <div class="dp ser"><div class="dp-nm">stripe-webhook</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">1/2</span></div><div class="pds"><div class="pd r"></div><div class="pd e"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:56%;background:var(--amb)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:91%;background:var(--red)"></div></div></div></div></div>
+    <div class="dp sok"><div class="dp-nm">invoice-generator</div><div class="dp-mt"><span class="dp-tp">Deployment</span><span class="dp-rp">2/2</span></div><div class="pds"><div class="pd r"></div><div class="pd r"></div></div><div class="db"><div class="dbi"><div class="dbi-l">CPU</div><div class="dbi-t"><div class="dbi-f" style="width:19%;background:var(--grn)"></div></div></div><div class="dbi"><div class="dbi-l">MEM</div><div class="dbi-t"><div class="dbi-f" style="width:34%;background:var(--grn)"></div></div></div></div></div>
+  </div></div>
+</div></div>
+
+<!-- ═══ PODS ═══ -->
+<div class="view" id="v-pods" style="display:none"><div class="vct">
+  <div class="pg-t">Pods <span class="pg-badge">47 total</span></div>
+  <div class="fbar"><div class="fbar-ns act">All namespaces</div><div class="fbar-ns">default</div><div class="fbar-ns">payments</div><div class="fbar-ns">kube-system</div><div class="fbar-ns">ingress</div><input class="fbar-search" placeholder="Filter pods..."><div class="fbar-ct">Showing 47 of 47</div></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>CPU</th><th>Memory</th><th>Restarts</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">api-gateway-7f8d4-xk2m</td><td class="ns">default</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:32%;background:var(--grn)"></span></span><span class="mono">120m</span></td><td><span class="bar"><span class="bar-f" style="width:45%;background:var(--grn)"></span></span><span class="mono">180Mi</span></td><td class="mono">0</td><td class="age">2d 14h</td></tr>
+    <tr><td class="nm">api-gateway-7f8d4-p9nj</td><td class="ns">default</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:28%;background:var(--grn)"></span></span><span class="mono">105m</span></td><td><span class="bar"><span class="bar-f" style="width:42%;background:var(--grn)"></span></span><span class="mono">168Mi</span></td><td class="mono">0</td><td class="age">2d 14h</td></tr>
+    <tr><td class="nm">api-gateway-7f8d4-a3wq</td><td class="ns">default</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:35%;background:var(--grn)"></span></span><span class="mono">131m</span></td><td><span class="bar"><span class="bar-f" style="width:48%;background:var(--grn)"></span></span><span class="mono">192Mi</span></td><td class="mono">0</td><td class="age">3h 22m</td></tr>
+    <tr><td class="nm">worker-svc-5c9a2-m3kp</td><td class="ns">default</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:85%;background:var(--red)"></span></span><span class="mono">425m</span></td><td><span class="bar"><span class="bar-f" style="width:70%;background:var(--amb)"></span></span><span class="mono">358Mi</span></td><td class="mono">0</td><td class="age">5d 8h</td></tr>
+    <tr><td class="nm">worker-svc-5c9a2-z4rv</td><td class="ns">default</td><td><span class="st er">CrashLoop</span></td><td><span class="mono dim">—</span></td><td><span class="mono dim">—</span></td><td class="mono" style="color:var(--red)">7</td><td class="age">5d 8h</td></tr>
+    <tr><td class="nm">auth-svc-3b7e1-k9mp</td><td class="ns">default</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:20%;background:var(--grn)"></span></span><span class="mono">80m</span></td><td><span class="bar"><span class="bar-f" style="width:30%;background:var(--grn)"></span></span><span class="mono">120Mi</span></td><td class="mono">0</td><td class="age">1d 3h</td></tr>
+    <tr><td class="nm">stripe-wh-f4e2-n9kp</td><td class="ns">payments</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:55%;background:var(--amb)"></span></span><span class="mono">224m</span></td><td><span class="bar"><span class="bar-f" style="width:88%;background:var(--red)"></span></span><span class="mono">230Mi</span></td><td class="mono">0</td><td class="age">12h</td></tr>
+    <tr><td class="nm">stripe-wh-f4e2-x2mr</td><td class="ns">payments</td><td><span class="st er">OOMKilled</span></td><td><span class="mono dim">—</span></td><td><span class="mono dim">—</span></td><td class="mono" style="color:var(--red)">6</td><td class="age">12h</td></tr>
+    <tr><td class="nm">pay-proc-a2d1-k8mn</td><td class="ns">payments</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:44%;background:var(--grn)"></span></span><span class="mono">176m</span></td><td><span class="bar"><span class="bar-f" style="width:62%;background:var(--amb)"></span></span><span class="mono">248Mi</span></td><td class="mono">0</td><td class="age">3d 6h</td></tr>
+    <tr><td class="nm">coredns-5d78c</td><td class="ns">kube-system</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:6%;background:var(--grn)"></span></span><span class="mono">24m</span></td><td><span class="bar"><span class="bar-f" style="width:14%;background:var(--grn)"></span></span><span class="mono">56Mi</span></td><td class="mono">0</td><td class="age">14d</td></tr>
+    <tr><td class="nm">kube-proxy-n1</td><td class="ns">kube-system</td><td><span class="st ok">Running</span></td><td><span class="bar"><span class="bar-f" style="width:3%;background:var(--grn)"></span></span><span class="mono">12m</span></td><td><span class="bar"><span class="bar-f" style="width:9%;background:var(--grn)"></span></span><span class="mono">36Mi</span></td><td class="mono">0</td><td class="age">14d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ NODES ═══ -->
+<div class="view" id="v-nodes" style="display:none"><div class="vct">
+  <div class="pg-t">Nodes <span class="pg-badge">3 total</span></div>
+  <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px">
+    <div class="rc"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:10px;height:10px;border-radius:50%;background:var(--grn)"></div><div><div style="font-size:13px;font-weight:600">ip-10-0-1-101</div><div style="font-size:10px;font-family:var(--mono);color:var(--t3)">m5.xlarge · eu-west-1a</div></div></div><div class="rb"><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">CPU</div><div class="rbt"><div class="rbf" style="width:58%;background:var(--amb)"></div></div><div class="rbv">58% · 2.3/4</div></div><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">Mem</div><div class="rbt"><div class="rbf" style="width:72%;background:var(--amb)"></div></div><div class="rbv">72% · 5.8/8 GiB</div></div><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">Pods</div><div class="rbt"><div class="rbf" style="width:54%;background:var(--grn)"></div></div><div class="rbv">19/35</div></div></div><div style="margin-top:12px;font-size:10px;font-family:var(--mono);color:var(--t3)">Kubelet v1.28.3 · containerd 1.7.2</div></div>
+    <div class="rc"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:10px;height:10px;border-radius:50%;background:var(--grn)"></div><div><div style="font-size:13px;font-weight:600">ip-10-0-2-205</div><div style="font-size:10px;font-family:var(--mono);color:var(--t3)">m5.xlarge · eu-west-1b</div></div></div><div class="rb"><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">CPU</div><div class="rbt"><div class="rbf" style="width:65%;background:var(--amb)"></div></div><div class="rbv">65% · 2.6/4</div></div><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">Mem</div><div class="rbt"><div class="rbf" style="width:68%;background:var(--amb)"></div></div><div class="rbv">68% · 5.4/8 GiB</div></div><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">Pods</div><div class="rbt"><div class="rbf" style="width:46%;background:var(--grn)"></div></div><div class="rbv">16/35</div></div></div><div style="margin-top:12px;font-size:10px;font-family:var(--mono);color:var(--t3)">Kubelet v1.28.3 · containerd 1.7.2</div></div>
+    <div class="rc"><div style="display:flex;align-items:center;gap:10px;margin-bottom:12px"><div style="width:10px;height:10px;border-radius:50%;background:var(--grn)"></div><div><div style="font-size:13px;font-weight:600">ip-10-0-3-042</div><div style="font-size:10px;font-family:var(--mono);color:var(--t3)">m5.xlarge · eu-west-1c</div></div></div><div class="rb"><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">CPU</div><div class="rbt"><div class="rbf" style="width:42%;background:var(--grn)"></div></div><div class="rbv">42% · 1.7/4</div></div><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">Mem</div><div class="rbt"><div class="rbf" style="width:55%;background:var(--grn)"></div></div><div class="rbv">55% · 4.4/8 GiB</div></div><div class="rbr"><div style="font-size:10px;color:var(--t3);width:40px">Pods</div><div class="rbt"><div class="rbf" style="width:34%;background:var(--grn)"></div></div><div class="rbv">12/35</div></div></div><div style="margin-top:12px;font-size:10px;font-family:var(--mono);color:var(--t3)">Kubelet v1.28.3 · containerd 1.7.2</div></div>
+  </div>
+  <div class="ph2"><div class="ph2-ic">⚡</div><div class="ph2-t">Disk I/O & Network per node</div><div class="ph2-s">Detailed node metrics require KubeBolt Agent · Phase 2</div><div class="ph2-cmd">kubectl apply -f kubebolt-agent.yaml</div></div>
+</div></div>
+
+<!-- ═══ DEPLOYMENTS ═══ -->
+<div class="view" id="v-deployments" style="display:none"><div class="vct">
+  <div class="pg-t">Deployments <span class="pg-badge">12 total</span></div>
+  <div class="fbar"><div class="fbar-ns act">All</div><div class="fbar-ns">default</div><div class="fbar-ns">payments</div><div class="fbar-ns">kube-system</div><div class="fbar-ns">ingress</div><input class="fbar-search" placeholder="Filter deployments..."><div class="fbar-ct">12 deployments</div></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Ready</th><th>Up-to-date</th><th>CPU</th><th>Memory</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">api-gateway</td><td class="ns">default</td><td><span class="st ok">3/3</span></td><td class="mono">3</td><td><span class="bar"><span class="bar-f" style="width:35%;background:var(--grn)"></span></span><span class="mono">35%</span></td><td><span class="bar"><span class="bar-f" style="width:48%;background:var(--grn)"></span></span><span class="mono">48%</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">worker-service</td><td class="ns">default</td><td><span class="st wr">4/5</span></td><td class="mono">5</td><td><span class="bar"><span class="bar-f" style="width:87%;background:var(--red)"></span></span><span class="mono">87%</span></td><td><span class="bar"><span class="bar-f" style="width:72%;background:var(--amb)"></span></span><span class="mono">72%</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">auth-service</td><td class="ns">default</td><td><span class="st ok">2/2</span></td><td class="mono">2</td><td><span class="bar"><span class="bar-f" style="width:22%;background:var(--grn)"></span></span><span class="mono">22%</span></td><td><span class="bar"><span class="bar-f" style="width:31%;background:var(--grn)"></span></span><span class="mono">31%</span></td><td class="age">1d 3h</td></tr>
+    <tr><td class="nm">notification-svc</td><td class="ns">default</td><td><span class="st ok">2/2</span></td><td class="mono">2</td><td><span class="bar"><span class="bar-f" style="width:15%;background:var(--grn)"></span></span><span class="mono">15%</span></td><td><span class="bar"><span class="bar-f" style="width:28%;background:var(--grn)"></span></span><span class="mono">28%</span></td><td class="age">7d</td></tr>
+    <tr><td class="nm">payment-processor</td><td class="ns">payments</td><td><span class="st ok">3/3</span></td><td class="mono">3</td><td><span class="bar"><span class="bar-f" style="width:45%;background:var(--grn)"></span></span><span class="mono">45%</span></td><td><span class="bar"><span class="bar-f" style="width:63%;background:var(--amb)"></span></span><span class="mono">63%</span></td><td class="age">10d</td></tr>
+    <tr><td class="nm">stripe-webhook</td><td class="ns">payments</td><td><span class="st er">1/2</span></td><td class="mono">2</td><td><span class="bar"><span class="bar-f" style="width:56%;background:var(--amb)"></span></span><span class="mono">56%</span></td><td><span class="bar"><span class="bar-f" style="width:91%;background:var(--red)"></span></span><span class="mono">91%</span></td><td class="age">5d</td></tr>
+    <tr><td class="nm">invoice-generator</td><td class="ns">payments</td><td><span class="st ok">2/2</span></td><td class="mono">2</td><td><span class="bar"><span class="bar-f" style="width:19%;background:var(--grn)"></span></span><span class="mono">19%</span></td><td><span class="bar"><span class="bar-f" style="width:34%;background:var(--grn)"></span></span><span class="mono">34%</span></td><td class="age">10d</td></tr>
+    <tr><td class="nm">coredns</td><td class="ns">kube-system</td><td><span class="st ok">2/2</span></td><td class="mono">2</td><td><span class="bar"><span class="bar-f" style="width:6%;background:var(--grn)"></span></span><span class="mono">6%</span></td><td><span class="bar"><span class="bar-f" style="width:14%;background:var(--grn)"></span></span><span class="mono">14%</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">nginx-controller</td><td class="ns">ingress</td><td><span class="st ok">2/2</span></td><td class="mono">2</td><td><span class="bar"><span class="bar-f" style="width:12%;background:var(--grn)"></span></span><span class="mono">12%</span></td><td><span class="bar"><span class="bar-f" style="width:20%;background:var(--grn)"></span></span><span class="mono">20%</span></td><td class="age">14d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ SERVICES ═══ -->
+<div class="view" id="v-services" style="display:none"><div class="vct">
+  <div class="pg-t">Services <span class="pg-badge">18 total</span></div>
+  <div class="fbar"><div class="fbar-ns act">All</div><div class="fbar-ns">default</div><div class="fbar-ns">payments</div><div class="fbar-ns">kube-system</div><input class="fbar-search" placeholder="Filter services..."><div class="fbar-ct">18 services</div></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Cluster IP</th><th>Ports</th><th>Endpoints</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">api-gateway-svc</td><td class="ns">default</td><td class="mono">ClusterIP</td><td class="mono">10.100.24.15</td><td class="mono">8080/TCP</td><td><span class="st ok">3 ready</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">worker-svc</td><td class="ns">default</td><td class="mono">ClusterIP</td><td class="mono">10.100.31.82</td><td class="mono">9090/TCP</td><td><span class="st wr">4/5</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">auth-svc</td><td class="ns">default</td><td class="mono">ClusterIP</td><td class="mono">10.100.18.44</td><td class="mono">8081/TCP</td><td><span class="st ok">2 ready</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">payment-svc</td><td class="ns">payments</td><td class="mono">ClusterIP</td><td class="mono">10.100.42.91</td><td class="mono">443/TCP</td><td><span class="st ok">3 ready</span></td><td class="age">10d</td></tr>
+    <tr><td class="nm">stripe-svc</td><td class="ns">payments</td><td class="mono">ClusterIP</td><td class="mono">10.100.55.17</td><td class="mono">8443/TCP</td><td><span class="st er">1/2</span></td><td class="age">5d</td></tr>
+    <tr><td class="nm">kube-dns</td><td class="ns">kube-system</td><td class="mono">ClusterIP</td><td class="mono">10.100.0.10</td><td class="mono">53/UDP,53/TCP</td><td><span class="st ok">2 ready</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">ingress-nginx-svc</td><td class="ns">ingress</td><td class="mono">LoadBalancer</td><td class="mono">10.100.67.33</td><td class="mono">80,443/TCP</td><td><span class="st ok">2 ready</span></td><td class="age">14d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ INGRESSES ═══ -->
+<div class="view" id="v-ingresses" style="display:none"><div class="vct">
+  <div class="pg-t">Ingresses <span class="pg-badge">4 total</span></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Hosts</th><th>Paths</th><th>Backend</th><th>TLS</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">main-ingress</td><td class="ns">ingress</td><td class="mono">app.kubebolt.io</td><td class="mono">/api/*</td><td class="mono">api-gateway-svc:8080</td><td><span class="st ok">Yes</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">payments-ingress</td><td class="ns">ingress</td><td class="mono">pay.kubebolt.io</td><td class="mono">/webhooks/*</td><td class="mono">payment-svc:443</td><td><span class="st ok">Yes</span></td><td class="age">10d</td></tr>
+    <tr><td class="nm">auth-ingress</td><td class="ns">ingress</td><td class="mono">auth.kubebolt.io</td><td class="mono">/oauth/*</td><td class="mono">auth-svc:8081</td><td><span class="st ok">Yes</span></td><td class="age">14d</td></tr>
+    <tr><td class="nm">docs-ingress</td><td class="ns">ingress</td><td class="mono">docs.kubebolt.io</td><td class="mono">/*</td><td class="mono">docs-svc:80</td><td><span class="st ok">Yes</span></td><td class="age">7d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ CONFIGMAPS ═══ -->
+<div class="view" id="v-configmaps" style="display:none"><div class="vct">
+  <div class="pg-t">ConfigMaps <span class="pg-badge">14 total</span></div>
+  <div class="fbar"><div class="fbar-ns act">All</div><div class="fbar-ns">default</div><div class="fbar-ns">payments</div><div class="fbar-ns">kube-system</div><input class="fbar-search" placeholder="Filter configmaps..."><div class="fbar-ct">14 configmaps</div></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Keys</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">api-config</td><td class="ns">default</td><td class="mono">12</td><td class="age">14d</td></tr>
+    <tr><td class="nm">worker-config</td><td class="ns">default</td><td class="mono">8</td><td class="age">14d</td></tr>
+    <tr><td class="nm">notification-config</td><td class="ns">default</td><td class="mono">5</td><td class="age">7d</td></tr>
+    <tr><td class="nm">payment-config</td><td class="ns">payments</td><td class="mono">9</td><td class="age">10d</td></tr>
+    <tr><td class="nm">stripe-config</td><td class="ns">payments</td><td class="mono">4</td><td class="age">5d</td></tr>
+    <tr><td class="nm">coredns-config</td><td class="ns">kube-system</td><td class="mono">1</td><td class="age">14d</td></tr>
+    <tr><td class="nm">kube-proxy-config</td><td class="ns">kube-system</td><td class="mono">2</td><td class="age">14d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ SECRETS ═══ -->
+<div class="view" id="v-secrets" style="display:none"><div class="vct">
+  <div class="pg-t">Secrets <span class="pg-badge">9 total</span></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Type</th><th>Keys</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">db-credentials</td><td class="ns">default</td><td class="mono">Opaque</td><td class="mono">3</td><td class="age">14d</td></tr>
+    <tr><td class="nm">tls-cert-main</td><td class="ns">ingress</td><td class="mono">kubernetes.io/tls</td><td class="mono">2</td><td class="age">14d</td></tr>
+    <tr><td class="nm">stripe-api-key</td><td class="ns">payments</td><td class="mono">Opaque</td><td class="mono">2</td><td class="age">5d</td></tr>
+    <tr><td class="nm">registry-pull-secret</td><td class="ns">default</td><td class="mono">dockerconfigjson</td><td class="mono">1</td><td class="age">14d</td></tr>
+    <tr><td class="nm">default-token-x8k2p</td><td class="ns">default</td><td class="mono">service-account</td><td class="mono">3</td><td class="age">14d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ PVCS ═══ -->
+<div class="view" id="v-pvcs" style="display:none"><div class="vct">
+  <div class="pg-t">PersistentVolumeClaims <span class="pg-badge">6 total</span></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Status</th><th>Volume</th><th>Capacity</th><th>Storage Class</th><th>Age</th></tr></thead><tbody>
+    <tr><td class="nm">worker-data</td><td class="ns">default</td><td><span class="st ok">Bound</span></td><td class="mono">pv-worker-001</td><td class="mono">10Gi</td><td class="mono">gp3-default</td><td class="age">14d</td></tr>
+    <tr><td class="nm">invoices-storage</td><td class="ns">payments</td><td><span class="st ok">Bound</span></td><td class="mono">pv-invoices-001</td><td class="mono">50Gi</td><td class="mono">gp3-default</td><td class="age">10d</td></tr>
+    <tr><td class="nm">logs-volume</td><td class="ns">default</td><td><span class="st ok">Bound</span></td><td class="mono">pv-logs-001</td><td class="mono">20Gi</td><td class="mono">gp3-default</td><td class="age">14d</td></tr>
+    <tr><td class="nm">redis-data-0</td><td class="ns">default</td><td><span class="st ok">Bound</span></td><td class="mono">pv-redis-001</td><td class="mono">5Gi</td><td class="mono">gp3-default</td><td class="age">14d</td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ HPAS ═══ -->
+<div class="view" id="v-hpas" style="display:none"><div class="vct">
+  <div class="pg-t">Horizontal Pod Autoscalers <span class="pg-badge">3 total</span></div>
+  <div class="rc" style="padding:0;overflow-x:auto"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Targets</th><th>Min</th><th>Max</th><th>Current</th><th>Status</th></tr></thead><tbody>
+    <tr><td class="nm">api-hpa</td><td class="ns">default</td><td class="mono">CPU &gt; 70%</td><td class="mono">2</td><td class="mono">6</td><td class="mono">3</td><td><span class="st ok">Active</span></td></tr>
+    <tr><td class="nm">worker-hpa</td><td class="ns">default</td><td class="mono">CPU &gt; 60%</td><td class="mono">3</td><td class="mono">8</td><td class="mono">5</td><td><span class="st wr">Scaling</span></td></tr>
+    <tr><td class="nm">payment-hpa</td><td class="ns">payments</td><td class="mono">CPU &gt; 75%</td><td class="mono">2</td><td class="mono">5</td><td class="mono">3</td><td><span class="st ok">Active</span></td></tr>
+  </tbody></table></div>
+</div></div>
+
+<!-- ═══ NAMESPACES ═══ -->
+<div class="view" id="v-namespaces" style="display:none"><div class="vct">
+  <div class="pg-t">Namespaces <span class="pg-badge">5 total</span></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px">
+    <div class="rc"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="width:8px;height:8px;border-radius:50%;background:var(--grn)"></div><div style="font-size:14px;font-weight:600">default</div><div style="margin-left:auto;font-size:9px;font-family:var(--mono);padding:2px 8px;border-radius:4px;background:var(--grnd);color:var(--grn)">Active</div></div><div style="font-size:11px;color:var(--t2);display:flex;flex-direction:column;gap:4px"><div>18 pods · 5 deployments</div><div>4 services · 3 configmaps</div><div style="color:var(--t3);font-family:var(--mono);font-size:10px">Age: 14d</div></div></div>
+    <div class="rc"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="width:8px;height:8px;border-radius:50%;background:var(--grn)"></div><div style="font-size:14px;font-weight:600">payments</div><div style="margin-left:auto;font-size:9px;font-family:var(--mono);padding:2px 8px;border-radius:4px;background:var(--grnd);color:var(--grn)">Active</div></div><div style="font-size:11px;color:var(--t2);display:flex;flex-direction:column;gap:4px"><div>11 pods · 3 deployments</div><div>3 services · 2 secrets</div><div style="color:var(--t3);font-family:var(--mono);font-size:10px">Age: 10d</div></div></div>
+    <div class="rc"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="width:8px;height:8px;border-radius:50%;background:var(--grn)"></div><div style="font-size:14px;font-weight:600">kube-system</div><div style="margin-left:auto;font-size:9px;font-family:var(--mono);padding:2px 8px;border-radius:4px;background:var(--grnd);color:var(--grn)">Active</div></div><div style="font-size:11px;color:var(--t2);display:flex;flex-direction:column;gap:4px"><div>8 pods · 1 deployment</div><div>1 service · 3 daemonsets</div><div style="color:var(--t3);font-family:var(--mono);font-size:10px">Age: 14d</div></div></div>
+    <div class="rc"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="width:8px;height:8px;border-radius:50%;background:var(--grn)"></div><div style="font-size:14px;font-weight:600">ingress</div><div style="margin-left:auto;font-size:9px;font-family:var(--mono);padding:2px 8px;border-radius:4px;background:var(--grnd);color:var(--grn)">Active</div></div><div style="font-size:11px;color:var(--t2);display:flex;flex-direction:column;gap:4px"><div>2 pods · 1 deployment</div><div>4 ingresses · 1 service</div><div style="color:var(--t3);font-family:var(--mono);font-size:10px">Age: 14d</div></div></div>
+    <div class="rc"><div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><div style="width:8px;height:8px;border-radius:50%;background:var(--grn)"></div><div style="font-size:14px;font-weight:600">monitoring</div><div style="margin-left:auto;font-size:9px;font-family:var(--mono);padding:2px 8px;border-radius:4px;background:var(--elev);color:var(--t3)">Empty</div></div><div style="font-size:11px;color:var(--t3)">No workloads — KubeBolt Agent not installed</div></div>
+  </div>
+</div></div>
+
+<!-- ═══ EVENTS ═══ -->
+<div class="view" id="v-events" style="display:none"><div class="vct">
+  <div class="pg-t">Events <span class="pg-badge">Live stream</span></div>
+  <div class="fbar"><div class="fbar-ns act">All</div><div class="fbar-ns">Warnings</div><div class="fbar-ns">Normal</div><input class="fbar-search" placeholder="Filter events..."></div>
+  <div class="rc">
+    <div class="ev"><div class="ev-b wr">Warning</div><div class="ev-bd"><div class="ev-tp">OOMKilled</div><div class="ev-mg">Container <code>stripe-wh-f4e2-x2mr</code> exceeded memory limit (256Mi). Pod terminated and restarted.</div><div class="ev-tm">hace 12 min · payments/stripe-webhook</div></div></div>
+    <div class="ev"><div class="ev-b wr">Warning</div><div class="ev-bd"><div class="ev-tp">BackOff</div><div class="ev-mg">Back-off restarting failed container <code>worker-svc-5c9a2-z4rv</code></div><div class="ev-tm">hace 28 min · default/worker-service</div></div></div>
+    <div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">Killing</div><div class="ev-mg">Stopping container in pod <code>kite-6b96c</code></div><div class="ev-tm">hace 3 min · default</div></div></div>
+    <div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">ScalingReplicaSet</div><div class="ev-mg">Scaled up deployment <code>api-gateway</code> to 3 replicas (was 2)</div><div class="ev-tm">hace 2h 40m · default/api-gateway</div></div></div>
+    <div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">Pulled</div><div class="ev-mg">Successfully pulled image <code>registry.io/auth:v2.4.1</code></div><div class="ev-tm">hace 1h 15m · default/auth-service</div></div></div>
+    <div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">Created</div><div class="ev-mg">Created container <code>invoice-gen</code> in pod invoice-b7c3-q8tp</div><div class="ev-tm">hace 3h · payments/invoice-generator</div></div></div>
+    <div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">SuccessfulCreate</div><div class="ev-mg">Created pod <code>scheduler-cron-t3x8p</code></div><div class="ev-tm">hace 22 min · default/scheduler</div></div></div>
+    <div class="ev"><div class="ev-b nr">Normal</div><div class="ev-bd"><div class="ev-tp">NodeReady</div><div class="ev-mg">Node <code>ip-10-0-3-042</code> status is now: Ready</div><div class="ev-tm">hace 6h · cluster</div></div></div>
+  </div>
+</div></div>
+
+<!-- ═══ GENERIC VIEWS (StatefulSets, DaemonSets, Jobs, CronJobs, Endpoints, PVs, StorageClasses, RBAC, Settings) ═══ -->
+<div class="view" id="v-statefulsets" style="display:none"><div class="vct"><div class="pg-t">StatefulSets <span class="pg-badge">2 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Ready</th><th>Age</th></tr></thead><tbody><tr><td class="nm">redis-cluster</td><td class="ns">default</td><td><span class="st ok">3/3</span></td><td class="age">14d</td></tr><tr><td class="nm">postgres-ha</td><td class="ns">default</td><td><span class="st ok">2/2</span></td><td class="age">14d</td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-daemonsets" style="display:none"><div class="vct"><div class="pg-t">DaemonSets <span class="pg-badge">3 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Desired</th><th>Current</th><th>Ready</th><th>Age</th></tr></thead><tbody><tr><td class="nm">kube-proxy</td><td class="ns">kube-system</td><td class="mono">3</td><td class="mono">3</td><td><span class="st ok">3</span></td><td class="age">14d</td></tr><tr><td class="nm">aws-node</td><td class="ns">kube-system</td><td class="mono">3</td><td class="mono">3</td><td><span class="st ok">3</span></td><td class="age">14d</td></tr><tr><td class="nm">ebs-csi-node</td><td class="ns">kube-system</td><td class="mono">3</td><td class="mono">3</td><td><span class="st ok">3</span></td><td class="age">14d</td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-jobs" style="display:none"><div class="vct"><div class="pg-t">Jobs <span class="pg-badge">5 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Completions</th><th>Duration</th><th>Status</th><th>Age</th></tr></thead><tbody><tr><td class="nm">db-migration-v42</td><td class="ns">default</td><td class="mono">1/1</td><td class="mono">34s</td><td><span class="st ok">Complete</span></td><td class="age">1d 3h</td></tr><tr><td class="nm">report-gen-daily</td><td class="ns">default</td><td class="mono">1/1</td><td class="mono">2m 12s</td><td><span class="st ok">Complete</span></td><td class="age">8h</td></tr><tr><td class="nm">cache-warmup</td><td class="ns">default</td><td class="mono">1/1</td><td class="mono">45s</td><td><span class="st ok">Complete</span></td><td class="age">3h</td></tr><tr><td class="nm">invoice-batch-031</td><td class="ns">payments</td><td class="mono">1/1</td><td class="mono">5m 8s</td><td><span class="st ok">Complete</span></td><td class="age">12h</td></tr><tr><td class="nm">cleanup-orphans</td><td class="ns">default</td><td class="mono">0/1</td><td class="mono">—</td><td><span class="st wr">Running</span></td><td class="age">22m</td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-cronjobs" style="display:none"><div class="vct"><div class="pg-t">CronJobs <span class="pg-badge">2 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Schedule</th><th>Last Run</th><th>Status</th><th>Age</th></tr></thead><tbody><tr><td class="nm">scheduler</td><td class="ns">default</td><td class="mono">*/30 * * * *</td><td class="mono">22m ago</td><td><span class="st ok">Active</span></td><td class="age">14d</td></tr><tr><td class="nm">invoice-batch</td><td class="ns">payments</td><td class="mono">0 */6 * * *</td><td class="mono">2h ago</td><td><span class="st ok">Active</span></td><td class="age">10d</td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-endpoints" style="display:none"><div class="vct"><div class="pg-t">Endpoints <span class="pg-badge">8 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Namespace</th><th>Endpoints</th><th>Age</th></tr></thead><tbody><tr><td class="nm">api-gateway-svc</td><td class="ns">default</td><td class="mono">10.0.1.12:8080, 10.0.2.34:8080, 10.0.3.56:8080</td><td class="age">14d</td></tr><tr><td class="nm">worker-svc</td><td class="ns">default</td><td class="mono">10.0.1.78:9090, 10.0.2.90:9090, 10.0.3.12:9090, 10.0.1.34:9090</td><td class="age">14d</td></tr><tr><td class="nm">payment-svc</td><td class="ns">payments</td><td class="mono">10.0.2.56:443, 10.0.3.78:443, 10.0.1.90:443</td><td class="age">10d</td></tr><tr><td class="nm">kube-dns</td><td class="ns">kube-system</td><td class="mono">10.0.1.5:53, 10.0.2.5:53</td><td class="age">14d</td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-pvs" style="display:none"><div class="vct"><div class="pg-t">PersistentVolumes <span class="pg-badge">6 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Capacity</th><th>Access</th><th>Reclaim</th><th>Status</th><th>Claim</th></tr></thead><tbody><tr><td class="nm">pv-worker-001</td><td class="mono">10Gi</td><td class="mono">RWO</td><td class="mono">Retain</td><td><span class="st ok">Bound</span></td><td class="mono">default/worker-data</td></tr><tr><td class="nm">pv-invoices-001</td><td class="mono">50Gi</td><td class="mono">RWO</td><td class="mono">Retain</td><td><span class="st ok">Bound</span></td><td class="mono">payments/invoices-storage</td></tr><tr><td class="nm">pv-logs-001</td><td class="mono">20Gi</td><td class="mono">RWO</td><td class="mono">Delete</td><td><span class="st ok">Bound</span></td><td class="mono">default/logs-volume</td></tr><tr><td class="nm">pv-redis-001</td><td class="mono">5Gi</td><td class="mono">RWO</td><td class="mono">Retain</td><td><span class="st ok">Bound</span></td><td class="mono">default/redis-data-0</td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-storageclasses" style="display:none"><div class="vct"><div class="pg-t">StorageClasses <span class="pg-badge">3 total</span></div><div class="rc" style="padding:0"><table class="rtbl"><thead><tr><th>Name</th><th>Provisioner</th><th>Reclaim</th><th>Binding</th><th>Default</th></tr></thead><tbody><tr><td class="nm">gp3-default</td><td class="mono">ebs.csi.aws.com</td><td class="mono">Delete</td><td class="mono">WaitForFirstConsumer</td><td><span class="st ok">Yes</span></td></tr><tr><td class="nm">gp2-legacy</td><td class="mono">kubernetes.io/aws-ebs</td><td class="mono">Delete</td><td class="mono">Immediate</td><td><span class="st nt">No</span></td></tr><tr><td class="nm">io2-fast</td><td class="mono">ebs.csi.aws.com</td><td class="mono">Retain</td><td class="mono">WaitForFirstConsumer</td><td><span class="st nt">No</span></td></tr></tbody></table></div></div></div>
+
+<div class="view" id="v-rbac" style="display:none"><div class="vct"><div class="pg-t">RBAC <span class="pg-badge">Roles & Bindings</span></div><div class="two"><div class="rc"><div class="rc-t">ClusterRoles</div><div class="rc-s">8 cluster roles</div><div style="display:flex;flex-direction:column;gap:6px;margin-top:8px"><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr)"><span style="font-size:12px;font-weight:500">cluster-admin</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">All resources</span></div><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr)"><span style="font-size:12px;font-weight:500">admin</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">Namespaced</span></div><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr)"><span style="font-size:12px;font-weight:500">edit</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">Namespaced</span></div><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0"><span style="font-size:12px;font-weight:500">view</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">Read-only</span></div></div></div><div class="rc"><div class="rc-t">ClusterRoleBindings</div><div class="rc-s">6 bindings</div><div style="display:flex;flex-direction:column;gap:6px;margin-top:8px"><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr)"><span style="font-size:12px;font-weight:500">cluster-admin-binding</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">system:masters</span></div><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--bdr)"><span style="font-size:12px;font-weight:500">kubelet-bootstrap</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">system:bootstrappers</span></div><div style="display:flex;align-items:center;justify-content:space-between;padding:6px 0"><span style="font-size:12px;font-weight:500">node-proxy</span><span style="font-size:10px;font-family:var(--mono);color:var(--t3)">system:node-proxier</span></div></div></div></div></div></div>
+
+<div class="view" id="v-settings" style="display:none"><div class="vct"><div class="pg-t">Settings</div><div class="two"><div class="rc"><div class="rc-t">Cluster Connection</div><div class="rc-s">Current kubeconfig</div><div style="margin-top:8px"><div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:12px"><span style="color:var(--t2)">Cluster</span><span class="mono" style="color:var(--t1)">production-eks-eu-west-1</span></div><div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:12px"><span style="color:var(--t2)">Server</span><span class="mono" style="color:var(--t1)">https://ABCD1234.gr7.eu-west-1.eks.amazonaws.com</span></div><div style="display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--bdr);font-size:12px"><span style="color:var(--t2)">Kubernetes</span><span class="mono" style="color:var(--t1)">v1.28.3</span></div><div style="display:flex;justify-content:space-between;padding:8px 0;font-size:12px"><span style="color:var(--t2)">Provider</span><span class="mono" style="color:var(--t1)">AWS EKS</span></div></div></div><div class="rc"><div class="rc-t">KubeBolt Agent</div><div class="rc-s">Phase 2 features</div><div class="ph2" style="margin-top:8px"><div class="ph2-ic">⚡</div><div class="ph2-t">Agent not installed</div><div class="ph2-s">Install for network, disk I/O, and historical metrics</div><div class="ph2-cmd">kubectl apply -f kubebolt-agent.yaml</div></div></div></div></div></div>
+
+</div><!-- /dashViews -->
+
+<!-- MAP VIEW (same as before, stripped for size) -->
+<div id="mapView">
+  <div id="mapWorld"><svg id="mapSvg" width="3200" height="2200"></svg></div>
+  <div class="m-zctrl"><button class="m-zb" id="mzI">+</button><div class="m-zlb" id="mzL">65%</div><button class="m-zb" id="mzO">-</button><button class="m-zb" id="mzR" style="margin-top:3px;font-size:10px">&#x2299;</button></div>
+  <div class="m-mm"><div class="m-mm-t">Minimap</div><div class="m-mm-c" id="mmC"></div></div>
+  <div class="m-lgn"><div class="m-li"><div class="m-ll" style="background:var(--blu)"></div>Svc</div><div class="m-li"><div class="m-ll" style="background:var(--pur)"></div>Ingress</div><div class="m-li"><div class="m-ll" style="height:0;border-top:2px dashed var(--amb)"></div>Config</div><div class="m-li"><div class="m-ld" style="background:var(--grn)"></div>Ok</div><div class="m-li"><div class="m-ld" style="background:var(--red)"></div>Error</div></div>
+  <div class="m-fly" id="mFly"><div class="mf-hd"><div class="mf-nm" id="mfNm">node</div><button class="mf-cl" id="mfCl">x</button></div><div class="mf-sec"><div class="mf-lb">Metrics</div><div class="mf-mt" id="mfMt"></div></div><div class="mf-sec"><div class="mf-lb">CPU 60m</div><div style="height:38px;display:flex;align-items:center;justify-content:center;border:1px dashed var(--t5);border-radius:6px"><span style="font-size:9px;font-family:var(--mono);color:var(--t4)">Historical · Requires Agent</span></div></div><div class="mf-sec"><div class="mf-lb">Connected</div><div class="mf-cn" id="mfCn"></div></div></div>
+</div>
+
+<div class="ai-fab" id="aiFab">⚡</div>
+
+<script>
+(function(){
+// VIEW SWITCHING
+var curView='overview', curMode='dash';
+
+window.nav = function(el){
+  document.querySelectorAll('.sb-it').forEach(function(i){i.classList.remove('act');});
+  el.classList.add('act');
+  var v = el.getAttribute('data-v'); if(!v) return;
+  curView = v;
+  if(curMode==='map') switchView('dash');
+  document.querySelectorAll('#dashViews > .view').forEach(function(d){d.style.display='none';});
+  var target = document.getElementById('v-'+v);
+  if(target) target.style.display='';
+};
+
+window.switchView = function(v){
+  curMode = v;
+  var dv = document.getElementById('dashViews');
+  var mv = document.getElementById('mapView');
+  if(v==='dash'){
+    dv.style.visibility='visible'; dv.style.zIndex='2';
+    mv.style.visibility='hidden';  mv.style.zIndex='0';
+  } else {
+    dv.style.visibility='hidden';  dv.style.zIndex='0';
+    mv.style.visibility='visible'; mv.style.zIndex='2';
+  }
+  document.getElementById('vwDash').className='vw-btn'+(v==='dash'?' act':'');
+  document.getElementById('vwMap').className='vw-btn'+(v==='map'?' act':'');
+  document.getElementById('aiFab').style.display=v==='dash'?'':'none';
+  if(v==='map'&&!mapInit) buildMap();
+};
+
+// ═══ MAP ═══
+var mapInit=false;
+var NS={
+  'default':{c:'#22d68a',cb:'rgba(34,214,138,0.06)',bc:'rgba(34,214,138,0.12)',badge:'production',x:60,y:80,w:1100,h:640},
+  'payments':{c:'#f5a623',cb:'rgba(245,166,35,0.06)',bc:'rgba(245,166,35,0.12)',badge:'production',x:60,y:790,w:1100,h:460},
+  'monitoring':{c:'#4c9aff',cb:'rgba(76,154,255,0.06)',bc:'rgba(76,154,255,0.12)',badge:'system',x:1280,y:80,w:580,h:380},
+  'kube-system':{c:'#a78bfa',cb:'rgba(167,139,250,0.06)',bc:'rgba(167,139,250,0.12)',badge:'system',x:1280,y:530,w:580,h:460},
+  'ingress':{c:'#22d3ee',cb:'rgba(34,211,238,0.06)',bc:'rgba(34,211,238,0.12)',badge:'traffic',x:1980,y:80,w:360,h:540}
+};
+var ND=[
+  {id:'api-gw',ns:'default',tp:'Deployment',ic:'deploy',nm:'api-gateway',x:140,y:200,st:'ok',pods:[1,1,1],cpu:35,mem:48,mt:'3/3'},
+  {id:'worker',ns:'default',tp:'Deployment',ic:'deploy',nm:'worker-service',x:370,y:200,st:'warn',pods:[1,1,1,1,0],cpu:87,mem:72,mt:'4/5'},
+  {id:'auth',ns:'default',tp:'Deployment',ic:'deploy',nm:'auth-service',x:600,y:200,st:'ok',pods:[1,1],cpu:22,mem:31,mt:'2/2'},
+  {id:'notif',ns:'default',tp:'Deployment',ic:'deploy',nm:'notification-svc',x:830,y:200,st:'ok',pods:[1,1],cpu:15,mem:28,mt:'2/2'},
+  {id:'api-svc',ns:'default',tp:'Service',ic:'svc',nm:'api-gateway-svc',x:140,y:390,st:'info',mt:'ClusterIP :8080'},
+  {id:'worker-svc',ns:'default',tp:'Service',ic:'svc',nm:'worker-svc',x:370,y:390,st:'info',mt:'ClusterIP :9090'},
+  {id:'auth-svc',ns:'default',tp:'Service',ic:'svc',nm:'auth-svc',x:600,y:390,st:'info',mt:'ClusterIP :8081'},
+  {id:'api-cm',ns:'default',tp:'ConfigMap',ic:'cm',nm:'api-config',x:160,y:560,st:'neutral',mt:'12 keys'},
+  {id:'db-secret',ns:'default',tp:'Secret',ic:'secret',nm:'db-credentials',x:520,y:560,st:'neutral',mt:'3 keys'},
+  {id:'api-hpa',ns:'default',tp:'HPA',ic:'hpa',nm:'api-hpa',x:300,y:560,st:'ok',mt:'min:2 max:6'},
+  {id:'pay-proc',ns:'payments',tp:'Deployment',ic:'deploy',nm:'payment-processor',x:140,y:900,st:'ok',pods:[1,1,1],cpu:45,mem:63,mt:'3/3'},
+  {id:'stripe',ns:'payments',tp:'Deployment',ic:'deploy',nm:'stripe-webhook',x:430,y:900,st:'err',pods:[1,0],cpu:56,mem:91,mt:'1/2'},
+  {id:'invoice',ns:'payments',tp:'Deployment',ic:'deploy',nm:'invoice-generator',x:720,y:900,st:'ok',pods:[1,1],cpu:19,mem:34,mt:'2/2'},
+  {id:'pay-svc',ns:'payments',tp:'Service',ic:'svc',nm:'payment-svc',x:140,y:1070,st:'info',mt:'ClusterIP :443'},
+  {id:'stripe-svc',ns:'payments',tp:'Service',ic:'svc',nm:'stripe-svc',x:430,y:1070,st:'info',mt:'ClusterIP :8443'},
+  {id:'kv-ph',ns:'monitoring',tp:'Info',ic:'cm',nm:'Agent not installed',x:1430,y:240,st:'neutral',mt:'Install for metrics'},
+  {id:'coredns',ns:'kube-system',tp:'Deployment',ic:'deploy',nm:'coredns',x:1360,y:650,st:'ok',pods:[1,1],cpu:6,mem:14,mt:'2/2'},
+  {id:'kube-proxy',ns:'kube-system',tp:'DaemonSet',ic:'ds',nm:'kube-proxy',x:1580,y:650,st:'ok',pods:[1,1,1],cpu:3,mem:9,mt:'3/3'},
+  {id:'coredns-svc',ns:'kube-system',tp:'Service',ic:'svc',nm:'kube-dns',x:1470,y:830,st:'info',mt:'ClusterIP :53'},
+  {id:'ing-main',ns:'ingress',tp:'Ingress',ic:'ing',nm:'main-ingress',x:2040,y:200,st:'ok',mt:'*.app.io'},
+  {id:'ing-pay',ns:'ingress',tp:'Ingress',ic:'ing',nm:'payments-ingress',x:2040,y:350,st:'ok',mt:'pay.app.io'},
+  {id:'ing-ctrl',ns:'ingress',tp:'Deployment',ic:'deploy',nm:'nginx-controller',x:2040,y:490,st:'ok',pods:[1,1],cpu:12,mem:20,mt:'2/2'}
+];
+var CN=[
+  ['api-svc','api-gw','svc'],['worker-svc','worker','svc'],['auth-svc','auth','svc'],
+  ['pay-svc','pay-proc','svc'],['stripe-svc','stripe','svc'],['coredns-svc','coredns','svc'],
+  ['ing-main','api-svc','ing'],['ing-pay','pay-svc','ing'],
+  ['api-cm','api-gw','cfg'],['db-secret','auth','cfg'],['db-secret','worker','cfg'],
+  ['api-hpa','api-gw','hpa']
+];
+var ICONS={deploy:'\u25A6',svc:'\u21CC',ing:'\u21E2',pvc:'\u25A2',cm:'\u2630',secret:'\u26BF',hpa:'\u21D5',ds:'\u25A5',cj:'\u21BB'};
+var IC_BG={deploy:'rgba(34,214,138,0.10)',svc:'rgba(76,154,255,0.08)',ing:'rgba(167,139,250,0.08)',pvc:'rgba(34,211,238,0.08)',cm:'rgba(255,255,255,0.04)',secret:'rgba(245,166,35,0.10)',hpa:'rgba(167,139,250,0.08)',ds:'rgba(34,214,138,0.10)',cj:'rgba(245,166,35,0.10)'};
+var IC_C={deploy:'#22d68a',svc:'#4c9aff',ing:'#a78bfa',pvc:'#22d3ee',cm:'#555770',secret:'#f5a623',hpa:'#a78bfa',ds:'#22d68a',cj:'#f5a623'};
+var ST={ok:'sok',warn:'swn',err:'ser',info:'sin',neutral:'snt'};
+var nodeEls={},sc=0.65,px=20,py=10,dragging=false,dsx,dsy;
+
+function buildMap(){
+  mapInit=true;
+  var mw=document.getElementById('mapWorld'),svg=document.getElementById('mapSvg');
+  Object.keys(NS).forEach(function(name){var ns=NS[name];var d=document.createElement('div');d.className='mr';d.style.cssText='left:'+ns.x+'px;top:'+ns.y+'px;width:'+ns.w+'px;height:'+ns.h+'px;background:'+ns.cb+';border-color:'+ns.bc+';';d.innerHTML='<div class="mr-lb" style="color:'+ns.c+'">'+name+' <span class="mr-bg" style="background:'+ns.cb+';color:'+ns.c+'">'+ns.badge+'</span></div>';mw.appendChild(d);});
+  ND.forEach(function(n){var d=document.createElement('div');d.className='mn '+(ST[n.st]||'snt');d.id='mn-'+n.id;d.style.cssText='left:'+n.x+'px;top:'+n.y+'px;';d.setAttribute('data-id',n.id);var pods='';if(n.pods)pods='<div style="display:flex;gap:3px;flex-wrap:wrap">'+n.pods.map(function(p){return '<div style="width:7px;height:7px;border-radius:50%;background:'+(p?'#22d68a':'#ef4056')+'"></div>'}).join('')+'</div>';var bars='';if(n.cpu!==undefined){var cc=n.cpu<50?'#22d68a':n.cpu<80?'#f5a623':'#ef4056';var mc=n.mem<50?'#22d68a':n.mem<80?'#f5a623':'#ef4056';bars='<div style="display:flex;gap:5px;margin-top:5px"><div style="flex:1"><div style="font-size:7px;font-family:var(--mono);color:var(--t5);text-transform:uppercase;margin-bottom:1px">CPU</div><div style="height:2px;background:rgba(255,255,255,0.04);border-radius:1px;overflow:hidden"><div style="height:100%;width:'+n.cpu+'%;background:'+cc+';border-radius:1px"></div></div></div><div style="flex:1"><div style="font-size:7px;font-family:var(--mono);color:var(--t5);text-transform:uppercase;margin-bottom:1px">MEM</div><div style="height:2px;background:rgba(255,255,255,0.04);border-radius:1px;overflow:hidden"><div style="height:100%;width:'+n.mem+'%;background:'+mc+';border-radius:1px"></div></div></div></div>';}d.innerHTML='<div style="display:flex;align-items:center;gap:7px;margin-bottom:5px"><div style="width:20px;height:20px;border-radius:5px;display:flex;align-items:center;justify-content:center;font-size:10px;background:'+(IC_BG[n.ic]||'rgba(255,255,255,0.04)')+';color:'+(IC_C[n.ic]||'#555770')+'">'+(ICONS[n.ic]||'.'  )+'</div><div style="font-size:11px;font-weight:500;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1">'+n.nm+'</div></div><div style="font-size:8px;font-family:var(--mono);text-transform:uppercase;color:var(--t3);letter-spacing:.04em;margin-bottom:3px">'+n.tp+'</div>'+pods+(n.mt?'<div style="font-size:9px;font-family:var(--mono);color:var(--t3);margin-top:3px">'+n.mt+'</div>':'')+bars;mw.appendChild(d);nodeEls[n.id]=d;});
+  // Connections
+  function estH(id){var n=ND.filter(function(nd){return nd.id===id})[0];if(!n)return 50;var h=38;if(n.pods)h+=14;if(n.mt)h+=14;if(n.cpu!==undefined)h+=18;return h;}
+  var cS={svc:{s:'#4c9aff',w:1.6,d:'',a:true},ing:{s:'#a78bfa',w:1.4,d:'',a:true},cfg:{s:'#f5a623',w:0.9,d:'6 4',a:false},hpa:{s:'#22d68a',w:0.9,d:'6 4',a:false},pvc:{s:'#22d3ee',w:1.1,d:'',a:false}};
+  var h='<defs><marker id="aB" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M1 1L7 4L1 7" fill="none" stroke="#4c9aff" stroke-width="1.2" stroke-linecap="round"/></marker><marker id="aP" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto"><path d="M1 1L7 4L1 7" fill="none" stroke="#a78bfa" stroke-width="1.2" stroke-linecap="round"/></marker></defs>';
+  CN.forEach(function(c){var fe=nodeEls[c[0]],te=nodeEls[c[1]];if(!fe||!te)return;var fh=estH(c[0]),th=estH(c[1]);var fx=parseInt(fe.style.left)+79,fy=parseInt(fe.style.top)+fh/2;var tx=parseInt(te.style.left)+79,ty=parseInt(te.style.top)+th/2;var cfg=cS[c[2]]||cS.cfg;var mk=c[2]==='svc'?'url(#aB)':c[2]==='ing'?'url(#aP)':'';var dx=tx-fx;var cx1=fx+dx*.35,cy1=fy,cx2=tx-dx*.35,cy2=ty;var as=cfg.a?'stroke-dasharray:8 6;animation:flowD 1.5s linear infinite;':'';h+='<path d="M'+fx+','+fy+' C'+cx1+','+cy1+' '+cx2+','+cy2+' '+tx+','+ty+'" fill="none" stroke="'+cfg.s+'" stroke-width="'+cfg.w+'" opacity="0.4"'+(cfg.d?' stroke-dasharray="'+cfg.d+'"':'')+(mk?' marker-end="'+mk+'"':'')+' style="'+as+'" data-f="'+c[0]+'" data-t="'+c[1]+'"/>';});
+  svg.innerHTML=h;
+  // Pan/zoom
+  var mv=document.getElementById('mapView');
+  function apply(){mw.style.transform='translate('+px+'px,'+py+'px) scale('+sc+')';document.getElementById('mzL').textContent=Math.round(sc*100)+'%';updMM();}
+  apply();
+  mv.addEventListener('pointerdown',function(e){if(e.target.closest('.mn,.m-zctrl,.m-mm,.m-lgn,.m-fly,.m-zb,.mf-cl'))return;dragging=true;dsx=e.clientX-px;dsy=e.clientY-py;mv.classList.add('dragging');e.preventDefault();});
+  window.addEventListener('pointermove',function(e){if(!dragging)return;px=e.clientX-dsx;py=e.clientY-dsy;apply();});
+  window.addEventListener('pointerup',function(){dragging=false;mv.classList.remove('dragging');});
+  document.getElementById('mzI').onclick=function(){sc=Math.min(2,sc+0.1);apply();};
+  document.getElementById('mzO').onclick=function(){sc=Math.max(0.2,sc-0.1);apply();};
+  document.getElementById('mzR').onclick=function(){sc=0.65;px=20;py=10;apply();};
+  mv.addEventListener('wheel',function(e){e.preventDefault();var d=e.deltaY>0?-0.05:0.05;var ns2=Math.max(0.2,Math.min(2,sc+d));var r=mv.getBoundingClientRect();var mx=e.clientX-r.left,my=e.clientY-r.top;px=mx-(mx-px)*(ns2/sc);py=my-(my-py)*(ns2/sc);sc=ns2;apply();},{passive:false});
+  // Node select
+  mv.addEventListener('click',function(e){var nd=e.target.closest('.mn');if(nd){selNode(nd.getAttribute('data-id'));return;}var ci=e.target.closest('.mf-ci');if(ci){var jid=ci.getAttribute('data-jid');if(jid)jumpTo(jid);}});
+  document.getElementById('mfCl').onclick=closeMFly;
+  function selNode(id){var n=ND.filter(function(nd){return nd.id===id})[0];if(!n)return;document.querySelectorAll('.mn').forEach(function(el){el.classList.remove('sel');});var el=document.getElementById('mn-'+id);if(el)el.classList.add('sel');svg.querySelectorAll('path[data-f]').forEach(function(p){var f=p.getAttribute('data-f'),t=p.getAttribute('data-t');if(f===id||t===id){p.style.opacity='1';p.style.strokeWidth='3px';}else{p.style.opacity='0.1';p.style.strokeWidth='';}});document.getElementById('mFly').classList.add('open');var pc=n.st==='ok'?'ok':n.st==='warn'?'wn':'er';var pt=n.st==='ok'?'healthy':n.st==='warn'?'warning':n.st==='err'?'error':'info';document.getElementById('mfNm').innerHTML=n.nm+' <span class="mf-pl '+pc+'">'+pt+'</span>';var mh='';if(n.cpu!==undefined){var cc=n.cpu<50?'#22d68a':'#f5a623',mc=n.mem<50?'#22d68a':'#f5a623';var pcc=n.pods?n.pods.filter(function(p){return p===1}).length+'/'+n.pods.length:'-';mh='<div><div class="mf-mv" style="color:'+cc+'">'+n.cpu+'%</div><div class="mf-ms">CPU</div></div><div><div class="mf-mv" style="color:'+mc+'">'+n.mem+'%</div><div class="mf-ms">Memory</div></div><div><div class="mf-mv" style="color:var(--t1)">'+pcc+'</div><div class="mf-ms">Pods</div></div>';}else{mh='<div style="grid-column:span 3;font-size:11px;color:var(--t3)">'+(n.mt||'')+'</div>';}document.getElementById('mfMt').innerHTML=mh;var conns=CN.filter(function(c){return c[0]===id||c[1]===id});document.getElementById('mfCn').innerHTML=conns.map(function(c){var oid=c[0]===id?c[1]:c[0];var o=ND.filter(function(nd){return nd.id===oid})[0];if(!o)return '';var icC=c[2]==='svc'?'#4c9aff':c[2]==='ing'?'#a78bfa':c[2]==='cfg'?'#f5a623':'#22d3ee';return '<div class="mf-ci" data-jid="'+oid+'"><span style="color:'+icC+';font-size:10px;width:14px;text-align:center">'+(ICONS[o.ic]||'.')+'</span>'+o.nm+'<span class="mf-ct">'+o.tp+'</span></div>';}).join('')||'<div style="font-size:11px;color:var(--t3)">No connections</div>';}
+  function closeMFly(){document.getElementById('mFly').classList.remove('open');document.querySelectorAll('.mn').forEach(function(el){el.classList.remove('sel');});svg.querySelectorAll('path[data-f]').forEach(function(p){p.style.opacity='';p.style.strokeWidth='';});}
+  function jumpTo(id){var n=ND.filter(function(nd){return nd.id===id})[0];if(!n)return;px=window.innerWidth/2-(n.x+79)*sc;py=window.innerHeight/2-(n.y+40)*sc;apply();selNode(id);}
+  function updMM(){var mc=document.getElementById('mmC');if(!mc)return;var mw2=mc.offsetWidth,mh2=mc.offsetHeight,s=Math.min(mw2/2500,mh2/1400);var hh='';Object.keys(NS).forEach(function(name){var ns=NS[name];hh+='<div style="position:absolute;border-radius:2px;border:1px solid '+ns.bc+';background:'+ns.cb+';left:'+ns.x*s+'px;top:'+ns.y*s+'px;width:'+ns.w*s+'px;height:'+ns.h*s+'px"></div>';});ND.forEach(function(n){var c=n.st==='ok'?'#22d68a':n.st==='warn'?'#f5a623':n.st==='err'?'#ef4056':'#4c9aff';hh+='<div style="position:absolute;width:3px;height:3px;border-radius:50%;background:'+c+';left:'+(n.x+79)*s+'px;top:'+(n.y+25)*s+'px"></div>';});var vw=window.innerWidth/sc*s,vh=window.innerHeight/sc*s,vx=-px/sc*s,vy=(-py+52)/sc*s;hh+='<div style="position:absolute;border:1px solid #4c9aff;border-radius:1px;opacity:.5;left:'+vx+'px;top:'+vy+'px;width:'+vw+'px;height:'+vh+'px"></div>';mc.innerHTML=hh;}
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&curMode==='map')closeMFly();});
+}
+})();
+</script>
+</body>
+</html>

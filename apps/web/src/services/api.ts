@@ -1,0 +1,85 @@
+import type {
+  ClusterOverview,
+  ClusterHealth,
+  ClusterInfo,
+  ResourceList,
+  Topology,
+  Insight,
+  ResourceMetrics,
+  ResourceParams,
+  InsightParams,
+  EventParams,
+  ResourceItem,
+} from '@/types/kubernetes'
+
+const API_BASE = '/api/v1'
+
+class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message)
+    this.name = 'ApiError'
+  }
+}
+
+async function fetchJSON<T>(url: string): Promise<T> {
+  const res = await fetch(url)
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText)
+    throw new ApiError(res.status, msg)
+  }
+  return res.json()
+}
+
+function buildQuery(params?: Record<string, string | number | boolean | undefined | null>): string {
+  if (!params) return ''
+  const query = new URLSearchParams()
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') {
+      query.set(k, String(v))
+    }
+  })
+  const str = query.toString()
+  return str ? `?${str}` : ''
+}
+
+async function postJSON<T>(url: string, body: unknown): Promise<T> {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const msg = await res.text().catch(() => res.statusText)
+    throw new ApiError(res.status, msg)
+  }
+  return res.json()
+}
+
+export const api = {
+  // Cluster management
+  listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
+
+  switchCluster: (context: string) =>
+    postJSON<{ status: string; context: string }>(`${API_BASE}/clusters/switch`, { context }),
+
+  getOverview: () => fetchJSON<ClusterOverview>(`${API_BASE}/cluster/overview`),
+
+  getHealth: () => fetchJSON<ClusterHealth>(`${API_BASE}/cluster/health`),
+
+  getResources: (type: string, params?: ResourceParams) =>
+    fetchJSON<ResourceList>(`${API_BASE}/resources/${type}${buildQuery(params as Record<string, string | number | undefined>)}`),
+
+  getResourceDetail: (type: string, namespace: string, name: string) =>
+    fetchJSON<ResourceItem>(`${API_BASE}/resources/${type}/${namespace}/${name}`),
+
+  getTopology: () => fetchJSON<Topology>(`${API_BASE}/topology`),
+
+  getInsights: (params?: InsightParams) =>
+    fetchJSON<{ items: Insight[]; total: number }>(`${API_BASE}/insights${buildQuery(params as Record<string, string | undefined>)}`),
+
+  getEvents: (params?: EventParams) =>
+    fetchJSON<ResourceList>(`${API_BASE}/events${buildQuery(params as Record<string, string | number | undefined>)}`),
+
+  getMetrics: (type: string, namespace: string, name: string) =>
+    fetchJSON<ResourceMetrics>(`${API_BASE}/metrics/${type}/${namespace}/${name}`),
+}
