@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
+import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
 import { FilterBar } from './FilterBar'
@@ -11,6 +12,8 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
+
+const PAGE_SIZE = 50
 
 const resourceLabels: Record<string, string> = {
   pods: 'Pods',
@@ -281,10 +284,15 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
 
   const [namespace, setNamespace] = useState('')
   const [search, setSearch] = useState('')
+  const [page, setPage] = useState(1)
+
+  function resetPage() { setPage(1) }
 
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources(resourceType, {
     namespace: namespace || undefined,
     search: search || undefined,
+    page,
+    limit: PAGE_SIZE,
   })
 
   const columns = useMemo(() => getColumns(resourceType), [resourceType])
@@ -299,6 +307,8 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
 
   const items = data?.items || []
+  const total = data?.total ?? items.length
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const label = resourceLabels[resourceType] || resourceType
 
   return (
@@ -306,7 +316,7 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
       <div className="flex items-center gap-3 mb-4">
         <h1 className="text-lg font-semibold text-kb-text-primary">{label}</h1>
         <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
-          {items.length} total
+          {total} total
         </span>
         <div className="ml-auto">
           <DataFreshnessIndicator
@@ -319,15 +329,45 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
       <FilterBar
         namespaces={namespaces}
         selectedNamespace={namespace}
-        onNamespaceChange={setNamespace}
+        onNamespaceChange={(v) => { setNamespace(v); resetPage() }}
         search={search}
-        onSearchChange={setSearch}
+        onSearchChange={(v) => { setSearch(v); resetPage() }}
         total={items.length}
         resourceName={label.toLowerCase()}
       />
       <div className="bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
         <ResourceTable data={items} columns={columns} />
       </div>
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between mt-3 px-1">
+          <span className="text-[11px] font-mono text-kb-text-tertiary">
+            {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
+          </span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title="Previous page"
+              onClick={() => setPage(p => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="p-1 rounded border border-kb-border text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span className="text-[11px] font-mono text-kb-text-secondary px-2">
+              {page} / {totalPages}
+            </span>
+            <button
+              type="button"
+              title="Next page"
+              onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="p-1 rounded border border-kb-border text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
