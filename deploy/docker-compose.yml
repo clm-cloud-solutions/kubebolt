@@ -4,6 +4,8 @@ services:
     ports: ["8080:8080"]
     volumes:
       - /tmp/docker-kubeconfig:/root/.kube/config:ro
+      # AWS credentials are needed for EKS token generation (aws eks get-token).
+      # Remove this line if you're not using EKS clusters.
       - ~/.aws:/root/.aws:ro
     extra_hosts: ["host.docker.internal:host-gateway"]
   web:
