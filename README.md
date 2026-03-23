@@ -6,6 +6,15 @@ KubeBolt gives you full cluster visibility in under 2 minutes. No agents, no con
 
 Connect your kubeconfig → See your entire cluster → Get actionable insights.
 
+### Dashboard Overview
+![KubeBolt Dashboard](docs/images/kubebolt-dashboard.webp)
+
+### Cluster Topology Map
+![KubeBolt Cluster Map](docs/images/kubebolt-cluster-map.webp)
+
+### Resource Views with Live Metrics
+![KubeBolt Deployments](docs/images/kubebolt-deployments.webp)
+
 ## Quick Start
 
 ### Option 1: Docker Compose (recommended)
