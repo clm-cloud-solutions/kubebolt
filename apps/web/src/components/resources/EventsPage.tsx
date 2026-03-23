@@ -25,7 +25,7 @@ export function EventsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-semibold text-[#e8e9ed]">Events</h1>
+        <h1 className="text-lg font-semibold text-kb-text-primary">Events</h1>
         <div className="flex gap-1">
           {filters.map((f) => (
             <button
@@ -38,7 +38,7 @@ export function EventsPage() {
                     : f === 'Normal'
                       ? 'bg-status-ok-dim text-status-ok border-status-ok/20'
                       : 'bg-status-info-dim text-status-info border-status-info/20'
-                  : 'bg-kb-card text-[#8b8d9a] border-kb-border hover:border-kb-border-active'
+                  : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
               }`}
             >
               {f}
@@ -49,7 +49,7 @@ export function EventsPage() {
 
       <div className="bg-kb-card border border-kb-border rounded-[10px] divide-y divide-kb-border">
         {items.length === 0 && (
-          <div className="py-12 text-center text-xs text-[#555770] font-mono">No events found</div>
+          <div className="py-12 text-center text-xs text-kb-text-tertiary font-mono">No events found</div>
         )}
         {items.map((item, i) => {
           const eventType = (item.type as string) || 'Normal'
@@ -65,13 +65,13 @@ export function EventsPage() {
                 {eventType}
               </span>
               <div className="flex-1 min-w-0">
-                <div className="text-xs text-[#e8e9ed]">{(item.message as string) || item.name}</div>
-                <div className="text-[10px] font-mono text-[#555770] mt-0.5">
+                <div className="text-xs text-kb-text-primary">{(item.message as string) || item.name}</div>
+                <div className="text-[10px] font-mono text-kb-text-tertiary mt-0.5">
                   {(item.object as string) || `${item.namespace}/${item.name}`}
-                  {item.reason != null ? <span className="ml-2 text-[#8b8d9a]">{String(item.reason)}</span> : null}
+                  {item.reason != null ? <span className="ml-2 text-kb-text-secondary">{String(item.reason)}</span> : null}
                 </div>
               </div>
-              <span className="text-[10px] font-mono text-[#555770] shrink-0">
+              <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
                 {item.createdAt ? formatAge(item.createdAt) : item.age || '-'}
               </span>
             </div>

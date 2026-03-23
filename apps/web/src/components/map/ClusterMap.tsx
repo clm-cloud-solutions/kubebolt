@@ -180,75 +180,78 @@ function buildGridLayout(filtered: TopologyNode[]) {
 }
 
 // ─── Flow Layout ───
-function buildFlowLayout(filtered: TopologyNode[], edges: TopologyEdge[]) {
+function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
   const groups = groupByNamespace(filtered)
   const allNodes: Node[] = []
-  const nodeIdSet = new Set(filtered.map((n) => n.id))
 
-  // Build adjacency for edge-based ordering
-  const outgoing = new Map<string, Set<string>>()
-  const incoming = new Map<string, Set<string>>()
-  for (const e of edges) {
-    if (!nodeIdSet.has(e.source) || !nodeIdSet.has(e.target)) continue
-    if (!outgoing.has(e.source)) outgoing.set(e.source, new Set())
-    outgoing.get(e.source)!.add(e.target)
-    if (!incoming.has(e.target)) incoming.set(e.target, new Set())
-    incoming.get(e.target)!.add(e.source)
+  interface FlowBlock {
+    ns: string
+    resources: TopologyNode[]
+    color: typeof NS_COLORS[number]
+    width: number
+    height: number
+    activeColumns: number[]
+    columns: Map<number, TopologyNode[]>
   }
 
-  let globalOffsetY = 0
-
-  groups.forEach(({ ns, resources }, nsIdx) => {
+  // Pre-compute dimensions for every namespace block
+  const blocks: FlowBlock[] = groups.map(({ ns, resources }, nsIdx) => {
     const color = NS_COLORS[nsIdx % NS_COLORS.length]
 
-    // Assign each resource to a flow column
-    const columnAssignment = new Map<string, number>()
+    const columns = new Map<number, TopologyNode[]>()
     for (const n of resources) {
       const kind = n.type || n.kind
       const colIdx = FLOW_COLUMNS.findIndex((col) => col.includes(kind))
-      columnAssignment.set(n.id, colIdx >= 0 ? colIdx : FLOW_COLUMNS.length)
-    }
-
-    // Group resources by column
-    const columns = new Map<number, TopologyNode[]>()
-    for (const n of resources) {
-      const col = columnAssignment.get(n.id)!
+      const col = colIdx >= 0 ? colIdx : FLOW_COLUMNS.length
       if (!columns.has(col)) columns.set(col, [])
       columns.get(col)!.push(n)
     }
 
-    // Only include columns that have resources
     const activeColumns = [...columns.keys()].sort((a, b) => a - b)
     const numCols = activeColumns.length
     const maxRows = Math.max(1, ...activeColumns.map((c) => columns.get(c)!.length))
+    const width = Math.max(numCols * (FLOW_COL_W + FLOW_GAP_X) - FLOW_GAP_X + NS_PAD_X * 2, 300)
+    const height = maxRows * (FLOW_NODE_H + FLOW_GAP_Y) - FLOW_GAP_Y + NS_PAD_TOP + NS_PAD_BOTTOM
 
-    const regionW = numCols * (FLOW_COL_W + FLOW_GAP_X) - FLOW_GAP_X + NS_PAD_X * 2
-    const regionH = maxRows * (FLOW_NODE_H + FLOW_GAP_Y) - FLOW_GAP_Y + NS_PAD_TOP + NS_PAD_BOTTOM
+    return { ns, resources, color, width, height, activeColumns, columns }
+  })
 
-    const nsId = `ns__${ns}`
-    allNodes.push({
-      id: nsId, type: 'namespaceRegion',
-      position: { x: 0, y: globalOffsetY },
-      data: { namespace: ns, nodeCount: resources.length, color, width: Math.max(regionW, 300), height: regionH },
-      style: { width: Math.max(regionW, 300), height: regionH },
-      selectable: false, draggable: false,
-    })
+  // Arrange namespace blocks in rows of NS_COLS (same as grid layout)
+  const rows: FlowBlock[][] = []
+  for (let i = 0; i < blocks.length; i += NS_COLS) {
+    rows.push(blocks.slice(i, i + NS_COLS))
+  }
 
-    activeColumns.forEach((colNum, colVisualIdx) => {
-      const colResources = columns.get(colNum)!
-      colResources.forEach((n, rowIdx) => {
-        allNodes.push({
-          id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
-          position: {
-            x: NS_PAD_X + colVisualIdx * (FLOW_COL_W + FLOW_GAP_X),
-            y: NS_PAD_TOP + rowIdx * (FLOW_NODE_H + FLOW_GAP_Y),
-          },
-          data: n,
+  let offsetY = 0
+  rows.forEach((row) => {
+    let offsetX = 0
+    const rowMaxH = Math.max(...row.map((b) => b.height))
+    row.forEach((block) => {
+      const nsId = `ns__${block.ns}`
+      allNodes.push({
+        id: nsId, type: 'namespaceRegion',
+        position: { x: offsetX, y: offsetY },
+        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
+        style: { width: block.width, height: block.height },
+        selectable: false, draggable: false,
+      })
+
+      block.activeColumns.forEach((colNum, colVisualIdx) => {
+        block.columns.get(colNum)!.forEach((n, rowIdx) => {
+          allNodes.push({
+            id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
+            position: {
+              x: NS_PAD_X + colVisualIdx * (FLOW_COL_W + FLOW_GAP_X),
+              y: NS_PAD_TOP + rowIdx * (FLOW_NODE_H + FLOW_GAP_Y),
+            },
+            data: n,
+          })
         })
       })
-    })
 
-    globalOffsetY += Math.max(regionH, 100) + NS_GAP_Y
+      offsetX += block.width + NS_GAP_X
+    })
+    offsetY += rowMaxH + NS_GAP_Y
   })
 
   return allNodes
@@ -384,13 +387,13 @@ function ClusterMapInner() {
       <div className="absolute top-4 left-4 bg-kb-card/95 backdrop-blur-sm border border-kb-border rounded-lg p-3 z-10 w-[250px] space-y-3">
         {/* Layout Toggle */}
         <div>
-          <div className="text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em] mb-1.5">Layout</div>
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">Layout</div>
           <div className="flex rounded-md border border-kb-border overflow-hidden">
             <button
               onClick={() => setLayoutMode('grid')}
               title="Grid layout — resources arranged in a compact grid"
               className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors ${
-                layoutMode === 'grid' ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-[#555770] hover:text-[#8b8d9a]'
+                layoutMode === 'grid' ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
               }`}
             >
               <LayoutGrid className="w-3 h-3" />
@@ -400,7 +403,7 @@ function ClusterMapInner() {
               onClick={() => setLayoutMode('flow')}
               title="Flow layout — resources arranged by dependency chain"
               className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border ${
-                layoutMode === 'flow' ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-[#555770] hover:text-[#8b8d9a]'
+                layoutMode === 'flow' ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
               }`}
             >
               <GitBranch className="w-3 h-3" />
@@ -411,7 +414,7 @@ function ClusterMapInner() {
 
         {/* Resource Types */}
         <div>
-          <div className="text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em] mb-1.5">
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">
             Resource Types
           </div>
           <div className="flex flex-wrap gap-1">
@@ -425,7 +428,7 @@ function ClusterMapInner() {
                   className={`px-1.5 py-0.5 rounded text-[9px] font-mono transition-all ${
                     isVisible
                       ? 'bg-status-info-dim text-status-info border border-status-info/20'
-                      : 'bg-kb-elevated/50 text-[#555770] border border-transparent'
+                      : 'bg-kb-elevated/50 text-kb-text-tertiary border border-transparent'
                   }`}
                 >
                   {KIND_SHORT[kind] || kind}
@@ -439,7 +442,7 @@ function ClusterMapInner() {
         <div>
           <button
             onClick={() => setNsFilterOpen(!nsFilterOpen)}
-            className="w-full flex items-center justify-between text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em] mb-1.5 hover:text-[#8b8d9a] transition-colors"
+            className="w-full flex items-center justify-between text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5 hover:text-kb-text-secondary transition-colors"
           >
             <span>Namespaces ({nsCount}/{allNamespaces.length})</span>
             <span className="text-[10px]">{nsFilterOpen ? '▲' : '▼'}</span>
@@ -451,7 +454,7 @@ function ClusterMapInner() {
                 className={`w-full text-left px-2 py-1 rounded text-[10px] font-mono transition-colors ${
                   visibleNamespaces === null
                     ? 'bg-status-info-dim text-status-info'
-                    : 'text-[#8b8d9a] hover:bg-kb-elevated/50'
+                    : 'text-kb-text-secondary hover:bg-kb-elevated/50'
                 }`}
               >
                 All namespaces
@@ -465,7 +468,7 @@ function ClusterMapInner() {
                     className={`w-full text-left px-2 py-1 rounded text-[10px] font-mono transition-colors truncate ${
                       isActive
                         ? 'bg-status-ok-dim/50 text-status-ok'
-                        : 'text-[#555770] hover:bg-kb-elevated/50 hover:text-[#8b8d9a]'
+                        : 'text-kb-text-tertiary hover:bg-kb-elevated/50 hover:text-kb-text-secondary'
                     }`}
                   >
                     {ns}
@@ -483,11 +486,11 @@ function ClusterMapInner() {
           {FLOW_COLUMNS.filter((col) => {
             return col.some((k) => availableKinds.includes(k) && !hiddenKinds.has(k))
           }).map((col) => (
-            <span key={col.join(',')} className="text-[8px] font-mono text-[#555770] uppercase tracking-[0.06em]">
+            <span key={col.join(',')} className="text-[8px] font-mono text-kb-text-tertiary uppercase tracking-[0.06em]">
               {col.map((k) => KIND_SHORT[k] || k).join(' / ')}
             </span>
           ))}
-          <span className="text-[8px] font-mono text-[#555770]">→</span>
+          <span className="text-[8px] font-mono text-kb-text-tertiary">→</span>
         </div>
       )}
 
@@ -508,7 +511,7 @@ function ClusterMapInner() {
             ) : (
               <div className={`w-4 h-0.5 ${item.color}`} />
             )}
-            <span className="text-[9px] font-mono text-[#8b8d9a]">{item.label}</span>
+            <span className="text-[9px] font-mono text-kb-text-secondary">{item.label}</span>
           </div>
         ))}
       </div>

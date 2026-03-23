@@ -35,7 +35,7 @@ const kindAccent: Record<string, { bg: string; text: string; border: string }> =
   DaemonSet:     { bg: 'rgba(34,214,138,0.10)', text: '#22d68a', border: 'border-[#22d68a]/20' },
   Service:       { bg: 'rgba(76,154,255,0.08)', text: '#4c9aff', border: 'border-[#4c9aff]/20' },
   Ingress:       { bg: 'rgba(167,139,250,0.08)', text: '#a78bfa', border: 'border-[#a78bfa]/20' },
-  ConfigMap:     { bg: 'rgba(255,255,255,0.04)', text: '#555770', border: 'border-[#555770]/30' },
+  ConfigMap:     { bg: 'rgba(255,255,255,0.04)', text: 'var(--kb-text-tertiary)', border: 'border-[#555770]/30' },
   Secret:        { bg: 'rgba(245,166,35,0.10)', text: '#f5a623', border: 'border-[#f5a623]/20' },
   HPA:           { bg: 'rgba(167,139,250,0.08)', text: '#a78bfa', border: 'border-[#a78bfa]/20' },
   PersistentVolumeClaim: { bg: 'rgba(34,211,238,0.08)', text: '#22d3ee', border: 'border-[#22d3ee]/20' },
@@ -48,7 +48,7 @@ const kindAccent: Record<string, { bg: string; text: string; border: string }> =
   HTTPRoute:     { bg: 'rgba(167,139,250,0.08)', text: '#a78bfa', border: 'border-[#a78bfa]/20' },
 }
 
-const defaultAccent = { bg: 'rgba(255,255,255,0.04)', text: '#555770', border: 'border-kb-border' }
+const defaultAccent = { bg: 'rgba(255,255,255,0.04)', text: 'var(--kb-text-tertiary)', border: 'border-kb-border' }
 
 function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
   const kind = data.type || data.kind || ''
@@ -61,8 +61,8 @@ function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
         selected ? 'ring-1 ring-status-info shadow-lg shadow-status-info/10' : 'hover:bg-kb-card-hover'
       }`}
     >
-      <Handle type="target" position={Position.Left} className="!bg-[#555770] !border-kb-bg !w-1.5 !h-1.5 !-left-1" />
-      <Handle type="source" position={Position.Right} className="!bg-[#555770] !border-kb-bg !w-1.5 !h-1.5 !-right-1" />
+      <Handle type="target" position={Position.Left} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-left-1" />
+      <Handle type="source" position={Position.Right} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-right-1" />
 
       {/* Header: icon + name */}
       <div className="flex items-center gap-2 mb-1.5">
@@ -73,7 +73,7 @@ function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
           {icon}
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[11px] font-medium text-[#e8e9ed] truncate leading-tight">
+          <div className="text-[11px] font-medium text-kb-text-primary truncate leading-tight">
             {data.label}
           </div>
         </div>
@@ -82,9 +82,9 @@ function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
 
       {/* Type + status */}
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[8px] font-mono text-[#555770] uppercase tracking-[0.04em]">{kind}</span>
+        <span className="text-[8px] font-mono text-kb-text-tertiary uppercase tracking-[0.04em]">{kind}</span>
         {data.metadata?.replicas && (
-          <span className="text-[9px] font-mono text-[#8b8d9a]">{data.metadata.replicas}</span>
+          <span className="text-[9px] font-mono text-kb-text-secondary">{data.metadata.replicas}</span>
         )}
       </div>
 
@@ -105,12 +105,12 @@ function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
       {data.cpu && (
         <div className="space-y-1 mt-1">
           <div className="flex items-center gap-1.5">
-            <span className="text-[7px] font-mono text-[#555770] uppercase w-6">CPU</span>
+            <span className="text-[7px] font-mono text-kb-text-tertiary uppercase w-6">CPU</span>
             <UsageBar percent={data.cpu.percentUsed ?? 0} height={2} className="flex-1" />
           </div>
           {data.memory && (
             <div className="flex items-center gap-1.5">
-              <span className="text-[7px] font-mono text-[#555770] uppercase w-6">MEM</span>
+              <span className="text-[7px] font-mono text-kb-text-tertiary uppercase w-6">MEM</span>
               <UsageBar percent={data.memory.percentUsed ?? 0} height={2} className="flex-1" />
             </div>
           )}

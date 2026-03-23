@@ -2,6 +2,38 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --kb-bg: #f5f6fa;
+  --kb-surface: #eef0f5;
+  --kb-card: #ffffff;
+  --kb-card-hover: #f5f6fa;
+  --kb-elevated: #e8eaf0;
+  --kb-sidebar: #f0f2f8;
+  --kb-border: rgba(0, 0, 0, 0.08);
+  --kb-border-active: rgba(0, 0, 0, 0.18);
+  --kb-text-primary: #1a1b2e;
+  --kb-text-secondary: #5a5c6e;
+  --kb-text-tertiary: #8b8d9a;
+  --kb-scrollbar: rgba(0, 0, 0, 0.14);
+  --kb-bar-track: rgba(0, 0, 0, 0.1);
+}
+
+.dark {
+  --kb-bg: #0a0b0f;
+  --kb-surface: #101118;
+  --kb-card: #161720;
+  --kb-card-hover: #1c1d2a;
+  --kb-elevated: #22243a;
+  --kb-sidebar: #0d0e14;
+  --kb-border: rgba(255, 255, 255, 0.06);
+  --kb-border-active: rgba(255, 255, 255, 0.14);
+  --kb-text-primary: #e8e9ed;
+  --kb-text-secondary: #8b8d9a;
+  --kb-text-tertiary: #555770;
+  --kb-scrollbar: rgba(255, 255, 255, 0.14);
+  --kb-bar-track: rgba(255, 255, 255, 0.06);
+}
+
 * {
   margin: 0;
   padding: 0;
@@ -14,16 +46,16 @@ body,
   width: 100%;
   height: 100%;
   overflow: hidden;
-  background: #0a0b0f;
+  background: var(--kb-bg);
   font-family: 'DM Sans', sans-serif;
-  color: #e8e9ed;
+  color: var(--kb-text-primary);
 }
 
 ::-webkit-scrollbar {
   width: 5px;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--kb-scrollbar);
   border-radius: 2px;
 }
 ::-webkit-scrollbar-track {

@@ -38,19 +38,19 @@ export function InsightCard({ insight }: InsightCardProps) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-1">
-            <h3 className="text-sm font-medium text-[#e8e9ed] truncate">{insight.title}</h3>
+            <h3 className="text-sm font-medium text-kb-text-primary truncate">{insight.title}</h3>
             <span className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-[0.06em] ${config.bg} ${config.text}`}>
               {insight.severity}
             </span>
           </div>
-          <p className="text-xs text-[#8b8d9a] mb-2">{insight.message}</p>
+          <p className="text-xs text-kb-text-secondary mb-2">{insight.message}</p>
           {insight.suggestion && (
             <div className="bg-kb-bg rounded-md px-3 py-2 mb-2">
-              <span className="text-[10px] font-mono text-[#555770] uppercase tracking-[0.06em]">Suggestion: </span>
-              <span className="text-[11px] text-[#8b8d9a]">{insight.suggestion}</span>
+              <span className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-[0.06em]">Suggestion: </span>
+              <span className="text-[11px] text-kb-text-secondary">{insight.suggestion}</span>
             </div>
           )}
-          <div className="flex items-center gap-3 text-[10px] font-mono text-[#555770]">
+          <div className="flex items-center gap-3 text-[10px] font-mono text-kb-text-tertiary">
             <span>{insight.resource}</span>
             {insight.namespace && <span>{insight.namespace}</span>}
             <span>{formatAge(insight.lastSeen)}</span>

@@ -57,12 +57,12 @@ export function SummaryCards({ overview }: SummaryCardsProps) {
           className="bg-kb-card border border-kb-border rounded-[10px] p-4 hover:bg-kb-card-hover transition-colors"
         >
           <div className="flex items-center justify-between mb-3">
-            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-[#555770]">{card.label}</span>
+            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">{card.label}</span>
             <div className={`w-7 h-7 rounded-lg ${card.bg} flex items-center justify-center ${card.color}`}>
               {card.icon}
             </div>
           </div>
-          <div className="text-2xl font-semibold text-[#e8e9ed] mb-1">{card.total}</div>
+          <div className="text-2xl font-semibold text-kb-text-primary mb-1">{card.total}</div>
           <div className={`text-[11px] font-mono ${card.status === 'ok' ? 'text-status-ok' : 'text-status-warn'}`}>
             {card.statusText}
           </div>

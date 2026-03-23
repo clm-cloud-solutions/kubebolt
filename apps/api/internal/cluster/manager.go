@@ -30,6 +30,7 @@ type Manager struct {
 	metricInterval  time.Duration
 	insightInterval time.Duration
 	cancelFn        context.CancelFunc
+	connErr         error // set when the active context failed to connect
 }
 
 // ClusterInfo represents a cluster available in the kubeconfig.
@@ -56,10 +57,16 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 		insightInterval: insightInterval,
 	}
 
-	// Connect to the current context
-	if err := m.connectToContext(kubeConfig.CurrentContext); err != nil {
-		return nil, err
-	}
+	// Connect asynchronously so the HTTP server can bind immediately.
+	// The manager starts in disconnected state; the UI will see 503s until ready.
+	go func() {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if err := m.connectToContextLocked(kubeConfig.CurrentContext); err != nil {
+			log.Printf("Warning: initial connection to context %q failed: %v — staying in disconnected state", kubeConfig.CurrentContext, err)
+			m.connErr = err
+		}
+	}()
 
 	return m, nil
 }
@@ -93,7 +100,8 @@ func (m *Manager) SwitchCluster(contextName string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if contextName == m.activeContext {
+	// Allow retry if currently disconnected from this context
+	if contextName == m.activeContext && m.connector != nil {
 		return nil
 	}
 
@@ -102,20 +110,27 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return fmt.Errorf("context %q not found in kubeconfig", contextName)
 	}
 
-	// Stop existing connector and collector
+	// Stop existing connector and immediately mark new context as active.
+	// The user explicitly chose this cluster, so we stay on it even if unreachable.
 	m.stopCurrent()
+	m.activeContext = contextName
 
-	// Connect to new context
+	// Connect to new context; on failure, stay disconnected on contextName (no fallback).
 	if err := m.connectToContextLocked(contextName); err != nil {
-		// Try to reconnect to previous context
-		log.Printf("Failed to switch to %s: %v, reconnecting to %s", contextName, err, m.activeContext)
-		_ = m.connectToContextLocked(m.activeContext)
+		m.connErr = err
+		log.Printf("Failed to connect to context %s: %v — staying disconnected", contextName, err)
 		return err
 	}
 
-	m.activeContext = contextName
 	log.Printf("Switched to cluster context: %s", contextName)
 	return nil
+}
+
+// ConnError returns the last connection error, or nil if connected.
+func (m *Manager) ConnError() error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.connErr
 }
 
 // ActiveContext returns the name of the currently active context.
@@ -164,6 +179,7 @@ func (m *Manager) stopCurrent() {
 	}
 	m.collector = nil
 	m.engine = nil
+	m.connErr = nil
 }
 
 func (m *Manager) connectToContext(contextName string) error {
@@ -175,7 +191,10 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	if err != nil {
 		return fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
-	connector.Start()
+	if err := connector.Start(); err != nil {
+		connector.Stop()
+		return fmt.Errorf("starting connector for context %s: %w", contextName, err)
+	}
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval)
 	connector.SetCollector(collector)
@@ -209,6 +228,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	m.engine = engine
 	m.cancelFn = cancel
 	m.activeContext = contextName
+	m.connErr = nil
 
 	return nil
 }

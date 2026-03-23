@@ -1,9 +1,11 @@
-version: "3.8"
 services:
   api:
     build: ../apps/api
     ports: ["8080:8080"]
-    volumes: ["~/.kube/config:/root/.kube/config:ro"]
+    volumes:
+      - /tmp/docker-kubeconfig:/root/.kube/config:ro
+      - ~/.aws:/root/.aws:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
   web:
     build: ../apps/web
     ports: ["3000:3000"]

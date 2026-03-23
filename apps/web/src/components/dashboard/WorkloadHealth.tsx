@@ -10,8 +10,8 @@ function HealthRow({ label, ready, total }: { label: string; ready: number; tota
 
   return (
     <div className="flex items-center gap-3">
-      <span className="text-[11px] text-[#8b8d9a] w-24 shrink-0">{label}</span>
-      <div className="flex-1 h-2 rounded-full overflow-hidden bg-[rgba(255,255,255,0.06)]">
+      <span className="text-[11px] text-kb-text-secondary w-24 shrink-0">{label}</span>
+      <div className="flex-1 h-2 rounded-full overflow-hidden bg-[var(--kb-bar-track)]">
         <div className="flex h-full">
           <div
             className="h-full bg-status-ok transition-all duration-500"
@@ -25,7 +25,7 @@ function HealthRow({ label, ready, total }: { label: string; ready: number; tota
           )}
         </div>
       </div>
-      <span className="text-[10px] font-mono text-[#8b8d9a] w-12 text-right shrink-0">
+      <span className="text-[10px] font-mono text-kb-text-secondary w-12 text-right shrink-0">
         {ready}/{total}
       </span>
     </div>
@@ -35,7 +35,7 @@ function HealthRow({ label, ready, total }: { label: string; ready: number; tota
 export function WorkloadHealth({ overview }: WorkloadHealthProps) {
   return (
     <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
-      <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-[#555770] mb-4">
+      <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary mb-4">
         Workload Health
       </div>
       <div className="space-y-3">

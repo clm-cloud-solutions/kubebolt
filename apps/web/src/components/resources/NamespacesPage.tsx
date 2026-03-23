@@ -15,23 +15,23 @@ function NamespaceCard({ ns }: { ns: ResourceItem }) {
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <FolderOpen className="w-4 h-4 text-[#a78bfa]" />
-          <span className="text-sm font-mono text-[#e8e9ed]">{ns.name}</span>
+          <span className="text-sm font-mono text-kb-text-primary">{ns.name}</span>
         </div>
         <StatusBadge status={ns.status || 'Active'} />
       </div>
 
       <div className="grid grid-cols-3 gap-2">
         <div className="bg-kb-bg rounded-md p-2 text-center">
-          <div className="text-sm font-semibold text-[#e8e9ed]">{podCount}</div>
-          <div className="text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em]">Pods</div>
+          <div className="text-sm font-semibold text-kb-text-primary">{podCount}</div>
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">Pods</div>
         </div>
         <div className="bg-kb-bg rounded-md p-2 text-center">
-          <div className="text-sm font-semibold text-[#e8e9ed]">{deploymentCount}</div>
-          <div className="text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em]">Deploys</div>
+          <div className="text-sm font-semibold text-kb-text-primary">{deploymentCount}</div>
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">Deploys</div>
         </div>
         <div className="bg-kb-bg rounded-md p-2 text-center">
-          <div className="text-sm font-semibold text-[#e8e9ed]">{serviceCount}</div>
-          <div className="text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em]">Services</div>
+          <div className="text-sm font-semibold text-kb-text-primary">{serviceCount}</div>
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">Services</div>
         </div>
       </div>
     </div>
@@ -49,8 +49,8 @@ export function NamespacesPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-semibold text-[#e8e9ed]">Namespaces</h1>
-        <span className="text-[10px] font-mono text-[#555770] uppercase tracking-[0.08em]">
+        <h1 className="text-lg font-semibold text-kb-text-primary">Namespaces</h1>
+        <span className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">
           {namespaces.length} namespaces
         </span>
       </div>

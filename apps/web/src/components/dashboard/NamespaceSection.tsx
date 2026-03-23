@@ -13,13 +13,13 @@ export function NamespaceSection({ namespaceWorkload }: NamespaceSectionProps) {
     <div className="animate-fade-up">
       {/* Namespace header */}
       <div className="flex items-center gap-3 mb-3 pb-2 border-b border-kb-border">
-        <span className="text-sm font-semibold text-[#e8e9ed]">
+        <span className="text-sm font-semibold text-kb-text-primary">
           {namespaceWorkload.namespace}
         </span>
-        <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-kb-elevated text-[#555770] uppercase tracking-[0.04em]">
+        <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary uppercase tracking-[0.04em]">
           namespace
         </span>
-        <span className="ml-auto text-[11px] font-mono text-[#555770]">
+        <span className="ml-auto text-[11px] font-mono text-kb-text-tertiary">
           {workloads.length} deployments · {totalPods} pods
         </span>
       </div>

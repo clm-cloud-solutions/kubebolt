@@ -14,18 +14,26 @@ import type {
 
 const API_BASE = '/api/v1'
 
-class ApiError extends Error {
+export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message)
     this.name = 'ApiError'
   }
 }
 
+async function extractErrorMessage(res: Response): Promise<string> {
+  try {
+    const json = await res.json()
+    return json.error || json.message || res.statusText
+  } catch {
+    return res.text().catch(() => res.statusText)
+  }
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
   const res = await fetch(url)
   if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText)
-    throw new ApiError(res.status, msg)
+    throw new ApiError(res.status, await extractErrorMessage(res))
   }
   return res.json()
 }
@@ -49,8 +57,7 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    const msg = await res.text().catch(() => res.statusText)
-    throw new ApiError(res.status, msg)
+    throw new ApiError(res.status, await extractErrorMessage(res))
   }
   return res.json()
 }

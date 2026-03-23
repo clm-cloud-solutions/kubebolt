@@ -8,11 +8,55 @@ Connect your kubeconfig → See your entire cluster → Get actionable insights.
 
 ## Quick Start
 
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/kubebolt.git
-cd kubebolt
+### Option 1: Docker Compose (recommended)
 
+Runs the full stack (Go API + React frontend via nginx) in containers.
+
+**Prerequisites:** Docker Desktop with a reachable Kubernetes cluster.
+
+#### Remote clusters (EKS, GKE, AKS, etc.)
+
+If your kubeconfig points to remote cluster endpoints, it works directly:
+
+```bash
+# Set your kubectl context to the desired cluster
+kubectl config use-context my-cluster
+
+# Start the stack
+cd deploy
+docker compose up -d
+```
+
+> **EKS note:** The API container needs the AWS CLI to obtain tokens. The Dockerfile already includes `aws-cli`, and the compose file mounts `~/.aws` for credentials. Make sure your AWS profile/SSO session is active before starting.
+
+#### Docker Desktop Kubernetes
+
+Docker Desktop's built-in K8s uses `127.0.0.1:6443` as the API server address, which doesn't work from inside a container. A helper script rewrites the kubeconfig to use `kubernetes.docker.internal` instead:
+
+```bash
+# 1. Enable Kubernetes in Docker Desktop (Settings > Kubernetes > Enable)
+# 2. Switch to the docker-desktop context
+kubectl config use-context docker-desktop
+
+# 3. Generate a container-compatible kubeconfig
+./deploy/docker-kubeconfig.sh
+
+# 4. Start the stack
+cd deploy
+docker compose up -d
+```
+
+Open http://localhost:3000 — the nginx frontend proxies API and WebSocket requests to the backend.
+
+To stop: `docker compose down`
+
+To rebuild after code changes: `docker compose up -d --build`
+
+### Option 2: Local development (no Docker)
+
+Requires Go 1.22+ and Node 20+.
+
+```bash
 # Start the backend
 cd apps/api
 go run cmd/server/main.go --kubeconfig ~/.kube/config
@@ -22,7 +66,7 @@ cd apps/web
 npm install && npm run dev
 ```
 
-Open http://localhost:5173 — your cluster is live.
+Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on port 8080.
 
 ## Features
 

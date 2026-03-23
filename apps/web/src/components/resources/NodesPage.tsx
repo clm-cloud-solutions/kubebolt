@@ -27,8 +27,8 @@ function NodeCard({ node }: { node: ResourceItem }) {
       <div className="flex items-center gap-2.5 mb-3">
         <div className={`w-2.5 h-2.5 rounded-full ${node.status === 'Ready' ? 'bg-status-ok' : 'bg-status-error'}`} />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold text-[#e8e9ed] truncate">{node.name}</div>
-          <div className="text-[10px] font-mono text-[#555770]">{(node.labels as Record<string, string>)?.['node.kubernetes.io/instance-type'] || ''}</div>
+          <div className="text-[13px] font-semibold text-kb-text-primary truncate">{node.name}</div>
+          <div className="text-[10px] font-mono text-kb-text-tertiary">{(node.labels as Record<string, string>)?.['node.kubernetes.io/instance-type'] || ''}</div>
         </div>
       </div>
 
@@ -36,8 +36,8 @@ function NodeCard({ node }: { node: ResourceItem }) {
       <div className="space-y-2.5">
         <div>
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] text-[#555770]">CPU</span>
-            <span className="text-[10px] font-mono text-[#8b8d9a]">
+            <span className="text-[10px] text-kb-text-tertiary">CPU</span>
+            <span className="text-[10px] font-mono text-kb-text-secondary">
               {hasMetrics ? `${Math.round(cpuPercent)}% · ${formatCPU(cpuUsage)}/${formatCPU(cpuAlloc)}` : `${formatCPU(cpuAlloc)} alloc`}
             </span>
           </div>
@@ -46,8 +46,8 @@ function NodeCard({ node }: { node: ResourceItem }) {
 
         <div>
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] text-[#555770]">Mem</span>
-            <span className="text-[10px] font-mono text-[#8b8d9a]">
+            <span className="text-[10px] text-kb-text-tertiary">Mem</span>
+            <span className="text-[10px] font-mono text-kb-text-secondary">
               {hasMetrics ? `${Math.round(memPercent)}% · ${formatMemory(memUsage)}/${formatMemory(memAlloc)}` : `${formatMemory(memAlloc)} alloc`}
             </span>
           </div>
@@ -56,15 +56,15 @@ function NodeCard({ node }: { node: ResourceItem }) {
 
         <div>
           <div className="flex items-center justify-between mb-1">
-            <span className="text-[10px] text-[#555770]">Pods</span>
-            <span className="text-[10px] font-mono text-[#8b8d9a]">{podCount}/{podCapacity}</span>
+            <span className="text-[10px] text-kb-text-tertiary">Pods</span>
+            <span className="text-[10px] font-mono text-kb-text-secondary">{podCount}/{podCapacity}</span>
           </div>
           <UsageBar percent={podCapacity > 0 ? (podCount / podCapacity) * 100 : 0} height={6} />
         </div>
       </div>
 
       {/* Footer */}
-      <div className="mt-3 text-[10px] font-mono text-[#555770]">
+      <div className="mt-3 text-[10px] font-mono text-kb-text-tertiary">
         {kubeletVersion}{containerRuntime ? ` · ${containerRuntime}` : ''}
       </div>
     </div>
@@ -82,8 +82,8 @@ export function NodesPage() {
   return (
     <div>
       <div className="flex items-center gap-3 mb-4">
-        <h1 className="text-lg font-semibold text-[#e8e9ed]">Nodes</h1>
-        <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-[#555770]">
+        <h1 className="text-lg font-semibold text-kb-text-primary">Nodes</h1>
+        <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
           {nodes.length} total
         </span>
       </div>

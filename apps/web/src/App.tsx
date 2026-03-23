@@ -1,6 +1,8 @@
 import { Component, type ReactNode } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { ThemeProvider } from '@/contexts/ThemeContext'
+import { ApiError } from '@/services/api'
 import { Layout } from '@/components/layout/Layout'
 import { OverviewPage } from '@/components/dashboard/OverviewPage'
 import { ResourceListPage } from '@/components/resources/ResourceListPage'
@@ -15,7 +17,11 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 10_000,
-      retry: 2,
+      retry: (failureCount, error) => {
+        // Never retry cluster-unavailable errors — they won't resolve by retrying
+        if (error instanceof ApiError && error.status === 503) return false
+        return failureCount < 2
+      },
       refetchOnWindowFocus: false,
     },
   },
@@ -39,7 +45,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
         <div className="flex items-center justify-center min-h-screen bg-kb-bg text-white">
           <div className="text-center p-8">
             <h1 className="text-xl font-semibold mb-2">Something went wrong</h1>
-            <p className="text-sm text-[#555770] mb-4">{this.state.error?.message}</p>
+            <p className="text-sm text-kb-text-tertiary mb-4">{this.state.error?.message}</p>
             <button
               onClick={() => this.setState({ hasError: false, error: null })}
               className="px-4 py-2 text-sm bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
@@ -56,8 +62,9 @@ class ErrorBoundary extends Component<{ children: ReactNode }, ErrorBoundaryStat
 
 export default function App() {
   return (
-    <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
+    <ThemeProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <Routes>
             <Route element={<Layout />}>
@@ -88,7 +95,8 @@ export default function App() {
             </Route>
           </Routes>
         </BrowserRouter>
-      </QueryClientProvider>
-    </ErrorBoundary>
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </ThemeProvider>
   )
 }

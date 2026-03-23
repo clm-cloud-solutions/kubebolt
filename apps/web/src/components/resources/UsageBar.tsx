@@ -13,14 +13,14 @@ export function UsageBar({ percent, height = 4, showLabel = false, className = '
 
   return (
     <div className={`flex items-center gap-2 ${className}`}>
-      <div className="flex-1 rounded-full overflow-hidden" style={{ height, background: 'rgba(255,255,255,0.06)' }}>
+      <div className="flex-1 rounded-full overflow-hidden" style={{ height, background: 'var(--kb-bar-track)' }}>
         <div
           className="h-full rounded-full transition-all duration-500"
           style={{ width: `${clamped}%`, background: color }}
         />
       </div>
       {showLabel && (
-        <span className="text-[10px] font-mono text-[#8b8d9a] w-8 text-right">{Math.round(clamped)}%</span>
+        <span className="text-[10px] font-mono text-kb-text-secondary w-8 text-right">{Math.round(clamped)}%</span>
       )}
     </div>
   )

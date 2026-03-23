@@ -8,6 +8,7 @@ import { StatusBadge } from './StatusBadge'
 import { UsageBar } from './UsageBar'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -34,13 +35,13 @@ const resourceLabels: Record<string, string> = {
 function CpuCell({ item }: { item: ResourceItem }) {
   const usage = Number(item.cpuUsage ?? 0)
   const percent = Number(item.cpuPercent ?? 0)
-  if (usage === 0 && percent === 0) return <span className="text-[#555770] text-[11px] font-mono">—</span>
+  if (usage === 0 && percent === 0) return <span className="text-kb-text-tertiary text-[11px] font-mono">—</span>
   return (
     <div className="flex items-center gap-1.5">
       <div className="w-14">
         <UsageBar percent={Math.max(percent, usage > 0 ? 2 : 0)} height={4} />
       </div>
-      <span className="text-[11px] font-mono text-[#8b8d9a]">{formatCPU(usage)}</span>
+      <span className="text-[11px] font-mono text-kb-text-secondary">{formatCPU(usage)}</span>
     </div>
   )
 }
@@ -48,13 +49,13 @@ function CpuCell({ item }: { item: ResourceItem }) {
 function MemCell({ item }: { item: ResourceItem }) {
   const usage = Number(item.memoryUsage ?? 0)
   const percent = Number(item.memoryPercent ?? 0)
-  if (usage === 0 && percent === 0) return <span className="text-[#555770] text-[11px] font-mono">—</span>
+  if (usage === 0 && percent === 0) return <span className="text-kb-text-tertiary text-[11px] font-mono">—</span>
   return (
     <div className="flex items-center gap-1.5">
       <div className="w-14">
         <UsageBar percent={Math.max(percent, usage > 0 ? 2 : 0)} height={4} />
       </div>
-      <span className="text-[11px] font-mono text-[#8b8d9a]">{formatMemory(usage)}</span>
+      <span className="text-[11px] font-mono text-kb-text-secondary">{formatMemory(usage)}</span>
     </div>
   )
 }
@@ -65,14 +66,14 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
       accessorKey: 'name',
       header: 'Name',
       cell: (info) => (
-        <span className="font-medium text-[#e8e9ed]">{info.getValue() as string}</span>
+        <span className="font-medium text-kb-text-primary">{info.getValue() as string}</span>
       ),
     },
     {
       accessorKey: 'namespace',
       header: 'Namespace',
       cell: (info) => (
-        <span className="text-[10px] font-mono text-[#555770]">{(info.getValue() as string) || '—'}</span>
+        <span className="text-[10px] font-mono text-kb-text-tertiary">{(info.getValue() as string) || '—'}</span>
       ),
     },
     {
@@ -101,7 +102,7 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         cell: (info) => {
           const v = Number(info.getValue() ?? 0)
           return (
-            <span className={`text-[11px] font-mono ${v > 0 ? 'text-status-error' : 'text-[#8b8d9a]'}`}>
+            <span className={`text-[11px] font-mono ${v > 0 ? 'text-status-error' : 'text-kb-text-secondary'}`}>
               {v}
             </span>
           )
@@ -133,7 +134,7 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         id: 'upToDate',
         header: 'Up-to-date',
         cell: (info) => (
-          <span className="text-[11px] font-mono text-[#8b8d9a]">
+          <span className="text-[11px] font-mono text-kb-text-secondary">
             {String(info.row.original.updatedReplicas ?? info.row.original.current ?? '—')}
           </span>
         ),
@@ -157,23 +158,23 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
       {
         accessorKey: 'type',
         header: 'Type',
-        cell: (info) => <span className="text-[11px] font-mono text-[#8b8d9a]">{info.getValue() as string}</span>,
+        cell: (info) => <span className="text-[11px] font-mono text-kb-text-secondary">{info.getValue() as string}</span>,
       },
       {
         accessorKey: 'clusterIP',
         header: 'Cluster IP',
-        cell: (info) => <span className="text-[11px] font-mono text-[#8b8d9a]">{info.getValue() as string}</span>,
+        cell: (info) => <span className="text-[11px] font-mono text-kb-text-secondary">{info.getValue() as string}</span>,
       },
       {
         accessorKey: 'ports',
         header: 'Ports',
         cell: (info) => {
           const ports = info.getValue()
-          if (!ports || !Array.isArray(ports)) return <span className="text-[11px] font-mono text-[#555770]">—</span>
+          if (!ports || !Array.isArray(ports)) return <span className="text-[11px] font-mono text-kb-text-tertiary">—</span>
           const formatted = (ports as Array<{ port: number; protocol: string }>)
             .map((p) => `${p.port}/${p.protocol}`)
             .join(', ')
-          return <span className="text-[11px] font-mono text-[#8b8d9a]">{formatted}</span>
+          return <span className="text-[11px] font-mono text-kb-text-secondary">{formatted}</span>
         },
       }
     )
@@ -189,41 +190,41 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
 
   if (resourceType === 'gateways') {
     base.push(
-      { accessorKey: 'class', header: 'Class', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'address', header: 'Address', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a] truncate block max-w-[250px]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'listeners', header: 'Listeners', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'class', header: 'Class', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'address', header: 'Address', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary truncate block max-w-[250px]">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'listeners', header: 'Listeners', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
   if (resourceType === 'httproutes') {
     base.push(
-      { accessorKey: 'hostnames', header: 'Hostnames', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'gateway', header: 'Gateway', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'backends', header: 'Backends', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'hostnames', header: 'Hostnames', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'gateway', header: 'Gateway', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'backends', header: 'Backends', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
   // Jobs
   if (resourceType === 'jobs') {
     base.push(
-      { accessorKey: 'completions', header: 'Completions', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'duration', header: 'Duration', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'completions', header: 'Completions', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'duration', header: 'Duration', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
   // CronJobs
   if (resourceType === 'cronjobs') {
     base.push(
-      { accessorKey: 'schedule', header: 'Schedule', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'lastSchedule', header: 'Last Run', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'schedule', header: 'Schedule', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'lastSchedule', header: 'Last Run', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
   // PVCs/PVs
   if (['pvcs', 'pvs'].includes(resourceType)) {
     base.push(
-      { accessorKey: 'capacity', header: 'Capacity', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'storageClass', header: 'Storage Class', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'capacity', header: 'Capacity', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'storageClass', header: 'Storage Class', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
@@ -232,24 +233,24 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     base.push({
       accessorKey: 'keys',
       header: 'Keys',
-      cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span>,
+      cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span>,
     })
   }
 
   // Secrets
   if (resourceType === 'secrets') {
     base.push(
-      { accessorKey: 'type', header: 'Type', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'keys', header: 'Keys', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'type', header: 'Type', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'keys', header: 'Keys', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
   // HPAs
   if (resourceType === 'hpas') {
     base.push(
-      { accessorKey: 'minReplicas', header: 'Min', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'maxReplicas', header: 'Max', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'currentReplicas', header: 'Current', cell: (info) => <span className="font-mono text-[11px] text-[#8b8d9a]">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'minReplicas', header: 'Min', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'maxReplicas', header: 'Max', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { accessorKey: 'currentReplicas', header: 'Current', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
     )
   }
 
@@ -260,7 +261,7 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     cell: (info) => {
       const val = info.getValue() as string
       return (
-        <span className="text-[10px] font-mono text-[#555770]">
+        <span className="text-[10px] font-mono text-kb-text-tertiary">
           {val ? formatAge(val) : (info.row.original.age as string) || '—'}
         </span>
       )
@@ -281,7 +282,7 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   const [namespace, setNamespace] = useState('')
   const [search, setSearch] = useState('')
 
-  const { data, isLoading, error, refetch } = useResources(resourceType, {
+  const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources(resourceType, {
     namespace: namespace || undefined,
     search: search || undefined,
   })
@@ -303,10 +304,17 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   return (
     <div>
       <div className="flex items-center gap-3 mb-4">
-        <h1 className="text-lg font-semibold text-[#e8e9ed]">{label}</h1>
-        <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-[#555770]">
+        <h1 className="text-lg font-semibold text-kb-text-primary">{label}</h1>
+        <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
           {items.length} total
         </span>
+        <div className="ml-auto">
+          <DataFreshnessIndicator
+            dataUpdatedAt={dataUpdatedAt}
+            refreshInterval={30_000}
+            isFetching={isFetching}
+          />
+        </div>
       </div>
       <FilterBar
         namespaces={namespaces}

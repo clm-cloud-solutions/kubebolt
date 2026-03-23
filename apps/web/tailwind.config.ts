@@ -7,14 +7,19 @@ export default {
     extend: {
       colors: {
         kb: {
-          bg: '#0a0b0f',
-          surface: '#101118',
-          card: '#161720',
-          'card-hover': '#1c1d2a',
-          elevated: '#22243a',
-          sidebar: '#0d0e14',
-          border: 'rgba(255,255,255,0.06)',
-          'border-active': 'rgba(255,255,255,0.14)',
+          bg: 'var(--kb-bg)',
+          surface: 'var(--kb-surface)',
+          card: 'var(--kb-card)',
+          'card-hover': 'var(--kb-card-hover)',
+          elevated: 'var(--kb-elevated)',
+          sidebar: 'var(--kb-sidebar)',
+          border: 'var(--kb-border)',
+          'border-active': 'var(--kb-border-active)',
+          text: {
+            primary: 'var(--kb-text-primary)',
+            secondary: 'var(--kb-text-secondary)',
+            tertiary: 'var(--kb-text-tertiary)',
+          },
         },
         status: {
           ok: '#22d68a',

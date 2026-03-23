@@ -25,8 +25,20 @@ cd apps/web && npm run build  # Production build (TypeScript check + Vite)
 
 ### Docker Compose (full stack)
 ```bash
-cd deploy && docker-compose up
+# Remote clusters (EKS, GKE, AKS) — works directly:
+kubectl config use-context my-cluster
+cd deploy && docker compose up -d
+
+# Docker Desktop K8s — needs kubeconfig rewrite (127.0.0.1 → kubernetes.docker.internal):
+kubectl config use-context docker-desktop
+./deploy/docker-kubeconfig.sh   # generates /tmp/docker-kubeconfig
+cd deploy && docker compose up -d
+
+# Rebuild after code changes:
+docker compose -f deploy/docker-compose.yml up -d --build
 ```
+Frontend on http://localhost:3000 (nginx proxies /api and /ws to backend).
+EKS clusters require `~/.aws` mounted (already in compose) with an active AWS session.
 
 ## Architecture
 

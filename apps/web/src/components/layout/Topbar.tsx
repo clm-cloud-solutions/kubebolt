@@ -1,9 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink } from 'react-router-dom'
-import { Search, Server, ChevronDown, Check } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon } from 'lucide-react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import type { ClusterOverview } from '@/types/kubernetes'
+import { useTheme } from '@/contexts/ThemeContext'
+import type { ClusterOverview, ClusterInfo } from '@/types/kubernetes'
 
 interface TopbarProps {
   overview?: ClusterOverview
@@ -13,11 +14,7 @@ export function Topbar({ overview }: TopbarProps) {
   const [open, setOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
-
-  const clusterName = overview?.clusterName || 'loading...'
-  const nodeCount = overview?.nodes?.total ?? '-'
-  const healthStatus = overview?.health?.status || 'unknown'
-  const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'degraded' ? 'bg-status-warn' : 'bg-status-error'
+  const { theme, toggleTheme } = useTheme()
 
   const { data: clusters } = useQuery({
     queryKey: ['clusters'],
@@ -25,12 +22,27 @@ export function Topbar({ overview }: TopbarProps) {
     refetchInterval: 60_000,
   })
 
+  const activeCluster = clusters?.find(c => c.active)
+  const clusterName = overview?.clusterName || activeCluster?.name || activeCluster?.context || 'loading...'
+  const nodeCount = overview?.nodes?.total ?? '-'
+  const healthStatus = overview?.health?.status || 'unknown'
+  const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'degraded' ? 'bg-status-warn' : 'bg-status-error'
+
   const switchMutation = useMutation({
     mutationFn: (context: string) => api.switchCluster(context),
-    onSuccess: () => {
-      // Invalidate all queries to refetch with new cluster data
-      queryClient.invalidateQueries()
+    onMutate: (context: string) => {
+      // Immediately mark the selected cluster as active — don't wait for the server round-trip
+      queryClient.setQueryData(['clusters'], (old: ClusterInfo[] | undefined) =>
+        old?.map(c => ({ ...c, active: c.context === context }))
+      )
+      queryClient.setQueryData(['cluster-overview'], undefined)
       setOpen(false)
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries()
+    },
+    onError: () => {
+      queryClient.invalidateQueries()
     },
   })
 
@@ -60,16 +72,16 @@ export function Topbar({ overview }: TopbarProps) {
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${dotColor} animate-pulse-live`} />
-            <span className="text-xs font-mono text-[#e8e9ed]">{clusterName}</span>
+            <span className="text-xs font-mono text-kb-text-primary">{clusterName}</span>
             {hasMultipleClusters && (
-              <ChevronDown className={`w-3 h-3 text-[#555770] transition-transform ${open ? 'rotate-180' : ''}`} />
+              <ChevronDown className={`w-3 h-3 text-kb-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
             )}
           </button>
 
           {/* Dropdown */}
           {open && clusters && (
             <div className="absolute top-full left-0 mt-1 w-72 bg-kb-card border border-kb-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
-              <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-[0.1em] text-[#555770]">
+              <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-[0.1em] text-kb-text-tertiary">
                 Clusters ({clusters.length})
               </div>
               {clusters.map((cl) => (
@@ -83,10 +95,10 @@ export function Topbar({ overview }: TopbarProps) {
                       : 'hover:bg-kb-card-hover'
                   } ${switchMutation.isPending ? 'opacity-50' : ''}`}
                 >
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${cl.active ? 'bg-status-ok' : 'bg-[#555770]'}`} />
+                  <span className={`w-2 h-2 rounded-full shrink-0 ${cl.active ? 'bg-status-ok' : 'bg-kb-text-tertiary'}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-[#e8e9ed] truncate">{cl.context}</div>
-                    <div className="text-[10px] font-mono text-[#555770] truncate">{cl.server}</div>
+                    <div className="text-xs text-kb-text-primary truncate">{cl.context}</div>
+                    <div className="text-[10px] font-mono text-kb-text-tertiary truncate">{cl.server}</div>
                   </div>
                   {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}
                 </button>
@@ -102,7 +114,7 @@ export function Topbar({ overview }: TopbarProps) {
             end
             className={({ isActive }) =>
               `px-3 py-1 text-[10px] font-mono uppercase tracking-[0.08em] transition-colors ${
-                isActive ? 'bg-kb-elevated text-[#e8e9ed]' : 'bg-kb-card text-[#555770] hover:text-[#8b8d9a]'
+                isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-tertiary hover:text-kb-text-secondary'
               }`
             }
           >
@@ -112,7 +124,7 @@ export function Topbar({ overview }: TopbarProps) {
             to="/map"
             className={({ isActive }) =>
               `px-3 py-1 text-[10px] font-mono uppercase tracking-[0.08em] transition-colors border-l border-kb-border ${
-                isActive ? 'bg-kb-elevated text-[#e8e9ed]' : 'bg-kb-card text-[#555770] hover:text-[#8b8d9a]'
+                isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-tertiary hover:text-kb-text-secondary'
               }`
             }
           >
@@ -125,16 +137,26 @@ export function Topbar({ overview }: TopbarProps) {
       <div className="flex items-center gap-3">
         {/* Search */}
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-[#555770]" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-kb-text-tertiary" />
           <input
             type="text"
             placeholder="Search..."
-            className="w-52 pl-8 pr-12 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-[#e8e9ed] placeholder-[#555770] outline-none focus:border-kb-border-active transition-colors"
+            className="w-52 pl-8 pr-12 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-primary placeholder-kb-text-tertiary outline-none focus:border-kb-border-active transition-colors"
           />
-          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 rounded text-[9px] font-mono text-[#555770] bg-kb-bg border border-kb-border">
+          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary bg-kb-bg border border-kb-border">
             ⌘K
           </kbd>
         </div>
+
+        {/* Theme toggle */}
+        <button
+          type="button"
+          onClick={toggleTheme}
+          className="p-1.5 rounded-md text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-card border border-kb-border transition-colors"
+          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+        >
+          {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+        </button>
 
         {/* Live indicator */}
         <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-ok-dim">
@@ -143,7 +165,7 @@ export function Topbar({ overview }: TopbarProps) {
         </div>
 
         {/* Node count */}
-        <div className="flex items-center gap-1.5 text-[#8b8d9a]">
+        <div className="flex items-center gap-1.5 text-kb-text-secondary">
           <Server className="w-3.5 h-3.5" />
           <span className="text-xs font-mono">{nodeCount} nodes</span>
         </div>

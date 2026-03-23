@@ -107,6 +107,10 @@ func NewConnector(kubeconfigPath string, wsHub *websocket.Hub) (*Connector, erro
 
 // newConnectorFromConfig creates a connector from an existing rest.Config.
 func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *websocket.Hub) (*Connector, error) {
+	// Bound individual K8s API calls so the server doesn't hang if a cluster
+	// becomes unreachable mid-session (e.g. laptop closed, VPN dropped).
+	restConfig.Timeout = 15 * time.Second
+
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating kubernetes client: %w", err)
@@ -465,12 +469,20 @@ func (c *Connector) addGatewayTopologyNodes() {
 	}
 }
 
-// Start begins the shared informer factory.
-func (c *Connector) Start() {
+// Start begins the shared informer factory. Returns an error if cache sync
+// does not complete within 20 seconds (e.g. cluster is unreachable).
+func (c *Connector) Start() error {
 	c.factory.Start(c.stopCh)
-	c.factory.WaitForCacheSync(c.stopCh)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
+		if !ok {
+			return fmt.Errorf("timed out waiting for cache sync — cluster may be unreachable")
+		}
+	}
 	log.Println("Informer caches synced")
 	c.rebuildTopology()
+	return nil
 }
 
 // Stop shuts down informers and cancels pending timers.

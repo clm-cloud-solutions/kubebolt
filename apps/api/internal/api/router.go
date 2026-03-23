@@ -34,18 +34,22 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(JSONContentType)
 
-		// Cluster management
+		// Cluster management — always available, no active connector required
 		r.Get("/clusters", h.listClusters)
 		r.Post("/clusters/switch", h.switchCluster)
 
-		r.Get("/cluster/overview", h.getClusterOverview)
-		r.Get("/cluster/health", h.getClusterHealth)
-		r.Get("/resources/{type}", h.getResources)
-		r.Get("/resources/{type}/{namespace}/{name}", h.getResourceDetail)
-		r.Get("/topology", h.getTopology)
-		r.Get("/insights", h.getInsights)
-		r.Get("/events", h.getEvents)
-		r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
+		// All other endpoints require an active cluster connection
+		r.Group(func(r chi.Router) {
+			r.Use(h.requireConnector)
+			r.Get("/cluster/overview", h.getClusterOverview)
+			r.Get("/cluster/health", h.getClusterHealth)
+			r.Get("/resources/{type}", h.getResources)
+			r.Get("/resources/{type}/{namespace}/{name}", h.getResourceDetail)
+			r.Get("/topology", h.getTopology)
+			r.Get("/insights", h.getInsights)
+			r.Get("/events", h.getEvents)
+			r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
+		})
 	})
 
 	// WebSocket endpoint (outside JSON middleware)

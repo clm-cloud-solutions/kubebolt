@@ -33,16 +33,16 @@ export function DeploymentCard({ workload }: DeploymentCardProps) {
       <div className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[9px] ${statusBorderColor[status]}`} />
 
       {/* Name */}
-      <div className="text-[12px] font-medium text-[#e8e9ed] truncate mb-1.5 pl-1">
+      <div className="text-[12px] font-medium text-kb-text-primary truncate mb-1.5 pl-1">
         {workload.name}
       </div>
 
       {/* Type + replicas */}
       <div className="flex items-center justify-between mb-2 pl-1">
-        <span className="text-[9px] font-mono uppercase tracking-[0.04em] text-[#555770]">
+        <span className="text-[9px] font-mono uppercase tracking-[0.04em] text-kb-text-tertiary">
           {workload.kind}
         </span>
-        <span className="text-[10px] font-mono text-[#8b8d9a]">
+        <span className="text-[10px] font-mono text-kb-text-secondary">
           {workload.readyReplicas}/{workload.replicas}
         </span>
       </div>
@@ -67,10 +67,10 @@ export function DeploymentCard({ workload }: DeploymentCardProps) {
         <div className="flex gap-1.5 mt-2 pl-1">
           <div className="flex-1">
             <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[8px] font-mono text-[#555770] uppercase">CPU</span>
-              <span className="text-[8px] font-mono text-[#8b8d9a]">{formatCPU(cpuUsed)}</span>
+              <span className="text-[8px] font-mono text-kb-text-tertiary uppercase">CPU</span>
+              <span className="text-[8px] font-mono text-kb-text-secondary">{formatCPU(cpuUsed)}</span>
             </div>
-            <div className="h-[3px] rounded-sm overflow-hidden" style={{ background: 'rgba(255,255,255,0.05)' }}>
+            <div className="h-[3px] rounded-sm overflow-hidden" style={{ background: 'var(--kb-bar-track)' }}>
               <div
                 className="h-full rounded-sm transition-all duration-700"
                 style={{ width: `${Math.max(2, Math.min(100, cpuPct))}%`, background: getUsageBarColor(cpuPct) }}
@@ -79,10 +79,10 @@ export function DeploymentCard({ workload }: DeploymentCardProps) {
           </div>
           <div className="flex-1">
             <div className="flex items-center justify-between mb-0.5">
-              <span className="text-[8px] font-mono text-[#555770] uppercase">MEM</span>
-              <span className="text-[8px] font-mono text-[#8b8d9a]">{formatMemory(memUsed)}</span>
+              <span className="text-[8px] font-mono text-kb-text-tertiary uppercase">MEM</span>
+              <span className="text-[8px] font-mono text-kb-text-secondary">{formatMemory(memUsed)}</span>
             </div>
-            <div className="h-[3px] rounded-sm overflow-hidden" style={{ background: 'rgba(255,255,255,0.05)' }}>
+            <div className="h-[3px] rounded-sm overflow-hidden" style={{ background: 'var(--kb-bar-track)' }}>
               <div
                 className="h-full rounded-sm transition-all duration-700"
                 style={{ width: `${Math.max(2, Math.min(100, memPct))}%`, background: getUsageBarColor(memPct) }}
@@ -93,12 +93,12 @@ export function DeploymentCard({ workload }: DeploymentCardProps) {
       ) : (
         <div className="flex gap-1.5 mt-2 pl-1">
           <div className="flex-1">
-            <div className="text-[8px] font-mono text-[#555770] uppercase mb-0.5">CPU</div>
-            <div className="h-[3px] rounded-sm" style={{ background: 'rgba(255,255,255,0.05)' }} />
+            <div className="text-[8px] font-mono text-kb-text-tertiary uppercase mb-0.5">CPU</div>
+            <div className="h-[3px] rounded-sm" style={{ background: 'var(--kb-bar-track)' }} />
           </div>
           <div className="flex-1">
-            <div className="text-[8px] font-mono text-[#555770] uppercase mb-0.5">MEM</div>
-            <div className="h-[3px] rounded-sm" style={{ background: 'rgba(255,255,255,0.05)' }} />
+            <div className="text-[8px] font-mono text-kb-text-tertiary uppercase mb-0.5">MEM</div>
+            <div className="h-[3px] rounded-sm" style={{ background: 'var(--kb-bar-track)' }} />
           </div>
         </div>
       )}

@@ -31,10 +31,10 @@ function UsageCard({
   return (
     <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
       <div className="flex items-center gap-2 mb-1">
-        <div className="text-[#8b8d9a]">{icon}</div>
-        <span className="text-sm font-semibold text-[#e8e9ed]">{label}</span>
+        <div className="text-kb-text-secondary">{icon}</div>
+        <span className="text-sm font-semibold text-kb-text-primary">{label}</span>
       </div>
-      <div className="text-[11px] font-mono text-[#555770] mb-3">
+      <div className="text-[11px] font-mono text-kb-text-tertiary mb-3">
         Requests: {formatFn(usage?.requested ?? 0)} / Limits: {formatFn(usage?.limit ?? 0)} / Total: {formatFn(usage?.allocatable ?? 0)}
       </div>
 
@@ -42,20 +42,20 @@ function UsageCard({
         {/* Requests bar */}
         <div>
           <div className="flex items-center gap-3">
-            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.04em] px-2 py-0.5 rounded bg-status-info-dim text-status-info w-[56px] text-center shrink-0">
+            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.04em] px-2 py-0.5 rounded bg-status-info-dim text-status-info border border-status-info/30 w-[68px] text-center shrink-0">
               Requests
             </span>
-            <div className="flex-1 h-2 rounded bg-[rgba(255,255,255,0.04)] overflow-hidden">
+            <div className="flex-1 h-2 rounded bg-[var(--kb-bar-track)] overflow-hidden">
               <div
                 className="h-full rounded transition-all duration-700"
                 style={{ width: `${requestedPercent}%`, background: '#4c9aff' }}
               />
             </div>
-            <span className="text-[11px] font-mono text-[#8b8d9a] min-w-[70px] text-right">
+            <span className="text-[11px] font-mono text-kb-text-secondary min-w-[70px] text-right">
               {formatFn(usage?.requested ?? 0)}
             </span>
           </div>
-          <div className="text-[10px] font-mono text-[#555770] ml-[68px] mt-0.5">
+          <div className="text-[10px] font-mono text-kb-text-tertiary ml-[80px] mt-0.5">
             {formatPercent(requestedPercent)} of capacity
           </div>
         </div>
@@ -63,10 +63,10 @@ function UsageCard({
         {/* Limits bar */}
         <div>
           <div className="flex items-center gap-3">
-            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.04em] px-2 py-0.5 rounded bg-status-error-dim text-status-error w-[56px] text-center shrink-0">
+            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.04em] px-2 py-0.5 rounded bg-status-error-dim text-status-error border border-status-error/30 w-[68px] text-center shrink-0">
               Limits
             </span>
-            <div className="flex-1 h-2 rounded bg-[rgba(255,255,255,0.04)] overflow-hidden">
+            <div className="flex-1 h-2 rounded bg-[var(--kb-bar-track)] overflow-hidden">
               <div
                 className="h-full rounded transition-all duration-700"
                 style={{
@@ -75,11 +75,11 @@ function UsageCard({
                 }}
               />
             </div>
-            <span className="text-[11px] font-mono text-[#8b8d9a] min-w-[70px] text-right">
+            <span className="text-[11px] font-mono text-kb-text-secondary min-w-[70px] text-right">
               {formatFn(usage?.limit ?? 0)}
             </span>
           </div>
-          <div className="text-[10px] font-mono text-[#555770] ml-[68px] mt-0.5">
+          <div className="text-[10px] font-mono text-kb-text-tertiary ml-[80px] mt-0.5">
             {formatPercent(usage?.allocatable ? ((usage?.limit ?? 0) / usage.allocatable) * 100 : 0)} of capacity
           </div>
         </div>
@@ -88,20 +88,20 @@ function UsageCard({
         {hasUsageData && (
           <div>
             <div className="flex items-center gap-3">
-              <span className="text-[10px] font-mono font-medium uppercase tracking-[0.04em] px-2 py-0.5 rounded bg-status-ok-dim text-status-ok w-[56px] text-center shrink-0">
+              <span className="text-[10px] font-mono font-medium uppercase tracking-[0.04em] px-2 py-0.5 rounded bg-status-ok-dim text-status-ok border border-status-ok/30 w-[68px] text-center shrink-0">
                 Used
               </span>
-              <div className="flex-1 h-2 rounded bg-[rgba(255,255,255,0.04)] overflow-hidden">
+              <div className="flex-1 h-2 rounded bg-[var(--kb-bar-track)] overflow-hidden">
                 <div
                   className="h-full rounded transition-all duration-700"
                   style={{ width: `${usedPercent}%`, background: getUsageBarColor(usedPercent) }}
                 />
               </div>
-              <span className="text-[11px] font-mono text-[#8b8d9a] min-w-[70px] text-right">
+              <span className="text-[11px] font-mono text-kb-text-secondary min-w-[70px] text-right">
                 {formatFn(usage?.used ?? 0)}
               </span>
             </div>
-            <div className="text-[10px] font-mono text-[#555770] ml-[68px] mt-0.5">
+            <div className="text-[10px] font-mono text-kb-text-tertiary ml-[80px] mt-0.5">
               {formatPercent(usedPercent)} of capacity
             </div>
           </div>
@@ -117,7 +117,7 @@ function UsageCard({
       )}
 
       {/* Available */}
-      <div className="text-[11px] font-mono text-[#555770] mt-2">
+      <div className="text-[11px] font-mono text-kb-text-tertiary mt-2">
         Available: {formatFn(Math.max(0, (usage?.allocatable ?? 0) - (usage?.requested ?? 0)))}
       </div>
     </div>

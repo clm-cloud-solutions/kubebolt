@@ -36,7 +36,7 @@ export function ResourceTable<T>({ data, columns }: ResourceTableProps<T>) {
                 <th
                   key={header.id}
                   onClick={header.column.getToggleSortingHandler()}
-                  className="px-3 py-2.5 text-left text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-[#555770] cursor-pointer select-none hover:text-[#8b8d9a] transition-colors"
+                  className="px-3 py-2.5 text-left text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-kb-text-tertiary cursor-pointer select-none hover:text-kb-text-secondary transition-colors"
                 >
                   <div className="flex items-center gap-1">
                     {header.isPlaceholder
@@ -57,7 +57,7 @@ export function ResourceTable<T>({ data, columns }: ResourceTableProps<T>) {
               className="border-b border-kb-border hover:bg-kb-card-hover transition-colors"
             >
               {row.getVisibleCells().map((cell) => (
-                <td key={cell.id} className="px-3 py-2.5 text-xs font-mono text-[#e8e9ed]">
+                <td key={cell.id} className="px-3 py-2.5 text-xs font-mono text-kb-text-primary">
                   {flexRender(cell.column.columnDef.cell, cell.getContext())}
                 </td>
               ))}
@@ -66,7 +66,7 @@ export function ResourceTable<T>({ data, columns }: ResourceTableProps<T>) {
         </tbody>
       </table>
       {data.length === 0 && (
-        <div className="py-12 text-center text-xs text-[#555770] font-mono">No resources found</div>
+        <div className="py-12 text-center text-xs text-kb-text-tertiary font-mono">No resources found</div>
       )}
     </div>
   )

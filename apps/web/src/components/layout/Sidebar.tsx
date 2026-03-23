@@ -113,8 +113,8 @@ export function Sidebar({ overview }: SidebarProps) {
           <Zap className="w-4 h-4 text-white" />
         </div>
         <div className="flex flex-col">
-          <span className="text-sm font-semibold text-[#e8e9ed] leading-tight">KubeBolt</span>
-          <span className="text-[9px] font-mono text-[#555770] uppercase tracking-[0.08em]">v0.1.0 beta</span>
+          <span className="text-sm font-semibold text-kb-text-primary leading-tight">KubeBolt</span>
+          <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v0.1.0 beta</span>
         </div>
       </div>
 
@@ -129,7 +129,7 @@ export function Sidebar({ overview }: SidebarProps) {
               `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors relative ${
                 isActive
                   ? 'bg-status-info-dim text-status-info'
-                  : 'text-[#8b8d9a] hover:text-[#e8e9ed] hover:bg-kb-card'
+                  : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
               }`
             }
           >
@@ -147,7 +147,7 @@ export function Sidebar({ overview }: SidebarProps) {
 
         {sections.map((section) => (
           <div key={section.title}>
-            <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-[#555770]">
+            <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
               {section.title}
             </div>
             <div className="space-y-0.5">
@@ -161,7 +161,7 @@ export function Sidebar({ overview }: SidebarProps) {
                       `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                         isActive
                           ? 'bg-status-info-dim text-status-info'
-                          : 'text-[#8b8d9a] hover:text-[#e8e9ed] hover:bg-kb-card'
+                          : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
                       }`
                     }
                   >
@@ -173,7 +173,7 @@ export function Sidebar({ overview }: SidebarProps) {
                         <span className="shrink-0">{item.icon}</span>
                         <span className="flex-1 truncate">{item.label}</span>
                         {count !== undefined && (
-                          <span className="text-[10px] font-mono text-[#555770]">{count}</span>
+                          <span className="text-[10px] font-mono text-kb-text-tertiary">{count}</span>
                         )}
                       </>
                     )}
@@ -193,7 +193,7 @@ export function Sidebar({ overview }: SidebarProps) {
             `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors ${
               isActive
                 ? 'bg-status-info-dim text-status-info'
-                : 'text-[#8b8d9a] hover:text-[#e8e9ed] hover:bg-kb-card'
+                : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
             }`
           }
         >
