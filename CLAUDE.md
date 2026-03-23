@@ -54,14 +54,14 @@ Uses `go.work` with three modules:
 Entry point: `cmd/server/main.go` (flags: `--kubeconfig`, `--port`)
 
 Key packages under `internal/`:
-- **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster
-- **cluster/connector.go** — Kubernetes client-go shared informers for all resource types + dynamic client for Gateway API (Gateways, HTTPRoutes)
+- **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster. Initial connection is **async** — HTTP server binds immediately; manager starts in disconnected state if the default cluster is unreachable. `ConnError()` exposes the last connection error.
+- **cluster/connector.go** — Kubernetes client-go shared informers for all resource types + dynamic client for Gateway API (Gateways, HTTPRoutes). `Start()` returns an error if `WaitForCacheSync` does not complete within 20s. `rest.Config.Timeout = 15s` prevents hanging on mid-session cluster failures.
 - **cluster/graph.go** — In-memory topology graph with debounced rebuild (2s)
 - **cluster/relationships.go** — Edge detection: ownerRefs, selectors, Gateway parentRefs, volumes
 - **metrics/collector.go** — Polls Metrics Server API (`metrics.k8s.io/v1beta1`) every 30s with synchronous initial poll. In-memory cache, no DB.
 - **insights/engine.go** — 12 rule-based insight evaluations (crash-loop, OOM, CPU throttle, memory pressure, etc.)
 - **websocket/hub.go** — WebSocket connection management (4096 buffer, silent drops when no clients)
-- **api/router.go** — Chi router: `/api/v1/clusters`, `/cluster/overview`, `/resources/:type`, `/topology`, `/insights`, `/events`, `/ws`
+- **api/router.go** — Chi router with `requireConnector` middleware guarding all cluster-dependent routes; `/clusters` and `/clusters/switch` are always available even when disconnected.
 - **models/types.go** — All domain types: `ClusterOverview`, `ResourceUsage`, `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
 
 ### Frontend (`apps/web`)
@@ -75,17 +75,25 @@ Key libraries: TanStack Query (server state), TanStack Table, ReactFlow (cluster
 Component organization: `src/components/{dashboard,map,resources,layout,shared,insights}/`
 API client: `src/services/api.ts`
 Type definitions: `src/types/kubernetes.ts`
+Theme: `src/contexts/ThemeContext.tsx` — light/dark mode via CSS custom properties (`--kb-*` variables in `globals.css`). `darkMode: 'class'` in Tailwind; all color tokens point to CSS vars. Theme persisted in `localStorage`.
+
+**Key frontend behaviors:**
+- TanStack Query `retry` skips retries on 503 (cluster unavailable)
+- `ApiError` (from `api.ts`) used to detect 503 vs other errors
+- Resource list pages support server-side pagination (50/page) with prev/next controls
+- Cluster switcher uses optimistic updates: active state updates immediately on click, before API responds
 
 ### Data Flow
 
-1. Cluster Manager reads kubeconfig contexts, connects to selected cluster
-2. Shared informers watch K8s resources → in-memory lister caches
-3. Dynamic client discovers Gateway API resources (with 5s timeout)
-4. Metrics Collector polls Metrics Server → in-memory metrics cache
-5. Insights Engine evaluates 12 rules against cluster state → recommendations
-6. REST API serves enriched resource lists (with CPU/MEM metrics injected)
-7. WebSocket hub broadcasts resource changes (debounced topology rebuilds)
-8. Frontend uses TanStack Query with 30s refetch intervals
+1. Cluster Manager reads kubeconfig contexts; initial K8s connection starts async in background
+2. HTTP server is immediately available — returns 503 on cluster-dependent routes until connected
+3. Shared informers watch K8s resources → in-memory lister caches
+4. Dynamic client discovers Gateway API resources (with 5s timeout)
+5. Metrics Collector polls Metrics Server → in-memory metrics cache
+6. Insights Engine evaluates 12 rules against cluster state → recommendations
+7. REST API serves enriched resource lists (with CPU/MEM metrics injected), paginated (default 50/page)
+8. WebSocket hub broadcasts resource changes (debounced topology rebuilds)
+9. Frontend uses TanStack Query with 30s refetch intervals; 503s shown as "Cluster unreachable" state
 
 ### Cluster Map
 
@@ -93,7 +101,7 @@ Two layout modes:
 - **Grid**: compact grid of resources within namespace regions
 - **Flow**: horizontal dependency chain (Ingress/Gateway → HTTPRoute → Service → Deployment → ReplicaSet → Pod)
 
-Namespace regions are ReactFlow group nodes with child resource nodes. Supports filtering by resource type and namespace.
+In both modes, namespace regions are arranged in a grid of up to 3 columns (`NS_COLS`). Namespace regions are ReactFlow group nodes with child resource nodes. Supports filtering by resource type and namespace.
 
 ## CI
 
