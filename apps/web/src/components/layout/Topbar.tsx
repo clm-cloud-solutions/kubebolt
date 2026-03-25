@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useNavigate } from 'react-router-dom'
 import { Search, Server, ChevronDown, Check, Sun, Moon } from 'lucide-react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
@@ -14,6 +14,7 @@ export function Topbar({ overview }: TopbarProps) {
   const [open, setOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const { theme, toggleTheme } = useTheme()
 
   const { data: clusters } = useQuery({
@@ -40,6 +41,7 @@ export function Topbar({ overview }: TopbarProps) {
     },
     onSuccess: () => {
       queryClient.invalidateQueries()
+      navigate('/')
     },
     onError: () => {
       queryClient.invalidateQueries()

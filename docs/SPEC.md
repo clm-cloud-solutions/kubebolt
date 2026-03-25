@@ -938,7 +938,8 @@ npm run dev  # → http://localhost:5173
 |-------|----------|-------------|
 | **1.0** | Weeks 1–6 | Go backend (cluster manager, metrics collector, insights engine, REST API, WebSocket). React frontend with 23 views. Multi-cluster support. Gateway API support. Cluster Map with Grid/Flow layouts. Docker Compose self-hosted. Tested on Docker Desktop + EKS. |
 | **1.1** | Weeks 7–8 | Cluster management from Settings (add/remove/rename clusters, upload kubeconfig, connection status). Resource detail panels. Improved insights. Slack/email notifications. |
-| **2.0** | Weeks 9–14 | kubebolt-agent DaemonSet. gRPC streaming. Network/disk metrics. Historical TSDB. Enhanced cluster map. |
+| **1.2** | Weeks 9–10 | Sidebar counters for Gateways, HTTPRoutes, Endpoints, StorageClasses (require dynamic client counts). Terminal tab (WebSocket exec via SPDY + xterm.js). Files tab (exec-based file browser). StatefulSet/DaemonSet revision history (ControllerRevision lister). CronJob → Jobs tab (child job listing). Historical metrics time-series in Monitor tab. |
+| **2.0** | Weeks 11–16 | kubebolt-agent DaemonSet. gRPC streaming. Network/disk metrics. Historical TSDB. Enhanced cluster map. |
 | **2.1** | Weeks 15–18 | Prometheus compatibility. Custom alert rules. AI-powered insights. Cost analysis. |
 | **3.0** | Weeks 19+ | SaaS platform. Team collaboration. Custom dashboards. Marketplace. |
 

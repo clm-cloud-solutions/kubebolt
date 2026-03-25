@@ -1,6 +1,12 @@
+import { Link } from 'react-router-dom'
 import type { WorkloadSummary } from '@/types/kubernetes'
 import { getDotColor, getUsageBarColor } from '@/utils/colors'
 import { formatCPU, formatMemory } from '@/utils/formatters'
+
+const kindToRoute: Record<string, string> = {
+  Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets',
+  Job: 'jobs', CronJob: 'cronjobs',
+}
 
 interface DeploymentCardProps {
   workload: WorkloadSummary
@@ -28,7 +34,10 @@ export function DeploymentCard({ workload }: DeploymentCardProps) {
   const hasMetrics = cpuUsed > 0 || memUsed > 0
 
   return (
-    <div className="bg-kb-card border border-kb-border rounded-[9px] p-3 hover:bg-kb-card-hover hover:-translate-y-px transition-all cursor-pointer relative overflow-hidden">
+    <Link
+      to={`/${kindToRoute[workload.kind] ?? 'deployments'}/${workload.namespace}/${workload.name}`}
+      className="block bg-kb-card border border-kb-border rounded-[9px] p-3 hover:bg-kb-card-hover hover:-translate-y-px transition-all cursor-pointer relative overflow-hidden"
+    >
       {/* Left status bar */}
       <div className={`absolute left-0 top-0 bottom-0 w-[3px] rounded-l-[9px] ${statusBorderColor[status]}`} />
 
@@ -102,6 +111,6 @@ export function DeploymentCard({ workload }: DeploymentCardProps) {
           </div>
         </div>
       )}
-    </div>
+    </Link>
   )
 }

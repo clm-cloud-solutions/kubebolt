@@ -56,14 +56,14 @@ const sections: NavSection[] = [
       { label: 'StatefulSets', path: '/statefulsets', icon: <Database className="w-4 h-4" />, countKey: 'statefulSets' },
       { label: 'DaemonSets', path: '/daemonsets', icon: <BarChart3 className="w-4 h-4" />, countKey: 'daemonSets' },
       { label: 'Jobs', path: '/jobs', icon: <Timer className="w-4 h-4" />, countKey: 'jobs' },
-      { label: 'CronJobs', path: '/cronjobs', icon: <Clock className="w-4 h-4" /> },
+      { label: 'CronJobs', path: '/cronjobs', icon: <Clock className="w-4 h-4" />, countKey: 'cronJobs' },
     ],
   },
   {
     title: 'Traffic',
     items: [
       { label: 'Services', path: '/services', icon: <Globe className="w-4 h-4" />, countKey: 'services' },
-      { label: 'Ingresses', path: '/ingresses', icon: <ArrowRightLeft className="w-4 h-4" /> },
+      { label: 'Ingresses', path: '/ingresses', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'ingresses' },
       { label: 'Gateways', path: '/gateways', icon: <Globe className="w-4 h-4" /> },
       { label: 'HTTPRoutes', path: '/httproutes', icon: <ArrowRightLeft className="w-4 h-4" /> },
       { label: 'Endpoints', path: '/endpoints', icon: <Radio className="w-4 h-4" /> },
@@ -72,17 +72,17 @@ const sections: NavSection[] = [
   {
     title: 'Storage',
     items: [
-      { label: 'PVCs', path: '/pvcs', icon: <HardDrive className="w-4 h-4" /> },
-      { label: 'PVs', path: '/pvs', icon: <Disc className="w-4 h-4" /> },
+      { label: 'PVCs', path: '/pvcs', icon: <HardDrive className="w-4 h-4" />, countKey: 'pvcs' },
+      { label: 'PVs', path: '/pvs', icon: <Disc className="w-4 h-4" />, countKey: 'pvs' },
       { label: 'StorageClasses', path: '/storageclasses', icon: <FolderClosed className="w-4 h-4" /> },
     ],
   },
   {
     title: 'Config',
     items: [
-      { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" /> },
-      { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" /> },
-      { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" /> },
+      { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" />, countKey: 'configMaps' },
+      { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" />, countKey: 'secrets' },
+      { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" />, countKey: 'hpas' },
     ],
   },
   {

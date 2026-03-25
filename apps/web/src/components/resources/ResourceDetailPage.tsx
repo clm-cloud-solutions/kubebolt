@@ -500,6 +500,42 @@ function ContainersTab({ item }: { item: ResourceItem }) {
 
 // ─── YAML Tab ────────────────────────────────────────────────────
 
+function highlightLogLine(line: string): React.ReactNode {
+  // Error levels in red
+  if (/\b(ERROR|FATAL|PANIC|error|fatal|panic)\b/.test(line)) {
+    return <span className="text-[#f97583]">{line}</span>
+  }
+  // Warnings in yellow
+  if (/\b(WARN|WARNING|warn|warning)\b/.test(line)) {
+    return <span className="text-[#f0b72f]">{line}</span>
+  }
+  // Debug in dim
+  if (/\b(DEBUG|TRACE|debug|trace)\b/.test(line)) {
+    return <span className="text-[#6a737d]">{line}</span>
+  }
+  // Highlight timestamps at start of line
+  const tsMatch = line.match(/^(\d{4}[-/]\d{2}[-/]\d{2}[T ]\d{2}:\d{2}:\d{2}[^\s]*)(.*)$/)
+  if (tsMatch) {
+    return <><span className="text-[#79c0ff]">{tsMatch[1]}</span><span className="text-[#b5e5a4]">{tsMatch[2]}</span></>
+  }
+  // Default: green tint for terminal feel
+  return <span className="text-[#b5e5a4]">{line}</span>
+}
+
+function LogOutput({ logs, logsEndRef }: { logs: string | undefined; logsEndRef: React.RefObject<HTMLDivElement> }) {
+  if (logs === undefined) return null
+  if (!logs) return <pre className="p-4 text-[11px] font-mono text-kb-text-tertiary">No logs available</pre>
+  const lines = logs.split('\n')
+  return (
+    <pre className="p-4 text-[11px] font-mono leading-5 overflow-auto max-h-[600px]">
+      {lines.map((line, i) => (
+        <div key={i}>{highlightLogLine(line)}</div>
+      ))}
+      <div ref={logsEndRef} />
+    </pre>
+  )
+}
+
 function highlightYAMLLine(line: string): React.ReactNode {
   // Comment lines
   if (/^\s*#/.test(line)) {
@@ -858,12 +894,7 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         {error && (
           <div className="p-8 text-center text-sm text-status-error">{(error as Error).message}</div>
         )}
-        {logs !== undefined && (
-          <pre className="p-4 text-[11px] font-mono leading-5 text-[#c9d1d9] overflow-auto max-h-[600px] whitespace-pre-wrap">
-            {logs || 'No logs available'}
-            <div ref={logsEndRef} />
-          </pre>
-        )}
+        <LogOutput logs={logs} logsEndRef={logsEndRef} />
       </div>
     </div>
   )
@@ -1276,12 +1307,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         {logsError && (
           <div className="p-8 text-center text-sm text-status-error">{(logsError as Error).message}</div>
         )}
-        {logs !== undefined && (
-          <pre className="p-4 text-[11px] font-mono leading-5 text-[#c9d1d9] overflow-auto max-h-[600px] whitespace-pre-wrap">
-            {logs || 'No logs available'}
-            <div ref={logsEndRef} />
-          </pre>
-        )}
+        <LogOutput logs={logs} logsEndRef={logsEndRef} />
       </div>
     </div>
   )
