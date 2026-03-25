@@ -1375,7 +1375,7 @@ function HistoryTab({ namespace, name }: { namespace: string; name: string }) {
                 </td>
                 <td className="py-2 font-mono text-kb-text-tertiary max-w-xs truncate">{String(item.image ?? '-')}</td>
                 <td className="py-2 font-mono">{readyReplicas}/{replicas}</td>
-                <td className="py-2"><StatusBadge status={item.status} /></td>
+                <td className="py-2"><StatusBadge status={isActive ? 'Running' : 'Terminated'} label={isActive ? 'Active' : 'Scaled down'} /></td>
                 <td className="py-2 font-mono text-kb-text-tertiary">{item.createdAt ? formatAge(item.createdAt) : '-'}</td>
               </tr>
             )
