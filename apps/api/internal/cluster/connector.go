@@ -1,7 +1,9 @@
 package cluster
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"log"
 	"sort"
 	"strings"
@@ -39,6 +41,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // Connector manages the Kubernetes cluster connection and informers.
@@ -1348,7 +1351,7 @@ func (c *Connector) GetTopology() models.Topology {
 }
 
 // GetEvents returns filtered events.
-func (c *Connector) GetEvents(eventType, namespace string, limit int) models.ResourceList {
+func (c *Connector) GetEvents(eventType, namespace, involvedKind, involvedName string, limit int) models.ResourceList {
 	events, _ := c.eventLister.List(everythingSelector())
 	var items []map[string]interface{}
 	for _, event := range events {
@@ -1358,6 +1361,19 @@ func (c *Connector) GetEvents(eventType, namespace string, limit int) models.Res
 		if eventType != "" && event.Type != eventType {
 			continue
 		}
+		if involvedKind != "" && event.InvolvedObject.Kind != involvedKind {
+			continue
+		}
+		if involvedName != "" && event.InvolvedObject.Name != involvedName {
+			continue
+		}
+		source := ""
+		if event.Source.Component != "" {
+			source = event.Source.Component
+			if event.Source.Host != "" {
+				source += "/" + event.Source.Host
+			}
+		}
 		items = append(items, map[string]interface{}{
 			"name":      event.Name,
 			"namespace": event.Namespace,
@@ -1366,6 +1382,7 @@ func (c *Connector) GetEvents(eventType, namespace string, limit int) models.Res
 			"message":   event.Message,
 			"object":    event.InvolvedObject.Kind + "/" + event.InvolvedObject.Name,
 			"count":     event.Count,
+			"source":    source,
 			"firstSeen": event.FirstTimestamp.Time,
 			"lastSeen":  event.LastTimestamp.Time,
 		})
@@ -1463,29 +1480,45 @@ func podToMap(pod *corev1.Pod) map[string]interface{} {
 			break
 		}
 	}
+	startTime := ""
+	if pod.Status.StartTime != nil {
+		startTime = pod.Status.StartTime.Time.Format(time.RFC3339)
+	}
 	return map[string]interface{}{
-		"name":        pod.Name,
-		"namespace":   pod.Namespace,
-		"status":      status,
-		"ready":       fmt.Sprintf("%d/%d", ready, total),
-		"restarts":    restarts,
-		"nodeName":    pod.Spec.NodeName,
-		"labels":      safeLabels(pod.Labels),
-		"annotations": safeAnnotations(pod.Annotations),
-		"createdAt":   pod.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":         formatAge(pod.CreationTimestamp.Time),
-		"ip":          pod.Status.PodIP,
-		"containers":  containerSpecs(pod),
+		"name":            pod.Name,
+		"namespace":       pod.Namespace,
+		"status":          status,
+		"ready":           fmt.Sprintf("%d/%d", ready, total),
+		"restarts":        restarts,
+		"nodeName":        pod.Spec.NodeName,
+		"labels":          safeLabels(pod.Labels),
+		"annotations":     safeAnnotations(pod.Annotations),
+		"createdAt":       pod.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(pod.CreationTimestamp.Time),
+		"ip":              pod.Status.PodIP,
+		"hostIP":          pod.Status.HostIP,
+		"startTime":       startTime,
+		"ownerReferences": ownerRefsToSlice(pod.OwnerReferences),
+		"conditions":      podConditionsToSlice(pod.Status.Conditions),
+		"volumes":         volumesToSlice(pod.Spec.Volumes),
+		"containers":      containerSpecs(pod),
 	}
 }
 
 func containerSpecs(pod *corev1.Pod) []map[string]interface{} {
 	var containers []map[string]interface{}
 	for _, c := range pod.Spec.Containers {
+		stateInfo := containerStateFromStatus(c.Name, pod.Status.ContainerStatuses)
+		isReady, _ := stateInfo["ready"].(bool)
 		containers = append(containers, map[string]interface{}{
-			"name":  c.Name,
-			"image": c.Image,
-			"ports": c.Ports,
+			"name":            c.Name,
+			"image":           c.Image,
+			"ports":           c.Ports,
+			"imagePullPolicy": string(c.ImagePullPolicy),
+			"resources":       containerResourcesToMap(c.Resources),
+			"volumeMounts":    volumeMountsToSlice(c.VolumeMounts),
+			"state":           stateInfo,
+			"ready":           isReady,
 		})
 	}
 	return containers
@@ -1506,6 +1539,8 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"strategy":          string(d.Spec.Strategy.Type),
 		"createdAt":         d.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":               formatAge(d.CreationTimestamp.Time),
+		"ownerReferences":   ownerRefsToSlice(d.OwnerReferences),
+		"conditions":        deploymentConditionsToSlice(d.Status.Conditions),
 	}
 }
 
@@ -1520,17 +1555,18 @@ func serviceToMap(svc *corev1.Service) map[string]interface{} {
 		})
 	}
 	return map[string]interface{}{
-		"name":        svc.Name,
-		"namespace":   svc.Namespace,
-		"status":      string(svc.Spec.Type),
-		"type":        string(svc.Spec.Type),
-		"clusterIP":   svc.Spec.ClusterIP,
-		"ports":       ports,
-		"selector":    svc.Spec.Selector,
-		"labels":      safeLabels(svc.Labels),
-		"annotations": safeAnnotations(svc.Annotations),
-		"createdAt":   svc.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":         formatAge(svc.CreationTimestamp.Time),
+		"name":            svc.Name,
+		"namespace":       svc.Namespace,
+		"status":          string(svc.Spec.Type),
+		"type":            string(svc.Spec.Type),
+		"clusterIP":       svc.Spec.ClusterIP,
+		"ports":           ports,
+		"selector":        svc.Spec.Selector,
+		"labels":          safeLabels(svc.Labels),
+		"annotations":     safeAnnotations(svc.Annotations),
+		"createdAt":       svc.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(svc.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(svc.OwnerReferences),
 	}
 }
 
@@ -1557,20 +1593,22 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		"memoryCapacity":    node.Status.Capacity.Memory().Value(),
 		"cpuAllocatable":    node.Status.Allocatable.Cpu().MilliValue(),
 		"memoryAllocatable": node.Status.Allocatable.Memory().Value(),
+		"conditions":        nodeConditionsToSlice(node.Status.Conditions),
 	}
 }
 
 func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
 	return map[string]interface{}{
-		"name":          ss.Name,
-		"namespace":     ss.Namespace,
-		"status":        fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
-		"replicas":      ss.Status.Replicas,
-		"readyReplicas": ss.Status.ReadyReplicas,
-		"labels":        safeLabels(ss.Labels),
-		"annotations":   safeAnnotations(ss.Annotations),
-		"createdAt":     ss.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":           formatAge(ss.CreationTimestamp.Time),
+		"name":            ss.Name,
+		"namespace":       ss.Namespace,
+		"status":          fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
+		"replicas":        ss.Status.Replicas,
+		"readyReplicas":   ss.Status.ReadyReplicas,
+		"labels":          safeLabels(ss.Labels),
+		"annotations":     safeAnnotations(ss.Annotations),
+		"createdAt":       ss.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(ss.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(ss.OwnerReferences),
 	}
 }
 
@@ -1586,6 +1624,7 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 		"annotations":     safeAnnotations(ds.Annotations),
 		"createdAt":       ds.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":             formatAge(ds.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(ds.OwnerReferences),
 	}
 }
 
@@ -1597,16 +1636,18 @@ func jobToMap(job *batchv1.Job) map[string]interface{} {
 		status = "Failed"
 	}
 	return map[string]interface{}{
-		"name":        job.Name,
-		"namespace":   job.Namespace,
-		"status":      status,
-		"succeeded":   job.Status.Succeeded,
-		"failed":      job.Status.Failed,
-		"active":      job.Status.Active,
-		"labels":      safeLabels(job.Labels),
-		"annotations": safeAnnotations(job.Annotations),
-		"createdAt":   job.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":         formatAge(job.CreationTimestamp.Time),
+		"name":            job.Name,
+		"namespace":       job.Namespace,
+		"status":          status,
+		"succeeded":       job.Status.Succeeded,
+		"failed":          job.Status.Failed,
+		"active":          job.Status.Active,
+		"labels":          safeLabels(job.Labels),
+		"annotations":     safeAnnotations(job.Annotations),
+		"createdAt":       job.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(job.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(job.OwnerReferences),
+		"conditions":      jobConditionsToSlice(job.Status.Conditions),
 	}
 }
 
@@ -1628,6 +1669,7 @@ func cronJobToMap(cj *batchv1.CronJob) map[string]interface{} {
 		"annotations":      safeAnnotations(cj.Annotations),
 		"createdAt":        cj.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":              formatAge(cj.CreationTimestamp.Time),
+		"ownerReferences":  ownerRefsToSlice(cj.OwnerReferences),
 	}
 }
 
@@ -1639,14 +1681,15 @@ func ingressToMap(ing *networkingv1.Ingress) map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"name":        ing.Name,
-		"namespace":   ing.Namespace,
-		"status":      "Active",
-		"hosts":       hosts,
-		"labels":      safeLabels(ing.Labels),
-		"annotations": safeAnnotations(ing.Annotations),
-		"createdAt":   ing.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":         formatAge(ing.CreationTimestamp.Time),
+		"name":            ing.Name,
+		"namespace":       ing.Namespace,
+		"status":          "Active",
+		"hosts":           hosts,
+		"labels":          safeLabels(ing.Labels),
+		"annotations":     safeAnnotations(ing.Annotations),
+		"createdAt":       ing.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(ing.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(ing.OwnerReferences),
 	}
 }
 
@@ -1656,15 +1699,16 @@ func configMapToMap(cm *corev1.ConfigMap) map[string]interface{} {
 		keys = append(keys, k)
 	}
 	return map[string]interface{}{
-		"name":        cm.Name,
-		"namespace":   cm.Namespace,
-		"status":      "Active",
-		"keys":        keys,
-		"dataCount":   len(cm.Data),
-		"labels":      safeLabels(cm.Labels),
-		"annotations": safeAnnotations(cm.Annotations),
-		"createdAt":   cm.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":         formatAge(cm.CreationTimestamp.Time),
+		"name":            cm.Name,
+		"namespace":       cm.Namespace,
+		"status":          "Active",
+		"keys":            keys,
+		"dataCount":       len(cm.Data),
+		"labels":          safeLabels(cm.Labels),
+		"annotations":     safeAnnotations(cm.Annotations),
+		"createdAt":       cm.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(cm.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(cm.OwnerReferences),
 	}
 }
 
@@ -1675,16 +1719,17 @@ func secretToMap(sec *corev1.Secret) map[string]interface{} {
 		keys = append(keys, k)
 	}
 	return map[string]interface{}{
-		"name":        sec.Name,
-		"namespace":   sec.Namespace,
-		"status":      "Active",
-		"type":        string(sec.Type),
-		"keys":        keys,
-		"dataCount":   len(sec.Data),
-		"labels":      safeLabels(sec.Labels),
-		"annotations": safeAnnotations(sec.Annotations),
-		"createdAt":   sec.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":         formatAge(sec.CreationTimestamp.Time),
+		"name":            sec.Name,
+		"namespace":       sec.Namespace,
+		"status":          "Active",
+		"type":            string(sec.Type),
+		"keys":            keys,
+		"dataCount":       len(sec.Data),
+		"labels":          safeLabels(sec.Labels),
+		"annotations":     safeAnnotations(sec.Annotations),
+		"createdAt":       sec.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(sec.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(sec.OwnerReferences),
 	}
 }
 
@@ -1696,17 +1741,18 @@ func pvcToMap(pvc *corev1.PersistentVolumeClaim) map[string]interface{} {
 		}
 	}
 	return map[string]interface{}{
-		"name":         pvc.Name,
-		"namespace":    pvc.Namespace,
-		"status":       string(pvc.Status.Phase),
-		"volumeName":   pvc.Spec.VolumeName,
-		"storageClass": ptrStr(pvc.Spec.StorageClassName),
-		"capacity":     storage,
-		"accessModes":  pvc.Spec.AccessModes,
-		"labels":       safeLabels(pvc.Labels),
-		"annotations":  safeAnnotations(pvc.Annotations),
-		"createdAt":    pvc.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":          formatAge(pvc.CreationTimestamp.Time),
+		"name":            pvc.Name,
+		"namespace":       pvc.Namespace,
+		"status":          string(pvc.Status.Phase),
+		"volumeName":      pvc.Spec.VolumeName,
+		"storageClass":    ptrStr(pvc.Spec.StorageClassName),
+		"capacity":        storage,
+		"accessModes":     pvc.Spec.AccessModes,
+		"labels":          safeLabels(pvc.Labels),
+		"annotations":     safeAnnotations(pvc.Annotations),
+		"createdAt":       pvc.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(pvc.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(pvc.OwnerReferences),
 	}
 }
 
@@ -1740,6 +1786,7 @@ func hpaToMap(hpa *autoscalingv1.HorizontalPodAutoscaler) map[string]interface{}
 		"annotations":     safeAnnotations(hpa.Annotations),
 		"createdAt":       hpa.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":             formatAge(hpa.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(hpa.OwnerReferences),
 	}
 }
 
@@ -1755,6 +1802,393 @@ func ptrInt32(p *int32) int32 {
 		return 0
 	}
 	return *p
+}
+
+// --- Detail helper functions ---
+
+func ownerRefsToSlice(refs []metav1.OwnerReference) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(refs))
+	for _, ref := range refs {
+		result = append(result, map[string]interface{}{
+			"apiVersion": ref.APIVersion,
+			"kind":       ref.Kind,
+			"name":       ref.Name,
+			"uid":        string(ref.UID),
+		})
+	}
+	return result
+}
+
+func podConditionsToSlice(conditions []corev1.PodCondition) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(conditions))
+	for _, c := range conditions {
+		result = append(result, map[string]interface{}{
+			"type":               string(c.Type),
+			"status":             string(c.Status),
+			"lastTransitionTime": c.LastTransitionTime.Time.Format(time.RFC3339),
+			"reason":             c.Reason,
+			"message":            c.Message,
+		})
+	}
+	return result
+}
+
+func deploymentConditionsToSlice(conditions []appsv1.DeploymentCondition) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(conditions))
+	for _, c := range conditions {
+		result = append(result, map[string]interface{}{
+			"type":               string(c.Type),
+			"status":             string(c.Status),
+			"lastTransitionTime": c.LastTransitionTime.Time.Format(time.RFC3339),
+			"reason":             c.Reason,
+			"message":            c.Message,
+		})
+	}
+	return result
+}
+
+func nodeConditionsToSlice(conditions []corev1.NodeCondition) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(conditions))
+	for _, c := range conditions {
+		result = append(result, map[string]interface{}{
+			"type":               string(c.Type),
+			"status":             string(c.Status),
+			"lastTransitionTime": c.LastTransitionTime.Time.Format(time.RFC3339),
+			"reason":             c.Reason,
+			"message":            c.Message,
+		})
+	}
+	return result
+}
+
+func jobConditionsToSlice(conditions []batchv1.JobCondition) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(conditions))
+	for _, c := range conditions {
+		result = append(result, map[string]interface{}{
+			"type":               string(c.Type),
+			"status":             string(c.Status),
+			"lastTransitionTime": c.LastTransitionTime.Time.Format(time.RFC3339),
+			"reason":             c.Reason,
+			"message":            c.Message,
+		})
+	}
+	return result
+}
+
+func volumesToSlice(volumes []corev1.Volume) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(volumes))
+	for _, v := range volumes {
+		volType := "Unknown"
+		details := ""
+		switch {
+		case v.ConfigMap != nil:
+			volType = "ConfigMap"
+			details = v.ConfigMap.Name
+		case v.Secret != nil:
+			volType = "Secret"
+			details = v.Secret.SecretName
+		case v.PersistentVolumeClaim != nil:
+			volType = "PVC"
+			details = v.PersistentVolumeClaim.ClaimName
+		case v.EmptyDir != nil:
+			volType = "EmptyDir"
+			details = string(v.EmptyDir.Medium)
+			if details == "" {
+				details = "default"
+			}
+		case v.HostPath != nil:
+			volType = "HostPath"
+			details = v.HostPath.Path
+		case v.Projected != nil:
+			volType = "Projected"
+			var sources []string
+			for _, src := range v.Projected.Sources {
+				switch {
+				case src.ServiceAccountToken != nil:
+					sources = append(sources, "ServiceAccountToken")
+				case src.ConfigMap != nil:
+					sources = append(sources, "ConfigMap:"+src.ConfigMap.Name)
+				case src.Secret != nil:
+					sources = append(sources, "Secret:"+src.Secret.Name)
+				case src.DownwardAPI != nil:
+					sources = append(sources, "DownwardAPI")
+				}
+			}
+			details = strings.Join(sources, ", ")
+		case v.DownwardAPI != nil:
+			volType = "DownwardAPI"
+		case v.CSI != nil:
+			volType = "CSI"
+			details = v.CSI.Driver
+		case v.NFS != nil:
+			volType = "NFS"
+			details = v.NFS.Server + ":" + v.NFS.Path
+		}
+		result = append(result, map[string]interface{}{
+			"name":    v.Name,
+			"type":    volType,
+			"details": details,
+		})
+	}
+	return result
+}
+
+func volumeMountsToSlice(mounts []corev1.VolumeMount) []map[string]interface{} {
+	result := make([]map[string]interface{}, 0, len(mounts))
+	for _, m := range mounts {
+		result = append(result, map[string]interface{}{
+			"name":      m.Name,
+			"mountPath": m.MountPath,
+			"readOnly":  m.ReadOnly,
+			"subPath":   m.SubPath,
+		})
+	}
+	return result
+}
+
+func containerStateFromStatus(name string, statuses []corev1.ContainerStatus) map[string]interface{} {
+	for _, cs := range statuses {
+		if cs.Name != name {
+			continue
+		}
+		result := map[string]interface{}{
+			"ready":        cs.Ready,
+			"restartCount": int(cs.RestartCount),
+		}
+		switch {
+		case cs.State.Running != nil:
+			result["state"] = "running"
+			result["startedAt"] = cs.State.Running.StartedAt.Time.Format(time.RFC3339)
+		case cs.State.Waiting != nil:
+			result["state"] = "waiting"
+			if cs.State.Waiting.Reason != "" {
+				result["reason"] = cs.State.Waiting.Reason
+			}
+		case cs.State.Terminated != nil:
+			result["state"] = "terminated"
+			if cs.State.Terminated.Reason != "" {
+				result["reason"] = cs.State.Terminated.Reason
+			}
+		default:
+			result["state"] = "unknown"
+		}
+		return result
+	}
+	return map[string]interface{}{"state": "unknown", "ready": false, "restartCount": 0}
+}
+
+func containerResourcesToMap(r corev1.ResourceRequirements) map[string]interface{} {
+	return map[string]interface{}{
+		"cpuRequest":    r.Requests.Cpu().MilliValue(),
+		"cpuLimit":      r.Limits.Cpu().MilliValue(),
+		"memoryRequest": r.Requests.Memory().Value(),
+		"memoryLimit":   r.Limits.Memory().Value(),
+	}
+}
+
+// resourceTypeToGVR maps a resource type string to its GroupVersionResource.
+func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) {
+	m := map[string]schema.GroupVersionResource{
+		"pods":                  {Group: "", Version: "v1", Resource: "pods"},
+		"nodes":                 {Group: "", Version: "v1", Resource: "nodes"},
+		"namespaces":            {Group: "", Version: "v1", Resource: "namespaces"},
+		"services":              {Group: "", Version: "v1", Resource: "services"},
+		"configmaps":            {Group: "", Version: "v1", Resource: "configmaps"},
+		"secrets":               {Group: "", Version: "v1", Resource: "secrets"},
+		"persistentvolumeclaims": {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
+		"pvcs":                  {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
+		"persistentvolumes":     {Group: "", Version: "v1", Resource: "persistentvolumes"},
+		"pvs":                   {Group: "", Version: "v1", Resource: "persistentvolumes"},
+		"events":                {Group: "", Version: "v1", Resource: "events"},
+		"deployments":           {Group: "apps", Version: "v1", Resource: "deployments"},
+		"statefulsets":          {Group: "apps", Version: "v1", Resource: "statefulsets"},
+		"daemonsets":            {Group: "apps", Version: "v1", Resource: "daemonsets"},
+		"replicasets":           {Group: "apps", Version: "v1", Resource: "replicasets"},
+		"jobs":                  {Group: "batch", Version: "v1", Resource: "jobs"},
+		"cronjobs":              {Group: "batch", Version: "v1", Resource: "cronjobs"},
+		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
+		"hpas":                  {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
+		"horizontalpodautoscalers": {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
+		"storageclasses":        {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
+		"roles":                 {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"},
+		"clusterroles":          {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
+		"rolebindings":          {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
+		"clusterrolebindings":   {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
+		"gateways":              {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
+		"httproutes":            {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+	}
+	gvr, ok := m[resourceType]
+	return gvr, ok
+}
+
+// isClusterScoped returns true for resource types that are not namespaced.
+func isClusterScoped(resourceType string) bool {
+	switch resourceType {
+	case "nodes", "namespaces", "persistentvolumes", "pvs", "storageclasses", "clusterroles", "clusterrolebindings":
+		return true
+	}
+	return false
+}
+
+// AggregateWorkloadMetrics sums pod metrics for a workload (deployment, statefulset, daemonset, job).
+func (c *Connector) AggregateWorkloadMetrics(resourceType, namespace, name string, col metricsCollector) map[string]interface{} {
+	pods, _ := c.podLister.List(everythingSelector())
+	podMetrics := col.GetAllPodMetrics()
+
+	// For deployments, pods are owned by ReplicaSets which are owned by the Deployment.
+	// For statefulsets/daemonsets, pods are directly owned.
+	isOwned := func(pod *corev1.Pod) bool {
+		if pod.Namespace != namespace {
+			return false
+		}
+		for _, ref := range pod.OwnerReferences {
+			switch resourceType {
+			case "deployments":
+				// Pod → ReplicaSet → Deployment: check if the ReplicaSet is owned by this Deployment
+				if ref.Kind == "ReplicaSet" {
+					rs, err := c.replicaSetLister.ReplicaSets(namespace).Get(ref.Name)
+					if err == nil {
+						for _, rsRef := range rs.OwnerReferences {
+							if rsRef.Kind == "Deployment" && rsRef.Name == name {
+								return true
+							}
+						}
+					}
+				}
+			case "statefulsets":
+				if ref.Kind == "StatefulSet" && ref.Name == name {
+					return true
+				}
+			case "daemonsets":
+				if ref.Kind == "DaemonSet" && ref.Name == name {
+					return true
+				}
+			case "jobs":
+				if ref.Kind == "Job" && ref.Name == name {
+					return true
+				}
+			case "cronjobs":
+				// Pod → Job → CronJob
+				if ref.Kind == "Job" {
+					job, err := c.jobLister.Jobs(namespace).Get(ref.Name)
+					if err == nil {
+						for _, jobRef := range job.OwnerReferences {
+							if jobRef.Kind == "CronJob" && jobRef.Name == name {
+								return true
+							}
+						}
+					}
+				}
+			}
+		}
+		return false
+	}
+
+	var cpuUsed, memUsed, cpuReq, cpuLim, memReq, memLim int64
+	for _, pod := range pods {
+		if !isOwned(pod) {
+			continue
+		}
+		for _, cont := range pod.Spec.Containers {
+			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+			memReq += cont.Resources.Requests.Memory().Value()
+			memLim += cont.Resources.Limits.Memory().Value()
+		}
+		key := pod.Namespace + "/" + pod.Name
+		if pm, ok := podMetrics[key]; ok {
+			cpuUsed += pm.CPUUsage
+			memUsed += pm.MemUsage
+		}
+	}
+
+	if cpuUsed == 0 && memUsed == 0 {
+		return nil
+	}
+
+	result := map[string]interface{}{
+		"cpuUsage":    cpuUsed,
+		"memoryUsage": memUsed,
+	}
+	cpuDenom := cpuLim
+	if cpuDenom == 0 {
+		cpuDenom = cpuReq
+	}
+	if cpuDenom > 0 {
+		result["cpuPercent"] = float64(cpuUsed) / float64(cpuDenom) * 100
+	}
+	memDenom := memLim
+	if memDenom == 0 {
+		memDenom = memReq
+	}
+	if memDenom > 0 {
+		result["memoryPercent"] = float64(memUsed) / float64(memDenom) * 100
+	}
+	return result
+}
+
+// GetPodLogs returns the tail of logs for a specific pod container.
+func (c *Connector) GetPodLogs(namespace, name, container string, tailLines int64) (string, error) {
+	opts := &corev1.PodLogOptions{
+		TailLines: &tailLines,
+	}
+	if container != "" {
+		opts.Container = container
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req := c.clientset.CoreV1().Pods(namespace).GetLogs(name, opts)
+	stream, err := req.Stream(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get logs: %w", err)
+	}
+	defer stream.Close()
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, stream)
+	if err != nil {
+		return "", fmt.Errorf("failed to read logs: %w", err)
+	}
+	return buf.String(), nil
+}
+
+// GetResourceYAML fetches a single resource via the dynamic client and returns its YAML representation.
+func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byte, error) {
+	if c.dynamicClient == nil {
+		return nil, fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var obj *unstructured.Unstructured
+	var err error
+	if isClusterScoped(resourceType) {
+		obj, err = c.dynamicClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
+	} else {
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fetching resource: %w", err)
+	}
+
+	// Redact secret data values
+	if resourceType == "secrets" {
+		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
+			for k := range data {
+				data[k] = "REDACTED"
+			}
+		}
+	}
+
+	yamlBytes, err := sigsyaml.Marshal(obj.Object)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling to YAML: %w", err)
+	}
+	return yamlBytes, nil
 }
 
 // --- List helpers ---

@@ -121,6 +121,62 @@ func (h *handlers) getResourceDetail(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
+
+	// Inject metrics from collector if available
+	if col := h.manager.Collector(); col != nil {
+		switch resourceType {
+		case "pods":
+			if pm := col.GetPodMetrics(namespace, name); pm != nil {
+				detail["cpuUsage"] = pm.CPUUsage
+				detail["memoryUsage"] = pm.MemUsage
+				// Aggregate limits/requests from containers
+				var cpuReq, cpuLim, memReq, memLim int64
+				if containers, ok := detail["containers"].([]map[string]interface{}); ok {
+					for _, c := range containers {
+						if res, ok := c["resources"].(map[string]interface{}); ok {
+							if v, ok := res["cpuRequest"].(int64); ok { cpuReq += v }
+							if v, ok := res["cpuLimit"].(int64); ok { cpuLim += v }
+							if v, ok := res["memoryRequest"].(int64); ok { memReq += v }
+							if v, ok := res["memoryLimit"].(int64); ok { memLim += v }
+						}
+					}
+				}
+				if cpuLim > 0 {
+					detail["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
+				} else if cpuReq > 0 {
+					detail["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
+				}
+				if memLim > 0 {
+					detail["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
+				} else if memReq > 0 {
+					detail["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
+				}
+			}
+		case "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs":
+			if wm := conn.AggregateWorkloadMetrics(resourceType, namespace, name, col); wm != nil {
+				detail["cpuUsage"] = wm["cpuUsage"]
+				detail["memoryUsage"] = wm["memoryUsage"]
+				if v, ok := wm["cpuPercent"]; ok {
+					detail["cpuPercent"] = v
+				}
+				if v, ok := wm["memoryPercent"]; ok {
+					detail["memoryPercent"] = v
+				}
+			}
+		case "nodes":
+			if nm := col.GetNodeMetrics(name); nm != nil {
+				detail["cpuUsage"] = nm.CPUUsage
+				detail["memoryUsage"] = nm.MemUsage
+				if alloc, ok := detail["cpuAllocatable"].(int64); ok && alloc > 0 {
+					detail["cpuPercent"] = float64(nm.CPUUsage) / float64(alloc) * 100
+				}
+				if alloc, ok := detail["memoryAllocatable"].(int64); ok && alloc > 0 {
+					detail["memoryPercent"] = float64(nm.MemUsage) / float64(alloc) * 100
+				}
+			}
+		}
+	}
+
 	respondJSON(w, http.StatusOK, detail)
 }
 
@@ -158,11 +214,70 @@ func (h *handlers) getEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	eventType := r.URL.Query().Get("type")
 	namespace := r.URL.Query().Get("namespace")
+	involvedKind := r.URL.Query().Get("involvedKind")
+	involvedName := r.URL.Query().Get("involvedName")
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit < 1 {
 		limit = 100
 	}
-	respondJSON(w, http.StatusOK, conn.GetEvents(eventType, namespace, limit))
+	respondJSON(w, http.StatusOK, conn.GetEvents(eventType, namespace, involvedKind, involvedName, limit))
+}
+
+func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	container := r.URL.Query().Get("container")
+
+	if namespace == "_" {
+		namespace = ""
+	}
+
+	tailLines := int64(100)
+	if tl := r.URL.Query().Get("tailLines"); tl != "" {
+		if v, err := strconv.ParseInt(tl, 10, 64); err == nil && v > 0 {
+			tailLines = v
+		}
+	}
+
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+
+	logs, err := conn.GetPodLogs(namespace, name, container, tailLines)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(logs))
+}
+
+func (h *handlers) getResourceYAML(w http.ResponseWriter, r *http.Request) {
+	resourceType := chi.URLParam(r, "type")
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	if namespace == "_" {
+		namespace = ""
+	}
+
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	yamlBytes, err := conn.GetResourceYAML(resourceType, namespace, name)
+	if err != nil {
+		respondError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/yaml")
+	w.WriteHeader(http.StatusOK)
+	w.Write(yamlBytes)
 }
 
 func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {

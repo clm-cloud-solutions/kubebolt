@@ -115,6 +115,7 @@ export interface PodSummary {
 export interface TopologyNode {
   id: string
   type: string
+  name: string
   label: string
   namespace: string
   status: string
@@ -204,4 +205,6 @@ export interface EventParams {
   namespace?: string
   type?: 'Normal' | 'Warning'
   limit?: number
+  involvedKind?: string
+  involvedName?: string
 }

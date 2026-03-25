@@ -89,4 +89,20 @@ export const api = {
 
   getMetrics: (type: string, namespace: string, name: string) =>
     fetchJSON<ResourceMetrics>(`${API_BASE}/metrics/${type}/${namespace}/${name}`),
+
+  getResourceYAML: async (type: string, namespace: string, name: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`)
+    if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
+    return res.text()
+  },
+
+  getPodLogs: async (namespace: string, name: string, container?: string, tailLines?: number): Promise<string> => {
+    const params = new URLSearchParams()
+    if (container) params.set('container', container)
+    if (tailLines) params.set('tailLines', String(tailLines))
+    const query = params.toString()
+    const res = await fetch(`${API_BASE}/resources/pods/${namespace}/${name}/logs${query ? `?${query}` : ''}`)
+    if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
+    return res.text()
+  },
 }

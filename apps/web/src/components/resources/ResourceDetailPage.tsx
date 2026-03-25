@@ -1,7 +1,7 @@
-import React from 'react'
+import React, { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ChevronRight } from 'lucide-react'
-import { useResourceDetail } from '@/hooks/useResources'
+import { ChevronRight, Lock } from 'lucide-react'
+import { useResourceDetail, useResourceYAML, useResourceEvents, useTopology, usePodLogs } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { StatusBadge } from './StatusBadge'
@@ -9,42 +9,39 @@ import { UsageBar } from './UsageBar'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
-// Maps a Kubernetes kind to the URL segment used in KubeBolt routes
+// ─── Shared Helpers ──────────────────────────────────────────────
+
 const kindToRoute: Record<string, string> = {
-  Deployment: 'deployments',
-  StatefulSet: 'statefulsets',
-  DaemonSet: 'daemonsets',
-  ReplicaSet: 'replicasets',
-  Pod: 'pods',
-  Service: 'services',
-  Node: 'nodes',
-  Ingress: 'ingresses',
-  Job: 'jobs',
-  CronJob: 'cronjobs',
-  ConfigMap: 'configmaps',
-  Secret: 'secrets',
-  PersistentVolumeClaim: 'pvcs',
-  PersistentVolume: 'pvs',
-  HorizontalPodAutoscaler: 'hpas',
-  StorageClass: 'storageclasses',
-  Gateway: 'gateways',
-  HTTPRoute: 'httproutes',
-  Namespace: 'namespaces',
+  Deployment: 'deployments', StatefulSet: 'statefulsets', DaemonSet: 'daemonsets',
+  ReplicaSet: 'replicasets', Pod: 'pods', Service: 'services', Node: 'nodes',
+  Ingress: 'ingresses', Job: 'jobs', CronJob: 'cronjobs', ConfigMap: 'configmaps',
+  Secret: 'secrets', PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
+  HorizontalPodAutoscaler: 'hpas', HPA: 'hpas', StorageClass: 'storageclasses',
+  Gateway: 'gateways', HTTPRoute: 'httproutes', Namespace: 'namespaces',
+  PVC: 'pvcs', PV: 'pvs',
+}
+
+const routeToKind: Record<string, string> = Object.fromEntries(
+  Object.entries(kindToRoute).map(([k, v]) => [v, k])
+)
+
+const resourceLabels: Record<string, string> = {
+  pods: 'Pods', deployments: 'Deployments', statefulsets: 'StatefulSets',
+  daemonsets: 'DaemonSets', jobs: 'Jobs', cronjobs: 'CronJobs', services: 'Services',
+  ingresses: 'Ingresses', gateways: 'Gateways', httproutes: 'HTTPRoutes',
+  endpoints: 'Endpoints', pvcs: 'PVCs', pvs: 'PVs', storageclasses: 'Storage Classes',
+  configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
+  namespaces: 'Namespaces', replicasets: 'ReplicaSets',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {
-  const ns = namespace || '_'
   return (
-    <Link
-      to={`/${resourceType}/${ns}/${name}`}
-      className="text-status-info hover:underline font-mono text-[11px]"
-    >
+    <Link to={`/${resourceType}/${namespace || '_'}/${name}`} className="text-status-info hover:underline font-mono text-[11px]">
       {name}
     </Link>
   )
 }
 
-// Parses "Kind/Name" format (e.g. "Deployment/my-app") into a link
 function KindNameLink({ value, namespace }: { value: string; namespace?: string }) {
   const parts = value.split('/')
   if (parts.length !== 2) return <span className="font-mono text-[11px]">{value}</span>
@@ -59,133 +56,168 @@ function KindNameLink({ value, namespace }: { value: string; namespace?: string 
   )
 }
 
-const resourceLabels: Record<string, string> = {
-  pods: 'Pods',
-  deployments: 'Deployments',
-  statefulsets: 'StatefulSets',
-  daemonsets: 'DaemonSets',
-  jobs: 'Jobs',
-  cronjobs: 'CronJobs',
-  services: 'Services',
-  ingresses: 'Ingresses',
-  gateways: 'Gateways',
-  httproutes: 'HTTPRoutes',
-  endpoints: 'Endpoints',
-  pvcs: 'Persistent Volume Claims',
-  pvs: 'Persistent Volumes',
-  storageclasses: 'Storage Classes',
-  configmaps: 'ConfigMaps',
-  secrets: 'Secrets',
-  hpas: 'HPAs',
-  nodes: 'Nodes',
-  namespaces: 'Namespaces',
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, className }: { title: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
-      <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary mb-3">
-        {title}
-      </div>
+    <div className={`bg-kb-card border border-kb-border rounded-[10px] p-5 ${className ?? ''}`}>
+      <div className="text-sm font-semibold text-kb-text-primary mb-4">{title}</div>
       {children}
     </div>
   )
 }
 
 function renderValue(value: React.ReactNode): React.ReactNode {
-  if (typeof value === 'object' && value !== null && !React.isValidElement(value)) {
-    return JSON.stringify(value)
-  }
+  if (typeof value === 'object' && value !== null && !React.isValidElement(value)) return JSON.stringify(value)
   return value
 }
 
-function Field({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  if (value === undefined || value === null || value === '') return null
+function InfoField({ label, children }: { label: string; children: React.ReactNode }) {
+  if (children === undefined || children === null || children === '') return null
   return (
-    <div className="flex items-start gap-3 py-1.5">
-      <span className="text-[11px] text-kb-text-tertiary w-36 shrink-0">{label}</span>
-      <span className={`text-[11px] text-kb-text-primary break-all ${mono ? 'font-mono' : ''}`}>
-        {renderValue(value)}
-      </span>
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-kb-text-tertiary mb-0.5">{label}</div>
+      <div className="text-[12px] text-kb-text-primary">{renderValue(children)}</div>
     </div>
   )
 }
 
 function Labels({ labels }: { labels: Record<string, string> | undefined }) {
-  if (!labels || Object.keys(labels).length === 0) {
-    return <span className="text-[11px] text-kb-text-tertiary">None</span>
-  }
+  if (!labels || Object.keys(labels).length === 0) return <span className="text-[11px] text-kb-text-tertiary">None</span>
   return (
     <div className="flex flex-wrap gap-1.5">
       {Object.entries(labels).map(([k, v]) => (
-        <span
-          key={k}
-          className="inline-flex px-2 py-0.5 rounded text-[10px] font-mono bg-kb-elevated text-kb-text-secondary"
-        >
-          {k}={v}
+        <span key={k} className="inline-flex px-2 py-0.5 rounded text-[10px] font-mono bg-kb-elevated text-kb-text-secondary">
+          {k}: {v}
         </span>
       ))}
     </div>
   )
 }
 
-function MetricsSection({ item }: { item: ResourceItem }) {
-  const cpuUsage = Number(item.cpuUsage ?? 0)
-  const cpuPercent = Number(item.cpuPercent ?? 0)
-  const memUsage = Number(item.memoryUsage ?? 0)
-  const memPercent = Number(item.memoryPercent ?? 0)
+function extractSelector(selector: unknown): Record<string, string> | undefined {
+  if (!selector || typeof selector !== 'object') return undefined
+  const s = selector as Record<string, unknown>
+  if (s.matchLabels && typeof s.matchLabels === 'object') return s.matchLabels as Record<string, string>
+  const flat: Record<string, string> = {}
+  for (const [k, v] of Object.entries(s)) { if (typeof v === 'string') flat[k] = v }
+  return Object.keys(flat).length > 0 ? flat : undefined
+}
 
-  if (cpuUsage === 0 && memUsage === 0) return null
-
+function ComingSoon({ title, description }: { title: string; description: string }) {
   return (
-    <Section title="Resource Usage">
-      <div className="grid grid-cols-2 gap-4">
-        {cpuUsage > 0 && (
-          <div>
-            <div className="text-[10px] text-kb-text-tertiary mb-1">CPU</div>
-            <UsageBar percent={cpuPercent} height={6} showLabel />
-            <div className="text-[11px] font-mono text-kb-text-secondary mt-1">{formatCPU(cpuUsage)}</div>
-          </div>
-        )}
-        {memUsage > 0 && (
-          <div>
-            <div className="text-[10px] text-kb-text-tertiary mb-1">Memory</div>
-            <UsageBar percent={memPercent} height={6} showLabel />
-            <div className="text-[11px] font-mono text-kb-text-secondary mt-1">{formatMemory(memUsage)}</div>
-          </div>
-        )}
-      </div>
-    </Section>
+    <div className="flex flex-col items-center justify-center py-16 text-kb-text-tertiary">
+      <Lock className="w-8 h-8 mb-3" />
+      <div className="text-sm font-medium text-kb-text-secondary mb-1">{title}</div>
+      <div className="text-xs">{description}</div>
+    </div>
   )
 }
 
-function ContainersSection({ containers }: { containers: unknown }) {
-  if (!containers || !Array.isArray(containers) || containers.length === 0) return null
+// ─── Tab Definitions ─────────────────────────────────────────────
+
+interface TabDef { id: string; label: string; count?: number; soon?: boolean }
+
+function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
+  const containers = Array.isArray(item.containers) ? item.containers.length : 0
+  const volumes = Array.isArray(item.volumes) ? item.volumes.length : 0
+  const base: TabDef[] = [{ id: 'overview', label: 'Overview' }]
+
+  switch (type) {
+    case 'pods':
+      base.push(
+        { id: 'containers', label: 'Containers', count: containers },
+        { id: 'yaml', label: 'YAML' },
+        { id: 'logs', label: 'Logs' },
+        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'files', label: 'Files', soon: true },
+        { id: 'volumes', label: 'Volumes', count: volumes },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
+    case 'deployments':
+    case 'statefulsets':
+    case 'daemonsets':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
+    case 'services':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+      )
+      break
+    case 'nodes':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
+    default:
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'events', label: 'Events' },
+      )
+  }
+  return base
+}
+
+// ─── Status Overview Cards ───────────────────────────────────────
+
+function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
+  const metrics: { label: string; value: React.ReactNode }[] = []
+
+  switch (type) {
+    case 'pods':
+      metrics.push(
+        { label: 'Phase', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
+        { label: 'Ready Containers', value: String(item.ready ?? '-') },
+        { label: 'Restart Count', value: String(item.restarts ?? 0) },
+        { label: 'Node', value: item.nodeName ? <ResourceLink name={String(item.nodeName)} resourceType="nodes" /> : '-' },
+      )
+      break
+    case 'deployments':
+      metrics.push(
+        { label: 'Status', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Available' || item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
+        { label: 'Ready Replicas', value: `${item.readyReplicas ?? 0} / ${item.replicas ?? 0}` },
+        { label: 'Updated Replicas', value: String(item.updatedReplicas ?? 0) },
+        { label: 'Available Replicas', value: String(item.availableReplicas ?? 0) },
+      )
+      break
+    case 'services':
+      metrics.push(
+        { label: 'Type', value: String(item.type ?? '-') },
+        { label: 'Cluster IP', value: <span className="font-mono">{String(item.clusterIP ?? '-')}</span> },
+        { label: 'Ports', value: Array.isArray(item.ports) ? (item.ports as Array<Record<string, unknown>>).map(p => `${p.port}/${p.protocol ?? 'TCP'}`).join(', ') : '-' },
+      )
+      break
+    case 'nodes':
+      metrics.push(
+        { label: 'Status', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Ready' ? 'bg-status-ok' : 'bg-status-error'}`} />{item.status}</div> },
+        { label: 'Kubelet', value: <span className="font-mono text-[11px]">{String(item.kubeletVersion ?? '-')}</span> },
+        { label: 'CPU', value: item.cpuCapacity != null ? `${item.cpuCapacity} cores` : '-' },
+        { label: 'Memory', value: item.memoryCapacity != null ? formatMemory(Number(item.memoryCapacity)) : '-' },
+      )
+      break
+    default:
+      metrics.push(
+        { label: 'Status', value: <div className="flex items-center gap-2"><StatusBadge status={item.status} />{item.status}</div> },
+      )
+  }
+
   return (
-    <Section title="Containers">
-      <div className="space-y-3">
-        {(containers as Array<Record<string, unknown>>).map((c, i) => (
-          <div key={String(c.name ?? i)} className="bg-kb-elevated rounded-lg p-3">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-xs font-medium text-kb-text-primary">{String(c.name)}</span>
-              {c.ready !== undefined && (
-                <StatusBadge status={c.ready ? 'Running' : 'NotReady'} label={c.ready ? 'Ready' : 'Not Ready'} />
-              )}
-            </div>
-            <div className="space-y-0.5">
-              <Field label="Image" value={String(c.image ?? '')} mono />
-              {Array.isArray(c.ports) && c.ports.length > 0 && (
-                <Field
-                  label="Ports"
-                  value={(c.ports as Array<Record<string, unknown>>).map((p: Record<string, unknown>) => `${p.containerPort}/${p.protocol ?? 'TCP'}`).join(', ')}
-                  mono
-                />
-              )}
-              {c.cpuRequest != null && <Field label="CPU Request" value={formatCPU(Number(c.cpuRequest))} mono />}
-              {c.cpuLimit != null && <Field label="CPU Limit" value={formatCPU(Number(c.cpuLimit))} mono />}
-              {c.memoryRequest != null && <Field label="Memory Request" value={formatMemory(Number(c.memoryRequest))} mono />}
-              {c.memoryLimit != null && <Field label="Memory Limit" value={formatMemory(Number(c.memoryLimit))} mono />}
-            </div>
+    <Section title="Status Overview">
+      <div className={`grid grid-cols-${Math.min(metrics.length, 4)} gap-6`}>
+        {metrics.map(m => (
+          <div key={m.label}>
+            <div className="text-[10px] uppercase tracking-wide text-kb-text-tertiary mb-1">{m.label}</div>
+            <div className="text-sm text-kb-text-primary font-medium">{renderValue(m.value)}</div>
           </div>
         ))}
       </div>
@@ -193,304 +225,637 @@ function ContainersSection({ containers }: { containers: unknown }) {
   )
 }
 
-function PortsSection({ ports }: { ports: unknown }) {
-  if (!ports || !Array.isArray(ports) || ports.length === 0) return null
+// ─── Overview Tab ────────────────────────────────────────────────
+
+function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
+  const ownerRefs = Array.isArray(item.ownerReferences) ? item.ownerReferences as Array<Record<string, string>> : []
+
   return (
-    <Section title="Ports">
-      <div className="overflow-x-auto">
-        <table className="w-full text-[11px]">
-          <thead>
-            <tr className="text-kb-text-tertiary text-left">
-              <th className="pb-1.5 font-normal">Name</th>
-              <th className="pb-1.5 font-normal">Port</th>
-              <th className="pb-1.5 font-normal">Target</th>
-              <th className="pb-1.5 font-normal">Protocol</th>
-              {(ports as Array<Record<string, unknown>>).some(p => p.nodePort) && (
-                <th className="pb-1.5 font-normal">Node Port</th>
-              )}
-            </tr>
-          </thead>
-          <tbody className="font-mono text-kb-text-secondary">
-            {(ports as Array<Record<string, unknown>>).map((p, i) => (
-              <tr key={i} className="border-t border-kb-border">
-                <td className="py-1.5">{String(p.name ?? '-')}</td>
-                <td className="py-1.5">{String(p.port ?? '-')}</td>
-                <td className="py-1.5">{String(p.targetPort ?? '-')}</td>
-                <td className="py-1.5">{String(p.protocol ?? 'TCP')}</td>
-                {(ports as Array<Record<string, unknown>>).some(pp => pp.nodePort) && (
-                  <td className="py-1.5">{p.nodePort ? String(p.nodePort) : '-'}</td>
-                )}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <div className="space-y-4">
+      <StatusOverview type={type} item={item} />
+
+      {/* Resource Info */}
+      <Section title={`${resourceLabels[type] ?? type} Information`}>
+        <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+          <InfoField label="Created">
+            {item.createdAt ? `${new Date(item.createdAt).toLocaleString()} (${formatAge(item.createdAt)})` : '-'}
+          </InfoField>
+          {type === 'pods' && (
+            <InfoField label="Started">
+              {item.startTime ? new Date(String(item.startTime)).toLocaleString() : '-'}
+            </InfoField>
+          )}
+          {type === 'pods' && <InfoField label="Pod IP"><span className="font-mono">{String(item.ip ?? '-')}</span></InfoField>}
+          {type === 'pods' && <InfoField label="Host IP"><span className="font-mono">{String(item.hostIP ?? '-')}</span></InfoField>}
+          {type === 'pods' && ownerRefs.length > 0 && (
+            <InfoField label="Owner">
+              <KindNameLink value={`${ownerRefs[0].kind}/${ownerRefs[0].name}`} namespace={item.namespace} />
+            </InfoField>
+          )}
+          {type === 'pods' && Array.isArray(item.containers) && (
+            <InfoField label="Ports">
+              {(item.containers as Array<Record<string, unknown>>)
+                .flatMap(c => Array.isArray(c.ports) ? (c.ports as Array<Record<string, unknown>>).map(p => String(p.containerPort)) : [])
+                .join(', ') || '-'}
+            </InfoField>
+          )}
+          {type === 'pods' && <InfoField label="QoS Class">{String(item.qosClass ?? '-')}</InfoField>}
+
+          {type === 'deployments' && <InfoField label="Strategy">{String(item.strategy ?? '-')}</InfoField>}
+          {type === 'deployments' && <InfoField label="Replicas">{String(item.replicas ?? '-')}</InfoField>}
+          {type === 'deployments' && item.selector != null && (
+            <InfoField label="Selector">
+              <Labels labels={extractSelector(item.selector)} />
+            </InfoField>
+          )}
+
+          {type === 'services' && <InfoField label="Type">{String(item.type ?? '-')}</InfoField>}
+          {type === 'services' && <InfoField label="Cluster IP"><span className="font-mono">{String(item.clusterIP ?? '-')}</span></InfoField>}
+          {type === 'services' && item.selector != null && (
+            <InfoField label="Selector"><Labels labels={extractSelector(item.selector)} /></InfoField>
+          )}
+
+          {type === 'nodes' && <InfoField label="OS Image">{String(item.osImage ?? '-')}</InfoField>}
+          {type === 'nodes' && <InfoField label="Runtime">{String(item.containerRuntime ?? '-')}</InfoField>}
+          {type === 'nodes' && <InfoField label="CPU Allocatable">{item.cpuAllocatable != null ? `${item.cpuAllocatable} cores` : '-'}</InfoField>}
+          {type === 'nodes' && <InfoField label="Memory Allocatable">{item.memoryAllocatable != null ? formatMemory(Number(item.memoryAllocatable)) : '-'}</InfoField>}
+
+          {type === 'statefulsets' && <InfoField label="Replicas">{`${item.readyReplicas ?? 0}/${item.replicas ?? 0} ready`}</InfoField>}
+          {type === 'daemonsets' && <InfoField label="Desired / Ready">{`${item.desired ?? 0} / ${item.ready ?? 0}`}</InfoField>}
+          {type === 'jobs' && <InfoField label="Succeeded / Failed">{`${item.succeeded ?? 0} / ${item.failed ?? 0}`}</InfoField>}
+          {type === 'cronjobs' && <InfoField label="Schedule"><span className="font-mono">{String(item.schedule ?? '-')}</span></InfoField>}
+          {type === 'cronjobs' && <InfoField label="Suspend">{String(item.suspend ?? false)}</InfoField>}
+          {type === 'ingresses' && <InfoField label="Hosts"><span className="font-mono">{String(item.hosts ?? '-')}</span></InfoField>}
+          {type === 'configmaps' && <InfoField label="Keys">{String(item.keys ?? '-')}</InfoField>}
+          {type === 'configmaps' && <InfoField label="Data Count">{String(item.dataCount ?? 0)}</InfoField>}
+          {type === 'secrets' && <InfoField label="Type"><span className="font-mono">{String(item.type ?? '-')}</span></InfoField>}
+          {type === 'secrets' && <InfoField label="Keys">{String(item.keys ?? '-')}</InfoField>}
+          {type === 'pvcs' && item.volumeName != null && <InfoField label="Volume"><ResourceLink name={String(item.volumeName)} resourceType="pvs" /></InfoField>}
+          {type === 'pvcs' && item.storageClass != null && <InfoField label="Storage Class"><ResourceLink name={String(item.storageClass)} resourceType="storageclasses" /></InfoField>}
+          {type === 'pvcs' && <InfoField label="Capacity">{String(item.capacity ?? '-')}</InfoField>}
+          {type === 'pvs' && <InfoField label="Capacity">{String(item.capacity ?? '-')}</InfoField>}
+          {type === 'pvs' && item.storageClass != null && <InfoField label="Storage Class"><ResourceLink name={String(item.storageClass)} resourceType="storageclasses" /></InfoField>}
+          {type === 'pvs' && <InfoField label="Reclaim Policy">{String(item.reclaimPolicy ?? '-')}</InfoField>}
+          {type === 'hpas' && <InfoField label="Min / Max Replicas">{`${item.minReplicas ?? '-'} / ${item.maxReplicas ?? '-'}`}</InfoField>}
+          {type === 'hpas' && item.targetRef != null && <InfoField label="Target"><KindNameLink value={String(item.targetRef)} namespace={item.namespace} /></InfoField>}
+          {type === 'storageclasses' && <InfoField label="Provisioner"><span className="font-mono">{String(item.provisioner ?? '-')}</span></InfoField>}
+          {type === 'storageclasses' && <InfoField label="Reclaim Policy">{String(item.reclaimPolicy ?? '-')}</InfoField>}
+          {type === 'gateways' && <InfoField label="Class">{String(item.class ?? '-')}</InfoField>}
+          {type === 'httproutes' && item.gateway != null && <InfoField label="Gateway"><ResourceLink name={String(item.gateway)} namespace={item.namespace} resourceType="gateways" /></InfoField>}
+        </div>
+
+        {/* Labels & Annotations */}
+        <div className="grid grid-cols-2 gap-x-8 gap-y-4 mt-5 pt-4 border-t border-kb-border">
+          <InfoField label="Labels"><Labels labels={item.labels} /></InfoField>
+          <InfoField label="Annotations"><Labels labels={item.annotations} /></InfoField>
+        </div>
+      </Section>
+
+      {/* Metrics */}
+      <MetricsBar item={item} />
+
+      {/* Conditions */}
+      <ConditionsSection conditions={item.conditions} />
+    </div>
+  )
+}
+
+function MetricsBar({ item }: { item: ResourceItem }) {
+  const cpuUsage = Number(item.cpuUsage ?? 0)
+  const cpuPercent = Number(item.cpuPercent ?? 0)
+  const memUsage = Number(item.memoryUsage ?? 0)
+  const memPercent = Number(item.memoryPercent ?? 0)
+  if (cpuUsage === 0 && memUsage === 0) return null
+  return (
+    <Section title="Resource Usage">
+      <div className="grid grid-cols-2 gap-6">
+        {cpuUsage > 0 && (
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-kb-text-tertiary">CPU</span>
+              <span className="text-[10px] font-mono text-kb-text-secondary">{formatCPU(cpuUsage)} ({Math.round(cpuPercent)}%)</span>
+            </div>
+            <UsageBar percent={cpuPercent} height={6} />
+          </div>
+        )}
+        {memUsage > 0 && (
+          <div>
+            <div className="flex justify-between mb-1">
+              <span className="text-[10px] text-kb-text-tertiary">Memory</span>
+              <span className="text-[10px] font-mono text-kb-text-secondary">{formatMemory(memUsage)} ({Math.round(memPercent)}%)</span>
+            </div>
+            <UsageBar percent={memPercent} height={6} />
+          </div>
+        )}
       </div>
     </Section>
   )
 }
 
-function PodDetails({ item }: { item: ResourceItem }) {
+function ConditionsSection({ conditions }: { conditions: unknown }) {
+  if (!conditions || !Array.isArray(conditions) || conditions.length === 0) return null
   return (
-    <>
-      {item.nodeName && (
-        <Field label="Node" value={<ResourceLink name={String(item.nodeName)} resourceType="nodes" />} />
-      )}
-      <Field label="IP" value={String(item.ip ?? '')} mono />
-      <Field label="Ready" value={String(item.ready ?? '')} />
-      <Field label="Restarts" value={item.restarts != null ? String(item.restarts) : undefined} />
-      <Field label="QoS Class" value={String(item.qosClass ?? '')} />
-    </>
+    <Section title="Conditions">
+      <div className="space-y-2">
+        {(conditions as Array<Record<string, unknown>>).map((c, i) => (
+          <div key={i} className="flex items-center gap-3 py-1.5">
+            <StatusBadge
+              status={c.status === 'True' ? 'Running' : 'Warning'}
+              label={String(c.type)}
+            />
+            <span className="flex-1 text-[11px] text-kb-text-secondary truncate">
+              {c.message ? String(c.message) : ''}
+            </span>
+            <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
+              {c.lastTransitionTime ? new Date(String(c.lastTransitionTime)).toLocaleString() : ''}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Section>
   )
 }
 
-function extractSelector(selector: unknown): Record<string, string> | undefined {
-  if (!selector || typeof selector !== 'object') return undefined
-  const s = selector as Record<string, unknown>
-  if (s.matchLabels && typeof s.matchLabels === 'object') {
-    return s.matchLabels as Record<string, string>
+// ─── Containers Tab ──────────────────────────────────────────────
+
+function ContainersTab({ item }: { item: ResourceItem }) {
+  const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
+  if (containers.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No containers</div>
+
+  return (
+    <div className="space-y-4">
+      {containers.map((c, i) => {
+        const state = c.state as Record<string, unknown> | undefined
+        const stateLabel = state?.state ? String(state.state) : 'unknown'
+        const ready = state?.ready === true
+        const resources = c.resources as Record<string, unknown> | undefined
+        const mounts = Array.isArray(c.volumeMounts) ? c.volumeMounts as Array<Record<string, unknown>> : []
+
+        return (
+          <Section key={String(c.name ?? i)} title="">
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <span className="px-2.5 py-1 rounded text-xs font-medium bg-status-info text-white">{String(c.name)}</span>
+                <span className="text-[11px] font-mono text-kb-text-secondary">{String(c.image ?? '')}</span>
+              </div>
+              <StatusBadge status={ready ? 'Running' : 'Warning'} label={ready ? 'Ready' : 'Not Ready'} />
+            </div>
+
+            <div className="grid grid-cols-2 gap-x-8 gap-y-3">
+              <InfoField label="Image"><span className="font-mono text-[11px]">{String(c.image ?? '-')}</span></InfoField>
+              <InfoField label="Image Pull Policy">{String(c.imagePullPolicy ?? '-')}</InfoField>
+              <InfoField label="State">
+                <div className="flex items-center gap-2">
+                  <StatusBadge status={stateLabel === 'running' ? 'Running' : stateLabel === 'waiting' ? 'Warning' : 'Terminated'} label={stateLabel} />
+                  {state?.startedAt != null && <span className="text-[10px] text-kb-text-tertiary">since {new Date(String(state.startedAt)).toLocaleString()}</span>}
+                </div>
+              </InfoField>
+              <InfoField label="Restart Count">{String(state?.restartCount ?? 0)}</InfoField>
+            </div>
+
+            {resources && (
+              <div className="mt-4 pt-3 border-t border-kb-border">
+                <div className="text-[10px] uppercase tracking-wide text-kb-text-tertiary mb-2">Resources</div>
+                <div className="grid grid-cols-4 gap-3">
+                  <InfoField label="CPU Request">{resources.cpuRequest != null ? formatCPU(Number(resources.cpuRequest)) : '-'}</InfoField>
+                  <InfoField label="CPU Limit">{resources.cpuLimit != null ? formatCPU(Number(resources.cpuLimit)) : '-'}</InfoField>
+                  <InfoField label="Memory Request">{resources.memoryRequest != null ? formatMemory(Number(resources.memoryRequest)) : '-'}</InfoField>
+                  <InfoField label="Memory Limit">{resources.memoryLimit != null ? formatMemory(Number(resources.memoryLimit)) : '-'}</InfoField>
+                </div>
+              </div>
+            )}
+
+            {mounts.length > 0 && (
+              <div className="mt-4 pt-3 border-t border-kb-border">
+                <div className="text-[10px] uppercase tracking-wide text-kb-text-tertiary mb-2">Volume Mounts</div>
+                <table className="w-full text-[11px]">
+                  <thead>
+                    <tr className="text-kb-text-tertiary text-left">
+                      <th className="pb-1.5 font-normal">Name</th>
+                      <th className="pb-1.5 font-normal">Mount Path</th>
+                      <th className="pb-1.5 font-normal">Read Only</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono text-kb-text-secondary">
+                    {mounts.map((m, mi) => (
+                      <tr key={mi} className="border-t border-kb-border">
+                        <td className="py-1.5">{String(m.name ?? '-')}</td>
+                        <td className="py-1.5">{String(m.mountPath ?? '-')}</td>
+                        <td className="py-1.5">{m.readOnly ? <span className="text-status-warn">RO</span> : 'RW'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Section>
+        )
+      })}
+    </div>
+  )
+}
+
+// ─── YAML Tab ────────────────────────────────────────────────────
+
+function YAMLTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
+  const { data: yaml, isLoading, error } = useResourceYAML(type, namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const lines = (yaml ?? '').split('\n')
+
+  return (
+    <Section title="YAML Configuration" className="relative">
+      <div className="absolute top-4 right-5 flex gap-2">
+        <button className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-tertiary rounded cursor-not-allowed" disabled>
+          Save <span className="text-[8px] ml-1 opacity-60">SOON</span>
+        </button>
+      </div>
+      <div className="overflow-auto max-h-[600px] rounded-lg bg-kb-elevated p-3">
+        <pre className="text-[11px] font-mono leading-5">
+          {lines.map((line, i) => (
+            <div key={i} className="flex">
+              <span className="w-10 text-right pr-3 text-kb-text-tertiary select-none shrink-0">{i + 1}</span>
+              <span className="text-kb-text-secondary">{line}</span>
+            </div>
+          ))}
+        </pre>
+      </div>
+    </Section>
+  )
+}
+
+// ─── Volumes Tab ─────────────────────────────────────────────────
+
+function VolumesTab({ item }: { item: ResourceItem }) {
+  const volumes = Array.isArray(item.volumes) ? item.volumes as Array<Record<string, unknown>> : []
+  if (volumes.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No volumes</div>
+
+  const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
+
+  return (
+    <Section title="Volumes">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Type</th>
+            <th className="pb-2 font-normal">Details</th>
+            <th className="pb-2 font-normal">Volume Mounts</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {volumes.map((vol, i) => {
+            const mounts: string[] = []
+            containers.forEach(c => {
+              const vm = Array.isArray(c.volumeMounts) ? c.volumeMounts as Array<Record<string, unknown>> : []
+              vm.forEach(m => {
+                if (m.name === vol.name) {
+                  mounts.push(`${String(c.name)} → ${String(m.mountPath)}${m.readOnly ? ' (RO)' : ''}`)
+                }
+              })
+            })
+            return (
+              <tr key={i} className="border-t border-kb-border">
+                <td className="py-2 font-mono">{String(vol.name ?? '-')}</td>
+                <td className="py-2">
+                  <span className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-elevated">{String(vol.type ?? '-')}</span>
+                </td>
+                <td className="py-2 font-mono text-kb-text-tertiary">{String(vol.details ?? '-')}</td>
+                <td className="py-2 font-mono">{mounts.length > 0 ? mounts.join(', ') : '-'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
+// ─── Related Tab ─────────────────────────────────────────────────
+
+function RelatedTab({ type, item }: { type: string; item: ResourceItem }) {
+  const { data: topology, isLoading } = useTopology()
+  const ownerRefs = Array.isArray(item.ownerReferences) ? item.ownerReferences as Array<Record<string, string>> : []
+
+  // Build the topology node ID for this resource
+  const kind = routeToKind[type] ?? type
+  const ns = item.namespace || ''
+  const nodeId = ns ? `${kind}/${ns}/${item.name}` : `${kind}/${item.name}`
+
+  // Find related resources from topology edges
+  const related: Array<{ kind: string; name: string; namespace: string; relation: string }> = []
+
+  // Add owner references (parents)
+  ownerRefs.forEach(ref => {
+    related.push({ kind: ref.kind, name: ref.name, namespace: item.namespace || '', relation: 'Owner' })
+  })
+
+  // Find children and connections from topology
+  if (topology) {
+    const { edges, nodes } = topology
+    const nodeMap = new Map(nodes.map(n => [n.id, n]))
+
+    edges.forEach(edge => {
+      if (edge.source === nodeId && !ownerRefs.some(r => `${r.kind}/${ns}/${r.name}` === edge.target)) {
+        const target = nodeMap.get(edge.target)
+        if (target) {
+          related.push({ kind: target.kind, name: target.name, namespace: target.namespace, relation: edge.type || 'related' })
+        }
+      }
+      if (edge.target === nodeId && !ownerRefs.some(r => `${r.kind}/${ns}/${r.name}` === edge.source)) {
+        const source = nodeMap.get(edge.source)
+        if (source) {
+          related.push({ kind: source.kind, name: source.name, namespace: source.namespace, relation: edge.type || 'related' })
+        }
+      }
+    })
   }
-  // Flat key-value selector
-  const flat: Record<string, string> = {}
-  for (const [k, v] of Object.entries(s)) {
-    if (typeof v === 'string') flat[k] = v
+
+  if (isLoading) return <LoadingSpinner />
+
+  if (related.length === 0) {
+    return <div className="text-sm text-kb-text-tertiary text-center py-12">No related resources found</div>
   }
-  return Object.keys(flat).length > 0 ? flat : undefined
-}
 
-function DeploymentDetails({ item }: { item: ResourceItem }) {
-  const selectorLabels = extractSelector(item.selector)
   return (
-    <>
-      <Field label="Replicas" value={`${item.readyReplicas ?? 0}/${item.replicas ?? 0} ready`} />
-      <Field label="Updated" value={item.updatedReplicas != null ? String(item.updatedReplicas) : undefined} />
-      <Field label="Available" value={item.availableReplicas != null ? String(item.availableReplicas) : undefined} />
-      <Field label="Strategy" value={String(item.strategy ?? '')} />
-      {selectorLabels && <Field label="Selector" value={<Labels labels={selectorLabels} />} />}
-    </>
+    <Section title="Related">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Kind</th>
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Relation</th>
+          </tr>
+        </thead>
+        <tbody>
+          {related.map((ref, i) => {
+            const route = kindToRoute[ref.kind]
+            return (
+              <tr key={`${ref.kind}-${ref.name}-${i}`} className="border-t border-kb-border">
+                <td className="py-2">
+                  <span className="px-2 py-0.5 rounded text-[9px] font-medium bg-status-info text-white">{ref.kind}</span>
+                </td>
+                <td className="py-2">
+                  {route ? (
+                    <ResourceLink name={ref.name} namespace={ref.namespace} resourceType={route} />
+                  ) : (
+                    <span className="font-mono text-kb-text-secondary">{ref.name}</span>
+                  )}
+                </td>
+                <td className="py-2 text-kb-text-tertiary capitalize">{ref.relation}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </Section>
   )
 }
 
-function ServiceDetails({ item }: { item: ResourceItem }) {
-  const selectorLabels = extractSelector(item.selector)
-  return (
-    <>
-      <Field label="Type" value={String(item.type ?? '')} />
-      <Field label="Cluster IP" value={String(item.clusterIP ?? '')} mono />
-      {item.externalIP && <Field label="External IP" value={String(item.externalIP)} mono />}
-      {selectorLabels && <Field label="Selector" value={<Labels labels={selectorLabels} />} />}
-    </>
-  )
-}
+// ─── Events Tab ──────────────────────────────────────────────────
 
-function NodeDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Kubelet" value={String(item.kubeletVersion ?? '')} mono />
-      <Field label="OS Image" value={String(item.osImage ?? '')} />
-      <Field label="Runtime" value={String(item.containerRuntime ?? '')} />
-      <Field label="CPU Capacity" value={item.cpuCapacity != null ? `${item.cpuCapacity} cores` : undefined} />
-      <Field label="Memory Capacity" value={item.memoryCapacity != null ? formatMemory(Number(item.memoryCapacity)) : undefined} />
-      <Field label="CPU Allocatable" value={item.cpuAllocatable != null ? `${item.cpuAllocatable} cores` : undefined} />
-      <Field label="Memory Allocatable" value={item.memoryAllocatable != null ? formatMemory(Number(item.memoryAllocatable)) : undefined} />
-    </>
-  )
-}
+function EventsTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
+  const kind = routeToKind[type] ?? ''
+  const { data, isLoading, error } = useResourceEvents(kind, namespace, name)
 
-function StatefulSetDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Replicas" value={`${item.readyReplicas ?? 0}/${item.replicas ?? 0} ready`} />
-    </>
-  )
-}
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
 
-function DaemonSetDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Desired" value={String(item.desired ?? '')} />
-      <Field label="Ready" value={String(item.ready ?? '')} />
-      <Field label="Available" value={String(item.numberAvailable ?? '')} />
-    </>
-  )
-}
+  const events = data?.items ?? []
 
-function JobDetails({ item }: { item: ResourceItem }) {
   return (
-    <>
-      <Field label="Succeeded" value={String(item.succeeded ?? 0)} />
-      <Field label="Failed" value={String(item.failed ?? 0)} />
-      <Field label="Active" value={String(item.active ?? 0)} />
-      <Field label="Completions" value={String(item.completions ?? '')} />
-      <Field label="Duration" value={String(item.duration ?? '')} />
-    </>
-  )
-}
-
-function CronJobDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Schedule" value={String(item.schedule ?? '')} mono />
-      <Field label="Suspend" value={String(item.suspend ?? false)} />
-      <Field label="Active Jobs" value={String(item.activeJobs ?? 0)} />
-      <Field label="Last Schedule" value={item.lastScheduleTime ? formatAge(String(item.lastScheduleTime)) + ' ago' : '-'} />
-    </>
-  )
-}
-
-function IngressDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Hosts" value={String(item.hosts ?? '')} mono />
-      <Field label="Address" value={String(item.address ?? '')} mono />
-    </>
-  )
-}
-
-function PVCDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      {item.volumeName && (
-        <Field label="Volume" value={<ResourceLink name={String(item.volumeName)} resourceType="pvs" />} />
+    <Section title="Events">
+      {events.length === 0 ? (
+        <div className="text-sm text-kb-text-tertiary text-center py-8">No events found</div>
+      ) : (
+        <table className="w-full text-[11px]">
+          <thead>
+            <tr className="text-kb-text-tertiary text-left">
+              <th className="pb-2 font-normal">Type</th>
+              <th className="pb-2 font-normal">Reason</th>
+              <th className="pb-2 font-normal">Message</th>
+              <th className="pb-2 font-normal">Source</th>
+              <th className="pb-2 font-normal">Last Seen</th>
+            </tr>
+          </thead>
+          <tbody className="text-kb-text-secondary">
+            {events.map((evt, i) => (
+              <tr key={i} className="border-t border-kb-border">
+                <td className="py-2">
+                  <StatusBadge status={String(evt.type) === 'Warning' ? 'Warning' : 'Running'} label={String(evt.type ?? 'Normal')} />
+                </td>
+                <td className="py-2 font-mono">{String(evt.reason ?? '-')}</td>
+                <td className="py-2 max-w-md truncate">{String(evt.message ?? '-')}</td>
+                <td className="py-2 font-mono text-kb-text-tertiary">{String(evt.source ?? '-')}</td>
+                <td className="py-2 font-mono text-kb-text-tertiary shrink-0">
+                  {evt.timestamp ? formatAge(String(evt.timestamp)) : '-'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       )}
-      {item.storageClass && (
-        <Field label="Storage Class" value={<ResourceLink name={String(item.storageClass)} resourceType="storageclasses" />} />
-      )}
-      <Field label="Capacity" value={String(item.capacity ?? '')} />
-      <Field label="Access Modes" value={String(item.accessModes ?? '')} />
-    </>
+    </Section>
   )
 }
 
-function PVDetails({ item }: { item: ResourceItem }) {
+// ─── Monitor Tab ─────────────────────────────────────────────────
+
+function LogsTab({ namespace, name, item }: { namespace: string; name: string; item: ResourceItem }) {
+  const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
+  const containerNames = containers.map(c => String(c.name ?? ''))
+  const [selectedContainer, setSelectedContainer] = useState(containerNames[0] ?? '')
+  const [tailLines, setTailLines] = useState(100)
+
+  const { data: logs, isLoading, error, refetch } = usePodLogs(namespace, name, selectedContainer, tailLines)
+  const logsEndRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (logs) {
+      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [logs])
+
   return (
-    <>
-      <Field label="Capacity" value={String(item.capacity ?? '')} />
-      {item.storageClass && (
-        <Field label="Storage Class" value={<ResourceLink name={String(item.storageClass)} resourceType="storageclasses" />} />
-      )}
-      <Field label="Access Modes" value={String(item.accessModes ?? '')} />
-      <Field label="Reclaim Policy" value={String(item.reclaimPolicy ?? '')} />
-    </>
+    <div className="space-y-3">
+      {/* Controls */}
+      <div className="flex items-center gap-3">
+        {containerNames.length > 1 && (
+          <select
+            value={selectedContainer}
+            onChange={(e) => setSelectedContainer(e.target.value)}
+            className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          >
+            {containerNames.map(cn => (
+              <option key={cn} value={cn}>{cn}</option>
+            ))}
+          </select>
+        )}
+        {containerNames.length === 1 && (
+          <span className="text-xs font-mono text-kb-text-secondary">{containerNames[0]}</span>
+        )}
+        <select
+          value={tailLines}
+          onChange={(e) => setTailLines(Number(e.target.value))}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+        >
+          <option value={100}>Last 100 lines</option>
+          <option value={500}>Last 500 lines</option>
+          <option value={1000}>Last 1000 lines</option>
+          <option value={5000}>Last 5000 lines</option>
+        </select>
+        <button
+          onClick={() => refetch()}
+          className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
+        >
+          Refresh
+        </button>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+          </span>
+          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+        </div>
+      </div>
+
+      {/* Log output */}
+      <div className="bg-[#0d1117] rounded-[10px] border border-kb-border overflow-hidden">
+        {isLoading && !logs && (
+          <div className="p-8 text-center text-sm text-kb-text-tertiary">Loading logs...</div>
+        )}
+        {error && (
+          <div className="p-8 text-center text-sm text-status-error">{(error as Error).message}</div>
+        )}
+        {logs !== undefined && (
+          <pre className="p-4 text-[11px] font-mono leading-5 text-[#c9d1d9] overflow-auto max-h-[600px] whitespace-pre-wrap">
+            {logs || 'No logs available'}
+            <div ref={logsEndRef} />
+          </pre>
+        )}
+      </div>
+    </div>
   )
 }
 
-function HPADetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Min Replicas" value={String(item.minReplicas ?? '')} />
-      <Field label="Max Replicas" value={String(item.maxReplicas ?? '')} />
-      <Field label="Current" value={String(item.currentReplicas ?? '')} />
-      <Field label="Desired" value={String(item.desiredReplicas ?? '')} />
-      {item.targetRef && (
-        <Field label="Target" value={<KindNameLink value={String(item.targetRef)} namespace={item.namespace} />} />
-      )}
-    </>
-  )
-}
+function MonitorTab({ item }: { item: ResourceItem }) {
+  const cpuUsage = Number(item.cpuUsage ?? 0)
+  const cpuPercent = Number(item.cpuPercent ?? 0)
+  const memUsage = Number(item.memoryUsage ?? 0)
+  const memPercent = Number(item.memoryPercent ?? 0)
 
-function ConfigMapDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Keys" value={String(item.keys ?? '')} />
-      <Field label="Data Count" value={String(item.dataCount ?? 0)} />
-    </>
-  )
-}
-
-function SecretDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Type" value={String(item.type ?? '')} mono />
-      <Field label="Keys" value={String(item.keys ?? '')} />
-      <Field label="Data Count" value={String(item.dataCount ?? 0)} />
-    </>
-  )
-}
-
-function GatewayDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Class" value={String(item.class ?? '')} />
-      <Field label="Address" value={String(item.address ?? '')} mono />
-      <Field label="Listeners" value={String(item.listeners ?? '')} />
-    </>
-  )
-}
-
-function HTTPRouteDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Hostnames" value={String(item.hostnames ?? '')} mono />
-      {item.gateway && (
-        <Field label="Gateway" value={<ResourceLink name={String(item.gateway)} namespace={item.namespace} resourceType="gateways" />} />
-      )}
-      <Field label="Backends" value={String(item.backends ?? '')} />
-    </>
-  )
-}
-
-function StorageClassDetails({ item }: { item: ResourceItem }) {
-  return (
-    <>
-      <Field label="Provisioner" value={String(item.provisioner ?? '')} mono />
-      <Field label="Reclaim Policy" value={String(item.reclaimPolicy ?? '')} />
-      <Field label="Volume Binding" value={String(item.volumeBindingMode ?? '')} />
-    </>
-  )
-}
-
-function EndpointDetails({ item }: { item: ResourceItem }) {
-  const addresses = item.addresses
-  return (
-    <>
-      {Array.isArray(addresses) && addresses.length > 0 && (
-        <Field label="Addresses" value={addresses.join(', ')} mono />
-      )}
-    </>
-  )
-}
-
-function ResourceSpecificFields({ type, item }: { type: string; item: ResourceItem }) {
-  switch (type) {
-    case 'pods': return <PodDetails item={item} />
-    case 'deployments': return <DeploymentDetails item={item} />
-    case 'services': return <ServiceDetails item={item} />
-    case 'nodes': return <NodeDetails item={item} />
-    case 'statefulsets': return <StatefulSetDetails item={item} />
-    case 'daemonsets': return <DaemonSetDetails item={item} />
-    case 'jobs': return <JobDetails item={item} />
-    case 'cronjobs': return <CronJobDetails item={item} />
-    case 'ingresses': return <IngressDetails item={item} />
-    case 'pvcs': return <PVCDetails item={item} />
-    case 'pvs': return <PVDetails item={item} />
-    case 'hpas': return <HPADetails item={item} />
-    case 'configmaps': return <ConfigMapDetails item={item} />
-    case 'secrets': return <SecretDetails item={item} />
-    case 'gateways': return <GatewayDetails item={item} />
-    case 'httproutes': return <HTTPRouteDetails item={item} />
-    case 'storageclasses': return <StorageClassDetails item={item} />
-    case 'endpoints': return <EndpointDetails item={item} />
-    default: return null
+  if (cpuUsage === 0 && memUsage === 0) {
+    return (
+      <div className="text-sm text-kb-text-tertiary text-center py-12">
+        No metrics available. Metrics Server may not be installed or this resource type does not report metrics.
+      </div>
+    )
   }
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-status-warn-dim border border-status-warn/20 rounded-lg px-4 py-2 text-[11px] text-status-warn">
+        Current data is from metrics-server (point-in-time snapshot). Historical time-series requires KubeBolt Agent.
+      </div>
+
+      <div className="grid grid-cols-2 gap-4">
+        {/* CPU */}
+        <Section title="CPU Usage">
+          <div className="flex flex-col items-center py-8">
+            <div className="relative w-32 h-32">
+              <svg className="w-32 h-32 -rotate-90" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="52" fill="none" stroke="var(--kb-border)" strokeWidth="10" />
+                <circle cx="60" cy="60" r="52" fill="none" stroke="#4c9aff" strokeWidth="10"
+                  strokeDasharray={`${cpuPercent * 3.267} 326.7`} strokeLinecap="round" />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-semibold text-kb-text-primary">{Math.round(cpuPercent)}%</span>
+              </div>
+            </div>
+            <div className="mt-4 text-center">
+              <div className="text-sm font-mono text-kb-text-primary">{formatCPU(cpuUsage)}</div>
+              <div className="text-[10px] text-kb-text-tertiary">current usage</div>
+            </div>
+          </div>
+        </Section>
+
+        {/* Memory */}
+        <Section title="Memory Usage">
+          <div className="flex flex-col items-center py-8">
+            <div className="relative w-32 h-32">
+              <svg className="w-32 h-32 -rotate-90" viewBox="0 0 120 120">
+                <circle cx="60" cy="60" r="52" fill="none" stroke="var(--kb-border)" strokeWidth="10" />
+                <circle cx="60" cy="60" r="52" fill="none" stroke="#22d68a" strokeWidth="10"
+                  strokeDasharray={`${memPercent * 3.267} 326.7`} strokeLinecap="round" />
+              </svg>
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
+                <span className="text-2xl font-semibold text-kb-text-primary">{Math.round(memPercent)}%</span>
+              </div>
+            </div>
+            <div className="mt-4 text-center">
+              <div className="text-sm font-mono text-kb-text-primary">{formatMemory(memUsage)}</div>
+              <div className="text-[10px] text-kb-text-tertiary">current usage</div>
+            </div>
+          </div>
+        </Section>
+      </div>
+
+      {/* Network & Disk placeholders */}
+      <div className="grid grid-cols-2 gap-4">
+        <Section title="Network Usage">
+          <div className="text-sm text-kb-text-tertiary text-center py-8">
+            Requires KubeBolt Agent for network metrics
+          </div>
+        </Section>
+        <Section title="Disk I/O Usage">
+          <div className="text-sm text-kb-text-tertiary text-center py-8">
+            Requires KubeBolt Agent for disk metrics
+          </div>
+        </Section>
+      </div>
+    </div>
+  )
 }
+
+// ─── Main Component ──────────────────────────────────────────────
 
 export function ResourceDetailPage() {
   const { type = '', namespace = '', name = '' } = useParams<{ type: string; namespace: string; name: string }>()
   const { data: item, isLoading, error, refetch } = useResourceDetail(type, namespace, name)
+  const [activeTab, setActiveTab] = useState('overview')
 
   if (isLoading) return <LoadingSpinner />
   if (error || !item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
 
+  const tabs = getTabsForResource(type, item)
   const parentLabel = resourceLabels[type] || type
   const parentPath = `/${type}`
+
+  function renderTab() {
+    const tab = tabs.find(t => t.id === activeTab)
+    if (tab?.soon) {
+      return <ComingSoon title={`${tab.label} — Coming Soon`} description="This feature will be available in a future update." />
+    }
+    switch (activeTab) {
+      case 'overview': return <OverviewTab type={type} item={item!} />
+      case 'containers': return <ContainersTab item={item!} />
+      case 'yaml': return <YAMLTab type={type} namespace={namespace} name={name} />
+      case 'logs': return <LogsTab namespace={namespace} name={name} item={item!} />
+      case 'volumes': return <VolumesTab item={item!} />
+      case 'related': return <RelatedTab type={type} item={item!} />
+      case 'events': return <EventsTab type={type} namespace={namespace} name={name} />
+      case 'monitor': return <MonitorTab item={item!} />
+      default: return <ComingSoon title="Coming Soon" description="This feature will be available in a future update." />
+    }
+  }
 
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
       <div className="flex items-center gap-1.5 text-[11px] font-mono text-kb-text-tertiary">
-        <Link to={parentPath} className="hover:text-kb-text-primary transition-colors">
-          {parentLabel}
-        </Link>
+        <Link to={parentPath} className="hover:text-kb-text-primary transition-colors">{parentLabel}</Link>
         <ChevronRight size={12} />
         {item.namespace && (
           <>
@@ -502,42 +867,49 @@ export function ResourceDetailPage() {
       </div>
 
       {/* Header */}
-      <div className="flex items-center gap-3">
-        <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
-        <StatusBadge status={item.status} size="md" />
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
+          {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
+        </div>
+        <div className="flex gap-2">
+          <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
+            Refresh
+          </button>
+          <button className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-tertiary cursor-not-allowed" disabled>
+            Describe <span className="text-[8px] ml-1 opacity-60">SOON</span>
+          </button>
+          <button className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error cursor-not-allowed" disabled>
+            Delete <span className="text-[8px] ml-1 opacity-60">SOON</span>
+          </button>
+        </div>
       </div>
 
-      {/* Overview */}
-      <Section title="Overview">
-        <div className="space-y-0.5">
-          {item.namespace && (
-            <Field label="Namespace" value={<ResourceLink name={item.namespace} resourceType="namespaces" />} />
-          )}
-          <Field label="Status" value={<StatusBadge status={item.status} />} />
-          <Field label="Age" value={item.createdAt ? formatAge(item.createdAt) : item.age} />
-          <Field label="Created" value={item.createdAt ? new Date(item.createdAt).toLocaleString() : undefined} />
-          <ResourceSpecificFields type={type} item={item} />
-        </div>
-      </Section>
+      {/* Tabs */}
+      <div className="flex gap-1 border-b border-kb-border">
+        {tabs.map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => !tab.soon ? setActiveTab(tab.id) : setActiveTab(tab.id)}
+            className={`px-3 py-2 text-xs font-medium transition-colors relative ${
+              activeTab === tab.id
+                ? 'text-status-info border-b-2 border-status-info -mb-px'
+                : 'text-kb-text-tertiary hover:text-kb-text-secondary'
+            }`}
+          >
+            {tab.label}
+            {tab.count != null && (
+              <span className="ml-1.5 px-1.5 py-0.5 rounded-full text-[9px] bg-kb-elevated">{tab.count}</span>
+            )}
+            {tab.soon && (
+              <span className="ml-1 text-[8px] opacity-50">SOON</span>
+            )}
+          </button>
+        ))}
+      </div>
 
-      {/* Metrics */}
-      <MetricsSection item={item} />
-
-      {/* Containers (pods) */}
-      <ContainersSection containers={item.containers} />
-
-      {/* Ports (services) */}
-      <PortsSection ports={item.ports} />
-
-      {/* Labels */}
-      <Section title="Labels">
-        <Labels labels={item.labels} />
-      </Section>
-
-      {/* Annotations */}
-      <Section title="Annotations">
-        <Labels labels={item.annotations} />
-      </Section>
+      {/* Tab Content */}
+      {renderTab()}
     </div>
   )
 }
