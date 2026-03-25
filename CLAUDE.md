@@ -62,7 +62,29 @@ Key packages under `internal/`:
 - **insights/engine.go** — 12 rule-based insight evaluations (crash-loop, OOM, CPU throttle, memory pressure, etc.)
 - **websocket/hub.go** — WebSocket connection management (4096 buffer, silent drops when no clients)
 - **api/router.go** — Chi router with `requireConnector` middleware guarding all cluster-dependent routes; `/clusters` and `/clusters/switch` are always available even when disconnected.
-- **models/types.go** — All domain types: `ClusterOverview`, `ResourceUsage`, `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
+- **api/handlers.go** — REST handlers including resource detail with metrics injection, YAML endpoint (dynamic client), pod logs streaming, deployment/statefulset/daemonset/job pod listing, deployment history
+- **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types), `ResourceUsage`, `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
+
+### API Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /clusters` | List all kubeconfig contexts |
+| `POST /clusters/switch` | Switch active cluster |
+| `GET /cluster/overview` | Cluster summary with resource counts, CPU/Memory, health |
+| `GET /resources/:type` | List resources with pagination, filtering, metrics |
+| `GET /resources/:type/:ns/:name` | Resource detail with metrics injection |
+| `GET /resources/:type/:ns/:name/yaml` | Raw YAML via dynamic client (secrets redacted) |
+| `GET /resources/pods/:ns/:name/logs` | Pod logs with `?container=&tailLines=` params |
+| `GET /resources/deployments/:ns/:name/pods` | Pods owned by deployment (via ReplicaSets) |
+| `GET /resources/deployments/:ns/:name/history` | Revision history via ReplicaSets |
+| `GET /resources/statefulsets/:ns/:name/pods` | Pods owned by statefulset |
+| `GET /resources/daemonsets/:ns/:name/pods` | Pods owned by daemonset |
+| `GET /resources/jobs/:ns/:name/pods` | Pods owned by job |
+| `GET /topology` | Full topology graph (nodes + edges) |
+| `GET /insights` | Evaluated insights with severity |
+| `GET /events` | Events with `?involvedKind=&involvedName=` filtering |
+| `GET /ws` | WebSocket for real-time updates |
 
 ### Frontend (`apps/web`)
 
@@ -70,18 +92,48 @@ React 18 + TypeScript + Vite + Tailwind CSS
 
 Key libraries: TanStack Query (server state), TanStack Table, ReactFlow (cluster topology map), Lucide React (icons), React Router
 
-23 views: Overview, Pods, Nodes, Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, Services, Ingresses, Gateways, HTTPRoutes, Endpoints, PVCs, PVs, StorageClasses, ConfigMaps, Secrets, HPAs, Namespaces, Events, RBAC, Settings + Cluster Map
+23 resource list views + Cluster Map + resource detail views with tabbed interface.
 
 Component organization: `src/components/{dashboard,map,resources,layout,shared,insights}/`
 API client: `src/services/api.ts`
 Type definitions: `src/types/kubernetes.ts`
 Theme: `src/contexts/ThemeContext.tsx` — light/dark mode via CSS custom properties (`--kb-*` variables in `globals.css`). `darkMode: 'class'` in Tailwind; all color tokens point to CSS vars. Theme persisted in `localStorage`.
 
+### Resource Detail Views (`ResourceDetailPage.tsx`)
+
+Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placeholder for cluster-scoped resources.
+
+**Tabs per resource type:**
+
+| Resource | Overview | YAML | Pods | Logs | Containers | Volumes | Related | History | Events | Monitor |
+|----------|----------|------|------|------|------------|---------|---------|---------|--------|---------|
+| Pods | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Deployments | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
+| StatefulSets | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | ✅ |
+| DaemonSets | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | ✅ |
+| Jobs | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | — |
+| CronJobs | ✅ | ✅ | — | — | — | — | ✅ | — | ✅ | — |
+| Services | ✅ | ✅ | — | — | — | — | ✅ | — | ✅ | — |
+| Nodes | ✅ | ✅ | — | — | — | — | — | — | ✅ | ✅ |
+| Others | ✅ | ✅ | — | — | — | — | — | — | ✅ | — |
+
+Terminal and Files tabs are Phase 2 (marked "Coming Soon").
+
+**Key features:**
+- YAML syntax highlighting (keys purple, strings blue, numbers, booleans, comments)
+- Log viewer with syntax coloring (green default, blue timestamps, red errors, yellow warnings)
+- Workload logs: pod selector + container selector + tail lines (100/500/1000) + 10s auto-refresh
+- Related tab uses topology API edges for parent+child navigation
+- Monitor tab: SVG donut gauges from Metrics Server (Network/Disk require agent)
+- Cross-resource links: Pod→Node, PVC→PV/StorageClass, HPA→target, namespace links
+
 **Key frontend behaviors:**
 - TanStack Query `retry` skips retries on 503 (cluster unavailable)
 - `ApiError` (from `api.ts`) used to detect 503 vs other errors
 - Resource list pages support server-side pagination (50/page) with prev/next controls
-- Cluster switcher uses optimistic updates: active state updates immediately on click, before API responds
+- Cluster switcher uses optimistic updates and navigates to Overview
+- Sidebar shows resource counters from overview API (15 resource types)
+- Overview workload cards link to resource detail views
 
 ### Data Flow
 
