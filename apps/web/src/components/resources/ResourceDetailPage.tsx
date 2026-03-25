@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ChevronRight, Lock } from 'lucide-react'
-import { useResourceDetail, useResourceYAML, useResourceEvents, useTopology, usePodLogs } from '@/hooks/useResources'
+import { useResourceDetail, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { StatusBadge } from './StatusBadge'
@@ -83,12 +83,15 @@ function InfoField({ label, children }: { label: string; children: React.ReactNo
 function Labels({ labels }: { labels: Record<string, string> | undefined }) {
   if (!labels || Object.keys(labels).length === 0) return <span className="text-[11px] text-kb-text-tertiary">None</span>
   return (
-    <div className="flex flex-wrap gap-1.5">
-      {Object.entries(labels).map(([k, v]) => (
-        <span key={k} className="inline-flex px-2 py-0.5 rounded text-[10px] font-mono bg-kb-elevated text-kb-text-secondary">
-          {k}: {v}
-        </span>
-      ))}
+    <div className="flex flex-wrap gap-1.5 overflow-hidden">
+      {Object.entries(labels).map(([k, v]) => {
+        const display = v.length > 80 ? v.slice(0, 80) + '\u2026' : v
+        return (
+          <span key={k} className="inline-flex px-2 py-0.5 rounded text-[10px] font-mono bg-kb-elevated text-kb-text-secondary max-w-full truncate" title={`${k}: ${v}`}>
+            {k}: {display}
+          </span>
+        )
+      })}
     </div>
   )
 }
@@ -136,13 +139,53 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
       )
       break
     case 'deployments':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'deploy-pods', label: 'Pods' },
+        { id: 'deploy-logs', label: 'Logs' },
+        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'related', label: 'Related' },
+        { id: 'history', label: 'History' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
     case 'statefulsets':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'sts-pods', label: 'Pods' },
+        { id: 'sts-logs', label: 'Logs' },
+        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
     case 'daemonsets':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'ds-pods', label: 'Pods' },
+        { id: 'ds-logs', label: 'Logs' },
+        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
+    case 'jobs':
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'job-pods', label: 'Pods' },
+        { id: 'job-logs', label: 'Logs' },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+      )
+      break
+    case 'cronjobs':
       base.push(
         { id: 'yaml', label: 'YAML' },
         { id: 'related', label: 'Related' },
         { id: 'events', label: 'Events' },
-        { id: 'monitor', label: 'Monitor' },
       )
       break
     case 'services':
@@ -457,6 +500,92 @@ function ContainersTab({ item }: { item: ResourceItem }) {
 
 // ─── YAML Tab ────────────────────────────────────────────────────
 
+function highlightYAMLLine(line: string): React.ReactNode {
+  // Comment lines
+  if (/^\s*#/.test(line)) {
+    return <span style={{ color: '#6a737d', fontStyle: 'italic' }}>{line}</span>
+  }
+
+  // Key: value lines
+  const kvMatch = line.match(/^(\s*)([\w.\-/]+)(:)(.*)$/)
+  if (kvMatch) {
+    const [, indent, key, colon, rest] = kvMatch
+    return (
+      <>
+        <span>{indent}</span>
+        <span style={{ color: '#d2a8ff' }}>{key}</span>
+        <span>{colon}</span>
+        {highlightValue(rest)}
+      </>
+    )
+  }
+
+  // List items with key: value
+  const listKvMatch = line.match(/^(\s*-\s+)([\w.\-/]+)(:)(.*)$/)
+  if (listKvMatch) {
+    const [, prefix, key, colon, rest] = listKvMatch
+    return (
+      <>
+        <span>{prefix}</span>
+        <span style={{ color: '#d2a8ff' }}>{key}</span>
+        <span>{colon}</span>
+        {highlightValue(rest)}
+      </>
+    )
+  }
+
+  // List items with plain value
+  const listMatch = line.match(/^(\s*-\s+)(.*)$/)
+  if (listMatch) {
+    const [, prefix, val] = listMatch
+    return (
+      <>
+        <span>{prefix}</span>
+        {highlightValue(' ' + val)}
+      </>
+    )
+  }
+
+  return <span>{line}</span>
+}
+
+function highlightValue(raw: string): React.ReactNode {
+  const trimmed = raw.trim()
+  if (!trimmed || trimmed === '') return <span>{raw}</span>
+
+  // Quoted strings
+  if (/^["'].*["']$/.test(trimmed)) {
+    const leading = raw.slice(0, raw.indexOf(trimmed))
+    return <><span>{leading}</span><span style={{ color: '#a5d6ff' }}>{trimmed}</span></>
+  }
+
+  // Booleans
+  if (/^(true|false)$/i.test(trimmed)) {
+    const leading = raw.slice(0, raw.indexOf(trimmed))
+    return <><span>{leading}</span><span style={{ color: '#ff7b72' }}>{trimmed}</span></>
+  }
+
+  // Null
+  if (/^(null|~)$/i.test(trimmed)) {
+    const leading = raw.slice(0, raw.indexOf(trimmed))
+    return <><span>{leading}</span><span style={{ color: '#6a737d', fontStyle: 'italic' }}>{trimmed}</span></>
+  }
+
+  // Numbers
+  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) {
+    const leading = raw.slice(0, raw.indexOf(trimmed))
+    return <><span>{leading}</span><span style={{ color: '#79c0ff' }}>{trimmed}</span></>
+  }
+
+  // Plain strings (unquoted)
+  if (trimmed.length > 0) {
+    const leading = raw.slice(0, raw.indexOf(trimmed))
+    return <><span>{leading}</span><span style={{ color: '#a5d6ff' }}>{trimmed}</span></>
+  }
+
+  return <span>{raw}</span>
+}
+
 function YAMLTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
   const { data: yaml, isLoading, error } = useResourceYAML(type, namespace, name)
 
@@ -472,12 +601,12 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
           Save <span className="text-[8px] ml-1 opacity-60">SOON</span>
         </button>
       </div>
-      <div className="overflow-auto max-h-[600px] rounded-lg bg-kb-elevated p-3">
+      <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117' }}>
         <pre className="text-[11px] font-mono leading-5">
           {lines.map((line, i) => (
             <div key={i} className="flex">
-              <span className="w-10 text-right pr-3 text-kb-text-tertiary select-none shrink-0">{i + 1}</span>
-              <span className="text-kb-text-secondary">{line}</span>
+              <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
+              <span>{highlightYAMLLine(line)}</span>
             </div>
           ))}
         </pre>
@@ -512,7 +641,7 @@ function VolumesTab({ item }: { item: ResourceItem }) {
               const vm = Array.isArray(c.volumeMounts) ? c.volumeMounts as Array<Record<string, unknown>> : []
               vm.forEach(m => {
                 if (m.name === vol.name) {
-                  mounts.push(`${String(c.name)} → ${String(m.mountPath)}${m.readOnly ? ' (RO)' : ''}`)
+                  mounts.push(`${String(c.name)} \u2192 ${String(m.mountPath)}${m.readOnly ? ' (RO)' : ''}`)
                 }
               })
             })
@@ -661,7 +790,7 @@ function EventsTab({ type, namespace, name }: { type: string; namespace: string;
   )
 }
 
-// ─── Monitor Tab ─────────────────────────────────────────────────
+// ─── Logs Tab (Pod) ──────────────────────────────────────────────
 
 function LogsTab({ namespace, name, item }: { namespace: string; name: string; item: ResourceItem }) {
   const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
@@ -739,6 +868,8 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
     </div>
   )
 }
+
+// ─── Monitor Tab ─────────────────────────────────────────────────
 
 function MonitorTab({ item }: { item: ResourceItem }) {
   const cpuUsage = Number(item.cpuUsage ?? 0)
@@ -819,6 +950,416 @@ function MonitorTab({ item }: { item: ResourceItem }) {
   )
 }
 
+// ─── Workload Pods Tabs ──────────────────────────────────────────
+
+function DeploymentPodsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useDeploymentPods(namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const pods = data?.items ?? []
+  if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
+
+  return (
+    <Section title="Pods">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal pr-6">CPU</th>
+            <th className="pb-2 font-normal pl-2">Memory</th>
+            <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {pods.map((pod, i) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
+              <td className="py-2 font-mono">{pod.namespace}</td>
+              <td className="py-2"><StatusBadge status={pod.status} /></td>
+              <td className="py-2 w-36 pr-6">
+                {Number(pod.cpuUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 w-36 pl-2">
+                {Number(pod.memoryUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
+function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const pods = data?.items ?? []
+  if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
+
+  return (
+    <Section title="Pods">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal pr-6">CPU</th>
+            <th className="pb-2 font-normal pl-2">Memory</th>
+            <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {pods.map((pod, i) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
+              <td className="py-2 font-mono">{pod.namespace}</td>
+              <td className="py-2"><StatusBadge status={pod.status} /></td>
+              <td className="py-2 w-36 pr-6">
+                {Number(pod.cpuUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 w-36 pl-2">
+                {Number(pod.memoryUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
+function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const pods = data?.items ?? []
+  if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
+
+  return (
+    <Section title="Pods">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Node</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal pr-6">CPU</th>
+            <th className="pb-2 font-normal pl-2">Memory</th>
+            <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {pods.map((pod, i) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
+              <td className="py-2 font-mono">{pod.namespace}</td>
+              <td className="py-2">
+                {pod.nodeName ? <ResourceLink name={String(pod.nodeName)} resourceType="nodes" /> : '-'}
+              </td>
+              <td className="py-2"><StatusBadge status={pod.status} /></td>
+              <td className="py-2 w-36 pr-6">
+                {Number(pod.cpuUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 w-36 pl-2">
+                {Number(pod.memoryUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
+function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useJobPods(namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const pods = data?.items ?? []
+  if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
+
+  return (
+    <Section title="Pods">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Node</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal pr-6">CPU</th>
+            <th className="pb-2 font-normal pl-2">Memory</th>
+            <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {pods.map((pod, i) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
+              <td className="py-2">
+                {pod.nodeName ? <ResourceLink name={String(pod.nodeName)} resourceType="nodes" /> : '-'}
+              </td>
+              <td className="py-2"><StatusBadge status={pod.status} /></td>
+              <td className="py-2 w-36 pr-6">
+                {Number(pod.cpuUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 w-36 pl-2">
+                {Number(pod.memoryUsage ?? 0) > 0 ? (
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
+                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
+                  </div>
+                ) : <span className="text-kb-text-tertiary">—</span>}
+              </td>
+              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
+// ─── Workload Logs Tabs ──────────────────────────────────────────
+
+function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { pods: ResourceItem[]; isLoading: boolean; error: Error | null }) {
+  const [selectedPod, setSelectedPod] = useState('')
+  const [selectedContainer, setSelectedContainer] = useState('')
+  const [tailLines, setTailLines] = useState(100)
+  const logsEndRef = useRef<HTMLDivElement>(null)
+
+  // Set default pod when pods load
+  useEffect(() => {
+    if (pods.length > 0 && !selectedPod) {
+      setSelectedPod(pods[0].name)
+    }
+  }, [pods, selectedPod])
+
+  // Get containers for selected pod
+  const currentPod = pods.find(p => p.name === selectedPod)
+  const containers = currentPod && Array.isArray(currentPod.containers)
+    ? (currentPod.containers as Array<Record<string, unknown>>).map(c => String(c.name ?? ''))
+    : []
+
+  // Set default container when pod changes
+  useEffect(() => {
+    if (containers.length > 0 && !containers.includes(selectedContainer)) {
+      setSelectedContainer(containers[0])
+    }
+  }, [selectedPod, containers, selectedContainer])
+
+  const podNamespace = currentPod?.namespace ?? ''
+  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(podNamespace, selectedPod, selectedContainer, tailLines)
+
+  useEffect(() => {
+    if (logs) {
+      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+  }, [logs])
+
+  if (podsLoading) return <LoadingSpinner />
+  if (podsError) return <ErrorState message={podsError.message} />
+  if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-3">
+        <select
+          value={selectedPod}
+          onChange={(e) => { setSelectedPod(e.target.value); setSelectedContainer('') }}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+        >
+          {pods.map(p => (
+            <option key={p.name} value={p.name}>{p.name}</option>
+          ))}
+        </select>
+        {containers.length > 1 && (
+          <select
+            value={selectedContainer}
+            onChange={(e) => setSelectedContainer(e.target.value)}
+            className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          >
+            {containers.map(cn => (
+              <option key={cn} value={cn}>{cn}</option>
+            ))}
+          </select>
+        )}
+        {containers.length === 1 && (
+          <span className="text-xs font-mono text-kb-text-secondary">{containers[0]}</span>
+        )}
+        <select
+          value={tailLines}
+          onChange={(e) => setTailLines(Number(e.target.value))}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+        >
+          <option value={100}>Last 100 lines</option>
+          <option value={500}>Last 500 lines</option>
+          <option value={1000}>Last 1000 lines</option>
+        </select>
+        <button
+          onClick={() => refetch()}
+          className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
+        >
+          Refresh
+        </button>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <span className="relative flex h-2 w-2">
+            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+          </span>
+          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+        </div>
+      </div>
+
+      <div className="bg-[#0d1117] rounded-[10px] border border-kb-border overflow-hidden">
+        {logsLoading && !logs && (
+          <div className="p-8 text-center text-sm text-kb-text-tertiary">Loading logs...</div>
+        )}
+        {logsError && (
+          <div className="p-8 text-center text-sm text-status-error">{(logsError as Error).message}</div>
+        )}
+        {logs !== undefined && (
+          <pre className="p-4 text-[11px] font-mono leading-5 text-[#c9d1d9] overflow-auto max-h-[600px] whitespace-pre-wrap">
+            {logs || 'No logs available'}
+            <div ref={logsEndRef} />
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DeploymentLogsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useDeploymentPods(namespace, name)
+  return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
+}
+
+function StatefulSetLogsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useStatefulSetPods(namespace, name)
+  return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
+}
+
+function DaemonSetLogsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useDaemonSetPods(namespace, name)
+  return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
+}
+
+function JobLogsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useJobPods(namespace, name)
+  return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
+}
+
+// ─── History Tab (Deployments) ───────────────────────────────────
+
+function HistoryTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useDeploymentHistory(namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const items = data?.items ?? []
+  if (items.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No revision history found</div>
+
+  return (
+    <Section title="Revision History">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Revision</th>
+            <th className="pb-2 font-normal">ReplicaSet</th>
+            <th className="pb-2 font-normal">Image</th>
+            <th className="pb-2 font-normal">Replicas</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal">Created</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {items.map((item, i) => {
+            const replicas = Number(item.replicas ?? 0)
+            const readyReplicas = Number(item.readyReplicas ?? 0)
+            const isActive = replicas > 0
+            return (
+              <tr key={i} className={`border-t border-kb-border ${isActive ? 'bg-status-ok/5' : ''}`}>
+                <td className="py-2">
+                  <span className="font-mono">{String(item.revision ?? i + 1)}</span>
+                  {isActive && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-medium bg-status-ok/20 text-status-ok">Active</span>
+                  )}
+                </td>
+                <td className="py-2">
+                  <ResourceLink name={item.name} namespace={item.namespace} resourceType="replicasets" />
+                </td>
+                <td className="py-2 font-mono text-kb-text-tertiary max-w-xs truncate">{String(item.image ?? '-')}</td>
+                <td className="py-2 font-mono">{readyReplicas}/{replicas}</td>
+                <td className="py-2"><StatusBadge status={item.status} /></td>
+                <td className="py-2 font-mono text-kb-text-tertiary">{item.createdAt ? formatAge(item.createdAt) : '-'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 // ─── Main Component ──────────────────────────────────────────────
 
 export function ResourceDetailPage() {
@@ -847,6 +1388,15 @@ export function ResourceDetailPage() {
       case 'related': return <RelatedTab type={type} item={item!} />
       case 'events': return <EventsTab type={type} namespace={namespace} name={name} />
       case 'monitor': return <MonitorTab item={item!} />
+      case 'deploy-pods': return <DeploymentPodsTab namespace={namespace} name={name} />
+      case 'deploy-logs': return <DeploymentLogsTab namespace={namespace} name={name} />
+      case 'sts-pods': return <StatefulSetPodsTab namespace={namespace} name={name} />
+      case 'sts-logs': return <StatefulSetLogsTab namespace={namespace} name={name} />
+      case 'ds-pods': return <DaemonSetPodsTab namespace={namespace} name={name} />
+      case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
+      case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
+      case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
+      case 'history': return <HistoryTab namespace={namespace} name={name} />
       default: return <ComingSoon title="Coming Soon" description="This feature will be available in a future update." />
     }
   }

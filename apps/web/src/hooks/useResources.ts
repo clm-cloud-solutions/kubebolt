@@ -36,6 +36,50 @@ export function useTopology() {
   })
 }
 
+export function useDeploymentPods(namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['deployment-pods', namespace, name],
+    queryFn: () => api.getDeploymentPods(namespace, name),
+    enabled: !!namespace && !!name,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useStatefulSetPods(namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['statefulset-pods', namespace, name],
+    queryFn: () => api.getStatefulSetPods(namespace, name),
+    enabled: !!namespace && !!name,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useDaemonSetPods(namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['daemonset-pods', namespace, name],
+    queryFn: () => api.getDaemonSetPods(namespace, name),
+    enabled: !!namespace && !!name,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useJobPods(namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['job-pods', namespace, name],
+    queryFn: () => api.getJobPods(namespace, name),
+    enabled: !!namespace && !!name,
+    refetchInterval: 30_000,
+  })
+}
+
+export function useDeploymentHistory(namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['deployment-history', namespace, name],
+    queryFn: () => api.getDeploymentHistory(namespace, name),
+    enabled: !!namespace && !!name,
+  })
+}
+
 export function usePodLogs(namespace: string, name: string, container: string, tailLines: number) {
   return useQuery({
     queryKey: ['pod-logs', namespace, name, container, tailLines],

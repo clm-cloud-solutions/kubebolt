@@ -96,6 +96,21 @@ export const api = {
     return res.text()
   },
 
+  getDeploymentPods: (namespace: string, name: string) =>
+    fetchJSON<ResourceList>(`${API_BASE}/resources/deployments/${namespace}/${name}/pods`),
+
+  getDeploymentHistory: (namespace: string, name: string) =>
+    fetchJSON<{ items: ResourceItem[]; total: number }>(`${API_BASE}/resources/deployments/${namespace}/${name}/history`),
+
+  getStatefulSetPods: (namespace: string, name: string) =>
+    fetchJSON<ResourceList>(`${API_BASE}/resources/statefulsets/${namespace}/${name}/pods`),
+
+  getDaemonSetPods: (namespace: string, name: string) =>
+    fetchJSON<ResourceList>(`${API_BASE}/resources/daemonsets/${namespace}/${name}/pods`),
+
+  getJobPods: (namespace: string, name: string) =>
+    fetchJSON<ResourceList>(`${API_BASE}/resources/jobs/${namespace}/${name}/pods`),
+
   getPodLogs: async (namespace: string, name: string, container?: string, tailLines?: number): Promise<string> => {
     const params = new URLSearchParams()
     if (container) params.set('container', container)

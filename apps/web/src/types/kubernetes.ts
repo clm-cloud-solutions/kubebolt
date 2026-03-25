@@ -69,6 +69,13 @@ export interface ClusterOverview {
   statefulSets?: ResourceCount
   daemonSets?: ResourceCount
   jobs?: ResourceCount
+  cronJobs?: ResourceCount
+  ingresses?: ResourceCount
+  configMaps?: ResourceCount
+  secrets?: ResourceCount
+  pvcs?: ResourceCount
+  pvs?: ResourceCount
+  hpas?: ResourceCount
   cpu?: ResourceUsage
   memory?: ResourceUsage
   health?: ClusterHealth
