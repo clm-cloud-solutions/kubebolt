@@ -15,6 +15,13 @@ type ClusterOverview struct {
 	StatefulSets       ResourceCount       `json:"statefulSets"`
 	DaemonSets         ResourceCount       `json:"daemonSets"`
 	Jobs               ResourceCount       `json:"jobs"`
+	CronJobs           ResourceCount       `json:"cronJobs"`
+	Ingresses          ResourceCount       `json:"ingresses"`
+	ConfigMaps         ResourceCount       `json:"configMaps"`
+	Secrets            ResourceCount       `json:"secrets"`
+	PVCs               ResourceCount       `json:"pvcs"`
+	PVs                ResourceCount       `json:"pvs"`
+	HPAs               ResourceCount       `json:"hpas"`
 	CPU                ResourceUsage       `json:"cpu"`
 	Memory             ResourceUsage       `json:"memory"`
 	Health             ClusterHealth       `json:"health"`

@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -652,6 +653,47 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 			overview.Jobs.Warning++
 		}
 	}
+
+	// CronJobs
+	cronJobs, _ := c.cronJobLister.List(everythingSelector())
+	overview.CronJobs.Total = len(cronJobs)
+	overview.CronJobs.Ready = len(cronJobs)
+
+	// Ingresses
+	ingresses, _ := c.ingressLister.List(everythingSelector())
+	overview.Ingresses.Total = len(ingresses)
+	overview.Ingresses.Ready = len(ingresses)
+
+	// ConfigMaps
+	configMaps, _ := c.configMapLister.List(everythingSelector())
+	overview.ConfigMaps.Total = len(configMaps)
+	overview.ConfigMaps.Ready = len(configMaps)
+
+	// Secrets
+	secrets, _ := c.secretLister.List(everythingSelector())
+	overview.Secrets.Total = len(secrets)
+	overview.Secrets.Ready = len(secrets)
+
+	// PVCs
+	pvcs, _ := c.pvcLister.List(everythingSelector())
+	overview.PVCs.Total = len(pvcs)
+	for _, pvc := range pvcs {
+		if pvc.Status.Phase == corev1.ClaimBound {
+			overview.PVCs.Ready++
+		} else {
+			overview.PVCs.NotReady++
+		}
+	}
+
+	// PVs
+	pvs, _ := c.pvLister.List(everythingSelector())
+	overview.PVs.Total = len(pvs)
+	overview.PVs.Ready = len(pvs)
+
+	// HPAs
+	hpas, _ := c.hpaLister.List(everythingSelector())
+	overview.HPAs.Total = len(hpas)
+	overview.HPAs.Ready = len(hpas)
 
 	// Events (recent 20)
 	overview.Events = c.getRecentEvents(20)
@@ -1338,6 +1380,14 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			}
 		}
 		return nil, fmt.Errorf("endpoint %s/%s not found", namespace, name)
+	case "gateways", "httproutes":
+		items := c.listGatewayResources(resourceType, namespace)
+		for _, item := range items {
+			if item["name"] == name {
+				return item, nil
+			}
+		}
+		return nil, fmt.Errorf("%s %s/%s not found", resourceType, namespace, name)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}
@@ -2893,6 +2943,311 @@ func (c *Connector) listClusterRoleBindings() []map[string]interface{} {
 			"createdAt":   crb.CreationTimestamp.Time.Format(time.RFC3339),
 			"age":         formatAge(crb.CreationTimestamp.Time),
 		})
+	}
+	return items
+}
+
+// GetDeploymentPods returns all pods owned by a deployment (via ReplicaSets).
+func (c *Connector) GetDeploymentPods(namespace, deploymentName string) []map[string]interface{} {
+	// 1. Get all ReplicaSets in the namespace
+	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
+	// 2. Find which ReplicaSets are owned by this deployment
+	rsNames := make(map[string]bool)
+	for _, rs := range replicaSets {
+		if rs.Namespace != namespace {
+			continue
+		}
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Deployment" && ref.Name == deploymentName {
+				rsNames[rs.Name] = true
+			}
+		}
+	}
+
+	// 3. Get all pods in the namespace
+	pods, _ := c.podLister.List(everythingSelector())
+	var podMetrics map[string]*models.MetricPoint
+	if c.collector != nil {
+		podMetrics = c.collector.GetAllPodMetrics()
+	}
+
+	var items []map[string]interface{}
+	for _, pod := range pods {
+		if pod.Namespace != namespace {
+			continue
+		}
+		// 4. Find which pods are owned by those ReplicaSets
+		owned := false
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "ReplicaSet" && rsNames[ref.Name] {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+
+		// 5. Convert pod using podToMap
+		m := podToMap(pod)
+
+		// 6. Inject pod metrics (same pattern as listPods)
+		var cpuReq, cpuLim, memReq, memLim int64
+		for _, cont := range pod.Spec.Containers {
+			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+			memReq += cont.Resources.Requests.Memory().Value()
+			memLim += cont.Resources.Limits.Memory().Value()
+		}
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		if podMetrics != nil {
+			key := pod.Namespace + "/" + pod.Name
+			if pm, ok := podMetrics[key]; ok {
+				m["cpuUsage"] = pm.CPUUsage
+				m["memoryUsage"] = pm.MemUsage
+				if cpuLim > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
+				} else if cpuReq > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
+				}
+				if memLim > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
+				} else if memReq > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
+				}
+			}
+		}
+		items = append(items, m)
+	}
+	return items
+}
+
+// GetDeploymentHistory returns the revision history of a deployment via its ReplicaSets.
+func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map[string]interface{} {
+	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
+
+	var items []map[string]interface{}
+	for _, rs := range replicaSets {
+		if rs.Namespace != namespace {
+			continue
+		}
+		ownedByDeployment := false
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Deployment" && ref.Name == deploymentName {
+				ownedByDeployment = true
+				break
+			}
+		}
+		if !ownedByDeployment {
+			continue
+		}
+
+		revision := ""
+		if rs.Annotations != nil {
+			revision = rs.Annotations["deployment.kubernetes.io/revision"]
+		}
+
+		image := ""
+		if len(rs.Spec.Template.Spec.Containers) > 0 {
+			image = rs.Spec.Template.Spec.Containers[0].Image
+		}
+
+		item := map[string]interface{}{
+			"revision":      revision,
+			"name":          rs.Name,
+			"replicas":      rs.Status.Replicas,
+			"readyReplicas": rs.Status.ReadyReplicas,
+			"createdAt":     rs.CreationTimestamp.Format(time.RFC3339),
+			"age":           formatAge(rs.CreationTimestamp.Time),
+			"image":         image,
+			"active":        rs.Status.Replicas > 0,
+		}
+		items = append(items, item)
+	}
+
+	// Sort by revision number descending (highest/newest first)
+	sort.Slice(items, func(i, j int) bool {
+		ri, _ := strconv.Atoi(items[i]["revision"].(string))
+		rj, _ := strconv.Atoi(items[j]["revision"].(string))
+		return ri > rj
+	})
+
+	return items
+}
+
+// GetStatefulSetPods returns all pods owned by a statefulset (direct ownership).
+func (c *Connector) GetStatefulSetPods(namespace, stsName string) []map[string]interface{} {
+	pods, _ := c.podLister.List(everythingSelector())
+	var podMetrics map[string]*models.MetricPoint
+	if c.collector != nil {
+		podMetrics = c.collector.GetAllPodMetrics()
+	}
+
+	var items []map[string]interface{}
+	for _, pod := range pods {
+		if pod.Namespace != namespace {
+			continue
+		}
+		owned := false
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "StatefulSet" && ref.Name == stsName {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+
+		m := podToMap(pod)
+		var cpuReq, cpuLim, memReq, memLim int64
+		for _, cont := range pod.Spec.Containers {
+			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+			memReq += cont.Resources.Requests.Memory().Value()
+			memLim += cont.Resources.Limits.Memory().Value()
+		}
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		if podMetrics != nil {
+			key := pod.Namespace + "/" + pod.Name
+			if pm, ok := podMetrics[key]; ok {
+				m["cpuUsage"] = pm.CPUUsage
+				m["memoryUsage"] = pm.MemUsage
+				if cpuLim > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
+				} else if cpuReq > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
+				}
+				if memLim > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
+				} else if memReq > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
+				}
+			}
+		}
+		items = append(items, m)
+	}
+	return items
+}
+
+// GetDaemonSetPods returns all pods owned by a daemonset (direct ownership).
+func (c *Connector) GetDaemonSetPods(namespace, dsName string) []map[string]interface{} {
+	pods, _ := c.podLister.List(everythingSelector())
+	var podMetrics map[string]*models.MetricPoint
+	if c.collector != nil {
+		podMetrics = c.collector.GetAllPodMetrics()
+	}
+
+	var items []map[string]interface{}
+	for _, pod := range pods {
+		if pod.Namespace != namespace {
+			continue
+		}
+		owned := false
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "DaemonSet" && ref.Name == dsName {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+
+		m := podToMap(pod)
+		var cpuReq, cpuLim, memReq, memLim int64
+		for _, cont := range pod.Spec.Containers {
+			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+			memReq += cont.Resources.Requests.Memory().Value()
+			memLim += cont.Resources.Limits.Memory().Value()
+		}
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		if podMetrics != nil {
+			key := pod.Namespace + "/" + pod.Name
+			if pm, ok := podMetrics[key]; ok {
+				m["cpuUsage"] = pm.CPUUsage
+				m["memoryUsage"] = pm.MemUsage
+				if cpuLim > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
+				} else if cpuReq > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
+				}
+				if memLim > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
+				} else if memReq > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
+				}
+			}
+		}
+		items = append(items, m)
+	}
+	return items
+}
+
+// GetJobPods returns all pods owned by a job (direct ownership).
+func (c *Connector) GetJobPods(namespace, jobName string) []map[string]interface{} {
+	pods, _ := c.podLister.List(everythingSelector())
+	var podMetrics map[string]*models.MetricPoint
+	if c.collector != nil {
+		podMetrics = c.collector.GetAllPodMetrics()
+	}
+
+	var items []map[string]interface{}
+	for _, pod := range pods {
+		if pod.Namespace != namespace {
+			continue
+		}
+		owned := false
+		for _, ref := range pod.OwnerReferences {
+			if ref.Kind == "Job" && ref.Name == jobName {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+
+		m := podToMap(pod)
+		var cpuReq, cpuLim, memReq, memLim int64
+		for _, cont := range pod.Spec.Containers {
+			cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+			cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+			memReq += cont.Resources.Requests.Memory().Value()
+			memLim += cont.Resources.Limits.Memory().Value()
+		}
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		if podMetrics != nil {
+			key := pod.Namespace + "/" + pod.Name
+			if pm, ok := podMetrics[key]; ok {
+				m["cpuUsage"] = pm.CPUUsage
+				m["memoryUsage"] = pm.MemUsage
+				if cpuLim > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuLim) * 100
+				} else if cpuReq > 0 {
+					m["cpuPercent"] = float64(pm.CPUUsage) / float64(cpuReq) * 100
+				}
+				if memLim > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memLim) * 100
+				} else if memReq > 0 {
+					m["memoryPercent"] = float64(pm.MemUsage) / float64(memReq) * 100
+				}
+			}
+		}
+		items = append(items, m)
 	}
 	return items
 }
