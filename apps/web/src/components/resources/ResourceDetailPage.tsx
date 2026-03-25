@@ -1393,6 +1393,11 @@ export function ResourceDetailPage() {
   const { data: item, isLoading, error, refetch } = useResourceDetail(type, namespace, name)
   const [activeTab, setActiveTab] = useState('overview')
 
+  // Reset to overview tab when navigating to a different resource
+  useEffect(() => {
+    setActiveTab('overview')
+  }, [type, namespace, name])
+
   if (isLoading) return <LoadingSpinner />
   if (error || !item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
 
