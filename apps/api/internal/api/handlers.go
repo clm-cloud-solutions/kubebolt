@@ -106,6 +106,11 @@ func (h *handlers) getResourceDetail(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 
+	// "_" is used as a placeholder for cluster-scoped resources (nodes, PVs, etc.)
+	if namespace == "_" {
+		namespace = ""
+	}
+
 	conn := h.manager.Connector()
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")

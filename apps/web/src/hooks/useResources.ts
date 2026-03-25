@@ -16,5 +16,6 @@ export function useResourceDetail(type: string, namespace: string, name: string)
     queryKey: ['resource-detail', type, namespace, name],
     queryFn: () => api.getResourceDetail(type, namespace, name),
     enabled: !!type && !!namespace && !!name,
+    refetchInterval: 30_000,
   })
 }

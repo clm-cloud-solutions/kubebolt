@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -22,7 +23,7 @@ function NodeCard({ node }: { node: ResourceItem }) {
   const hasMetrics = cpuUsage > 0 || memUsage > 0
 
   return (
-    <div className="bg-kb-card border border-kb-border rounded-[10px] p-4 hover:bg-kb-card-hover transition-colors">
+    <Link to={`/nodes/_/${node.name}`} className="block bg-kb-card border border-kb-border rounded-[10px] p-4 hover:bg-kb-card-hover transition-colors">
       {/* Header */}
       <div className="flex items-center gap-2.5 mb-3">
         <div className={`w-2.5 h-2.5 rounded-full ${node.status === 'Ready' ? 'bg-status-ok' : 'bg-status-error'}`} />
@@ -67,7 +68,7 @@ function NodeCard({ node }: { node: ResourceItem }) {
       <div className="mt-3 text-[10px] font-mono text-kb-text-tertiary">
         {kubeletVersion}{containerRuntime ? ` · ${containerRuntime}` : ''}
       </div>
-    </div>
+    </Link>
   )
 }
 

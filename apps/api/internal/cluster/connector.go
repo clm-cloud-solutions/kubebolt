@@ -1258,6 +1258,83 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			return nil, err
 		}
 		return hpaToMap(hpa), nil
+	case "storageclasses":
+		sc, err := c.storageClassLister.Get(name)
+		if err != nil {
+			return nil, err
+		}
+		reclaimPolicy := ""
+		if sc.ReclaimPolicy != nil {
+			reclaimPolicy = string(*sc.ReclaimPolicy)
+		}
+		volumeBindingMode := ""
+		if sc.VolumeBindingMode != nil {
+			volumeBindingMode = string(*sc.VolumeBindingMode)
+		}
+		return map[string]interface{}{
+			"name":              sc.Name,
+			"namespace":         "",
+			"status":            "Active",
+			"provisioner":       sc.Provisioner,
+			"reclaimPolicy":     reclaimPolicy,
+			"volumeBindingMode": volumeBindingMode,
+			"labels":            safeLabels(sc.Labels),
+			"annotations":       safeAnnotations(sc.Annotations),
+			"createdAt":         sc.CreationTimestamp.Time.Format(time.RFC3339),
+			"age":               formatAge(sc.CreationTimestamp.Time),
+		}, nil
+	case "replicasets":
+		rs, err := c.replicaSetLister.ReplicaSets(namespace).Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]interface{}{
+			"name":             rs.Name,
+			"namespace":        rs.Namespace,
+			"status":           fmt.Sprintf("%d/%d", rs.Status.ReadyReplicas, *rs.Spec.Replicas),
+			"replicas":         rs.Status.Replicas,
+			"readyReplicas":    rs.Status.ReadyReplicas,
+			"availableReplicas": rs.Status.AvailableReplicas,
+			"labels":           safeLabels(rs.Labels),
+			"annotations":      safeAnnotations(rs.Annotations),
+			"createdAt":        rs.CreationTimestamp.Time.Format(time.RFC3339),
+			"age":              formatAge(rs.CreationTimestamp.Time),
+		}, nil
+	case "endpoints":
+		// EndpointSlices don't map 1:1 to a single "endpoint" resource;
+		// return the slice matching the given name.
+		slices, err := c.endpointSliceLister.EndpointSlices(namespace).List(everythingSelector())
+		if err != nil {
+			return nil, err
+		}
+		for _, es := range slices {
+			if es.Name == name {
+				var endpoints []string
+				for _, ep := range es.Endpoints {
+					endpoints = append(endpoints, ep.Addresses...)
+				}
+				var ports []map[string]interface{}
+				for _, p := range es.Ports {
+					ports = append(ports, map[string]interface{}{
+						"name":     ptrStr(p.Name),
+						"port":     *p.Port,
+						"protocol": string(*p.Protocol),
+					})
+				}
+				return map[string]interface{}{
+					"name":        es.Name,
+					"namespace":   es.Namespace,
+					"status":      "Active",
+					"addresses":   endpoints,
+					"ports":       ports,
+					"labels":      safeLabels(es.Labels),
+					"annotations": safeAnnotations(es.Annotations),
+					"createdAt":   es.CreationTimestamp.Time.Format(time.RFC3339),
+					"age":         formatAge(es.CreationTimestamp.Time),
+				}, nil
+			}
+		}
+		return nil, fmt.Errorf("endpoint %s/%s not found", namespace, name)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}

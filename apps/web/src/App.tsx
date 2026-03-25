@@ -11,6 +11,7 @@ import { EventsPage } from '@/components/resources/EventsPage'
 import { NamespacesPage } from '@/components/resources/NamespacesPage'
 import { RBACPage } from '@/components/resources/RBACPage'
 import { SettingsPage } from '@/components/resources/SettingsPage'
+import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { ClusterMap } from '@/components/map/ClusterMap'
 
 const queryClient = new QueryClient({
@@ -88,6 +89,7 @@ export default function App() {
               <Route path="/configmaps" element={<ResourceListPage resourceType="configmaps" />} />
               <Route path="/secrets" element={<ResourceListPage resourceType="secrets" />} />
               <Route path="/hpas" element={<ResourceListPage resourceType="hpas" />} />
+              <Route path="/:type/:namespace/:name" element={<ResourceDetailPage />} />
               <Route path="/namespaces" element={<NamespacesPage />} />
               <Route path="/events" element={<EventsPage />} />
               <Route path="/rbac" element={<RBACPage />} />

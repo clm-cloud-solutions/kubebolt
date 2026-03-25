@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
@@ -68,9 +68,18 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     {
       accessorKey: 'name',
       header: 'Name',
-      cell: (info) => (
-        <span className="font-medium text-kb-text-primary">{info.getValue() as string}</span>
-      ),
+      cell: (info) => {
+        const item = info.row.original
+        const ns = item.namespace || '_'
+        return (
+          <Link
+            to={`/${resourceType}/${ns}/${info.getValue() as string}`}
+            className="font-medium text-status-info hover:underline transition-colors"
+          >
+            {info.getValue() as string}
+          </Link>
+        )
+      },
     },
     {
       accessorKey: 'namespace',
