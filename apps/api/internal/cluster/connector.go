@@ -51,6 +51,7 @@ type Connector struct {
 	dynamicClient dynamic.Interface
 	metricsClient metricsv.Interface
 	factory       informers.SharedInformerFactory
+	nsFactories   []informers.SharedInformerFactory // per-namespace factories for namespace-scoped access
 	graph         *TopologyGraph
 	wsHub         *websocket.Hub
 	stopCh        chan struct{}
@@ -58,6 +59,7 @@ type Connector struct {
 	clusterName    string
 	collector      metricsCollector
 	topologyTimer  *time.Timer
+	permissions    ResourcePermissions
 
 	// Listers
 	podLister            corelisters.PodLister
@@ -143,8 +145,14 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		clusterName:   clusterName,
 	}
 
+	c.permissions = probePermissions(clientset)
 	c.setupInformers()
 	return c, nil
+}
+
+// Permissions returns the probed resource permissions for this cluster.
+func (c *Connector) Permissions() ResourcePermissions {
+	return c.permissions
 }
 
 // SetCollector sets the metrics collector reference for use in GetOverview.
@@ -158,42 +166,31 @@ func (c *Connector) MetricsClient() metricsv.Interface {
 }
 
 func (c *Connector) setupInformers() {
-	// Core v1
-	c.podLister = c.factory.Core().V1().Pods().Lister()
-	c.nodeLister = c.factory.Core().V1().Nodes().Lister()
-	c.namespaceLister = c.factory.Core().V1().Namespaces().Lister()
-	c.serviceLister = c.factory.Core().V1().Services().Lister()
-	c.endpointSliceLister = c.factory.Discovery().V1().EndpointSlices().Lister()
-	c.configMapLister = c.factory.Core().V1().ConfigMaps().Lister()
-	c.secretLister = c.factory.Core().V1().Secrets().Lister()
-	c.pvcLister = c.factory.Core().V1().PersistentVolumeClaims().Lister()
-	c.pvLister = c.factory.Core().V1().PersistentVolumes().Lister()
-	c.eventLister = c.factory.Core().V1().Events().Lister()
+	can := c.permissions.CanListWatch
+	isNS := func(key string) bool {
+		if p, ok := c.permissions[key]; ok {
+			return p.NamespaceScoped
+		}
+		return false
+	}
 
-	// Apps v1
-	c.deploymentLister = c.factory.Apps().V1().Deployments().Lister()
-	c.statefulSetLister = c.factory.Apps().V1().StatefulSets().Lister()
-	c.daemonSetLister = c.factory.Apps().V1().DaemonSets().Lister()
-	c.replicaSetLister = c.factory.Apps().V1().ReplicaSets().Lister()
-
-	// Batch v1
-	c.jobLister = c.factory.Batch().V1().Jobs().Lister()
-	c.cronJobLister = c.factory.Batch().V1().CronJobs().Lister()
-
-	// Networking v1
-	c.ingressLister = c.factory.Networking().V1().Ingresses().Lister()
-
-	// Autoscaling v1
-	c.hpaLister = c.factory.Autoscaling().V1().HorizontalPodAutoscalers().Lister()
-
-	// Storage v1
-	c.storageClassLister = c.factory.Storage().V1().StorageClasses().Lister()
-
-	// RBAC v1
-	c.roleLister = c.factory.Rbac().V1().Roles().Lister()
-	c.clusterRoleLister = c.factory.Rbac().V1().ClusterRoles().Lister()
-	c.roleBindingLister = c.factory.Rbac().V1().RoleBindings().Lister()
-	c.clusterRoleBindingLister = c.factory.Rbac().V1().ClusterRoleBindings().Lister()
+	// Determine if we need namespace-scoped factories
+	var nsFactories map[string]informers.SharedInformerFactory
+	var nsNamespaces []string
+	for _, p := range c.permissions {
+		if p.NamespaceScoped && len(p.Namespaces) > 0 {
+			nsNamespaces = p.Namespaces
+			break
+		}
+	}
+	if len(nsNamespaces) > 0 {
+		nsFactories = make(map[string]informers.SharedInformerFactory, len(nsNamespaces))
+		for _, ns := range nsNamespaces {
+			nsFactories[ns] = informers.NewSharedInformerFactoryWithOptions(
+				c.clientset, 30*time.Second, informers.WithNamespace(ns),
+			)
+		}
+	}
 
 	// Add event handlers for topology updates and WebSocket broadcasts
 	handler := cache.ResourceEventHandlerFuncs{
@@ -208,30 +205,221 @@ func (c *Connector) setupInformers() {
 		},
 	}
 
-	// Register handlers on key informers
-	c.factory.Core().V1().Pods().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().Nodes().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().Services().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().Namespaces().Informer().AddEventHandler(handler)
-	c.factory.Apps().V1().Deployments().Informer().AddEventHandler(handler)
-	c.factory.Apps().V1().StatefulSets().Informer().AddEventHandler(handler)
-	c.factory.Apps().V1().DaemonSets().Informer().AddEventHandler(handler)
-	c.factory.Apps().V1().ReplicaSets().Informer().AddEventHandler(handler)
-	c.factory.Batch().V1().Jobs().Informer().AddEventHandler(handler)
-	c.factory.Batch().V1().CronJobs().Informer().AddEventHandler(handler)
-	c.factory.Networking().V1().Ingresses().Informer().AddEventHandler(handler)
-	c.factory.Autoscaling().V1().HorizontalPodAutoscalers().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().PersistentVolumeClaims().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().PersistentVolumes().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().ConfigMaps().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().Secrets().Informer().AddEventHandler(handler)
-	c.factory.Core().V1().Events().Informer().AddEventHandler(handler)
-	c.factory.Discovery().V1().EndpointSlices().Informer().AddEventHandler(handler)
-	c.factory.Storage().V1().StorageClasses().Informer().AddEventHandler(handler)
-	c.factory.Rbac().V1().Roles().Informer().AddEventHandler(handler)
-	c.factory.Rbac().V1().ClusterRoles().Informer().AddEventHandler(handler)
-	c.factory.Rbac().V1().RoleBindings().Informer().AddEventHandler(handler)
-	c.factory.Rbac().V1().ClusterRoleBindings().Informer().AddEventHandler(handler)
+	// Core v1
+	if can("pods") {
+		if isNS("pods") {
+			var listers []corelisters.PodLister
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().Pods().Lister())
+				f.Core().V1().Pods().Informer().AddEventHandler(handler)
+			}
+			c.podLister = &multiPodLister{listers: listers}
+		} else {
+			c.podLister = c.factory.Core().V1().Pods().Lister()
+			c.factory.Core().V1().Pods().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("nodes") {
+		c.nodeLister = c.factory.Core().V1().Nodes().Lister()
+		c.factory.Core().V1().Nodes().Informer().AddEventHandler(handler)
+	}
+	if can("namespaces") {
+		c.namespaceLister = c.factory.Core().V1().Namespaces().Lister()
+		c.factory.Core().V1().Namespaces().Informer().AddEventHandler(handler)
+	}
+	if can("services") {
+		if isNS("services") {
+			var listers []corelisters.ServiceLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().Services().Lister()); f.Core().V1().Services().Informer().AddEventHandler(handler) }
+			c.serviceLister = &multiServiceLister{listers: listers}
+		} else {
+			c.serviceLister = c.factory.Core().V1().Services().Lister()
+			c.factory.Core().V1().Services().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("endpointslices") {
+		if isNS("endpointslices") {
+			var listers []discoverylisters.EndpointSliceLister
+			for _, f := range nsFactories { listers = append(listers, f.Discovery().V1().EndpointSlices().Lister()); f.Discovery().V1().EndpointSlices().Informer().AddEventHandler(handler) }
+			c.endpointSliceLister = &multiEndpointSliceLister{listers: listers}
+		} else {
+			c.endpointSliceLister = c.factory.Discovery().V1().EndpointSlices().Lister()
+			c.factory.Discovery().V1().EndpointSlices().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("configmaps") {
+		if isNS("configmaps") {
+			var listers []corelisters.ConfigMapLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().ConfigMaps().Lister()); f.Core().V1().ConfigMaps().Informer().AddEventHandler(handler) }
+			c.configMapLister = &multiConfigMapLister{listers: listers}
+		} else {
+			c.configMapLister = c.factory.Core().V1().ConfigMaps().Lister()
+			c.factory.Core().V1().ConfigMaps().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("secrets") {
+		if isNS("secrets") {
+			var listers []corelisters.SecretLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().Secrets().Lister()); f.Core().V1().Secrets().Informer().AddEventHandler(handler) }
+			c.secretLister = &multiSecretLister{listers: listers}
+		} else {
+			c.secretLister = c.factory.Core().V1().Secrets().Lister()
+			c.factory.Core().V1().Secrets().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("pvcs") {
+		if isNS("pvcs") {
+			var listers []corelisters.PersistentVolumeClaimLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().PersistentVolumeClaims().Lister()); f.Core().V1().PersistentVolumeClaims().Informer().AddEventHandler(handler) }
+			c.pvcLister = &multiPVCLister{listers: listers}
+		} else {
+			c.pvcLister = c.factory.Core().V1().PersistentVolumeClaims().Lister()
+			c.factory.Core().V1().PersistentVolumeClaims().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("pvs") {
+		c.pvLister = c.factory.Core().V1().PersistentVolumes().Lister()
+		c.factory.Core().V1().PersistentVolumes().Informer().AddEventHandler(handler)
+	}
+	if can("events") {
+		if isNS("events") {
+			var listers []corelisters.EventLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().Events().Lister()); f.Core().V1().Events().Informer().AddEventHandler(handler) }
+			c.eventLister = &multiEventLister{listers: listers}
+		} else {
+			c.eventLister = c.factory.Core().V1().Events().Lister()
+			c.factory.Core().V1().Events().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Apps v1
+	if can("deployments") {
+		if isNS("deployments") {
+			var listers []appslisters.DeploymentLister
+			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().Deployments().Lister()); f.Apps().V1().Deployments().Informer().AddEventHandler(handler) }
+			c.deploymentLister = &multiDeploymentLister{listers: listers}
+		} else {
+			c.deploymentLister = c.factory.Apps().V1().Deployments().Lister()
+			c.factory.Apps().V1().Deployments().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("statefulsets") {
+		if isNS("statefulsets") {
+			var listers []appslisters.StatefulSetLister
+			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().StatefulSets().Lister()); f.Apps().V1().StatefulSets().Informer().AddEventHandler(handler) }
+			c.statefulSetLister = &multiStatefulSetLister{listers: listers}
+		} else {
+			c.statefulSetLister = c.factory.Apps().V1().StatefulSets().Lister()
+			c.factory.Apps().V1().StatefulSets().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("daemonsets") {
+		if isNS("daemonsets") {
+			var listers []appslisters.DaemonSetLister
+			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().DaemonSets().Lister()); f.Apps().V1().DaemonSets().Informer().AddEventHandler(handler) }
+			c.daemonSetLister = &multiDaemonSetLister{listers: listers}
+		} else {
+			c.daemonSetLister = c.factory.Apps().V1().DaemonSets().Lister()
+			c.factory.Apps().V1().DaemonSets().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("replicasets") {
+		if isNS("replicasets") {
+			var listers []appslisters.ReplicaSetLister
+			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().ReplicaSets().Lister()); f.Apps().V1().ReplicaSets().Informer().AddEventHandler(handler) }
+			c.replicaSetLister = &multiReplicaSetLister{listers: listers}
+		} else {
+			c.replicaSetLister = c.factory.Apps().V1().ReplicaSets().Lister()
+			c.factory.Apps().V1().ReplicaSets().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Batch v1
+	if can("jobs") {
+		if isNS("jobs") {
+			var listers []batchlisters.JobLister
+			for _, f := range nsFactories { listers = append(listers, f.Batch().V1().Jobs().Lister()); f.Batch().V1().Jobs().Informer().AddEventHandler(handler) }
+			c.jobLister = &multiJobLister{listers: listers}
+		} else {
+			c.jobLister = c.factory.Batch().V1().Jobs().Lister()
+			c.factory.Batch().V1().Jobs().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("cronjobs") {
+		if isNS("cronjobs") {
+			var listers []batchlisters.CronJobLister
+			for _, f := range nsFactories { listers = append(listers, f.Batch().V1().CronJobs().Lister()); f.Batch().V1().CronJobs().Informer().AddEventHandler(handler) }
+			c.cronJobLister = &multiCronJobLister{listers: listers}
+		} else {
+			c.cronJobLister = c.factory.Batch().V1().CronJobs().Lister()
+			c.factory.Batch().V1().CronJobs().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Networking v1
+	if can("ingresses") {
+		if isNS("ingresses") {
+			var listers []networkinglisters.IngressLister
+			for _, f := range nsFactories { listers = append(listers, f.Networking().V1().Ingresses().Lister()); f.Networking().V1().Ingresses().Informer().AddEventHandler(handler) }
+			c.ingressLister = &multiIngressLister{listers: listers}
+		} else {
+			c.ingressLister = c.factory.Networking().V1().Ingresses().Lister()
+			c.factory.Networking().V1().Ingresses().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Autoscaling v1
+	if can("hpas") {
+		if isNS("hpas") {
+			var listers []autoscalinglisters.HorizontalPodAutoscalerLister
+			for _, f := range nsFactories { listers = append(listers, f.Autoscaling().V1().HorizontalPodAutoscalers().Lister()); f.Autoscaling().V1().HorizontalPodAutoscalers().Informer().AddEventHandler(handler) }
+			c.hpaLister = &multiHPALister{listers: listers}
+		} else {
+			c.hpaLister = c.factory.Autoscaling().V1().HorizontalPodAutoscalers().Lister()
+			c.factory.Autoscaling().V1().HorizontalPodAutoscalers().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Storage v1 (cluster-scoped only)
+	if can("storageclasses") {
+		c.storageClassLister = c.factory.Storage().V1().StorageClasses().Lister()
+		c.factory.Storage().V1().StorageClasses().Informer().AddEventHandler(handler)
+	}
+
+	// RBAC v1
+	if can("roles") {
+		if isNS("roles") {
+			var listers []rbaclisters.RoleLister
+			for _, f := range nsFactories { listers = append(listers, f.Rbac().V1().Roles().Lister()); f.Rbac().V1().Roles().Informer().AddEventHandler(handler) }
+			c.roleLister = &multiRoleLister{listers: listers}
+		} else {
+			c.roleLister = c.factory.Rbac().V1().Roles().Lister()
+			c.factory.Rbac().V1().Roles().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("clusterroles") {
+		c.clusterRoleLister = c.factory.Rbac().V1().ClusterRoles().Lister()
+		c.factory.Rbac().V1().ClusterRoles().Informer().AddEventHandler(handler)
+	}
+	if can("rolebindings") {
+		if isNS("rolebindings") {
+			var listers []rbaclisters.RoleBindingLister
+			for _, f := range nsFactories { listers = append(listers, f.Rbac().V1().RoleBindings().Lister()); f.Rbac().V1().RoleBindings().Informer().AddEventHandler(handler) }
+			c.roleBindingLister = &multiRoleBindingLister{listers: listers}
+		} else {
+			c.roleBindingLister = c.factory.Rbac().V1().RoleBindings().Lister()
+			c.factory.Rbac().V1().RoleBindings().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("clusterrolebindings") {
+		c.clusterRoleBindingLister = c.factory.Rbac().V1().ClusterRoleBindings().Lister()
+		c.factory.Rbac().V1().ClusterRoleBindings().Informer().AddEventHandler(handler)
+	}
+
+	// Store ns factories for Start/Stop
+	for _, f := range nsFactories {
+		c.nsFactories = append(c.nsFactories, f)
+	}
 }
 
 func (c *Connector) onResourceChange(action string, obj interface{}) {
@@ -267,158 +455,184 @@ func (c *Connector) rebuildTopology() {
 }
 
 func (c *Connector) buildTopologyNodes() {
-	pods, _ := c.podLister.List(everythingSelector())
-	for _, pod := range pods {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("Pod", pod.Namespace, pod.Name),
-			Type:      "Pod",
-			Name:      pod.Name,
-			Namespace: pod.Namespace,
-			Status:    string(pod.Status.Phase),
-		})
+	if c.podLister != nil {
+		pods, _ := c.podLister.List(everythingSelector())
+		for _, pod := range pods {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("Pod", pod.Namespace, pod.Name),
+				Type:      "Pod",
+				Name:      pod.Name,
+				Namespace: pod.Namespace,
+				Status:    string(pod.Status.Phase),
+			})
+		}
 	}
 
-	nodes, _ := c.nodeLister.List(everythingSelector())
-	for _, node := range nodes {
-		status := "NotReady"
-		for _, cond := range node.Status.Conditions {
-			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
-				status = "Ready"
-				break
+	if c.nodeLister != nil {
+		nodes, _ := c.nodeLister.List(everythingSelector())
+		for _, node := range nodes {
+			status := "NotReady"
+			for _, cond := range node.Status.Conditions {
+				if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+					status = "Ready"
+					break
+				}
 			}
+			c.graph.AddNode(models.TopologyNode{
+				ID:     nodeID("Node", "", node.Name),
+				Type:   "Node",
+				Name:   node.Name,
+				Status: status,
+			})
 		}
-		c.graph.AddNode(models.TopologyNode{
-			ID:     nodeID("Node", "", node.Name),
-			Type:   "Node",
-			Name:   node.Name,
-			Status: status,
-		})
 	}
 
-	deployments, _ := c.deploymentLister.List(everythingSelector())
-	for _, d := range deployments {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("Deployment", d.Namespace, d.Name),
-			Type:      "Deployment",
-			Name:      d.Name,
-			Namespace: d.Namespace,
-			Status:    deploymentStatus(d),
-		})
-	}
-
-	services, _ := c.serviceLister.List(everythingSelector())
-	for _, svc := range services {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("Service", svc.Namespace, svc.Name),
-			Type:      "Service",
-			Name:      svc.Name,
-			Namespace: svc.Namespace,
-			Status:    string(svc.Spec.Type),
-		})
-	}
-
-	statefulSets, _ := c.statefulSetLister.List(everythingSelector())
-	for _, ss := range statefulSets {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("StatefulSet", ss.Namespace, ss.Name),
-			Type:      "StatefulSet",
-			Name:      ss.Name,
-			Namespace: ss.Namespace,
-			Status:    fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
-		})
-	}
-
-	daemonSets, _ := c.daemonSetLister.List(everythingSelector())
-	for _, ds := range daemonSets {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("DaemonSet", ds.Namespace, ds.Name),
-			Type:      "DaemonSet",
-			Name:      ds.Name,
-			Namespace: ds.Namespace,
-			Status:    fmt.Sprintf("%d/%d", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled),
-		})
-	}
-
-	ingresses, _ := c.ingressLister.List(everythingSelector())
-	for _, ing := range ingresses {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("Ingress", ing.Namespace, ing.Name),
-			Type:      "Ingress",
-			Name:      ing.Name,
-			Namespace: ing.Namespace,
-			Status:    "Active",
-		})
-	}
-
-	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
-	for _, rs := range replicaSets {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("ReplicaSet", rs.Namespace, rs.Name),
-			Type:      "ReplicaSet",
-			Name:      rs.Name,
-			Namespace: rs.Namespace,
-			Status:    fmt.Sprintf("%d/%d", rs.Status.ReadyReplicas, rs.Status.Replicas),
-		})
-	}
-
-	jobs, _ := c.jobLister.List(everythingSelector())
-	for _, job := range jobs {
-		status := "Running"
-		if job.Status.Succeeded > 0 {
-			status = "Complete"
-		} else if job.Status.Failed > 0 {
-			status = "Failed"
+	if c.deploymentLister != nil {
+		deployments, _ := c.deploymentLister.List(everythingSelector())
+		for _, d := range deployments {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("Deployment", d.Namespace, d.Name),
+				Type:      "Deployment",
+				Name:      d.Name,
+				Namespace: d.Namespace,
+				Status:    deploymentStatus(d),
+			})
 		}
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("Job", job.Namespace, job.Name),
-			Type:      "Job",
-			Name:      job.Name,
-			Namespace: job.Namespace,
-			Status:    status,
-		})
 	}
 
-	cronJobs, _ := c.cronJobLister.List(everythingSelector())
-	for _, cj := range cronJobs {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("CronJob", cj.Namespace, cj.Name),
-			Type:      "CronJob",
-			Name:      cj.Name,
-			Namespace: cj.Namespace,
-			Status:    "Scheduled",
-		})
+	if c.serviceLister != nil {
+		services, _ := c.serviceLister.List(everythingSelector())
+		for _, svc := range services {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("Service", svc.Namespace, svc.Name),
+				Type:      "Service",
+				Name:      svc.Name,
+				Namespace: svc.Namespace,
+				Status:    string(svc.Spec.Type),
+			})
+		}
 	}
 
-	pvcs, _ := c.pvcLister.List(everythingSelector())
-	for _, pvc := range pvcs {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("PersistentVolumeClaim", pvc.Namespace, pvc.Name),
-			Type:      "PersistentVolumeClaim",
-			Name:      pvc.Name,
-			Namespace: pvc.Namespace,
-			Status:    string(pvc.Status.Phase),
-		})
+	if c.statefulSetLister != nil {
+		statefulSets, _ := c.statefulSetLister.List(everythingSelector())
+		for _, ss := range statefulSets {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("StatefulSet", ss.Namespace, ss.Name),
+				Type:      "StatefulSet",
+				Name:      ss.Name,
+				Namespace: ss.Namespace,
+				Status:    fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
+			})
+		}
 	}
 
-	pvs, _ := c.pvLister.List(everythingSelector())
-	for _, pv := range pvs {
-		c.graph.AddNode(models.TopologyNode{
-			ID:     nodeID("PersistentVolume", "", pv.Name),
-			Type:   "PersistentVolume",
-			Name:   pv.Name,
-			Status: string(pv.Status.Phase),
-		})
+	if c.daemonSetLister != nil {
+		daemonSets, _ := c.daemonSetLister.List(everythingSelector())
+		for _, ds := range daemonSets {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("DaemonSet", ds.Namespace, ds.Name),
+				Type:      "DaemonSet",
+				Name:      ds.Name,
+				Namespace: ds.Namespace,
+				Status:    fmt.Sprintf("%d/%d", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled),
+			})
+		}
 	}
 
-	hpas, _ := c.hpaLister.List(everythingSelector())
-	for _, hpa := range hpas {
-		c.graph.AddNode(models.TopologyNode{
-			ID:        nodeID("HPA", hpa.Namespace, hpa.Name),
-			Type:      "HPA",
-			Name:      hpa.Name,
-			Namespace: hpa.Namespace,
-			Status:    "Active",
-		})
+	if c.ingressLister != nil {
+		ingresses, _ := c.ingressLister.List(everythingSelector())
+		for _, ing := range ingresses {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("Ingress", ing.Namespace, ing.Name),
+				Type:      "Ingress",
+				Name:      ing.Name,
+				Namespace: ing.Namespace,
+				Status:    "Active",
+			})
+		}
+	}
+
+	if c.replicaSetLister != nil {
+		replicaSets, _ := c.replicaSetLister.List(everythingSelector())
+		for _, rs := range replicaSets {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("ReplicaSet", rs.Namespace, rs.Name),
+				Type:      "ReplicaSet",
+				Name:      rs.Name,
+				Namespace: rs.Namespace,
+				Status:    fmt.Sprintf("%d/%d", rs.Status.ReadyReplicas, rs.Status.Replicas),
+			})
+		}
+	}
+
+	if c.jobLister != nil {
+		jobs, _ := c.jobLister.List(everythingSelector())
+		for _, job := range jobs {
+			status := "Running"
+			if job.Status.Succeeded > 0 {
+				status = "Complete"
+			} else if job.Status.Failed > 0 {
+				status = "Failed"
+			}
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("Job", job.Namespace, job.Name),
+				Type:      "Job",
+				Name:      job.Name,
+				Namespace: job.Namespace,
+				Status:    status,
+			})
+		}
+	}
+
+	if c.cronJobLister != nil {
+		cronJobs, _ := c.cronJobLister.List(everythingSelector())
+		for _, cj := range cronJobs {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("CronJob", cj.Namespace, cj.Name),
+				Type:      "CronJob",
+				Name:      cj.Name,
+				Namespace: cj.Namespace,
+				Status:    "Scheduled",
+			})
+		}
+	}
+
+	if c.pvcLister != nil {
+		pvcs, _ := c.pvcLister.List(everythingSelector())
+		for _, pvc := range pvcs {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("PersistentVolumeClaim", pvc.Namespace, pvc.Name),
+				Type:      "PersistentVolumeClaim",
+				Name:      pvc.Name,
+				Namespace: pvc.Namespace,
+				Status:    string(pvc.Status.Phase),
+			})
+		}
+	}
+
+	if c.pvLister != nil {
+		pvs, _ := c.pvLister.List(everythingSelector())
+		for _, pv := range pvs {
+			c.graph.AddNode(models.TopologyNode{
+				ID:     nodeID("PersistentVolume", "", pv.Name),
+				Type:   "PersistentVolume",
+				Name:   pv.Name,
+				Status: string(pv.Status.Phase),
+			})
+		}
+	}
+
+	if c.hpaLister != nil {
+		hpas, _ := c.hpaLister.List(everythingSelector())
+		for _, hpa := range hpas {
+			c.graph.AddNode(models.TopologyNode{
+				ID:        nodeID("HPA", hpa.Namespace, hpa.Name),
+				Type:      "HPA",
+				Name:      hpa.Name,
+				Namespace: hpa.Namespace,
+				Status:    "Active",
+			})
+		}
 	}
 
 	// Gateway API resources (dynamic, with timeout)
@@ -477,11 +691,22 @@ func (c *Connector) addGatewayTopologyNodes() {
 // does not complete within 20 seconds (e.g. cluster is unreachable).
 func (c *Connector) Start() error {
 	c.factory.Start(c.stopCh)
+	for _, f := range c.nsFactories {
+		f.Start(c.stopCh)
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
 		if !ok {
 			return fmt.Errorf("timed out waiting for cache sync — cluster may be unreachable")
+		}
+	}
+	for _, f := range c.nsFactories {
+		for _, ok := range f.WaitForCacheSync(ctx.Done()) {
+			if !ok {
+				return fmt.Errorf("timed out waiting for namespace cache sync")
+			}
 		}
 	}
 	log.Println("Informer caches synced")
@@ -497,7 +722,7 @@ func (c *Connector) Stop() {
 		c.topologyTimer = nil
 	}
 	c.mu.Unlock()
-	close(c.stopCh)
+	close(c.stopCh) // stops both factory and nsFactories since they share stopCh
 }
 
 // GetOverview aggregates counts from listers.
@@ -513,7 +738,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// Nodes
-	nodes, _ := c.nodeLister.List(everythingSelector())
+	var nodes []*corev1.Node
+	if c.nodeLister != nil {
+		nodes, _ = c.nodeLister.List(everythingSelector())
+	}
 	overview.Nodes.Total = len(nodes)
 	for _, node := range nodes {
 		ready := false
@@ -536,7 +764,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// Pods
-	pods, _ := c.podLister.List(everythingSelector())
+	var pods []*corev1.Pod
+	if c.podLister != nil {
+		pods, _ = c.podLister.List(everythingSelector())
+	}
 	overview.Pods.Total = len(pods)
 	for _, pod := range pods {
 		switch pod.Status.Phase {
@@ -589,7 +820,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// Namespaces
-	namespaces, _ := c.namespaceLister.List(everythingSelector())
+	var namespaces []*corev1.Namespace
+	if c.namespaceLister != nil {
+		namespaces, _ = c.namespaceLister.List(everythingSelector())
+	}
 	overview.Namespaces.Total = len(namespaces)
 	for _, ns := range namespaces {
 		if ns.Status.Phase == corev1.NamespaceActive {
@@ -600,12 +834,18 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// Services
-	svcs, _ := c.serviceLister.List(everythingSelector())
+	var svcs []*corev1.Service
+	if c.serviceLister != nil {
+		svcs, _ = c.serviceLister.List(everythingSelector())
+	}
 	overview.Services.Total = len(svcs)
 	overview.Services.Ready = len(svcs)
 
 	// Deployments
-	deployments, _ := c.deploymentLister.List(everythingSelector())
+	var deployments []*appsv1.Deployment
+	if c.deploymentLister != nil {
+		deployments, _ = c.deploymentLister.List(everythingSelector())
+	}
 	overview.Deployments.Total = len(deployments)
 	for _, d := range deployments {
 		if d.Status.AvailableReplicas == d.Status.Replicas && d.Status.Replicas > 0 {
@@ -620,7 +860,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// StatefulSets
-	statefulSets, _ := c.statefulSetLister.List(everythingSelector())
+	var statefulSets []*appsv1.StatefulSet
+	if c.statefulSetLister != nil {
+		statefulSets, _ = c.statefulSetLister.List(everythingSelector())
+	}
 	overview.StatefulSets.Total = len(statefulSets)
 	for _, ss := range statefulSets {
 		if ss.Status.ReadyReplicas == ss.Status.Replicas {
@@ -631,7 +874,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// DaemonSets
-	daemonSets, _ := c.daemonSetLister.List(everythingSelector())
+	var daemonSets []*appsv1.DaemonSet
+	if c.daemonSetLister != nil {
+		daemonSets, _ = c.daemonSetLister.List(everythingSelector())
+	}
 	overview.DaemonSets.Total = len(daemonSets)
 	for _, ds := range daemonSets {
 		if ds.Status.NumberReady == ds.Status.DesiredNumberScheduled {
@@ -642,7 +888,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// Jobs
-	jobs, _ := c.jobLister.List(everythingSelector())
+	var jobs []*batchv1.Job
+	if c.jobLister != nil {
+		jobs, _ = c.jobLister.List(everythingSelector())
+	}
 	overview.Jobs.Total = len(jobs)
 	for _, job := range jobs {
 		if job.Status.Succeeded > 0 {
@@ -655,27 +904,42 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// CronJobs
-	cronJobs, _ := c.cronJobLister.List(everythingSelector())
+	var cronJobs []*batchv1.CronJob
+	if c.cronJobLister != nil {
+		cronJobs, _ = c.cronJobLister.List(everythingSelector())
+	}
 	overview.CronJobs.Total = len(cronJobs)
 	overview.CronJobs.Ready = len(cronJobs)
 
 	// Ingresses
-	ingresses, _ := c.ingressLister.List(everythingSelector())
+	var ingresses []*networkingv1.Ingress
+	if c.ingressLister != nil {
+		ingresses, _ = c.ingressLister.List(everythingSelector())
+	}
 	overview.Ingresses.Total = len(ingresses)
 	overview.Ingresses.Ready = len(ingresses)
 
 	// ConfigMaps
-	configMaps, _ := c.configMapLister.List(everythingSelector())
+	var configMaps []*corev1.ConfigMap
+	if c.configMapLister != nil {
+		configMaps, _ = c.configMapLister.List(everythingSelector())
+	}
 	overview.ConfigMaps.Total = len(configMaps)
 	overview.ConfigMaps.Ready = len(configMaps)
 
 	// Secrets
-	secrets, _ := c.secretLister.List(everythingSelector())
+	var secrets []*corev1.Secret
+	if c.secretLister != nil {
+		secrets, _ = c.secretLister.List(everythingSelector())
+	}
 	overview.Secrets.Total = len(secrets)
 	overview.Secrets.Ready = len(secrets)
 
 	// PVCs
-	pvcs, _ := c.pvcLister.List(everythingSelector())
+	var pvcs []*corev1.PersistentVolumeClaim
+	if c.pvcLister != nil {
+		pvcs, _ = c.pvcLister.List(everythingSelector())
+	}
 	overview.PVCs.Total = len(pvcs)
 	for _, pvc := range pvcs {
 		if pvc.Status.Phase == corev1.ClaimBound {
@@ -686,12 +950,18 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 
 	// PVs
-	pvs, _ := c.pvLister.List(everythingSelector())
+	var pvs []*corev1.PersistentVolume
+	if c.pvLister != nil {
+		pvs, _ = c.pvLister.List(everythingSelector())
+	}
 	overview.PVs.Total = len(pvs)
 	overview.PVs.Ready = len(pvs)
 
 	// HPAs
-	hpas, _ := c.hpaLister.List(everythingSelector())
+	var hpas []*autoscalingv1.HorizontalPodAutoscaler
+	if c.hpaLister != nil {
+		hpas, _ = c.hpaLister.List(everythingSelector())
+	}
 	overview.HPAs.Total = len(hpas)
 	overview.HPAs.Ready = len(hpas)
 
@@ -703,6 +973,14 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 
 	// Namespace workloads
 	overview.NamespaceWorkloads = c.buildNamespaceWorkloads(pods, deployments, statefulSets, daemonSets)
+
+	// Permissions
+	if c.permissions != nil {
+		overview.Permissions = make(map[string]bool, len(c.permissions))
+		for key, perm := range c.permissions {
+			overview.Permissions[key] = perm.CanList && perm.CanWatch
+		}
+	}
 
 	return overview
 }
@@ -728,6 +1006,9 @@ func detectPlatform(gitVersion string) string {
 }
 
 func (c *Connector) getRecentEvents(limit int) []models.KubeEvent {
+	if c.eventLister == nil {
+		return nil
+	}
 	events, _ := c.eventLister.List(everythingSelector())
 	// Sort by last timestamp desc
 	sort.Slice(events, func(i, j int) bool {
@@ -771,7 +1052,10 @@ func (c *Connector) buildHealth() models.ClusterHealth {
 	}
 
 	// Check nodes
-	nodes, _ := c.nodeLister.List(everythingSelector())
+	var nodes []*corev1.Node
+	if c.nodeLister != nil {
+		nodes, _ = c.nodeLister.List(everythingSelector())
+	}
 	allNodesReady := true
 	for _, node := range nodes {
 		ready := false
@@ -811,7 +1095,10 @@ func (c *Connector) buildHealth() models.ClusterHealth {
 	}
 
 	// Check for failing pods
-	pods, _ := c.podLister.List(everythingSelector())
+	var pods []*corev1.Pod
+	if c.podLister != nil {
+		pods, _ = c.podLister.List(everythingSelector())
+	}
 	failingPods := 0
 	for _, pod := range pods {
 		if pod.Status.Phase == corev1.PodFailed {
@@ -855,7 +1142,10 @@ func (c *Connector) buildNamespaceWorkloads(
 	}
 
 	// Build replicaset lookup for deployment->pod resolution
-	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
+	var replicaSets []*appsv1.ReplicaSet
+	if c.replicaSetLister != nil {
+		replicaSets, _ = c.replicaSetLister.List(everythingSelector())
+	}
 	// Map deployment name -> replicaset names
 	deployRS := make(map[string][]string) // key: "ns/deployName"
 	rsNames := make(map[string]bool)
@@ -903,7 +1193,10 @@ func (c *Connector) buildNamespaceWorkloads(
 	}
 
 	// Get total cluster capacity for fallback when no limits/requests
-	nodes, _ := c.nodeLister.List(everythingSelector())
+	var nodes []*corev1.Node
+	if c.nodeLister != nil {
+		nodes, _ = c.nodeLister.List(everythingSelector())
+	}
 	var totalCPUCapacity, totalMemCapacity int64
 	for _, node := range nodes {
 		totalCPUCapacity += node.Status.Allocatable.Cpu().MilliValue()
@@ -1077,6 +1370,19 @@ func (c *Connector) GetHealth(metricsAvailable bool, insights []models.Insight) 
 
 // GetResources returns a paginated, filtered, sorted list of resources.
 func (c *Connector) GetResources(resourceType, namespace, search, status, sortBy, order string, page, limit int) models.ResourceList {
+	// Check permission for this resource type (gateway types use dynamic client, skip check)
+	permKey := resourceType
+	if permKey == "persistentvolumeclaims" {
+		permKey = "pvcs"
+	} else if permKey == "persistentvolumes" {
+		permKey = "pvs"
+	} else if permKey == "horizontalpodautoscalers" {
+		permKey = "hpas"
+	}
+	if permKey != "gateways" && permKey != "httproutes" && !c.permissions.CanListWatch(permKey) {
+		return models.ResourceList{Kind: resourceType, Items: []map[string]interface{}{}, Total: 0, Forbidden: true}
+	}
+
 	if page < 1 {
 		page = 1
 	}
@@ -1204,6 +1510,18 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, sortBy
 
 // GetResourceDetail returns a single resource by type, namespace, and name.
 func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map[string]interface{}, error) {
+	permKey := resourceType
+	if permKey == "persistentvolumeclaims" {
+		permKey = "pvcs"
+	} else if permKey == "persistentvolumes" {
+		permKey = "pvs"
+	} else if permKey == "horizontalpodautoscalers" {
+		permKey = "hpas"
+	}
+	if permKey != "gateways" && permKey != "httproutes" && !c.permissions.CanListWatch(permKey) {
+		return nil, &PermissionDeniedError{Resource: resourceType}
+	}
+
 	switch resourceType {
 	case "pods":
 		pod, err := c.podLister.Pods(namespace).Get(name)
@@ -2746,9 +3064,15 @@ func (c *Connector) listStorageClasses() []map[string]interface{} {
 }
 
 func (c *Connector) listNodes() []map[string]interface{} {
+	if c.nodeLister == nil {
+		return nil
+	}
 	list, _ := c.nodeLister.List(everythingSelector())
 	// Count pods per node
-	pods, _ := c.podLister.List(everythingSelector())
+	var pods []*corev1.Pod
+	if c.podLister != nil {
+		pods, _ = c.podLister.List(everythingSelector())
+	}
 	podCountByNode := make(map[string]int)
 	for _, pod := range pods {
 		if pod.Spec.NodeName != "" && pod.Status.Phase == corev1.PodRunning {

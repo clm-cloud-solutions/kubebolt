@@ -35,16 +35,46 @@ func (c *Connector) BuildEdges() []models.TopologyEdge {
 		})
 	}
 
-	pods, _ := c.podLister.List(everythingSelector())
-	services, _ := c.serviceLister.List(everythingSelector())
-	deployments, _ := c.deploymentLister.List(everythingSelector())
-	replicaSets, _ := c.replicaSetLister.List(everythingSelector())
-	statefulSets, _ := c.statefulSetLister.List(everythingSelector())
-	daemonSets, _ := c.daemonSetLister.List(everythingSelector())
-	jobs, _ := c.jobLister.List(everythingSelector())
-	cronJobs, _ := c.cronJobLister.List(everythingSelector())
-	ingresses, _ := c.ingressLister.List(everythingSelector())
-	hpas, _ := c.hpaLister.List(everythingSelector())
+	var pods []*corev1.Pod
+	if c.podLister != nil {
+		pods, _ = c.podLister.List(everythingSelector())
+	}
+	var services []*corev1.Service
+	if c.serviceLister != nil {
+		services, _ = c.serviceLister.List(everythingSelector())
+	}
+	var deployments []*appsv1.Deployment
+	if c.deploymentLister != nil {
+		deployments, _ = c.deploymentLister.List(everythingSelector())
+	}
+	var replicaSets []*appsv1.ReplicaSet
+	if c.replicaSetLister != nil {
+		replicaSets, _ = c.replicaSetLister.List(everythingSelector())
+	}
+	var statefulSets []*appsv1.StatefulSet
+	if c.statefulSetLister != nil {
+		statefulSets, _ = c.statefulSetLister.List(everythingSelector())
+	}
+	var daemonSets []*appsv1.DaemonSet
+	if c.daemonSetLister != nil {
+		daemonSets, _ = c.daemonSetLister.List(everythingSelector())
+	}
+	var jobs []*batchv1.Job
+	if c.jobLister != nil {
+		jobs, _ = c.jobLister.List(everythingSelector())
+	}
+	var cronJobs []*batchv1.CronJob
+	if c.cronJobLister != nil {
+		cronJobs, _ = c.cronJobLister.List(everythingSelector())
+	}
+	var ingresses []*networkingv1.Ingress
+	if c.ingressLister != nil {
+		ingresses, _ = c.ingressLister.List(everythingSelector())
+	}
+	var hpas []*autoscalingv1.HorizontalPodAutoscaler
+	if c.hpaLister != nil {
+		hpas, _ = c.hpaLister.List(everythingSelector())
+	}
 
 	// Pod ownerReferences
 	for _, pod := range pods {
@@ -142,7 +172,10 @@ func (c *Connector) BuildEdges() []models.TopologyEdge {
 	}
 
 	// PVC -> PV
-	pvcs, _ := c.pvcLister.List(everythingSelector())
+	var pvcs []*corev1.PersistentVolumeClaim
+	if c.pvcLister != nil {
+		pvcs, _ = c.pvcLister.List(everythingSelector())
+	}
 	for _, pvc := range pvcs {
 		if pvc.Spec.VolumeName != "" {
 			pvcID := nodeID("PersistentVolumeClaim", pvc.Namespace, pvc.Name)

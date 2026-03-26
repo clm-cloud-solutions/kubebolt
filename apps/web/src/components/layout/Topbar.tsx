@@ -30,6 +30,7 @@ export function Topbar({ overview }: TopbarProps) {
   const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'degraded' ? 'bg-status-warn' : 'bg-status-error'
 
   const switchMutation = useMutation({
+    mutationKey: ['switch-cluster'],
     mutationFn: (context: string) => api.switchCluster(context),
     onMutate: (context: string) => {
       // Immediately mark the selected cluster as active — don't wait for the server round-trip

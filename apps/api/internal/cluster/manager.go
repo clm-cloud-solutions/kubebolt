@@ -196,7 +196,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 		return fmt.Errorf("starting connector for context %s: %w", contextName, err)
 	}
 
-	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval)
+	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)
 
 	ctx, cancel := context.WithCancel(context.Background())

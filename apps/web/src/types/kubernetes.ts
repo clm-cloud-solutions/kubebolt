@@ -81,6 +81,7 @@ export interface ClusterOverview {
   health?: ClusterHealth
   events?: KubeEvent[]
   namespaceWorkloads?: NamespaceWorkload[]
+  permissions?: Record<string, boolean>
 }
 
 // Events

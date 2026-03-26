@@ -36,6 +36,7 @@ export function OverviewPage() {
         cpu={overview.cpu}
         memory={overview.memory}
         metricsAvailable={!overview.health?.checks?.some(c => c.name === 'metrics' && c.status !== 'pass')}
+        nodesRestricted={overview.permissions?.nodes === false}
       />
 
       {/* Events + Workload Health */}

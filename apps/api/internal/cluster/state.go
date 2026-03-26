@@ -10,6 +10,9 @@ import (
 
 // GetPods returns all pods from the cache.
 func (c *Connector) GetPods() []*corev1.Pod {
+	if c.podLister == nil {
+		return nil
+	}
 	pods, err := c.podLister.List(everythingSelector())
 	if err != nil {
 		log.Printf("Error listing pods: %v", err)
@@ -20,6 +23,9 @@ func (c *Connector) GetPods() []*corev1.Pod {
 
 // GetDeployments returns all deployments from the cache.
 func (c *Connector) GetDeployments() []*appsv1.Deployment {
+	if c.deploymentLister == nil {
+		return nil
+	}
 	deployments, err := c.deploymentLister.List(everythingSelector())
 	if err != nil {
 		log.Printf("Error listing deployments: %v", err)
@@ -30,6 +36,9 @@ func (c *Connector) GetDeployments() []*appsv1.Deployment {
 
 // GetNodes returns all nodes from the cache.
 func (c *Connector) GetNodes() []*corev1.Node {
+	if c.nodeLister == nil {
+		return nil
+	}
 	nodes, err := c.nodeLister.List(everythingSelector())
 	if err != nil {
 		log.Printf("Error listing nodes: %v", err)
@@ -40,6 +49,9 @@ func (c *Connector) GetNodes() []*corev1.Node {
 
 // GetHPAs returns all HPAs from the cache.
 func (c *Connector) GetHPAs() []*autoscalingv1.HorizontalPodAutoscaler {
+	if c.hpaLister == nil {
+		return nil
+	}
 	hpas, err := c.hpaLister.List(everythingSelector())
 	if err != nil {
 		log.Printf("Error listing HPAs: %v", err)
@@ -50,6 +62,9 @@ func (c *Connector) GetHPAs() []*autoscalingv1.HorizontalPodAutoscaler {
 
 // GetPVCs returns all PVCs from the cache.
 func (c *Connector) GetPVCs() []*corev1.PersistentVolumeClaim {
+	if c.pvcLister == nil {
+		return nil
+	}
 	pvcs, err := c.pvcLister.List(everythingSelector())
 	if err != nil {
 		log.Printf("Error listing PVCs: %v", err)
@@ -60,6 +75,9 @@ func (c *Connector) GetPVCs() []*corev1.PersistentVolumeClaim {
 
 // GetEventsRaw returns all events from the cache.
 func (c *Connector) GetEventsRaw() []*corev1.Event {
+	if c.eventLister == nil {
+		return nil
+	}
 	events, err := c.eventLister.List(everythingSelector())
 	if err != nil {
 		log.Printf("Error listing events: %v", err)

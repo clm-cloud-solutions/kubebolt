@@ -9,6 +9,8 @@ import { StatusBadge } from './StatusBadge'
 import { UsageBar } from './UsageBar'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { PermissionDenied } from '@/components/shared/PermissionDenied'
+import { ApiError } from '@/services/api'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
@@ -313,7 +315,12 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   }, [data?.items])
 
   if (isLoading) return <LoadingSpinner />
-  if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
+  if (error) {
+    if (error instanceof ApiError && error.status === 403) {
+      return <PermissionDenied resourceType={resourceType} />
+    }
+    return <ErrorState message={error.message} onRetry={() => refetch()} />
+  }
 
   const items = data?.items || []
   const total = data?.total ?? items.length

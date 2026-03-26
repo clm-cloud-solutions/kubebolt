@@ -27,6 +27,7 @@ type ClusterOverview struct {
 	Health             ClusterHealth       `json:"health"`
 	Events             []KubeEvent         `json:"events"`
 	NamespaceWorkloads []NamespaceWorkload `json:"namespaceWorkloads"`
+	Permissions        map[string]bool     `json:"permissions,omitempty"`
 }
 
 // ResourceCount tracks totals and health for a resource type.
@@ -175,9 +176,10 @@ type Topology struct {
 
 // ResourceList is a list of resources.
 type ResourceList struct {
-	Kind  string                   `json:"kind"`
-	Items []map[string]interface{} `json:"items"`
-	Total int                      `json:"total"`
+	Kind      string                   `json:"kind"`
+	Items     []map[string]interface{} `json:"items"`
+	Total     int                      `json:"total"`
+	Forbidden bool                     `json:"forbidden,omitempty"`
 }
 
 // WSMessage is a WebSocket message envelope.

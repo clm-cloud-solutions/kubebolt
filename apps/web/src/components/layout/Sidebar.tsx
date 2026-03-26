@@ -23,6 +23,7 @@ import {
   Shield,
   Activity,
   Settings,
+  ShieldOff,
 } from 'lucide-react'
 import type { ClusterOverview } from '@/types/kubernetes'
 
@@ -35,6 +36,7 @@ interface NavItem {
   path: string
   icon: React.ReactNode
   countKey?: keyof ClusterOverview
+  permissionKey?: string
 }
 
 interface NavSection {
@@ -46,52 +48,52 @@ const sections: NavSection[] = [
   {
     title: 'Pinned',
     items: [
-      { label: 'Pods', path: '/pods', icon: <Box className="w-4 h-4" />, countKey: 'pods' },
-      { label: 'Nodes', path: '/nodes', icon: <Server className="w-4 h-4" />, countKey: 'nodes' },
+      { label: 'Pods', path: '/pods', icon: <Box className="w-4 h-4" />, countKey: 'pods', permissionKey: 'pods' },
+      { label: 'Nodes', path: '/nodes', icon: <Server className="w-4 h-4" />, countKey: 'nodes', permissionKey: 'nodes' },
     ],
   },
   {
     title: 'Workloads',
     items: [
-      { label: 'Deployments', path: '/deployments', icon: <Layers className="w-4 h-4" />, countKey: 'deployments' },
-      { label: 'StatefulSets', path: '/statefulsets', icon: <Database className="w-4 h-4" />, countKey: 'statefulSets' },
-      { label: 'DaemonSets', path: '/daemonsets', icon: <BarChart3 className="w-4 h-4" />, countKey: 'daemonSets' },
-      { label: 'Jobs', path: '/jobs', icon: <Timer className="w-4 h-4" />, countKey: 'jobs' },
-      { label: 'CronJobs', path: '/cronjobs', icon: <Clock className="w-4 h-4" />, countKey: 'cronJobs' },
+      { label: 'Deployments', path: '/deployments', icon: <Layers className="w-4 h-4" />, countKey: 'deployments', permissionKey: 'deployments' },
+      { label: 'StatefulSets', path: '/statefulsets', icon: <Database className="w-4 h-4" />, countKey: 'statefulSets', permissionKey: 'statefulsets' },
+      { label: 'DaemonSets', path: '/daemonsets', icon: <BarChart3 className="w-4 h-4" />, countKey: 'daemonSets', permissionKey: 'daemonsets' },
+      { label: 'Jobs', path: '/jobs', icon: <Timer className="w-4 h-4" />, countKey: 'jobs', permissionKey: 'jobs' },
+      { label: 'CronJobs', path: '/cronjobs', icon: <Clock className="w-4 h-4" />, countKey: 'cronJobs', permissionKey: 'cronjobs' },
     ],
   },
   {
     title: 'Traffic',
     items: [
-      { label: 'Services', path: '/services', icon: <Globe className="w-4 h-4" />, countKey: 'services' },
-      { label: 'Ingresses', path: '/ingresses', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'ingresses' },
+      { label: 'Services', path: '/services', icon: <Globe className="w-4 h-4" />, countKey: 'services', permissionKey: 'services' },
+      { label: 'Ingresses', path: '/ingresses', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'ingresses', permissionKey: 'ingresses' },
       { label: 'Gateways', path: '/gateways', icon: <Globe className="w-4 h-4" /> },
       { label: 'HTTPRoutes', path: '/httproutes', icon: <ArrowRightLeft className="w-4 h-4" /> },
-      { label: 'Endpoints', path: '/endpoints', icon: <Radio className="w-4 h-4" /> },
+      { label: 'Endpoints', path: '/endpoints', icon: <Radio className="w-4 h-4" />, permissionKey: 'endpointslices' },
     ],
   },
   {
     title: 'Storage',
     items: [
-      { label: 'PVCs', path: '/pvcs', icon: <HardDrive className="w-4 h-4" />, countKey: 'pvcs' },
-      { label: 'PVs', path: '/pvs', icon: <Disc className="w-4 h-4" />, countKey: 'pvs' },
-      { label: 'StorageClasses', path: '/storageclasses', icon: <FolderClosed className="w-4 h-4" /> },
+      { label: 'PVCs', path: '/pvcs', icon: <HardDrive className="w-4 h-4" />, countKey: 'pvcs', permissionKey: 'pvcs' },
+      { label: 'PVs', path: '/pvs', icon: <Disc className="w-4 h-4" />, countKey: 'pvs', permissionKey: 'pvs' },
+      { label: 'StorageClasses', path: '/storageclasses', icon: <FolderClosed className="w-4 h-4" />, permissionKey: 'storageclasses' },
     ],
   },
   {
     title: 'Config',
     items: [
-      { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" />, countKey: 'configMaps' },
-      { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" />, countKey: 'secrets' },
-      { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" />, countKey: 'hpas' },
+      { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" />, countKey: 'configMaps', permissionKey: 'configmaps' },
+      { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" />, countKey: 'secrets', permissionKey: 'secrets' },
+      { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" />, countKey: 'hpas', permissionKey: 'hpas' },
     ],
   },
   {
     title: 'Cluster',
     items: [
-      { label: 'Namespaces', path: '/namespaces', icon: <FolderOpen className="w-4 h-4" />, countKey: 'namespaces' },
-      { label: 'RBAC', path: '/rbac', icon: <Shield className="w-4 h-4" /> },
-      { label: 'Events', path: '/events', icon: <Activity className="w-4 h-4" /> },
+      { label: 'Namespaces', path: '/namespaces', icon: <FolderOpen className="w-4 h-4" />, countKey: 'namespaces', permissionKey: 'namespaces' },
+      { label: 'RBAC', path: '/rbac', icon: <Shield className="w-4 h-4" />, permissionKey: 'roles' },
+      { label: 'Events', path: '/events', icon: <Activity className="w-4 h-4" />, permissionKey: 'events' },
     ],
   },
 ]
@@ -196,6 +198,9 @@ export function Sidebar({ overview }: SidebarProps) {
             <div className="space-y-0.5">
               {section.items.map((item) => {
                 const count = getCount(overview, item.countKey)
+                const isRestricted = item.permissionKey != null
+                  && overview?.permissions != null
+                  && overview.permissions[item.permissionKey] === false
                 return (
                   <NavLink
                     key={item.path}
@@ -205,7 +210,7 @@ export function Sidebar({ overview }: SidebarProps) {
                         isActive
                           ? 'bg-status-info-dim text-status-info'
                           : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
-                      }`
+                      } ${isRestricted ? 'opacity-40' : ''}`
                     }
                   >
                     {({ isActive }) => (
@@ -215,9 +220,11 @@ export function Sidebar({ overview }: SidebarProps) {
                         )}
                         <span className="shrink-0">{item.icon}</span>
                         <span className="flex-1 truncate">{item.label}</span>
-                        {count !== undefined && (
+                        {isRestricted ? (
+                          <ShieldOff className="w-3 h-3 text-status-warn" />
+                        ) : count !== undefined ? (
                           <span className="text-[10px] font-mono text-kb-text-tertiary">{count}</span>
-                        )}
+                        ) : null}
                       </>
                     )}
                   </NavLink>

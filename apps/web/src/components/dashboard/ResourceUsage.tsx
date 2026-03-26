@@ -1,4 +1,4 @@
-import { Cpu, MemoryStick, AlertTriangle } from 'lucide-react'
+import { Cpu, MemoryStick, AlertTriangle, ShieldOff } from 'lucide-react'
 import type { ResourceUsage as ResourceUsageType } from '@/types/kubernetes'
 import { formatPercent, formatCPU, formatMemory } from '@/utils/formatters'
 import { getUsageBarColor } from '@/utils/colors'
@@ -9,6 +9,7 @@ interface ResourceUsageProps {
   cpu?: ResourceUsageType
   memory?: ResourceUsageType
   metricsAvailable?: boolean
+  nodesRestricted?: boolean
 }
 
 function UsageCard({
@@ -17,12 +18,14 @@ function UsageCard({
   usage,
   formatFn,
   metricsAvailable,
+  nodesRestricted,
 }: {
   label: string
   icon: React.ReactNode
   usage: ResourceUsageType
   formatFn: (v: number) => string
   metricsAvailable: boolean
+  nodesRestricted?: boolean
 }) {
   const requestedPercent = Math.min(100, usage?.percentRequested ?? 0)
   const hasUsageData = metricsAvailable && (usage?.used ?? 0) > 0
@@ -35,7 +38,7 @@ function UsageCard({
         <span className="text-sm font-semibold text-kb-text-primary">{label}</span>
       </div>
       <div className="text-[11px] font-mono text-kb-text-tertiary mb-3">
-        Requests: {formatFn(usage?.requested ?? 0)} / Limits: {formatFn(usage?.limit ?? 0)} / Total: {formatFn(usage?.allocatable ?? 0)}
+        Requests: {formatFn(usage?.requested ?? 0)} / Limits: {formatFn(usage?.limit ?? 0)} / Total: {nodesRestricted ? 'N/A' : formatFn(usage?.allocatable ?? 0)}
       </div>
 
       <div className="space-y-2.5">
@@ -109,26 +112,36 @@ function UsageCard({
       </div>
 
       {/* No metrics warning */}
-      {!metricsAvailable && (
+      {!metricsAvailable && !nodesRestricted && (
         <div className="flex items-center gap-2 mt-3 px-2 py-1.5 rounded bg-status-warn-dim/50 text-status-warn">
           <AlertTriangle className="w-3 h-3 shrink-0" />
           <span className="text-[10px] font-mono">Metrics Server not detected — usage data unavailable</span>
         </div>
       )}
 
+      {/* No node access warning */}
+      {nodesRestricted && (
+        <div className="flex items-center gap-2 mt-3 px-2 py-1.5 rounded border border-kb-border bg-kb-elevated text-kb-text-secondary">
+          <ShieldOff className="w-3 h-3 shrink-0 text-status-warn" />
+          <span className="text-[10px] font-mono">No access to Nodes — capacity data unavailable</span>
+        </div>
+      )}
+
       {/* Available */}
-      <div className="text-[11px] font-mono text-kb-text-tertiary mt-2">
-        Available: {formatFn(Math.max(0, (usage?.allocatable ?? 0) - (usage?.requested ?? 0)))}
-      </div>
+      {!nodesRestricted && (
+        <div className="text-[11px] font-mono text-kb-text-tertiary mt-2">
+          Available: {formatFn(Math.max(0, (usage?.allocatable ?? 0) - (usage?.requested ?? 0)))}
+        </div>
+      )}
     </div>
   )
 }
 
-export function ResourceUsagePanel({ cpu, memory, metricsAvailable = true }: ResourceUsageProps) {
+export function ResourceUsagePanel({ cpu, memory, metricsAvailable = true, nodesRestricted }: ResourceUsageProps) {
   return (
     <div className="grid grid-cols-2 gap-3">
-      <UsageCard label="CPU Usage" icon={<Cpu className="w-4 h-4" />} usage={cpu ?? emptyUsage} formatFn={formatCPU} metricsAvailable={metricsAvailable} />
-      <UsageCard label="Memory Usage" icon={<MemoryStick className="w-4 h-4" />} usage={memory ?? emptyUsage} formatFn={formatMemory} metricsAvailable={metricsAvailable} />
+      <UsageCard label="CPU Usage" icon={<Cpu className="w-4 h-4" />} usage={cpu ?? emptyUsage} formatFn={formatCPU} metricsAvailable={metricsAvailable} nodesRestricted={nodesRestricted} />
+      <UsageCard label="Memory Usage" icon={<MemoryStick className="w-4 h-4" />} usage={memory ?? emptyUsage} formatFn={formatMemory} metricsAvailable={metricsAvailable} nodesRestricted={nodesRestricted} />
     </div>
   )
 }

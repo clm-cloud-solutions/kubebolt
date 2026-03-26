@@ -43,6 +43,7 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Use(h.requireConnector)
 			r.Get("/cluster/overview", h.getClusterOverview)
 			r.Get("/cluster/health", h.getClusterHealth)
+			r.Get("/cluster/permissions", h.getPermissions)
 			r.Get("/resources/{type}", h.getResources)
 			r.Get("/resources/{type}/{namespace}/{name}", h.getResourceDetail)
 			r.Get("/resources/{type}/{namespace}/{name}/yaml", h.getResourceYAML)

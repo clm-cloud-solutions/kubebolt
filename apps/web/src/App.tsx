@@ -19,8 +19,8 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 10_000,
       retry: (failureCount, error) => {
-        // Never retry cluster-unavailable errors — they won't resolve by retrying
-        if (error instanceof ApiError && error.status === 503) return false
+        // Never retry cluster-unavailable or permission errors — they won't resolve by retrying
+        if (error instanceof ApiError && (error.status === 503 || error.status === 403)) return false
         return failureCount < 2
       },
       refetchOnWindowFocus: false,

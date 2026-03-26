@@ -98,6 +98,10 @@ func (h *handlers) getResources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	result := conn.GetResources(resourceType, namespace, search, status, sortBy, order, page, limit)
+	if result.Forbidden {
+		respondError(w, http.StatusForbidden, "insufficient permissions to access "+resourceType)
+		return
+	}
 	respondJSON(w, http.StatusOK, result)
 }
 
@@ -118,6 +122,10 @@ func (h *handlers) getResourceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	detail, err := conn.GetResourceDetail(resourceType, namespace, name)
 	if err != nil {
+		if _, ok := err.(*cluster.PermissionDeniedError); ok {
+			respondError(w, http.StatusForbidden, err.Error())
+			return
+		}
 		respondError(w, http.StatusNotFound, err.Error())
 		return
 	}
@@ -312,6 +320,15 @@ func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 
 func (h *handlers) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	websocket.ServeWS(h.wsHub, w, r)
+}
+
+func (h *handlers) getPermissions(w http.ResponseWriter, r *http.Request) {
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	respondJSON(w, http.StatusOK, conn.Permissions())
 }
 
 // requireConnector is middleware that returns 503 when no cluster is connected.

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -25,19 +26,22 @@ type Collector struct {
 	metricsClient metricsv.Interface
 	cache         *MetricsCache
 	available     bool
+	forbidden     bool
 	mu            sync.RWMutex
 	interval      time.Duration
+	namespaces    []string // when set, poll per-namespace instead of cluster-wide
 }
 
 // NewCollector creates a new metrics collector.
-func NewCollector(metricsClient metricsv.Interface, interval time.Duration) *Collector {
+func NewCollector(metricsClient metricsv.Interface, interval time.Duration, namespaces []string) *Collector {
 	return &Collector{
 		metricsClient: metricsClient,
 		cache: &MetricsCache{
 			podMetrics:  make(map[string]*models.MetricPoint),
 			nodeMetrics: make(map[string]*models.MetricPoint),
 		},
-		interval: interval,
+		interval:   interval,
+		namespaces: namespaces,
 	}
 }
 
@@ -70,7 +74,9 @@ func (c *Collector) Start(ctx context.Context) {
 }
 
 func (c *Collector) poll(ctx context.Context) {
-	c.pollNodeMetrics(ctx)
+	if len(c.namespaces) == 0 {
+		c.pollNodeMetrics(ctx) // node metrics only available cluster-wide
+	}
 	c.pollPodMetrics(ctx)
 }
 
@@ -79,6 +85,9 @@ func (c *Collector) pollNodeMetrics(ctx context.Context) {
 	if err != nil {
 		c.mu.Lock()
 		c.available = false
+		if apierrors.IsForbidden(err) {
+			c.forbidden = true
+		}
 		c.mu.Unlock()
 		log.Printf("Failed to fetch node metrics: %v", err)
 		return
@@ -102,27 +111,43 @@ func (c *Collector) pollNodeMetrics(ctx context.Context) {
 }
 
 func (c *Collector) pollPodMetrics(ctx context.Context) {
-	podMetrics, err := c.metricsClient.MetricsV1beta1().PodMetricses("").List(ctx, metav1.ListOptions{})
-	if err != nil {
-		log.Printf("Failed to fetch pod metrics: %v", err)
-		return
+	namespaces := c.namespaces
+	if len(namespaces) == 0 {
+		namespaces = []string{""} // empty string = cluster-wide
 	}
 
 	c.cache.mu.Lock()
 	defer c.cache.mu.Unlock()
 
-	for _, pm := range podMetrics.Items {
-		key := fmt.Sprintf("%s/%s", pm.Namespace, pm.Name)
-		var cpuTotal, memTotal int64
-		for _, container := range pm.Containers {
-			cpuTotal += container.Usage.Cpu().MilliValue()
-			memTotal += container.Usage.Memory().Value()
+	for _, ns := range namespaces {
+		podMetrics, err := c.metricsClient.MetricsV1beta1().PodMetricses(ns).List(ctx, metav1.ListOptions{})
+		if err != nil {
+			if ns == "" {
+				log.Printf("Failed to fetch pod metrics: %v", err)
+			}
+			continue
 		}
-		c.cache.podMetrics[key] = &models.MetricPoint{
-			Timestamp: pm.Timestamp.Time,
-			Resource:  key,
-			CPUUsage:  cpuTotal,
-			MemUsage:  memTotal,
+
+		// Mark available on first successful fetch
+		if !c.available {
+			c.mu.Lock()
+			c.available = true
+			c.mu.Unlock()
+		}
+
+		for _, pm := range podMetrics.Items {
+			key := fmt.Sprintf("%s/%s", pm.Namespace, pm.Name)
+			var cpuTotal, memTotal int64
+			for _, container := range pm.Containers {
+				cpuTotal += container.Usage.Cpu().MilliValue()
+				memTotal += container.Usage.Memory().Value()
+			}
+			c.cache.podMetrics[key] = &models.MetricPoint{
+				Timestamp: pm.Timestamp.Time,
+				Resource:  key,
+				CPUUsage:  cpuTotal,
+				MemUsage:  memTotal,
+			}
 		}
 	}
 }
@@ -132,6 +157,13 @@ func (c *Collector) IsAvailable() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.available
+}
+
+// IsForbidden returns whether the metrics server access was denied due to permissions.
+func (c *Collector) IsForbidden() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.forbidden
 }
 
 // GetPodMetrics returns metrics for a specific pod.
