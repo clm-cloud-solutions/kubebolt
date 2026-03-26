@@ -55,15 +55,17 @@ Entry point: `cmd/server/main.go` (flags: `--kubeconfig`, `--port`)
 
 Key packages under `internal/`:
 - **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster. Initial connection is **async** — HTTP server binds immediately; manager starts in disconnected state if the default cluster is unreachable. `ConnError()` exposes the last connection error.
-- **cluster/connector.go** — Kubernetes client-go shared informers for all resource types + dynamic client for Gateway API (Gateways, HTTPRoutes). `Start()` returns an error if `WaitForCacheSync` does not complete within 20s. `rest.Config.Timeout = 15s` prevents hanging on mid-session cluster failures.
+- **cluster/connector.go** — Kubernetes client-go shared informers for all resource types + dynamic client for Gateway API (Gateways, HTTPRoutes). `Start()` returns an error if `WaitForCacheSync` does not complete within 20s. `rest.Config.Timeout = 15s` prevents hanging on mid-session cluster failures. Informers are **gated by permissions** — only started for resources the connected SA can access. For namespace-scoped SAs, creates per-namespace `SharedInformerFactory` instances instead of a single cluster-wide factory.
+- **cluster/permissions.go** — RBAC permission probing via `SelfSubjectAccessReview`. Probes 22 resource types at connection time (list verb only, ~2-5s). Two-phase probe: cluster-wide first, then namespace-level fallback for RoleBinding-based access. `PermissionDeniedError` type for 403 responses. `ResourcePermissions` map tracks `CanList`/`CanWatch`/`CanGet` per resource, plus `NamespaceScoped` flag and `Namespaces` list for namespace-scoped SAs.
+- **cluster/nslister.go** — Multi-namespace lister wrappers that aggregate results from per-namespace informer factories. Implements all client-go lister interfaces (`PodLister`, `DeploymentLister`, etc.) with `List()` merging across factories and `Get()` trying each factory until found. Required for namespace-scoped ServiceAccounts.
 - **cluster/graph.go** — In-memory topology graph with debounced rebuild (2s)
-- **cluster/relationships.go** — Edge detection: ownerRefs, selectors, Gateway parentRefs, volumes
-- **metrics/collector.go** — Polls Metrics Server API (`metrics.k8s.io/v1beta1`) every 30s with synchronous initial poll. In-memory cache, no DB.
+- **cluster/relationships.go** — Edge detection: ownerRefs, selectors, Gateway parentRefs, volumes. All lister calls nil-guarded for partial-permission scenarios.
+- **metrics/collector.go** — Polls Metrics Server API (`metrics.k8s.io/v1beta1`) every 30s with synchronous initial poll. In-memory cache, no DB. Supports **per-namespace polling** when cluster-wide metrics access is denied (namespace-scoped SAs). Distinguishes 403 Forbidden from "metrics server not installed" via `apierrors.IsForbidden()`.
 - **insights/engine.go** — 12 rule-based insight evaluations (crash-loop, OOM, CPU throttle, memory pressure, etc.)
 - **websocket/hub.go** — WebSocket connection management (4096 buffer, silent drops when no clients)
 - **api/router.go** — Chi router with `requireConnector` middleware guarding all cluster-dependent routes; `/clusters` and `/clusters/switch` are always available even when disconnected.
-- **api/handlers.go** — REST handlers including resource detail with metrics injection, YAML endpoint (dynamic client), pod logs streaming, deployment/statefulset/daemonset/job pod listing, deployment history
-- **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types), `ResourceUsage`, `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
+- **api/handlers.go** — REST handlers including resource detail with metrics injection, YAML endpoint (dynamic client), pod logs streaming, deployment/statefulset/daemonset/job pod listing, deployment history. Permission-denied errors mapped to HTTP 403 (was generic 404/500). New `getPermissions` handler.
+- **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types + `Permissions` map), `ResourceUsage`, `ResourceList` (with `Forbidden` flag), `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
 
 ### API Endpoints
 
@@ -84,6 +86,7 @@ Key packages under `internal/`:
 | `GET /topology` | Full topology graph (nodes + edges) |
 | `GET /insights` | Evaluated insights with severity |
 | `GET /events` | Events with `?involvedKind=&involvedName=` filtering |
+| `GET /cluster/permissions` | Probed RBAC permissions per resource type |
 | `GET /ws` | WebSocket for real-time updates |
 
 ### Frontend (`apps/web`)
@@ -128,24 +131,28 @@ Terminal and Files tabs are Phase 2 (marked "Coming Soon").
 - Cross-resource links: Pod→Node, PVC→PV/StorageClass, HPA→target, namespace links
 
 **Key frontend behaviors:**
-- TanStack Query `retry` skips retries on 503 (cluster unavailable)
-- `ApiError` (from `api.ts`) used to detect 503 vs other errors
+- TanStack Query `retry` skips retries on 503 (cluster unavailable) and 403 (permission denied)
+- `ApiError` (from `api.ts`) used to detect 503/403 vs other errors
 - Resource list pages support server-side pagination (50/page) with prev/next controls
-- Cluster switcher uses optimistic updates and navigates to Overview
-- Sidebar shows resource counters from overview API (15 resource types)
+- Cluster switcher uses optimistic updates, shows "Connecting to cluster" overlay during switch, navigates to Overview on success
+- Sidebar shows resource counters from overview API (15 resource types); restricted resources dimmed with shield icon
+- "Limited access" banner when permissions are partial (shows X of Y resource types)
+- `PermissionDenied` component for 403 pages (instead of generic error)
+- Summary cards show "No access" for restricted resources; CPU/Memory panels show "No access to Nodes" when capacity unavailable
 - Overview workload cards link to resource detail views
 
 ### Data Flow
 
 1. Cluster Manager reads kubeconfig contexts; initial K8s connection starts async in background
-2. HTTP server is immediately available — returns 503 on cluster-dependent routes until connected
-3. Shared informers watch K8s resources → in-memory lister caches
-4. Dynamic client discovers Gateway API resources (with 5s timeout)
-5. Metrics Collector polls Metrics Server → in-memory metrics cache
-6. Insights Engine evaluates 12 rules against cluster state → recommendations
-7. REST API serves enriched resource lists (with CPU/MEM metrics injected), paginated (default 50/page)
-8. WebSocket hub broadcasts resource changes (debounced topology rebuilds)
-9. Frontend uses TanStack Query with 30s refetch intervals; 503s shown as "Cluster unreachable" state
+2. **Permission probe** runs 22 SelfSubjectAccessReview calls (cluster-wide, then namespace fallback) to detect access level
+3. HTTP server is immediately available — returns 503 on cluster-dependent routes until connected
+4. Shared informers start **only for permitted resources**; namespace-scoped SAs get per-namespace factories with multi-lister aggregation
+5. Dynamic client discovers Gateway API resources (with 5s timeout)
+6. Metrics Collector polls Metrics Server → in-memory metrics cache (per-namespace polling for namespace-scoped SAs)
+7. Insights Engine evaluates 12 rules against cluster state → recommendations
+8. REST API serves enriched resource lists (with CPU/MEM metrics injected), paginated (default 50/page). Returns 403 for restricted resources.
+9. WebSocket hub broadcasts resource changes (debounced topology rebuilds)
+10. Frontend uses TanStack Query with 30s refetch intervals; 503s shown as "Cluster unreachable", 403s shown as "Access Restricted"
 
 ### Cluster Map
 

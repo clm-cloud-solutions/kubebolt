@@ -83,6 +83,7 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 ## Features
 
 - **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click
+- **RBAC-aware** — Auto-detects permissions at connect time; gracefully degrades for read-only or namespace-scoped ServiceAccounts
 - **23 resource views** — Pods, Deployments, Services, Ingresses, Gateways, HTTPRoutes, Nodes, and more
 - **Cluster Map** — Interactive topology with Grid and Flow layouts, namespace grouping, resource type filters
 - **Insights Engine** — 12 built-in rules: crash loops, OOM kills, CPU throttling, HPA saturation, pending PVCs
@@ -117,10 +118,27 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 └─────────────────────────────┘
 ```
 
+## RBAC & Permissions
+
+KubeBolt works with any level of Kubernetes access — from full cluster-admin to namespace-scoped read-only ServiceAccounts.
+
+| Access Level | What You See |
+|---|---|
+| **Cluster-admin** | Everything — all resources, metrics, insights |
+| **Cluster read-only** (ClusterRoleBinding `view`) | All namespace resources, no Secrets/RBAC. Restricted items dimmed in sidebar |
+| **Namespace-scoped** (RoleBindings in specific namespaces) | Only resources in permitted namespaces. Metrics polled per-namespace |
+
+At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` and adapts:
+- Informers only start for accessible resources (no 403 errors in logs)
+- Namespace-scoped SAs get per-namespace informer factories with merged results
+- UI shows a "Limited access" banner, dims restricted sidebar items, and displays clear "Access Restricted" pages
+
 ## Phase 1 (Current)
 
 - Zero install — only a kubeconfig needed
 - Multi-cluster support with runtime switching
+- RBAC permission detection with graceful degradation for limited access
+- Namespace-scoped ServiceAccount support with per-namespace informers and metrics
 - Kubernetes API Server + Metrics Server (optional, graceful degradation)
 - Gateway API support (`gateway.networking.k8s.io/v1`)
 - 23 resource views + interactive cluster topology map with two layout modes
