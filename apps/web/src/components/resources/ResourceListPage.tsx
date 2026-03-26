@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
@@ -295,13 +295,23 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
 
   const [namespace, setNamespace] = useState('')
   const [search, setSearch] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [page, setPage] = useState(1)
 
   function resetPage() { setPage(1) }
 
+  // Debounce search: update query param 300ms after last keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(search)
+      resetPage()
+    }, 300)
+    return () => clearTimeout(timer)
+  }, [search])
+
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources(resourceType, {
     namespace: namespace || undefined,
-    search: search || undefined,
+    search: debouncedSearch || undefined,
     page,
     limit: PAGE_SIZE,
   })
@@ -314,7 +324,7 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
     return Array.from(ns).sort()
   }, [data?.items])
 
-  if (isLoading) return <LoadingSpinner />
+  if (isLoading && !data) return <LoadingSpinner />
   if (error) {
     if (error instanceof ApiError && error.status === 403) {
       return <PermissionDenied resourceType={resourceType} />
@@ -347,7 +357,7 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
         selectedNamespace={namespace}
         onNamespaceChange={(v) => { setNamespace(v); resetPage() }}
         search={search}
-        onSearchChange={(v) => { setSearch(v); resetPage() }}
+        onSearchChange={setSearch}
         total={items.length}
         resourceName={label.toLowerCase()}
       />

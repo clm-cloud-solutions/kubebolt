@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import type { ResourceParams } from '@/types/kubernetes'
 
@@ -8,6 +8,7 @@ export function useResources(type: string, params?: ResourceParams) {
     queryFn: () => api.getResources(type, params),
     refetchInterval: 30_000,
     retry: 2,
+    placeholderData: keepPreviousData,
   })
 }
 
