@@ -6,13 +6,13 @@ import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
 import { FilterBar } from './FilterBar'
 import { StatusBadge } from './StatusBadge'
-import { UsageBar } from './UsageBar'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { PermissionDenied } from '@/components/shared/PermissionDenied'
 import { ApiError } from '@/services/api'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
-import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
+import { formatAge } from '@/utils/formatters'
+import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import type { ResourceItem } from '@/types/kubernetes'
 
 const PAGE_SIZE = 50
@@ -52,30 +52,26 @@ const resourceLabels: Record<string, string> = {
 }
 
 function CpuCell({ item }: { item: ResourceItem }) {
-  const usage = Number(item.cpuUsage ?? 0)
-  const percent = Number(item.cpuPercent ?? 0)
-  if (usage === 0 && percent === 0) return <span className="text-kb-text-tertiary text-[11px] font-mono">—</span>
   return (
-    <div className="flex items-center gap-1.5">
-      <div className="w-14">
-        <UsageBar percent={Math.max(percent, usage > 0 ? 2 : 0)} height={4} />
-      </div>
-      <span className="text-[11px] font-mono text-kb-text-secondary">{formatCPU(usage)}</span>
-    </div>
+    <ResourceUsageCell
+      usage={Number(item.cpuUsage ?? 0)}
+      request={Number(item.cpuRequest ?? 0)}
+      limit={Number(item.cpuLimit ?? 0)}
+      percent={Number(item.cpuPercent ?? 0)}
+      type="cpu"
+    />
   )
 }
 
 function MemCell({ item }: { item: ResourceItem }) {
-  const usage = Number(item.memoryUsage ?? 0)
-  const percent = Number(item.memoryPercent ?? 0)
-  if (usage === 0 && percent === 0) return <span className="text-kb-text-tertiary text-[11px] font-mono">—</span>
   return (
-    <div className="flex items-center gap-1.5">
-      <div className="w-14">
-        <UsageBar percent={Math.max(percent, usage > 0 ? 2 : 0)} height={4} />
-      </div>
-      <span className="text-[11px] font-mono text-kb-text-secondary">{formatMemory(usage)}</span>
-    </div>
+    <ResourceUsageCell
+      usage={Number(item.memoryUsage ?? 0)}
+      request={Number(item.memoryRequest ?? 0)}
+      limit={Number(item.memoryLimit ?? 0)}
+      percent={Number(item.memoryPercent ?? 0)}
+      type="memory"
+    />
   )
 }
 
@@ -236,7 +232,9 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
   if (resourceType === 'jobs') {
     base.push(
       { accessorKey: 'completions', header: 'Completions', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'duration', header: 'Duration', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'duration', header: 'Duration', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
+      { id: 'cpu', header: 'CPU', cell: (info) => <CpuCell item={info.row.original} /> },
+      { id: 'memory', header: 'Memory', cell: (info) => <MemCell item={info.row.original} /> }
     )
   }
 

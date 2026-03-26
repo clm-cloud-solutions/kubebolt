@@ -6,7 +6,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
-import { UsageBar } from './UsageBar'
+import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -382,29 +382,35 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
 
 function MetricsBar({ item }: { item: ResourceItem }) {
   const cpuUsage = Number(item.cpuUsage ?? 0)
+  const cpuRequest = Number(item.cpuRequest ?? 0)
+  const cpuLimit = Number(item.cpuLimit ?? 0)
   const cpuPercent = Number(item.cpuPercent ?? 0)
   const memUsage = Number(item.memoryUsage ?? 0)
+  const memRequest = Number(item.memoryRequest ?? 0)
+  const memLimit = Number(item.memoryLimit ?? 0)
   const memPercent = Number(item.memoryPercent ?? 0)
-  if (cpuUsage === 0 && memUsage === 0) return null
+
+  const hasCpu = cpuUsage > 0 || cpuRequest > 0
+  const hasMem = memUsage > 0 || memRequest > 0
+  if (!hasCpu && !hasMem) return null
+
   return (
     <Section title="Resource Usage">
       <div className="grid grid-cols-2 gap-6">
-        {cpuUsage > 0 && (
+        {hasCpu && (
           <div>
-            <div className="flex justify-between mb-1">
+            <div className="flex justify-between mb-2">
               <span className="text-[10px] text-kb-text-tertiary">CPU</span>
-              <span className="text-[10px] font-mono text-kb-text-secondary">{formatCPU(cpuUsage)} ({Math.round(cpuPercent)}%)</span>
             </div>
-            <UsageBar percent={cpuPercent} height={6} />
+            <ResourceUsageCell usage={cpuUsage} request={cpuRequest} limit={cpuLimit} percent={cpuPercent} type="cpu" size="lg" />
           </div>
         )}
-        {memUsage > 0 && (
+        {hasMem && (
           <div>
-            <div className="flex justify-between mb-1">
+            <div className="flex justify-between mb-2">
               <span className="text-[10px] text-kb-text-tertiary">Memory</span>
-              <span className="text-[10px] font-mono text-kb-text-secondary">{formatMemory(memUsage)} ({Math.round(memPercent)}%)</span>
             </div>
-            <UsageBar percent={memPercent} height={6} />
+            <ResourceUsageCell usage={memUsage} request={memRequest} limit={memLimit} percent={memPercent} type="memory" size="lg" />
           </div>
         )}
       </div>
@@ -1030,20 +1036,10 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
               <td className="py-2 font-mono">{pod.namespace}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                {Number(pod.cpuUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
               </td>
               <td className="py-2 w-36 pl-2">
-                {Number(pod.memoryUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -1085,20 +1081,10 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
               <td className="py-2 font-mono">{pod.namespace}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                {Number(pod.cpuUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
               </td>
               <td className="py-2 w-36 pl-2">
-                {Number(pod.memoryUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -1144,20 +1130,10 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
               </td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                {Number(pod.cpuUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
               </td>
               <td className="py-2 w-36 pl-2">
-                {Number(pod.memoryUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -1201,20 +1177,10 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
               </td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                {Number(pod.cpuUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.cpuPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatCPU(Number(pod.cpuUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
               </td>
               <td className="py-2 w-36 pl-2">
-                {Number(pod.memoryUsage ?? 0) > 0 ? (
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-16"><UsageBar percent={Number(pod.memoryPercent ?? 0)} height={4} /></div>
-                    <span className="text-[10px] font-mono">{formatMemory(Number(pod.memoryUsage))}</span>
-                  </div>
-                ) : <span className="text-kb-text-tertiary">—</span>}
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
