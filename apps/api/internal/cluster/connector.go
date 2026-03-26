@@ -45,6 +45,16 @@ import (
 	sigsyaml "sigs.k8s.io/yaml"
 )
 
+// stripManagedFieldsOption removes managedFields from cached objects to reduce memory.
+// managedFields is server-side apply metadata not used by KubeBolt.
+// The YAML endpoint uses the dynamic client directly, so full objects are still available there.
+var stripManagedFieldsOption = informers.WithTransform(func(obj interface{}) (interface{}, error) {
+	if accessor, ok := obj.(metav1.ObjectMetaAccessor); ok {
+		accessor.GetObjectMeta().SetManagedFields(nil)
+	}
+	return obj, nil
+})
+
 // Connector manages the Kubernetes cluster connection and informers.
 type Connector struct {
 	clientset     kubernetes.Interface
@@ -132,7 +142,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		log.Printf("Warning: metrics client creation failed: %v", err)
 	}
 
-	factory := informers.NewSharedInformerFactory(clientset, 30*time.Second)
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 30*time.Second, stripManagedFieldsOption)
 
 	c := &Connector{
 		clientset:     clientset,
@@ -187,7 +197,7 @@ func (c *Connector) setupInformers() {
 		nsFactories = make(map[string]informers.SharedInformerFactory, len(nsNamespaces))
 		for _, ns := range nsNamespaces {
 			nsFactories[ns] = informers.NewSharedInformerFactoryWithOptions(
-				c.clientset, 30*time.Second, informers.WithNamespace(ns),
+				c.clientset, 30*time.Second, informers.WithNamespace(ns), stripManagedFieldsOption,
 			)
 		}
 	}
