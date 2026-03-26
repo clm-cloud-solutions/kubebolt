@@ -539,7 +539,7 @@ function LogOutput({ logs, logsEndRef }: { logs: string | undefined; logsEndRef:
 function highlightYAMLLine(line: string): React.ReactNode {
   // Comment lines
   if (/^\s*#/.test(line)) {
-    return <span style={{ color: '#6a737d', fontStyle: 'italic' }}>{line}</span>
+    return <span className="yaml-comment">{line}</span>
   }
 
   // Key: value lines
@@ -549,7 +549,7 @@ function highlightYAMLLine(line: string): React.ReactNode {
     return (
       <>
         <span>{indent}</span>
-        <span style={{ color: '#d2a8ff' }}>{key}</span>
+        <span className="yaml-key">{key}</span>
         <span>{colon}</span>
         {highlightValue(rest)}
       </>
@@ -563,7 +563,7 @@ function highlightYAMLLine(line: string): React.ReactNode {
     return (
       <>
         <span>{prefix}</span>
-        <span style={{ color: '#d2a8ff' }}>{key}</span>
+        <span className="yaml-key">{key}</span>
         <span>{colon}</span>
         {highlightValue(rest)}
       </>
@@ -592,31 +592,31 @@ function highlightValue(raw: string): React.ReactNode {
   // Quoted strings
   if (/^["'].*["']$/.test(trimmed)) {
     const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span style={{ color: '#a5d6ff' }}>{trimmed}</span></>
+    return <><span>{leading}</span><span className="yaml-string">{trimmed}</span></>
   }
 
   // Booleans
   if (/^(true|false)$/i.test(trimmed)) {
     const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span style={{ color: '#ff7b72' }}>{trimmed}</span></>
+    return <><span>{leading}</span><span className="yaml-bool">{trimmed}</span></>
   }
 
   // Null
   if (/^(null|~)$/i.test(trimmed)) {
     const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span style={{ color: '#6a737d', fontStyle: 'italic' }}>{trimmed}</span></>
+    return <><span>{leading}</span><span className="yaml-null">{trimmed}</span></>
   }
 
   // Numbers
   if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) {
     const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span style={{ color: '#79c0ff' }}>{trimmed}</span></>
+    return <><span>{leading}</span><span className="yaml-number">{trimmed}</span></>
   }
 
   // Plain strings (unquoted)
   if (trimmed.length > 0) {
     const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span style={{ color: '#a5d6ff' }}>{trimmed}</span></>
+    return <><span>{leading}</span><span className="yaml-string">{trimmed}</span></>
   }
 
   return <span>{raw}</span>
@@ -637,7 +637,7 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
           Save <span className="text-[8px] ml-1 opacity-60">SOON</span>
         </button>
       </div>
-      <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117' }}>
+      <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
         <pre className="text-[11px] font-mono leading-5">
           {lines.map((line, i) => (
             <div key={i} className="flex">

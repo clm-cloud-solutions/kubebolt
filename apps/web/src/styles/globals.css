@@ -16,6 +16,13 @@
   --kb-text-tertiary: #8b8d9a;
   --kb-scrollbar: rgba(0, 0, 0, 0.14);
   --kb-bar-track: rgba(0, 0, 0, 0.1);
+  /* YAML syntax highlighting (code block always has dark bg) */
+  --kb-yaml-key: #d2a8ff;
+  --kb-yaml-string: #a5d6ff;
+  --kb-yaml-number: #79c0ff;
+  --kb-yaml-bool: #ff7b72;
+  --kb-yaml-null: #8b949e;
+  --kb-yaml-comment: #8b949e;
 }
 
 .dark {
@@ -32,6 +39,13 @@
   --kb-text-tertiary: #555770;
   --kb-scrollbar: rgba(255, 255, 255, 0.14);
   --kb-bar-track: rgba(255, 255, 255, 0.06);
+  /* YAML syntax highlighting */
+  --kb-yaml-key: #d2a8ff;
+  --kb-yaml-string: #a5d6ff;
+  --kb-yaml-number: #79c0ff;
+  --kb-yaml-bool: #ff7b72;
+  --kb-yaml-null: #6a737d;
+  --kb-yaml-comment: #6a737d;
 }
 
 * {
@@ -111,3 +125,11 @@ body,
 .animate-celebrate {
   animation: celebrate 2.2s ease-out both;
 }
+
+/* YAML syntax highlighting classes */
+.yaml-key { color: var(--kb-yaml-key); }
+.yaml-string { color: var(--kb-yaml-string); }
+.yaml-number { color: var(--kb-yaml-number); }
+.yaml-bool { color: var(--kb-yaml-bool); }
+.yaml-null { color: var(--kb-yaml-null); font-style: italic; }
+.yaml-comment { color: var(--kb-yaml-comment); font-style: italic; }

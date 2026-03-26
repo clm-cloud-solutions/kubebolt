@@ -75,13 +75,15 @@ KubeBolt is a Kubernetes monitoring platform that provides instant cluster visib
 **Phase 1 (zero install):**
 1. User provides kubeconfig (all contexts auto-discovered for multi-cluster)
 2. Cluster Manager connects to selected K8s API Server via client-go
-3. Shared informer factory watches all resource types
-4. Dynamic client discovers Gateway API resources (Gateways, HTTPRoutes)
-5. Metrics Collector polls `metrics.k8s.io/v1beta1` every 30s (synchronous initial poll)
-6. Insights Engine evaluates 12 rules against current state
-7. REST API serves resource lists, details, topology (with metrics enrichment)
-8. WebSocket broadcasts real-time updates to frontend
-9. User can switch clusters at runtime via API
+3. **Permission probe** runs SelfSubjectAccessReview for 22 resource types to detect access level
+4. Shared informer factory watches **only permitted** resource types (skips denied resources)
+5. For namespace-scoped ServiceAccounts: per-namespace informer factories with multi-lister aggregation
+6. Dynamic client discovers Gateway API resources (Gateways, HTTPRoutes)
+7. Metrics Collector polls `metrics.k8s.io/v1beta1` every 30s (per-namespace when cluster-wide denied)
+8. Insights Engine evaluates 12 rules against current state
+9. REST API serves resource lists, details, topology (with metrics enrichment). Returns 403 for restricted resources.
+10. WebSocket broadcasts real-time updates to frontend
+11. User can switch clusters at runtime via API
 
 **Phase 2 (agent installed):**
 1. `kubebolt-agent` DaemonSet reads kubelet/cAdvisor on each node
@@ -160,7 +162,41 @@ KubeBolt is a Kubernetes monitoring platform that provides instant cluster visib
 
 **Graceful degradation:** If Metrics Server is not available, KubeBolt shows all resource state and events but CPU/memory bars display "Metrics Server not detected — install for CPU/memory data" with a one-click install command.
 
-### 3.5 Relationship Detection
+### 3.5 RBAC Permission Detection
+
+KubeBolt auto-detects the connected kubeconfig's permissions at connection time and adapts its behavior. Works with any access level — from cluster-admin to namespace-scoped read-only ServiceAccounts.
+
+**Permission probe (`permissions.go`):**
+- Uses `SelfSubjectAccessReview` API to test `list` verb for each of the 22 resource types
+- Two-phase probe: cluster-wide first, then namespace-level fallback for RoleBinding-based access
+- Concurrent execution (semaphore of 10), completes in ~2-5s
+- If SSAR API itself is unavailable, falls back to assume full access (preserves existing behavior)
+
+**Access levels supported:**
+
+| Level | Detection | Backend Behavior | Frontend Behavior |
+|---|---|---|---|
+| Cluster-admin | All 22 SSAR probes pass | All informers start normally | Full UI, no restrictions |
+| Cluster read-only | Some probes fail (e.g., Secrets, RBAC) | Informers only for permitted resources | Restricted items dimmed, "Limited access" banner |
+| Namespace-scoped | Cluster-wide probes fail, namespace probes pass | Per-namespace `SharedInformerFactory` instances with multi-lister aggregation (`nslister.go`) | Same as above, resources scoped to permitted namespaces |
+
+**Namespace-scoped informers (`nslister.go`):**
+- When a ServiceAccount has RoleBindings (not ClusterRoleBindings), cluster-wide list/watch is denied
+- KubeBolt creates one `SharedInformerFactory` per accessible namespace using `informers.WithNamespace(ns)`
+- Multi-lister wrappers aggregate `List()` across all factories and `Get()` tries each until found
+- Metrics Collector polls per-namespace (`PodMetricses(ns).List()`) instead of cluster-wide
+
+**Frontend permission UI:**
+- "Limited access — showing X of Y resource types" banner in Layout
+- Sidebar items dimmed with shield icon for restricted resources
+- Summary cards show "No access" instead of misleading "0"
+- CPU/Memory panels show "No access to Nodes — capacity data unavailable" when node access denied
+- `PermissionDenied` component for 403 resource pages
+- "Connecting to cluster" overlay during cluster switch (permission probe + informer sync)
+
+**API endpoint:** `GET /cluster/permissions` returns the full permission map per resource type. The `GET /cluster/overview` response also includes a `permissions` field with simplified `key → bool` access map.
+
+### 3.6 Relationship Detection
 
 KubeBolt builds a cluster topology graph by analyzing:
 
@@ -914,7 +950,7 @@ npm run dev  # → http://localhost:5173
 ## 9. Security
 
 **Principle of Least Privilege:**
-- Phase 1: uses whatever permissions the kubeconfig provides (typically read-only)
+- Phase 1: auto-detects kubeconfig permissions via SelfSubjectAccessReview; only starts informers for permitted resources. Works with cluster-admin, read-only ClusterRoles, or namespace-scoped RoleBindings.
 - Phase 2: agent uses dedicated ServiceAccount with minimal ClusterRole
 - KubeBolt NEVER reads Secret values, environment variable contents, or container filesystem data
 - ConfigMap and Secret views show key names only, NOT values
