@@ -9,8 +9,6 @@ import { WorkloadHealth } from './WorkloadHealth'
 import { EventsFeed } from './EventsFeed'
 import { NamespaceSection } from './NamespaceSection'
 
-const OVERVIEW_REFRESH_INTERVAL = 30_000
-
 export function OverviewPage() {
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
 
@@ -23,8 +21,7 @@ export function OverviewPage() {
       <div className="flex justify-end">
         <DataFreshnessIndicator
           dataUpdatedAt={dataUpdatedAt}
-          refreshInterval={OVERVIEW_REFRESH_INTERVAL}
-          isFetching={isFetching}
+isFetching={isFetching}
         />
       </div>
 

@@ -361,7 +361,6 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
         <div className="ml-auto">
           <DataFreshnessIndicator
             dataUpdatedAt={dataUpdatedAt}
-            refreshInterval={30_000}
             isFetching={isFetching}
           />
         </div>

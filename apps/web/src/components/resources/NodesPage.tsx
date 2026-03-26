@@ -89,7 +89,7 @@ export function NodesPage() {
           {nodes.length} total
         </span>
         <div className="ml-auto">
-          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
         </div>
       </div>
       <div className="grid grid-cols-3 gap-3 mb-5">

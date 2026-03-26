@@ -28,7 +28,7 @@ export function EventsPage() {
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h1 className="text-lg font-semibold text-kb-text-primary">Events</h1>
-          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={15_000} isFetching={isFetching} />
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
         </div>
         <div className="flex gap-1">
           {filters.map((f) => (

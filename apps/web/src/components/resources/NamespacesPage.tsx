@@ -56,7 +56,7 @@ export function NamespacesPage() {
             {namespaces.length} total
           </span>
         </div>
-        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
+        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
       </div>
       <div className="grid grid-cols-3 gap-3">
         {namespaces.map((ns) => (

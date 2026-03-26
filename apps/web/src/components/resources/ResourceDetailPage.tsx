@@ -1464,7 +1464,7 @@ export function ResourceDetailPage() {
           )}
           <span className="text-kb-text-primary">{item.name}</span>
         </div>
-        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
+        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
       </div>
 
       {/* Header */}

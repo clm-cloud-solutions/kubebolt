@@ -21,7 +21,7 @@ export function RBACPage() {
     <div>
       <div className="flex items-center justify-between mb-4">
         <h1 className="text-lg font-semibold text-kb-text-primary">RBAC</h1>
-        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
+        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
       </div>
 
       <div className="grid grid-cols-2 gap-4">

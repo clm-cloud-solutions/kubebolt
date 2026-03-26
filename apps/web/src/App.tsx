@@ -2,6 +2,7 @@ import { Component, type ReactNode } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
+import { RefreshProvider } from '@/contexts/RefreshContext'
 import { ApiError } from '@/services/api'
 import { Layout } from '@/components/layout/Layout'
 import { OverviewPage } from '@/components/dashboard/OverviewPage'
@@ -66,6 +67,7 @@ export default function App() {
     <ThemeProvider>
       <ErrorBoundary>
         <QueryClientProvider client={queryClient}>
+        <RefreshProvider>
         <BrowserRouter>
           <Routes>
             <Route element={<Layout />}>
@@ -97,6 +99,7 @@ export default function App() {
             </Route>
           </Routes>
         </BrowserRouter>
+        </RefreshProvider>
         </QueryClientProvider>
       </ErrorBoundary>
     </ThemeProvider>

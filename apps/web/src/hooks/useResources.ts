@@ -1,23 +1,26 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { api } from '@/services/api'
+import { useRefreshInterval } from '@/contexts/RefreshContext'
 import type { ResourceParams } from '@/types/kubernetes'
 
 export function useResources(type: string, params?: ResourceParams) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['resources', type, params],
     queryFn: () => api.getResources(type, params),
-    refetchInterval: 30_000,
+    refetchInterval: interval,
     retry: 2,
     placeholderData: keepPreviousData,
   })
 }
 
 export function useResourceDetail(type: string, namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['resource-detail', type, namespace, name],
     queryFn: () => api.getResourceDetail(type, namespace, name),
     enabled: !!type && !!namespace && !!name,
-    refetchInterval: 30_000,
+    refetchInterval: interval,
   })
 }
 
@@ -38,38 +41,42 @@ export function useTopology() {
 }
 
 export function useDeploymentPods(namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['deployment-pods', namespace, name],
     queryFn: () => api.getDeploymentPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: 30_000,
+    refetchInterval: interval,
   })
 }
 
 export function useStatefulSetPods(namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['statefulset-pods', namespace, name],
     queryFn: () => api.getStatefulSetPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: 30_000,
+    refetchInterval: interval,
   })
 }
 
 export function useDaemonSetPods(namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['daemonset-pods', namespace, name],
     queryFn: () => api.getDaemonSetPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: 30_000,
+    refetchInterval: interval,
   })
 }
 
 export function useJobPods(namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['job-pods', namespace, name],
     queryFn: () => api.getJobPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: 30_000,
+    refetchInterval: interval,
   })
 }
 
@@ -81,6 +88,7 @@ export function useDeploymentHistory(namespace: string, name: string) {
   })
 }
 
+// Logs have their own fixed refresh interval (independent of global setting)
 export function usePodLogs(namespace: string, name: string, container: string, tailLines: number) {
   return useQuery({
     queryKey: ['pod-logs', namespace, name, container, tailLines],
@@ -91,10 +99,11 @@ export function usePodLogs(namespace: string, name: string, container: string, t
 }
 
 export function useResourceEvents(kind: string, namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
   return useQuery({
     queryKey: ['resource-events', kind, namespace, name],
     queryFn: () => api.getEvents({ namespace: namespace === '_' ? undefined : namespace, involvedKind: kind, involvedName: name }),
     enabled: !!kind && !!name,
-    refetchInterval: 30_000,
+    refetchInterval: interval,
   })
 }
