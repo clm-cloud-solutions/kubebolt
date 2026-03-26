@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom'
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
 import { UsageBar } from './UsageBar'
 import { Phase2Placeholder } from '@/components/shared/Phase2Placeholder'
@@ -73,7 +74,7 @@ function NodeCard({ node }: { node: ResourceItem }) {
 }
 
 export function NodesPage() {
-  const { data, isLoading, error, refetch } = useResources('nodes')
+  const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources('nodes')
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
@@ -87,6 +88,9 @@ export function NodesPage() {
         <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
           {nodes.length} total
         </span>
+        <div className="ml-auto">
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
+        </div>
       </div>
       <div className="grid grid-cols-3 gap-3 mb-5">
         {nodes.map((node) => (

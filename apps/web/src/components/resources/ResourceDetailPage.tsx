@@ -4,10 +4,27 @@ import { ChevronRight, Lock } from 'lucide-react'
 import { useResourceDetail, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
 import { UsageBar } from './UsageBar'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
+
+// ─── Keys Display ───────────────────────────────────────────────
+
+function KeysList({ value }: { value: string }) {
+  const keys = value.split(',').map(k => k.trim()).filter(Boolean)
+  if (keys.length === 0) return <span className="text-kb-text-tertiary">—</span>
+  return (
+    <div className="flex flex-wrap gap-1">
+      {keys.map((key) => (
+        <span key={key} className="px-1.5 py-0.5 rounded bg-kb-elevated text-[10px] font-mono text-kb-text-secondary">
+          {key}
+        </span>
+      ))}
+    </div>
+  )
+}
 
 // ─── Shared Helpers ──────────────────────────────────────────────
 
@@ -329,10 +346,10 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
           {type === 'cronjobs' && <InfoField label="Schedule"><span className="font-mono">{String(item.schedule ?? '-')}</span></InfoField>}
           {type === 'cronjobs' && <InfoField label="Suspend">{String(item.suspend ?? false)}</InfoField>}
           {type === 'ingresses' && <InfoField label="Hosts"><span className="font-mono">{String(item.hosts ?? '-')}</span></InfoField>}
-          {type === 'configmaps' && <InfoField label="Keys">{String(item.keys ?? '-')}</InfoField>}
+          {type === 'configmaps' && <InfoField label="Keys"><KeysList value={String(item.keys ?? '-')} /></InfoField>}
           {type === 'configmaps' && <InfoField label="Data Count">{String(item.dataCount ?? 0)}</InfoField>}
           {type === 'secrets' && <InfoField label="Type"><span className="font-mono">{String(item.type ?? '-')}</span></InfoField>}
-          {type === 'secrets' && <InfoField label="Keys">{String(item.keys ?? '-')}</InfoField>}
+          {type === 'secrets' && <InfoField label="Keys"><KeysList value={String(item.keys ?? '-')} /></InfoField>}
           {type === 'pvcs' && item.volumeName != null && <InfoField label="Volume"><ResourceLink name={String(item.volumeName)} resourceType="pvs" /></InfoField>}
           {type === 'pvcs' && item.storageClass != null && <InfoField label="Storage Class"><ResourceLink name={String(item.storageClass)} resourceType="storageclasses" /></InfoField>}
           {type === 'pvcs' && <InfoField label="Capacity">{String(item.capacity ?? '-')}</InfoField>}
@@ -1390,7 +1407,7 @@ function HistoryTab({ namespace, name }: { namespace: string; name: string }) {
 
 export function ResourceDetailPage() {
   const { type = '', namespace = '', name = '' } = useParams<{ type: string; namespace: string; name: string }>()
-  const { data: item, isLoading, error, refetch } = useResourceDetail(type, namespace, name)
+  const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(type, namespace, name)
   const [activeTab, setActiveTab] = useState('overview')
 
   // Reset to overview tab when navigating to a different resource
@@ -1435,16 +1452,19 @@ export function ResourceDetailPage() {
   return (
     <div className="space-y-4">
       {/* Breadcrumb */}
-      <div className="flex items-center gap-1.5 text-[11px] font-mono text-kb-text-tertiary">
-        <Link to={parentPath} className="hover:text-kb-text-primary transition-colors">{parentLabel}</Link>
-        <ChevronRight size={12} />
-        {item.namespace && (
-          <>
-            <span>{item.namespace}</span>
-            <ChevronRight size={12} />
-          </>
-        )}
-        <span className="text-kb-text-primary">{item.name}</span>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-1.5 text-[11px] font-mono text-kb-text-tertiary">
+          <Link to={parentPath} className="hover:text-kb-text-primary transition-colors">{parentLabel}</Link>
+          <ChevronRight size={12} />
+          {item.namespace && (
+            <>
+              <span>{item.namespace}</span>
+              <ChevronRight size={12} />
+            </>
+          )}
+          <span className="text-kb-text-primary">{item.name}</span>
+        </div>
+        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
       </div>
 
       {/* Header */}

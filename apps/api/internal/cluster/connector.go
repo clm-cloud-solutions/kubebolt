@@ -2390,6 +2390,60 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 }
 
 // isClusterScoped returns true for resource types that are not namespaced.
+// looksLikeSensitiveKey returns true if a ConfigMap key name suggests it holds a secret value.
+func looksLikeSensitiveKey(key string) bool {
+	k := strings.ToLower(key)
+	sensitive := []string{
+		"password", "passwd", "pass_", "_pass",
+		"secret", "token", "api_key", "apikey",
+		"access_key", "private_key", "public_key",
+		"client_secret", "client_id",
+		"credentials", "credential",
+		"authorization",
+		"connection_string", "dsn",
+	}
+	for _, s := range sensitive {
+		if strings.Contains(k, s) {
+			return true
+		}
+	}
+	// Exact suffix matches (e.g., CRON_PASS, DB_PASS)
+	suffixes := []string{"_pass", "_pwd", "_key"}
+	for _, s := range suffixes {
+		if strings.HasSuffix(k, s) {
+			return true
+		}
+	}
+	return false
+}
+
+// looksLikeSensitiveValue returns true if a value looks like it contains a secret,
+// regardless of the key name. Detects AWS keys, long base64, connection strings, etc.
+func looksLikeSensitiveValue(value string) bool {
+	v := strings.TrimSpace(value)
+	if len(v) == 0 {
+		return false
+	}
+	// AWS access key IDs (AKIA...)
+	if strings.HasPrefix(v, "AKIA") && len(v) == 20 {
+		return true
+	}
+	// Long base64-encoded values (likely keys/certs) — 200+ chars of base64 alphabet
+	if len(v) > 200 {
+		isBase64 := true
+		for _, c := range v {
+			if !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '+' || c == '/' || c == '=' || c == '\n') {
+				isBase64 = false
+				break
+			}
+		}
+		if isBase64 {
+			return true
+		}
+	}
+	return false
+}
+
 func isClusterScoped(resourceType string) bool {
 	switch resourceType {
 	case "nodes", "namespaces", "persistentvolumes", "pvs", "storageclasses", "clusterroles", "clusterrolebindings":
@@ -2548,6 +2602,19 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
 			for k := range data {
 				data[k] = "REDACTED"
+			}
+		}
+	}
+
+	// Redact sensitive-looking values in ConfigMap data
+	if resourceType == "configmaps" {
+		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
+			for k, v := range data {
+				if s, ok := v.(string); ok && len(s) > 0 {
+					if looksLikeSensitiveKey(k) || looksLikeSensitiveValue(s) {
+						data[k] = "REDACTED"
+					}
+				}
 			}
 		}
 	}

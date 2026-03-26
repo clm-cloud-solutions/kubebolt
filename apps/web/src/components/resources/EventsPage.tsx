@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useEvents } from '@/hooks/useEvents'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { formatAge } from '@/utils/formatters'
 import type { EventParams } from '@/types/kubernetes'
 
@@ -13,7 +14,7 @@ export function EventsPage() {
   const params: EventParams = {}
   if (filter !== 'all') params.type = filter
 
-  const { data, isLoading, error, refetch } = useEvents(params)
+  const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useEvents(params)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
@@ -25,7 +26,10 @@ export function EventsPage() {
   return (
     <div>
       <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-semibold text-kb-text-primary">Events</h1>
+        <div className="flex items-center gap-3">
+          <h1 className="text-lg font-semibold text-kb-text-primary">Events</h1>
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={15_000} isFetching={isFetching} />
+        </div>
         <div className="flex gap-1">
           {filters.map((f) => (
             <button

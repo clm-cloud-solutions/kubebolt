@@ -16,6 +16,20 @@ import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
 const PAGE_SIZE = 50
+const MAX_KEYS_DISPLAY = 8
+
+function TruncatedKeys({ value }: { value: string }) {
+  const keys = value.split(',').map(k => k.trim()).filter(Boolean)
+  if (keys.length === 0) return <span className="font-mono text-[11px] text-kb-text-tertiary">—</span>
+  const shown = keys.slice(0, MAX_KEYS_DISPLAY)
+  const remaining = keys.length - shown.length
+  return (
+    <span className="font-mono text-[11px] text-kb-text-secondary leading-relaxed">
+      {shown.join(', ')}
+      {remaining > 0 && <span className="text-kb-text-tertiary"> +{remaining} more</span>}
+    </span>
+  )
+}
 
 const resourceLabels: Record<string, string> = {
   pods: 'Pods',
@@ -247,7 +261,7 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     base.push({
       accessorKey: 'keys',
       header: 'Keys',
-      cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span>,
+      cell: (info) => <TruncatedKeys value={String(info.getValue() ?? '—')} />,
     })
   }
 
@@ -255,7 +269,7 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
   if (resourceType === 'secrets') {
     base.push(
       { accessorKey: 'type', header: 'Type', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'keys', header: 'Keys', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
+      { accessorKey: 'keys', header: 'Keys', cell: (info) => <TruncatedKeys value={String(info.getValue() ?? '—')} /> }
     )
   }
 

@@ -1,10 +1,11 @@
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { Shield, Link } from 'lucide-react'
 
 export function RBACPage() {
-  const { data: roles, isLoading: rolesLoading, error: rolesError } = useResources('clusterroles')
+  const { data: roles, isLoading: rolesLoading, error: rolesError, dataUpdatedAt, isFetching } = useResources('clusterroles')
   const { data: bindings, isLoading: bindingsLoading, error: bindingsError } = useResources('clusterrolebindings')
 
   const isLoading = rolesLoading || bindingsLoading
@@ -18,7 +19,10 @@ export function RBACPage() {
 
   return (
     <div>
-      <h1 className="text-lg font-semibold text-kb-text-primary mb-4">RBAC</h1>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-lg font-semibold text-kb-text-primary">RBAC</h1>
+        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} refreshInterval={30_000} isFetching={isFetching} />
+      </div>
 
       <div className="grid grid-cols-2 gap-4">
         {/* ClusterRoles */}
