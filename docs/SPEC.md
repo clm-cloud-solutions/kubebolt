@@ -970,14 +970,62 @@ npm run dev  # → http://localhost:5173
 
 ## 10. Development Roadmap
 
-| Phase | Timeline | Deliverables |
-|-------|----------|-------------|
-| **1.0** | Weeks 1–6 | Go backend (cluster manager, metrics collector, insights engine, REST API, WebSocket). React frontend with 23 views. Multi-cluster support. Gateway API support. Cluster Map with Grid/Flow layouts. Docker Compose self-hosted. Tested on Docker Desktop + EKS. |
-| **1.1** | Weeks 7–8 | Cluster management from Settings (add/remove/rename clusters, upload kubeconfig, connection status). Resource detail panels. Improved insights. Slack/email notifications. |
-| **1.2** | Weeks 9–10 | Sidebar counters for Gateways, HTTPRoutes, Endpoints, StorageClasses (require dynamic client counts). Terminal tab (WebSocket exec via SPDY + xterm.js). Files tab (exec-based file browser). StatefulSet/DaemonSet revision history (ControllerRevision lister). CronJob → Jobs tab (child job listing). Historical metrics time-series in Monitor tab. |
-| **2.0** | Weeks 11–16 | kubebolt-agent DaemonSet. gRPC streaming. Network/disk metrics. Historical TSDB. Enhanced cluster map. |
-| **2.1** | Weeks 15–18 | Prometheus compatibility. Custom alert rules. AI-powered insights. Cost analysis. |
-| **3.0** | Weeks 19+ | SaaS platform. Team collaboration. Custom dashboards. Marketplace. |
+### Phase 1.0 — Core Platform (DONE)
+
+Go backend (cluster manager, metrics collector, insights engine, REST API, WebSocket). React frontend with 23 views. Multi-cluster support. Gateway API support. Cluster Map with Grid/Flow layouts. Docker Compose self-hosted. RBAC permission detection with namespace-scoped SA support. Configurable refresh intervals. Sensitive value redaction in ConfigMap/Secret YAML. Tested on Docker Desktop + EKS.
+
+### Phase 1.3 — Terminal & Cluster Actions (HIGH IMPACT)
+
+Priority: highest — these are the features that keep users inside KubeBolt instead of switching to `kubectl`.
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Pod Terminal** | Critical | WebSocket exec via SPDY + xterm.js. Shell selector (bash/sh/custom). Multi-container support. Tab per terminal session. |
+| **Port Forwarding** | Critical | Forward local ports to pod/service ports. UI to start/stop/list active forwards. Auto-detect container ports. Status indicator in pod detail. |
+| **Restart/Scale** | High | Restart deployment/statefulset/daemonset (rollout restart). Scale replicas via slider or input. Confirmation dialog before action. |
+| **YAML Editing** | High | In-place YAML editor with apply. Diff preview before save. Validation errors shown inline. |
+| **Delete Resources** | High | Delete with confirmation dialog. Support for cascade/orphan options. Grace period selector. |
+| **Global Search** | High | Full-text search across all resources (name, namespace, labels). Keyboard shortcut (Cmd+K). Results grouped by type with navigation. |
+
+### Phase 1.4 — File Browser & History
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Files Tab** | Medium | Exec-based file browser for pod containers. Navigate directories, view file contents, download files. |
+| **StatefulSet/DaemonSet History** | Medium | Revision history via ControllerRevision lister. Diff between revisions. Rollback to previous revision. |
+| **CronJob → Jobs** | Medium | Child job listing for CronJobs. Job status timeline. Manual trigger button. |
+| **Export/Copy YAML** | Medium | Download YAML as file. Copy to clipboard button. |
+
+### Phase 1.5 — Distribution & Community
+
+Priority: critical for open source adoption.
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Helm Chart** | Critical | Standard K8s distribution. Configurable values (kubeconfig, resources, ingress). Published to Artifact Hub. |
+| **Container Images** | High | Multi-arch images (amd64/arm64) on ghcr.io. Automated builds via GitHub Actions on tag. |
+| **GitHub Releases** | High | Automated release workflow. Changelog generation. Pre-built binaries for macOS/Linux. |
+| **User Documentation** | High | Quick start guide, screenshots, cloud-specific guides (EKS, GKE, AKS). Troubleshooting section. |
+
+### Phase 1.6 — Settings & Notifications
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Cluster Management** | Medium | Add/remove/rename clusters from UI. Upload kubeconfig. Connection health status per cluster. |
+| **Slack Notifications** | Medium | Webhook integration for insights alerts. Configurable severity threshold. Channel selector. |
+| **Email Notifications** | Low | SMTP configuration. Digest mode (daily/hourly). Per-insight-type subscription. |
+
+### Phase 2.0 — Agent & Historical Data
+
+kubebolt-agent DaemonSet. gRPC streaming. Network/disk metrics. Historical TSDB (VictoriaMetrics). Enhanced cluster map with traffic flow animation. Container-level metrics granularity.
+
+### Phase 2.1 — Advanced Observability
+
+Prometheus compatibility (remote write receiver). Custom alert rules engine. AI-powered insights and anomaly detection. Cost analysis and right-sizing recommendations.
+
+### Phase 3.0 — SaaS Platform
+
+Multi-tenant platform. OAuth2/SSO. Team collaboration. Custom dashboards. Billing. See `internal/ROADMAP-SAAS.md` for detailed planning.
 
 ---
 
