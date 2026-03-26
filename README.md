@@ -1,5 +1,8 @@
 # ⚡ KubeBolt
 
+[![GitHub stars](https://img.shields.io/github/stars/clm-cloud-solutions/kubebolt?style=social)](https://github.com/clm-cloud-solutions/kubebolt)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 **Instant Kubernetes Monitoring**
 
 KubeBolt gives you full cluster visibility in under 2 minutes. No agents, no configuration, no Prometheus required.

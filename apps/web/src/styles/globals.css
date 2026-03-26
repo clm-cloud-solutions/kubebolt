@@ -88,3 +88,26 @@ body,
 .animate-fade-up {
   animation: fade-up 0.4s ease both;
 }
+
+/* Easter egg celebration */
+@keyframes celebrate {
+  0% {
+    opacity: 0;
+    transform: translateY(100%) scale(0.5);
+  }
+  20% {
+    opacity: 1;
+    transform: translateY(40%) scale(1);
+  }
+  80% {
+    opacity: 1;
+    transform: translateY(-120%) scale(1.1);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-200%) scale(0.8);
+  }
+}
+.animate-celebrate {
+  animation: celebrate 2.2s ease-out both;
+}

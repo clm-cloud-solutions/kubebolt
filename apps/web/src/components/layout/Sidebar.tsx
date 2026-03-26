@@ -1,3 +1,4 @@
+import { useState, useCallback } from 'react'
 import { NavLink } from 'react-router-dom'
 import {
   Zap,
@@ -104,12 +105,54 @@ function getCount(overview: ClusterOverview | undefined, key?: keyof ClusterOver
   return undefined
 }
 
+const BOLT_EMOJIS = ['⚡', '🔥', '🌟', '💫', '✨', '🚀', '💜']
+
 export function Sidebar({ overview }: SidebarProps) {
+  const [clickCount, setClickCount] = useState(0)
+  const [celebrating, setCelebrating] = useState(false)
+
+  const handleLogoClick = useCallback(() => {
+    const next = clickCount + 1
+    if (next >= 7) {
+      setCelebrating(true)
+      setClickCount(0)
+      setTimeout(() => setCelebrating(false), 2500)
+    } else {
+      setClickCount(next)
+    }
+  }, [clickCount])
+
   return (
-    <aside className="w-[220px] h-full bg-kb-sidebar border-r border-kb-border flex flex-col shrink-0">
+    <aside className="w-[220px] h-full bg-kb-sidebar border-r border-kb-border flex flex-col shrink-0 relative overflow-hidden">
+      {/* Celebration particles */}
+      {celebrating && (
+        <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden">
+          {BOLT_EMOJIS.map((emoji, i) => (
+            <span
+              key={i}
+              className="absolute text-lg animate-celebrate"
+              style={{
+                left: `${10 + (i * 28) % 80}%`,
+                animationDelay: `${i * 0.15}s`,
+              }}
+            >
+              {emoji}
+            </span>
+          ))}
+          <div className="absolute top-12 left-0 right-0 text-center">
+            <span className="text-[10px] font-mono font-bold text-yellow-400 animate-pulse tracking-wider">
+              FIRST STAR ★ THANK YOU!
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Logo */}
-      <div className="px-4 h-[52px] flex items-center gap-2 border-b border-kb-border">
-        <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-status-info to-blue-600 flex items-center justify-center">
+      <div
+        className="px-4 h-[52px] flex items-center gap-2 border-b border-kb-border cursor-pointer select-none"
+        onClick={handleLogoClick}
+      >
+        <div className={`w-7 h-7 rounded-lg bg-gradient-to-br from-status-info to-blue-600 flex items-center justify-center transition-transform ${celebrating ? 'animate-spin' : ''}`}>
           <Zap className="w-4 h-4 text-white" />
         </div>
         <div className="flex flex-col">
