@@ -2,12 +2,30 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/clm-cloud-solutions/kubebolt?style=social)](https://github.com/clm-cloud-solutions/kubebolt)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-client--go-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 
-**Instant Kubernetes Monitoring**
+**Instant Kubernetes Monitoring & Management**
 
-KubeBolt gives you full cluster visibility in under 2 minutes. No agents, no configuration, no Prometheus required.
+Full cluster visibility in under 2 minutes. No agents, no configuration, no Prometheus required. Connect your kubeconfig and go.
 
-Connect your kubeconfig → See your entire cluster → Get actionable insights.
+### Why KubeBolt?
+
+| | kubectl | k9s | Lens | KubeBolt |
+|---|:---:|:---:|:---:|:---:|
+| Web-based UI | | | | **Yes** |
+| Zero install | | | | **Yes** |
+| Multi-cluster | | | Yes | **Yes** |
+| RBAC-aware degradation | | | | **Yes** |
+| Pod terminal | | Yes | Yes | **Yes** |
+| Port forwarding | | Yes | Yes | **Yes** |
+| Cluster topology map | | | | **Yes** |
+| Insights engine | | | | **Yes** |
+| Gateway API support | | | | **Yes** |
+| < 70 MB RAM | | Yes | | **Yes** |
+
+---
 
 ### Dashboard Overview
 ![KubeBolt Dashboard](docs/images/kubebolt-dashboard.webp)
@@ -82,40 +100,58 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 
 ## Features
 
-- **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click
-- **RBAC-aware** — Auto-detects permissions at connect time; gracefully degrades for read-only or namespace-scoped ServiceAccounts
+### Monitoring & Observability
 - **23 resource views** — Pods, Deployments, Services, Ingresses, Gateways, HTTPRoutes, Nodes, and more
 - **Cluster Map** — Interactive topology with Grid and Flow layouts, namespace grouping, resource type filters
+- **Live metrics** — CPU/Memory usage bars with request/limit markers and hover tooltips
 - **Insights Engine** — 12 built-in rules: crash loops, OOM kills, CPU throttling, HPA saturation, pending PVCs
+- **Real-time updates** — WebSocket-powered live updates via K8s shared informers
+- **Configurable refresh** — Choose refresh interval from 5s to 2m, persisted across sessions
+
+### Cluster Management
+- **Pod Terminal** — Interactive shell access from the browser (xterm.js + SPDY exec). Auto-detects bash/sh. Multi-container support.
+- **Port Forwarding** — Forward pod ports with one click. Active forwards shown in Topbar with Open/Stop controls.
+- **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click with connection overlay
+
+### Security & RBAC
+- **RBAC-aware** — Auto-detects permissions at connect time via SelfSubjectAccessReview
+- **Namespace-scoped SAs** — Works with RoleBinding-only ServiceAccounts using per-namespace informers
+- **Sensitive data redaction** — Secret values always redacted. ConfigMap values with sensitive keys (passwords, tokens, API keys) auto-redacted in YAML view.
+- **Graceful degradation** — Restricted resources dimmed in sidebar, "Access Restricted" pages, "No access" indicators on dashboard cards
+
+### Developer Experience
 - **Gateway API** — Native support for `gateway.networking.k8s.io` Gateways and HTTPRoutes
-- **Metrics** — CPU/Memory usage from Metrics Server with graceful degradation when unavailable
-- **Real-time** — WebSocket-powered live updates via K8s shared informers
-- **~19 MB RAM** — Lightweight Go backend with in-memory caches, no database required
+- **YAML viewer** — Syntax highlighted with theme-aware colors, works in light and dark mode
+- **Search & filter** — Debounced search across resources with namespace filtering
+- **Dark/Light mode** — Full theme support with CSS custom properties
 
 ## Architecture
 
 ```
-┌─────────────────────────────┐
-│    Kubernetes Cluster(s)    │
-│  API Server + Metrics Server│
-└────────────┬────────────────┘
-             │ kubeconfig (all contexts)
-┌────────────▼────────────────┐
-│  KubeBolt Backend (Go)      │
-│  Cluster Manager            │
-│  ├─ Shared Informers        │
-│  ├─ Dynamic Client (GW API) │
-│  ├─ Metrics Collector       │
-│  └─ Insights Engine (12     │
-│     rules)                  │
-└────────────┬────────────────┘
-             │ REST API + WebSocket
-┌────────────▼────────────────┐
-│  KubeBolt Frontend (React)  │
-│  ├─ Dashboard Overview      │
-│  ├─ Cluster Map (Grid/Flow) │
-│  └─ 23 Resource Views       │
-└─────────────────────────────┘
+┌─────────────────────────────────┐
+│      Kubernetes Cluster(s)      │
+│   API Server + Metrics Server   │
+└───────────────┬─────────────────┘
+                │ kubeconfig (all contexts)
+┌───────────────▼─────────────────┐
+│   KubeBolt Backend (Go)         │
+│   ├─ Permission Probe (SSAR)    │
+│   ├─ Shared Informers (gated)   │
+│   ├─ Dynamic Client (GW API)    │
+│   ├─ Metrics Collector          │
+│   ├─ Insights Engine (12 rules) │
+│   ├─ SPDY Exec Bridge           │
+│   └─ Port Forward Manager       │
+└───────────────┬─────────────────┘
+                │ REST API + WebSocket
+┌───────────────▼─────────────────┐
+│   KubeBolt Frontend (React)     │
+│   ├─ Dashboard Overview         │
+│   ├─ Cluster Map (Grid/Flow)    │
+│   ├─ 23 Resource Views          │
+│   ├─ Pod Terminal (xterm.js)    │
+│   └─ Port Forward UI            │
+└─────────────────────────────────┘
 ```
 
 ## RBAC & Permissions
@@ -124,7 +160,7 @@ KubeBolt works with any level of Kubernetes access — from full cluster-admin t
 
 | Access Level | What You See |
 |---|---|
-| **Cluster-admin** | Everything — all resources, metrics, insights |
+| **Cluster-admin** | Everything — all resources, metrics, insights, terminal, port-forward |
 | **Cluster read-only** (ClusterRoleBinding `view`) | All namespace resources, no Secrets/RBAC. Restricted items dimmed in sidebar |
 | **Namespace-scoped** (RoleBindings in specific namespaces) | Only resources in permitted namespaces. Metrics polled per-namespace |
 
@@ -133,32 +169,13 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 - Namespace-scoped SAs get per-namespace informer factories with merged results
 - UI shows a "Limited access" banner, dims restricted sidebar items, and displays clear "Access Restricted" pages
 
-## Phase 1 (Current)
-
-- Zero install — only a kubeconfig needed
-- Multi-cluster support with runtime switching
-- RBAC permission detection with graceful degradation for limited access
-- Namespace-scoped ServiceAccount support with per-namespace informers and metrics
-- Kubernetes API Server + Metrics Server (optional, graceful degradation)
-- Gateway API support (`gateway.networking.k8s.io/v1`)
-- 23 resource views + interactive cluster topology map with two layout modes
-- Insights engine with 12 rules and actionable recommendations
-- Namespace workload cards with pod status dots and CPU/Memory bars
-- Resource lists enriched with live metrics (CPU, Memory, pod counts)
-
-## Phase 2 (Planned)
-
-- Lightweight DaemonSet agent for network/disk metrics
-- Historical time-series data (VictoriaMetrics)
-- Container-level metrics granularity
-- Enhanced cluster map with traffic flow animation
-
 ## Tech Stack
 
 | Component | Technology |
 |-----------|-----------|
 | Backend | Go 1.22+ with client-go, Chi v5, gorilla/websocket |
 | K8s Client | Shared informers (typed) + dynamic client (Gateway API CRDs) |
+| Terminal | SPDY exec bridge + xterm.js |
 | Frontend | React 18 + TypeScript + Vite 5 + Tailwind CSS 3.4 |
 | Cluster Map | React Flow 11 with custom nodes, edges, namespace group nodes |
 | Data Fetching | TanStack Query 5 + TanStack Table 8 |
@@ -168,10 +185,22 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 
 | Metric | Value |
 |--------|-------|
-| Backend RAM | ~19 MB |
-| Frontend bundle | 485 KB JS + 28 KB CSS (~148 KB gzipped) |
+| Backend RAM | ~70 MB (production cluster) |
+| Frontend bundle | ~560 KB JS + 39 KB CSS (~250 KB gzipped) |
 | API response time | < 5ms (from informer cache) |
-| Startup time | < 3s (informer sync + initial metrics poll) |
+| Startup time | < 5s (permission probe + informer sync) |
+
+## Roadmap
+
+See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and roadmap.
+
+**Coming next:**
+- Restart/Scale deployments from the UI
+- In-place YAML editing with diff preview
+- Resource deletion with confirmation
+- Global search (Cmd+K)
+- Helm chart for easy distribution
+- File browser for pod containers
 
 ## License
 
