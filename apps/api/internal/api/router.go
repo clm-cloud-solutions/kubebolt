@@ -60,8 +60,9 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 		})
 	})
 
-	// WebSocket endpoint (outside JSON middleware)
+	// WebSocket endpoints (outside JSON middleware)
 	r.Get("/api/v1/ws", h.handleWebSocket)
+	r.Get("/ws/exec/{namespace}/{name}", h.handleExec)
 
 	return r
 }

@@ -7,6 +7,7 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
+import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -147,7 +148,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'containers', label: 'Containers', count: containers },
         { id: 'yaml', label: 'YAML' },
         { id: 'logs', label: 'Logs' },
-        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'terminal', label: 'Terminal' },
         { id: 'files', label: 'Files', soon: true },
         { id: 'volumes', label: 'Volumes', count: volumes },
         { id: 'related', label: 'Related' },
@@ -160,7 +161,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'yaml', label: 'YAML' },
         { id: 'deploy-pods', label: 'Pods' },
         { id: 'deploy-logs', label: 'Logs' },
-        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'terminal', label: 'Terminal' },
         { id: 'related', label: 'Related' },
         { id: 'history', label: 'History' },
         { id: 'events', label: 'Events' },
@@ -172,7 +173,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'yaml', label: 'YAML' },
         { id: 'sts-pods', label: 'Pods' },
         { id: 'sts-logs', label: 'Logs' },
-        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'terminal', label: 'Terminal' },
         { id: 'related', label: 'Related' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
@@ -183,7 +184,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'yaml', label: 'YAML' },
         { id: 'ds-pods', label: 'Pods' },
         { id: 'ds-logs', label: 'Logs' },
-        { id: 'terminal', label: 'Terminal', soon: true },
+        { id: 'terminal', label: 'Terminal' },
         { id: 'related', label: 'Related' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
@@ -1411,6 +1412,12 @@ export function ResourceDetailPage() {
       case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history': return <HistoryTab namespace={namespace} name={name} />
+      case 'terminal':
+        if (type === 'pods') return <TerminalTab namespace={namespace} name={name} item={item!} />
+        if (type === 'deployments') return <DeploymentTerminalTab namespace={namespace} name={name} />
+        if (type === 'statefulsets') return <StatefulSetTerminalTab namespace={namespace} name={name} />
+        if (type === 'daemonsets') return <DaemonSetTerminalTab namespace={namespace} name={name} />
+        return null
       default: return <ComingSoon title="Coming Soon" description="This feature will be available in a future update." />
     }
   }

@@ -57,6 +57,7 @@ var stripManagedFieldsOption = informers.WithTransform(func(obj interface{}) (in
 
 // Connector manages the Kubernetes cluster connection and informers.
 type Connector struct {
+	restConfig    *rest.Config
 	clientset     kubernetes.Interface
 	dynamicClient dynamic.Interface
 	metricsClient metricsv.Interface
@@ -145,6 +146,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 30*time.Second, stripManagedFieldsOption)
 
 	c := &Connector{
+		restConfig:    restConfig,
 		clientset:     clientset,
 		dynamicClient: dynClient,
 		metricsClient: metricsClient,
@@ -163,6 +165,16 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 // Permissions returns the probed resource permissions for this cluster.
 func (c *Connector) Permissions() ResourcePermissions {
 	return c.permissions
+}
+
+// RestConfig returns the Kubernetes REST config for this cluster connection.
+func (c *Connector) RestConfig() *rest.Config {
+	return c.restConfig
+}
+
+// Clientset returns the Kubernetes clientset for this cluster connection.
+func (c *Connector) Clientset() kubernetes.Interface {
+	return c.clientset
 }
 
 // SetCollector sets the metrics collector reference for use in GetOverview.

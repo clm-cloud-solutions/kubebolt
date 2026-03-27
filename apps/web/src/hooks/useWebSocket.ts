@@ -10,14 +10,25 @@ export function useWebSocket(resources: string[]) {
     wsManager.connect()
     wsManager.subscribe(resources)
 
+    // Debounce overview invalidation to prevent request storms
+    let overviewTimer: ReturnType<typeof setTimeout> | null = null
+
     const unsubscribe = wsManager.onMessage((event: WSEvent) => {
       // Invalidate queries for the affected resource type
       queryClient.invalidateQueries({ queryKey: ['resources', event.resource] })
-      queryClient.invalidateQueries({ queryKey: ['cluster-overview'] })
+
+      // Debounce overview invalidation — many WS events can fire rapidly
+      if (!overviewTimer) {
+        overviewTimer = setTimeout(() => {
+          overviewTimer = null
+          queryClient.invalidateQueries({ queryKey: ['cluster-overview'] })
+        }, 2000)
+      }
     })
 
     return () => {
       unsubscribe()
+      if (overviewTimer) clearTimeout(overviewTimer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [resources])
