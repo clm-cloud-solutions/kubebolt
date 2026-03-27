@@ -981,7 +981,7 @@ Priority: highest — these are the features that keep users inside KubeBolt ins
 | Feature | Impact | Description |
 |---------|--------|-------------|
 | **Pod Terminal** | Critical | WebSocket exec via SPDY + xterm.js. Shell selector (bash/sh/custom). Multi-container support. Tab per terminal session. |
-| **Port Forwarding** | Critical | Forward local ports to pod/service ports. UI to start/stop/list active forwards. Auto-detect container ports. Status indicator in pod detail. |
+| **Port Forwarding** | Critical | Forward local ports to pod/service ports. UI to start/stop/list active forwards. Auto-detect container ports. Status indicator in Topbar. **Limitation:** Opens TCP ports on the backend host — only works when backend and browser run on the same machine (localhost). Remote/SaaS deployments will require subdomain-based proxying (Phase 3). |
 | **Restart/Scale** | High | Restart deployment/statefulset/daemonset (rollout restart). Scale replicas via slider or input. Confirmation dialog before action. |
 | **YAML Editing** | High | In-place YAML editor with apply. Diff preview before save. Validation errors shown inline. |
 | **Delete Resources** | High | Delete with confirmation dialog. Support for cascade/orphan options. Grace period selector. |

@@ -12,6 +12,7 @@ export default defineConfig({
     proxy: {
       '/api/v1/ws': { target: 'http://localhost:8080', ws: true },
       '/ws/exec': { target: 'http://localhost:8080', ws: true },
+      '/pf': 'http://localhost:8080',
       '/api': 'http://localhost:8080',
     },
   },

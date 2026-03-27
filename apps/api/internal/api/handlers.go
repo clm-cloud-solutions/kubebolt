@@ -13,8 +13,9 @@ import (
 )
 
 type handlers struct {
-	manager *cluster.Manager
-	wsHub   *websocket.Hub
+	manager   *cluster.Manager
+	wsHub     *websocket.Hub
+	pfManager *PortForwardManager
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
@@ -44,6 +45,9 @@ func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 		respondError(w, status, err.Error())
 		return
 	}
+
+	// Stop any active port-forwards from previous cluster
+	h.pfManager.StopAll()
 
 	// Broadcast cluster switch event
 	h.wsHub.Broadcast("cluster.switched", map[string]string{"context": body.Context})

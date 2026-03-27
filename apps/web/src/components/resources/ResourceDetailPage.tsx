@@ -8,6 +8,7 @@ import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicat
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
+import { PortForwardButton, PortForwardNote } from './PortForwardButton'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -313,13 +314,28 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
               <KindNameLink value={`${ownerRefs[0].kind}/${ownerRefs[0].name}`} namespace={item.namespace} />
             </InfoField>
           )}
-          {type === 'pods' && Array.isArray(item.containers) && (
-            <InfoField label="Ports">
-              {(item.containers as Array<Record<string, unknown>>)
-                .flatMap(c => Array.isArray(c.ports) ? (c.ports as Array<Record<string, unknown>>).map(p => String(p.containerPort)) : [])
-                .join(', ') || '-'}
-            </InfoField>
-          )}
+          {type === 'pods' && Array.isArray(item.containers) && (() => {
+            const ports = (item.containers as Array<Record<string, unknown>>)
+              .flatMap(c => Array.isArray(c.ports)
+                ? (c.ports as Array<Record<string, unknown>>).map(p => ({
+                    port: Number(p.containerPort),
+                    container: String(c.name),
+                  }))
+                : []
+              )
+            return ports.length > 0 ? (
+              <InfoField label="Ports">
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-1.5">
+                    {ports.map(({ port, container: ctr }) => (
+                      <PortForwardButton key={`${ctr}-${port}`} namespace={item.namespace} pod={item.name} container={ctr} remotePort={port} />
+                    ))}
+                  </div>
+                  <PortForwardNote />
+                </div>
+              </InfoField>
+            ) : null
+          })()}
           {type === 'pods' && <InfoField label="QoS Class">{String(item.qosClass ?? '-')}</InfoField>}
 
           {type === 'deployments' && <InfoField label="Strategy">{String(item.strategy ?? '-')}</InfoField>}

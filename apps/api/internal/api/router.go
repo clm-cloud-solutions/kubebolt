@@ -21,8 +21,9 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 	r.Use(CORSMiddleware(corsOrigins))
 
 	h := &handlers{
-		manager: manager,
-		wsHub:   wsHub,
+		manager:   manager,
+		wsHub:     wsHub,
+		pfManager: NewPortForwardManager(),
 	}
 
 	// Health check endpoint
@@ -53,6 +54,9 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Get("/resources/statefulsets/{namespace}/{name}/pods", h.getStatefulSetPods)
 			r.Get("/resources/daemonsets/{namespace}/{name}/pods", h.getDaemonSetPods)
 			r.Get("/resources/jobs/{namespace}/{name}/pods", h.getJobPods)
+			r.Post("/portforward", h.handleCreatePortForward)
+			r.Get("/portforward", h.handleListPortForwards)
+			r.Delete("/portforward/{id}", h.handleDeletePortForward)
 			r.Get("/topology", h.getTopology)
 			r.Get("/insights", h.getInsights)
 			r.Get("/events", h.getEvents)
@@ -63,6 +67,9 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 	// WebSocket endpoints (outside JSON middleware)
 	r.Get("/api/v1/ws", h.handleWebSocket)
 	r.Get("/ws/exec/{namespace}/{name}", h.handleExec)
+
+	// Port-forward reverse proxy (outside JSON middleware — proxied content has its own content-type)
+	r.HandleFunc("/pf/{id}/*", h.handlePortForwardProxy)
 
 	return r
 }

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { Search, Server, ChevronDown, Check, Sun, Moon } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X } from 'lucide-react'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -167,6 +167,9 @@ export function Topbar({ overview }: TopbarProps) {
           <span className="text-[10px] font-mono font-medium text-status-ok uppercase tracking-[0.08em]">Live</span>
         </div>
 
+        {/* Active port-forwards */}
+        <PortForwardIndicator />
+
         {/* Node count */}
         <div className="flex items-center gap-1.5 text-kb-text-secondary">
           <Server className="w-3.5 h-3.5" />
@@ -174,5 +177,85 @@ export function Topbar({ overview }: TopbarProps) {
         </div>
       </div>
     </header>
+  )
+}
+
+function PortForwardIndicator() {
+  const [open, setOpen] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+
+  const { data: forwards } = useQuery({
+    queryKey: ['port-forwards'],
+    queryFn: api.listPortForwards,
+    refetchInterval: 5_000,
+  })
+
+  const active = forwards?.filter(f => f.status === 'active') ?? []
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false)
+      }
+    }
+    if (open) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  async function stopForward(id: string) {
+    try {
+      await api.deletePortForward(id)
+    } catch {}
+  }
+
+  if (active.length === 0) return null
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-info-dim text-status-info hover:bg-status-info/20 transition-colors"
+      >
+        <Cable className="w-3.5 h-3.5" />
+        <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">
+          {active.length} forward{active.length !== 1 ? 's' : ''}
+        </span>
+      </button>
+
+      {open && (
+        <div className="absolute top-full right-0 mt-1 w-80 bg-kb-card border border-kb-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
+          <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-[0.1em] text-kb-text-tertiary">
+            Active Port Forwards
+          </div>
+          {active.map(pf => {
+            const url = `${window.location.protocol}//${window.location.hostname}:${pf.localPort}`
+            return (
+              <div key={pf.id} className="px-3 py-2 flex items-center gap-2 hover:bg-kb-card-hover transition-colors">
+                <div className="flex-1 min-w-0">
+                  <div className="text-xs text-kb-text-primary truncate">{pf.pod}</div>
+                  <div className="text-[10px] font-mono text-kb-text-tertiary">{pf.namespace} · port {pf.remotePort} → {pf.localPort}</div>
+                </div>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="p-1 rounded text-status-ok hover:bg-status-ok-dim transition-colors"
+                  title="Open in new tab"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                </a>
+                <button
+                  onClick={() => stopForward(pf.id)}
+                  className="p-1 rounded text-kb-text-tertiary hover:text-status-error hover:bg-status-error-dim transition-colors"
+                  title="Stop forward"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
   )
 }

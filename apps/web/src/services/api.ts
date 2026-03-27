@@ -50,6 +50,14 @@ function buildQuery(params?: Record<string, string | number | boolean | undefine
   return str ? `?${str}` : ''
 }
 
+async function deleteRequest<T>(url: string): Promise<T> {
+  const res = await fetch(url, { method: 'DELETE' })
+  if (!res.ok) {
+    throw new ApiError(res.status, await extractErrorMessage(res))
+  }
+  return res.json()
+}
+
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: 'POST',
@@ -120,4 +128,18 @@ export const api = {
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
     return res.text()
   },
+
+  // Port forwarding
+  createPortForward: (body: { namespace: string; pod: string; container?: string; remotePort: number }) =>
+    postJSON<{ id: string; url: string; namespace: string; pod: string; remotePort: number; localPort: number; status: string; createdAt: string }>(
+      `${API_BASE}/portforward`, body
+    ),
+
+  listPortForwards: () =>
+    fetchJSON<Array<{ id: string; namespace: string; pod: string; remotePort: number; localPort: number; url: string; status: string; error?: string; createdAt: string }>>(
+      `${API_BASE}/portforward`
+    ),
+
+  deletePortForward: (id: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/portforward/${id}`),
 }
