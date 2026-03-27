@@ -57,19 +57,19 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
     : []
   const [selectedContainer, setSelectedContainer] = useState(containers[0] ?? '')
   const [selectedShell, setSelectedShell] = useState('')
-  const [connected, setConnected] = useState(false)
-  const [sessionKey, setSessionKey] = useState(0) // bump to force new session
+  const [sessionActive, setSessionActive] = useState(false)
+  const [sessionKey, setSessionKey] = useState(0)
 
   const podStatus = String(item.status ?? '').toLowerCase()
   const canExec = podStatus === 'running'
 
   function handleConnect() {
     setSessionKey(k => k + 1)
-    setConnected(true)
+    setSessionActive(true)
   }
 
   function handleDisconnect() {
-    setConnected(false)
+    setSessionActive(false)
   }
 
   return (
@@ -80,7 +80,7 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
           <select
             value={selectedContainer}
             onChange={(e) => { setSelectedContainer(e.target.value); handleDisconnect() }}
-            disabled={connected}
+            disabled={sessionActive}
             className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
           >
             {containers.map(cn => (
@@ -95,7 +95,7 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
         <select
           value={selectedShell}
           onChange={(e) => { setSelectedShell(e.target.value); handleDisconnect() }}
-          disabled={connected}
+          disabled={sessionActive}
           className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           {SHELLS.map(sh => (
@@ -103,7 +103,7 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
           ))}
         </select>
 
-        {!connected ? (
+        {!sessionActive ? (
           <button
             onClick={handleConnect}
             disabled={!canExec}
@@ -124,7 +124,7 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
           <span className="text-[10px] font-mono text-status-warn">Pod is not running</span>
         )}
 
-        {connected && (
+        {sessionActive && (
           <div className="flex items-center gap-1.5 ml-auto">
             <span className="relative flex h-2 w-2">
               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
@@ -135,8 +135,8 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
         )}
       </div>
 
-      {/* Terminal session — key forces remount on new session */}
-      {connected && (
+      {/* Terminal session — stays mounted to preserve error messages */}
+      {sessionActive ? (
         <TerminalSession
           key={sessionKey}
           namespace={namespace}
@@ -145,9 +145,7 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
           shell={selectedShell}
           onDisconnect={handleDisconnect}
         />
-      )}
-
-      {!connected && (
+      ) : (
         <div
           className="rounded-[10px] border border-kb-border flex items-center justify-center text-kb-text-tertiary text-xs font-mono"
           style={{ backgroundColor: '#0d1117', minHeight: '400px' }}
@@ -248,15 +246,37 @@ function TerminalSession({
               break
             case 'exit':
               serverClosed = true
+              if (initialFlush) {
+                clearTimeout(initialFlush.timer)
+                initialFlush = null
+              }
               term.writeln('')
-              term.writeln(`\x1b[1;${msg.code === 0 ? '32' : '31'}m●\x1b[0m Process exited with code ${msg.code}`)
-              onDisconnectRef.current()
+              term.writeln(`\x1b[1;${msg.code === 0 ? '32' : '31'}m●\x1b[0m Session ended`)
+              // Auto-disconnect after a moment so the message is visible
+              setTimeout(() => { if (!disposed) onDisconnectRef.current() }, 1500)
               break
             case 'error':
               serverClosed = true
+              if (initialFlush) {
+                clearTimeout(initialFlush.timer)
+                initialFlush = null
+              }
+              term.reset()
+              term.writeln('\x1b[1;31m●\x1b[0m ' + msg.message)
               term.writeln('')
-              term.writeln('\x1b[1;31m● Error:\x1b[0m ' + msg.message)
-              onDisconnectRef.current()
+              // Countdown before auto-disconnect
+              let countdown = 3
+              term.write(`\x1b[90mDisconnecting in ${countdown}s...\x1b[0m`)
+              const countdownTimer = setInterval(() => {
+                countdown--
+                if (countdown > 0) {
+                  term.write(`\r\x1b[90mDisconnecting in ${countdown}s...\x1b[0m`)
+                } else {
+                  clearInterval(countdownTimer)
+                  term.write(`\r\x1b[90mDisconnected.            \x1b[0m\r\n`)
+                  if (!disposed) onDisconnectRef.current()
+                }
+              }, 1000)
               break
           }
         } catch {

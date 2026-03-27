@@ -236,16 +236,24 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	exitCode := 0
 	if err != nil {
+		errMsg := err.Error()
 		log.Printf("Exec stream ended: %v", err)
-		if exitErr, ok := err.(interface{ ExitStatus() int }); ok {
+
+		// Detect permission errors and send a clear message
+		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
+			ws.writeJSON(execMessage{Type: "error", Message: "Insufficient permissions — the connected kubeconfig does not have pods/exec access"})
+		} else if exitErr, ok := err.(interface{ ExitStatus() int }); ok {
 			exitCode = exitErr.ExitStatus()
+			ws.writeJSON(execMessage{Type: "exit", Code: exitCode})
 		} else {
-			ws.writeJSON(execMessage{Type: "error", Message: err.Error()})
-			exitCode = 1
+			ws.writeJSON(execMessage{Type: "error", Message: errMsg})
 		}
+	} else {
+		ws.writeJSON(execMessage{Type: "exit", Code: 0})
 	}
 
-	ws.writeJSON(execMessage{Type: "exit", Code: exitCode})
+	// Small delay to ensure the error/exit frames are sent before WS close
+	time.Sleep(100 * time.Millisecond)
 	<-done
 	log.Printf("Exec session closed: %s/%s", namespace, name)
 }
