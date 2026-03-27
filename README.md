@@ -2,7 +2,7 @@
 
 [![GitHub stars](https://img.shields.io/github/stars/clm-cloud-solutions/kubebolt?style=social)](https://github.com/clm-cloud-solutions/kubebolt)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.22+-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
 [![Kubernetes](https://img.shields.io/badge/Kubernetes-client--go-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
 
@@ -84,7 +84,7 @@ To rebuild after code changes: `docker compose up -d --build`
 
 ### Option 2: Local development (no Docker)
 
-Requires Go 1.22+ and Node 20+.
+Requires Go 1.25+ and Node 20+.
 
 ```bash
 # Start the backend
@@ -173,7 +173,7 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 
 | Component | Technology |
 |-----------|-----------|
-| Backend | Go 1.22+ with client-go, Chi v5, gorilla/websocket |
+| Backend | Go 1.25+ with client-go, Chi v5, gorilla/websocket |
 | K8s Client | Shared informers (typed) + dynamic client (Gateway API CRDs) |
 | Terminal | SPDY exec bridge + xterm.js |
 | Frontend | React 18 + TypeScript + Vite 5 + Tailwind CSS 3.4 |
