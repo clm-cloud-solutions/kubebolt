@@ -48,6 +48,7 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Get("/resources/{type}", h.getResources)
 			r.Get("/resources/{type}/{namespace}/{name}", h.getResourceDetail)
 			r.Get("/resources/{type}/{namespace}/{name}/yaml", h.getResourceYAML)
+			r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
 			r.Get("/resources/{type}/{namespace}/{name}/describe", h.getResourceDescribe)
 			r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 			r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)

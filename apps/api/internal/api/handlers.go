@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -266,6 +267,44 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/plain")
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(logs))
+}
+
+func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
+	resourceType := chi.URLParam(r, "type")
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	if namespace == "_" {
+		namespace = ""
+	}
+
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "failed to read request body")
+		return
+	}
+
+	if err := conn.ApplyResourceYAML(resourceType, namespace, name, body); err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
+			respondError(w, http.StatusForbidden, errMsg)
+		} else if strings.Contains(errMsg, "invalid") || strings.Contains(errMsg, "Invalid") {
+			respondError(w, http.StatusBadRequest, errMsg)
+		} else if strings.Contains(errMsg, "conflict") || strings.Contains(errMsg, "Conflict") {
+			respondError(w, http.StatusConflict, errMsg)
+		} else {
+			respondError(w, http.StatusInternalServerError, errMsg)
+		}
+		return
+	}
+
+	respondJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 
 func (h *handlers) getResourceYAML(w http.ResponseWriter, r *http.Request) {

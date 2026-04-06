@@ -104,6 +104,16 @@ export const api = {
     return res.text()
   },
 
+  applyResourceYAML: async (type: string, namespace: string, name: string, yaml: string): Promise<{ status: string }> => {
+    const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/yaml' },
+      body: yaml,
+    })
+    if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
+    return res.json()
+  },
+
   getResourceYAML: async (type: string, namespace: string, name: string): Promise<string> => {
     const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))

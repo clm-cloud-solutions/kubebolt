@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { EditorView, lineNumbers } from '@codemirror/view'
+import { yaml } from '@codemirror/lang-yaml'
+import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
@@ -776,31 +779,133 @@ function DescribeModal({ type, namespace, name, onClose }: { type: string; names
   )
 }
 
+function YAMLEditor({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  const editorRef = useRef<HTMLDivElement>(null)
+  const viewRef = useRef<EditorView | null>(null)
+
+  useEffect(() => {
+    if (!editorRef.current) return
+
+    const view = new EditorView({
+      doc: value,
+      extensions: [
+        yaml(),
+        oneDark,
+        EditorView.updateListener.of(update => {
+          if (update.docChanged) {
+            onChange(update.state.doc.toString())
+          }
+        }),
+        EditorView.theme({
+          '&': { fontSize: '11px', maxHeight: '600px' },
+          '.cm-scroller': { overflow: 'auto', fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace" },
+          '.cm-content': { padding: '12px 0' },
+          '.cm-gutters': { backgroundColor: '#0d1117', border: 'none' },
+          '&.cm-editor': { backgroundColor: '#0d1117', borderRadius: '8px' },
+        }),
+        lineNumbers(),
+      ],
+      parent: editorRef.current,
+    })
+
+    viewRef.current = view
+
+    return () => {
+      view.destroy()
+      viewRef.current = null
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  return <div ref={editorRef} className="rounded-lg overflow-hidden border border-kb-border" />
+}
+
 function YAMLTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
-  const { data: yaml, isLoading, error } = useResourceYAML(type, namespace, name)
+  const { data: yaml, isLoading, error, refetch } = useResourceYAML(type, namespace, name)
+  const [editing, setEditing] = useState(false)
+  const [editValue, setEditValue] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
   const lines = (yaml ?? '').split('\n')
 
+  function startEdit() {
+    setEditValue(yaml ?? '')
+    setSaveError(null)
+    setEditing(true)
+  }
+
+  function cancelEdit() {
+    setEditing(false)
+    setSaveError(null)
+  }
+
+  async function saveEdit() {
+    setSaving(true)
+    setSaveError(null)
+    try {
+      await api.applyResourceYAML(type, namespace, name, editValue)
+      setEditing(false)
+      refetch()
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : 'Failed to apply YAML')
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <Section title="YAML Configuration" className="relative">
       <div className="absolute top-4 right-5 flex gap-2">
-        <button className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-tertiary rounded cursor-not-allowed" disabled>
-          Save <span className="text-[8px] ml-1 opacity-60">SOON</span>
-        </button>
+        {editing ? (
+          <>
+            <button
+              onClick={cancelEdit}
+              className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={saveEdit}
+              disabled={saving}
+              className="px-3 py-1.5 text-[10px] font-mono bg-status-info text-white rounded hover:bg-status-info/90 transition-colors disabled:opacity-50 flex items-center gap-1"
+            >
+              {saving ? 'Applying...' : 'Apply'}
+            </button>
+          </>
+        ) : (
+          <button
+            onClick={startEdit}
+            className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
+          >
+            Edit
+          </button>
+        )}
       </div>
-      <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
-        <pre className="text-[11px] font-mono leading-5">
-          {lines.map((line, i) => (
-            <div key={i} className="flex">
-              <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
-              <span>{highlightYAMLLine(line)}</span>
-            </div>
-          ))}
-        </pre>
-      </div>
+
+      {saveError && (
+        <div className="mb-2 px-3 py-2 rounded bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono">
+          {saveError}
+        </div>
+      )}
+
+      {editing ? (
+        <YAMLEditor value={editValue} onChange={setEditValue} />
+      ) : (
+        <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
+          <pre className="text-[11px] font-mono leading-5">
+            {lines.map((line, i) => (
+              <div key={i} className="flex">
+                <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
+                <span>{highlightYAMLLine(line)}</span>
+              </div>
+            ))}
+          </pre>
+        </div>
+      )}
     </Section>
   )
 }

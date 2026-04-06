@@ -2619,6 +2619,11 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 		return nil, fmt.Errorf("fetching resource: %w", err)
 	}
 
+	// Strip managedFields — internal server-side apply metadata that adds noise
+	if metadata, ok := obj.Object["metadata"].(map[string]interface{}); ok {
+		delete(metadata, "managedFields")
+	}
+
 	// Redact secret data values
 	if resourceType == "secrets" {
 		if data, ok := obj.Object["data"].(map[string]interface{}); ok {
@@ -2646,6 +2651,42 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 		return nil, fmt.Errorf("marshalling to YAML: %w", err)
 	}
 	return yamlBytes, nil
+}
+
+// ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
+func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yamlData []byte) error {
+	if c.dynamicClient == nil {
+		return fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+
+	// Parse YAML to unstructured object
+	var rawObj map[string]interface{}
+	if err := sigsyaml.Unmarshal(yamlData, &rawObj); err != nil {
+		return fmt.Errorf("invalid YAML: %w", err)
+	}
+
+	obj := &unstructured.Unstructured{Object: rawObj}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if isClusterScoped(resourceType) {
+		_, err := c.dynamicClient.Resource(gvr).Update(ctx, obj, metav1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+	} else {
+		_, err := c.dynamicClient.Resource(gvr).Namespace(namespace).Update(ctx, obj, metav1.UpdateOptions{})
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // --- List helpers ---
