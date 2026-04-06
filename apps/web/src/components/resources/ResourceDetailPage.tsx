@@ -1152,11 +1152,13 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
         <thead>
           <tr className="text-kb-text-tertiary text-left">
             <th className="pb-2 font-normal">Name</th>
-            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Ready</th>
             <th className="pb-2 font-normal">Status</th>
             <th className="pb-2 font-normal pr-6">CPU</th>
             <th className="pb-2 font-normal pl-2">Memory</th>
             <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">IP</th>
+            <th className="pb-2 font-normal">Node</th>
             <th className="pb-2 font-normal">Age</th>
           </tr>
         </thead>
@@ -1164,7 +1166,7 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
           {pods.map((pod, i) => (
             <tr key={i} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
-              <td className="py-2 font-mono">{pod.namespace}</td>
+              <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
                 <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
@@ -1173,6 +1175,8 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
+              <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>
           ))}
@@ -1197,11 +1201,13 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
         <thead>
           <tr className="text-kb-text-tertiary text-left">
             <th className="pb-2 font-normal">Name</th>
-            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Ready</th>
             <th className="pb-2 font-normal">Status</th>
             <th className="pb-2 font-normal pr-6">CPU</th>
             <th className="pb-2 font-normal pl-2">Memory</th>
             <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">IP</th>
+            <th className="pb-2 font-normal">Node</th>
             <th className="pb-2 font-normal">Age</th>
           </tr>
         </thead>
@@ -1209,7 +1215,7 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
           {pods.map((pod, i) => (
             <tr key={i} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
-              <td className="py-2 font-mono">{pod.namespace}</td>
+              <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
                 <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
@@ -1218,6 +1224,8 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
+              <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>
           ))}
@@ -1242,12 +1250,13 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
         <thead>
           <tr className="text-kb-text-tertiary text-left">
             <th className="pb-2 font-normal">Name</th>
-            <th className="pb-2 font-normal">Namespace</th>
-            <th className="pb-2 font-normal">Node</th>
+            <th className="pb-2 font-normal">Ready</th>
             <th className="pb-2 font-normal">Status</th>
             <th className="pb-2 font-normal pr-6">CPU</th>
             <th className="pb-2 font-normal pl-2">Memory</th>
             <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">IP</th>
+            <th className="pb-2 font-normal">Node</th>
             <th className="pb-2 font-normal">Age</th>
           </tr>
         </thead>
@@ -1255,10 +1264,7 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
           {pods.map((pod, i) => (
             <tr key={i} className="border-t border-kb-border">
               <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
-              <td className="py-2 font-mono">{pod.namespace}</td>
-              <td className="py-2">
-                {pod.nodeName ? <ResourceLink name={String(pod.nodeName)} resourceType="nodes" /> : '-'}
-              </td>
+              <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
                 <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
@@ -1267,6 +1273,8 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
+              <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>
           ))}

@@ -111,6 +111,16 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
   if (resourceType === 'pods') {
     base.push(
       {
+        accessorKey: 'ready',
+        header: 'Ready',
+        cell: (info) => {
+          const val = String(info.getValue() ?? '0/0')
+          const [r, t] = val.split('/')
+          const ok = r === t && t !== '0'
+          return <StatusBadge status={ok ? 'Running' : 'Warning'} label={val} />
+        },
+      },
+      {
         id: 'cpu',
         header: 'CPU',
         cell: (info) => <CpuCell item={info.row.original} />,
@@ -129,6 +139,24 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
             <span className={`text-[11px] font-mono ${v > 0 ? 'text-status-error' : 'text-kb-text-secondary'}`}>
               {v}
             </span>
+          )
+        },
+      },
+      {
+        accessorKey: 'ip',
+        header: 'IP',
+        cell: (info) => <span className="text-[11px] font-mono text-kb-text-secondary">{String(info.getValue() ?? '—')}</span>,
+      },
+      {
+        accessorKey: 'nodeName',
+        header: 'Node',
+        cell: (info) => {
+          const node = info.getValue() as string
+          if (!node) return <span className="text-[11px] font-mono text-kb-text-tertiary">—</span>
+          return (
+            <Link to={`/nodes/_/${node}`} className="text-[11px] font-mono text-status-info hover:underline">
+              {node}
+            </Link>
           )
         },
       }
