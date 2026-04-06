@@ -135,6 +135,13 @@ export const api = {
     return res.text()
   },
 
+  // Resource actions
+  restartResource: (type: string, namespace: string, name: string) =>
+    postJSON<{ status: string }>(`${API_BASE}/resources/${type}/${namespace}/${name}/restart`, {}),
+
+  scaleResource: (type: string, namespace: string, name: string, replicas: number) =>
+    postJSON<{ status: string; fromReplicas: number; toReplicas: number }>(`${API_BASE}/resources/${type}/${namespace}/${name}/scale`, { replicas }),
+
   // Port forwarding
   createPortForward: (body: { namespace: string; pod: string; container?: string; remotePort: number }) =>
     postJSON<{ id: string; url: string; namespace: string; pod: string; remotePort: number; localPort: number; status: string; createdAt: string }>(

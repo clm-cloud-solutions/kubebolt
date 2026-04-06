@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ChevronRight, Lock } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { api } from '@/services/api'
 import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -1505,6 +1507,11 @@ export function ResourceDetailPage() {
   const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(type, namespace, name)
   const [activeTab, setActiveTab] = useState('overview')
   const [showDescribe, setShowDescribe] = useState(false)
+  const [showRestart, setShowRestart] = useState(false)
+  const [showScale, setShowScale] = useState(false)
+  const [scaleValue, setScaleValue] = useState(0)
+  const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const queryClient = useQueryClient()
 
   // Reset to overview tab when navigating to a different resource
   useEffect(() => {
@@ -1575,7 +1582,7 @@ export function ResourceDetailPage() {
           <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 items-center">
           <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
             Refresh
           </button>
@@ -1589,6 +1596,107 @@ export function ResourceDetailPage() {
           >
             Describe
           </button>
+          {['deployments', 'statefulsets'].includes(type) && (
+            <div className="relative">
+              <button
+                onClick={() => { setScaleValue(Number(item.replicas ?? 1)); setShowScale(!showScale); setShowRestart(false) }}
+                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
+                  showScale ? 'bg-status-info-dim border-status-info/20 text-status-info' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+                }`}
+              >
+                <ArrowUpDown className="w-3 h-3" />
+                Scale
+              </button>
+              {showScale && (
+                <div className="absolute top-full right-0 mt-1 bg-kb-card border border-kb-border rounded-xl shadow-xl z-50 p-4 w-64">
+                  <h4 className="text-sm font-semibold text-kb-text-primary mb-1">Scale {type === 'deployments' ? 'Deployment' : 'StatefulSet'}</h4>
+                  <p className="text-[11px] text-kb-text-tertiary mb-3">Adjust the number of replicas for this {type === 'deployments' ? 'deployment' : 'statefulset'}.</p>
+                  <div className="text-[10px] font-mono text-kb-text-tertiary mb-1.5">Replicas</div>
+                  <div className="mb-3">
+                    <input
+                      type="number"
+                      min="0"
+                      value={scaleValue}
+                      onChange={e => setScaleValue(Math.max(0, parseInt(e.target.value) || 0))}
+                      className="w-full px-2 py-1.5 text-xs font-mono bg-kb-bg border border-kb-border rounded-md text-kb-text-primary outline-none focus:border-kb-border-active"
+                      autoFocus
+                    />
+                  </div>
+                  <button
+                    onClick={async () => {
+                      setActionLoading('scale')
+                      setShowScale(false)
+                      try {
+                        await api.scaleResource(type, namespace, name, scaleValue)
+                        queryClient.invalidateQueries({ queryKey: ['resource-detail'] })
+                        queryClient.invalidateQueries({ queryKey: ['resources'] })
+                      } catch (err) {
+                        alert(err instanceof Error ? err.message : 'Scale failed')
+                      } finally {
+                        setActionLoading(null)
+                      }
+                    }}
+                    disabled={actionLoading === 'scale'}
+                    className="w-full py-2 text-xs font-medium bg-status-info text-white rounded-lg hover:bg-status-info/90 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
+                  >
+                    <ArrowUpDown className="w-3 h-3" />
+                    Scale
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+            <div className="relative">
+              <button
+                onClick={() => { setShowRestart(!showRestart); setShowScale(false) }}
+                disabled={actionLoading === 'restart'}
+                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50 ${
+                  showRestart ? 'bg-status-warn-dim border-status-warn/20 text-status-warn' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+                }`}
+              >
+                <RotateCw className={`w-3 h-3 ${actionLoading === 'restart' ? 'animate-spin' : ''}`} />
+                Restart
+              </button>
+              {showRestart && (
+                <div className="absolute top-full right-0 mt-1 bg-kb-card border border-kb-border rounded-xl shadow-xl z-50 p-4 w-72">
+                  <h4 className="text-sm font-semibold text-kb-text-primary mb-1">
+                    Restart {type === 'deployments' ? 'Deployment' : type === 'statefulsets' ? 'StatefulSet' : 'DaemonSet'}
+                  </h4>
+                  <p className="text-[11px] text-kb-text-tertiary mb-4">
+                    This will restart all pods by updating the template with a new restart annotation. This action cannot be undone.
+                  </p>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      onClick={() => setShowRestart(false)}
+                      className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setActionLoading('restart')
+                        setShowRestart(false)
+                        try {
+                          await api.restartResource(type, namespace, name)
+                          queryClient.invalidateQueries({ queryKey: ['resource-detail'] })
+                          queryClient.invalidateQueries({ queryKey: ['resources'] })
+                        } catch (err) {
+                          alert(err instanceof Error ? err.message : 'Restart failed')
+                        } finally {
+                          setActionLoading(null)
+                        }
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium bg-status-info text-white rounded-lg hover:bg-status-info/90 transition-colors flex items-center gap-1.5"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                      Restart
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <button className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error cursor-not-allowed" disabled>
             Delete <span className="text-[8px] ml-1 opacity-60">SOON</span>
           </button>
