@@ -82,12 +82,12 @@ To stop: `docker compose down`
 
 To rebuild after code changes: `docker compose up -d --build`
 
-### Option 2: Local development (no Docker)
+### Option 2: Local development — single command
 
 Requires Go 1.25+ and Node 20+.
 
 ```bash
-# One command — runs both API and Web in a single terminal
+# Runs both API and Web in a single terminal
 make dev
 ```
 
@@ -100,9 +100,23 @@ make build        # Build API binary + frontend bundle
 make build-api    # Build only the Go binary
 make build-web    # Build only the frontend
 make test         # Run Go tests
-make dev-api      # Run only the API (if you want separate terminals)
-make dev-web      # Run only the Web
 ```
+
+### Option 3: Local development — separate terminals
+
+If you prefer running each service independently:
+
+```bash
+# Terminal 1 — Start the backend
+cd apps/api
+go run cmd/server/main.go --kubeconfig ~/.kube/config
+
+# Terminal 2 — Start the frontend
+cd apps/web
+npm install && npm run dev
+```
+
+Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on port 8080.
 
 ## Features
 
