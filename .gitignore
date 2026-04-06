@@ -32,3 +32,6 @@ Thumbs.db
 # Build artifacts
 *.db
 /apps/api/kubebolt
+
+# Internal planning (not versioned)
+/internal/
