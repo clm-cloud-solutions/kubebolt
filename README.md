@@ -87,16 +87,22 @@ To rebuild after code changes: `docker compose up -d --build`
 Requires Go 1.25+ and Node 20+.
 
 ```bash
-# Start the backend
-cd apps/api
-go run cmd/server/main.go --kubeconfig ~/.kube/config
-
-# Start the frontend (separate terminal)
-cd apps/web
-npm install && npm run dev
+# One command — runs both API and Web in a single terminal
+make dev
 ```
 
-Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on port 8080.
+API on http://localhost:8080, Web on http://localhost:5173. Press `Ctrl+C` to stop both.
+
+Other useful commands:
+
+```bash
+make build        # Build API binary + frontend bundle
+make build-api    # Build only the Go binary
+make build-web    # Build only the frontend
+make test         # Run Go tests
+make dev-api      # Run only the API (if you want separate terminals)
+make dev-web      # Run only the Web
+```
 
 ## Features
 
