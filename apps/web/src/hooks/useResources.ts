@@ -32,6 +32,14 @@ export function useResourceYAML(type: string, namespace: string, name: string) {
   })
 }
 
+export function useResourceDescribe(type: string, namespace: string, name: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['resource-describe', type, namespace, name],
+    queryFn: () => api.getResourceDescribe(type, namespace, name),
+    enabled: enabled && !!type && !!namespace && !!name,
+  })
+}
+
 export function useTopology() {
   return useQuery({
     queryKey: ['topology'],

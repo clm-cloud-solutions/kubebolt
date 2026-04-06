@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { ChevronRight, Lock } from 'lucide-react'
-import { useResourceDetail, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
+import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
@@ -660,6 +660,118 @@ function highlightValue(raw: string): React.ReactNode {
   }
 
   return <span>{raw}</span>
+}
+
+function highlightDescribeLine(line: string): React.ReactNode {
+  const trimmed = line.trimStart()
+  const indent = line.slice(0, line.length - trimmed.length)
+
+  // Empty lines
+  if (trimmed.length === 0) return <span>{line}</span>
+
+  // Event lines (table rows with Normal/Warning)
+  if (/^\s*(Normal|Warning)\s/.test(line)) {
+    const isWarning = line.includes('Warning')
+    return <span className={isWarning ? 'text-status-warn' : 'text-status-ok'}>{line}</span>
+  }
+
+  // Key-only lines (end with ":" and optional whitespace, no value)
+  // e.g., "Containers:", "  application-controller:", "  Args:", "  Environment:"
+  const keyOnlyMatch = line.match(/^(\s*)([\w][\w\s/.-]*?)(:\s*)$/)
+  if (keyOnlyMatch) {
+    const [, ind, key, colon] = keyOnlyMatch
+    const isBold = ind.length <= 2
+    return (
+      <>
+        <span>{ind}</span>
+        <span className={`yaml-key ${isBold ? 'font-semibold' : ''}`}>{key}</span>
+        <span>{colon}</span>
+      </>
+    )
+  }
+
+  // Key: value — kubectl describe uses aligned columns.
+  // Top-level fields (0-2 indent): match "Key: value" with 1+ space after colon
+  // Deeper fields (3+ indent): require 2+ spaces after colon to avoid matching
+  // annotation continuations like "meta.helm.sh/release-name: value"
+  const minSpaces = indent.length <= 2 ? 1 : 2
+  const kvRegex = new RegExp(`^(\\s*)(\\w[\\w\\s/.-]*?)(:\\s{${minSpaces},})(.*)$`)
+  const kvMatch = line.match(kvRegex)
+  if (kvMatch) {
+    const [, ind, key, colon, value] = kvMatch
+    const isBold = ind.length <= 2
+    return (
+      <>
+        <span>{ind}</span>
+        <span className={`yaml-key ${isBold ? 'font-semibold' : ''}`}>{key}</span>
+        <span>{colon}</span>
+        {value && <span className="yaml-string">{value}</span>}
+      </>
+    )
+  }
+
+  // Continuation/value lines (indented, not matching key: pattern)
+  if (indent.length >= 2) {
+    return <span className="yaml-string">{line}</span>
+  }
+
+  return <span>{line}</span>
+}
+
+function DescribeModal({ type, namespace, name, onClose }: { type: string; namespace: string; name: string; onClose: () => void }) {
+  const { data: output, isLoading, error } = useResourceDescribe(type, namespace, name, true)
+
+  useEffect(() => {
+    function handleEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', handleEsc)
+    return () => document.removeEventListener('keydown', handleEsc)
+  }, [onClose])
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        className="relative w-[90vw] max-w-5xl max-h-[85vh] bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
+          <div className="flex items-center gap-3">
+            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary bg-kb-elevated px-2 py-0.5 rounded">kubectl describe</span>
+            <span className="text-sm text-kb-text-primary font-medium">{name}</span>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        {/* Content */}
+        <div className="flex-1 overflow-auto p-4" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
+          {isLoading && (
+            <div className="py-12 text-center text-sm text-kb-text-tertiary">Loading describe output...</div>
+          )}
+          {error && (
+            <div className="py-12 text-center text-sm text-status-error">{(error as Error).message}</div>
+          )}
+          {output && (
+            <pre className="text-[11px] font-mono leading-5">
+              {output.split('\n').map((line, i) => (
+                <div key={i} className="flex">
+                  <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
+                  <span className="flex-1">{highlightDescribeLine(line)}</span>
+                </div>
+              ))}
+            </pre>
+          )}
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function YAMLTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
@@ -1392,6 +1504,7 @@ export function ResourceDetailPage() {
   const { type = '', namespace = '', name = '' } = useParams<{ type: string; namespace: string; name: string }>()
   const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(type, namespace, name)
   const [activeTab, setActiveTab] = useState('overview')
+  const [showDescribe, setShowDescribe] = useState(false)
 
   // Reset to overview tab when navigating to a different resource
   useEffect(() => {
@@ -1466,14 +1579,26 @@ export function ResourceDetailPage() {
           <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
             Refresh
           </button>
-          <button className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-tertiary cursor-not-allowed" disabled>
-            Describe <span className="text-[8px] ml-1 opacity-60">SOON</span>
+          <button
+            onClick={() => setShowDescribe(!showDescribe)}
+            className={`px-3 py-1.5 text-xs border rounded-lg transition-colors ${
+              showDescribe
+                ? 'bg-status-info-dim border-status-info/20 text-status-info'
+                : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+            }`}
+          >
+            Describe
           </button>
           <button className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error cursor-not-allowed" disabled>
             Delete <span className="text-[8px] ml-1 opacity-60">SOON</span>
           </button>
         </div>
       </div>
+
+      {/* Describe modal */}
+      {showDescribe && (
+        <DescribeModal type={type} namespace={namespace} name={name} onClose={() => setShowDescribe(false)} />
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-kb-border">

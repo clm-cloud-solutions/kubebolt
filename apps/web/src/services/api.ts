@@ -98,6 +98,12 @@ export const api = {
   getMetrics: (type: string, namespace: string, name: string) =>
     fetchJSON<ResourceMetrics>(`${API_BASE}/metrics/${type}/${namespace}/${name}`),
 
+  getResourceDescribe: async (type: string, namespace: string, name: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/describe`)
+    if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
+    return res.text()
+  },
+
   getResourceYAML: async (type: string, namespace: string, name: string): Promise<string> => {
     const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
