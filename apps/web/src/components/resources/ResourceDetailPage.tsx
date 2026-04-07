@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
@@ -721,6 +721,129 @@ function highlightDescribeLine(line: string): React.ReactNode {
   }
 
   return <span>{line}</span>
+}
+
+function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
+  type: string; namespace: string; name: string; onClose: () => void; onDeleted: () => void
+}) {
+  const [confirmText, setConfirmText] = useState('')
+  const [forceDelete, setForceDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const resourceLabel = resourceLabels[type] ? resourceLabels[type].replace(/s$/, '') : type
+  const canDelete = confirmText === name
+
+  useEffect(() => {
+    function handleEsc(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleEsc)
+    return () => document.removeEventListener('keydown', handleEsc)
+  }, [onClose])
+
+  async function handleDelete() {
+    setDeleting(true)
+    setError(null)
+    try {
+      await api.deleteResource(type, namespace, name, { force: forceDelete })
+      onDeleted()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Delete failed')
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+      <div
+        className="relative w-[90vw] max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-status-error-dim flex items-center justify-center shrink-0 mt-0.5">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="text-status-error">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-kb-text-primary">Delete {resourceLabel}</h4>
+              <p className="text-[11px] text-kb-text-tertiary">This action cannot be undone.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+          </button>
+        </div>
+
+        {/* Resource info */}
+        <div className="mx-5 px-3 py-2.5 rounded-lg bg-status-error-dim/30 border border-status-error/10">
+          <div className="text-[11px] font-semibold text-status-error mb-1">You are about to delete:</div>
+          <div className="text-[11px] font-mono text-kb-text-secondary space-y-0.5">
+            <div>Name: <span className="text-kb-text-primary">{name}</span></div>
+            <div>Type: <span className="text-kb-text-primary">{type}</span></div>
+            {namespace && namespace !== '_' && <div>Namespace: <span className="text-kb-text-primary">{namespace}</span></div>}
+          </div>
+        </div>
+
+        {/* Confirmation input */}
+        <div className="px-5 pt-4">
+          <label className="text-[11px] text-kb-text-secondary block mb-1.5">
+            Type <span className="font-mono font-semibold text-kb-text-primary">{name}</span> to confirm:
+          </label>
+          <input
+            type="text"
+            value={confirmText}
+            onChange={e => setConfirmText(e.target.value)}
+            placeholder={name}
+            autoFocus
+            className="w-full px-3 py-2 text-xs font-mono bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary outline-none focus:border-status-error/50 transition-colors"
+          />
+        </div>
+
+        {/* Options */}
+        <div className="px-5 pt-3 space-y-2">
+          <label className="flex items-start gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={forceDelete}
+              onChange={e => setForceDelete(e.target.checked)}
+              className="mt-0.5 rounded"
+            />
+            <div>
+              <div className="text-[11px] text-kb-text-secondary">Force delete (grace period = 0)</div>
+              <div className="text-[10px] text-kb-text-tertiary">If finalizers exist and resource is not deleted after 3 seconds, finalizers will be removed automatically</div>
+            </div>
+          </label>
+        </div>
+
+        {/* Error */}
+        {error && (
+          <div className="mx-5 mt-3 px-3 py-2 rounded-lg bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono">
+            {error}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="px-5 py-4 flex gap-2 justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleDelete}
+            disabled={!canDelete || deleting}
+            className="px-4 py-2 text-xs font-medium bg-status-error text-white rounded-lg hover:bg-status-error/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            {deleting ? 'Deleting...' : 'Delete'}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function DescribeModal({ type, namespace, name, onClose }: { type: string; namespace: string; name: string; onClose: () => void }) {
@@ -1624,7 +1747,9 @@ export function ResourceDetailPage() {
   const [showScale, setShowScale] = useState(false)
   const [scaleValue, setScaleValue] = useState(0)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
+  const [showDelete, setShowDelete] = useState(false)
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
 
   // Reset to overview tab when navigating to a different resource
   useEffect(() => {
@@ -1810,8 +1935,11 @@ export function ResourceDetailPage() {
               )}
             </div>
           )}
-          <button className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error cursor-not-allowed" disabled>
-            Delete <span className="text-[8px] ml-1 opacity-60">SOON</span>
+          <button
+            onClick={() => { setShowDelete(true); setShowRestart(false); setShowScale(false) }}
+            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors"
+          >
+            Delete
           </button>
         </div>
       </div>
@@ -1819,6 +1947,20 @@ export function ResourceDetailPage() {
       {/* Describe modal */}
       {showDescribe && (
         <DescribeModal type={type} namespace={namespace} name={name} onClose={() => setShowDescribe(false)} />
+      )}
+
+      {/* Delete modal */}
+      {showDelete && (
+        <DeleteModal
+          type={type}
+          namespace={namespace}
+          name={item.name}
+          onClose={() => setShowDelete(false)}
+          onDeleted={() => {
+            queryClient.invalidateQueries({ queryKey: ['resources'] })
+            navigate(`/${type}`)
+          }}
+        />
       )}
 
       {/* Tabs */}

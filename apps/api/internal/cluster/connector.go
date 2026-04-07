@@ -2653,6 +2653,29 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 	return yamlBytes, nil
 }
 
+// DeleteResource deletes a resource using the dynamic client.
+func (c *Connector) DeleteResource(resourceType, namespace, name string, propagation metav1.DeletionPropagation, gracePeriod *int64) error {
+	if c.dynamicClient == nil {
+		return fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	opts := metav1.DeleteOptions{PropagationPolicy: &propagation}
+	if gracePeriod != nil {
+		opts.GracePeriodSeconds = gracePeriod
+	}
+	if isClusterScoped(resourceType) {
+		return c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
+	}
+	return c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
+}
+
 // ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
 func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yamlData []byte) error {
 	if c.dynamicClient == nil {

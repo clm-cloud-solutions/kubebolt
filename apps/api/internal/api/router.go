@@ -52,6 +52,7 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Get("/resources/{type}/{namespace}/{name}/describe", h.getResourceDescribe)
 			r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 			r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
+			r.Delete("/resources/{type}/{namespace}/{name}", h.handleDelete)
 			r.Get("/resources/pods/{namespace}/{name}/logs", h.getPodLogs)
 			r.Get("/resources/deployments/{namespace}/{name}/pods", h.getDeploymentPods)
 			r.Get("/resources/deployments/{namespace}/{name}/history", h.getDeploymentHistory)

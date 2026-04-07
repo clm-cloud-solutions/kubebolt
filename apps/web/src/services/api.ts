@@ -146,6 +146,14 @@ export const api = {
   },
 
   // Resource actions
+  deleteResource: (type: string, namespace: string, name: string, options?: { orphan?: boolean; force?: boolean }) => {
+    const params = new URLSearchParams()
+    if (options?.orphan) params.set('orphan', 'true')
+    if (options?.force) params.set('force', 'true')
+    const query = params.toString()
+    return deleteRequest<{ status: string }>(`${API_BASE}/resources/${type}/${namespace}/${name}${query ? '?' + query : ''}`)
+  },
+
   restartResource: (type: string, namespace: string, name: string) =>
     postJSON<{ status: string }>(`${API_BASE}/resources/${type}/${namespace}/${name}/restart`, {}),
 

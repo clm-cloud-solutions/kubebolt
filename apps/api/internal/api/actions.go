@@ -150,3 +150,57 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		"toReplicas":   body.Replicas,
 	})
 }
+
+func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
+	resourceType := chi.URLParam(r, "type")
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	if namespace == "_" {
+		namespace = ""
+	}
+
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+
+	propagation := metav1.DeletePropagationBackground
+	if r.URL.Query().Get("orphan") == "true" {
+		propagation = metav1.DeletePropagationOrphan
+	}
+
+	var gracePeriod *int64
+	if r.URL.Query().Get("force") == "true" {
+		zero := int64(0)
+		gracePeriod = &zero
+	}
+
+	if err := conn.DeleteResource(resourceType, namespace, name, propagation, gracePeriod); err != nil {
+		errMsg := err.Error()
+		log.Printf("Delete failed for %s/%s/%s: %v", resourceType, namespace, name, err)
+		if containsForbidden(errMsg) {
+			respondError(w, http.StatusForbidden, errMsg)
+		} else {
+			respondError(w, http.StatusInternalServerError, errMsg)
+		}
+		return
+	}
+
+	log.Printf("Deleted: %s/%s/%s", resourceType, namespace, name)
+	respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
+}
+
+func containsForbidden(s string) bool {
+	for _, sub := range []string{"forbidden", "Forbidden"} {
+		if len(s) >= len(sub) {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
