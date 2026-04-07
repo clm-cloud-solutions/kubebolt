@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react'
+import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
@@ -752,9 +753,9 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70" />
       <div
         className="relative w-[90vw] max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
@@ -842,7 +843,8 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
@@ -857,9 +859,9 @@ function DescribeModal({ type, namespace, name, onClose }: { type: string; names
     return () => document.removeEventListener('keydown', handleEsc)
   }, [onClose])
 
-  return (
-    <div className="fixed inset-0 z-[9999] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" />
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70" />
       <div
         className="relative w-[90vw] max-w-5xl max-h-[85vh] bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
@@ -898,7 +900,8 @@ function DescribeModal({ type, namespace, name, onClose }: { type: string; names
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }
 
