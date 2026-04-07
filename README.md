@@ -20,6 +20,10 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 | RBAC-aware degradation | | | | **Yes** |
 | Pod terminal | | Yes | Yes | **Yes** |
 | Port forwarding | | Yes | Yes | **Yes** |
+| YAML editing & apply | Yes | Yes | Yes | **Yes** |
+| kubectl describe | Yes | Yes | | **Yes** |
+| Restart / Scale / Delete | | Yes | Yes | **Yes** |
+| Global search (Cmd+K) | | Yes | Yes | **Yes** |
 | Cluster topology map | | | | **Yes** |
 | Insights engine | | | | **Yes** |
 | Gateway API support | | | | **Yes** |
@@ -129,8 +133,12 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 - **Configurable refresh** — Choose refresh interval from 5s to 2m, persisted across sessions
 
 ### Cluster Management
-- **Pod Terminal** — Interactive shell access from the browser (xterm.js + SPDY exec). Auto-detects bash/sh. Multi-container support.
+- **Pod Terminal** — Interactive shell access from the browser (xterm.js + SPDY exec). Auto-detects bash/sh. Multi-container support. Workload pod selector for Deployments/StatefulSets/DaemonSets.
 - **Port Forwarding** — Forward pod ports with one click. Active forwards shown in Topbar with Open/Stop controls.
+- **Restart & Scale** — Rollout restart for Deployments/StatefulSets/DaemonSets. Scale replicas for Deployments/StatefulSets. Confirmation popovers.
+- **YAML Editing** — CodeMirror 6 editor with YAML syntax highlighting. Edit and apply changes directly from the browser.
+- **Delete Resources** — Confirmation modal with name-to-confirm input, force delete option, and cascade control.
+- **kubectl describe** — Full `kubectl describe` output in a modal with syntax highlighting.
 - **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click with connection overlay
 
 ### Security & RBAC
@@ -140,6 +148,7 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 - **Graceful degradation** — Restricted resources dimmed in sidebar, "Access Restricted" pages, "No access" indicators on dashboard cards
 
 ### Developer Experience
+- **Global Search (Cmd+K)** — Search across all resource types. Results grouped by kind with icons. Keyboard navigation.
 - **Gateway API** — Native support for `gateway.networking.k8s.io` Gateways and HTTPRoutes
 - **YAML viewer** — Syntax highlighted with theme-aware colors, works in light and dark mode
 - **Search & filter** — Debounced search across resources with namespace filtering
@@ -196,6 +205,7 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 | Backend | Go 1.25+ with client-go, Chi v5, gorilla/websocket |
 | K8s Client | Shared informers (typed) + dynamic client (Gateway API CRDs) |
 | Terminal | SPDY exec bridge + xterm.js |
+| YAML Editor | CodeMirror 6 with One Dark theme + YAML language |
 | Frontend | React 18 + TypeScript + Vite 5 + Tailwind CSS 3.4 |
 | Cluster Map | React Flow 11 with custom nodes, edges, namespace group nodes |
 | Data Fetching | TanStack Query 5 + TanStack Table 8 |
@@ -206,7 +216,7 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 | Metric | Value |
 |--------|-------|
 | Backend RAM | ~70 MB (production cluster) |
-| Frontend bundle | ~560 KB JS + 39 KB CSS (~250 KB gzipped) |
+| Frontend bundle | ~1.2 MB JS + 40 KB CSS (~347 KB gzipped) |
 | API response time | < 5ms (from informer cache) |
 | Startup time | < 5s (permission probe + informer sync) |
 
@@ -215,12 +225,11 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and roadmap.
 
 **Coming next:**
-- Restart/Scale deployments from the UI
-- In-place YAML editing with diff preview
-- Resource deletion with confirmation
-- Global search (Cmd+K)
-- Helm chart for easy distribution
 - File browser for pod containers
+- StatefulSet/DaemonSet revision history with rollback
+- CronJob → Jobs child listing with manual trigger
+- Helm chart for easy distribution
+- Container images on ghcr.io with GitHub Releases
 
 ## License
 

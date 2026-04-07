@@ -64,7 +64,12 @@ Key packages under `internal/`:
 - **insights/engine.go** — 12 rule-based insight evaluations (crash-loop, OOM, CPU throttle, memory pressure, etc.)
 - **websocket/hub.go** — WebSocket connection management (4096 buffer, silent drops when no clients)
 - **api/router.go** — Chi router with `requireConnector` middleware guarding all cluster-dependent routes; `/clusters` and `/clusters/switch` are always available even when disconnected.
-- **api/handlers.go** — REST handlers including resource detail with metrics injection, YAML endpoint (dynamic client), pod logs streaming, deployment/statefulset/daemonset/job pod listing, deployment history. Permission-denied errors mapped to HTTP 403 (was generic 404/500). New `getPermissions` handler.
+- **api/handlers.go** — REST handlers including resource detail with metrics injection, YAML endpoint (dynamic client), pod logs streaming, deployment/statefulset/daemonset/job pod listing, deployment history. Permission-denied errors mapped to HTTP 403 (was generic 404/500). YAML apply via PUT endpoint. New `getPermissions` handler.
+- **api/exec.go** — WebSocket-to-SPDY exec bridge for pod terminal. Auto-detects shell (bash → sh). Handles permission errors, session lifecycle, terminal resize.
+- **api/portforward.go** — PortForwardManager for pod port forwarding via SPDY. TCP listener on backend host with reverse proxy fallback. Start/Stop/List/StopAll with auto-cleanup on cluster switch.
+- **api/actions.go** — Resource actions: restart (rollout restart via annotation patch), scale (scale subresource), delete (dynamic client with cascade/force options).
+- **api/describe.go** — kubectl describe output via `k8s.io/kubectl/pkg/describe.DescriberFor()`. Supports all resource types.
+- **api/search.go** — Global search across 16 resource types using existing listers. Returns results with name, namespace, kind, status.
 - **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types + `Permissions` map), `ResourceUsage`, `ResourceList` (with `Forbidden` flag), `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
 
 ### API Endpoints
@@ -76,24 +81,34 @@ Key packages under `internal/`:
 | `GET /cluster/overview` | Cluster summary with resource counts, CPU/Memory, health |
 | `GET /resources/:type` | List resources with pagination, filtering, metrics |
 | `GET /resources/:type/:ns/:name` | Resource detail with metrics injection |
-| `GET /resources/:type/:ns/:name/yaml` | Raw YAML via dynamic client (secrets redacted) |
+| `GET /resources/:type/:ns/:name/yaml` | Raw YAML via dynamic client (secrets redacted, managedFields stripped) |
+| `PUT /resources/:type/:ns/:name/yaml` | Apply edited YAML via dynamic client Update() |
+| `GET /resources/:type/:ns/:name/describe` | kubectl describe output via k8s.io/kubectl |
+| `POST /resources/:type/:ns/:name/restart` | Rollout restart (Deployments, StatefulSets, DaemonSets) |
+| `POST /resources/:type/:ns/:name/scale` | Scale replicas (Deployments, StatefulSets) |
+| `DELETE /resources/:type/:ns/:name` | Delete resource with `?force=true&orphan=true` options |
 | `GET /resources/pods/:ns/:name/logs` | Pod logs with `?container=&tailLines=` params |
 | `GET /resources/deployments/:ns/:name/pods` | Pods owned by deployment (via ReplicaSets) |
 | `GET /resources/deployments/:ns/:name/history` | Revision history via ReplicaSets |
 | `GET /resources/statefulsets/:ns/:name/pods` | Pods owned by statefulset |
 | `GET /resources/daemonsets/:ns/:name/pods` | Pods owned by daemonset |
 | `GET /resources/jobs/:ns/:name/pods` | Pods owned by job |
+| `GET /search` | Global search across 16 resource types by name |
 | `GET /topology` | Full topology graph (nodes + edges) |
 | `GET /insights` | Evaluated insights with severity |
 | `GET /events` | Events with `?involvedKind=&involvedName=` filtering |
 | `GET /cluster/permissions` | Probed RBAC permissions per resource type |
-| `GET /ws` | WebSocket for real-time updates |
+| `POST /portforward` | Start port-forward to pod port |
+| `GET /portforward` | List active port-forwards |
+| `DELETE /portforward/:id` | Stop port-forward |
+| `GET /ws` | WebSocket for real-time resource updates |
+| `GET /ws/exec/:ns/:name` | WebSocket for pod terminal (SPDY exec bridge) |
 
 ### Frontend (`apps/web`)
 
 React 18 + TypeScript + Vite + Tailwind CSS
 
-Key libraries: TanStack Query (server state), TanStack Table, ReactFlow (cluster topology map), Lucide React (icons), React Router
+Key libraries: TanStack Query (server state), TanStack Table, ReactFlow (cluster topology map), Lucide React (icons), React Router, xterm.js (pod terminal), CodeMirror 6 (YAML editor)
 
 23 resource list views + Cluster Map + resource detail views with tabbed interface.
 
@@ -123,23 +138,32 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 Terminal and Files tabs are Phase 2 (marked "Coming Soon").
 
 **Key features:**
-- YAML syntax highlighting (keys purple, strings blue, numbers, booleans, comments)
+- YAML viewer with theme-aware syntax highlighting (CSS variables for light/dark) + CodeMirror 6 editor mode with YAML language + One Dark theme
+- kubectl describe modal with syntax highlighting (keys, values, events colored by severity)
 - Log viewer with syntax coloring (green default, blue timestamps, red errors, yellow warnings)
 - Workload logs: pod selector + container selector + tail lines (100/500/1000) + 10s auto-refresh
+- Pod terminal: xterm.js with SPDY exec bridge, auto shell detection (bash → sh), multi-container, workload pod selector
+- Port forwarding: per-port buttons in pod detail, Topbar indicator with active forwards dropdown
+- Resource actions: Restart (rollout restart), Scale (replica input popover), Delete (confirmation modal with name typing)
+- Global search: Cmd+K modal, debounced, grouped by kind with icons, keyboard navigation
+- CPU/Memory bars with request/limit markers and hover tooltip (ResourceUsageCell component)
 - Related tab uses topology API edges for parent+child navigation
 - Monitor tab: SVG donut gauges from Metrics Server (Network/Disk require agent)
 - Cross-resource links: Pod→Node, PVC→PV/StorageClass, HPA→target, namespace links
+- Configurable refresh interval (5s–2m) persisted in localStorage, selector in DataFreshnessIndicator
 
 **Key frontend behaviors:**
 - TanStack Query `retry` skips retries on 503 (cluster unavailable) and 403 (permission denied)
 - `ApiError` (from `api.ts`) used to detect 503/403 vs other errors
-- Resource list pages support server-side pagination (50/page) with prev/next controls
+- Resource list pages support server-side pagination (50/page) with prev/next controls, debounced search with `keepPreviousData`
 - Cluster switcher uses optimistic updates, shows "Connecting to cluster" overlay during switch, navigates to Overview on success
 - Sidebar shows resource counters from overview API (15 resource types); restricted resources dimmed with shield icon
 - "Limited access" banner when permissions are partial (shows X of Y resource types)
 - `PermissionDenied` component for 403 pages (instead of generic error)
 - Summary cards show "No access" for restricted resources; CPU/Memory panels show "No access to Nodes" when capacity unavailable
 - Overview workload cards link to resource detail views
+- WebSocket broadcast invalidation debounced (2s) to prevent request storms
+- Sensitive value redaction: Secrets always redacted, ConfigMap values with sensitive keys auto-redacted in YAML view
 
 ### Data Flow
 

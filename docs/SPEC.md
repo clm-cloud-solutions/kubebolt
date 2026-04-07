@@ -974,18 +974,19 @@ npm run dev  # → http://localhost:5173
 
 Go backend (cluster manager, metrics collector, insights engine, REST API, WebSocket). React frontend with 23 views. Multi-cluster support. Gateway API support. Cluster Map with Grid/Flow layouts. Docker Compose self-hosted. RBAC permission detection with namespace-scoped SA support. Configurable refresh intervals. Sensitive value redaction in ConfigMap/Secret YAML. Tested on Docker Desktop + EKS.
 
-### Phase 1.3 — Terminal & Cluster Actions (HIGH IMPACT)
+### Phase 1.3 — Terminal & Cluster Actions (DONE)
 
-Priority: highest — these are the features that keep users inside KubeBolt instead of switching to `kubectl`.
+All features implemented. Users can manage clusters entirely from KubeBolt without switching to `kubectl`.
 
-| Feature | Impact | Description |
-|---------|--------|-------------|
-| **Pod Terminal** | Critical | WebSocket exec via SPDY + xterm.js. Shell selector (bash/sh/custom). Multi-container support. Tab per terminal session. |
-| **Port Forwarding** | Critical | Forward local ports to pod/service ports. UI to start/stop/list active forwards. Auto-detect container ports. Status indicator in Topbar. **Limitation:** Opens TCP ports on the backend host — only works when backend and browser run on the same machine (localhost). Remote/SaaS deployments will require subdomain-based proxying (Phase 3). |
-| **Restart/Scale** | High | Restart deployment/statefulset/daemonset (rollout restart). Scale replicas via slider or input. Confirmation dialog before action. |
-| **YAML Editing** | High | In-place YAML editor with apply. Diff preview before save. Validation errors shown inline. |
-| **Delete Resources** | High | Delete with confirmation dialog. Support for cascade/orphan options. Grace period selector. |
-| **Global Search** | High | Full-text search across all resources (name, namespace, labels). Keyboard shortcut (Cmd+K). Results grouped by type with navigation. |
+| Feature | Impact | Status | Implementation |
+|---------|--------|--------|----------------|
+| **Pod Terminal** | Critical | Done | WebSocket-to-SPDY exec bridge + xterm.js. Auto-detects bash/sh. Multi-container + workload pod selector. Permission-aware with error countdown. |
+| **Port Forwarding** | Critical | Done | SPDY port-forward with TCP listener on backend host. Topbar indicator with active forwards dropdown (Open/Stop). Per-port forward buttons in pod detail. **Limitation:** localhost only — remote requires Phase 3 subdomain proxy. |
+| **Restart/Scale** | High | Done | Restart: PATCH `restartedAt` annotation (rollout restart) for Deployments/StatefulSets/DaemonSets. Scale: scale subresource for Deployments/StatefulSets. Popover confirmations with descriptions. |
+| **Describe** | High | Done | `k8s.io/kubectl/pkg/describe` for exact `kubectl describe` output. Full-screen modal with syntax highlighting (keys, values, events). |
+| **YAML Editing** | High | Done | CodeMirror 6 with One Dark theme + YAML language. Edit/Apply/Cancel workflow. Backend applies via dynamic client Update(). managedFields stripped from output. |
+| **Delete Resources** | High | Done | Full confirmation modal: resource info, type-name-to-confirm input, force delete option (grace period 0). Navigates to list on success. |
+| **Global Search** | High | Done | Cmd+K modal searching across 16 resource types. Results grouped by kind with icons. Keyboard navigation (↑↓ + Enter). Debounced, min 3 chars. Portal rendering for full-screen overlay. |
 
 ### Phase 1.4 — File Browser & History
 
