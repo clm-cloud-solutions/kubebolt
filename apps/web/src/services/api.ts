@@ -145,6 +145,12 @@ export const api = {
     return res.text()
   },
 
+  // Search
+  search: (query: string) =>
+    fetchJSON<Array<{ name: string; namespace: string; kind: string; resourceType: string; status: string }>>(
+      `${API_BASE}/search?q=${encodeURIComponent(query)}`
+    ),
+
   // Resource actions
   deleteResource: (type: string, namespace: string, name: string, options?: { orphan?: boolean; force?: boolean }) => {
     const params = new URLSearchParams()

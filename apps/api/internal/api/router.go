@@ -62,6 +62,7 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Post("/portforward", h.handleCreatePortForward)
 			r.Get("/portforward", h.handleListPortForwards)
 			r.Delete("/portforward/{id}", h.handleDeletePortForward)
+			r.Get("/search", h.handleSearch)
 			r.Get("/topology", h.getTopology)
 			r.Get("/insights", h.getInsights)
 			r.Get("/events", h.getEvents)

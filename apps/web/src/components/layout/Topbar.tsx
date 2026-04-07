@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
 import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X } from 'lucide-react'
+import { SearchModal } from '@/components/shared/SearchModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -12,8 +13,21 @@ interface TopbarProps {
 
 export function Topbar({ overview }: TopbarProps) {
   const [open, setOpen] = useState(false)
+  const [searchOpen, setSearchOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+
+  // Cmd+K / Ctrl+K global shortcut
+  useEffect(() => {
+    function handleKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault()
+        setSearchOpen(true)
+      }
+    }
+    document.addEventListener('keydown', handleKey)
+    return () => document.removeEventListener('keydown', handleKey)
+  }, [])
   const navigate = useNavigate()
   const { theme, toggleTheme } = useTheme()
 
@@ -138,18 +152,16 @@ export function Topbar({ overview }: TopbarProps) {
 
       {/* Right side */}
       <div className="flex items-center gap-3">
-        {/* Search */}
-        <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-kb-text-tertiary" />
-          <input
-            type="text"
-            placeholder="Search..."
-            className="w-52 pl-8 pr-12 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-primary placeholder-kb-text-tertiary outline-none focus:border-kb-border-active transition-colors"
-          />
-          <kbd className="absolute right-2.5 top-1/2 -translate-y-1/2 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary bg-kb-bg border border-kb-border">
-            ⌘K
-          </kbd>
-        </div>
+        {/* Search trigger */}
+        <button
+          onClick={() => setSearchOpen(true)}
+          className="flex items-center gap-2 w-52 pl-3 pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
+        >
+          <Search className="w-3.5 h-3.5" />
+          <span className="flex-1 text-left">Search...</span>
+          <kbd className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
+        </button>
+        {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
 
         {/* Theme toggle */}
         <button
