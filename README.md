@@ -244,8 +244,8 @@ See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and ro
 - File browser for pod containers
 - StatefulSet/DaemonSet revision history with rollback
 - CronJob → Jobs child listing with manual trigger
-- Helm chart for easy distribution
-- Container images on ghcr.io with GitHub Releases
+- Animated cluster map with traffic visualization
+- User documentation and guides
 
 ## License
 
