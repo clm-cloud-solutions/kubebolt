@@ -1682,6 +1682,7 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			"availableReplicas": rs.Status.AvailableReplicas,
 			"labels":           safeLabels(rs.Labels),
 			"annotations":      safeAnnotations(rs.Annotations),
+			"ownerReferences":  ownerRefsToSlice(rs.OwnerReferences),
 			"createdAt":        rs.CreationTimestamp.Time.Format(time.RFC3339),
 			"age":              formatAge(rs.CreationTimestamp.Time),
 		}, nil

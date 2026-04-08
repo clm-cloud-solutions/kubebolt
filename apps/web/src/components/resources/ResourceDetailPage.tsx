@@ -278,7 +278,7 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
       break
     default:
       metrics.push(
-        { label: 'Status', value: <div className="flex items-center gap-2"><StatusBadge status={item.status} />{item.status}</div> },
+        { label: 'Status', value: <StatusBadge status={item.status} /> },
       )
   }
 
