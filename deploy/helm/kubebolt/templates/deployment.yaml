@@ -63,6 +63,9 @@ spec:
         - name: web
           image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.web.image.pullPolicy }}
+          env:
+            - name: API_BACKEND
+              value: "{{ include "kubebolt.fullname" . }}-api:{{ .Values.api.port }}"
           ports:
             - containerPort: {{ .Values.web.port }}
               protocol: TCP
