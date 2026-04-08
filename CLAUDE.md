@@ -40,6 +40,13 @@ docker compose -f deploy/docker-compose.yml up -d --build
 Frontend on http://localhost:3000 (nginx proxies /api and /ws to backend).
 EKS clusters require `~/.aws` mounted (already in compose) with an active AWS session.
 
+### Helm Chart
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
+kubectl port-forward svc/kubebolt 3000:80
+```
+When deployed via Helm, the API auto-detects in-cluster config (ServiceAccount token). The web container uses `API_BACKEND` env var (set by Helm template) to point nginx at the correct API service name.
+
 ## Architecture
 
 ### Go Workspace Monorepo
@@ -54,7 +61,7 @@ Uses `go.work` with three modules:
 Entry point: `cmd/server/main.go` (flags: `--kubeconfig`, `--port`)
 
 Key packages under `internal/`:
-- **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster. Initial connection is **async** — HTTP server binds immediately; manager starts in disconnected state if the default cluster is unreachable. `ConnError()` exposes the last connection error.
+- **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster. Initial connection is **async** — HTTP server binds immediately; manager starts in disconnected state if the default cluster is unreachable. `ConnError()` exposes the last connection error. **In-cluster support:** when no kubeconfig file is found, auto-detects ServiceAccount token via `rest.InClusterConfig()` and creates a single "in-cluster" context.
 - **cluster/connector.go** — Kubernetes client-go shared informers for all resource types + dynamic client for Gateway API (Gateways, HTTPRoutes). `Start()` returns an error if `WaitForCacheSync` does not complete within 20s. `rest.Config.Timeout = 15s` prevents hanging on mid-session cluster failures. Informers are **gated by permissions** — only started for resources the connected SA can access. For namespace-scoped SAs, creates per-namespace `SharedInformerFactory` instances instead of a single cluster-wide factory.
 - **cluster/permissions.go** — RBAC permission probing via `SelfSubjectAccessReview`. Probes 22 resource types at connection time (list verb only, ~2-5s). Two-phase probe: cluster-wide first, then namespace-level fallback for RoleBinding-based access. `PermissionDeniedError` type for 403 responses. `ResourcePermissions` map tracks `CanList`/`CanWatch`/`CanGet` per resource, plus `NamespaceScoped` flag and `Namespaces` list for namespace-scoped SAs.
 - **cluster/nslister.go** — Multi-namespace lister wrappers that aggregate results from per-namespace informer factories. Implements all client-go lister interfaces (`PodLister`, `DeploymentLister`, etc.) with `List()` merging across factories and `Get()` trying each factory until found. Required for namespace-scoped ServiceAccounts.
@@ -129,19 +136,17 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 
 **Tabs per resource type:**
 
-| Resource | Overview | YAML | Pods | Logs | Containers | Volumes | Related | History | Events | Monitor |
-|----------|----------|------|------|------|------------|---------|---------|---------|--------|---------|
-| Pods | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Deployments | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
-| StatefulSets | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | ✅ |
-| DaemonSets | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | ✅ |
-| Jobs | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | — | ✅ | — |
-| CronJobs | ✅ | ✅ | — | — | — | — | ✅ | — | ✅ | — |
-| Services | ✅ | ✅ | — | — | — | — | ✅ | — | ✅ | — |
-| Nodes | ✅ | ✅ | — | — | — | — | — | — | ✅ | ✅ |
-| Others | ✅ | ✅ | — | — | — | — | — | — | ✅ | — |
-
-Terminal and Files tabs are Phase 2 (marked "Coming Soon").
+| Resource | Overview | YAML | Pods | Logs | Terminal | Files | Containers | Volumes | Related | History | Events | Monitor |
+|----------|----------|------|------|------|----------|-------|------------|---------|---------|---------|--------|---------|
+| Pods | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
+| Deployments | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
+| StatefulSets | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
+| DaemonSets | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
+| Jobs | ✅ | ✅ | ✅ | ✅ | — | — | — | — | ✅ | — | ✅ | — |
+| CronJobs | ✅ | ✅ | — | — | — | — | — | — | ✅ | — | ✅ | — |
+| Services | ✅ | ✅ | — | — | — | — | — | — | ✅ | — | ✅ | — |
+| Nodes | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| Others | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | — |
 
 **Key features:**
 - YAML viewer with theme-aware syntax highlighting (CSS variables for light/dark) + CodeMirror 6 editor mode with YAML language + One Dark theme
@@ -149,6 +154,7 @@ Terminal and Files tabs are Phase 2 (marked "Coming Soon").
 - Log viewer with syntax coloring (green default, blue timestamps, red errors, yellow warnings)
 - Workload logs: pod selector + container selector + tail lines (100/500/1000) + 10s auto-refresh
 - Pod terminal: xterm.js with SPDY exec bridge, auto shell detection (bash → sh), multi-container, workload pod selector
+- Pod file browser: directory navigation with breadcrumbs, file content viewer, download. Handles distroless containers via `find` fallback
 - Port forwarding: per-port buttons in pod detail, Topbar indicator with active forwards dropdown
 - Resource actions: Restart (rollout restart), Scale (replica input popover), Delete (confirmation modal with name typing)
 - Global search: Cmd+K modal, debounced, grouped by kind with icons, keyboard navigation

@@ -19,6 +19,7 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 | Multi-cluster | | | Yes | **Yes** |
 | RBAC-aware degradation | | | | **Yes** |
 | Pod terminal | | Yes | Yes | **Yes** |
+| Pod file browser | | | | **Yes** |
 | Port forwarding | | Yes | Yes | **Yes** |
 | YAML editing & apply | Yes | Yes | Yes | **Yes** |
 | kubectl describe | Yes | Yes | | **Yes** |
@@ -27,6 +28,7 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 | Cluster topology map | | | | **Yes** |
 | Insights engine | | | | **Yes** |
 | Gateway API support | | | | **Yes** |
+| Helm chart (OCI) | | | | **Yes** |
 | < 70 MB RAM | | Yes | | **Yes** |
 
 ---
@@ -150,11 +152,15 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 
 ### Cluster Management
 - **Pod Terminal** — Interactive shell access from the browser (xterm.js + SPDY exec). Auto-detects bash/sh. Multi-container support. Workload pod selector for Deployments/StatefulSets/DaemonSets.
+- **Pod File Browser** — Browse directories, view file contents, and download files from any container. Works with distroless images via `find` fallback.
 - **Port Forwarding** — Forward pod ports with one click. Active forwards shown in Topbar with Open/Stop controls.
 - **Restart & Scale** — Rollout restart for Deployments/StatefulSets/DaemonSets. Scale replicas for Deployments/StatefulSets. Confirmation popovers.
 - **YAML Editing** — CodeMirror 6 editor with YAML syntax highlighting. Edit and apply changes directly from the browser.
+- **Export/Copy YAML** — Copy to clipboard or download as `.yaml` file.
 - **Delete Resources** — Confirmation modal with name-to-confirm input, force delete option, and cascade control.
 - **kubectl describe** — Full `kubectl describe` output in a modal with syntax highlighting.
+- **Workload History** — Deployment revision history via ReplicaSets. StatefulSet/DaemonSet history via ControllerRevisions.
+- **CronJob Jobs** — Child job listing with status, completions, duration, and age.
 - **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click with connection overlay
 
 ### Security & RBAC
@@ -195,6 +201,7 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 │   ├─ Cluster Map (Grid/Flow)    │
 │   ├─ 23 Resource Views          │
 │   ├─ Pod Terminal (xterm.js)    │
+│   ├─ Pod File Browser           │
 │   └─ Port Forward UI            │
 └─────────────────────────────────┘
 ```
@@ -241,11 +248,11 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and roadmap.
 
 **Coming next:**
-- File browser for pod containers
-- StatefulSet/DaemonSet revision history with rollback
-- CronJob → Jobs child listing with manual trigger
 - Animated cluster map with traffic visualization
-- User documentation and guides
+- Cluster management UI (add/remove/rename clusters)
+- Notifications (Slack, email) for insights alerts
+- Lightweight node agent for network/disk metrics
+- Live traffic visualization on cluster map
 
 ## License
 

@@ -997,16 +997,16 @@ All features implemented. Users can manage clusters entirely from KubeBolt witho
 | **CronJob → Jobs** | Medium | Done | Child job listing via ownerReferences filtering, sorted newest first. Shows name, status, completions, duration, age. |
 | **Export/Copy YAML** | Medium | Done | Copy to clipboard with "Copied!" feedback. Download as `.yaml` file. Buttons alongside Edit in YAML tab. |
 
-### Phase 1.5 — Distribution & Community
+### Phase 1.5 — Distribution & Community (DONE)
 
 Priority: critical for open source adoption.
 
-| Feature | Impact | Description |
-|---------|--------|-------------|
-| **Helm Chart** | Critical | Standard K8s distribution. Configurable values (kubeconfig, resources, ingress). Published to Artifact Hub. |
-| **Container Images** | High | Multi-arch images (amd64/arm64) on ghcr.io. Automated builds via GitHub Actions on tag. |
-| **GitHub Releases** | High | Automated release workflow. Changelog generation. Pre-built binaries for macOS/Linux. |
-| **User Documentation** | High | Quick start guide, screenshots, cloud-specific guides (EKS, GKE, AKS). Troubleshooting section. |
+| Feature | Impact | Status | Implementation |
+|---------|--------|--------|----------------|
+| **Helm Chart** | Critical | Done | OCI-based Helm chart at `ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt`. Configurable values (images, resources, ingress, RBAC, ServiceAccount). ClusterRole with full KubeBolt permissions. In-cluster config auto-detection. |
+| **Container Images** | High | Done | Multi-arch images (amd64/arm64) on ghcr.io. Native platform builds to avoid QEMU timeout. API uses Go cross-compilation, Web uses native Node.js build + multi-arch nginx runtime. |
+| **GitHub Releases** | High | Done | Automated release workflow on `v*` tags. Categorized changelog (features, fixes, docs, performance). Docker pull instructions and install commands in release notes. |
+| **User Documentation** | High | Done | README with feature comparison table, quick start guides (Helm, Docker Compose, local dev), architecture diagram, RBAC docs, tech stack, and performance metrics. |
 
 ### Phase 1.6 — Animated Traffic Map & Settings
 
