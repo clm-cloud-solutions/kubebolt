@@ -151,6 +151,21 @@ export const api = {
     return res.text()
   },
 
+  // Pod files
+  listFiles: (namespace: string, name: string, container: string, path: string) =>
+    fetchJSON<{ path: string; items: Array<{ name: string; type: string; size: string; modified: string; permissions: string }> }>(
+      `${API_BASE}/resources/pods/${namespace}/${name}/files?container=${encodeURIComponent(container)}&path=${encodeURIComponent(path)}`
+    ),
+
+  getFileContent: async (namespace: string, name: string, container: string, path: string): Promise<string> => {
+    const res = await fetch(`${API_BASE}/resources/pods/${namespace}/${name}/files/content?container=${encodeURIComponent(container)}&path=${encodeURIComponent(path)}`)
+    if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
+    return res.text()
+  },
+
+  getFileDownloadUrl: (namespace: string, name: string, container: string, path: string) =>
+    `${API_BASE}/resources/pods/${namespace}/${name}/files/download?container=${encodeURIComponent(container)}&path=${encodeURIComponent(path)}`,
+
   // Search
   search: (query: string) =>
     fetchJSON<Array<{ name: string; namespace: string; kind: string; resourceType: string; status: string }>>(

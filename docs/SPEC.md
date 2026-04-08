@@ -988,14 +988,14 @@ All features implemented. Users can manage clusters entirely from KubeBolt witho
 | **Delete Resources** | High | Done | Full confirmation modal: resource info, type-name-to-confirm input, force delete option (grace period 0). Navigates to list on success. |
 | **Global Search** | High | Done | Cmd+K modal searching across 16 resource types. Results grouped by kind with icons. Keyboard navigation (↑↓ + Enter). Debounced, min 3 chars. Portal rendering for full-screen overlay. |
 
-### Phase 1.4 — File Browser & History
+### Phase 1.4 — File Browser & History (DONE)
 
-| Feature | Impact | Description |
-|---------|--------|-------------|
-| **Files Tab** | Medium | Exec-based file browser for pod containers. Navigate directories, view file contents, download files. |
-| **StatefulSet/DaemonSet History** | Medium | Revision history via ControllerRevision lister. Diff between revisions. Rollback to previous revision. |
-| **CronJob → Jobs** | Medium | Child job listing for CronJobs. Job status timeline. Manual trigger button. |
-| **Export/Copy YAML** | Medium | Download YAML as file. Copy to clipboard button. |
+| Feature | Impact | Status | Implementation |
+|---------|--------|--------|----------------|
+| **Files Tab** | Medium | Done | Exec-based file browser (`ls -la` / `find` fallback). Directory navigation with breadcrumbs, file content viewer, download. Handles distroless containers gracefully. Permission denied shown as centered icon state. |
+| **StatefulSet/DaemonSet History** | Medium | Done | ControllerRevision listing via clientset, sorted by revision. Deployments continue using ReplicaSet-based history with active/inactive differentiation. |
+| **CronJob → Jobs** | Medium | Done | Child job listing via ownerReferences filtering, sorted newest first. Shows name, status, completions, duration, age. |
+| **Export/Copy YAML** | Medium | Done | Copy to clipboard with "Copied!" feedback. Download as `.yaml` file. Buttons alongside Edit in YAML tab. |
 
 ### Phase 1.5 — Distribution & Community
 

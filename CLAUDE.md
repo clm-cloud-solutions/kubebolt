@@ -70,6 +70,7 @@ Key packages under `internal/`:
 - **api/actions.go** — Resource actions: restart (rollout restart via annotation patch), scale (scale subresource), delete (dynamic client with cascade/force options).
 - **api/describe.go** — kubectl describe output via `k8s.io/kubectl/pkg/describe.DescriberFor()`. Supports all resource types.
 - **api/search.go** — Global search across 16 resource types using existing listers. Returns results with name, namespace, kind, status.
+- **api/files.go** — Pod file browser via exec-based `ls`/`find`/`cat` commands. List directories, view file content (1MB limit), download files. Handles distroless containers and permission denied gracefully.
 - **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types + `Permissions` map), `ResourceUsage`, `ResourceList` (with `Forbidden` flag), `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
 
 ### API Endpoints
@@ -88,6 +89,11 @@ Key packages under `internal/`:
 | `POST /resources/:type/:ns/:name/scale` | Scale replicas (Deployments, StatefulSets) |
 | `DELETE /resources/:type/:ns/:name` | Delete resource with `?force=true&orphan=true` options |
 | `GET /resources/pods/:ns/:name/logs` | Pod logs with `?container=&tailLines=` params |
+| `GET /resources/pods/:ns/:name/files` | List directory contents via exec (`?container=&path=/`) |
+| `GET /resources/pods/:ns/:name/files/content` | Read file content via exec (`?container=&path=`) |
+| `GET /resources/pods/:ns/:name/files/download` | Download file as attachment |
+| `GET /resources/cronjobs/:ns/:name/jobs` | List child Jobs of a CronJob |
+| `GET /resources/:type/:ns/:name/history` | Workload revision history (ControllerRevisions for SS/DS) |
 | `GET /resources/deployments/:ns/:name/pods` | Pods owned by deployment (via ReplicaSets) |
 | `GET /resources/deployments/:ns/:name/history` | Revision history via ReplicaSets |
 | `GET /resources/statefulsets/:ns/:name/pods` | Pods owned by statefulset |

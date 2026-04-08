@@ -14,6 +14,7 @@ import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicat
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
+import { FilesTab } from './FilesTab'
 import { PortForwardButton, PortForwardNote } from './PortForwardButton'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
@@ -156,7 +157,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'yaml', label: 'YAML' },
         { id: 'logs', label: 'Logs' },
         { id: 'terminal', label: 'Terminal' },
-        { id: 'files', label: 'Files', soon: true },
+        { id: 'files', label: 'Files' },
         { id: 'volumes', label: 'Volumes', count: volumes },
         { id: 'related', label: 'Related' },
         { id: 'events', label: 'Events' },
@@ -1900,6 +1901,7 @@ export function ResourceDetailPage() {
         if (type === 'deployments') return <HistoryTab namespace={namespace} name={name} />
         return <WorkloadHistoryTab type={type} namespace={namespace} name={name} />
       case 'cronjob-jobs': return <CronJobJobsTab namespace={namespace} name={name} />
+      case 'files': return <FilesTab namespace={namespace} name={name} item={item!} />
       case 'terminal':
         if (type === 'pods') return <TerminalTab namespace={namespace} name={name} item={item!} />
         if (type === 'deployments') return <DeploymentTerminalTab namespace={namespace} name={name} />
