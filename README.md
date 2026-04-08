@@ -42,7 +42,23 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 
 ## Quick Start
 
-### Option 1: Docker Compose (recommended)
+### Option 1: Helm Chart (recommended for Kubernetes)
+
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
+```
+
+KubeBolt will be deployed with a ServiceAccount that has read access to your cluster. Access via `kubectl port-forward svc/kubebolt 3000:80` or configure an Ingress.
+
+For custom configuration:
+
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set ingress.enabled=true \
+  --set ingress.hosts[0].host=kubebolt.example.com
+```
+
+### Option 2: Docker Compose
 
 Runs the full stack (Go API + React frontend via nginx) in containers.
 
@@ -86,7 +102,7 @@ To stop: `docker compose down`
 
 To rebuild after code changes: `docker compose up -d --build`
 
-### Option 2: Local development — single command
+### Option 3: Local development — single command
 
 Requires Go 1.25+ and Node 20+.
 
@@ -106,7 +122,7 @@ make build-web    # Build only the frontend
 make test         # Run Go tests
 ```
 
-### Option 3: Local development — separate terminals
+### Option 4: Local development — separate terminals
 
 If you prefer running each service independently:
 

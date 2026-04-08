@@ -1,0 +1,61 @@
+# KubeBolt Helm Chart Values
+
+# API backend
+api:
+  image:
+    repository: ghcr.io/clm-cloud-solutions/kubebolt/api
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  port: 8080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+# Web frontend (nginx)
+web:
+  image:
+    repository: ghcr.io/clm-cloud-solutions/kubebolt/web
+    tag: ""  # defaults to Chart.appVersion
+    pullPolicy: IfNotPresent
+  port: 3000
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 80
+
+# Ingress configuration
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: kubebolt.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# ServiceAccount for API to access the cluster
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# RBAC — create ClusterRole with read access to all resources
+rbac:
+  create: true
+
+# Number of replicas
+replicaCount: 1
