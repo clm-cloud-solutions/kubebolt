@@ -93,17 +93,67 @@ jobs:
         run: |
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
           if [ -z "$PREV_TAG" ]; then
-            CHANGES=$(git log --oneline --no-decorate)
+            COMMITS=$(git log --oneline --no-decorate)
           else
-            CHANGES=$(git log --oneline --no-decorate ${PREV_TAG}..HEAD)
+            COMMITS=$(git log --oneline --no-decorate ${PREV_TAG}..HEAD)
           fi
-          echo "changes<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGES" >> $GITHUB_OUTPUT
+
+          FEATURES=""
+          FIXES=""
+          DOCS=""
+          PERF=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            hash=$(echo "$line" | cut -d' ' -f1)
+            msg=$(echo "$line" | cut -d' ' -f2-)
+            entry="- $msg (\`$hash\`)"
+            case "$msg" in
+              feat:*|feat\(*) FEATURES="$FEATURES
+          $entry" ;;
+              fix:*|fix\(*|Fix:*|Fix\ *) FIXES="$FIXES
+          $entry" ;;
+              docs:*|docs\(*) DOCS="$DOCS
+          $entry" ;;
+              perf:*|perf\(*) PERF="$PERF
+          $entry" ;;
+              UI:*) FEATURES="$FEATURES
+          $entry" ;;
+              revert:*) FIXES="$FIXES
+          $entry" ;;
+              *) OTHER="$OTHER
+          $entry" ;;
+            esac
+          done <<< "$COMMITS"
+
+          BODY=""
+          [ -n "$FEATURES" ] && BODY="$BODY
+          ### Features
+          $FEATURES
+          "
+          [ -n "$FIXES" ] && BODY="$BODY
+          ### Fixes
+          $FIXES
+          "
+          [ -n "$PERF" ] && BODY="$BODY
+          ### Performance
+          $PERF
+          "
+          [ -n "$DOCS" ] && BODY="$BODY
+          ### Documentation
+          $DOCS
+          "
+          [ -n "$OTHER" ] && BODY="$BODY
+          ### Other
+          $OTHER
+          "
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
       - uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
           body: |
             ## Container Images
 
@@ -112,14 +162,18 @@ jobs:
             docker pull ${{ env.WEB_IMAGE }}:${{ github.ref_name }}
             ```
 
-            ## Quick Install (Docker Compose)
+            ## Install
 
+            **Helm:**
             ```bash
-            git clone https://github.com/${{ github.repository }}.git
-            cd kubebolt/deploy
-            docker compose up -d
+            helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
             ```
 
-            ## Commits
+            **Docker Compose:**
+            ```bash
+            git clone https://github.com/${{ github.repository }}.git
+            cd kubebolt/deploy && docker compose up -d
+            ```
 
-            ${{ steps.changelog.outputs.changes }}
+            ## Changelog
+            ${{ steps.changelog.outputs.body }}
