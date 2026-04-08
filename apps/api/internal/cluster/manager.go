@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
@@ -22,6 +23,7 @@ type Manager struct {
 	mu              sync.RWMutex
 	kubeconfigPath  string
 	kubeConfig      *clientcmdapi.Config
+	inCluster       bool // true when running inside Kubernetes (no kubeconfig file)
 	activeContext   string
 	connector       *Connector
 	collector       *metrics.Collector
@@ -43,8 +45,40 @@ type ClusterInfo struct {
 
 // NewManager creates a new cluster manager.
 func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, insightInterval time.Duration) (*Manager, error) {
+	// Try loading kubeconfig file first; fall back to in-cluster config
 	kubeConfig, err := clientcmd.LoadFromFile(kubeconfigPath)
 	if err != nil {
+		// Check if running inside Kubernetes (ServiceAccount token available)
+		if _, inClusterErr := rest.InClusterConfig(); inClusterErr == nil {
+			log.Printf("No kubeconfig file found, using in-cluster configuration")
+			m := &Manager{
+				inCluster: true,
+				kubeConfig: &clientcmdapi.Config{
+					Contexts: map[string]*clientcmdapi.Context{
+						"in-cluster": {Cluster: "in-cluster"},
+					},
+					Clusters: map[string]*clientcmdapi.Cluster{
+						"in-cluster": {Server: "https://kubernetes.default.svc"},
+					},
+					CurrentContext: "in-cluster",
+				},
+				activeContext:   "in-cluster",
+				wsHub:           wsHub,
+				metricInterval:  metricInterval,
+				insightInterval: insightInterval,
+			}
+
+			go func() {
+				m.mu.Lock()
+				defer m.mu.Unlock()
+				if err := m.connectToContextLocked("in-cluster"); err != nil {
+					log.Printf("Warning: in-cluster connection failed: %v — staying in disconnected state", err)
+					m.connErr = err
+				}
+			}()
+
+			return m, nil
+		}
 		return nil, fmt.Errorf("loading kubeconfig: %w", err)
 	}
 
@@ -187,7 +221,14 @@ func (m *Manager) connectToContext(contextName string) error {
 }
 
 func (m *Manager) connectToContextLocked(contextName string) error {
-	connector, err := NewConnectorForContext(m.kubeconfigPath, contextName, m.wsHub)
+	var connector *Connector
+	var err error
+
+	if m.inCluster {
+		connector, err = NewConnectorInCluster(m.wsHub)
+	} else {
+		connector, err = NewConnectorForContext(m.kubeconfigPath, contextName, m.wsHub)
+	}
 	if err != nil {
 		return fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
@@ -273,6 +314,15 @@ func NewConnectorForContext(kubeconfigPath, contextName string, wsHub *websocket
 	}
 
 	return newConnectorFromConfig(restConfig, contextName, wsHub)
+}
+
+// NewConnectorInCluster creates a connector using in-cluster ServiceAccount credentials.
+func NewConnectorInCluster(wsHub *websocket.Hub) (*Connector, error) {
+	restConfig, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("building in-cluster config: %w", err)
+	}
+	return newConnectorFromConfig(restConfig, "in-cluster", wsHub)
 }
 
 // GetClusterInfoForContext returns models.ClusterInfo for a specific context.
