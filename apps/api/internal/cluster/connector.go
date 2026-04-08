@@ -3535,6 +3535,7 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 		item := map[string]interface{}{
 			"revision":      revision,
 			"name":          rs.Name,
+			"namespace":     rs.Namespace,
 			"replicas":      rs.Status.Replicas,
 			"readyReplicas": rs.Status.ReadyReplicas,
 			"createdAt":     rs.CreationTimestamp.Format(time.RFC3339),

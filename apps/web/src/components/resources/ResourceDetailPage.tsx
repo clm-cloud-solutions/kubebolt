@@ -318,7 +318,7 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
           )}
           {type === 'pods' && <InfoField label="Pod IP"><span className="font-mono">{String(item.ip ?? '-')}</span></InfoField>}
           {type === 'pods' && <InfoField label="Host IP"><span className="font-mono">{String(item.hostIP ?? '-')}</span></InfoField>}
-          {type === 'pods' && ownerRefs.length > 0 && (
+          {ownerRefs.length > 0 && (
             <InfoField label="Owner">
               <KindNameLink value={`${ownerRefs[0].kind}/${ownerRefs[0].name}`} namespace={item.namespace} />
             </InfoField>
