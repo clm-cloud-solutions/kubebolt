@@ -1052,11 +1052,11 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
         <YAMLEditor value={editValue} onChange={setEditValue} />
       ) : (
         <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
-          <pre className="text-[11px] font-mono leading-5">
+          <pre className="text-[11px] font-mono leading-5 whitespace-pre-wrap break-all">
             {lines.map((line, i) => (
               <div key={i} className="flex">
                 <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
-                <span>{highlightYAMLLine(line)}</span>
+                <span className="flex-1 min-w-0">{highlightYAMLLine(line)}</span>
               </div>
             ))}
           </pre>

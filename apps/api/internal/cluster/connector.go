@@ -1850,7 +1850,14 @@ func safeAnnotations(m map[string]string) map[string]string {
 	if m == nil {
 		return map[string]string{}
 	}
-	return m
+	filtered := make(map[string]string, len(m))
+	for k, v := range m {
+		if k == "kubectl.kubernetes.io/last-applied-configuration" {
+			continue
+		}
+		filtered[k] = v
+	}
+	return filtered
 }
 
 func podToMap(pod *corev1.Pod) map[string]interface{} {
@@ -2620,9 +2627,13 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 		return nil, fmt.Errorf("fetching resource: %w", err)
 	}
 
-	// Strip managedFields — internal server-side apply metadata that adds noise
+	// Strip managedFields and last-applied-configuration — internal metadata that adds noise
 	if metadata, ok := obj.Object["metadata"].(map[string]interface{}); ok {
 		delete(metadata, "managedFields")
+		// Remove last-applied-configuration — it's verbose and for secrets it contains unredacted data
+		if annotations, ok := metadata["annotations"].(map[string]interface{}); ok {
+			delete(annotations, "kubectl.kubernetes.io/last-applied-configuration")
+		}
 	}
 
 	// Redact secret data values
