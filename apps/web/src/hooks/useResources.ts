@@ -78,6 +78,14 @@ export function useDaemonSetPods(namespace: string, name: string) {
   })
 }
 
+export function useWorkloadHistory(type: string, namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['workload-history', type, namespace, name],
+    queryFn: () => api.getWorkloadHistory(type, namespace, name),
+    enabled: !!type && !!namespace && !!name,
+  })
+}
+
 export function useCronJobJobs(namespace: string, name: string) {
   const { interval } = useRefreshInterval()
   return useQuery({

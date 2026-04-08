@@ -7,7 +7,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs } from '@/hooks/useResources'
+import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
@@ -182,6 +182,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'sts-logs', label: 'Logs' },
         { id: 'terminal', label: 'Terminal' },
         { id: 'related', label: 'Related' },
+        { id: 'history', label: 'History' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
       )
@@ -193,6 +194,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'ds-logs', label: 'Logs' },
         { id: 'terminal', label: 'Terminal' },
         { id: 'related', label: 'Related' },
+        { id: 'history', label: 'History' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
       )
@@ -1804,6 +1806,47 @@ function HistoryTab({ namespace, name }: { namespace: string; name: string }) {
   )
 }
 
+function WorkloadHistoryTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
+  const { data, isLoading, error } = useWorkloadHistory(type, namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const items = data?.items ?? []
+  if (items.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No revision history found</div>
+
+  return (
+    <Section title="Revision History (ControllerRevisions)">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Revision</th>
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {items.map((item, i) => {
+            const isLatest = i === 0
+            return (
+              <tr key={i} className={`border-t border-kb-border ${isLatest ? 'bg-status-ok/5' : ''}`}>
+                <td className="py-2">
+                  <span className="font-mono">{String(item.revision ?? '')}</span>
+                  {isLatest && (
+                    <span className="ml-2 px-1.5 py-0.5 rounded text-[9px] font-medium bg-status-ok/20 text-status-ok">Current</span>
+                  )}
+                </td>
+                <td className="py-2 font-mono">{String(item.name ?? '')}</td>
+                <td className="py-2 font-mono text-kb-text-tertiary">{item.createdAt ? formatAge(String(item.createdAt)) : '-'}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 // ─── Main Component ──────────────────────────────────────────────
 
 export function ResourceDetailPage() {
@@ -1853,7 +1896,9 @@ export function ResourceDetailPage() {
       case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
       case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
-      case 'history': return <HistoryTab namespace={namespace} name={name} />
+      case 'history':
+        if (type === 'deployments') return <HistoryTab namespace={namespace} name={name} />
+        return <WorkloadHistoryTab type={type} namespace={namespace} name={name} />
       case 'cronjob-jobs': return <CronJobJobsTab namespace={namespace} name={name} />
       case 'terminal':
         if (type === 'pods') return <TerminalTab namespace={namespace} name={name} item={item!} />

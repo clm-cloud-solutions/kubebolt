@@ -60,6 +60,7 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Get("/resources/daemonsets/{namespace}/{name}/pods", h.getDaemonSetPods)
 			r.Get("/resources/jobs/{namespace}/{name}/pods", h.getJobPods)
 			r.Get("/resources/cronjobs/{namespace}/{name}/jobs", h.getCronJobJobs)
+			r.Get("/resources/{type}/{namespace}/{name}/history", h.getWorkloadHistory)
 			r.Post("/portforward", h.handleCreatePortForward)
 			r.Get("/portforward", h.handleListPortForwards)
 			r.Delete("/portforward/{id}", h.handleDeletePortForward)

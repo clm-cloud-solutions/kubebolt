@@ -3729,6 +3729,57 @@ func (c *Connector) GetJobPods(namespace, jobName string) []map[string]interface
 	return items
 }
 
+// GetWorkloadHistory returns the revision history of a StatefulSet or DaemonSet via ControllerRevisions.
+func (c *Connector) GetWorkloadHistory(resourceType, namespace, name string) []map[string]interface{} {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	revisions, err := c.clientset.AppsV1().ControllerRevisions(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return nil
+	}
+
+	var kind string
+	switch resourceType {
+	case "statefulsets":
+		kind = "StatefulSet"
+	case "daemonsets":
+		kind = "DaemonSet"
+	default:
+		return nil
+	}
+
+	var items []map[string]interface{}
+	for _, rev := range revisions.Items {
+		owned := false
+		for _, ref := range rev.OwnerReferences {
+			if ref.Kind == kind && ref.Name == name {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+
+		items = append(items, map[string]interface{}{
+			"revision":  rev.Revision,
+			"name":      rev.Name,
+			"createdAt": rev.CreationTimestamp.Format(time.RFC3339),
+			"age":       formatAge(rev.CreationTimestamp.Time),
+		})
+	}
+
+	// Sort by revision descending (newest first)
+	sort.Slice(items, func(i, j int) bool {
+		ri, _ := items[i]["revision"].(int64)
+		rj, _ := items[j]["revision"].(int64)
+		return ri > rj
+	})
+
+	return items
+}
+
 // GetCronJobJobs returns all Jobs owned by a CronJob.
 func (c *Connector) GetCronJobJobs(namespace, cronJobName string) []map[string]interface{} {
 	if c.jobLister == nil {

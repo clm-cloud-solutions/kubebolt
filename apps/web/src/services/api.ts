@@ -132,6 +132,9 @@ export const api = {
   getDaemonSetPods: (namespace: string, name: string) =>
     fetchJSON<ResourceList>(`${API_BASE}/resources/daemonsets/${namespace}/${name}/pods`),
 
+  getWorkloadHistory: (type: string, namespace: string, name: string) =>
+    fetchJSON<{ items: ResourceItem[]; total: number }>(`${API_BASE}/resources/${type}/${namespace}/${name}/history`),
+
   getCronJobJobs: (namespace: string, name: string) =>
     fetchJSON<ResourceList>(`${API_BASE}/resources/cronjobs/${namespace}/${name}/jobs`),
 

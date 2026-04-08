@@ -484,6 +484,25 @@ func (h *handlers) getJobPods(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h *handlers) getWorkloadHistory(w http.ResponseWriter, r *http.Request) {
+	resourceType := chi.URLParam(r, "type")
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	if namespace == "_" {
+		namespace = ""
+	}
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	history := conn.GetWorkloadHistory(resourceType, namespace, name)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"items": history,
+		"total": len(history),
+	})
+}
+
 func (h *handlers) getCronJobJobs(w http.ResponseWriter, r *http.Request) {
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
