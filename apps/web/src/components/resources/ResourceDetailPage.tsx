@@ -387,7 +387,7 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
           {type === 'storageclasses' && <InfoField label="Provisioner"><span className="font-mono">{String(item.provisioner ?? '-')}</span></InfoField>}
           {type === 'storageclasses' && <InfoField label="Reclaim Policy">{String(item.reclaimPolicy ?? '-')}</InfoField>}
           {type === 'gateways' && <InfoField label="Class">{String(item.class ?? '-')}</InfoField>}
-          {type === 'httproutes' && item.gateway != null && <InfoField label="Gateway"><ResourceLink name={String(item.gateway)} namespace={item.namespace} resourceType="gateways" /></InfoField>}
+          {type === 'httproutes' && item.gateway != null && <InfoField label="Gateway"><ResourceLink name={String(item.gateway)} namespace={String(item.gatewayNamespace ?? item.namespace)} resourceType="gateways" /></InfoField>}
         </div>
 
         {/* Labels & Annotations */}

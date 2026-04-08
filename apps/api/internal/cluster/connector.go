@@ -3118,6 +3118,9 @@ func (c *Connector) listGatewayResources(resource, namespace string) []map[strin
 			if parentRefs, ok := spec["parentRefs"].([]interface{}); ok && len(parentRefs) > 0 {
 				if pr, ok := parentRefs[0].(map[string]interface{}); ok {
 					m["gateway"] = pr["name"]
+					if gwNs, ok := pr["namespace"]; ok {
+						m["gatewayNamespace"] = gwNs
+					}
 				}
 			}
 			// Check accepted condition
