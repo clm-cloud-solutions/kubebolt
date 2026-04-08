@@ -78,6 +78,16 @@ export function useDaemonSetPods(namespace: string, name: string) {
   })
 }
 
+export function useCronJobJobs(namespace: string, name: string) {
+  const { interval } = useRefreshInterval()
+  return useQuery({
+    queryKey: ['cronjob-jobs', namespace, name],
+    queryFn: () => api.getCronJobJobs(namespace, name),
+    enabled: !!namespace && !!name,
+    refetchInterval: interval,
+  })
+}
+
 export function useJobPods(namespace: string, name: string) {
   const { interval } = useRefreshInterval()
   return useQuery({

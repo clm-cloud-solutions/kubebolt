@@ -483,3 +483,22 @@ func (h *handlers) getJobPods(w http.ResponseWriter, r *http.Request) {
 		"total": len(pods),
 	})
 }
+
+func (h *handlers) getCronJobJobs(w http.ResponseWriter, r *http.Request) {
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+	if namespace == "_" {
+		namespace = ""
+	}
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	jobs := conn.GetCronJobJobs(namespace, name)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"kind":  "jobs",
+		"items": jobs,
+		"total": len(jobs),
+	})
+}

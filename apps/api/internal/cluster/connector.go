@@ -3729,6 +3729,38 @@ func (c *Connector) GetJobPods(namespace, jobName string) []map[string]interface
 	return items
 }
 
+// GetCronJobJobs returns all Jobs owned by a CronJob.
+func (c *Connector) GetCronJobJobs(namespace, cronJobName string) []map[string]interface{} {
+	if c.jobLister == nil {
+		return nil
+	}
+	jobs, _ := c.jobLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, job := range jobs {
+		if job.Namespace != namespace {
+			continue
+		}
+		owned := false
+		for _, ref := range job.OwnerReferences {
+			if ref.Kind == "CronJob" && ref.Name == cronJobName {
+				owned = true
+				break
+			}
+		}
+		if !owned {
+			continue
+		}
+		items = append(items, jobToMap(job))
+	}
+	// Sort by creation time descending (newest first)
+	sort.Slice(items, func(i, j int) bool {
+		ti, _ := items[i]["createdAt"].(string)
+		tj, _ := items[j]["createdAt"].(string)
+		return ti > tj
+	})
+	return items
+}
+
 // Ensure all imported types are used.
 var (
 	_ *storagev1.StorageClass

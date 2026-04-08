@@ -7,7 +7,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
+import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
@@ -209,6 +209,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
     case 'cronjobs':
       base.push(
         { id: 'yaml', label: 'YAML' },
+        { id: 'cronjob-jobs', label: 'Jobs' },
         { id: 'related', label: 'Related' },
         { id: 'events', label: 'Events' },
       )
@@ -952,6 +953,7 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
   const [editValue, setEditValue] = useState('')
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
@@ -1003,12 +1005,38 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
             </button>
           </>
         ) : (
-          <button
-            onClick={startEdit}
-            className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
-          >
-            Edit
-          </button>
+          <>
+            <button
+              onClick={() => {
+                navigator.clipboard.writeText(yaml ?? '')
+                setCopied(true)
+                setTimeout(() => setCopied(false), 2000)
+              }}
+              className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
+            >
+              {copied ? 'Copied!' : 'Copy'}
+            </button>
+            <button
+              onClick={() => {
+                const blob = new Blob([yaml ?? ''], { type: 'application/yaml' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `${name}.yaml`
+                a.click()
+                URL.revokeObjectURL(url)
+              }}
+              className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
+            >
+              Download
+            </button>
+            <button
+              onClick={startEdit}
+              className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
+            >
+              Edit
+            </button>
+          </>
         )}
       </div>
 
@@ -1688,6 +1716,43 @@ function JobLogsTab({ namespace, name }: { namespace: string; name: string }) {
 
 // ─── History Tab (Deployments) ───────────────────────────────────
 
+function CronJobJobsTab({ namespace, name }: { namespace: string; name: string }) {
+  const { data, isLoading, error } = useCronJobJobs(namespace, name)
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const jobs = data?.items ?? []
+  if (jobs.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No jobs found</div>
+
+  return (
+    <Section title="Jobs">
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal">Completions</th>
+            <th className="pb-2 font-normal">Duration</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {jobs.map((job, i) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={job.name} namespace={job.namespace} resourceType="jobs" /></td>
+              <td className="py-2"><StatusBadge status={job.status} /></td>
+              <td className="py-2 font-mono">{String(job.completions ?? '—')}</td>
+              <td className="py-2 font-mono">{String(job.duration ?? '—')}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{job.createdAt ? formatAge(job.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 function HistoryTab({ namespace, name }: { namespace: string; name: string }) {
   const { data, isLoading, error } = useDeploymentHistory(namespace, name)
 
@@ -1789,6 +1854,7 @@ export function ResourceDetailPage() {
       case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history': return <HistoryTab namespace={namespace} name={name} />
+      case 'cronjob-jobs': return <CronJobJobsTab namespace={namespace} name={name} />
       case 'terminal':
         if (type === 'pods') return <TerminalTab namespace={namespace} name={name} item={item!} />
         if (type === 'deployments') return <DeploymentTerminalTab namespace={namespace} name={name} />
