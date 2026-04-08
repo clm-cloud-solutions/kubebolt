@@ -80,8 +80,30 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  publish-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Update chart version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s/^version:.*/version: $VERSION/" deploy/helm/kubebolt/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" deploy/helm/kubebolt/Chart.yaml
+
+      - name: Package and push chart
+        run: |
+          helm package deploy/helm/kubebolt
+          helm push kubebolt-*.tgz oci://ghcr.io/${{ github.repository }}/helm
+
   release:
-    needs: [build-api, build-web]
+    needs: [build-api, build-web, publish-chart]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
