@@ -1791,7 +1791,10 @@ function HistoryTab({ namespace, name }: { namespace: string; name: string }) {
                   )}
                 </td>
                 <td className="py-2">
-                  <ResourceLink name={item.name} namespace={item.namespace} resourceType="replicasets" />
+                  {isActive
+                    ? <ResourceLink name={item.name} namespace={item.namespace} resourceType="replicasets" />
+                    : <span className="font-mono text-kb-text-tertiary">{String(item.name)}</span>
+                  }
                 </td>
                 <td className="py-2 font-mono text-kb-text-tertiary max-w-xs truncate">{String(item.image ?? '-')}</td>
                 <td className="py-2 font-mono">{readyReplicas}/{replicas}</td>
