@@ -1008,21 +1008,37 @@ Priority: critical for open source adoption.
 | **GitHub Releases** | High | Automated release workflow. Changelog generation. Pre-built binaries for macOS/Linux. |
 | **User Documentation** | High | Quick start guide, screenshots, cloud-specific guides (EKS, GKE, AKS). Troubleshooting section. |
 
-### Phase 1.6 — Settings & Notifications
+### Phase 1.6 — Animated Traffic Map & Settings
 
 | Feature | Impact | Description |
 |---------|--------|-------------|
+| **Animated Cluster Map** | High | Enhance the existing Cluster Map (Flow layout) with animated traffic lines — moving dots along edges to visualize communication flow between resources. Line styles differentiated by relationship type (selector, ownerRef, parentRef, volume). Uses existing topology data — no agent or service mesh required. |
 | **Cluster Management** | Medium | Add/remove/rename clusters from UI. Upload kubeconfig. Connection health status per cluster. |
 | **Slack Notifications** | Medium | Webhook integration for insights alerts. Configurable severity threshold. Channel selector. |
 | **Email Notifications** | Low | SMTP configuration. Digest mode (daily/hourly). Per-insight-type subscription. |
 
-### Phase 2.0 — Agent & Historical Data
+### Phase 2.0 — Agent, Historical Data & Network Observability
 
-kubebolt-agent DaemonSet. gRPC streaming. Network/disk metrics. Historical TSDB (VictoriaMetrics). Enhanced cluster map with traffic flow animation. Container-level metrics granularity.
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **kubebolt-agent DaemonSet** | Critical | Lightweight agent per node. Single static binary, <50MB RAM, <0.05 CPU. Install: `kubectl apply -f`. |
+| **Network connection tracking** | High | Agent reads `/proc/net/tcp` or conntrack to capture pod-to-pod TCP connections with bytes transferred. No eBPF required — works on any kernel. Feeds real traffic data to the cluster map. |
+| **Network/Disk metrics** | High | Agent reads cAdvisor/kubelet for network I/O (bytes in/out), disk/filesystem usage per container. |
+| **gRPC streaming** | High | Agent streams metrics to backend every 15s. Reconnects automatically if backend unavailable. |
+| **Historical TSDB** | High | VictoriaMetrics for time-series storage. Retention policies. Materialized rollups (1m, 5m, 1h). |
+| **Live traffic cluster map** | High | Cluster map edges show real traffic volume (line thickness), direction (animated dots), and health (green/yellow/red based on error rate). Data from agent conntrack. |
+| **Container-level metrics** | Medium | Per-container CPU, memory, network — not just pod-level aggregates. |
 
-### Phase 2.1 — Advanced Observability
+### Phase 2.1 — Service Mesh Integration & Advanced Observability
 
-Prometheus compatibility (remote write receiver). Custom alert rules engine. AI-powered insights and anomaly detection. Cost analysis and right-sizing recommendations.
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Prometheus integration** | High | Remote write receiver for Prometheus compatibility. Read existing Prometheus data. |
+| **Istio/Linkerd metrics** | High | If service mesh present, read `istio_requests_total`, `istio_request_duration_milliseconds` etc. from Prometheus. Show HTTP status codes, gRPC codes, latency p50/p95/p99 on cluster map edges. Full Kiali-like traffic visualization. |
+| **Protocol-aware traffic lines** | High | Differentiate cluster map edges by protocol: HTTP/S (solid blue), gRPC (solid green), TCP (dashed gray), high error rate (pulsing red). Line thickness = request volume. |
+| **Custom alert rules engine** | High | Threshold, anomaly, absence, composite rules on metrics/logs/events. |
+| **AI-powered insights** | High | Anomaly detection baselines per workload. Incident correlation and root cause analysis. |
+| **Cost analysis** | Medium | Right-sizing recommendations based on actual usage vs requests/limits. |
 
 ### Phase 3.0 — SaaS Platform
 
