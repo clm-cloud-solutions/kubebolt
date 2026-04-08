@@ -997,7 +997,7 @@ All features implemented. Users can manage clusters entirely from KubeBolt witho
 | **CronJob → Jobs** | Medium | Done | Child job listing via ownerReferences filtering, sorted newest first. Shows name, status, completions, duration, age. |
 | **Export/Copy YAML** | Medium | Done | Copy to clipboard with "Copied!" feedback. Download as `.yaml` file. Buttons alongside Edit in YAML tab. |
 
-### Phase 1.5 — Distribution & Community (DONE)
+### Phase 1.5 — Distribution & Community
 
 Priority: critical for open source adoption.
 
@@ -1007,6 +1007,9 @@ Priority: critical for open source adoption.
 | **Container Images** | High | Done | Multi-arch images (amd64/arm64) on ghcr.io. Native platform builds to avoid QEMU timeout. API uses Go cross-compilation, Web uses native Node.js build + multi-arch nginx runtime. |
 | **GitHub Releases** | High | Done | Automated release workflow on `v*` tags. Categorized changelog (features, fixes, docs, performance). Docker pull instructions and install commands in release notes. |
 | **User Documentation** | High | Done | README with feature comparison table, quick start guides (Helm, Docker Compose, local dev), architecture diagram, RBAC docs, tech stack, and performance metrics. |
+| **Artifact Hub** | Medium | Pending | Register the Helm chart on artifacthub.io for public discoverability. Add `artifacthub-repo.yml` metadata to the repository. |
+| **Helm NOTES.txt** | Medium | Pending | Post-install instructions template showing `kubectl port-forward` command, ingress setup hints, and connection verification steps. |
+| **Cloud-specific Guides** | Medium | Pending | Dedicated guides for EKS (IAM roles, IRSA), GKE (Workload Identity), and AKS (AAD integration) with their specific RBAC and authentication requirements. |
 
 ### Phase 1.6 — Animated Traffic Map & Settings
 
