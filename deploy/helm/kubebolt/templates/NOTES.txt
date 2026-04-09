@@ -1,0 +1,24 @@
+KubeBolt has been installed successfully!
+
+{{- if .Values.ingress.enabled }}
+
+Access KubeBolt via your Ingress:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+
+{{- else }}
+
+Access KubeBolt via port-forward:
+
+  kubectl port-forward svc/{{ include "kubebolt.fullname" . }} 3000:{{ .Values.service.port }}
+
+Then open http://localhost:3000
+
+{{- end }}
+
+To verify the installation:
+
+  kubectl get pods -l app.kubernetes.io/name={{ include "kubebolt.name" . }}
+
+For more information, visit: https://github.com/clm-cloud-solutions/kubebolt

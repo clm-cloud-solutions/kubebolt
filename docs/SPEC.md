@@ -1007,9 +1007,9 @@ Priority: critical for open source adoption.
 | **Container Images** | High | Done | Multi-arch images (amd64/arm64) on ghcr.io. Native platform builds to avoid QEMU timeout. API uses Go cross-compilation, Web uses native Node.js build + multi-arch nginx runtime. |
 | **GitHub Releases** | High | Done | Automated release workflow on `v*` tags. Categorized changelog (features, fixes, docs, performance). Docker pull instructions and install commands in release notes. |
 | **User Documentation** | High | Done | README with feature comparison table, quick start guides (Helm, Docker Compose, local dev), architecture diagram, RBAC docs, tech stack, and performance metrics. |
-| **Artifact Hub** | Medium | Pending | Register the Helm chart on artifacthub.io for public discoverability. Add `artifacthub-repo.yml` metadata to the repository. |
-| **Helm NOTES.txt** | Medium | Pending | Post-install instructions template showing `kubectl port-forward` command, ingress setup hints, and connection verification steps. |
-| **Cloud-specific Guides** | Medium | Pending | Dedicated guides for EKS (IAM roles, IRSA), GKE (Workload Identity), and AKS (AAD integration) with their specific RBAC and authentication requirements. |
+| **Artifact Hub** | Medium | Done | `artifacthub-repo.yml` in repo root + annotations in Chart.yaml (license, links). Chart keywords expanded for discoverability. |
+| **Helm NOTES.txt** | Medium | Done | Post-install instructions template: port-forward command for ClusterIP, ingress URL when enabled, pod verification command. |
+| **Cloud-specific Guides** | Medium | Done | Dedicated guides at `docs/guides/` for EKS (IRSA, Pod Identity, ALB, Fargate), GKE (Workload Identity, GCE Ingress, Autopilot), and AKS (Azure AD Workload Identity, AGIC, Azure RBAC). |
 
 ### Phase 1.6 — Animated Traffic Map & Settings
 
