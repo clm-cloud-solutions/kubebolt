@@ -91,6 +91,7 @@ const sections: NavSection[] = [
   {
     title: 'Cluster',
     items: [
+      { label: 'Clusters', path: '/clusters', icon: <Server className="w-4 h-4" /> },
       { label: 'Namespaces', path: '/namespaces', icon: <FolderOpen className="w-4 h-4" />, countKey: 'namespaces', permissionKey: 'namespaces' },
       { label: 'RBAC', path: '/rbac', icon: <Shield className="w-4 h-4" />, permissionKey: 'roles' },
       { label: 'Events', path: '/events', icon: <Activity className="w-4 h-4" />, permissionKey: 'events' },

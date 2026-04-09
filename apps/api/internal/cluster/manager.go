@@ -41,6 +41,8 @@ type ClusterInfo struct {
 	Context  string `json:"context"`
 	Server   string `json:"server"`
 	Active   bool   `json:"active"`
+	Status   string `json:"status"`          // "connected", "disconnected", "error"
+	Error    string `json:"error,omitempty"`  // connection error message
 }
 
 // NewManager creates a new cluster manager.
@@ -116,11 +118,24 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		if cl, ok := m.kubeConfig.Clusters[ctx.Cluster]; ok {
 			server = cl.Server
 		}
+		isActive := ctxName == m.activeContext
+		status := "disconnected"
+		connErrMsg := ""
+		if isActive {
+			if m.connector != nil {
+				status = "connected"
+			} else if m.connErr != nil {
+				status = "error"
+				connErrMsg = m.connErr.Error()
+			}
+		}
 		clusters = append(clusters, ClusterInfo{
 			Name:    ctx.Cluster,
 			Context: ctxName,
 			Server:  server,
-			Active:  ctxName == m.activeContext,
+			Active:  isActive,
+			Status:  status,
+			Error:   connErrMsg,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {

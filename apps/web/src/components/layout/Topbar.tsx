@@ -5,6 +5,7 @@ import { SearchModal } from '@/components/shared/SearchModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
+import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterOverview, ClusterInfo } from '@/types/kubernetes'
 
 interface TopbarProps {
@@ -38,7 +39,7 @@ export function Topbar({ overview }: TopbarProps) {
   })
 
   const activeCluster = clusters?.find(c => c.active)
-  const clusterName = overview?.clusterName || activeCluster?.name || activeCluster?.context || 'loading...'
+  const clusterName = activeCluster ? parseClusterDisplayName(activeCluster) : (overview?.clusterName || 'loading...')
   const nodeCount = overview?.nodes?.total ?? '-'
   const healthStatus = overview?.health?.status || 'unknown'
   const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'degraded' ? 'bg-status-warn' : 'bg-status-error'
@@ -84,6 +85,7 @@ export function Topbar({ overview }: TopbarProps) {
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => hasMultipleClusters && setOpen(!open)}
+            title={activeCluster?.context || clusterName}
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md bg-kb-card border border-kb-border transition-colors ${
               hasMultipleClusters ? 'cursor-pointer hover:border-kb-border-active' : 'cursor-default'
             }`}
@@ -106,6 +108,7 @@ export function Topbar({ overview }: TopbarProps) {
                   key={cl.context}
                   onClick={() => !cl.active && switchMutation.mutate(cl.context)}
                   disabled={switchMutation.isPending}
+                  title={cl.context}
                   className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
                     cl.active
                       ? 'bg-status-info-dim'
@@ -114,7 +117,7 @@ export function Topbar({ overview }: TopbarProps) {
                 >
                   <span className={`w-2 h-2 rounded-full shrink-0 ${cl.active ? 'bg-status-ok' : 'bg-kb-text-tertiary'}`} />
                   <div className="flex-1 min-w-0">
-                    <div className="text-xs text-kb-text-primary truncate">{cl.context}</div>
+                    <div className="text-xs text-kb-text-primary truncate">{parseClusterDisplayName(cl)}</div>
                     <div className="text-[10px] font-mono text-kb-text-tertiary truncate">{cl.server}</div>
                   </div>
                   {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}

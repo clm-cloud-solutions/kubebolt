@@ -191,6 +191,8 @@ export interface ClusterInfo {
   context: string
   server: string
   active: boolean
+  status: 'connected' | 'disconnected' | 'error'
+  error?: string
 }
 
 // API params
