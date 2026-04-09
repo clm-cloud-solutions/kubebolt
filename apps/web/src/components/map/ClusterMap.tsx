@@ -317,15 +317,26 @@ function ClusterMapInner() {
   const edges: Edge[] = useMemo(() => {
     if (!topology?.edges) return []
     const visibleIds = new Set(flowNodes.map((n) => n.id))
+    const nodeStatusMap = new Map<string, string>()
+    if (topology?.nodes) {
+      for (const n of topology.nodes) {
+        nodeStatusMap.set(n.id, n.status || '')
+      }
+    }
     return topology.edges
       .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
       .map((e) => ({
         id: e.id, source: e.source, target: e.target,
         type: 'connection',
-        data: { edgeType: e.type, animated: e.animated },
+        data: {
+          edgeType: e.type,
+          animated: e.animated,
+          sourceStatus: nodeStatusMap.get(e.source) || '',
+          targetStatus: nodeStatusMap.get(e.target) || '',
+        },
         animated: e.animated,
       }))
-  }, [topology?.edges, flowNodes])
+  }, [topology?.edges, topology?.nodes, flowNodes])
 
   useEffect(() => {
     if (flowNodes.length > 0) {
@@ -497,19 +508,26 @@ function ClusterMapInner() {
       {/* Legend */}
       <div className="absolute bottom-4 left-64 bg-kb-card/95 backdrop-blur-sm border border-kb-border rounded-lg px-3 py-2 z-10 flex gap-3 flex-wrap">
         {[
-          { color: 'bg-status-info', label: 'Service' },
-          { color: 'bg-[#a78bfa]', label: 'Ingress/Route' },
-          { color: 'bg-status-warn', dashed: true, label: 'Config' },
-          { color: 'bg-status-ok', dot: true, label: 'Ok' },
-          { color: 'bg-status-error', dot: true, label: 'Error' },
+          { color: '#1DBD7D', label: 'Traffic', dot: true },
+          { color: '#a78bfa', label: 'Routing', dot: true },
+          { color: '#f5a623', label: 'Config', dashed: true },
+          { color: '#22d3ee', label: 'Storage' },
+          { color: 'rgba(255,255,255,0.10)', label: 'Ownership' },
+          { color: '#22d68a', statusDot: true, label: 'Ok' },
+          { color: '#ef4056', statusDot: true, label: 'Error' },
         ].map((item) => (
           <div key={item.label} className="flex items-center gap-1.5">
-            {item.dot ? (
-              <div className={`w-2 h-2 rounded-full ${item.color}`} />
+            {item.statusDot ? (
+              <div className="w-2 h-2 rounded-full" style={{ background: item.color }} />
             ) : item.dashed ? (
-              <div className="w-4 h-0.5 border-t border-dashed border-status-warn" />
+              <div className="w-4 h-0.5 border-t border-dashed" style={{ borderColor: item.color }} />
+            ) : item.dot ? (
+              <div className="flex items-center gap-0.5">
+                <div className="w-3 h-0.5 rounded" style={{ background: item.color }} />
+                <div className="w-1 h-1 rounded-full" style={{ background: item.color }} />
+              </div>
             ) : (
-              <div className={`w-4 h-0.5 ${item.color}`} />
+              <div className="w-4 h-0.5 rounded" style={{ background: item.color }} />
             )}
             <span className="text-[9px] font-mono text-kb-text-secondary">{item.label}</span>
           </div>
