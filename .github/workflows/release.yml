@@ -121,6 +121,16 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Push Artifact Hub metadata via ORAS
+        run: |
+          curl -sLO https://github.com/oras-project/oras/releases/download/v1.2.2/oras_1.2.2_linux_amd64.tar.gz
+          tar xzf oras_1.2.2_linux_amd64.tar.gz oras
+          echo "${{ secrets.GITHUB_TOKEN }}" | ./oras login ghcr.io -u ${{ github.actor }} --password-stdin
+          ./oras push \
+            ghcr.io/${{ github.repository }}/helm/kubebolt:artifacthub.io \
+            --config /dev/null:application/vnd.cncf.artifacthub.config.v1+yaml \
+            deploy/helm/kubebolt/artifacthub-repo.yml:application/vnd.cncf.artifacthub.repository-metadata.layer.v1.yaml
+
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3
 
