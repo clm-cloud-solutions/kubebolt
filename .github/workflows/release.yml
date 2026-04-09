@@ -113,9 +113,19 @@ jobs:
           sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" deploy/helm/kubebolt/Chart.yaml
 
       - name: Package and push chart
+        id: chart
         run: |
           helm package deploy/helm/kubebolt
-          helm push kubebolt-*.tgz oci://ghcr.io/${{ github.repository }}/helm
+          CHART_TGZ=$(ls kubebolt-*.tgz)
+          helm push $CHART_TGZ oci://ghcr.io/${{ github.repository }}/helm
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign chart with Cosign
+        run: cosign sign --yes ghcr.io/${{ github.repository }}/helm/kubebolt:${{ steps.chart.outputs.version }}
 
   release:
     needs: [build-api, build-web, publish-chart]
