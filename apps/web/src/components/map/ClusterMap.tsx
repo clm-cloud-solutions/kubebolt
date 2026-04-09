@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import ReactFlow, {
   Background,
   MiniMap,
@@ -79,6 +80,14 @@ const FLOW_COLUMNS: string[][] = [
   ['PersistentVolume'],
   ['Node'],
 ]
+
+const KIND_TO_ROUTE: Record<string, string> = {
+  Pod: 'pods', Node: 'nodes', Deployment: 'deployments', StatefulSet: 'statefulsets',
+  DaemonSet: 'daemonsets', ReplicaSet: 'replicasets', Job: 'jobs', CronJob: 'cronjobs',
+  Service: 'services', Ingress: 'ingresses', Gateway: 'gateways', HTTPRoute: 'httproutes',
+  ConfigMap: 'configmaps', Secret: 'secrets', HPA: 'hpas', HorizontalPodAutoscaler: 'hpas',
+  PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
+}
 
 type LayoutMode = 'grid' | 'flow'
 
@@ -265,6 +274,7 @@ function ClusterMapInner() {
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
   const [layoutMode, setLayoutMode] = useState<LayoutMode>('flow')
   const { fitView } = useReactFlow()
+  const navigate = useNavigate()
 
   const allNamespaces = useMemo(() => {
     if (!topology?.nodes) return []
@@ -354,6 +364,19 @@ function ClusterMapInner() {
     [topology?.nodes]
   )
 
+  const onNodeDoubleClick = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      if (node.type === 'namespaceRegion') return
+      const topoNode = topology?.nodes.find((n) => n.id === node.id)
+      if (!topoNode) return
+      const route = KIND_TO_ROUTE[topoNode.kind]
+      if (!route) return
+      const ns = topoNode.namespace || '_'
+      navigate(`/${route}/${ns}/${topoNode.name}`)
+    },
+    [topology?.nodes, navigate]
+  )
+
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
 
@@ -367,6 +390,7 @@ function ClusterMapInner() {
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodeClick={onNodeClick}
+        onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => setSelectedNode(null)}
         fitView
         fitViewOptions={{ padding: 0.1 }}

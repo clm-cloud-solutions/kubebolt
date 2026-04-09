@@ -1,7 +1,16 @@
-import { X } from 'lucide-react'
+import { X, ExternalLink } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { StatusBadge } from '@/components/resources/StatusBadge'
 import { UsageBar } from '@/components/resources/UsageBar'
 import type { TopologyNode, TopologyEdge } from '@/types/kubernetes'
+
+const KIND_TO_ROUTE: Record<string, string> = {
+  Pod: 'pods', Node: 'nodes', Deployment: 'deployments', StatefulSet: 'statefulsets',
+  DaemonSet: 'daemonsets', ReplicaSet: 'replicasets', Job: 'jobs', CronJob: 'cronjobs',
+  Service: 'services', Ingress: 'ingresses', Gateway: 'gateways', HTTPRoute: 'httproutes',
+  ConfigMap: 'configmaps', Secret: 'secrets', HPA: 'hpas', HorizontalPodAutoscaler: 'hpas',
+  PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
+}
 
 interface NodeDetailPanelProps {
   node: TopologyNode
@@ -27,12 +36,23 @@ export function NodeDetailPanel({ node, edges, allNodes, onClose }: NodeDetailPa
           <span className="text-sm font-mono text-kb-text-primary truncate">{node.label}</span>
           <StatusBadge status={node.status} />
         </div>
-        <button
-          onClick={onClose}
-          className="p-1 rounded hover:bg-kb-elevated text-kb-text-secondary hover:text-kb-text-primary transition-colors shrink-0"
-        >
-          <X className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1 shrink-0">
+          {KIND_TO_ROUTE[node.kind] && (
+            <Link
+              to={`/${KIND_TO_ROUTE[node.kind]}/${node.namespace || '_'}/${node.name}`}
+              className="p-1 rounded hover:bg-kb-elevated text-kb-text-secondary hover:text-kb-accent transition-colors"
+              title="View details"
+            >
+              <ExternalLink className="w-4 h-4" />
+            </Link>
+          )}
+          <button
+            onClick={onClose}
+            className="p-1 rounded hover:bg-kb-elevated text-kb-text-secondary hover:text-kb-text-primary transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Content */}
@@ -103,7 +123,7 @@ export function NodeDetailPanel({ node, edges, allNodes, onClose }: NodeDetailPa
         )}
 
         {/* Metadata */}
-        {Object.keys(node.metadata).length > 0 && (
+        {node.metadata && Object.keys(node.metadata).length > 0 && (
           <div>
             <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-2">Metadata</div>
             <div className="space-y-1">
