@@ -9,7 +9,7 @@ COPY . .
 RUN npm run build
 
 # Runtime stage: multi-arch (nginx with static files is tiny)
-FROM nginx:alpine
+FROM nginx:1.27-alpine3.21
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY docker-entrypoint.sh /docker-entrypoint.d/40-api-backend.sh

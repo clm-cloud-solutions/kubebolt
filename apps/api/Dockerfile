@@ -10,8 +10,8 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /kubebolt-api ./cmd/server
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates aws-cli
+FROM alpine:3.21
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates aws-cli
 COPY --from=builder /kubebolt-api /usr/local/bin/kubebolt-api
 EXPOSE 8080
 ENTRYPOINT ["kubebolt-api"]
