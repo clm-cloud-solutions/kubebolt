@@ -7,6 +7,7 @@ on:
 permissions:
   contents: write
   packages: write
+  id-token: write  # Required for Cosign keyless signing
 
 env:
   REGISTRY: ghcr.io
@@ -38,6 +39,7 @@ jobs:
             type=sha,prefix=
 
       - uses: docker/build-push-action@v5
+        id: build
         with:
           context: apps/api
           platforms: linux/amd64,linux/arm64
@@ -46,6 +48,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign
+        run: cosign sign --yes ${{ env.API_IMAGE }}@${{ steps.build.outputs.digest }}
 
   build-web:
     runs-on: ubuntu-latest
@@ -71,6 +79,7 @@ jobs:
             type=sha,prefix=
 
       - uses: docker/build-push-action@v5
+        id: build
         with:
           context: apps/web
           platforms: linux/amd64,linux/arm64
@@ -79,6 +88,12 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign
+        run: cosign sign --yes ${{ env.WEB_IMAGE }}@${{ steps.build.outputs.digest }}
 
   publish-chart:
     runs-on: ubuntu-latest
