@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Soft green rounded background -->
+  <rect width="512" height="512" rx="108" ry="108" fill="#dcf5e7"/>
+  <!-- Lightning bolt (Lucide Zap geometry, scaled and filled) -->
+  <path d="M 276 64 L 116 280 H 236 L 214 448 L 396 216 H 268 Z" fill="#16a34a"/>
+</svg>
