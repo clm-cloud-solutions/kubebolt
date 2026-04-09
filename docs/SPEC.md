@@ -1020,6 +1020,19 @@ Priority: critical for open source adoption.
 | **Slack Notifications** | Medium | Webhook integration for insights alerts. Configurable severity threshold. Channel selector. |
 | **Email Notifications** | Low | SMTP configuration. Digest mode (daily/hourly). Per-insight-type subscription. |
 
+### Phase 1.7 — Authentication & Access Control
+
+Priority: critical for production deployments where multiple users access KubeBolt.
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **OAuth2/OIDC Authentication** | Critical | Login via external identity providers (GitHub, Google, Azure AD, Keycloak, any OIDC). Session management with JWT tokens. Login page with provider selector. |
+| **Kubernetes Impersonation** | Critical | After authentication, KubeBolt impersonates the authenticated user when calling the Kubernetes API. Each user sees only what their RBAC permits — namespaces, resources, actions. The ServiceAccount's ClusterRole becomes a ceiling, not the effective permission set. |
+| **Per-user RBAC enforcement** | High | UI adapts to the impersonated user's permissions: sidebar items dimmed, actions disabled, "Access Restricted" pages — same degradation behavior as today but per-user instead of per-ServiceAccount. |
+| **Session & audit** | Medium | Active sessions list, session expiry, logout. Audit log of who accessed what (user, action, resource, timestamp). |
+
+This phase ensures KubeBolt is safe for multi-user production environments without requiring the full SaaS platform (Phase 3.0). The admin installs with full-access ServiceAccount, but each user's view is scoped to their own Kubernetes RBAC permissions.
+
 ### Phase 2.0 — Agent, Historical Data & Network Observability
 
 | Feature | Impact | Description |
