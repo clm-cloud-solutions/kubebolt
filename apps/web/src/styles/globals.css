@@ -16,6 +16,8 @@
   --kb-text-tertiary: #8b8d9a;
   --kb-scrollbar: rgba(0, 0, 0, 0.14);
   --kb-bar-track: rgba(0, 0, 0, 0.1);
+  --kb-accent: #16a34a;
+  --kb-accent-light: #dcf5e7;
   /* YAML syntax highlighting (code block always has dark bg) */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;
@@ -39,6 +41,8 @@
   --kb-text-tertiary: #555770;
   --kb-scrollbar: rgba(255, 255, 255, 0.14);
   --kb-bar-track: rgba(255, 255, 255, 0.06);
+  --kb-accent: #1DBD7D;
+  --kb-accent-light: rgba(29, 189, 125, 0.12);
   /* YAML syntax highlighting */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;

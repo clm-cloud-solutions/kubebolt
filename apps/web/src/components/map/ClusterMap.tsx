@@ -30,7 +30,7 @@ const edgeTypes: EdgeTypes = { connection: ConnectionEdge }
 const NS_COLORS = [
   { border: 'rgba(34,214,138,0.15)', bg: 'rgba(34,214,138,0.03)', text: '#22d68a' },
   { border: 'rgba(245,166,35,0.15)', bg: 'rgba(245,166,35,0.03)', text: '#f5a623' },
-  { border: 'rgba(76,154,255,0.15)', bg: 'rgba(76,154,255,0.03)', text: '#4c9aff' },
+  { border: 'rgba(29,189,125,0.15)', bg: 'rgba(29,189,125,0.03)', text: '#1DBD7D' },
   { border: 'rgba(167,139,250,0.15)', bg: 'rgba(167,139,250,0.03)', text: '#a78bfa' },
   { border: 'rgba(34,211,238,0.15)', bg: 'rgba(34,211,238,0.03)', text: '#22d3ee' },
   { border: 'rgba(239,64,86,0.15)', bg: 'rgba(239,64,86,0.03)', text: '#ef4056' },

@@ -2,8 +2,8 @@ import { memo } from 'react'
 import { getBezierPath, type EdgeProps } from 'reactflow'
 
 const EDGE_STYLES: Record<string, { stroke: string; width: number; dashed: boolean; animated: boolean }> = {
-  'svc-pod':     { stroke: '#4c9aff', width: 1.6, dashed: false, animated: true },
-  'svc-deploy':  { stroke: '#4c9aff', width: 1.6, dashed: false, animated: true },
+  'svc-pod':     { stroke: '#1DBD7D', width: 1.6, dashed: false, animated: true },
+  'svc-deploy':  { stroke: '#1DBD7D', width: 1.6, dashed: false, animated: true },
   'ing-svc':     { stroke: '#a78bfa', width: 1.4, dashed: false, animated: true },
   config:        { stroke: '#f5a623', width: 0.9, dashed: true,  animated: false },
   configmap:     { stroke: '#f5a623', width: 0.9, dashed: true,  animated: false },

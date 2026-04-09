@@ -15,6 +15,8 @@ export default {
           sidebar: 'var(--kb-sidebar)',
           border: 'var(--kb-border)',
           'border-active': 'var(--kb-border-active)',
+          accent: 'var(--kb-accent)',
+          'accent-light': 'var(--kb-accent-light)',
           text: {
             primary: 'var(--kb-text-primary)',
             secondary: 'var(--kb-text-secondary)',

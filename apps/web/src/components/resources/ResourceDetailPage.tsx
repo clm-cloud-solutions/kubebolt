@@ -1345,7 +1345,7 @@ function MonitorTab({ item }: { item: ResourceItem }) {
             <div className="relative w-32 h-32">
               <svg className="w-32 h-32 -rotate-90" viewBox="0 0 120 120">
                 <circle cx="60" cy="60" r="52" fill="none" stroke="var(--kb-border)" strokeWidth="10" />
-                <circle cx="60" cy="60" r="52" fill="none" stroke="#4c9aff" strokeWidth="10"
+                <circle cx="60" cy="60" r="52" fill="none" stroke="var(--kb-accent)" strokeWidth="10"
                   strokeDasharray={`${cpuPercent * 3.267} 326.7`} strokeLinecap="round" />
               </svg>
               <div className="absolute inset-0 flex flex-col items-center justify-center">

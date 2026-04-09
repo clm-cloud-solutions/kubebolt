@@ -154,8 +154,8 @@ export function Sidebar({ overview }: SidebarProps) {
         className="px-4 h-[52px] flex items-center gap-2 border-b border-kb-border cursor-pointer select-none"
         onClick={handleLogoClick}
       >
-        <div className={`w-7 h-7 rounded-lg bg-gradient-to-br from-status-info to-blue-600 flex items-center justify-center transition-transform ${celebrating ? 'animate-spin' : ''}`}>
-          <Zap className="w-4 h-4 text-white" />
+        <div className={`w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center transition-transform ${celebrating ? 'animate-spin' : ''}`}>
+          <Zap className="w-4 h-4 text-kb-accent" />
         </div>
         <div className="flex flex-col">
           <span className="text-sm font-semibold text-kb-text-primary leading-tight">KubeBolt</span>
