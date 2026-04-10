@@ -55,8 +55,19 @@ func main() {
 	}
 	defer manager.Stop()
 
+	// Load copilot configuration from KUBEBOLT_AI_* env vars
+	copilotCfg := config.LoadCopilotConfig()
+	if copilotCfg.Enabled {
+		log.Printf("AI Copilot enabled: provider=%s model=%s", copilotCfg.Primary.Provider, copilotCfg.Primary.Model)
+		if copilotCfg.Fallback != nil {
+			log.Printf("  Fallback: provider=%s model=%s", copilotCfg.Fallback.Provider, copilotCfg.Fallback.Model)
+		}
+	} else {
+		log.Println("AI Copilot disabled (KUBEBOLT_AI_API_KEY not set)")
+	}
+
 	// Create API Router
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg)
 
 	// Start HTTP server
 	server := &http.Server{

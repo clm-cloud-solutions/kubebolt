@@ -10,13 +10,15 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
 type handlers struct {
-	manager   *cluster.Manager
-	wsHub     *websocket.Hub
-	pfManager *PortForwardManager
+	manager       *cluster.Manager
+	wsHub         *websocket.Hub
+	pfManager     *PortForwardManager
+	copilotConfig config.CopilotConfig
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

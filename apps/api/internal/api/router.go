@@ -7,11 +7,12 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
 // NewRouter creates the chi router with all API routes.
-func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []string) *chi.Mux {
+func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []string, copilotCfg config.CopilotConfig) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -21,9 +22,10 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 	r.Use(CORSMiddleware(corsOrigins))
 
 	h := &handlers{
-		manager:   manager,
-		wsHub:     wsHub,
-		pfManager: NewPortForwardManager(),
+		manager:       manager,
+		wsHub:         wsHub,
+		pfManager:     NewPortForwardManager(),
+		copilotConfig: copilotCfg,
 	}
 
 	// Health check endpoint
@@ -38,6 +40,9 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 		// Cluster management — always available, no active connector required
 		r.Get("/clusters", h.listClusters)
 		r.Post("/clusters/switch", h.switchCluster)
+
+		// Copilot config — available even when no cluster is connected
+		r.Get("/copilot/config", h.HandleCopilotConfig)
 
 		// All other endpoints require an active cluster connection
 		r.Group(func(r chi.Router) {
@@ -72,6 +77,9 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			r.Get("/insights", h.getInsights)
 			r.Get("/events", h.getEvents)
 			r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
+
+			// Copilot chat — requires active cluster connection
+			r.Post("/copilot/chat", h.HandleCopilotChat)
 		})
 	})
 
