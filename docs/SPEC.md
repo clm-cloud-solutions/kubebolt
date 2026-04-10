@@ -1033,6 +1033,99 @@ Priority: critical for production deployments where multiple users access KubeBo
 
 This phase ensures KubeBolt is safe for multi-user production environments without requiring the full SaaS platform (Phase 3.0). The admin installs with full-access ServiceAccount, but each user's view is scoped to their own Kubernetes RBAC permissions.
 
+### Phase 1.8 — AI Copilot
+
+Priority: high — adds an in-app AI assistant that combines deep Kubernetes expertise with real-time access to the user's cluster data via KubeBolt's REST API.
+
+**Key principle: BYO API key.** KubeBolt is **not a managed AI service**. The administrator configures their own API key (Anthropic, OpenAI, or any custom provider) at install time via env vars. KubeBolt has no AI billing — users pay their LLM provider directly. If no key is configured, the copilot is disabled but the rest of KubeBolt works fully.
+
+The complete skill specification, including system prompt, tool definitions, knowledge base, and integration guide, lives at `skills/kubebolt-copilot/`.
+
+#### Features
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **In-app chat panel** | Critical | Slide-out panel from the right side with FAB button. React component using existing theme tokens. Streaming responses via SSE. |
+| **16 tool integrations** | Critical | LLM tools mapped to KubeBolt REST endpoints: cluster overview, list/detail/yaml/describe of 23 resource types, pod logs, workload pods/history, CronJob jobs, topology, insights, events, search, permissions, clusters, metrics. |
+| **Multi-provider support** | High | Pluggable LLM providers: Anthropic Claude, OpenAI, custom (self-hosted Ollama, vLLM, etc.). Configurable per deployment. |
+| **Backend proxy mode** | Critical | Production deployments route LLM requests through the Go backend so API keys never reach the browser. Streamed via Server-Sent Events. |
+| **Browser-direct mode** | Medium | For local dev, the user can store their key in `localStorage` and call the LLM provider directly. |
+| **Fallback model** | High | When the primary provider fails (rate limit, 5xx, network), the backend automatically retries with a configured fallback (different provider, cheaper model, or self-hosted endpoint). UI shows a "via fallback" badge. |
+| **Tool calling loop** | Critical | Multi-step tool calling with max 10 rounds. Tool execution shown as collapsed indicators ("Checked cluster overview"). |
+| **Context awareness** | High | Current cluster name and active page (`/deployments`, `/pods/ns/name`) injected into the system prompt for relevance. |
+| **Markdown rendering** | High | Code blocks for kubectl commands, tables for resource lists, bold for key values, ResourceLink components for clickable navigation to KubeBolt views. |
+| **Permission awareness** | High | Copilot recognizes 403 responses and adapts ("I can't see Secrets — your kubeconfig doesn't have access"). Same RBAC degradation philosophy as the rest of KubeBolt. |
+| **Destructive command warnings** | High | When recommending `kubectl delete`, `--force`, `rollout undo`, etc., the copilot prefixes with ⚠️ warnings and suggests `--dry-run=server` or safer alternatives. |
+| **Privacy guards** | Medium | Sensitive data in logs (API keys, tokens, DSNs) is redacted before being shown in chat. Warns the user if credentials are detected. |
+| **Language matching** | Medium | Copilot responds in the same language the user writes in (Spanish, English, etc.). Technical terms stay in English. |
+| **Settings UI** | Medium | When backend has a key configured: read-only display. When in browser mode: provider/model/key inputs with localStorage warning. |
+| **Capability endpoint** | High | `GET /api/v1/copilot/config` returns enabled status, provider, model, fallback metadata (without API keys). Frontend uses this to show/hide the panel. |
+
+#### Configuration (env vars)
+
+| Variable | Required | Description |
+|---|---|---|
+| `KUBEBOLT_AI_PROVIDER` | Yes | `anthropic`, `openai`, or `custom` |
+| `KUBEBOLT_AI_API_KEY` | Yes | User's API key (enables the copilot) |
+| `KUBEBOLT_AI_MODEL` | No | Model name (defaults: `claude-sonnet-4-6` / `gpt-4o`) |
+| `KUBEBOLT_AI_BASE_URL` | No | Custom endpoint for self-hosted or proxy |
+| `KUBEBOLT_AI_MAX_TOKENS` | No | Max tokens per response (default 4096) |
+| `KUBEBOLT_AI_FALLBACK_PROVIDER` | No | Fallback provider (defaults to primary) |
+| `KUBEBOLT_AI_FALLBACK_API_KEY` | No | Fallback API key (enables fallback if set) |
+| `KUBEBOLT_AI_FALLBACK_MODEL` | No | Fallback model name |
+| `KUBEBOLT_AI_FALLBACK_BASE_URL` | No | Fallback custom endpoint |
+
+The Helm chart exposes these via a `copilot:` block in `values.yaml` with support for `existingSecret` so the API key is managed via Kubernetes Secrets (Sealed Secrets, External Secrets, Vault, etc.) instead of inline values.
+
+#### Implementation Components
+
+**Backend (Go):**
+- `internal/config/copilot.go` — Env var loader with primary + optional fallback
+- `internal/copilot/` — New package: `provider.go` (interface), `anthropic.go`, `openai.go`, `errors.go` (with `isRecoverable`)
+- `internal/api/copilot.go` — `HandleCopilotChat` (SSE + fallback logic) and `HandleCopilotConfig`
+- `internal/api/router.go` — Route registration: `/api/v1/copilot/chat` and `/api/v1/copilot/config`
+- `cmd/server/main.go` — Load `CopilotConfig` at startup
+
+**Frontend (React):**
+- `services/copilot/types.ts`, `tools.ts`, `providers.ts` — Tool definitions, dispatcher, provider adapters
+- `contexts/CopilotContext.tsx` — State, sendMessage, tool calling loop
+- `hooks/useCopilotConfig.ts` — Detect if copilot is enabled
+- `components/copilot/` — `CopilotPanel`, `CopilotToggle`, `MessageList`, `MessageBubble`, `MessageInput`, `ToolCallIndicator`, `FallbackBadge`, `ResourceLink`
+- `services/api.ts` — Add `/copilot/chat` (SSE) and `/copilot/config` wrappers
+- Settings UI for browser mode (when no backend key)
+
+**Helm chart:**
+- `values.yaml` — `copilot:` block with primary + fallback config, `existingSecret` support
+- `templates/deployment.yaml` — Conditional env var injection
+- `templates/copilot-secret.yaml` — Inline secret for `apiKey` mode (not recommended for production)
+- `README.md` — Document the copilot section
+
+**Docker Compose:**
+- `docker-compose.yml` — Pass through `KUBEBOLT_AI_*` from environment
+- `.env.example` — Template with empty values
+
+**Documentation:**
+- `README.md` — AI Copilot section with screenshots
+- `docs/guides/copilot.md` — How to obtain API keys for each provider, fallback recipes, troubleshooting
+- `CLAUDE.md` — Architecture notes for the copilot
+
+**Skill (already complete):**
+- `skills/kubebolt-copilot/SKILL.md` — Role, response guidelines, error handling, safety, formatting, language matching
+- `skills/kubebolt-copilot/references/api-tools.md` — All 16 tool definitions with schemas
+- `skills/kubebolt-copilot/references/insights-rules.md` — All 12 KubeBolt insight rules
+- `skills/kubebolt-copilot/references/kubernetes-knowledge.md` — Kubernetes knowledge base for general questions
+- `skills/kubebolt-copilot/references/integration-guide.md` — Implementation guide for backend proxy, BYO key model, fallback behavior, Helm config
+- `skills/kubebolt-copilot/references/examples.md` — 12 few-shot conversation examples
+
+#### Pending (post-1.8)
+
+The following are documented in the skill but deferred to future iterations:
+- Conversation memory management (context window pruning, summarization)
+- Usage metrics & analytics (token tracking, cost reporting, telemetry)
+- Automated test suite (regression scenarios, mock cluster fixtures)
+- KubeBolt product knowledge base (questions about KubeBolt features themselves, not Kubernetes)
+- WebSocket integration for proactive context (Phase 2 enhancement)
+
 ### Phase 2.0 — Agent, Historical Data & Network Observability
 
 | Feature | Impact | Description |

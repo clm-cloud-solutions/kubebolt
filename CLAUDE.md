@@ -78,6 +78,8 @@ Key packages under `internal/`:
 - **api/describe.go** — kubectl describe output via `k8s.io/kubectl/pkg/describe.DescriberFor()`. Supports all resource types.
 - **api/search.go** — Global search across 16 resource types using existing listers. Returns results with name, namespace, kind, status.
 - **api/files.go** — Pod file browser via exec-based `ls`/`find`/`cat` commands. List directories, view file content (1MB limit), download files. Handles distroless containers and permission denied gracefully.
+- **api/copilot.go** — AI Copilot chat handler with multi-step tool calling loop. SSE streaming. Auto-fallback to secondary provider on recoverable errors (429, 5xx, network). Reads `KUBEBOLT_AI_*` env vars via `config.LoadCopilotConfig()`.
+- **copilot/** — Copilot package: provider interface, Anthropic + OpenAI adapters, tool executor (server-side, calls existing connector methods), system prompt builder, tool definitions. BYO key model — no KubeBolt-managed AI service.
 - **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types + `Permissions` map), `ResourceUsage`, `ResourceList` (with `Forbidden` flag), `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
 
 ### API Endpoints
@@ -116,6 +118,8 @@ Key packages under `internal/`:
 | `DELETE /portforward/:id` | Stop port-forward |
 | `GET /ws` | WebSocket for real-time resource updates |
 | `GET /ws/exec/:ns/:name` | WebSocket for pod terminal (SPDY exec bridge) |
+| `GET /copilot/config` | AI Copilot config (provider, model, enabled flag) — no API key |
+| `POST /copilot/chat` | AI Copilot chat with SSE streaming + tool calling loop |
 
 ### Frontend (`apps/web`)
 

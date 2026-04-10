@@ -28,6 +28,7 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 | Global search (Cmd+K) | | Yes | Yes | **Yes** |
 | Cluster topology map | | | | **Yes** |
 | Insights engine | | | | **Yes** |
+| AI Copilot (BYO key) | | | | **Yes** |
 | Gateway API support | | | | **Yes** |
 | Helm chart (OCI) | | | | **Yes** |
 | < 70 MB RAM | | Yes | | **Yes** |
@@ -176,6 +177,14 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 - **YAML viewer** — Syntax highlighted with theme-aware colors, works in light and dark mode
 - **Search & filter** — Debounced search across resources with namespace filtering
 - **Dark/Light mode** — Full theme support with CSS custom properties
+
+### AI Copilot (Optional)
+- **In-app chat (Cmd+J)** — Ask questions about your cluster, troubleshoot issues, explain insights
+- **16 cluster tools** — The copilot can fetch resource details, logs, events, topology, history, and more
+- **Multi-provider** — Works with Anthropic Claude, OpenAI, Groq, OpenRouter, Azure OpenAI, DeepSeek, Mistral, or self-hosted models (Ollama, vLLM, LM Studio)
+- **Fallback model** — Auto-retry with a secondary provider on rate limits or 5xx errors
+- **BYO API key** — KubeBolt has no managed AI service. You bring your own provider key. Disabled by default.
+- Setup: [docs/guides/copilot.md](docs/guides/copilot.md) · Provider reference: [docs/guides/copilot-providers.md](docs/guides/copilot-providers.md)
 
 ## Architecture
 
