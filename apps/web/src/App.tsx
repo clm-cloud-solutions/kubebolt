@@ -15,6 +15,7 @@ import { SettingsPage } from '@/components/resources/SettingsPage'
 import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
+import { CopilotProvider } from '@/contexts/CopilotContext'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -70,6 +71,7 @@ export default function App() {
         <QueryClientProvider client={queryClient}>
         <RefreshProvider>
         <BrowserRouter>
+        <CopilotProvider>
           <Routes>
             <Route element={<Layout />}>
               <Route path="/" element={<OverviewPage />} />
@@ -100,6 +102,7 @@ export default function App() {
               <Route path="/settings" element={<SettingsPage />} />
             </Route>
           </Routes>
+        </CopilotProvider>
         </BrowserRouter>
         </RefreshProvider>
         </QueryClientProvider>

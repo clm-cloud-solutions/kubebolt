@@ -1,0 +1,397 @@
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import {
+  Bot,
+  X,
+  Send,
+  Trash2,
+  Loader2,
+  AlertCircle,
+  Wrench,
+  PanelRightClose,
+  PanelRightOpen,
+  Copy,
+  Check,
+} from 'lucide-react'
+import { useCopilot } from '@/contexts/CopilotContext'
+import { useCopilotLayout } from '@/hooks/useCopilotLayout'
+import { useClusterOverview } from '@/hooks/useClusterOverview'
+import { useInsights } from '@/hooks/useInsights'
+import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
+import { MarkdownRenderer } from './MarkdownRenderer'
+import type { CopilotMessage } from '@/services/copilot/types'
+
+export function CopilotPanel() {
+  const {
+    config,
+    isOpen,
+    isLoading,
+    error,
+    messages,
+    pendingToolCalls,
+    usedFallback,
+    closePanel,
+    sendMessage,
+    clearHistory,
+  } = useCopilot()
+  const { layout, toggleMode, setDockedWidth, setFloatingSize } = useCopilotLayout()
+
+  const [input, setInput] = useState('')
+  const messagesContainerRef = useRef<HTMLDivElement>(null)
+  const messagesEndRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
+
+  // Auto-scroll to bottom when new content arrives
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, pendingToolCalls])
+
+  // Snap to bottom (no animation) when the panel opens
+  useEffect(() => {
+    if (isOpen) {
+      // Wait for the panel to actually mount before scrolling
+      requestAnimationFrame(() => {
+        const el = messagesContainerRef.current
+        if (el) el.scrollTop = el.scrollHeight
+        setTimeout(() => inputRef.current?.focus(), 80)
+      })
+    }
+  }, [isOpen])
+
+  // ─── Resize handlers ────────────────────────────────────────
+  function startDockedResize(e: React.MouseEvent) {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = layout.dockedWidth
+
+    function onMove(ev: MouseEvent) {
+      // Dragging left from the left edge increases the width
+      const dx = startX - ev.clientX
+      setDockedWidth(startWidth + dx)
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  function startFloatingResize(e: React.MouseEvent, edge: 'left' | 'top' | 'corner') {
+    e.preventDefault()
+    const startX = e.clientX
+    const startY = e.clientY
+    const startW = layout.floatingWidth
+    const startH = layout.floatingHeight
+
+    function onMove(ev: MouseEvent) {
+      let newW = startW
+      let newH = startH
+      if (edge === 'left' || edge === 'corner') {
+        newW = startW + (startX - ev.clientX)
+      }
+      if (edge === 'top' || edge === 'corner') {
+        newH = startH + (startY - ev.clientY)
+      }
+      setFloatingSize(newW, newH)
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    document.body.style.cursor = edge === 'corner' ? 'nwse-resize' : edge === 'left' ? 'ew-resize' : 'ns-resize'
+    document.body.style.userSelect = 'none'
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
+
+  if (!config?.enabled || !isOpen) return null
+
+  function handleSend() {
+    if (!input.trim() || isLoading) return
+    sendMessage(input)
+    setInput('')
+  }
+
+  function handleKeyDown(e: KeyboardEvent<HTMLTextAreaElement>) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault()
+      handleSend()
+    }
+  }
+
+  // Container styles depend on the mode
+  const isDocked = layout.mode === 'docked'
+  const containerStyle: React.CSSProperties = isDocked
+    ? {
+        position: 'fixed',
+        top: 0,
+        right: 0,
+        bottom: 0,
+        width: `${layout.dockedWidth}px`,
+      }
+    : {
+        position: 'fixed',
+        right: '20px',
+        bottom: '20px',
+        width: `${layout.floatingWidth}px`,
+        height: `${layout.floatingHeight}px`,
+        borderRadius: '12px',
+      }
+
+  return (
+    <div
+      style={containerStyle}
+      className={`bg-kb-card border border-kb-border z-[300] flex flex-col shadow-2xl ${
+        isDocked ? 'border-l' : ''
+      }`}
+    >
+      {/* Resize handles */}
+      {isDocked ? (
+        <div
+          onMouseDown={startDockedResize}
+          className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-10"
+          title="Drag to resize"
+        />
+      ) : (
+        <>
+          {/* Left edge */}
+          <div
+            onMouseDown={(e) => startFloatingResize(e, 'left')}
+            className="absolute left-0 top-3 bottom-3 w-1 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-10 rounded-l-xl"
+          />
+          {/* Top edge */}
+          <div
+            onMouseDown={(e) => startFloatingResize(e, 'top')}
+            className="absolute top-0 left-3 right-3 h-1 cursor-ns-resize hover:bg-kb-accent/30 transition-colors z-10 rounded-t-xl"
+          />
+          {/* Top-left corner */}
+          <div
+            onMouseDown={(e) => startFloatingResize(e, 'corner')}
+            className="absolute top-0 left-0 w-3 h-3 cursor-nwse-resize hover:bg-kb-accent/40 transition-colors z-20 rounded-tl-xl"
+          />
+        </>
+      )}
+
+      {/* Header */}
+      <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center shrink-0">
+            <Bot className="w-4 h-4 text-kb-accent" />
+          </div>
+          <div className="flex flex-col min-w-0">
+            <span className="text-sm font-semibold text-kb-text-primary leading-tight truncate">
+              KubeBolt Copilot AI
+            </span>
+            <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] truncate">
+              {config.provider} · {config.model || 'default'}
+            </span>
+          </div>
+        </div>
+        <div className="flex items-center gap-1 shrink-0">
+          <button
+            onClick={toggleMode}
+            title={isDocked ? 'Switch to floating window' : 'Dock to right side'}
+            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            {isDocked ? <PanelRightOpen className="w-3.5 h-3.5" /> : <PanelRightClose className="w-3.5 h-3.5" />}
+          </button>
+          {messages.length > 0 && (
+            <button
+              onClick={clearHistory}
+              title="Clear history"
+              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          )}
+          <button
+            onClick={closePanel}
+            title="Close (⌘J)"
+            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+        {messages.length === 0 && <EmptyState />}
+
+        {messages.map((m) => (
+          <MessageBubble key={m.id} message={m} />
+        ))}
+
+        {pendingToolCalls.length > 0 && (
+          <div className="flex flex-col gap-1">
+            {pendingToolCalls.map((toolName, i) => (
+              <ToolCallIndicator key={i} toolName={toolName} />
+            ))}
+          </div>
+        )}
+
+        {isLoading &&
+          messages[messages.length - 1]?.role === 'assistant' &&
+          messages[messages.length - 1]?.content === '' && (
+            <div className="flex items-center gap-2 text-[11px] text-kb-text-tertiary">
+              <Loader2 className="w-3 h-3 animate-spin" />
+              Thinking...
+            </div>
+          )}
+
+        {error && (
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-[11px]">
+            <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+            <span className="break-words">{error}</span>
+          </div>
+        )}
+
+        {usedFallback && (
+          <div className="text-[10px] font-mono text-kb-text-tertiary text-center">
+            via fallback model ({config.fallback?.provider} {config.fallback?.model})
+          </div>
+        )}
+
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="border-t border-kb-border p-3 shrink-0">
+        <div className="flex gap-2 items-end">
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder="Ask about your cluster..."
+            rows={1}
+            disabled={isLoading}
+            className="flex-1 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border text-xs text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-kb-accent resize-none max-h-32 disabled:opacity-50"
+            style={{ minHeight: '36px' }}
+          />
+          <button
+            onClick={handleSend}
+            disabled={!input.trim() || isLoading}
+            className="w-9 h-9 rounded-lg bg-kb-accent hover:bg-kb-accent/90 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+          >
+            <Send className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="text-[9px] font-mono text-kb-text-tertiary mt-1.5 text-center leading-relaxed">
+          AI can make mistakes. Verify important information before acting on it.
+          <br />
+          ⌘+Enter to send · ⌘J to toggle
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Empty state with smart suggestions ─────────────────────────
+
+function EmptyState() {
+  const { sendMessage } = useCopilot()
+  const { data: overview } = useClusterOverview()
+  const { data: insightsResp } = useInsights()
+
+  const suggestions = useMemo(
+    () => generateCopilotSuggestions(overview, insightsResp?.items),
+    [overview, insightsResp?.items],
+  )
+
+  return (
+    <div className="flex flex-col items-center justify-center h-full text-center px-4 py-8">
+      <div className="w-12 h-12 rounded-2xl bg-kb-accent-light flex items-center justify-center mb-3">
+        <Bot className="w-6 h-6 text-kb-accent" />
+      </div>
+      <h3 className="text-sm font-semibold text-kb-text-primary mb-1">KubeBolt Copilot AI</h3>
+      <p className="text-xs text-kb-text-tertiary mb-4 max-w-xs">
+        Ask questions about your cluster, troubleshoot issues, or learn about Kubernetes concepts.
+      </p>
+      <div className="space-y-1.5 w-full max-w-md">
+        {suggestions.map((text) => (
+          <button
+            key={text}
+            onClick={() => sendMessage(text)}
+            className="w-full text-left px-3 py-2 rounded-lg bg-kb-bg hover:bg-kb-elevated border border-kb-border text-[11px] text-kb-text-secondary hover:text-kb-text-primary transition-colors"
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Message rendering ──────────────────────────────────────────
+
+function MessageBubble({ message }: { message: CopilotMessage }) {
+  const [copied, setCopied] = useState(false)
+
+  if (message.role === 'user') {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-xs text-kb-text-primary whitespace-pre-wrap break-words">
+          {message.content}
+        </div>
+      </div>
+    )
+  }
+
+  function handleCopyMessage() {
+    navigator.clipboard.writeText(message.content).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    })
+  }
+
+  // assistant — render markdown with a copy action
+  return (
+    <div className="flex flex-col items-start group">
+      <div className="max-w-[95%] px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words">
+        {message.content ? (
+          <MarkdownRenderer content={message.content} />
+        ) : (
+          <span className="text-kb-text-tertiary italic">...</span>
+        )}
+      </div>
+      {message.content && (
+        <button
+          onClick={handleCopyMessage}
+          title={copied ? 'Copied!' : 'Copy message'}
+          className="flex items-center gap-1 ml-2 mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary hover:text-kb-accent hover:bg-kb-elevated/40 opacity-0 group-hover:opacity-100 transition-all"
+        >
+          {copied ? (
+            <>
+              <Check className="w-3 h-3" />
+              Copied
+            </>
+          ) : (
+            <>
+              <Copy className="w-3 h-3" />
+              Copy
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  )
+}
+
+function ToolCallIndicator({ toolName }: { toolName: string }) {
+  const label = toolName.replace(/_/g, ' ')
+  return (
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-kb-bg border border-kb-border text-[10px] font-mono text-kb-text-tertiary">
+      <Wrench className="w-3 h-3 text-kb-accent" />
+      <span>{label}</span>
+      <Loader2 className="w-3 h-3 animate-spin ml-auto" />
+    </div>
+  )
+}
+

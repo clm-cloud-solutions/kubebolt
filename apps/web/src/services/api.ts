@@ -200,4 +200,14 @@ export const api = {
 
   deletePortForward: (id: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/portforward/${id}`),
+
+  // Copilot
+  getCopilotConfig: () =>
+    fetchJSON<{
+      enabled: boolean
+      provider: string
+      model: string
+      proxyMode: boolean
+      fallback?: { provider: string; model: string }
+    }>(`${API_BASE}/copilot/config`),
 }

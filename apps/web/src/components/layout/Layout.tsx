@@ -6,6 +6,8 @@ import { Topbar } from './Topbar'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { ApiError } from '@/services/api'
+import { CopilotPanel } from '@/components/copilot/CopilotPanel'
+import { CopilotToggle } from '@/components/copilot/CopilotToggle'
 
 const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
 
@@ -71,6 +73,8 @@ export function Layout() {
           )}
         </main>
       </div>
+      <CopilotToggle />
+      <CopilotPanel />
     </div>
   )
 }
