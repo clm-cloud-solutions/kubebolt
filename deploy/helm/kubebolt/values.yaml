@@ -59,3 +59,28 @@ rbac:
 
 # Number of replicas
 replicaCount: 1
+
+# AI Copilot configuration
+# The copilot uses the user's own LLM provider API key — no KubeBolt-managed
+# AI service. Leave apiKey empty to disable the copilot entirely. KubeBolt
+# itself works fully without the copilot.
+copilot:
+  enabled: false
+  provider: anthropic     # anthropic | openai | custom
+  model: ""               # optional — uses provider default if empty
+  baseUrl: ""             # optional — for custom/self-hosted endpoints
+  maxTokens: 4096
+  # API key — recommended to set via existingSecret rather than apiKey
+  apiKey: ""
+  existingSecret: ""      # name of an existing Secret containing 'api-key'
+
+  # Optional fallback model — used when the primary fails (rate limits,
+  # 5xx errors, network issues). Can be a different provider or just a
+  # cheaper/smaller model from the same provider.
+  fallback:
+    enabled: false
+    provider: ""          # anthropic | openai | custom (defaults to primary)
+    model: ""             # required if fallback.enabled is true
+    baseUrl: ""
+    apiKey: ""
+    existingSecret: ""    # name of Secret containing 'api-key' for fallback

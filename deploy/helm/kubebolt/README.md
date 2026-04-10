@@ -37,6 +37,13 @@ Open http://localhost:3000
 | `serviceAccount.create` | Create ServiceAccount | `true` |
 | `rbac.create` | Create ClusterRole/Binding | `true` |
 | `replicaCount` | Number of replicas | `1` |
+| `copilot.enabled` | Enable AI Copilot chat panel | `false` |
+| `copilot.provider` | LLM provider: `anthropic`, `openai`, `custom` | `anthropic` |
+| `copilot.model` | Model name (uses provider default if empty) | `""` |
+| `copilot.apiKey` | LLM API key (use `existingSecret` for production) | `""` |
+| `copilot.existingSecret` | Existing Secret with `api-key` field | `""` |
+| `copilot.fallback.enabled` | Enable fallback model on primary failure | `false` |
+| `copilot.fallback.provider` / `model` / `apiKey` / `existingSecret` | Fallback config | — |
 
 ## Ingress
 
@@ -49,11 +56,42 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set ingress.hosts[0].paths[0].pathType=Prefix
 ```
 
+## AI Copilot
+
+KubeBolt includes an optional in-app AI assistant that can answer questions about your
+cluster. It uses **your own** LLM provider API key — KubeBolt has no managed AI service.
+
+Quick enable:
+
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set copilot.enabled=true \
+  --set copilot.provider=anthropic \
+  --set copilot.apiKey=$ANTHROPIC_API_KEY
+```
+
+For production, use an existing Kubernetes Secret instead of inline values:
+
+```bash
+kubectl create secret generic kubebolt-copilot-key --from-literal=api-key=$ANTHROPIC_API_KEY
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set copilot.enabled=true \
+  --set copilot.existingSecret=kubebolt-copilot-key
+```
+
+See the [full copilot guide](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot.md)
+for fallback configuration, recipes, and security notes. See the
+[providers reference](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot-providers.md)
+for the full list of supported LLM providers (Anthropic, OpenAI, Azure, Groq, OpenRouter,
+DeepSeek, Mistral, self-hosted Ollama/vLLM, and more).
+
 ## Cloud-specific Guides
 
 - [Amazon EKS](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/eks.md)
 - [Google GKE](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/gke.md)
 - [Azure AKS](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/aks.md)
+- [AI Copilot configuration](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot.md)
+- [AI Copilot providers reference](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot-providers.md)
 
 ## Architecture
 

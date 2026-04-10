@@ -3,19 +3,32 @@
 # ─── Development ──────────────────────────────────────────────
 
 ## Run both API and Web in a single terminal
+## Auto-loads .env if present (for KUBEBOLT_AI_* and other dev env vars).
+## .env is sourced via POSIX shell, so quoted values and comments work correctly.
 dev: install
 	@echo "Starting KubeBolt..."
 	@echo "  API  → http://localhost:8080"
 	@echo "  Web  → http://localhost:5173"
+	@if [ -f .env ]; then echo "  Loading .env..."; fi
 	@echo ""
 	@trap 'kill 0' EXIT; \
-		cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config & \
+		( \
+			set -a; \
+			[ -f .env ] && . ./.env; \
+			set +a; \
+			cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config \
+		) & \
 		cd apps/web && npx vite --host & \
 		wait
 
 ## Run only the API
 dev-api:
-	cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config
+	@( \
+		set -a; \
+		[ -f .env ] && . ./.env; \
+		set +a; \
+		cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config \
+	)
 
 ## Run only the Web
 dev-web:

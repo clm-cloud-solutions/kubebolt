@@ -8,6 +8,18 @@ services:
       # Remove this line if you're not using EKS clusters.
       - ~/.aws:/root/.aws:ro
     extra_hosts: ["host.docker.internal:host-gateway"]
+    environment:
+      # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
+      # The copilot is disabled if no key is set; KubeBolt works fully without it.
+      - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}
+      - KUBEBOLT_AI_API_KEY=${KUBEBOLT_AI_API_KEY:-}
+      - KUBEBOLT_AI_MODEL=${KUBEBOLT_AI_MODEL:-}
+      - KUBEBOLT_AI_BASE_URL=${KUBEBOLT_AI_BASE_URL:-}
+      - KUBEBOLT_AI_MAX_TOKENS=${KUBEBOLT_AI_MAX_TOKENS:-4096}
+      - KUBEBOLT_AI_FALLBACK_PROVIDER=${KUBEBOLT_AI_FALLBACK_PROVIDER:-}
+      - KUBEBOLT_AI_FALLBACK_API_KEY=${KUBEBOLT_AI_FALLBACK_API_KEY:-}
+      - KUBEBOLT_AI_FALLBACK_MODEL=${KUBEBOLT_AI_FALLBACK_MODEL:-}
+      - KUBEBOLT_AI_FALLBACK_BASE_URL=${KUBEBOLT_AI_FALLBACK_BASE_URL:-}
   web:
     build: ../apps/web
     ports: ["3000:3000"]

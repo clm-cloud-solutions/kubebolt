@@ -27,6 +27,59 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- if .Values.copilot.enabled }}
+          env:
+            - name: KUBEBOLT_AI_PROVIDER
+              value: {{ .Values.copilot.provider | quote }}
+            {{- if .Values.copilot.model }}
+            - name: KUBEBOLT_AI_MODEL
+              value: {{ .Values.copilot.model | quote }}
+            {{- end }}
+            {{- if .Values.copilot.baseUrl }}
+            - name: KUBEBOLT_AI_BASE_URL
+              value: {{ .Values.copilot.baseUrl | quote }}
+            {{- end }}
+            - name: KUBEBOLT_AI_MAX_TOKENS
+              value: {{ .Values.copilot.maxTokens | quote }}
+            {{- if .Values.copilot.existingSecret }}
+            - name: KUBEBOLT_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.copilot.existingSecret }}
+                  key: api-key
+            {{- else if .Values.copilot.apiKey }}
+            - name: KUBEBOLT_AI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubebolt.fullname" . }}-copilot
+                  key: api-key
+            {{- end }}
+            {{- if .Values.copilot.fallback.enabled }}
+            - name: KUBEBOLT_AI_FALLBACK_PROVIDER
+              value: {{ .Values.copilot.fallback.provider | default .Values.copilot.provider | quote }}
+            {{- if .Values.copilot.fallback.model }}
+            - name: KUBEBOLT_AI_FALLBACK_MODEL
+              value: {{ .Values.copilot.fallback.model | quote }}
+            {{- end }}
+            {{- if .Values.copilot.fallback.baseUrl }}
+            - name: KUBEBOLT_AI_FALLBACK_BASE_URL
+              value: {{ .Values.copilot.fallback.baseUrl | quote }}
+            {{- end }}
+            {{- if .Values.copilot.fallback.existingSecret }}
+            - name: KUBEBOLT_AI_FALLBACK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.copilot.fallback.existingSecret }}
+                  key: api-key
+            {{- else if .Values.copilot.fallback.apiKey }}
+            - name: KUBEBOLT_AI_FALLBACK_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kubebolt.fullname" . }}-copilot-fallback
+                  key: api-key
+            {{- end }}
+            {{- end }}
+          {{- end }}
           livenessProbe:
             httpGet:
               path: /health
