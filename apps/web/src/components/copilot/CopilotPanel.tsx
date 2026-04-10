@@ -11,6 +11,7 @@ import {
   PanelRightOpen,
   Copy,
   Check,
+  User,
 } from 'lucide-react'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useCopilotLayout } from '@/hooks/useCopilotLayout'
@@ -147,33 +148,37 @@ export function CopilotPanel() {
   return (
     <div
       style={containerStyle}
-      className={`bg-kb-card border border-kb-border z-[300] flex flex-col shadow-2xl ${
+      className={`relative bg-kb-card border border-kb-border z-[300] flex flex-col shadow-2xl ${
         isDocked ? 'border-l' : ''
       }`}
     >
-      {/* Resize handles */}
+      {/* Resize handles — wide enough to grab easily, positioned slightly outside the panel
+          edge so the cursor changes before reaching the visible border */}
       {isDocked ? (
         <div
           onMouseDown={startDockedResize}
-          className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-10"
-          title="Drag to resize"
+          className="absolute -left-1 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-[400]"
+          title="Drag to resize width"
         />
       ) : (
         <>
           {/* Left edge */}
           <div
             onMouseDown={(e) => startFloatingResize(e, 'left')}
-            className="absolute left-0 top-3 bottom-3 w-1 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-10 rounded-l-xl"
+            className="absolute -left-1 top-5 bottom-5 w-3 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-[400]"
+            title="Drag to resize width"
           />
           {/* Top edge */}
           <div
             onMouseDown={(e) => startFloatingResize(e, 'top')}
-            className="absolute top-0 left-3 right-3 h-1 cursor-ns-resize hover:bg-kb-accent/30 transition-colors z-10 rounded-t-xl"
+            className="absolute -top-1 left-5 right-5 h-3 cursor-ns-resize hover:bg-kb-accent/30 transition-colors z-[400]"
+            title="Drag to resize height"
           />
-          {/* Top-left corner */}
+          {/* Top-left corner — diagonal resize, larger hit area */}
           <div
             onMouseDown={(e) => startFloatingResize(e, 'corner')}
-            className="absolute top-0 left-0 w-3 h-3 cursor-nwse-resize hover:bg-kb-accent/40 transition-colors z-20 rounded-tl-xl"
+            className="absolute -top-1 -left-1 w-6 h-6 cursor-nwse-resize hover:bg-kb-accent/40 transition-colors z-[401] rounded-tl-xl"
+            title="Drag to resize"
           />
         </>
       )}
@@ -336,9 +341,12 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
 
   if (message.role === 'user') {
     return (
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
         <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-xs text-kb-text-primary whitespace-pre-wrap break-words">
           {message.content}
+        </div>
+        <div className="w-6 h-6 rounded-full bg-kb-elevated flex items-center justify-center shrink-0 mt-0.5">
+          <User className="w-3.5 h-3.5 text-kb-text-secondary" />
         </div>
       </div>
     )
@@ -353,33 +361,38 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
 
   // assistant — render markdown with a copy action
   return (
-    <div className="flex flex-col items-start group">
-      <div className="max-w-[95%] px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words">
-        {message.content ? (
-          <MarkdownRenderer content={message.content} />
-        ) : (
-          <span className="text-kb-text-tertiary italic">...</span>
+    <div className="flex justify-start gap-2 group max-w-[95%]">
+      <div className="w-6 h-6 rounded-full bg-kb-accent-light flex items-center justify-center shrink-0 mt-0.5">
+        <Bot className="w-3.5 h-3.5 text-kb-accent" />
+      </div>
+      <div className="flex flex-col items-start min-w-0">
+        <div className="px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words">
+          {message.content ? (
+            <MarkdownRenderer content={message.content} />
+          ) : (
+            <span className="text-kb-text-tertiary italic">...</span>
+          )}
+        </div>
+        {message.content && (
+          <button
+            onClick={handleCopyMessage}
+            title={copied ? 'Copied!' : 'Copy message'}
+            className="flex items-center gap-1 ml-2 mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary hover:text-kb-accent hover:bg-kb-elevated/40 opacity-0 group-hover:opacity-100 transition-all"
+          >
+            {copied ? (
+              <>
+                <Check className="w-3 h-3" />
+                Copied
+              </>
+            ) : (
+              <>
+                <Copy className="w-3 h-3" />
+                Copy
+              </>
+            )}
+          </button>
         )}
       </div>
-      {message.content && (
-        <button
-          onClick={handleCopyMessage}
-          title={copied ? 'Copied!' : 'Copy message'}
-          className="flex items-center gap-1 ml-2 mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary hover:text-kb-accent hover:bg-kb-elevated/40 opacity-0 group-hover:opacity-100 transition-all"
-        >
-          {copied ? (
-            <>
-              <Check className="w-3 h-3" />
-              Copied
-            </>
-          ) : (
-            <>
-              <Copy className="w-3 h-3" />
-              Copy
-            </>
-          )}
-        </button>
-      )}
     </div>
   )
 }
