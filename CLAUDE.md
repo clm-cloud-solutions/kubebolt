@@ -80,12 +80,30 @@ Key packages under `internal/`:
 - **api/files.go** — Pod file browser via exec-based `ls`/`find`/`cat` commands. List directories, view file content (1MB limit), download files. Handles distroless containers and permission denied gracefully.
 - **api/copilot.go** — AI Copilot chat handler with multi-step tool calling loop. SSE streaming. Auto-fallback to secondary provider on recoverable errors (429, 5xx, network). Reads `KUBEBOLT_AI_*` env vars via `config.LoadCopilotConfig()`.
 - **copilot/** — Copilot package: provider interface, Anthropic + OpenAI adapters, tool executor (server-side, calls existing connector methods), system prompt builder, tool definitions. BYO key model — no KubeBolt-managed AI service.
+- **auth/store.go** — User store backed by BoltDB (`go.etcd.io/bbolt`, pure Go, no CGO). Schema: `users` and `refresh_tokens` buckets with username index. CRUD for users, refresh token rotation, admin seed on first boot. Bcrypt cost 12 for password hashing.
+- **auth/jwt.go** — JWT service: HS256 access tokens (short-lived, 15m default) with `uid`/`usr`/`role` claims. Refresh tokens are random hex strings stored hashed (SHA-256) in BoltDB.
+- **auth/middleware.go** — `RequireAuth` middleware validates JWT from `Authorization: Bearer` header. `RequireRole(minRole)` checks role hierarchy (viewer < editor < admin). When auth is disabled, `ContextRole()` returns `RoleAdmin` (pass-through).
+- **auth/handlers.go** — Login (bcrypt verify + JWT + httpOnly refresh cookie), refresh (token rotation), logout, me, change password. Cookie: `kb_refresh`, path `/api/v1/auth`, httpOnly, SameSite=Strict.
+- **auth/user_handlers.go** — Admin-only user CRUD. Protections: cannot delete self, cannot delete/demote last admin. Password minimum 8 chars.
+- **config/auth.go** — `LoadAuthConfig()` reads `KUBEBOLT_AUTH_*` env vars. Auto-generates admin password (printed to stderr) and JWT secret (with restart warning) if not set.
 - **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types + `Permissions` map), `ResourceUsage`, `ResourceList` (with `Forbidden` flag), `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
 
 ### API Endpoints
 
 | Endpoint | Description |
 |----------|-------------|
+| `GET /auth/config` | Auth config (enabled flag) — public |
+| `POST /auth/login` | Login with username/password — returns JWT + sets refresh cookie |
+| `POST /auth/refresh` | Refresh access token via httpOnly cookie |
+| `POST /auth/logout` | Invalidate refresh token, clear cookie |
+| `GET /auth/me` | Current user profile |
+| `PUT /auth/me/password` | Change own password |
+| `GET /users` | List all users (Admin only) |
+| `POST /users` | Create user (Admin only) |
+| `GET /users/:id` | Get user (Admin only) |
+| `PUT /users/:id` | Update user (Admin only) |
+| `PUT /users/:id/password` | Reset user password (Admin only) |
+| `DELETE /users/:id` | Delete user (Admin only) |
 | `GET /clusters` | List all kubeconfig contexts |
 | `POST /clusters/switch` | Switch active cluster |
 | `GET /cluster/overview` | Cluster summary with resource counts, CPU/Memory, health |
@@ -183,9 +201,10 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 
 ### Data Flow
 
-1. Cluster Manager reads kubeconfig contexts; initial K8s connection starts async in background
-2. **Permission probe** runs 22 SelfSubjectAccessReview calls (cluster-wide, then namespace fallback) to detect access level
-3. HTTP server is immediately available — returns 503 on cluster-dependent routes until connected
+1. **Auth initialization** (if enabled): BoltDB store opened, admin user seeded on first boot, JWT service created. Auth middleware wraps all routes.
+2. Cluster Manager reads kubeconfig contexts; initial K8s connection starts async in background
+3. **Permission probe** runs 22 SelfSubjectAccessReview calls (cluster-wide, then namespace fallback) to detect access level
+4. HTTP server is immediately available — returns 503 on cluster-dependent routes until connected
 4. Shared informers start **only for permitted resources**; namespace-scoped SAs get per-namespace factories with multi-lister aggregation
 5. Dynamic client discovers Gateway API resources (with 5s timeout)
 6. Metrics Collector polls Metrics Server → in-memory metrics cache (per-namespace polling for namespace-scoped SAs)

@@ -11,6 +11,7 @@ import type {
   EventParams,
   ResourceItem,
 } from '@/types/kubernetes'
+import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/types/auth'
 
 const API_BASE = '/api/v1'
 
@@ -21,6 +22,25 @@ export class ApiError extends Error {
   }
 }
 
+// --- Token management (in-memory, not localStorage) ---
+
+let accessToken: string | null = null
+let refreshPromise: Promise<string | null> | null = null
+
+export function setAccessToken(token: string | null) {
+  accessToken = token
+}
+
+export function getAccessToken(): string | null {
+  return accessToken
+}
+
+export function clearAccessToken() {
+  accessToken = null
+}
+
+// --- Fetch helpers with auth ---
+
 async function extractErrorMessage(res: Response): Promise<string> {
   try {
     const json = await res.json()
@@ -30,8 +50,55 @@ async function extractErrorMessage(res: Response): Promise<string> {
   }
 }
 
+function authHeaders(): Record<string, string> {
+  if (accessToken) {
+    return { Authorization: `Bearer ${accessToken}` }
+  }
+  return {}
+}
+
+async function tryRefreshToken(): Promise<string | null> {
+  // Deduplicate concurrent refresh calls
+  if (refreshPromise) return refreshPromise
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: '{}',
+      })
+      if (!res.ok) return null
+      const data: RefreshResponse = await res.json()
+      accessToken = data.accessToken
+      return data.accessToken
+    } catch {
+      return null
+    } finally {
+      refreshPromise = null
+    }
+  })()
+  return refreshPromise
+}
+
+async function fetchWithAuth(url: string, init?: RequestInit): Promise<Response> {
+  const headers = { ...authHeaders(), ...init?.headers }
+  let res = await fetch(url, { ...init, headers, credentials: 'include' })
+
+  // On 401, try one silent refresh then retry
+  if (res.status === 401 && accessToken) {
+    const newToken = await tryRefreshToken()
+    if (newToken) {
+      const retryHeaders = { ...init?.headers, Authorization: `Bearer ${newToken}` }
+      res = await fetch(url, { ...init, headers: retryHeaders, credentials: 'include' })
+    }
+  }
+
+  return res
+}
+
 async function fetchJSON<T>(url: string): Promise<T> {
-  const res = await fetch(url)
+  const res = await fetchWithAuth(url)
   if (!res.ok) {
     throw new ApiError(res.status, await extractErrorMessage(res))
   }
@@ -51,7 +118,7 @@ function buildQuery(params?: Record<string, string | number | boolean | undefine
 }
 
 async function deleteRequest<T>(url: string): Promise<T> {
-  const res = await fetch(url, { method: 'DELETE' })
+  const res = await fetchWithAuth(url, { method: 'DELETE' })
   if (!res.ok) {
     throw new ApiError(res.status, await extractErrorMessage(res))
   }
@@ -59,7 +126,7 @@ async function deleteRequest<T>(url: string): Promise<T> {
 }
 
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
+  const res = await fetchWithAuth(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -70,8 +137,51 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
   return res.json()
 }
 
+async function putJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+  const res = await fetchWithAuth(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  })
+  if (!res.ok) {
+    throw new ApiError(res.status, await extractErrorMessage(res))
+  }
+  return res.json()
+}
+
 export const api = {
-  // Cluster management
+  // --- Auth ---
+  getAuthConfig: () =>
+    fetchJSON<AuthConfig>(`${API_BASE}/auth/config`),
+
+  login: (username: string, password: string) =>
+    postJSON<LoginResponse>(`${API_BASE}/auth/login`, { username, password }),
+
+  refresh: () => tryRefreshToken(),
+
+  logout: () => postJSON<{ status: string }>(`${API_BASE}/auth/logout`, {}),
+
+  getMe: () => fetchJSON<AuthUser>(`${API_BASE}/auth/me`),
+
+  changePassword: (currentPassword: string, newPassword: string) =>
+    putJSON<{ status: string }>(`${API_BASE}/auth/me/password`, { currentPassword, newPassword }),
+
+  // --- User management (admin) ---
+  listUsers: () => fetchJSON<AuthUser[]>(`${API_BASE}/users`),
+
+  createUser: (data: { username: string; email: string; name: string; password: string; role: string }) =>
+    postJSON<AuthUser>(`${API_BASE}/users`, data),
+
+  updateUser: (id: string, data: { username?: string; email?: string; name?: string; role?: string }) =>
+    putJSON<AuthUser>(`${API_BASE}/users/${id}`, data),
+
+  resetUserPassword: (id: string, password: string) =>
+    putJSON<{ status: string }>(`${API_BASE}/users/${id}/password`, { password }),
+
+  deleteUser: (id: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/users/${id}`),
+
+  // --- Cluster management ---
   listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
 
   switchCluster: (context: string) =>
@@ -99,13 +209,13 @@ export const api = {
     fetchJSON<ResourceMetrics>(`${API_BASE}/metrics/${type}/${namespace}/${name}`),
 
   getResourceDescribe: async (type: string, namespace: string, name: string): Promise<string> => {
-    const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/describe`)
+    const res = await fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}/${name}/describe`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
     return res.text()
   },
 
   applyResourceYAML: async (type: string, namespace: string, name: string, yaml: string): Promise<{ status: string }> => {
-    const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`, {
+    const res = await fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/yaml' },
       body: yaml,
@@ -115,7 +225,7 @@ export const api = {
   },
 
   getResourceYAML: async (type: string, namespace: string, name: string): Promise<string> => {
-    const res = await fetch(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`)
+    const res = await fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}/${name}/yaml`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
     return res.text()
   },
@@ -146,7 +256,7 @@ export const api = {
     if (container) params.set('container', container)
     if (tailLines) params.set('tailLines', String(tailLines))
     const query = params.toString()
-    const res = await fetch(`${API_BASE}/resources/pods/${namespace}/${name}/logs${query ? `?${query}` : ''}`)
+    const res = await fetchWithAuth(`${API_BASE}/resources/pods/${namespace}/${name}/logs${query ? `?${query}` : ''}`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
     return res.text()
   },
@@ -158,7 +268,7 @@ export const api = {
     ),
 
   getFileContent: async (namespace: string, name: string, container: string, path: string): Promise<string> => {
-    const res = await fetch(`${API_BASE}/resources/pods/${namespace}/${name}/files/content?container=${encodeURIComponent(container)}&path=${encodeURIComponent(path)}`)
+    const res = await fetchWithAuth(`${API_BASE}/resources/pods/${namespace}/${name}/files/content?container=${encodeURIComponent(container)}&path=${encodeURIComponent(path)}`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
     return res.text()
   },

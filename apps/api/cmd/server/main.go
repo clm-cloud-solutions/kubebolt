@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	crypto_rand "crypto/rand"
 	"flag"
 	"fmt"
 	"log"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
@@ -66,8 +68,54 @@ func main() {
 		log.Println("AI Copilot disabled (KUBEBOLT_AI_API_KEY not set)")
 	}
 
+	// Load auth configuration from KUBEBOLT_AUTH_* env vars
+	authCfg := config.LoadAuthConfig()
+
+	var authHandlers *auth.Handlers
+	if authCfg.Enabled {
+		log.Println("Authentication enabled")
+
+		store, err := auth.NewStore(authCfg.DataDir)
+		if err != nil {
+			log.Fatalf("Failed to open auth store: %v", err)
+		}
+		defer store.Close()
+
+		// Resolve JWT secret: env var > persisted in DB > generate and persist
+		if !authCfg.JWTSecretFromEnv {
+			if secret, err := store.GetSetting("jwt_secret"); err == nil {
+				authCfg.JWTSecret = secret
+				log.Println("JWT secret loaded from database")
+			} else {
+				secret := make([]byte, 32)
+				if _, err := crypto_rand.Read(secret); err != nil {
+					log.Fatalf("Failed to generate JWT secret: %v", err)
+				}
+				if err := store.SetSetting("jwt_secret", secret); err != nil {
+					log.Fatalf("Failed to persist JWT secret: %v", err)
+				}
+				authCfg.JWTSecret = secret
+				log.Println("JWT secret generated and persisted to database")
+			}
+		}
+
+		seeded, err := store.SeedAdmin(authCfg.InitialAdminPassword)
+		if err != nil {
+			log.Fatalf("Failed to seed admin user: %v", err)
+		}
+		if seeded {
+			log.Println("Default admin user created (username: admin)")
+		}
+
+		jwtSvc := auth.NewJWTService(authCfg)
+		authHandlers = auth.NewHandlers(store, jwtSvc, authCfg)
+	} else {
+		log.Println("Authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
+		authHandlers = auth.NewNoOpHandlers()
+	}
+
 	// Create API Router
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, authHandlers)
 
 	// Start HTTP server
 	server := &http.Server{

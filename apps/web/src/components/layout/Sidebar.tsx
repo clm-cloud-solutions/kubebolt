@@ -24,7 +24,12 @@ import {
   Activity,
   Settings,
   ShieldOff,
+  Users,
+  UsersRound,
+  Bot,
+  KeyRound,
 } from 'lucide-react'
+import { useAuth } from '@/contexts/AuthContext'
 import type { ClusterOverview } from '@/types/kubernetes'
 
 interface SidebarProps {
@@ -110,9 +115,17 @@ function getCount(overview: ClusterOverview | undefined, key?: keyof ClusterOver
 
 const BOLT_EMOJIS = ['⚡', '🔥', '🌟', '💫', '✨', '🚀', '💜']
 
+const adminItems = [
+  { label: 'Users', path: '/admin/users', icon: <Users className="w-4 h-4" /> },
+  { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },
+  { label: 'Service Accounts', path: '/admin/service-accounts', icon: <Bot className="w-4 h-4" /> },
+  { label: 'Authentication', path: '/admin/authentication', icon: <KeyRound className="w-4 h-4" /> },
+]
+
 export function Sidebar({ overview }: SidebarProps) {
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
+  const { hasRole, isAuthEnabled } = useAuth()
 
   const handleLogoClick = useCallback(() => {
     const next = clickCount + 1
@@ -234,6 +247,40 @@ export function Sidebar({ overview }: SidebarProps) {
             </div>
           </div>
         ))}
+
+        {/* Administration section — admin only (or when auth disabled) */}
+        {hasRole('admin') && (
+          <div>
+            <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
+              Administration
+            </div>
+            <div className="space-y-0.5">
+              {adminItems.map((item) => (
+                <NavLink
+                  key={item.path}
+                  to={item.path}
+                  className={({ isActive }) =>
+                    `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
+                      isActive
+                        ? 'bg-status-info-dim text-status-info'
+                        : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
+                    }`
+                  }
+                >
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
+                      )}
+                      <span className="shrink-0">{item.icon}</span>
+                      <span className="flex-1 truncate">{item.label}</span>
+                    </>
+                  )}
+                </NavLink>
+              ))}
+            </div>
+          </div>
+        )}
       </nav>
 
       {/* Settings */}

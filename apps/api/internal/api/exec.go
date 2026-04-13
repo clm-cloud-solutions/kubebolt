@@ -13,6 +13,8 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	gorilla "github.com/gorilla/websocket"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -113,6 +115,20 @@ func detectShell(clientset kubernetes.Interface, restConfig *restclient.Config, 
 }
 
 func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
+	// Validate auth + Editor role for exec (token via query param)
+	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
+		token := r.URL.Query().Get("token")
+		claims := h.authHandlers.ValidateWSToken(token)
+		if claims == nil {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+		if auth.RoleLevel(claims.Role) < auth.RoleLevel(auth.RoleEditor) {
+			http.Error(w, "insufficient permissions — Editor role required for terminal access", http.StatusForbidden)
+			return
+		}
+	}
+
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
 	container := r.URL.Query().Get("container")

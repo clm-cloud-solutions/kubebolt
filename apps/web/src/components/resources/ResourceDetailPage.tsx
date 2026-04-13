@@ -16,6 +16,7 @@ import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
 import { PortForwardButton, PortForwardNote } from './PortForwardButton'
+import { useAuth } from '@/contexts/AuthContext'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -300,6 +301,8 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
 // ─── Overview Tab ────────────────────────────────────────────────
 
 function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
+  const { hasRole } = useAuth()
+  const canEdit = hasRole('editor')
   const ownerRefs = Array.isArray(item.ownerReferences) ? item.ownerReferences as Array<Record<string, string>> : []
 
   return (
@@ -338,7 +341,7 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
                 <div className="space-y-2">
                   <div className="flex flex-wrap gap-1.5">
                     {ports.map(({ port, container: ctr }) => (
-                      <PortForwardButton key={`${ctr}-${port}`} namespace={item.namespace} pod={item.name} container={ctr} remotePort={port} />
+                      <PortForwardButton key={`${ctr}-${port}`} namespace={item.namespace} pod={item.name} container={ctr} remotePort={port} disabled={!canEdit} />
                     ))}
                   </div>
                   <PortForwardNote />
@@ -950,7 +953,7 @@ function YAMLEditor({ value, onChange }: { value: string; onChange: (v: string) 
   return <div ref={editorRef} className="rounded-lg overflow-hidden border border-kb-border" />
 }
 
-function YAMLTab({ type, namespace, name }: { type: string; namespace: string; name: string }) {
+function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: string; name: string; canEdit: boolean }) {
   const { data: yaml, isLoading, error, refetch } = useResourceYAML(type, namespace, name)
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState('')
@@ -1001,7 +1004,8 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
             </button>
             <button
               onClick={saveEdit}
-              disabled={saving}
+              disabled={saving || !canEdit}
+              title={!canEdit ? 'Editor role required' : undefined}
               className="px-3 py-1.5 text-[10px] font-mono bg-status-info text-white rounded hover:bg-status-info/90 transition-colors disabled:opacity-50 flex items-center gap-1"
             >
               {saving ? 'Applying...' : 'Apply'}
@@ -1035,7 +1039,9 @@ function YAMLTab({ type, namespace, name }: { type: string; namespace: string; n
             </button>
             <button
               onClick={startEdit}
-              className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors"
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : undefined}
+              className="px-3 py-1.5 text-[10px] font-mono bg-kb-elevated text-kb-text-secondary rounded hover:bg-kb-card-hover transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-kb-elevated"
             >
               Edit
             </button>
@@ -1862,6 +1868,9 @@ export function ResourceDetailPage() {
   const [showDelete, setShowDelete] = useState(false)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
+  const { hasRole } = useAuth()
+  const canEdit = hasRole('editor')
+  const canDelete = hasRole('admin')
 
   // Reset to overview tab when navigating to a different resource
   useEffect(() => {
@@ -1883,7 +1892,7 @@ export function ResourceDetailPage() {
     switch (activeTab) {
       case 'overview': return <OverviewTab type={type} item={item!} />
       case 'containers': return <ContainersTab item={item!} />
-      case 'yaml': return <YAMLTab type={type} namespace={namespace} name={name} />
+      case 'yaml': return <YAMLTab type={type} namespace={namespace} name={name} canEdit={canEdit} />
       case 'logs': return <LogsTab namespace={namespace} name={name} item={item!} />
       case 'volumes': return <VolumesTab item={item!} />
       case 'related': return <RelatedTab type={type} item={item!} />
@@ -1954,7 +1963,9 @@ export function ResourceDetailPage() {
             <div className="relative">
               <button
                 onClick={() => { setScaleValue(Number(item.replicas ?? 1)); setShowScale(!showScale); setShowRestart(false) }}
-                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
+                disabled={!canEdit}
+                title={!canEdit ? 'Editor role required' : undefined}
+                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
                   showScale ? 'bg-status-info-dim border-status-info/20 text-status-info' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
                 }`}
               >
@@ -2004,8 +2015,9 @@ export function ResourceDetailPage() {
             <div className="relative">
               <button
                 onClick={() => { setShowRestart(!showRestart); setShowScale(false) }}
-                disabled={actionLoading === 'restart'}
-                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-50 ${
+                disabled={actionLoading === 'restart' || !canEdit}
+                title={!canEdit ? 'Editor role required' : undefined}
+                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
                   showRestart ? 'bg-status-warn-dim border-status-warn/20 text-status-warn' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
                 }`}
               >
@@ -2053,7 +2065,9 @@ export function ResourceDetailPage() {
           )}
           <button
             onClick={() => { setShowDelete(true); setShowRestart(false); setShowScale(false) }}
-            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors"
+            disabled={!canDelete}
+            title={!canDelete ? 'Admin role required' : undefined}
+            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-status-error-dim"
           >
             Delete
           </button>

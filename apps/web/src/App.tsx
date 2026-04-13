@@ -3,8 +3,11 @@ import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '@/contexts/ThemeContext'
 import { RefreshProvider } from '@/contexts/RefreshContext'
+import { AuthProvider } from '@/contexts/AuthContext'
 import { ApiError } from '@/services/api'
 import { Layout } from '@/components/layout/Layout'
+import { RequireAuth } from '@/components/auth/RequireAuth'
+import { RequireRole } from '@/components/auth/RequireRole'
 import { OverviewPage } from '@/components/dashboard/OverviewPage'
 import { ResourceListPage } from '@/components/resources/ResourceListPage'
 import { NodesPage } from '@/components/resources/NodesPage'
@@ -15,6 +18,9 @@ import { SettingsPage } from '@/components/resources/SettingsPage'
 import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
+import { LoginPage } from '@/pages/LoginPage'
+import { UsersPage } from '@/pages/admin/UsersPage'
+import { AdminPlaceholderPage } from '@/pages/admin/AdminPlaceholderPage'
 import { CopilotProvider } from '@/contexts/CopilotContext'
 
 const queryClient = new QueryClient({
@@ -22,8 +28,8 @@ const queryClient = new QueryClient({
     queries: {
       staleTime: 10_000,
       retry: (failureCount, error) => {
-        // Never retry cluster-unavailable or permission errors — they won't resolve by retrying
-        if (error instanceof ApiError && (error.status === 503 || error.status === 403)) return false
+        // Never retry cluster-unavailable, permission, or auth errors
+        if (error instanceof ApiError && (error.status === 503 || error.status === 403 || error.status === 401)) return false
         return failureCount < 2
       },
       refetchOnWindowFocus: false,
@@ -71,9 +77,14 @@ export default function App() {
         <QueryClientProvider client={queryClient}>
         <RefreshProvider>
         <BrowserRouter>
+        <AuthProvider>
         <CopilotProvider>
           <Routes>
-            <Route element={<Layout />}>
+            {/* Login page — outside Layout */}
+            <Route path="/login" element={<LoginPage />} />
+
+            {/* All app routes — require auth when enabled */}
+            <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/" element={<OverviewPage />} />
               <Route path="/map" element={<ClusterMap />} />
               <Route path="/pods" element={<ResourceListPage resourceType="pods" />} />
@@ -100,9 +111,16 @@ export default function App() {
               <Route path="/events" element={<EventsPage />} />
               <Route path="/rbac" element={<RBACPage />} />
               <Route path="/settings" element={<SettingsPage />} />
+
+              {/* Admin routes */}
+              <Route path="/admin/users" element={<RequireRole role="admin"><UsersPage /></RequireRole>} />
+              <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
+              <Route path="/admin/service-accounts" element={<RequireRole role="admin"><AdminPlaceholderPage title="Service Accounts" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
+              <Route path="/admin/authentication" element={<RequireRole role="admin"><AdminPlaceholderPage title="Authentication" description="Configure single sign-on providers (GitHub, Google, Azure AD, OIDC)." /></RequireRole>} />
             </Route>
           </Routes>
         </CopilotProvider>
+        </AuthProvider>
         </BrowserRouter>
         </RefreshProvider>
         </QueryClientProvider>

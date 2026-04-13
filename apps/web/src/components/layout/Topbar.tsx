@@ -1,12 +1,14 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterOverview, ClusterInfo } from '@/types/kubernetes'
+import type { UserRole } from '@/types/auth'
 
 interface TopbarProps {
   overview?: ClusterOverview
@@ -190,6 +192,9 @@ export function Topbar({ overview }: TopbarProps) {
           <Server className="w-3.5 h-3.5" />
           <span className="text-xs font-mono">{nodeCount} nodes</span>
         </div>
+
+        {/* User menu */}
+        <UserMenu />
       </div>
     </header>
   )
@@ -269,6 +274,140 @@ function PortForwardIndicator() {
               </div>
             )
           })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const ROLE_COLORS: Record<UserRole, string> = {
+  admin: 'bg-status-error-dim text-status-error',
+  editor: 'bg-status-info-dim text-status-info',
+  viewer: 'bg-status-ok-dim text-status-ok',
+}
+
+function UserMenu() {
+  const { user, isAuthEnabled, logout } = useAuth()
+  const [open, setOpen] = useState(false)
+  const [changingPw, setChangingPw] = useState(false)
+  const [currentPw, setCurrentPw] = useState('')
+  const [newPw, setNewPw] = useState('')
+  const [pwError, setPwError] = useState<string | null>(null)
+  const [pwSuccess, setPwSuccess] = useState(false)
+  const [pwSaving, setPwSaving] = useState(false)
+  const dropdownRef = useRef<HTMLDivElement>(null)
+  const navigate = useNavigate()
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setOpen(false)
+        setChangingPw(false)
+      }
+    }
+    if (open) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [open])
+
+  if (!isAuthEnabled || !user) return null
+
+  async function handleChangePassword(e: React.FormEvent) {
+    e.preventDefault()
+    setPwError(null)
+    setPwSaving(true)
+    try {
+      await api.changePassword(currentPw, newPw)
+      setPwSuccess(true)
+      setCurrentPw('')
+      setNewPw('')
+      setTimeout(() => { setChangingPw(false); setPwSuccess(false) }, 1500)
+    } catch (err) {
+      setPwError(err instanceof Error ? err.message : 'Failed to change password')
+    } finally {
+      setPwSaving(false)
+    }
+  }
+
+  async function handleLogout() {
+    await logout()
+    navigate('/login', { replace: true })
+  }
+
+  return (
+    <div className="relative" ref={dropdownRef}>
+      <button
+        onClick={() => setOpen(!open)}
+        className="w-7 h-7 rounded-full bg-kb-accent/20 flex items-center justify-center text-[11px] font-mono font-bold text-kb-accent hover:bg-kb-accent/30 transition-colors uppercase"
+        title={`${user.username} (${user.role})`}
+      >
+        {user.username[0]}
+      </button>
+
+      {open && (
+        <div className="absolute top-full right-0 mt-1 w-64 bg-kb-card border border-kb-border rounded-lg shadow-xl z-50 overflow-hidden">
+          {/* User info */}
+          <div className="px-4 py-3 border-b border-kb-border">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 rounded-full bg-kb-elevated flex items-center justify-center text-xs font-mono font-bold text-kb-text-secondary uppercase">
+                {user.username[0]}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium text-kb-text-primary truncate">{user.name || user.username}</div>
+                <div className="text-[10px] text-kb-text-tertiary truncate">{user.email || user.username}</div>
+              </div>
+              <span className={`px-1.5 py-0.5 rounded-full text-[9px] font-mono font-medium uppercase ${ROLE_COLORS[user.role]}`}>
+                {user.role}
+              </span>
+            </div>
+          </div>
+
+          {/* Actions */}
+          {!changingPw ? (
+            <div className="py-1">
+              <button
+                onClick={() => setChangingPw(true)}
+                className="w-full text-left px-4 py-2 flex items-center gap-2 text-xs text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card-hover transition-colors"
+              >
+                <KeyRound className="w-3.5 h-3.5" />
+                Change password
+              </button>
+              <button
+                onClick={handleLogout}
+                className="w-full text-left px-4 py-2 flex items-center gap-2 text-xs text-status-error hover:bg-status-error-dim transition-colors"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                Sign out
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={handleChangePassword} className="p-3 space-y-2">
+              {pwError && <div className="px-2 py-1 rounded bg-status-error-dim text-status-error text-[10px]">{pwError}</div>}
+              {pwSuccess && <div className="px-2 py-1 rounded bg-status-ok-dim text-status-ok text-[10px]">Password changed</div>}
+              <input
+                type="password"
+                value={currentPw}
+                onChange={e => setCurrentPw(e.target.value)}
+                placeholder="Current password"
+                required
+                className="w-full px-2 py-1 text-xs bg-kb-bg border border-kb-border rounded text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent"
+              />
+              <input
+                type="password"
+                value={newPw}
+                onChange={e => setNewPw(e.target.value)}
+                placeholder="New password (min. 8 chars)"
+                required
+                minLength={8}
+                className="w-full px-2 py-1 text-xs bg-kb-bg border border-kb-border rounded text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent"
+              />
+              <div className="flex gap-2">
+                <button type="button" onClick={() => setChangingPw(false)} className="flex-1 px-2 py-1 text-[10px] border border-kb-border rounded text-kb-text-secondary hover:bg-kb-card-hover transition-colors">Cancel</button>
+                <button type="submit" disabled={pwSaving || pwSuccess} className="flex-1 px-2 py-1 text-[10px] font-medium text-white bg-kb-accent rounded hover:bg-kb-accent/90 disabled:opacity-50 transition-colors">
+                  {pwSaving ? 'Saving...' : 'Save'}
+                </button>
+              </div>
+            </form>
+          )}
         </div>
       )}
     </div>

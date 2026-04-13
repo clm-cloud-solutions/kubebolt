@@ -29,6 +29,7 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 | Cluster topology map | | | | **Yes** |
 | Insights engine | | | | **Yes** |
 | AI Copilot (BYO key) | | | | **Yes** |
+| Built-in auth & roles | | | | **Yes** |
 | Gateway API support | | | | **Yes** |
 | Helm chart (OCI) | | | | **Yes** |
 | < 70 MB RAM | | Yes | | **Yes** |
@@ -165,6 +166,13 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 - **CronJob Jobs** — Child job listing with status, completions, duration, and age.
 - **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click with connection overlay
 
+### Authentication & Access Control
+- **Built-in auth** — Username/password login with JWT sessions. Enabled by default, can be disabled for open access.
+- **Three roles** — **Viewer** (read-only), **Editor** (edit YAML, scale, restart, port-forward, exec), **Admin** (full access + user management)
+- **Default admin** — Auto-created on first boot with configurable password (or randomly generated, printed to logs)
+- **User management** — Grafana-style admin UI: create/edit/delete users, assign roles, reset passwords
+- **Session security** — Access tokens in memory (not localStorage), httpOnly refresh cookies, token rotation
+
 ### Security & RBAC
 - **RBAC-aware** — Auto-detects permissions at connect time via SelfSubjectAccessReview
 - **Namespace-scoped SAs** — Works with RoleBinding-only ServiceAccounts using per-namespace informers
@@ -186,6 +194,33 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 - **BYO API key** — KubeBolt has no managed AI service. You bring your own provider key. Disabled by default.
 - Setup: [docs/guides/copilot.md](docs/guides/copilot.md) · Provider reference: [docs/guides/copilot-providers.md](docs/guides/copilot-providers.md)
 
+## Authentication
+
+KubeBolt includes built-in authentication with three roles (Admin, Editor, Viewer). Enabled by default.
+
+| Environment Variable | Default | Description |
+|---|---|---|
+| `KUBEBOLT_AUTH_ENABLED` | `true` | Set `false` for open access (no login) |
+| `KUBEBOLT_ADMIN_PASSWORD` | (auto-generated) | Initial admin password. Printed to logs if not set |
+| `KUBEBOLT_JWT_SECRET` | (auto-generated) | JWT signing secret. Set explicitly to persist sessions across restarts |
+| `KUBEBOLT_DATA_DIR` | `./data` | Directory for the embedded user database |
+
+**Local development:**
+```bash
+# With auth (default) — password printed to terminal:
+go run cmd/server/main.go --kubeconfig ~/.kube/config
+
+# With a fixed password:
+KUBEBOLT_ADMIN_PASSWORD=admin123456 go run cmd/server/main.go --kubeconfig ~/.kube/config
+
+# Without auth (legacy mode):
+KUBEBOLT_AUTH_ENABLED=false go run cmd/server/main.go --kubeconfig ~/.kube/config
+```
+
+**Docker Compose:** set variables in `deploy/.env` (see `deploy/.env.example`).
+
+**Helm:** configure under `auth:` in `values.yaml`. Passwords can be managed via `existingSecret` for production.
+
 ## Architecture
 
 ```
@@ -196,6 +231,7 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
                 │ kubeconfig (all contexts)
 ┌───────────────▼─────────────────┐
 │   KubeBolt Backend (Go)         │
+│   ├─ Auth (BoltDB + JWT)        │
 │   ├─ Permission Probe (SSAR)    │
 │   ├─ Shared Informers (gated)   │
 │   ├─ Dynamic Client (GW API)    │
@@ -258,6 +294,8 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and roadmap.
 
 **Coming next:**
+- OAuth2/OIDC authentication (GitHub, Google, Azure AD)
+- Teams and organizations
 - Animated cluster map with traffic visualization
 - Cluster management UI (add/remove/rename clusters)
 - Notifications (Slack, email) for insights alerts

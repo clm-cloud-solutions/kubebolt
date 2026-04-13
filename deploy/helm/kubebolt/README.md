@@ -37,6 +37,13 @@ Open http://localhost:3000
 | `serviceAccount.create` | Create ServiceAccount | `true` |
 | `rbac.create` | Create ClusterRole/Binding | `true` |
 | `replicaCount` | Number of replicas | `1` |
+| `auth.enabled` | Enable built-in authentication | `true` |
+| `auth.adminPassword` | Initial admin password (generated if empty) | `""` |
+| `auth.jwtSecret` | JWT signing secret (generated if empty, won't survive restarts) | `""` |
+| `auth.existingSecret` | Existing Secret with `admin-password` and/or `jwt-secret` keys | `""` |
+| `auth.persistence.enabled` | Enable persistent storage for user database | `true` |
+| `auth.persistence.size` | PVC size | `1Gi` |
+| `auth.persistence.storageClass` | Storage class (cluster default if empty) | `""` |
 | `copilot.enabled` | Enable AI Copilot chat panel | `false` |
 | `copilot.provider` | LLM provider: `anthropic`, `openai`, `custom` | `anthropic` |
 | `copilot.model` | Model name (uses provider default if empty) | `""` |
@@ -54,6 +61,34 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set ingress.hosts[0].host=kubebolt.example.com \
   --set ingress.hosts[0].paths[0].path=/ \
   --set ingress.hosts[0].paths[0].pathType=Prefix
+```
+
+## Authentication
+
+KubeBolt includes built-in authentication with three roles: **Admin** (full access + user management), **Editor** (edit YAML, scale, restart), and **Viewer** (read-only). Enabled by default.
+
+On first boot, a default `admin` user is created. If no password is set, a random one is generated and printed to logs:
+
+```bash
+kubectl logs deployment/kubebolt-api | grep "Generated admin password"
+```
+
+For production, use an existing Kubernetes Secret:
+
+```bash
+kubectl create secret generic kubebolt-auth \
+  --from-literal=admin-password=YourSecurePassword \
+  --from-literal=jwt-secret=$(openssl rand -hex 32)
+
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.existingSecret=kubebolt-auth
+```
+
+To disable auth (open access, no login):
+
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.enabled=false
 ```
 
 ## AI Copilot

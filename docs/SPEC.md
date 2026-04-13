@@ -1024,14 +1024,144 @@ Priority: critical for open source adoption.
 
 Priority: critical for production deployments where multiple users access KubeBolt.
 
+**Design principle: Grafana-style local auth first.** Start with built-in username/password authentication and application-level roles. No external identity providers required. OAuth2/OIDC and Kubernetes Impersonation are deferred as optional enhancements — the goal is a secure, self-contained auth system that works out of the box with zero external dependencies.
+
+#### Deployment scenarios
+
+| Scenario | Auth | Kubernetes access | Users |
+|----------|------|-------------------|-------|
+| **Local / team** (`--kubeconfig`) | Admin user with configured password | Shared kubeconfig — all users see what the kubeconfig permits | Optional — works as single-user; additional users can be created |
+| **In-cluster / production** (Helm) | Admin password via K8s Secret + additional users | KubeBolt ServiceAccount — all users share the SA's permissions | Multi-user with role-based access control |
+| **Auth disabled** (`auth.enabled: false`) | No login required | Same as today — open access | Single implicit admin (current behavior preserved) |
+
+In both authenticated scenarios, Kubernetes-level permissions depend on the kubeconfig or ServiceAccount — KubeBolt roles control **application-level** actions (who can edit, delete, manage users), not which K8s resources are visible.
+
+#### Core features
+
 | Feature | Impact | Description |
 |---------|--------|-------------|
-| **OAuth2/OIDC Authentication** | Critical | Login via external identity providers (GitHub, Google, Azure AD, Keycloak, any OIDC). Session management with JWT tokens. Login page with provider selector. |
-| **Kubernetes Impersonation** | Critical | After authentication, KubeBolt impersonates the authenticated user when calling the Kubernetes API. Each user sees only what their RBAC permits — namespaces, resources, actions. The ServiceAccount's ClusterRole becomes a ceiling, not the effective permission set. |
-| **Per-user RBAC enforcement** | High | UI adapts to the impersonated user's permissions: sidebar items dimmed, actions disabled, "Access Restricted" pages — same degradation behavior as today but per-user instead of per-ServiceAccount. |
-| **Session & audit** | Medium | Active sessions list, session expiry, logout. Audit log of who accessed what (user, action, resource, timestamp). |
+| **Built-in authentication** | Critical | Username + password login with bcrypt-hashed credentials. JWT access tokens (short-lived, in-memory) + httpOnly refresh token cookie. Login page with username/password form. Configurable session expiry. |
+| **Default admin user** | Critical | On first boot, if no users exist, seed an `admin` user. Password from `KUBEBOLT_ADMIN_PASSWORD` env var (or Helm secret). If not configured, generate a random password and print it to stdout on startup (same pattern as Grafana). Email defaults to `admin@localhost`. |
+| **Application roles** | Critical | Three roles with hierarchical permissions: **Viewer** (read-only — browse all resources, view logs, view YAML, use Copilot), **Editor** (Viewer + edit YAML, scale, restart, port-forward, exec terminal), **Admin** (Editor + delete resources, manage users, configure clusters/copilot settings). |
+| **User management (Admin only)** | Critical | CRUD operations for users: create (username, email, password, role), list with search/filter, edit profile/role, reset password, delete. Table view with columns: Login, Email, Name, Role, Last active, Created. Inspired by Grafana's Administration > Users and access > Users page. |
+| **Role enforcement middleware** | High | Backend middleware checks the authenticated user's role before executing mutating actions. Viewers get 403 on write endpoints (YAML apply, scale, restart, delete, user management). Editors get 403 on admin endpoints (user CRUD, cluster config). |
+| **UI role adaptation** | High | Frontend adapts to the logged-in user's role: action buttons (Delete, Scale, Restart, YAML Edit/Apply) hidden or disabled for Viewers. User management section only visible to Admins. Current user's role shown in the user menu. |
+| **User profile** | Medium | Logged-in users can change their own password and display name. Admins can change any user's password and role. |
+| **Session management** | Medium | Token refresh flow, logout endpoint that invalidates refresh token. Optional: active sessions list for admins. |
 
-This phase ensures KubeBolt is safe for multi-user production environments without requiring the full SaaS platform (Phase 3.0). The admin installs with full-access ServiceAccount, but each user's view is scoped to their own Kubernetes RBAC permissions.
+#### Administration UI structure (Grafana-inspired)
+
+Sidebar section under **Administration** (Admin role only):
+
+```
+Administration
+├── Users and access
+│   ├── Users              ← User list + CRUD (Phase 1.7)
+│   ├── Teams              ← Team management (deferred)
+│   ├── Service accounts   ← API tokens for automation (deferred)
+│   └── Authentication     ← SSO provider config (deferred)
+└── General
+    └── Settings           ← App-level settings (deferred)
+```
+
+Only **Users** is implemented in the initial Phase 1.7 release. The remaining items are listed in the sidebar as "Coming soon" placeholders to establish the navigation structure.
+
+#### Configuration (env vars)
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `KUBEBOLT_AUTH_ENABLED` | No | `true` | Enable/disable authentication. When `false`, KubeBolt works as today with no login. |
+| `KUBEBOLT_ADMIN_PASSWORD` | No | (auto-generated) | Initial admin password. If not set, a random 16-char password is generated and printed to stdout at first boot. |
+| `KUBEBOLT_JWT_SECRET` | No | (auto-generated) | Secret for signing JWT tokens. Auto-generated if not set (persisted in the data store). Should be set explicitly in HA deployments. |
+| `KUBEBOLT_JWT_EXPIRY` | No | `15m` | Access token expiry duration. |
+| `KUBEBOLT_JWT_REFRESH_EXPIRY` | No | `7d` | Refresh token expiry duration. |
+| `KUBEBOLT_DATA_DIR` | No | `./data` | Directory for the embedded database file. |
+
+#### API endpoints
+
+| Endpoint | Method | Auth | Role | Description |
+|----------|--------|------|------|-------------|
+| `/auth/login` | POST | No | — | Authenticate with username + password, returns JWT + sets refresh cookie |
+| `/auth/refresh` | POST | Cookie | — | Refresh access token using httpOnly refresh cookie |
+| `/auth/logout` | POST | Yes | — | Invalidate refresh token, clear cookie |
+| `/auth/me` | GET | Yes | Any | Current user profile (username, email, name, role) |
+| `/auth/me/password` | PUT | Yes | Any | Change own password (requires current password) |
+| `/users` | GET | Yes | Admin | List all users with search/filter/pagination |
+| `/users` | POST | Yes | Admin | Create new user (username, email, password, role) |
+| `/users/:id` | GET | Yes | Admin | Get user details |
+| `/users/:id` | PUT | Yes | Admin | Update user (name, email, role) |
+| `/users/:id/password` | PUT | Yes | Admin | Reset user's password (admin override, no current password required) |
+| `/users/:id` | DELETE | Yes | Admin | Delete user (cannot delete self) |
+
+All existing resource endpoints remain under their current paths. The `requireConnector` middleware is unchanged. A new `requireAuth` middleware wraps all routes when auth is enabled, and a `requireRole(minRole)` middleware gates write/admin actions.
+
+#### Implementation components
+
+**Backend (Go):**
+- `internal/auth/store.go` — User store backed by embedded SQLite (`modernc.org/sqlite`, pure Go, no CGO). Schema: `users` table (id, username, email, name, password_hash, role, created_at, updated_at, last_login). Migrations on startup.
+- `internal/auth/service.go` — Auth service: `Login`, `Register`, `ChangePassword`, `ResetPassword`. Bcrypt hashing with cost 12. Admin seed logic on first boot.
+- `internal/auth/jwt.go` — JWT token generation/validation. Access token (short-lived, in Authorization header) + refresh token (long-lived, httpOnly cookie). Claims: `sub` (user ID), `username`, `role`, `exp`.
+- `internal/auth/middleware.go` — Chi middleware: `RequireAuth` (validates JWT, injects user into context), `RequireRole(role)` (checks minimum role level: Viewer < Editor < Admin).
+- `internal/api/auth_handlers.go` — HTTP handlers for `/auth/*` endpoints (login, refresh, logout, me, change password).
+- `internal/api/user_handlers.go` — HTTP handlers for `/users/*` CRUD endpoints (admin only).
+- `internal/api/router.go` — Conditional middleware: if `auth.enabled`, wrap routes with `RequireAuth`; gate mutating endpoints with `RequireRole(Editor)`, admin endpoints with `RequireRole(Admin)`.
+- `internal/config/auth.go` — Load auth config from env vars.
+- `cmd/server/main.go` — Initialize auth store, run migrations, seed admin user, print generated password if applicable.
+
+**Frontend (React):**
+- `contexts/AuthContext.tsx` — Auth state: `user`, `isAuthenticated`, `login()`, `logout()`, `refreshToken()`. Stores JWT in memory (not localStorage). Auto-refresh before expiry.
+- `components/auth/LoginPage.tsx` — Username + password form, error handling, redirect to previous page after login.
+- `components/admin/UsersPage.tsx` — User list table (Login, Email, Name, Role, Last active, Created) with search, "New user" button. Edit user modal. Role badge (color-coded). Inspired by Grafana's user management UI.
+- `components/admin/CreateUserModal.tsx` — Form: username, email, display name, password, role selector.
+- `components/admin/AdminLayout.tsx` — Administration section layout with sidebar navigation (Users, Teams placeholder, Service accounts placeholder, Authentication placeholder).
+- `components/shared/UserMenu.tsx` — Topbar user avatar/dropdown: display name, role badge, "Profile", "Change password", "Logout". Replaces the current anonymous header when auth is enabled.
+- `services/auth.ts` — API client for auth endpoints. Axios/fetch interceptor to attach JWT and handle 401 → refresh flow.
+- `hooks/useAuth.ts` — Hook wrapping AuthContext for convenience.
+- `hooks/useRequireRole.ts` — Hook that returns whether the current user has at minimum a given role. Used to conditionally render action buttons.
+- Route guards: redirect to `/login` when not authenticated. `/admin/*` routes guarded by Admin role.
+
+**Helm chart:**
+- `values.yaml` — `auth:` block with `enabled`, `adminPassword`, `existingSecret`, `jwtSecret`, `dataDir` (PVC for SQLite).
+- `templates/auth-secret.yaml` — Secret for admin password and JWT secret.
+- `templates/deployment.yaml` — Mount data volume for SQLite, inject `KUBEBOLT_AUTH_*` env vars.
+- `templates/pvc.yaml` — Optional PersistentVolumeClaim for the data directory.
+
+**Docker Compose:**
+- `docker-compose.yml` — Volume mount for `./data` directory, pass `KUBEBOLT_AUTH_*` env vars.
+- `.env.example` — Template with `KUBEBOLT_ADMIN_PASSWORD=` and `KUBEBOLT_AUTH_ENABLED=true`.
+
+#### Role enforcement matrix
+
+| Action | Viewer | Editor | Admin |
+|--------|--------|--------|-------|
+| View resources, logs, YAML, describe | ✅ | ✅ | ✅ |
+| Use Copilot | ✅ | ✅ | ✅ |
+| View topology, insights, events | ✅ | ✅ | ✅ |
+| Global search | ✅ | ✅ | ✅ |
+| Edit & apply YAML | ❌ | ✅ | ✅ |
+| Scale deployments/statefulsets | ❌ | ✅ | ✅ |
+| Restart workloads | ❌ | ✅ | ✅ |
+| Port-forward | ❌ | ✅ | ✅ |
+| Pod terminal (exec) | ❌ | ✅ | ✅ |
+| Delete resources | ❌ | ❌ | ✅ |
+| Manage users | ❌ | ❌ | ✅ |
+| Switch clusters | ✅ | ✅ | ✅ |
+| Configure clusters (add/remove) | ❌ | ❌ | ✅ |
+| Configure Copilot settings | ❌ | ❌ | ✅ |
+
+#### Deferred enhancements (within Phase 1.7)
+
+These features extend the auth system but are not required for the initial release:
+
+| Feature | Description |
+|---------|-------------|
+| **OAuth2/OIDC providers** | Login via GitHub, Google, Azure AD, Keycloak, any OIDC provider. Authentication page with provider cards (enabled/disabled status). Configured via env vars or admin UI. |
+| **Kubernetes Impersonation** | After authentication, KubeBolt impersonates the user when calling the K8s API. Each user sees only what their K8s RBAC permits. The ServiceAccount becomes a ceiling, not the effective permission set. |
+| **Teams** | Group users into teams. Assign roles at team level. Team members inherit the team's role (highest wins). |
+| **Service accounts** | API tokens for automation/CI pipelines. CRUD with expiry, role assignment, last-used tracking. |
+| **Organizations** | Multi-tenant isolation. Users belong to one or more orgs, each org has its own set of clusters and users. |
+| **Audit log** | Record who accessed what: user, action, resource, timestamp, source IP. Searchable audit log page for Admins. Configurable retention. |
+| **Per-user RBAC (K8s-backed)** | When Kubernetes Impersonation is active, UI adapts to the impersonated user's K8s permissions per-user instead of per-ServiceAccount. |
 
 ### Phase 1.8 — AI Copilot
 

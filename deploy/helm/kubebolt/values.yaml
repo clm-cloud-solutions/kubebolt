@@ -60,6 +60,21 @@ rbac:
 # Number of replicas
 replicaCount: 1
 
+# Authentication configuration
+# Built-in username/password auth with roles (Admin, Editor, Viewer).
+# Enabled by default. Set enabled: false for open access (no login required).
+auth:
+  enabled: true
+  adminPassword: ""       # initial admin password — generated if empty (printed to logs)
+  jwtSecret: ""           # JWT signing secret — generated if empty (tokens won't survive restarts)
+  existingSecret: ""      # name of an existing Secret containing 'admin-password' and/or 'jwt-secret'
+  persistence:
+    enabled: true
+    size: 1Gi
+    storageClass: ""      # uses cluster default if empty
+    accessModes:
+      - ReadWriteOnce
+
 # AI Copilot configuration
 # The copilot uses the user's own LLM provider API key — no KubeBolt-managed
 # AI service. Leave apiKey empty to disable the copilot entirely. KubeBolt

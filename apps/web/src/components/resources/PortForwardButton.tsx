@@ -7,6 +7,7 @@ interface PortForwardButtonProps {
   pod: string
   container?: string
   remotePort: number
+  disabled?: boolean
 }
 
 interface ActiveForward {
@@ -14,7 +15,7 @@ interface ActiveForward {
   url: string
 }
 
-export function PortForwardButton({ namespace, pod, container, remotePort }: PortForwardButtonProps) {
+export function PortForwardButton({ namespace, pod, container, remotePort, disabled }: PortForwardButtonProps) {
   const [forward, setForward] = useState<ActiveForward | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -90,8 +91,9 @@ export function PortForwardButton({ namespace, pod, container, remotePort }: Por
     <span className="inline-flex flex-col items-start">
       <button
         onClick={startForward}
-        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-kb-elevated text-[10px] font-mono text-kb-text-secondary border border-kb-border hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
-        title={`Forward port ${remotePort}`}
+        disabled={disabled}
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-kb-elevated text-[10px] font-mono text-kb-text-secondary border border-kb-border hover:border-kb-border-active hover:text-kb-text-primary transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:border-kb-border disabled:hover:text-kb-text-secondary"
+        title={disabled ? 'Editor role required' : `Forward port ${remotePort}`}
       >
         <ExternalLink className="w-3 h-3" />
         {remotePort}

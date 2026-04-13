@@ -1,0 +1,17 @@
+{{- if and .Values.auth.enabled .Values.auth.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "kubebolt.fullname" . }}-data
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.auth.persistence.accessModes | nindent 4 }}
+  resources:
+    requests:
+      storage: {{ .Values.auth.persistence.size }}
+  {{- if .Values.auth.persistence.storageClass }}
+  storageClassName: {{ .Values.auth.persistence.storageClass | quote }}
+  {{- end }}
+{{- end }}

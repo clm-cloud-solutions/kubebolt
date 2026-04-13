@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
@@ -19,6 +20,7 @@ type handlers struct {
 	wsHub         *websocket.Hub
 	pfManager     *PortForwardManager
 	copilotConfig config.CopilotConfig
+	authHandlers  *auth.Handlers
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
@@ -364,6 +366,14 @@ func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Validate auth for WebSocket connections (token via query param)
+	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
+		token := r.URL.Query().Get("token")
+		if h.authHandlers.ValidateWSToken(token) == nil {
+			http.Error(w, "authentication required", http.StatusUnauthorized)
+			return
+		}
+	}
 	websocket.ServeWS(h.wsHub, w, r)
 }
 

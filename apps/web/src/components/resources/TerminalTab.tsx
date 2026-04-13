@@ -4,6 +4,8 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useDeploymentPods, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
+import { getAccessToken } from '@/services/api'
+import { useAuth } from '@/contexts/AuthContext'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import type { ResourceItem } from '@/types/kubernetes'
@@ -19,6 +21,9 @@ function buildExecUrl(namespace: string, name: string, container: string, shell:
   const params = new URLSearchParams()
   if (container) params.set('container', container)
   if (shell) params.set('shell', shell)
+  // Attach auth token for WebSocket authentication
+  const token = getAccessToken()
+  if (token) params.set('token', token)
   return `${proto}//${window.location.host}/ws/exec/${namespace}/${name}?${params}`
 }
 
@@ -60,8 +65,9 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
   const [sessionActive, setSessionActive] = useState(false)
   const [sessionKey, setSessionKey] = useState(0)
 
+  const { hasRole } = useAuth()
   const podStatus = String(item.status ?? '').toLowerCase()
-  const canExec = podStatus === 'running'
+  const canExec = podStatus === 'running' && hasRole('editor')
 
   function handleConnect() {
     setSessionKey(k => k + 1)
@@ -121,7 +127,9 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
         )}
 
         {!canExec && (
-          <span className="text-[10px] font-mono text-status-warn">Pod is not running</span>
+          <span className="text-[10px] font-mono text-status-warn">
+            {!hasRole('editor') ? 'Editor role required for terminal access' : 'Pod is not running'}
+          </span>
         )}
 
         {sessionActive && (
@@ -150,7 +158,7 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
           className="rounded-[10px] border border-kb-border flex items-center justify-center text-kb-text-tertiary text-xs font-mono"
           style={{ backgroundColor: '#0d1117', minHeight: '400px' }}
         >
-          {canExec ? 'Click Connect to start a terminal session' : 'Pod must be running to use the terminal'}
+          {canExec ? 'Click Connect to start a terminal session' : !hasRole('editor') ? 'Editor role required for terminal access' : 'Pod must be running to use the terminal'}
         </div>
       )}
     </div>
