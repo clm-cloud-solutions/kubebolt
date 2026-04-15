@@ -5,29 +5,31 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KubeBolt — Documentation</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 :root{
-  --bg:#09090b;--surface:#111113;--card:#18181b;
-  --elevated:#27272a;--border:#27272a;--border-subtle:#1e1e21;
-  --text:#fafafa;--text-2:#a1a1aa;--text-3:#71717a;--text-4:#52525b;
-  --amber:#fbbf24;--amber-muted:#92710a;--amber-dim:rgba(251,191,36,0.10);
+  --bg:oklch(0.07 0.025 290);--surface:oklch(0.10 0.02 285);--card:oklch(0.10 0.02 285);
+  --elevated:oklch(0.14 0.015 285);--border:oklch(0.98 0 0 / 0.1);--border-subtle:oklch(0.98 0 0 / 0.06);
+  --text:oklch(0.98 0 0);--text-2:oklch(0.75 0 0);--text-3:oklch(0.55 0 0);--text-4:oklch(0.40 0 0);
+  --emerald:oklch(0.72 0.25 155);--emerald-bright:oklch(0.78 0.22 155);
+  --emerald-dim:oklch(0.72 0.25 155 / 0.14);--emerald-glow:oklch(0.72 0.25 155 / 0.40);
   --green:#34d399;--green-dim:rgba(52,211,153,0.10);
-  --red:#f87171;--blue:#60a5fa;
+  --red:#f87171;--red-dim:rgba(248,113,113,0.10);
+  --blue:#60a5fa;--blue-dim:rgba(96,165,250,0.10);
   --sidebar-w:260px;
 }
 html{scroll-behavior:smooth}
-body{font-family:'Instrument Sans',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased}
-a{color:var(--amber);text-decoration:none}a:hover{text-decoration:underline}
-code{font-family:'IBM Plex Mono',monospace;font-size:.875em;padding:1px 6px;border-radius:4px;background:var(--elevated);color:var(--amber)}
+body{font-family:'Geist',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased}
+a{color:var(--emerald);text-decoration:none}a:hover{text-decoration:underline}
+code{font-family:'Geist Mono',monospace;font-size:.875em;padding:1px 6px;border-radius:4px;background:var(--elevated);color:var(--emerald)}
 
 /* ─── Top Bar ─── */
 .topbar{position:fixed;top:0;left:0;right:0;z-index:100;height:52px;
   background:rgba(9,9,11,.88);backdrop-filter:blur(16px) saturate(180%);
   border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;padding:0 20px}
 .topbar .logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;color:var(--text);text-decoration:none;letter-spacing:-.02em}
-.logo-m{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#fbbf24,#f59e0b)}
+.logo-m{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--emerald-bright),var(--emerald));box-shadow:0 0 12px var(--emerald-glow)}
 .logo-m svg{color:#000}
 .topbar .sep{color:var(--text-4);margin:0 10px;font-weight:300}
 .topbar .docs-label{color:var(--text-3);font-size:14px;font-weight:500}
@@ -46,7 +48,7 @@ code{font-family:'IBM Plex Mono',monospace;font-size:.875em;padding:1px 6px;bord
 .sb-link{display:block;padding:5px 20px 5px 24px;font-size:13px;color:var(--text-3);
   text-decoration:none;transition:all .12s;border-left:2px solid transparent;cursor:pointer}
 .sb-link:hover{color:var(--text-2);background:rgba(255,255,255,.02);text-decoration:none}
-.sb-link.active{color:var(--amber);border-left-color:var(--amber);background:var(--amber-dim)}
+.sb-link.active{color:var(--emerald);border-left-color:var(--emerald);background:var(--emerald-dim)}
 
 /* ─── Content ─── */
 .content{margin-left:var(--sidebar-w);padding:80px 48px 64px;max-width:calc(var(--sidebar-w) + 800px)}
@@ -61,14 +63,14 @@ code{font-family:'IBM Plex Mono',monospace;font-size:.875em;padding:1px 6px;bord
 .md p{font-size:14px;color:var(--text-2);margin-bottom:14px;line-height:1.75}
 .md ul{list-style:none;padding:0;margin-bottom:18px}
 .md li{font-size:14px;color:var(--text-2);padding:3px 0 3px 20px;position:relative;line-height:1.7}
-.md li::before{content:'›';position:absolute;left:4px;color:var(--amber);font-weight:700;font-size:14px}
+.md li::before{content:'›';position:absolute;left:4px;color:var(--emerald);font-weight:700;font-size:14px}
 .md strong{color:var(--text);font-weight:600}
-.md pre{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.85;
-  padding:16px 20px;border-radius:10px;background:var(--card);border:1px solid var(--border);
+.md pre{font-family:'Geist Mono',monospace;font-size:12.5px;line-height:1.85;
+  padding:16px 20px;border-radius:10px;background:oklch(0.06 0.02 285);border:1px solid var(--border);
   overflow-x:auto;color:var(--text-2);margin-bottom:18px}
-.md pre .g{color:var(--green)}.md pre .d{color:var(--text-4)}.md pre .a{color:var(--amber)}
-.md .callout{padding:14px 18px;border-radius:8px;border-left:3px solid var(--amber);
-  background:var(--amber-dim);font-size:13px;color:var(--text-2);margin-bottom:18px;line-height:1.65}
+.md pre .g{color:var(--green)}.md pre .d{color:var(--text-4)}.md pre .a{color:var(--emerald)}
+.md .callout{padding:14px 18px;border-radius:8px;border-left:3px solid var(--emerald);
+  background:var(--emerald-dim);font-size:13px;color:var(--text-2);margin-bottom:18px;line-height:1.65}
 .md .callout-blue{border-left-color:var(--blue);background:rgba(96,165,250,.08)}
 .md table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:13px}
 .md th{text-align:left;padding:8px 14px;border-bottom:2px solid var(--border);
