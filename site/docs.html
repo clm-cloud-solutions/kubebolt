@@ -199,26 +199,70 @@ code{font-family:'Geist Mono',monospace;font-size:.875em;padding:1px 6px;border-
 <h1>Quick Start</h1>
 <p class="page-desc">Get KubeBolt running in under 2 minutes.</p>
 
-<h2>Fastest: Single Binary</h2>
-<pre><span class="d"># Download and install</span>
-<span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
+<h2>Fastest: Helm Chart</h2>
+<pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
 
-<span class="d"># Run — opens http://localhost:3000</span>
-<span class="g">kubebolt</span></pre>
-<p>KubeBolt auto-detects your default kubeconfig at <code>~/.kube/config</code> and connects to the current context.</p>
+<span class="g">kubectl port-forward svc/kubebolt 3000:80</span></pre>
+<p>Open <code>http://localhost:3000</code> and log in with the default admin user.</p>
 
-<div class="callout"><strong>Default admin password:</strong> On first boot, KubeBolt seeds a default <code>admin</code> user and prints the generated password to the server logs. Check the terminal output or container logs (<code>docker logs kubebolt</code>) to retrieve it. Change this password immediately after first login.</div>
+<div class="callout"><strong>Default admin password:</strong> On first boot, KubeBolt seeds a default <code>admin</code> user and prints the generated password to the server logs. Check with <code>kubectl logs deployment/kubebolt-api | grep "Generated admin password"</code>. You can also set it explicitly: <code>--set auth.adminPassword=YourPassword</code>.</div>
 
-<h2>Docker (no install)</h2>
-<pre><span class="g">docker run -p 3000:3000 \
-  -v ~/.kube:/root/.kube:ro \
-  ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
+<h2>Docker Compose</h2>
+<pre><span class="d"># Remote clusters (EKS, GKE, AKS)</span>
+<span class="g">kubectl config use-context my-cluster
+cd deploy && docker compose up -d</span>
+
+<span class="d"># Docker Desktop K8s (needs kubeconfig rewrite)</span>
+<span class="g">./deploy/docker-kubeconfig.sh
+cd deploy && docker compose up -d</span></pre>
+<p>Frontend at <code>http://localhost:3000</code>. Nginx proxies <code>/api</code> and <code>/ws</code> to the Go backend.</p>
 
 <h2>Helm (in-cluster)</h2>
 <pre><span class="g">helm install kubebolt \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
 
-<span class="g">kubectl port-forward svc/kubebolt 3000:3000</span></pre>
+<span class="g">kubectl port-forward svc/kubebolt 3000:80</span></pre>
+
+<h2>Local Development</h2>
+<p>Requires Go 1.25+ and Node 20+.</p>
+<pre><span class="d"># Backend (port 8080)</span>
+<span class="g">cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config</span>
+
+<span class="d"># Frontend (port 5173, proxies /api and /ws to backend)</span>
+<span class="g">cd apps/web && npm install && npm run dev</span></pre>
+</div></div>
+
+<!-- ═══ Installation ═══ -->
+<div class="doc-page" id="pg-installation"><div class="md">
+<h1>Installation Methods</h1>
+<p class="page-desc">Multiple ways to install KubeBolt, from Docker Compose to in-cluster Helm deployment.</p>
+
+<h2>Helm Chart (recommended for Kubernetes)</h2>
+<p>Production deployment inside your cluster. OCI-based chart on GitHub Container Registry. Also listed on Artifact Hub.</p>
+<pre><span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
+
+<span class="g">kubectl port-forward svc/kubebolt 3000:80</span>
+
+<span class="d"># With Ingress and custom admin password</span>
+<span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.adminPassword=YourSecurePassword \
+  --set ingress.enabled=true \
+  --set ingress.host=kubebolt.example.com</span></pre>
+<p>The chart creates a ClusterRole with full read permissions, a ServiceAccount, and the KubeBolt deployment. Configurable values include image tags, resource limits, Ingress, auth, and RBAC settings.</p>
+
+<h2>Docker Compose</h2>
+<p>Full stack with separate API and web containers. Multi-arch images (amd64/arm64).</p>
+<pre><span class="d"># Remote clusters (EKS, GKE, AKS)</span>
+<span class="g">kubectl config use-context my-cluster
+cd deploy && docker compose up -d</span>
+
+<span class="d"># Docker Desktop K8s (needs kubeconfig rewrite)</span>
+<span class="g">./deploy/docker-kubeconfig.sh
+cd deploy && docker compose up -d</span></pre>
+<p>Frontend at <code>http://localhost:3000</code>. Admin password printed to logs (<code>docker compose logs api</code>).</p>
+<div class="callout-blue callout"><strong>EKS note:</strong> The compose file mounts <code>~/.aws</code> for AWS credential access. Ensure your AWS session is active.</div>
 
 <h2>Local Development</h2>
 <p>Requires Go 1.25+ and Node 20+.</p>
@@ -228,71 +272,33 @@ code{font-family:'Geist Mono',monospace;font-size:.875em;padding:1px 6px;border-
 <span class="d"># Frontend (port 5173, proxies /api and /ws to backend)</span>
 <span class="g">cd apps/web && npm install && npm run dev</span></pre>
 
-<h2>Docker Compose (full stack)</h2>
-<pre><span class="d"># Remote clusters (EKS, GKE, AKS)</span>
-<span class="g">kubectl config use-context my-cluster
-cd deploy && docker compose up -d</span>
+<hr>
 
-<span class="d"># Docker Desktop K8s (needs kubeconfig rewrite)</span>
-<span class="g">./deploy/docker-kubeconfig.sh
-cd deploy && docker compose up -d</span></pre>
-<p>Frontend at <code>http://localhost:3000</code>. Nginx proxies <code>/api</code> and <code>/ws</code> to the Go backend.</p>
-</div></div>
+<h2>Coming Soon (Phase 1.9)</h2>
+<p>The following distribution methods are planned and documented in the <a href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/kubebolt-distribution-spec.md">distribution spec</a>.</p>
 
-<!-- ═══ Installation ═══ -->
-<div class="doc-page" id="pg-installation"><div class="md">
-<h1>Installation Methods</h1>
-<p class="page-desc">Six ways to install KubeBolt, from a single command to enterprise Kubernetes deployment.</p>
-
-<h2>Single Binary</h2>
-<p>One binary with embedded frontend assets. API server + web UI in a single process.</p>
-<pre><span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
-<span class="g">kubebolt --kubeconfig ~/.kube/config --port 3000</span></pre>
-
-<h2>Homebrew</h2>
-<p>For macOS and Linux. Automatic updates via <code>brew upgrade</code>.</p>
-<pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span>
+<h3>Single Binary</h3>
+<p>One binary with embedded frontend assets. API server + web UI in a single process. Download and run.</p>
+<pre><span class="d"># Install (auto-detects OS/arch)</span>
+<span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
 <span class="g">kubebolt</span></pre>
 
-<h2>Docker</h2>
-<p>Single container, multi-arch (amd64/arm64). Zero install on your machine.</p>
+<h3>Homebrew</h3>
+<p>For macOS and Linux. Automatic updates via <code>brew upgrade</code>.</p>
+<pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span></pre>
+
+<h3>Docker Single-Container</h3>
+<p>Single image (no nginx, no compose). Zero install on your machine.</p>
 <pre><span class="g">docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
-<div class="callout-blue callout"><strong>EKS note:</strong> Add <code>-v ~/.aws:/root/.aws:ro</code> and <code>-e AWS_PROFILE=your-profile</code> for AWS credential access.</div>
 
-<h2>Helm Chart</h2>
-<p>Production deployment inside your cluster. OCI-based chart on GitHub Container Registry. Also listed on Artifact Hub.</p>
-<pre><span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
+<h3>kubectl Plugin (krew)</h3>
+<p>Run KubeBolt as a kubectl subcommand.</p>
+<pre><span class="g">kubectl krew install kubebolt
+kubectl kubebolt</span></pre>
 
-<span class="d"># With Ingress</span>
-<span class="g">helm install kubebolt \
-  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --set ingress.enabled=true \
-  --set ingress.host=kubebolt.example.com</span></pre>
-<p>The chart creates a ClusterRole with full read permissions, a ServiceAccount, and the KubeBolt deployment. Configurable values include image tags, resource limits, Ingress, and RBAC settings.</p>
-
-<h2>Kubernetes Operator</h2>
-<p>Declarative lifecycle management via a <code>KubeBolt</code> CRD. The operator handles upgrades, configuration changes, and self-healing.</p>
-<pre><span class="d"># Install the operator</span>
-<span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span>
-
-<span class="d"># Create a KubeBolt instance</span>
-<span class="g">cat &lt;&lt;EOF | kubectl apply -f -
-apiVersion: kubebolt.io/v1alpha1
-kind: KubeBolt
-metadata:
-  name: kubebolt
-spec:
-  replicas: 1
-  ingress:
-    enabled: true
-    host: kubebolt.example.com
-EOF</span></pre>
-
-<h2>kubectl Plugin (krew)</h2>
-<p>Install via <a href="https://krew.sigs.k8s.io/">krew</a> and run as a kubectl subcommand.</p>
-<pre><span class="g">kubectl krew install kubebolt</span>
-<span class="g">kubectl kubebolt</span>
-<span class="g">kubectl kubebolt --context production-eks</span></pre>
+<h3>Kubernetes Operator</h3>
+<p>Declarative lifecycle management via <code>KubeBolt</code> CRD.</p>
+<pre><span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span></pre>
 </div></div>
 
 <!-- ═══ Architecture ═══ -->
@@ -586,12 +592,11 @@ KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
 
 <h2>Disabling Authentication</h2>
 <p>To run KubeBolt without authentication (e.g., behind a VPN or for local development):</p>
-<pre><span class="d"># Environment variable</span>
-<span class="g">KUBEBOLT_AUTH_ENABLED=false kubebolt</span>
+<pre><span class="d"># Local development</span>
+<span class="g">KUBEBOLT_AUTH_ENABLED=false go run cmd/server/main.go --kubeconfig ~/.kube/config</span>
 
-<span class="d"># Docker</span>
-<span class="g">docker run -p 3000:3000 -e KUBEBOLT_AUTH_ENABLED=false \
-  -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt</span>
+<span class="d"># Docker Compose (set in deploy/.env)</span>
+<span class="g">KUBEBOLT_AUTH_ENABLED=false</span>
 
 <span class="d"># Helm</span>
 <span class="g">helm install kubebolt \
@@ -695,12 +700,10 @@ POST /api/v1/clusters/switch       → { "context": "production-eks" }</pre>
 <li><strong>Pod Identity</strong> — newer EKS authentication method, also supported</li>
 <li><strong>AWS CLI</strong> — for local/Docker deployment, mount <code>~/.aws</code> with active SSO session</li>
 </ul>
-<h2>Docker Deployment</h2>
-<pre><span class="g">docker run -p 3000:3000 \
-  -v ~/.kube:/root/.kube:ro \
-  -v ~/.aws:/root/.aws:ro \
-  -e AWS_PROFILE=my-profile \
-  ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
+<h2>Docker Compose</h2>
+<p>The compose file already mounts <code>~/.aws</code> for EKS token generation. Ensure your AWS profile/SSO session is active:</p>
+<pre><span class="g">kubectl config use-context my-eks-cluster
+cd deploy && docker compose up -d</span></pre>
 <h2>Helm with ALB Ingress</h2>
 <pre><span class="g">helm install kubebolt \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
