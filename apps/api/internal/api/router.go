@@ -39,10 +39,12 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(JSONContentType)
 
-		// --- Public auth routes (no JWT required) ---
+		// --- Public routes (no JWT required) ---
 		r.Get("/auth/config", authHandlers.GetAuthConfig)
 		r.Post("/auth/login", authHandlers.Login)
 		r.Post("/auth/refresh", authHandlers.Refresh)
+		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
+		r.Get("/copilot/config", h.HandleCopilotConfig)
 
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
@@ -67,9 +69,6 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			// Cluster management — always available, no active connector required
 			r.Get("/clusters", h.listClusters)
 			r.Post("/clusters/switch", h.switchCluster)
-
-			// Copilot config — available even when no cluster is connected
-			r.Get("/copilot/config", h.HandleCopilotConfig)
 
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {

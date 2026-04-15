@@ -1,3 +1,4 @@
+import { getAccessToken } from '@/services/api'
 import type { CopilotMessage, CopilotStreamEvent } from './types'
 
 // Strip transient UI fields before sending to backend.
@@ -28,9 +29,13 @@ export async function* sendCopilotChat(
   currentPath: string,
   signal?: AbortSignal,
 ): AsyncGenerator<CopilotStreamEvent> {
+  const token = getAccessToken()
   const res = await fetch('/api/v1/copilot/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify({
       messages: serializeMessages(messages),
       currentPath,
