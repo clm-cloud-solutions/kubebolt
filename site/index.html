@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KubeBolt — Instant Kubernetes Monitoring & Management</title>
+<meta name="description" content="Open-source Kubernetes monitoring platform. Full cluster visibility in under 2 minutes. No agents, no Prometheus. 23 resource views, AI copilot, cluster topology map, built-in authentication.">
+<meta property="og:title" content="KubeBolt — Instant Kubernetes Monitoring & Management">
+<meta property="og:description" content="Full cluster visibility in under 2 minutes. Open source, MIT licensed.">
+<meta property="og:image" content="https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-dashboard.webp">
+<meta property="og:type" content="website">
+<link rel="icon" href="https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png" type="image/png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:oklch(0.07 0.025 290);
+  --surface:oklch(0.10 0.02 285);
+  --card:oklch(0.10 0.02 285);
+  --elevated:oklch(0.14 0.015 285);
+  --border:oklch(0.98 0 0 / 0.1);
+  --border-subtle:oklch(0.98 0 0 / 0.06);
+  --text:oklch(0.98 0 0);
+  --text-2:oklch(0.75 0 0);
+  --text-3:oklch(0.55 0 0);
+  --text-4:oklch(0.40 0 0);
+  --emerald:oklch(0.72 0.25 155);
+  --emerald-bright:oklch(0.78 0.22 155);
+  --emerald-dim:oklch(0.72 0.25 155 / 0.14);
+  --emerald-glow:oklch(0.72 0.25 155 / 0.40);
+  --emerald-glow-strong:oklch(0.72 0.25 155 / 0.55);
+  --primary:oklch(0.6 0.22 265);
+  --accent:oklch(0.65 0.25 240);
+  --green:#34d399;--green-dim:rgba(52,211,153,0.10);
+  --red:#f87171;--red-dim:rgba(248,113,113,0.10);
+  --blue:#60a5fa;--blue-dim:rgba(96,165,250,0.10);
+  --amber:#fbbf24;--amber-dim:rgba(251,191,36,0.10);
+}
+
+html{scroll-behavior:smooth}
+body{font-family:'Geist',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}
+code{font-family:'Geist Mono',monospace;font-size:.875em;padding:1px 6px;border-radius:4px;background:var(--elevated);color:var(--emerald)}
+.container{max-width:1080px;margin:0 auto;padding:0 24px}
+section{padding:96px 0}
+
+/* Noise overlay */
+body::before{content:'';position:fixed;inset:0;z-index:9999;pointer-events:none;opacity:0.03;
+  background:url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size:256px}
+
+/* Typography */
+.label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;color:var(--emerald);margin-bottom:10px;display:block}
+.heading{font-size:clamp(26px,3.5vw,36px);font-weight:700;letter-spacing:-0.025em;margin-bottom:10px}
+.sub{font-size:15px;color:var(--text-2);max-width:480px;line-height:1.65}
+.center{text-align:center}.center .sub{margin:0 auto}
+
+/* Buttons */
+.btn{padding:11px 24px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;font-family:inherit;
+  transition:all 0.2s;display:inline-flex;align-items:center;gap:8px;text-decoration:none}
+.btn-em{background:linear-gradient(135deg,var(--emerald-bright),var(--emerald));color:oklch(0.07 0.025 290);box-shadow:0 0 20px oklch(0.72 0.25 155/0.2)}
+.btn-em:hover{filter:brightness(1.15);transform:translateY(-2px);box-shadow:0 4px 20px var(--emerald-glow),0 8px 40px var(--emerald-glow)}
+.btn-o{background:transparent;color:var(--text-2);border:1px solid var(--border)}.btn-o:hover{color:var(--text);border-color:oklch(0.72 0.25 155/0.3);background:oklch(0.72 0.25 155/0.06)}
+.btn-sm{padding:7px 16px;font-size:13px;border-radius:7px}
+
+/* Nav */
+nav{position:fixed;top:0;left:0;right:0;z-index:100;background:oklch(0.07 0.025 290 / 0.82);backdrop-filter:blur(16px) saturate(180%);border-bottom:1px solid var(--border-subtle)}
+.nav-i{display:flex;align-items:center;justify-content:space-between;max-width:1080px;margin:0 auto;padding:12px 24px}
+.logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;letter-spacing:-.02em}
+.logo-m{width:28px;height:28px;border-radius:7px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,var(--emerald-bright),var(--emerald));box-shadow:0 0 16px oklch(0.72 0.25 155/0.3)}
+.logo-m svg{color:oklch(0.07 0.025 290)}
+.nav-r{display:flex;gap:4px;align-items:center}
+.nav-a{padding:6px 14px;font-size:13px;color:var(--text-3);border-radius:6px;transition:all .2s;font-weight:450;border:1px solid transparent}
+.nav-a:hover{color:var(--text-2);background:oklch(0.98 0 0/0.04);border-color:oklch(0.98 0 0/0.06)}
+
+/* Hero */
+.hero{padding:150px 0 80px;position:relative;overflow:hidden}
+.hero-c{max-width:700px;margin:0 auto;text-align:center;position:relative;z-index:1}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:5px 14px 5px 6px;border-radius:100px;font-size:12px;font-weight:500;
+  color:var(--text-2);border:1px solid var(--border);margin-bottom:28px;background:var(--surface)}
+.pill .tag{background:var(--emerald);color:oklch(0.07 0.025 290);padding:2px 8px;border-radius:100px;font-weight:600;font-size:11px;box-shadow:0 0 12px oklch(0.72 0.25 155/0.3)}
+.hero h1{font-size:clamp(36px,5.5vw,58px);font-weight:800;line-height:1.08;letter-spacing:-.04em;margin-bottom:18px}
+.hero .hs{font-size:17px;color:var(--text-2);line-height:1.65;max-width:520px;margin:0 auto 32px}
+.hero-b{display:flex;gap:10px;justify-content:center;flex-wrap:wrap}
+
+/* Hero flares */
+@keyframes flare-pulse{0%,100%{opacity:0.7;transform:scale(1)}50%{opacity:1;transform:scale(1.18)}}
+.hero-flare{position:absolute;pointer-events:none;border-radius:50%;filter:blur(35px);animation:flare-pulse 4s ease-in-out infinite}
+
+/* Terminal */
+.hero-code{margin:48px auto 0;max-width:480px;text-align:left;border-radius:16px;overflow:hidden;position:relative;z-index:1;
+  background:var(--card);border:1px solid var(--border);
+  box-shadow:0 0 0 1px oklch(0.60 0.22 155/0.05),0 20px 50px -12px oklch(0 0 0/0.4),0 0 80px -20px var(--emerald-glow)}
+.ch{display:flex;align-items:center;gap:6px;padding:10px 14px;background:oklch(0.08 0.02 285);border-bottom:1px solid var(--border-subtle)}
+.ch .dots{display:flex;gap:5px}.ch .dot{width:10px;height:10px;border-radius:50%}
+.ch .lbl{font-size:11px;color:var(--text-4);margin-left:auto;font-family:'Geist Mono',monospace}
+.cb{padding:16px 20px;font-family:'Geist Mono',monospace;font-size:12.5px;line-height:1.9}
+.cb .g{color:var(--green)}.cb .d{color:var(--text-4)}.cb .em{color:var(--emerald)}
+
+/* Metrics */
+.met{display:flex;justify-content:center;gap:1px;margin-top:56px;border-radius:12px;overflow:hidden;border:1px solid var(--border);max-width:750px;margin-left:auto;margin-right:auto;
+  background:var(--border)}
+.mc{flex:1;padding:20px;text-align:center;background:var(--surface)}
+.mc .v{font-family:'Geist Mono',monospace;font-size:20px;font-weight:600;color:var(--emerald)}
+.mc .l{font-size:11px;color:var(--text-3);margin-top:4px;letter-spacing:0.02em}
+
+/* Glass Card */
+.glass-card{
+  background:var(--surface);backdrop-filter:blur(20px) saturate(1.5);border:1px solid var(--border);
+  border-radius:20px;transition:border-color .3s,box-shadow .3s;position:relative;overflow:hidden;
+  box-shadow:inset 0 1px 0 oklch(0.98 0 0/0.06),0 4px 16px -2px oklch(0 0 0/0.4),0 12px 40px -8px oklch(0 0 0/0.3)}
+.glass-card:hover{border-color:oklch(0.98 0 0/0.2);
+  box-shadow:inset 0 1px 0 oklch(0.98 0 0/0.08),0 6px 20px -2px oklch(0 0 0/0.5),0 16px 48px -8px oklch(0 0 0/0.35)}
+.glass-card::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;transition:opacity .3s;opacity:0.06;
+  background:linear-gradient(135deg,var(--emerald-glow) 0%,transparent 40%,transparent 60%,oklch(0.60 0.22 155/0.15) 100%)}
+.glass-card:hover::before{opacity:0.12}
+
+/* Feature Grid */
+.feat-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px}
+.feat-card{padding:32px;border-radius:16px;position:relative;overflow:hidden;transition:all .3s;
+  background:var(--surface);border:1px solid var(--border);cursor:default}
+.feat-card::before{content:'';position:absolute;inset:0;border-radius:inherit;pointer-events:none;transition:opacity .3s;opacity:0;
+  background:radial-gradient(circle at 30% 0%,var(--emerald-glow),transparent 60%)}
+.feat-card:hover::before{opacity:0.15}
+.feat-card::after{content:'';position:absolute;top:0;left:20%;right:20%;height:1px;
+  background:linear-gradient(90deg,transparent,var(--emerald),transparent);opacity:0;transition:opacity .3s}
+.feat-card:hover::after{opacity:0.6}
+.feat-card:hover{border-color:oklch(0.72 0.25 155/0.2);transform:translateY(-3px);
+  box-shadow:0 8px 30px oklch(0 0 0/0.3),0 0 50px -10px var(--emerald-glow)}
+.feat-card .icon-wrap{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+  margin-bottom:16px;background:var(--emerald-dim);border:1px solid oklch(0.60 0.22 155/0.15);transition:all .3s}
+.feat-card:hover .icon-wrap{background:oklch(0.60 0.22 155/0.2);border-color:oklch(0.60 0.22 155/0.3);
+  box-shadow:0 0 20px var(--emerald-glow)}
+.feat-card .icon-wrap svg{color:var(--emerald);transition:transform .3s}
+.feat-card:hover .icon-wrap svg{transform:scale(1.1)}
+.feat-card h3{font-size:15px;font-weight:600;margin-bottom:6px;letter-spacing:-.01em}
+.feat-card p{font-size:13px;color:var(--text-3);line-height:1.65}
+
+/* Install Tabs */
+.it{display:flex;justify-content:center;gap:4px;margin-bottom:32px;background:var(--surface);border:1px solid var(--border);
+  border-radius:9px;padding:3px;max-width:max-content;margin-left:auto;margin-right:auto;flex-wrap:wrap}
+.itb{padding:7px 16px;border-radius:7px;font-size:13px;font-weight:500;cursor:pointer;background:transparent;border:none;
+  color:var(--text-3);font-family:inherit;transition:all .15s;white-space:nowrap}
+.itb:hover{color:var(--text-2)}.itb.on{background:var(--card);color:var(--emerald);box-shadow:0 1px 3px oklch(0 0 0/0.3),0 0 12px oklch(0.72 0.25 155/0.1)}
+.ip>div{display:none}.ip>div.on{display:block}
+.ib{max-width:600px;margin:0 auto}
+.ib .mt{font-size:18px;font-weight:600;margin-bottom:6px}.ib .md{font-size:14px;color:var(--text-2);margin-bottom:18px;line-height:1.6}
+.ib pre{font-family:'Geist Mono',monospace;font-size:12.5px;line-height:1.8;padding:16px 20px;border-radius:12px;
+  background:oklch(0.06 0.02 285);border:1px solid var(--border);overflow-x:auto;color:var(--text-2)}
+.ib pre .g{color:var(--green)}.ib pre .d{color:var(--text-4)}
+.badges{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+.badge{font-size:10px;font-weight:600;padding:3px 10px;border-radius:100px;text-transform:uppercase;letter-spacing:.05em}
+.be{background:var(--green-dim);color:var(--green)}.bs{background:var(--blue-dim);color:var(--blue)}.ba{background:var(--amber-dim);color:var(--amber)}
+.bp{background:var(--elevated);color:var(--text-3);border:1px solid var(--border)}
+
+/* Insights */
+.ins{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:1px;border-radius:12px;overflow:hidden;
+  border:1px solid var(--border);background:var(--border);margin-top:40px}
+.ir{display:flex;align-items:center;gap:12px;padding:14px 20px;background:var(--surface);transition:all .2s}
+.ir:hover{background:oklch(0.12 0.02 285);border-left:2px solid var(--emerald);padding-left:18px}
+.id{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+.dc{background:var(--red)}.dw{background:var(--amber)}.di{background:var(--blue)}
+.ir .n{font-size:13px;font-weight:500;flex:1}
+.ir .s{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;padding:2px 8px;border-radius:100px}
+.sc{background:var(--red-dim);color:var(--red)}.sw{background:var(--amber-dim);color:var(--amber)}.si{background:var(--blue-dim);color:var(--blue)}
+
+/* Copilot Demo */
+.cpd{max-width:600px;margin:40px auto 0;border-radius:20px;overflow:hidden;position:relative}
+
+/* Architecture */
+.af{display:flex;align-items:center;justify-content:center;gap:0;margin:40px auto 0;max-width:800px;flex-wrap:wrap}
+.ab{padding:20px 28px;border-radius:12px;border:1px solid var(--border);background:var(--surface);text-align:center;min-width:210px;
+  transition:all .3s}
+.ab:hover{border-color:oklch(0.98 0 0/0.15)}
+.ab .at{font-size:13px;font-weight:600;margin-bottom:4px}.ab .as{font-size:11px;color:var(--text-3);line-height:1.5}
+.aa{color:var(--text-4);font-size:18px;padding:0 14px;font-family:'Geist Mono',monospace}
+.tp{display:flex;flex-wrap:wrap;gap:6px;margin-top:40px;justify-content:center}
+.tp span{padding:6px 14px;border-radius:6px;font-size:11px;font-weight:500;background:var(--surface);border:1px solid var(--border);
+  color:var(--text-3);transition:all .2s}
+.tp span:hover{border-color:oklch(0.98 0 0/0.15);color:var(--text-2)}
+
+/* Auth section */
+.role-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:28px;max-width:620px;margin-left:auto;margin-right:auto}
+.role-card{padding:20px;border-radius:12px;border:1px solid var(--border);background:var(--surface);text-align:center;transition:all .3s}
+.role-card:hover{border-color:oklch(0.72 0.25 155/0.2);transform:translateY(-2px)}
+.role-card .role-name{font-size:14px;font-weight:600;margin-bottom:4px}
+.role-card .role-desc{font-size:11px;color:var(--text-3);line-height:1.5}
+.role-badge{display:inline-block;padding:2px 10px;border-radius:100px;font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+
+/* CTA */
+.cta{text-align:center;position:relative}
+
+/* Alternating section backgrounds */
+.sec-matte{background:oklch(0.09 0.018 288);border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle)}
+.sec-elevated{background:oklch(0.055 0.02 292);border-top:1px solid var(--border-subtle);border-bottom:1px solid var(--border-subtle)}
+.cta h2{font-size:clamp(26px,3.5vw,36px);font-weight:700;letter-spacing:-.025em;margin-bottom:12px}
+.cta p{font-size:15px;color:var(--text-2);margin-bottom:28px}
+
+/* Footer */
+footer{padding:32px 0;border-top:1px solid var(--border-subtle);text-align:center}
+footer p{font-size:12px;color:var(--text-4)}
+footer a{color:var(--text-3);transition:color .2s}footer a:hover{color:var(--text-2)}
+.footer-links{display:flex;gap:16px;justify-content:center;margin-bottom:8px}
+
+/* Animations */
+@keyframes enter{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
+@keyframes fade-up{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
+.enter{animation:enter .6s ease both}.d1{animation-delay:.08s}.d2{animation-delay:.16s}.d3{animation-delay:.24s}.d4{animation-delay:.32s}.d5{animation-delay:.4s}
+.scroll-reveal{animation:fade-up ease-out both;animation-timeline:view();animation-range:entry 0% entry 30%}
+@supports not (animation-timeline:view()){.scroll-reveal{animation:fade-up .6s ease-out both}}
+.stagger>*{animation:fade-up ease-out both;animation-timeline:view();animation-range:entry 0% entry 30%}
+.stagger>:nth-child(1){animation-range:entry 0% entry 25%}.stagger>:nth-child(2){animation-range:entry 5% entry 30%}
+.stagger>:nth-child(3){animation-range:entry 10% entry 35%}.stagger>:nth-child(4){animation-range:entry 15% entry 40%}
+.stagger>:nth-child(5){animation-range:entry 20% entry 45%}.stagger>:nth-child(6){animation-range:entry 25% entry 50%}
+.stagger>:nth-child(7){animation-range:entry 30% entry 55%}.stagger>:nth-child(8){animation-range:entry 35% entry 60%}
+@supports not (animation-timeline:view()){
+  .stagger>*{animation:fade-up .5s ease-out both}
+  .stagger>:nth-child(1){animation-delay:0ms}.stagger>:nth-child(2){animation-delay:80ms}
+  .stagger>:nth-child(3){animation-delay:160ms}.stagger>:nth-child(4){animation-delay:240ms}
+  .stagger>:nth-child(5){animation-delay:320ms}.stagger>:nth-child(6){animation-delay:400ms}
+  .stagger>:nth-child(7){animation-delay:480ms}.stagger>:nth-child(8){animation-delay:560ms}
+}
+@media(prefers-reduced-motion:reduce){.enter,.scroll-reveal,.stagger>*{animation:none!important;opacity:1!important}}
+
+/* Responsive */
+@media(max-width:768px){
+  .nav-a{display:none}.feat-grid{grid-template-columns:1fr}.af{flex-direction:column}.aa{transform:rotate(90deg)}
+  .met{flex-direction:column}.hero-b{flex-direction:column;align-items:center}section{padding:64px 0}
+  .it{overflow-x:auto;flex-wrap:nowrap}.role-grid{grid-template-columns:1fr}
+}
+</style>
+</head>
+<body>
+
+<!-- Nav -->
+<nav><div class="nav-i">
+  <a href="./" class="logo"><span class="logo-m"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>KubeBolt</a>
+  <div class="nav-r">
+    <a href="#features" class="nav-a">Features</a>
+    <a href="#install" class="nav-a">Install</a>
+    <a href="#auth" class="nav-a">Auth</a>
+    <a href="#copilot" class="nav-a">AI Copilot</a>
+    <a href="docs.html" class="nav-a">Docs</a>
+    <a href="https://github.com/clm-cloud-solutions/kubebolt" class="nav-a" target="_blank">GitHub</a>
+    <a href="#install" class="btn btn-em btn-sm" style="margin-left:8px">Get Started</a>
+  </div>
+</div></nav>
+
+<!-- Hero -->
+<section class="hero">
+  <span class="hero-flare" style="top:-10%;left:30%;width:500px;height:350px;background:radial-gradient(ellipse 70% 60%,oklch(0.75 0.28 155/0.7),oklch(0.65 0.22 155/0.25) 55%,transparent 80%);animation-delay:0s;animation-duration:5s"></span>
+  <span class="hero-flare" style="top:10%;right:15%;width:300px;height:200px;background:radial-gradient(ellipse,oklch(0.70 0.24 160/0.5),transparent 75%);animation-delay:1.2s;animation-duration:6s"></span>
+  <span class="hero-flare" style="bottom:0;left:10%;width:250px;height:150px;background:radial-gradient(ellipse,oklch(0.65 0.20 150/0.3),transparent 70%);animation-delay:2s;animation-duration:5s"></span>
+
+  <div class="hero-c">
+    <div class="pill enter"><span class="tag">Open Source</span> MIT Licensed &middot; CLM Cloud Solutions</div>
+    <h1 class="enter d1">See your entire Kubernetes cluster. Instantly.</h1>
+    <p class="hs enter d2">Full visibility in under 2 minutes. No agents, no Prometheus, no databases. Connect your kubeconfig and start operating with confidence.</p>
+    <div class="hero-b enter d3">
+      <a href="#install" class="btn btn-em">Get Started</a>
+      <a href="https://github.com/clm-cloud-solutions/kubebolt" target="_blank" class="btn btn-o">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23A11.509 11.509 0 0112 5.803c1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576C20.566 21.797 24 17.3 24 12c0-6.627-5.373-12-12-12z"/></svg>GitHub
+      </a>
+    </div>
+
+    <div class="hero-code enter d4">
+      <div class="ch"><div class="dots"><span class="dot" style="background:oklch(0.65 0.2 25/0.6)"></span><span class="dot" style="background:oklch(0.75 0.15 85/0.6)"></span><span class="dot" style="background:oklch(0.65 0.2 155/0.6)"></span></div><span class="lbl">terminal</span></div>
+      <div class="cb"><span class="d">$</span> helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt<br><span class="d">$</span> kubectl port-forward svc/kubebolt 3000:80<br><span class="g">Ready at http://localhost:3000</span><br><span class="g">Login: admin / (see logs for password)</span></div>
+    </div>
+
+    <div class="met enter d5">
+      <div class="mc"><div class="v">~19MB</div><div class="l">Memory</div></div>
+      <div class="mc"><div class="v">&lt;5ms</div><div class="l">API Latency</div></div>
+      <div class="mc"><div class="v">&lt;3s</div><div class="l">Startup</div></div>
+      <div class="mc"><div class="v">23</div><div class="l">Views</div></div>
+      <div class="mc"><div class="v">12</div><div class="l">Rules</div></div>
+      <div class="mc"><div class="v">16</div><div class="l">AI Tools</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features" class="sec-matte" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <span class="hero-flare" style="top:-5%;left:-10%;width:350px;height:250px;background:radial-gradient(ellipse 70% 60%,oklch(0.72 0.25 155/0.3),transparent 75%);animation-delay:0.5s;animation-duration:7s"></span>
+  <span class="hero-flare" style="bottom:-10%;right:-5%;width:280px;height:200px;background:radial-gradient(ellipse,oklch(0.68 0.22 160/0.2),transparent 70%);animation-delay:2s;animation-duration:6s"></span>
+  <div class="center scroll-reveal" style="margin-bottom:48px"><span class="label">Features</span><h2 class="heading">Built for teams without dedicated SRE</h2><p class="sub">Connect your kubeconfig. See everything. Get actionable insights. No expertise required.</p></div>
+  <div class="feat-grid stagger">
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div><h3>Zero Configuration</h3><p>No CRDs, no YAML manifests, no sidecars. Works with EKS, GKE, AKS, k3s, Docker Desktop out of the box.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg></div><h3>Multi-Cluster</h3><p>All kubeconfig contexts discovered automatically. Switch between dev, staging, and production in one click.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg></div><h3>Cluster Topology Map</h3><p>Interactive visualization with Grid and Flow layouts. Trace the path from Ingress to Pod. Namespace grouping and filtering.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg></div><h3>Insights Engine</h3><p>12 rules detect crash loops, OOM kills, CPU throttling, HPA saturation. Actionable recommendations, not raw metrics.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg></div><h3>Authentication & Roles</h3><p>Built-in login with Admin, Editor, and Viewer roles. User management UI. No OAuth setup required. JWT sessions with httpOnly cookies.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg></div><h3>RBAC-Aware</h3><p>Auto-detects permissions via SelfSubjectAccessReview. Adapts to cluster-admin, read-only, or namespace-scoped ServiceAccounts.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></div><h3>Real-Time Updates</h3><p>WebSocket-powered via Kubernetes shared informers. Pod changes, scaling events, and new insights the moment they happen.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg></div><h3>Cluster Actions</h3><p>Pod terminal, file browser, port-forward, restart, scale, YAML edit, describe, delete &mdash; all from the browser.</p></div>
+  </div>
+</div></section>
+
+<!-- Auth -->
+<section id="auth" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <span class="hero-flare" style="top:0%;right:10%;width:300px;height:200px;background:radial-gradient(ellipse,oklch(0.72 0.25 155/0.2),transparent 70%);animation-delay:1s;animation-duration:6s"></span>
+  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">Authentication</span><h2 class="heading">Secure by default. No OAuth required.</h2><p class="sub">Built-in authentication with three roles. Default admin user created on first boot. Add users from the UI.</p></div>
+  <div class="role-grid scroll-reveal">
+    <div class="role-card">
+      <span class="role-badge" style="background:var(--green-dim);color:var(--green)">Viewer</span>
+      <div class="role-name">Read-Only</div>
+      <div class="role-desc">Browse resources, logs, YAML, topology, insights. Use the AI Copilot.</div>
+    </div>
+    <div class="role-card">
+      <span class="role-badge" style="background:var(--blue-dim);color:var(--blue)">Editor</span>
+      <div class="role-name">Operate</div>
+      <div class="role-desc">Edit YAML, scale, restart workloads, port-forward, pod terminal.</div>
+    </div>
+    <div class="role-card">
+      <span class="role-badge" style="background:var(--red-dim);color:var(--red)">Admin</span>
+      <div class="role-name">Full Access</div>
+      <div class="role-desc">Delete resources, manage users, configure clusters and copilot.</div>
+    </div>
+  </div>
+  <div class="scroll-reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:20px;max-width:620px;margin-left:auto;margin-right:auto">
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">JWT + Cookies</div><div style="font-size:11px;color:var(--text-3)">httpOnly &middot; token rotation</div></div>
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">User Management</div><div style="font-size:11px;color:var(--text-3)">Grafana-style admin UI</div></div>
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">Optional</div><div style="font-size:11px;color:var(--text-3)">Disable for open access</div></div>
+  </div>
+</div></section>
+
+<!-- Install -->
+<section id="install" class="sec-elevated" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <span class="hero-flare" style="top:10%;right:-8%;width:300px;height:220px;background:radial-gradient(ellipse,oklch(0.72 0.25 155/0.2),transparent 70%);animation-delay:1s;animation-duration:6s"></span>
+  <div class="center scroll-reveal" style="margin-bottom:40px"><span class="label">Install</span><h2 class="heading">Choose your method</h2><p class="sub">From a single command to full Kubernetes-native deployment.</p></div>
+  <div class="it"><button class="itb on" onclick="st(this,'helm')">Helm</button><button class="itb" onclick="st(this,'docker')">Docker</button><button class="itb" onclick="st(this,'binary')">Binary</button><button class="itb" onclick="st(this,'brew')">Homebrew</button><button class="itb" onclick="st(this,'operator')">Operator</button><button class="itb" onclick="st(this,'krew')">kubectl</button></div>
+  <div class="ip">
+    <div class="on" id="p-helm"><div class="ib"><div class="badges"><span class="badge bs">Standard</span><span class="badge bp">In-Cluster</span></div><div class="mt">Helm Chart</div><p class="md">Production deployment. Configurable RBAC, Ingress, auth, resources. OCI chart on GHCR.</p><pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
+
+<span class="g">kubectl port-forward svc/kubebolt 3000:80</span>
+
+<span class="d"># With custom admin password</span>
+<span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.adminPassword=YourSecurePassword</span></pre></div></div>
+    <div id="p-docker"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">Any OS</span></div><div class="mt">Docker Compose</div><p class="md">Full stack with separate API and web containers. Multi-arch images (amd64/arm64).</p><pre><span class="g">cd deploy && docker compose up -d</span>
+
+<span class="d"># Open http://localhost:3000</span>
+<span class="d"># Default admin password printed to logs</span></pre></div></div>
+    <div id="p-binary"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span><span class="badge bp">Windows</span></div><div class="mt">Single Binary</div><p class="md">Download and run. API server and web UI in a single process with embedded assets.</p><pre><span class="d"># Install</span>
+<span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
+
+<span class="d"># Run (auto-detects kubeconfig)</span>
+<span class="g">kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+    <div id="p-brew"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span></div><div class="mt">Homebrew</div><p class="md">Install and update via Homebrew. Automatic version management.</p><pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span>
+<span class="g">kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+    <div id="p-operator"><div class="ib"><div class="badges"><span class="badge ba">Advanced</span><span class="badge bp">In-Cluster</span></div><div class="mt">Kubernetes Operator</div><p class="md">Declarative management via CRD. Handles upgrades, config, and self-healing.</p><pre><span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span>
+<span class="g">kubectl apply -f kubebolt-instance.yaml</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+    <div id="p-krew"><div class="ib"><div class="badges"><span class="badge bs">Standard</span><span class="badge bp">kubectl</span></div><div class="mt">kubectl Plugin (krew)</div><p class="md">Run KubeBolt as a kubectl subcommand.</p><pre><span class="g">kubectl krew install kubebolt</span>
+<span class="g">kubectl kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+  </div>
+  <p style="text-align:center;margin-top:24px;font-size:13px;color:var(--text-3)">Need help? Check the <a href="docs.html" style="color:var(--emerald);text-decoration:underline">full documentation</a>.</p>
+</div></section>
+
+<!-- Insights -->
+<section id="insights" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <span class="hero-flare" style="top:0%;left:5%;width:250px;height:180px;background:radial-gradient(ellipse,oklch(0.68 0.22 155/0.18),transparent 70%);animation-delay:0.8s;animation-duration:7s"></span>
+  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">Insights Engine</span><h2 class="heading">12 rules. Zero configuration.</h2><p class="sub">Continuous evaluation against proven heuristics. Actionable recommendations, not PromQL.</p></div>
+  <div class="ins scroll-reveal">
+    <div class="ir"><span class="id dc"></span><span class="n">Crash Loop Detected</span><span class="s sc">Critical</span></div>
+    <div class="ir"><span class="id dc"></span><span class="n">OOM Killed</span><span class="s sc">Critical</span></div>
+    <div class="ir"><span class="id dc"></span><span class="n">Zero Replicas</span><span class="s sc">Critical</span></div>
+    <div class="ir"><span class="id dc"></span><span class="n">Node Not Ready</span><span class="s sc">Critical</span></div>
+    <div class="ir"><span class="id dc"></span><span class="n">Image Pull Backoff</span><span class="s sc">Critical</span></div>
+    <div class="ir"><span class="id dw"></span><span class="n">CPU Throttle Risk</span><span class="s sw">Warning</span></div>
+    <div class="ir"><span class="id dw"></span><span class="n">Memory Pressure</span><span class="s sw">Warning</span></div>
+    <div class="ir"><span class="id dw"></span><span class="n">HPA Maxed Out</span><span class="s sw">Warning</span></div>
+    <div class="ir"><span class="id dw"></span><span class="n">PVC Pending</span><span class="s sw">Warning</span></div>
+    <div class="ir"><span class="id dw"></span><span class="n">Frequent Restarts</span><span class="s sw">Warning</span></div>
+    <div class="ir"><span class="id di"></span><span class="n">Under-Requested Resources</span><span class="s si">Info</span></div>
+    <div class="ir"><span class="id di"></span><span class="n">Evicted Pods</span><span class="s si">Info</span></div>
+  </div>
+</div></section>
+
+<!-- Copilot -->
+<section id="copilot" class="sec-matte" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <span class="hero-flare" style="top:-8%;right:20%;width:350px;height:250px;background:radial-gradient(ellipse 70% 60%,oklch(0.72 0.25 155/0.25),transparent 75%);animation-delay:0.3s;animation-duration:6s"></span>
+  <span class="hero-flare" style="bottom:-5%;left:10%;width:200px;height:150px;background:radial-gradient(ellipse,oklch(0.68 0.20 160/0.18),transparent 70%);animation-delay:1.8s;animation-duration:7s"></span>
+  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">AI Copilot</span><h2 class="heading">Talk to your cluster in natural language</h2><p class="sub">Press Cmd+J and ask anything. 16 native tools query your live cluster data. Multi-provider, BYO key, RBAC-aware.</p></div>
+  <div class="cpd glass-card scroll-reveal">
+    <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
+      <span style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--emerald)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> KubeBolt Copilot</span>
+      <span style="font-size:10px;color:var(--text-3);padding:2px 8px;border-radius:100px;background:var(--elevated)">Claude Sonnet 4</span>
+    </div>
+    <div style="padding:16px">
+      <div style="background:var(--elevated);padding:10px 14px;border-radius:10px 10px 4px 10px;font-size:13px;margin-bottom:12px;margin-left:40px">Why is the api-gateway pod crashing in production?</div>
+      <div style="display:flex;gap:4px;margin-bottom:12px;flex-wrap:wrap">
+        <span style="font-size:10px;padding:3px 10px;border-radius:100px;background:oklch(0.72 0.25 155/0.18);color:var(--emerald);font-weight:500;border:1px solid oklch(0.72 0.25 155/0.2)">get_pod_logs</span>
+        <span style="font-size:10px;padding:3px 10px;border-radius:100px;background:oklch(0.72 0.25 155/0.18);color:var(--emerald);font-weight:500;border:1px solid oklch(0.72 0.25 155/0.2)">get_events</span>
+        <span style="font-size:10px;padding:3px 10px;border-radius:100px;background:oklch(0.72 0.25 155/0.18);color:var(--emerald);font-weight:500;border:1px solid oklch(0.72 0.25 155/0.2)">get_resource_detail</span>
+      </div>
+      <div style="background:var(--surface);padding:12px 14px;border-radius:4px 10px 10px 10px;font-size:13px;line-height:1.65;color:var(--text-2);margin-right:40px;border:1px solid var(--border)">
+        Found <strong style="color:var(--text)">3 issues</strong> with <code>production/api-gateway</code>:<br><br>
+        1. <strong style="color:var(--text)">OOMKilled</strong> 2 min ago &mdash; memory limit 512Mi insufficient.<br>
+        2. Readiness probe failing on <code>/health</code> after restart.<br>
+        3. Last deploy changed <code>DB_POOL_SIZE</code> from 10 &rarr; 50.<br><br>
+        <strong style="color:var(--text)">Recommendation:</strong> increase memory to 1Gi and revert DB_POOL_SIZE.
+      </div>
+      <div style="margin-top:12px;padding:10px 14px;border-radius:8px;border:1px solid var(--border);background:var(--surface);font-size:12px;color:var(--text-4);display:flex;align-items:center;justify-content:space-between">
+        <span>Ask about your cluster... Cmd+J</span>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+      </div>
+    </div>
+  </div>
+  <div class="scroll-reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:28px;max-width:620px;margin-left:auto;margin-right:auto">
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">16 Tools</div><div style="font-size:11px;color:var(--text-3)">Live cluster queries</div></div>
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">BYO Key</div><div style="font-size:11px;color:var(--text-3)">Claude &middot; GPT &middot; Ollama &middot; vLLM</div></div>
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">Privacy-First</div><div style="font-size:11px;color:var(--text-3)">Secrets redacted &middot; RBAC-aware</div></div>
+  </div>
+</div></section>
+
+<!-- Architecture -->
+<section class="sec-elevated scroll-reveal" style="position:relative;overflow:hidden"><div class="container" style="text-align:center;position:relative;z-index:1">
+  <span class="hero-flare" style="top:20%;left:50%;transform:translateX(-50%);width:400px;height:200px;background:radial-gradient(ellipse,oklch(0.72 0.25 155/0.15),transparent 70%);animation-delay:1s;animation-duration:8s"></span>
+  <span class="label">Architecture</span><h2 class="heading">Lightweight by design</h2>
+  <div class="af">
+    <div class="ab"><div class="at">Kubernetes</div><div class="as">API Server<br>Metrics Server</div></div>
+    <div class="aa">&rarr;</div>
+    <div class="ab" style="border-color:oklch(0.60 0.22 155/0.3)"><div class="at" style="color:var(--emerald)">KubeBolt</div><div class="as">Go &middot; Auth &middot; Informers<br>Insights &middot; WebSocket</div></div>
+    <div class="aa">&rarr;</div>
+    <div class="ab"><div class="at">Frontend</div><div class="as">React &middot; 23 Views<br>Map &middot; AI Copilot</div></div>
+  </div>
+  <div class="tp">
+    <span>Go 1.25+</span><span>client-go</span><span>Chi v5</span><span>BoltDB</span><span>JWT</span>
+    <span>React 18</span><span>TypeScript</span><span>Vite 5</span><span>Tailwind CSS</span>
+    <span>TanStack Query</span><span>React Flow 11</span><span>Lucide React</span>
+  </div>
+</div></section>
+
+<!-- CTA -->
+<section class="cta"><div class="container">
+  <span class="hero-flare" style="bottom:-50px;left:50%;transform:translateX(-50%);width:500px;height:250px;background:radial-gradient(ellipse,var(--emerald-glow-strong),var(--emerald-glow) 40%,transparent 70%);animation-delay:0s;animation-duration:6s;opacity:0.5"></span>
+  <h2>Ready to see your cluster?</h2>
+  <p>Full Kubernetes visibility in under 2 minutes. Open source, MIT licensed.</p>
+  <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;position:relative;z-index:1">
+    <a href="#install" class="btn btn-em">Get Started</a>
+    <a href="docs.html" class="btn btn-o">Read the Docs</a>
+  </div>
+</div></section>
+
+<footer><div class="container">
+  <div class="footer-links"><a href="https://github.com/clm-cloud-solutions/kubebolt" target="_blank">GitHub</a><a href="https://www.clmcloudsolutions.es/en" target="_blank">CLM Cloud Solutions</a><a href="https://www.linkedin.com/company/clm-cloud-solutions/" target="_blank">LinkedIn</a><a href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/LICENSE" target="_blank">MIT License</a></div>
+  <p>&copy; 2026 CLM Cloud Solutions S.L. All rights reserved.</p>
+</div></footer>
+
+<script>function st(b,p){document.querySelectorAll('.itb').forEach(t=>t.classList.remove('on'));document.querySelectorAll('.ip>div').forEach(d=>d.classList.remove('on'));b.classList.add('on');document.getElementById('p-'+p).classList.add('on')}</script>
+</body>
+</html>

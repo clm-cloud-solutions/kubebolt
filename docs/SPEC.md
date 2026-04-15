@@ -1256,6 +1256,38 @@ The following are documented in the skill but deferred to future iterations:
 - KubeBolt product knowledge base (questions about KubeBolt features themselves, not Kubernetes)
 - WebSocket integration for proactive context (Phase 2 enhancement)
 
+### Phase 1.9 — Extended Distribution
+
+Priority: high — lowers the barrier to adoption by offering multiple installation methods beyond Helm and Docker Compose.
+
+**Key principle: Single binary foundation.** All distribution methods build on a single Go binary with embedded frontend assets (`embed.FS`). The binary serves both the API and the React UI from one HTTP server on one port.
+
+The full specification is in `docs/kubebolt-distribution-spec.md`.
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Single Binary** | Critical | Statically-linked binary with embedded frontend. One command to install (`curl -fsSL https://get.kubebolt.dev \| sh`), one command to run (`kubebolt`). Cross-compiled for Linux/macOS/Windows (amd64/arm64). CLI flags: `--kubeconfig`, `--context`, `--port`, `--host`, `--open`. < 30MB compressed. Install script with checksum verification. |
+| **Docker Single-Container** | High | Single image running the embedded binary. `docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt`. No nginx needed. Auto-detect Docker Desktop K8s (`kubernetes.docker.internal` rewrite). Multi-arch (amd64/arm64). |
+| **Homebrew** | High | `brew install clm-cloud-solutions/tap/kubebolt`. Tap repository with formula pointing to GitHub Release binaries. Auto-updated on release via CI. |
+| **kubectl Plugin (krew)** | Medium | `kubectl krew install kubebolt` → `kubectl kubebolt`. Same binary renamed to `kubectl-kubebolt`. Krew manifest with platform-specific archives. Submit to official krew-index. |
+| **Kubernetes Operator** | Medium | `KubeBolt` CRD managed by a Kubebuilder operator. Declarative lifecycle: install, upgrade, config changes, self-healing. Manages Deployment, Service, RBAC, Ingress. Status tracking (Pending/Running/Upgrading/Failed). |
+| **Release Automation** | High | Extend CI to: build frontend → embed in binary → cross-compile 5 platforms → generate checksums → attach to GitHub Release → update Homebrew tap → package krew archives. |
+
+#### Implementation order
+
+```
+Phase 1 (foundation):
+  [1] Single Binary ← embed.FS + CLI flags + install script + release workflow
+
+Phase 2 (quick wins — reuse the binary):
+  [2] Docker Single-Container ← thin Dockerfile around the binary
+  [3] Homebrew ← formula pointing to release assets
+  [4] kubectl Plugin (krew) ← rename binary + krew manifest
+
+Phase 3 (dedicated effort):
+  [5] Kubernetes Operator ← Kubebuilder controller project
+```
+
 ### Phase 2.0 — Agent, Historical Data & Network Observability
 
 | Feature | Impact | Description |

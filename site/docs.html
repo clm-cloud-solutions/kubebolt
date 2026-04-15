@@ -1,0 +1,847 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>KubeBolt — Documentation</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#09090b;--surface:#111113;--card:#18181b;
+  --elevated:#27272a;--border:#27272a;--border-subtle:#1e1e21;
+  --text:#fafafa;--text-2:#a1a1aa;--text-3:#71717a;--text-4:#52525b;
+  --amber:#fbbf24;--amber-muted:#92710a;--amber-dim:rgba(251,191,36,0.10);
+  --green:#34d399;--green-dim:rgba(52,211,153,0.10);
+  --red:#f87171;--blue:#60a5fa;
+  --sidebar-w:260px;
+}
+html{scroll-behavior:smooth}
+body{font-family:'Instrument Sans',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7;-webkit-font-smoothing:antialiased}
+a{color:var(--amber);text-decoration:none}a:hover{text-decoration:underline}
+code{font-family:'IBM Plex Mono',monospace;font-size:.875em;padding:1px 6px;border-radius:4px;background:var(--elevated);color:var(--amber)}
+
+/* ─── Top Bar ─── */
+.topbar{position:fixed;top:0;left:0;right:0;z-index:100;height:52px;
+  background:rgba(9,9,11,.88);backdrop-filter:blur(16px) saturate(180%);
+  border-bottom:1px solid var(--border-subtle);display:flex;align-items:center;padding:0 20px}
+.topbar .logo{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px;color:var(--text);text-decoration:none;letter-spacing:-.02em}
+.logo-m{width:24px;height:24px;border-radius:6px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#fbbf24,#f59e0b)}
+.logo-m svg{color:#000}
+.topbar .sep{color:var(--text-4);margin:0 10px;font-weight:300}
+.topbar .docs-label{color:var(--text-3);font-size:14px;font-weight:500}
+.topbar-r{margin-left:auto;display:flex;gap:12px;align-items:center}
+.topbar-r a{font-size:13px;color:var(--text-3);text-decoration:none}.topbar-r a:hover{color:var(--text)}
+.mobile-toggle{display:none;background:none;border:none;color:var(--text-3);cursor:pointer;padding:4px}
+
+/* ─── Sidebar ─── */
+.sidebar{position:fixed;top:52px;left:0;bottom:0;width:var(--sidebar-w);
+  background:var(--surface);border-right:1px solid var(--border-subtle);
+  overflow-y:auto;padding:20px 0;z-index:50}
+.sidebar::-webkit-scrollbar{width:3px}.sidebar::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px}
+.sb-section{margin-bottom:20px}
+.sb-title{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;
+  color:var(--text-4);padding:0 20px;margin-bottom:6px}
+.sb-link{display:block;padding:5px 20px 5px 24px;font-size:13px;color:var(--text-3);
+  text-decoration:none;transition:all .12s;border-left:2px solid transparent;cursor:pointer}
+.sb-link:hover{color:var(--text-2);background:rgba(255,255,255,.02);text-decoration:none}
+.sb-link.active{color:var(--amber);border-left-color:var(--amber);background:var(--amber-dim)}
+
+/* ─── Content ─── */
+.content{margin-left:var(--sidebar-w);padding:80px 48px 64px;max-width:calc(var(--sidebar-w) + 800px)}
+.doc-page{display:none}.doc-page.active{display:block}
+
+/* ─── Markdown-style rendering ─── */
+.md h1{font-size:28px;font-weight:700;letter-spacing:-.02em;margin-bottom:8px;line-height:1.2}
+.md .page-desc{font-size:15px;color:var(--text-2);margin-bottom:32px;line-height:1.65;max-width:600px}
+.md h2{font-size:20px;font-weight:700;letter-spacing:-.015em;margin:40px 0 12px;padding-top:24px;border-top:1px solid var(--border-subtle);line-height:1.3}
+.md h2:first-of-type{border-top:none;margin-top:0;padding-top:0}
+.md h3{font-size:16px;font-weight:600;margin:28px 0 8px;color:var(--text)}
+.md p{font-size:14px;color:var(--text-2);margin-bottom:14px;line-height:1.75}
+.md ul{list-style:none;padding:0;margin-bottom:18px}
+.md li{font-size:14px;color:var(--text-2);padding:3px 0 3px 20px;position:relative;line-height:1.7}
+.md li::before{content:'›';position:absolute;left:4px;color:var(--amber);font-weight:700;font-size:14px}
+.md strong{color:var(--text);font-weight:600}
+.md pre{font-family:'IBM Plex Mono',monospace;font-size:12.5px;line-height:1.85;
+  padding:16px 20px;border-radius:10px;background:var(--card);border:1px solid var(--border);
+  overflow-x:auto;color:var(--text-2);margin-bottom:18px}
+.md pre .g{color:var(--green)}.md pre .d{color:var(--text-4)}.md pre .a{color:var(--amber)}
+.md .callout{padding:14px 18px;border-radius:8px;border-left:3px solid var(--amber);
+  background:var(--amber-dim);font-size:13px;color:var(--text-2);margin-bottom:18px;line-height:1.65}
+.md .callout-blue{border-left-color:var(--blue);background:rgba(96,165,250,.08)}
+.md table{width:100%;border-collapse:collapse;margin-bottom:20px;font-size:13px}
+.md th{text-align:left;padding:8px 14px;border-bottom:2px solid var(--border);
+  color:var(--text-3);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+.md td{padding:8px 14px;border-bottom:1px solid var(--border-subtle);color:var(--text-2)}
+.md td code{font-size:11px}
+.md hr{border:none;border-top:1px solid var(--border-subtle);margin:32px 0}
+
+/* ─── Responsive ─── */
+@media(max-width:900px){
+  .sidebar{transform:translateX(-100%);transition:transform .2s;width:280px;z-index:200;background:var(--bg)}
+  .sidebar.open{transform:translateX(0)}
+  .content{margin-left:0;padding:72px 20px 48px}
+  .mobile-toggle{display:block}
+}
+</style>
+</head>
+<body>
+
+<!-- Top Bar -->
+<div class="topbar">
+  <button class="mobile-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </button>
+  <a href="./" class="logo"><span class="logo-m"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></span>KubeBolt</a>
+  <span class="sep">/</span>
+  <span class="docs-label">Documentation</span>
+  <div class="topbar-r">
+    <a href="./">Home</a>
+    <a href="https://github.com/clm-cloud-solutions/kubebolt" target="_blank">GitHub</a>
+  </div>
+</div>
+
+<!-- Sidebar -->
+<div class="sidebar">
+  <div class="sb-section">
+    <div class="sb-title">Getting Started</div>
+    <a class="sb-link active" onclick="go('overview')">Overview</a>
+    <a class="sb-link" onclick="go('quickstart')">Quick Start</a>
+    <a class="sb-link" onclick="go('installation')">Installation Methods</a>
+  </div>
+  <div class="sb-section">
+    <div class="sb-title">Core Concepts</div>
+    <a class="sb-link" onclick="go('architecture')">Architecture</a>
+    <a class="sb-link" onclick="go('resources')">Resource Views</a>
+    <a class="sb-link" onclick="go('insights')">Insights Engine</a>
+    <a class="sb-link" onclick="go('topology')">Cluster Map</a>
+    <a class="sb-link" onclick="go('copilot')">AI Copilot</a>
+  </div>
+  <div class="sb-section">
+    <div class="sb-title">Configuration</div>
+    <a class="sb-link" onclick="go('rbac')">RBAC & Permissions</a>
+    <a class="sb-link" onclick="go('auth')">Authentication</a>
+    <a class="sb-link" onclick="go('metrics')">Metrics Server</a>
+    <a class="sb-link" onclick="go('multicluster')">Multi-Cluster</a>
+  </div>
+  <div class="sb-section">
+    <div class="sb-title">API Reference</div>
+    <a class="sb-link" onclick="go('api')">REST API</a>
+    <a class="sb-link" onclick="go('websocket')">WebSocket Events</a>
+  </div>
+  <div class="sb-section">
+    <div class="sb-title">Deployment Guides</div>
+    <a class="sb-link" onclick="go('eks')">Amazon EKS</a>
+    <a class="sb-link" onclick="go('gke')">Google GKE</a>
+    <a class="sb-link" onclick="go('aks')">Azure AKS</a>
+    <a class="sb-link" onclick="go('docker-desktop')">Docker Desktop</a>
+  </div>
+  <div class="sb-section">
+    <div class="sb-title">Project</div>
+    <a class="sb-link" onclick="go('roadmap')">Roadmap</a>
+    <a class="sb-link" onclick="go('contributing')">Contributing</a>
+  </div>
+</div>
+
+<!-- Content -->
+<div class="content">
+
+<!-- ═══ Overview ═══ -->
+<div class="doc-page active" id="pg-overview"><div class="md">
+<h1>Overview</h1>
+<p class="page-desc">KubeBolt is an open-source Kubernetes monitoring and management platform. Full cluster visibility in under 2 minutes — no agents, no Prometheus, no databases.</p>
+
+<h2>What is KubeBolt?</h2>
+<p>KubeBolt reads directly from the Kubernetes API Server and Metrics Server to give you a visual, intuitive dashboard with actionable insights. It's designed for development teams and small-to-medium engineering organizations that deploy on Kubernetes but don't have dedicated SRE teams.</p>
+
+<div class="callout"><strong>Core philosophy:</strong> Connect. See. Fix. — Only a kubeconfig is needed. No YAML to write, no CRDs to install, no sidecars to inject.</div>
+
+<h2>What you get</h2>
+<ul>
+<li><strong>23 resource views</strong> with live CPU/memory metrics from Metrics Server</li>
+<li><strong>Interactive cluster topology map</strong> with Grid and Flow layouts</li>
+<li><strong>12-rule insights engine</strong> with actionable recommendations</li>
+<li><strong>Multi-cluster support</strong> — all kubeconfig contexts auto-discovered</li>
+<li><strong>Gateway API support</strong> — Gateways and HTTPRoutes via dynamic client</li>
+<li><strong>Cluster actions</strong> — Pod terminal, file browser, port-forward, restart, scale, YAML edit</li>
+<li><strong>AI Copilot</strong> — 16 tools querying live data, multi-provider (Claude, GPT, Ollama, vLLM)</li>
+<li><strong>Built-in authentication</strong> — Admin/Editor/Viewer roles with JWT sessions</li>
+<li><strong>Global search</strong> — ⌘K across all resource types</li>
+<li><strong>RBAC-aware</strong> — adapts to your ServiceAccount permissions automatically</li>
+</ul>
+
+<h2>Performance</h2>
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Backend memory usage</td><td><code>~19 MB</code></td></tr>
+<tr><td>Frontend bundle (gzipped)</td><td><code>~148 KB</code></td></tr>
+<tr><td>API response time</td><td><code>&lt;5ms</code> (from informer cache)</td></tr>
+<tr><td>Startup time</td><td><code>&lt;3s</code></td></tr>
+</table>
+
+<h2>Compatibility</h2>
+<table>
+<tr><th>Provider</th><th>Metrics Server</th><th>Notes</th></tr>
+<tr><td>Amazon EKS</td><td>Pre-installed</td><td>Mount <code>~/.aws</code> for credentials</td></tr>
+<tr><td>Google GKE</td><td>Pre-installed</td><td>Works out of the box</td></tr>
+<tr><td>Azure AKS</td><td>Pre-installed</td><td>Works out of the box</td></tr>
+<tr><td>k3s / k0s</td><td>Pre-installed</td><td>Works out of the box</td></tr>
+<tr><td>Docker Desktop</td><td>Manual install</td><td>Use <code>docker-kubeconfig.sh</code> helper</td></tr>
+<tr><td>Minikube</td><td>Addon</td><td><code>minikube addons enable metrics-server</code></td></tr>
+</table>
+</div></div>
+
+<!-- ═══ Quick Start ═══ -->
+<div class="doc-page" id="pg-quickstart"><div class="md">
+<h1>Quick Start</h1>
+<p class="page-desc">Get KubeBolt running in under 2 minutes.</p>
+
+<h2>Fastest: Single Binary</h2>
+<pre><span class="d"># Download and install</span>
+<span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
+
+<span class="d"># Run — opens http://localhost:3000</span>
+<span class="g">kubebolt</span></pre>
+<p>KubeBolt auto-detects your default kubeconfig at <code>~/.kube/config</code> and connects to the current context.</p>
+
+<div class="callout"><strong>Default admin password:</strong> On first boot, KubeBolt seeds a default <code>admin</code> user and prints the generated password to the server logs. Check the terminal output or container logs (<code>docker logs kubebolt</code>) to retrieve it. Change this password immediately after first login.</div>
+
+<h2>Docker (no install)</h2>
+<pre><span class="g">docker run -p 3000:3000 \
+  -v ~/.kube:/root/.kube:ro \
+  ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
+
+<h2>Helm (in-cluster)</h2>
+<pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
+
+<span class="g">kubectl port-forward svc/kubebolt 3000:3000</span></pre>
+
+<h2>Local Development</h2>
+<p>Requires Go 1.25+ and Node 20+.</p>
+<pre><span class="d"># Backend (port 8080)</span>
+<span class="g">cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config</span>
+
+<span class="d"># Frontend (port 5173, proxies /api and /ws to backend)</span>
+<span class="g">cd apps/web && npm install && npm run dev</span></pre>
+
+<h2>Docker Compose (full stack)</h2>
+<pre><span class="d"># Remote clusters (EKS, GKE, AKS)</span>
+<span class="g">kubectl config use-context my-cluster
+cd deploy && docker compose up -d</span>
+
+<span class="d"># Docker Desktop K8s (needs kubeconfig rewrite)</span>
+<span class="g">./deploy/docker-kubeconfig.sh
+cd deploy && docker compose up -d</span></pre>
+<p>Frontend at <code>http://localhost:3000</code>. Nginx proxies <code>/api</code> and <code>/ws</code> to the Go backend.</p>
+</div></div>
+
+<!-- ═══ Installation ═══ -->
+<div class="doc-page" id="pg-installation"><div class="md">
+<h1>Installation Methods</h1>
+<p class="page-desc">Six ways to install KubeBolt, from a single command to enterprise Kubernetes deployment.</p>
+
+<h2>Single Binary</h2>
+<p>One binary with embedded frontend assets. API server + web UI in a single process.</p>
+<pre><span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
+<span class="g">kubebolt --kubeconfig ~/.kube/config --port 3000</span></pre>
+
+<h2>Homebrew</h2>
+<p>For macOS and Linux. Automatic updates via <code>brew upgrade</code>.</p>
+<pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span>
+<span class="g">kubebolt</span></pre>
+
+<h2>Docker</h2>
+<p>Single container, multi-arch (amd64/arm64). Zero install on your machine.</p>
+<pre><span class="g">docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
+<div class="callout-blue callout"><strong>EKS note:</strong> Add <code>-v ~/.aws:/root/.aws:ro</code> and <code>-e AWS_PROFILE=your-profile</code> for AWS credential access.</div>
+
+<h2>Helm Chart</h2>
+<p>Production deployment inside your cluster. OCI-based chart on GitHub Container Registry. Also listed on Artifact Hub.</p>
+<pre><span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
+
+<span class="d"># With Ingress</span>
+<span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set ingress.enabled=true \
+  --set ingress.host=kubebolt.example.com</span></pre>
+<p>The chart creates a ClusterRole with full read permissions, a ServiceAccount, and the KubeBolt deployment. Configurable values include image tags, resource limits, Ingress, and RBAC settings.</p>
+
+<h2>Kubernetes Operator</h2>
+<p>Declarative lifecycle management via a <code>KubeBolt</code> CRD. The operator handles upgrades, configuration changes, and self-healing.</p>
+<pre><span class="d"># Install the operator</span>
+<span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span>
+
+<span class="d"># Create a KubeBolt instance</span>
+<span class="g">cat &lt;&lt;EOF | kubectl apply -f -
+apiVersion: kubebolt.io/v1alpha1
+kind: KubeBolt
+metadata:
+  name: kubebolt
+spec:
+  replicas: 1
+  ingress:
+    enabled: true
+    host: kubebolt.example.com
+EOF</span></pre>
+
+<h2>kubectl Plugin (krew)</h2>
+<p>Install via <a href="https://krew.sigs.k8s.io/">krew</a> and run as a kubectl subcommand.</p>
+<pre><span class="g">kubectl krew install kubebolt</span>
+<span class="g">kubectl kubebolt</span>
+<span class="g">kubectl kubebolt --context production-eks</span></pre>
+</div></div>
+
+<!-- ═══ Architecture ═══ -->
+<div class="doc-page" id="pg-architecture"><div class="md">
+<h1>Architecture</h1>
+<p class="page-desc">Go backend with in-memory caches and BoltDB for auth. React frontend with live WebSocket updates.</p>
+
+<h2>System Diagram</h2>
+<pre>Kubernetes Cluster(s)
+  │ API Server + Metrics Server
+  ▼ kubeconfig (all contexts)
+KubeBolt Backend (Go)
+  ├─ Cluster Manager     → multi-cluster lifecycle, async connection
+  ├─ Shared Informers    → typed resources (client-go)
+  ├─ Dynamic Client      → Gateway API CRDs (unstructured)
+  ├─ Permission Probe    → 22 SelfSubjectAccessReview calls
+  ├─ Metrics Collector   → 30s poll, in-memory cache
+  ├─ Insights Engine     → 12 rules
+  ├─ Auth Service        → JWT sessions, BoltDB user store, role enforcement
+  ├─ REST API (Chi v5)   → resource lists, details, YAML, logs
+  ├─ WebSocket Hub       → real-time broadcasts
+  └─ Copilot Proxy       → LLM tool-calling bridge
+  │
+  ▼ REST + WebSocket
+KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
+  ├─ 23 Resource Views   → TanStack Table + Query
+  ├─ Cluster Map         → React Flow 11
+  ├─ AI Copilot          → multi-provider, 16 tools
+  └─ Theme               → dark/light via CSS custom properties (--kb-*)</pre>
+
+<h2>Go Workspace</h2>
+<p>Monorepo with <code>go.work</code> containing three modules:</p>
+<ul>
+<li><code>apps/api</code> — Main backend server (entry: <code>cmd/server/main.go</code>)</li>
+<li><code>packages/agent</code> — Phase 2 lightweight node agent (stub)</li>
+<li><code>packages/shared</code> — Shared Go utilities</li>
+</ul>
+
+<h2>Key Backend Packages</h2>
+<table>
+<tr><th>Package</th><th>Purpose</th></tr>
+<tr><td><code>cluster/manager.go</code></td><td>Multi-cluster lifecycle, context switching, async initial connection</td></tr>
+<tr><td><code>cluster/connector.go</code></td><td>Shared informers + dynamic client, 20s cache sync timeout, 15s rest timeout</td></tr>
+<tr><td><code>cluster/permissions.go</code></td><td>RBAC probing via SSAR, cluster-wide then namespace fallback, semaphore of 10</td></tr>
+<tr><td><code>cluster/nslister.go</code></td><td>Multi-namespace lister wrappers for namespace-scoped ServiceAccounts</td></tr>
+<tr><td><code>cluster/graph.go</code></td><td>In-memory topology graph with debounced rebuild (2s)</td></tr>
+<tr><td><code>cluster/relationships.go</code></td><td>Edge detection: ownerRefs, selectors, Gateway parentRefs, volumes</td></tr>
+<tr><td><code>metrics/collector.go</code></td><td>Metrics Server polling, per-namespace fallback, graceful degradation</td></tr>
+<tr><td><code>insights/engine.go</code></td><td>12-rule evaluation engine</td></tr>
+<tr><td><code>auth/service.go</code></td><td>User management, JWT issue/verify, role enforcement, BoltDB persistence</td></tr>
+<tr><td><code>auth/middleware.go</code></td><td>Auth middleware with httpOnly cookie extraction and role-based route guards</td></tr>
+<tr><td><code>websocket/hub.go</code></td><td>Broadcast hub, 4096 buffer, silent drops when no clients</td></tr>
+<tr><td><code>api/router.go</code></td><td>Chi router with requireConnector middleware</td></tr>
+<tr><td><code>api/handlers.go</code></td><td>REST handlers with metrics injection, YAML, logs, deployment history</td></tr>
+</table>
+
+<h2>Data Flow</h2>
+<ul>
+<li>Manager reads kubeconfig contexts → async connection (HTTP server binds immediately, returns 503 until connected)</li>
+<li>Permission probe: 22 SSAR calls, cluster-wide then namespace fallback, ~2-5s</li>
+<li>Informers start <strong>only for permitted resources</strong></li>
+<li>Namespace-scoped SAs → per-namespace informer factories with multi-lister aggregation</li>
+<li>Dynamic client discovers Gateway API CRDs (5s timeout, gracefully skipped)</li>
+<li>Metrics Collector polls every 30s → in-memory cache (per-namespace when cluster-wide denied)</li>
+<li>REST API serves enriched resources with metrics injection, paginated (50/page). 403 for restricted.</li>
+<li>WebSocket broadcasts resource changes with debounced topology rebuilds</li>
+</ul>
+</div></div>
+
+<!-- ═══ Resources ═══ -->
+<div class="doc-page" id="pg-resources"><div class="md">
+<h1>Resource Views</h1>
+<p class="page-desc">23 resource types, each with search, filtering, pagination, and live metrics.</p>
+
+<h2>Supported Resources</h2>
+<table>
+<tr><th>Category</th><th>Resources</th></tr>
+<tr><td>Workloads</td><td>Pods, Deployments, StatefulSets, DaemonSets, Jobs, CronJobs, ReplicaSets</td></tr>
+<tr><td>Traffic</td><td>Services, Ingresses, Gateways, HTTPRoutes, EndpointSlices</td></tr>
+<tr><td>Storage</td><td>PersistentVolumeClaims, PersistentVolumes, StorageClasses</td></tr>
+<tr><td>Config</td><td>ConfigMaps, Secrets (keys only, never values), HPAs</td></tr>
+<tr><td>Cluster</td><td>Nodes, Namespaces, Events, Roles, ClusterRoles, RoleBindings, ClusterRoleBindings</td></tr>
+</table>
+
+<h2>Resource Detail Views</h2>
+<p>Each resource has a tabbed detail page at <code>/:type/:namespace/:name</code>. Available tabs vary by resource type:</p>
+<ul>
+<li><strong>Overview</strong> — Key fields, status, conditions, labels, annotations</li>
+<li><strong>YAML</strong> — Syntax-highlighted definition with copy/download/edit. Secrets redacted.</li>
+<li><strong>Pods</strong> — For workloads (Deployments, StatefulSets, DaemonSets, Jobs)</li>
+<li><strong>Logs</strong> — Pod and workload logs with container selector, tail lines (100/500/1000), 10s auto-refresh</li>
+<li><strong>Containers</strong> — Container specs, env vars, ports, mounts (Pods only)</li>
+<li><strong>Volumes</strong> — Volume mounts and claims (Pods only)</li>
+<li><strong>Related</strong> — Parent and child resources from topology edges</li>
+<li><strong>History</strong> — Revision history via ReplicaSets (Deployments) or ControllerRevisions (StatefulSets, DaemonSets)</li>
+<li><strong>Events</strong> — Events filtered to the specific resource</li>
+<li><strong>Monitor</strong> — SVG donut gauges for CPU/memory from Metrics Server</li>
+<li><strong>Files</strong> — Exec-based file browser with directory navigation and content viewer</li>
+<li><strong>Terminal</strong> — WebSocket-to-SPDY exec bridge with xterm.js</li>
+</ul>
+</div></div>
+
+<!-- ═══ Insights ═══ -->
+<div class="doc-page" id="pg-insights"><div class="md">
+<h1>Insights Engine</h1>
+<p class="page-desc">12 built-in rules that detect common Kubernetes issues and provide actionable recommendations.</p>
+
+<h2>Rule Definitions</h2>
+<table>
+<tr><th>Rule</th><th>Severity</th><th>Condition</th></tr>
+<tr><td>crash-loop</td><td>Critical</td><td>Pod in CrashLoopBackOff with restarts &gt;3/hour</td></tr>
+<tr><td>oom-killed</td><td>Critical</td><td>Container terminated with OOMKilled (exit code 137)</td></tr>
+<tr><td>zero-replicas</td><td>Critical</td><td>Deployment with 0 available replicas</td></tr>
+<tr><td>node-not-ready</td><td>Critical</td><td>Node condition Ready ≠ True</td></tr>
+<tr><td>image-pull-backoff</td><td>Critical</td><td>Pod in ImagePullBackOff state</td></tr>
+<tr><td>cpu-throttle-risk</td><td>Warning</td><td>CPU usage &gt;80% of limit sustained</td></tr>
+<tr><td>memory-pressure</td><td>Warning</td><td>Memory usage &gt;85% of limit</td></tr>
+<tr><td>hpa-maxed-out</td><td>Warning</td><td>HPA current replicas == max replicas</td></tr>
+<tr><td>pvc-pending</td><td>Warning</td><td>PVC in Pending state for &gt;5 minutes</td></tr>
+<tr><td>frequent-restarts</td><td>Warning</td><td>Pod with &gt;5 restarts in 24 hours (non crash-loop)</td></tr>
+<tr><td>resource-underrequest</td><td>Info</td><td>Requests &lt;40% of actual usage</td></tr>
+<tr><td>evicted-pods</td><td>Info</td><td>Pods evicted from node due to pressure</td></tr>
+</table>
+
+<p>Each insight includes the affected resource, a human-readable message, and a specific suggestion with remediation steps or kubectl commands.</p>
+</div></div>
+
+<!-- ═══ Topology ═══ -->
+<div class="doc-page" id="pg-topology"><div class="md">
+<h1>Cluster Map</h1>
+<p class="page-desc">Interactive topology visualization of resource relationships.</p>
+
+<h2>Layout Modes</h2>
+<ul>
+<li><strong>Grid</strong> — Compact grid of resources within namespace regions. Best for overview.</li>
+<li><strong>Flow</strong> — Horizontal dependency chain: Ingress/Gateway → HTTPRoute → Service → Deployment → ReplicaSet → Pod. Best for understanding traffic flow.</li>
+</ul>
+<p>In both modes, namespace regions are arranged in a grid of up to 3 columns. Regions are ReactFlow group nodes with child resource nodes.</p>
+
+<h2>Relationship Detection</h2>
+<table>
+<tr><th>Relationship</th><th>Detection Method</th><th>Edge Type</th></tr>
+<tr><td>Deployment → ReplicaSet → Pod</td><td>ownerReferences chain</td><td>owns</td></tr>
+<tr><td>Service → Pods</td><td>Label selector matching</td><td>selects</td></tr>
+<tr><td>Ingress → Service</td><td>spec.rules.http.paths.backend</td><td>routes</td></tr>
+<tr><td>Gateway → HTTPRoute</td><td>HTTPRoute spec.parentRefs</td><td>routes</td></tr>
+<tr><td>HTTPRoute → Service</td><td>spec.rules.backendRefs</td><td>routes</td></tr>
+<tr><td>HPA → Deployment</td><td>spec.scaleTargetRef</td><td>hpa</td></tr>
+<tr><td>Pod → PVC</td><td>spec.volumes.persistentVolumeClaim</td><td>mounts</td></tr>
+<tr><td>PVC → PV</td><td>spec.volumeName</td><td>bound</td></tr>
+<tr><td>Pod → ConfigMap/Secret</td><td>volumes + envFrom</td><td>mounts / envFrom</td></tr>
+</table>
+</div></div>
+
+<!-- ═══ Copilot ═══ -->
+<div class="doc-page" id="pg-copilot"><div class="md">
+<h1>AI Copilot</h1>
+<p class="page-desc">Talk to your cluster in natural language. Press ⌘J to open.</p>
+
+<h2>How it Works</h2>
+<p>The copilot sends your question to a configured LLM provider along with tool definitions that map to KubeBolt's REST API. The LLM calls tools to fetch live cluster data, analyzes the results, and responds with data-backed answers and kubectl commands.</p>
+
+<h2>16 Native Tools</h2>
+<table>
+<tr><th>Tool</th><th>What it does</th></tr>
+<tr><td><code>get_cluster_overview</code></td><td>Resource counts, CPU/memory, health score, events</td></tr>
+<tr><td><code>list_resources</code></td><td>List any of 23 resource types with filtering</td></tr>
+<tr><td><code>get_resource_detail</code></td><td>Full detail of a specific resource</td></tr>
+<tr><td><code>get_resource_yaml</code></td><td>Raw YAML definition (secrets redacted)</td></tr>
+<tr><td><code>get_pod_logs</code></td><td>Pod logs with container and tail options</td></tr>
+<tr><td><code>get_workload_pods</code></td><td>Pods owned by a workload controller</td></tr>
+<tr><td><code>get_deployment_history</code></td><td>Revision history via ReplicaSets</td></tr>
+<tr><td><code>get_topology</code></td><td>Full cluster topology graph</td></tr>
+<tr><td><code>get_insights</code></td><td>Active insights with severity</td></tr>
+<tr><td><code>get_events</code></td><td>Events with filtering</td></tr>
+<tr><td><code>get_permissions</code></td><td>Detected RBAC permissions</td></tr>
+<tr><td><code>list_clusters</code></td><td>All available kubeconfig contexts</td></tr>
+</table>
+
+<h2>Supported Providers</h2>
+<ul>
+<li><strong>Anthropic</strong> — Claude Sonnet 4, Claude Opus 4, Claude Haiku 4.5</li>
+<li><strong>OpenAI</strong> — GPT-4o, GPT-4o Mini, GPT-4 Turbo</li>
+<li><strong>Self-hosted</strong> — Ollama, vLLM, Groq, DeepSeek (OpenAI-compatible)</li>
+</ul>
+<div class="callout"><strong>BYO Key:</strong> You bring your own API key. KubeBolt never stores or transmits your key to any server other than the provider you configure. For production, use the API proxy mode to keep keys server-side.</div>
+</div></div>
+
+<!-- ═══ RBAC ═══ -->
+<div class="doc-page" id="pg-rbac"><div class="md">
+<h1>RBAC & Permissions</h1>
+<p class="page-desc">KubeBolt auto-detects your kubeconfig's permissions and adapts automatically.</p>
+
+<h2>Permission Detection</h2>
+<ul>
+<li>Uses <code>SelfSubjectAccessReview</code> API to test <code>list</code> verb for 22 resource types</li>
+<li>Two-phase: cluster-wide first, then namespace-level fallback for RoleBinding-based access</li>
+<li>Concurrent execution (semaphore of 10), completes in ~2-5 seconds</li>
+<li>If SSAR API itself is unavailable, falls back to assume full access</li>
+</ul>
+
+<h2>Access Levels</h2>
+<table>
+<tr><th>Level</th><th>Backend</th><th>Frontend</th></tr>
+<tr><td>Cluster-admin</td><td>All informers start normally</td><td>Full UI, no restrictions</td></tr>
+<tr><td>Cluster read-only</td><td>Informers for permitted resources only</td><td>Restricted items dimmed, "Limited access" banner</td></tr>
+<tr><td>Namespace-scoped</td><td>Per-namespace informer factories with multi-lister aggregation</td><td>Resources scoped to permitted namespaces</td></tr>
+</table>
+
+<h2>Frontend Behavior</h2>
+<ul>
+<li>"Limited access — showing X of Y resource types" banner</li>
+<li>Sidebar items dimmed with shield icon for restricted resources</li>
+<li>Summary cards show "No access" instead of "0"</li>
+<li>"No access to Nodes — capacity data unavailable" for node restrictions</li>
+<li><code>PermissionDenied</code> component for 403 resource pages</li>
+</ul>
+
+<h2>API Endpoint</h2>
+<p><code>GET /api/v1/cluster/permissions</code> returns the full permission map per resource type with <code>canList</code>, <code>canWatch</code>, <code>canGet</code>, <code>namespaceScoped</code>, and <code>namespaces</code> fields.</p>
+</div></div>
+
+<!-- ═══ Authentication ═══ -->
+<div class="doc-page" id="pg-auth"><div class="md">
+<h1>Authentication</h1>
+<p class="page-desc">Built-in username/password authentication with role-based access control. No external identity provider required.</p>
+
+<h2>Overview</h2>
+<p>KubeBolt ships with a built-in auth system that supports three roles: <strong>Admin</strong>, <strong>Editor</strong>, and <strong>Viewer</strong>. Auth is enabled by default and uses BoltDB for user storage — no external database needed. Sessions are managed via JWT tokens stored in httpOnly cookies.</p>
+
+<div class="callout"><strong>First boot:</strong> A default <code>admin</code> user is seeded automatically on first startup. The generated password is printed to the server logs. Change it immediately after first login.</div>
+
+<h2>Roles</h2>
+<p>KubeBolt enforces three roles with increasing levels of access:</p>
+<table>
+<tr><th>Action</th><th>Viewer</th><th>Editor</th><th>Admin</th></tr>
+<tr><td>View resources, metrics, topology, insights</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>View pod logs</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Use AI Copilot (read-only tools)</td><td>Yes</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Pod terminal (exec)</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Edit YAML / Apply changes</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Restart / Scale workloads</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Delete resources</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Port forwarding</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Switch clusters</td><td>No</td><td>Yes</td><td>Yes</td></tr>
+<tr><td>Manage users (create, edit, delete)</td><td>No</td><td>No</td><td>Yes</td></tr>
+<tr><td>Change auth settings</td><td>No</td><td>No</td><td>Yes</td></tr>
+</table>
+
+<h2>Session Management</h2>
+<ul>
+<li>JWT tokens issued on login, stored in <strong>httpOnly</strong> secure cookies (not localStorage)</li>
+<li>Token expiry is configurable (default: 24 hours)</li>
+<li>Tokens are validated on every API request via auth middleware</li>
+<li>Logout invalidates the cookie client-side</li>
+</ul>
+
+<h2>Storage</h2>
+<p>User accounts are stored in a local BoltDB file. By default, the database is written to <code>./data/kubebolt.db</code>. Use the <code>KUBEBOLT_DATA_DIR</code> environment variable to customize the storage path. In Kubernetes deployments, mount a PersistentVolume to this path for durability.</p>
+
+<h2>Environment Variables</h2>
+<table>
+<tr><th>Variable</th><th>Default</th><th>Description</th></tr>
+<tr><td><code>KUBEBOLT_AUTH_ENABLED</code></td><td><code>true</code></td><td>Enable or disable authentication. Set to <code>false</code> to allow anonymous access.</td></tr>
+<tr><td><code>KUBEBOLT_ADMIN_PASSWORD</code></td><td><em>auto-generated</em></td><td>Override the default admin password on first boot. Ignored if admin user already exists.</td></tr>
+<tr><td><code>KUBEBOLT_JWT_SECRET</code></td><td><em>auto-generated</em></td><td>Secret key for signing JWT tokens. Auto-generated and persisted in BoltDB if not set.</td></tr>
+<tr><td><code>KUBEBOLT_DATA_DIR</code></td><td><code>./data</code></td><td>Directory for BoltDB storage file.</td></tr>
+</table>
+
+<h2>Helm Configuration</h2>
+<p>When deploying via Helm, configure auth through values:</p>
+<pre><span class="d"># values.yaml</span>
+<span class="a">auth</span>:
+  <span class="a">enabled</span>: <span class="g">true</span>
+  <span class="a">adminPassword</span>: <span class="g">"my-secure-password"</span>
+
+<span class="d"># Or use an existing Kubernetes secret</span>
+<span class="a">auth</span>:
+  <span class="a">enabled</span>: <span class="g">true</span>
+  <span class="a">existingSecret</span>: <span class="g">"kubebolt-auth-secret"</span>
+  <span class="d"># Secret must contain keys: admin-password, jwt-secret</span></pre>
+<pre><span class="d"># Install with inline password</span>
+<span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.adminPassword="my-secure-password"</span>
+
+<span class="d"># Install with existing secret</span>
+<span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.existingSecret=kubebolt-auth-secret</span></pre>
+
+<h2>Disabling Authentication</h2>
+<p>To run KubeBolt without authentication (e.g., behind a VPN or for local development):</p>
+<pre><span class="d"># Environment variable</span>
+<span class="g">KUBEBOLT_AUTH_ENABLED=false kubebolt</span>
+
+<span class="d"># Docker</span>
+<span class="g">docker run -p 3000:3000 -e KUBEBOLT_AUTH_ENABLED=false \
+  -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt</span>
+
+<span class="d"># Helm</span>
+<span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set auth.enabled=false</span></pre>
+<div class="callout"><strong>Warning:</strong> Disabling auth exposes full cluster management capabilities to anyone who can reach the KubeBolt UI. Only disable auth when access is already restricted at the network level.</div>
+</div></div>
+
+<!-- ═══ Metrics ═══ -->
+<div class="doc-page" id="pg-metrics"><div class="md">
+<h1>Metrics Server</h1>
+<p class="page-desc">KubeBolt uses the Kubernetes Metrics Server for CPU/memory data.</p>
+
+<h2>How it Works</h2>
+<p>The Metrics Collector polls <code>metrics.k8s.io/v1beta1</code> (PodMetrics and NodeMetrics) every 30 seconds. Results are stored in an in-memory cache — no database required.</p>
+
+<h2>Graceful Degradation</h2>
+<p>If Metrics Server is not installed, KubeBolt shows all resource state and events normally. CPU/memory bars display a message with a one-click install command. The Collector distinguishes between "not installed" and "403 Forbidden" via <code>apierrors.IsForbidden()</code>.</p>
+
+<h2>Namespace-scoped Metrics</h2>
+<p>When cluster-wide metrics access is denied (namespace-scoped ServiceAccounts), the Collector falls back to per-namespace polling: <code>PodMetricses(ns).List()</code> for each accessible namespace.</p>
+</div></div>
+
+<!-- ═══ Multi-Cluster ═══ -->
+<div class="doc-page" id="pg-multicluster"><div class="md">
+<h1>Multi-Cluster</h1>
+<p class="page-desc">All kubeconfig contexts auto-discovered. Switch clusters in one click.</p>
+
+<h2>How it Works</h2>
+<p>The Cluster Manager reads all contexts from the kubeconfig file at startup. The initial connection targets the current-context. You can switch clusters at runtime via the API or the cluster selector in the UI.</p>
+
+<h2>Switching</h2>
+<p>When switching clusters, the manager tears down the old connector (informers, metrics collector, insights engine) and creates a new one for the target context. The permission probe runs again for the new cluster. The frontend shows a "Connecting to cluster" overlay during the switch.</p>
+
+<h2>API</h2>
+<pre>GET  /api/v1/clusters              → list all contexts
+POST /api/v1/clusters/switch       → { "context": "production-eks" }</pre>
+</div></div>
+
+<!-- ═══ API ═══ -->
+<div class="doc-page" id="pg-api"><div class="md">
+<h1>REST API Reference</h1>
+<p class="page-desc">All endpoints under <code>/api/v1</code>.</p>
+
+<h2>Cluster</h2>
+<table>
+<tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+<tr><td>GET</td><td><code>/clusters</code></td><td>List all kubeconfig contexts</td></tr>
+<tr><td>POST</td><td><code>/clusters/switch</code></td><td>Switch active cluster</td></tr>
+<tr><td>GET</td><td><code>/cluster/overview</code></td><td>Full cluster summary with counts, CPU/memory, health, events, workloads</td></tr>
+<tr><td>GET</td><td><code>/cluster/permissions</code></td><td>Probed RBAC permissions per resource type</td></tr>
+</table>
+
+<h2>Resources</h2>
+<table>
+<tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+<tr><td>GET</td><td><code>/resources/:type</code></td><td>List with pagination (?limit=50), filtering (?namespace=, ?search=, ?status=)</td></tr>
+<tr><td>GET</td><td><code>/resources/:type/:ns/:name</code></td><td>Detail with metrics injection</td></tr>
+<tr><td>GET</td><td><code>/resources/:type/:ns/:name/yaml</code></td><td>Raw YAML (secrets redacted, managedFields stripped)</td></tr>
+<tr><td>GET</td><td><code>/resources/pods/:ns/:name/logs</code></td><td>Pod logs (?container=, ?tailLines=100)</td></tr>
+<tr><td>GET</td><td><code>/resources/:workload/:ns/:name/pods</code></td><td>Pods owned by deployment/statefulset/daemonset/job</td></tr>
+<tr><td>GET</td><td><code>/resources/deployments/:ns/:name/history</code></td><td>Revision history via ReplicaSets</td></tr>
+</table>
+
+<h2>Other</h2>
+<table>
+<tr><th>Method</th><th>Endpoint</th><th>Description</th></tr>
+<tr><td>GET</td><td><code>/topology</code></td><td>Full topology graph (nodes + edges)</td></tr>
+<tr><td>GET</td><td><code>/insights</code></td><td>Active insights (?severity=critical,warning)</td></tr>
+<tr><td>GET</td><td><code>/events</code></td><td>Events (?type=Warning, ?involvedName=, ?involvedKind=)</td></tr>
+<tr><td>WS</td><td><code>/ws</code></td><td>WebSocket for real-time updates</td></tr>
+</table>
+</div></div>
+
+<!-- ═══ WebSocket ═══ -->
+<div class="doc-page" id="pg-websocket"><div class="md">
+<h1>WebSocket Events</h1>
+<p class="page-desc">Real-time updates via <code>/api/v1/ws</code>.</p>
+
+<h2>Event Types</h2>
+<table>
+<tr><th>Type</th><th>Description</th></tr>
+<tr><td><code>resource:updated</code></td><td>Kubernetes resource changed</td></tr>
+<tr><td><code>resource:deleted</code></td><td>Kubernetes resource removed</td></tr>
+<tr><td><code>event:new</code></td><td>New Kubernetes event</td></tr>
+<tr><td><code>insight:new</code></td><td>New insight detected</td></tr>
+<tr><td><code>insight:resolved</code></td><td>Insight resolved</td></tr>
+<tr><td><code>metrics:refresh</code></td><td>Metrics cache updated (every 30s)</td></tr>
+<tr><td><code>cluster.switched</code></td><td>Active cluster changed</td></tr>
+</table>
+<p>Broadcast buffer: 4096 messages. Messages dropped silently when no clients are connected to avoid log spam during cluster switches.</p>
+</div></div>
+
+<!-- ═══ EKS ═══ -->
+<div class="doc-page" id="pg-eks"><div class="md">
+<h1>Amazon EKS Guide</h1>
+<p class="page-desc">Deploy KubeBolt on Amazon EKS clusters.</p>
+<h2>Authentication</h2>
+<ul>
+<li><strong>IRSA</strong> (IAM Roles for Service Accounts) — recommended for in-cluster deployment</li>
+<li><strong>Pod Identity</strong> — newer EKS authentication method, also supported</li>
+<li><strong>AWS CLI</strong> — for local/Docker deployment, mount <code>~/.aws</code> with active SSO session</li>
+</ul>
+<h2>Docker Deployment</h2>
+<pre><span class="g">docker run -p 3000:3000 \
+  -v ~/.kube:/root/.kube:ro \
+  -v ~/.aws:/root/.aws:ro \
+  -e AWS_PROFILE=my-profile \
+  ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
+<h2>Helm with ALB Ingress</h2>
+<pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set ingress.enabled=true \
+  --set ingress.className=alb \
+  --set ingress.host=kubebolt.example.com</span></pre>
+<p>EKS Fargate is compatible — KubeBolt doesn't require DaemonSets in Phase 1.</p>
+</div></div>
+
+<!-- ═══ GKE ═══ -->
+<div class="doc-page" id="pg-gke"><div class="md">
+<h1>Google GKE Guide</h1>
+<p class="page-desc">Deploy KubeBolt on Google Kubernetes Engine.</p>
+<h2>Authentication</h2>
+<ul><li><strong>Workload Identity</strong> — recommended for in-cluster deployments</li><li>GKE comes with Metrics Server pre-installed</li></ul>
+<h2>Helm with GCE Ingress</h2>
+<pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set ingress.enabled=true \
+  --set ingress.className=gce</span></pre>
+<p>GKE Autopilot clusters are compatible — no privileged containers needed.</p>
+</div></div>
+
+<!-- ═══ AKS ═══ -->
+<div class="doc-page" id="pg-aks"><div class="md">
+<h1>Azure AKS Guide</h1>
+<p class="page-desc">Deploy KubeBolt on Azure Kubernetes Service.</p>
+<h2>Authentication</h2>
+<ul><li><strong>Azure AD Workload Identity</strong> — recommended for in-cluster deployments</li><li>Azure RBAC integration via kubeconfig</li></ul>
+<h2>Helm with AGIC</h2>
+<pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set ingress.enabled=true \
+  --set ingress.className=azure-application-gateway</span></pre>
+</div></div>
+
+<!-- ═══ Docker Desktop ═══ -->
+<div class="doc-page" id="pg-docker-desktop"><div class="md">
+<h1>Docker Desktop Guide</h1>
+<p class="page-desc">Run KubeBolt with Docker Desktop's built-in Kubernetes.</p>
+<h2>The Problem</h2>
+<p>Docker Desktop K8s uses <code>127.0.0.1:6443</code> as the API server address. This works from your host machine, but not from inside a container (which has its own localhost).</p>
+<h2>The Solution</h2>
+<p>Use the helper script to rewrite the kubeconfig to use <code>kubernetes.docker.internal</code> instead:</p>
+<pre><span class="d"># 1. Enable Kubernetes in Docker Desktop → Settings → Kubernetes → Enable</span>
+<span class="d"># 2. Switch context</span>
+<span class="g">kubectl config use-context docker-desktop</span>
+
+<span class="d"># 3. Generate container-compatible kubeconfig</span>
+<span class="g">./deploy/docker-kubeconfig.sh</span>
+
+<span class="d"># 4. Start</span>
+<span class="g">cd deploy && docker compose up -d</span></pre>
+<h2>Metrics Server</h2>
+<p>Docker Desktop doesn't include Metrics Server. Install it manually:</p>
+<pre><span class="g">kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml</span></pre>
+</div></div>
+
+<!-- ═══ Roadmap ═══ -->
+<div class="doc-page" id="pg-roadmap"><div class="md">
+<h1>Roadmap</h1>
+<p class="page-desc">Where KubeBolt is heading.</p>
+
+<h2>Phase 1.0 — Core Platform ✅</h2>
+<p>23 resource views, multi-cluster, Gateway API, insights engine, cluster map, RBAC detection, Docker Compose.</p>
+
+<h2>Phase 1.3 — Terminal & Actions ✅</h2>
+<p>Pod terminal (xterm.js), port-forwarding, restart/scale, describe, YAML editing (CodeMirror 6), delete, global search (⌘K).</p>
+
+<h2>Phase 1.4 — File Browser & History ✅</h2>
+<p>Exec-based file browser, StatefulSet/DaemonSet history via ControllerRevisions, CronJob child jobs, YAML export.</p>
+
+<h2>Phase 1.5 — Distribution ✅</h2>
+<p>Helm chart (OCI), multi-arch images (amd64/arm64), GitHub releases, Artifact Hub, cloud guides.</p>
+
+<h2>Phase 1.6 — Animated Map & Settings</h2>
+<p>Animated traffic lines on cluster map, cluster management UI, Slack/email notifications.</p>
+
+<h2>Phase 1.7 — Authentication ✅</h2>
+<p>Built-in username/password auth with Admin/Editor/Viewer roles, user management UI, JWT sessions, BoltDB storage.</p>
+
+<h2>Phase 1.8 — AI Copilot ✅</h2>
+<p>In-app AI assistant with 16 cluster tools, multi-provider (Claude, GPT, Ollama), BYO API key, SSE streaming, fallback model.</p>
+
+<h2>Phase 1.9 — Extended Distribution</h2>
+<p>Single binary with embedded frontend, Homebrew tap, Docker single-container, kubectl plugin (krew), Kubernetes Operator.</p>
+
+<h2>Phase 2.0 — Agent & Network</h2>
+<p>Lightweight DaemonSet agent (&lt;50MB RAM), network connection tracking via conntrack, gRPC streaming, VictoriaMetrics for historical data, live traffic on cluster map.</p>
+
+<h2>Phase 3.0 — SaaS Platform</h2>
+<p>Multi-tenant platform with OAuth/SSO, team collaboration, custom dashboards, billing.</p>
+</div></div>
+
+<!-- ═══ Contributing ═══ -->
+<div class="doc-page" id="pg-contributing"><div class="md">
+<h1>Contributing</h1>
+<p class="page-desc">KubeBolt is open source under the MIT license. Contributions are welcome.</p>
+
+<h2>Development Setup</h2>
+<p>Requires Go 1.25+ and Node 20+.</p>
+<pre><span class="d"># Clone</span>
+<span class="g">git clone https://github.com/clm-cloud-solutions/kubebolt.git
+cd kubebolt</span>
+
+<span class="d"># Backend</span>
+<span class="g">cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config</span>
+
+<span class="d"># Frontend (separate terminal)</span>
+<span class="g">cd apps/web && npm install && npm run dev</span></pre>
+
+<h2>CI</h2>
+<p>GitHub Actions on push/PR to <code>main</code>:</p>
+<ul>
+<li>Backend: <code>go build ./...</code> (Go 1.25, ubuntu-latest)</li>
+<li>Frontend: <code>npm ci && npm run build</code> (Node 20, ubuntu-latest)</li>
+</ul>
+
+<h2>Repository Structure</h2>
+<pre>kubebolt/
+├── apps/api/          <span class="d"># Go backend</span>
+├── apps/web/          <span class="d"># React frontend</span>
+├── packages/agent/    <span class="d"># Phase 2 node agent (stub)</span>
+├── packages/shared/   <span class="d"># Shared Go utilities</span>
+├── deploy/            <span class="d"># Docker Compose + Helm + scripts</span>
+├── docs/              <span class="d"># SPEC.md + images</span>
+├── go.work            <span class="d"># Go workspace</span>
+├── CLAUDE.md          <span class="d"># Claude Code context</span>
+└── README.md</pre>
+</div></div>
+
+</div><!-- /content -->
+
+<script>
+function go(page){
+  document.querySelectorAll('.doc-page').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.sb-link').forEach(l=>l.classList.remove('active'));
+  const el=document.getElementById('pg-'+page);
+  if(el){el.classList.add('active');window.scrollTo(0,0)}
+  event.target.classList.add('active');
+  // Close mobile sidebar
+  document.querySelector('.sidebar').classList.remove('open');
+}
+</script>
+</body>
+</html>
