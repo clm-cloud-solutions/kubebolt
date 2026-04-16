@@ -291,27 +291,64 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
 <pre><span class="g">make build-binary</span>
 <span class="d"># Produces apps/api/kubebolt (embedded frontend)</span></pre>
 
+<h2>Homebrew (macOS, Linux)</h2>
+<p>Install and update via Homebrew. Automatic version management via <code>brew upgrade</code>. Available for macOS and Linux (amd64 + arm64).</p>
+<pre><span class="d"># Add the CLM tap (one-time setup)</span>
+<span class="g">brew tap clm-cloud-solutions/tap</span>
+
+<span class="d"># Install</span>
+<span class="g">brew install kubebolt</span>
+
+<span class="d"># Run</span>
+<span class="g">kubebolt --kubeconfig ~/.kube/config</span>
+
+<span class="d"># Update to the latest version</span>
+<span class="g">brew upgrade kubebolt</span></pre>
+
+<h2>Docker (single container)</h2>
+<p>Single image with embedded frontend. No nginx, no compose. Multi-arch (amd64/arm64). Runs as non-root.</p>
+<pre><span class="g">docker run -p 3000:3000 \
+  -v ~/.kube:/root/.kube:ro \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest</span></pre>
+<p>The image is signed with Cosign. Verify with:</p>
+<pre><span class="g">cosign verify ghcr.io/clm-cloud-solutions/kubebolt:latest \
+  --certificate-identity-regexp 'https://github.com/clm-cloud-solutions/kubebolt/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com</span></pre>
+<div class="callout-blue callout"><strong>EKS note:</strong> For EKS clusters, mount <code>~/.aws</code> and set <code>AWS_PROFILE</code> so the binary can obtain tokens. The image includes <code>aws-cli</code>.</div>
+
+<h2>kubectl Plugin (krew)</h2>
+<p>Run KubeBolt as a kubectl subcommand. Available via CLM's custom krew index.</p>
+<pre><span class="d"># Prerequisite: install krew (one-time)</span>
+<span class="d"># https://krew.sigs.k8s.io/docs/user-guide/setup/install/</span>
+
+<span class="d"># Add the CLM custom index</span>
+<span class="g">kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git</span>
+
+<span class="d"># Install</span>
+<span class="g">kubectl krew install clm/kubebolt</span>
+
+<span class="d"># Run (uses current kubectl context)</span>
+<span class="g">kubectl kubebolt</span>
+
+<span class="d"># Update</span>
+<span class="g">kubectl krew upgrade clm/kubebolt</span></pre>
+
 <hr>
 
 <h2>Coming Soon</h2>
-<p>The following distribution methods are planned. They depend on acquiring a custom domain (<code>kubebolt.io</code>) for install scripts and tap repository setup. The spec is at <a href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/kubebolt-distribution-spec.md">docs/kubebolt-distribution-spec.md</a>.</p>
+<p>The following distribution methods are planned but require additional infrastructure.</p>
 
 <h3>Install Script</h3>
-<p>One-command install that auto-detects OS and architecture (needs custom domain).</p>
+<p>One-command install that auto-detects OS and architecture. Requires a custom domain (<code>kubebolt.io</code>) to host the script.</p>
 <pre><span class="g">curl -fsSL https://get.kubebolt.dev | sh</span></pre>
 
-<h3>Homebrew</h3>
-<p>For macOS and Linux. Automatic updates via <code>brew upgrade</code>. Requires setting up a tap repository.</p>
-<pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span></pre>
+<h3>Official krew-index</h3>
+<p>After upstream acceptance into <code>kubernetes-sigs/krew-index</code>, users will be able to install without adding the CLM custom index:</p>
+<pre><span class="g">kubectl krew install kubebolt</span></pre>
 
-<h3>Docker Single-Container</h3>
-<p>Single image (no nginx, no compose). Reuses the binary.</p>
-<pre><span class="g">docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
-
-<h3>kubectl Plugin (krew)</h3>
-<p>Run KubeBolt as a kubectl subcommand. Requires submission to krew-index.</p>
-<pre><span class="g">kubectl krew install kubebolt
-kubectl kubebolt</span></pre>
+<h3>Kubernetes Operator</h3>
+<p>Declarative lifecycle management via a <code>KubeBolt</code> CRD. Separate controller project with Kubebuilder, handles upgrades and self-healing.</p>
+<pre><span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span></pre>
 
 <h3>Kubernetes Operator</h3>
 <p>Declarative lifecycle management via <code>KubeBolt</code> CRD. Separate controller project with Kubebuilder.</p>
