@@ -1,0 +1,49 @@
+# Single-container image that packages the pre-built KubeBolt binary.
+#
+# This Dockerfile expects a cross-compiled Linux binary to be passed via
+# build args. It does NOT rebuild from source — that's the release workflow's
+# job (which already cross-compiles all 5 platforms).
+#
+# Usage (from release workflow):
+#   docker buildx build \
+#     --platform linux/amd64,linux/arm64 \
+#     --build-arg BINARY_DIR=dist \
+#     -f deploy/Dockerfile.single \
+#     -t ghcr.io/clm-cloud-solutions/kubebolt:VERSION .
+#
+# The build context must contain dist/kubebolt-linux-amd64 and
+# dist/kubebolt-linux-arm64 (produced by `make build-all`).
+
+FROM alpine:3.21
+
+# Target platform injected by buildx (linux/amd64 or linux/arm64)
+ARG TARGETOS
+ARG TARGETARCH
+ARG BINARY_DIR=dist
+
+# Install runtime dependencies:
+# - ca-certificates: for TLS connections to cloud K8s APIs
+# - aws-cli: needed by EKS for token generation (aws eks get-token)
+# - tzdata: for proper timezone handling in logs and metrics
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates aws-cli tzdata
+
+# Create data directory for the embedded BoltDB (auth users, JWT secret)
+RUN mkdir -p /data
+
+# Copy the appropriate pre-built binary for this platform
+COPY ${BINARY_DIR}/kubebolt-${TARGETOS}-${TARGETARCH} /usr/local/bin/kubebolt
+RUN chmod +x /usr/local/bin/kubebolt
+
+# Run as non-root user for safety
+RUN addgroup -S kubebolt && adduser -S kubebolt -G kubebolt && \
+    chown -R kubebolt:kubebolt /data
+USER kubebolt
+
+WORKDIR /data
+VOLUME ["/data"]
+EXPOSE 3000
+
+# Default to binding on all interfaces at port 3000 (matches spec)
+ENTRYPOINT ["kubebolt"]
+CMD ["--host", "0.0.0.0", "--port", "3000"]

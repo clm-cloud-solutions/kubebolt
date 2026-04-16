@@ -183,6 +183,20 @@ jobs:
             cd ../..
           done
 
+      - name: Package binaries for krew (kubectl-kubebolt)
+        run: |
+          cd dist
+          # krew expects the binary named 'kubectl-kubebolt' inside the archive
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64; do
+            cp "kubebolt-${target}" kubectl-kubebolt
+            tar czf "kubebolt-${target}.tar.gz" kubectl-kubebolt
+            rm kubectl-kubebolt
+          done
+          # Windows: zip with .exe extension
+          cp kubebolt-windows-amd64.exe kubectl-kubebolt.exe
+          zip kubebolt-windows-amd64.zip kubectl-kubebolt.exe
+          rm kubectl-kubebolt.exe
+
       - name: Generate SHA256 checksums
         run: |
           cd dist
@@ -196,8 +210,176 @@ jobs:
           path: dist/
           retention-days: 1
 
+  build-single-container:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v5
+        id: build
+        with:
+          context: .
+          file: deploy/Dockerfile.single
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BINARY_DIR=dist
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign
+        run: cosign sign --yes ghcr.io/${{ github.repository }}@${{ steps.build.outputs.digest }}
+
+  update-krew-index:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    if: ${{ !github.event.repository.fork }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          cd dist
+          echo "darwin_arm64=$(sha256sum kubebolt-darwin-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "darwin_amd64=$(sha256sum kubebolt-darwin-amd64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(sha256sum kubebolt-linux-arm64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_amd64=$(sha256sum kubebolt-linux-amd64.tar.gz | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "windows_amd64=$(sha256sum kubebolt-windows-amd64.zip | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Update krew index
+        env:
+          KREW_INDEX_TOKEN: ${{ secrets.KREW_INDEX_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [ -z "$KREW_INDEX_TOKEN" ]; then
+            echo "KREW_INDEX_TOKEN not set — skipping custom krew index update"
+            exit 0
+          fi
+
+          VER="${VERSION#v}"
+
+          git clone https://x-access-token:${KREW_INDEX_TOKEN}@github.com/clm-cloud-solutions/krew-index.git index
+          cd index
+          mkdir -p plugins
+
+          sed \
+            -e "s|__VERSION__|${VER}|g" \
+            -e "s|__SHA_DARWIN_ARM64_TGZ__|${{ steps.sha.outputs.darwin_arm64 }}|g" \
+            -e "s|__SHA_DARWIN_AMD64_TGZ__|${{ steps.sha.outputs.darwin_amd64 }}|g" \
+            -e "s|__SHA_LINUX_ARM64_TGZ__|${{ steps.sha.outputs.linux_arm64 }}|g" \
+            -e "s|__SHA_LINUX_AMD64_TGZ__|${{ steps.sha.outputs.linux_amd64 }}|g" \
+            -e "s|__SHA_WINDOWS_AMD64_ZIP__|${{ steps.sha.outputs.windows_amd64 }}|g" \
+            ../deploy/krew/kubebolt.yaml.template > plugins/kubebolt.yaml
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add plugins/kubebolt.yaml
+          if git diff --cached --quiet; then
+            echo "No changes to plugin manifest"
+          else
+            git commit -m "kubebolt ${VER}"
+            git push
+          fi
+
+  update-homebrew-tap:
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    # Skip if HOMEBREW_TAP_TOKEN secret is not configured
+    if: ${{ !github.event.repository.fork }}
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download binaries artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+
+      - name: Compute SHA256 checksums
+        id: sha
+        run: |
+          cd dist
+          echo "darwin_arm64=$(sha256sum kubebolt-darwin-arm64 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "darwin_amd64=$(sha256sum kubebolt-darwin-amd64 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_arm64=$(sha256sum kubebolt-linux-arm64 | awk '{print $1}')" >> $GITHUB_OUTPUT
+          echo "linux_amd64=$(sha256sum kubebolt-linux-amd64 | awk '{print $1}')" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew formula
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOMEBREW_TAP_TOKEN" ]; then
+            echo "HOMEBREW_TAP_TOKEN not set — skipping tap update"
+            exit 0
+          fi
+
+          # Strip v prefix for version
+          VER="${VERSION#v}"
+
+          # Clone the tap repo
+          git clone https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/clm-cloud-solutions/homebrew-tap.git tap
+          cd tap
+          mkdir -p Formula
+
+          # Render template with actual values
+          sed \
+            -e "s|__VERSION__|${VER}|g" \
+            -e "s|__SHA_DARWIN_ARM64__|${{ steps.sha.outputs.darwin_arm64 }}|g" \
+            -e "s|__SHA_DARWIN_AMD64__|${{ steps.sha.outputs.darwin_amd64 }}|g" \
+            -e "s|__SHA_LINUX_ARM64__|${{ steps.sha.outputs.linux_arm64 }}|g" \
+            -e "s|__SHA_LINUX_AMD64__|${{ steps.sha.outputs.linux_amd64 }}|g" \
+            ../deploy/homebrew/kubebolt.rb.template > Formula/kubebolt.rb
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/kubebolt.rb
+          if git diff --cached --quiet; then
+            echo "No changes to formula"
+          else
+            git commit -m "kubebolt ${VER}"
+            git push
+          fi
+
   release:
-    needs: [build-api, build-web, publish-chart, build-binaries]
+    needs: [build-api, build-web, publish-chart, build-binaries, build-single-container]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -282,6 +464,11 @@ jobs:
             dist/kubebolt-darwin-amd64
             dist/kubebolt-darwin-arm64
             dist/kubebolt-windows-amd64.exe
+            dist/kubebolt-linux-amd64.tar.gz
+            dist/kubebolt-linux-arm64.tar.gz
+            dist/kubebolt-darwin-amd64.tar.gz
+            dist/kubebolt-darwin-arm64.tar.gz
+            dist/kubebolt-windows-amd64.zip
             dist/CHECKSUMS.txt
           body: |
             ## Install
@@ -307,6 +494,24 @@ jobs:
 
             All platform binaries are attached below. Verify with `sha256sum -c CHECKSUMS.txt`.
 
+            ### Docker (single container)
+            ```bash
+            docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \
+              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+            ```
+
+            ### Homebrew (macOS, Linux)
+            ```bash
+            brew install clm-cloud-solutions/tap/kubebolt
+            ```
+
+            ### kubectl krew plugin
+            ```bash
+            kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git
+            kubectl krew install clm/kubebolt
+            kubectl kubebolt
+            ```
+
             ### Docker Compose
             ```bash
             git clone https://github.com/${{ github.repository }}.git
@@ -314,10 +519,9 @@ jobs:
             ```
 
             ### Container Images
-            ```bash
-            docker pull ${{ env.API_IMAGE }}:${{ github.ref_name }}
-            docker pull ${{ env.WEB_IMAGE }}:${{ github.ref_name }}
-            ```
+            - Single container (binary + frontend): `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
+            - API only: `${{ env.API_IMAGE }}:${{ github.ref_name }}`
+            - Web only: `${{ env.WEB_IMAGE }}:${{ github.ref_name }}`
 
             ## Changelog
             ${{ steps.changelog.outputs.body }}

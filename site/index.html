@@ -341,22 +341,26 @@ footer a{color:var(--text-3);transition:color .2s}footer a:hover{color:var(--tex
 <span class="g">helm install kubebolt \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set auth.adminPassword=YourSecurePassword</span></pre></div></div>
-    <div id="p-docker"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">Any OS</span></div><div class="mt">Docker Compose</div><p class="md">Full stack with separate API and web containers. Multi-arch images (amd64/arm64).</p><pre><span class="g">cd deploy && docker compose up -d</span>
+    <div id="p-docker"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">Any OS</span></div><div class="mt">Docker</div><p class="md">Single container with embedded frontend, or full stack with Docker Compose. Multi-arch (amd64/arm64).</p><pre><span class="d"># Single container (recommended)</span>
+<span class="g">docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest</span>
 
-<span class="d"># Open http://localhost:3000</span>
-<span class="d"># Default admin password printed to logs</span></pre></div></div>
+<span class="d"># Or full stack with Docker Compose</span>
+<span class="g">cd deploy && docker compose up -d</span></pre></div></div>
     <div id="p-binary"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span><span class="badge bp">Windows</span></div><div class="mt">Single Binary</div><p class="md">Download and run. API server and web UI in a single executable. Embedded frontend, one port. Auto-loads <code>.env</code> for configuration.</p><pre><span class="d"># macOS Apple Silicon</span>
 <span class="g">curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-darwin-arm64
 chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt</span>
 
 <span class="d"># Run</span>
 <span class="g">kubebolt --kubeconfig ~/.kube/config</span></pre></div></div>
-    <div id="p-brew"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span></div><div class="mt">Homebrew</div><p class="md">Install and update via Homebrew. Automatic version management.</p><pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span>
-<span class="g">kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+    <div id="p-brew"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span></div><div class="mt">Homebrew</div><p class="md">Install and update via Homebrew. Automatic version management.</p><pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt
+kubebolt --kubeconfig ~/.kube/config</span></pre></div></div>
     <div id="p-operator"><div class="ib"><div class="badges"><span class="badge ba">Advanced</span><span class="badge bp">In-Cluster</span></div><div class="mt">Kubernetes Operator</div><p class="md">Declarative management via CRD. Handles upgrades, config, and self-healing.</p><pre><span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span>
 <span class="g">kubectl apply -f kubebolt-instance.yaml</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
-    <div id="p-krew"><div class="ib"><div class="badges"><span class="badge bs">Standard</span><span class="badge bp">kubectl</span></div><div class="mt">kubectl Plugin (krew)</div><p class="md">Run KubeBolt as a kubectl subcommand.</p><pre><span class="g">kubectl krew install kubebolt</span>
-<span class="g">kubectl kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+    <div id="p-krew"><div class="ib"><div class="badges"><span class="badge bs">Standard</span><span class="badge bp">kubectl</span></div><div class="mt">kubectl Plugin (krew)</div><p class="md">Run KubeBolt as a kubectl subcommand. Uses the current kubectl context.</p><pre><span class="g">kubectl krew index add clm \
+  https://github.com/clm-cloud-solutions/krew-index.git
+kubectl krew install clm/kubebolt
+kubectl kubebolt</span></pre></div></div>
   </div>
   <p style="text-align:center;margin-top:24px;font-size:13px;color:var(--text-3)">Need help? Check the <a href="docs.html" style="color:var(--emerald);text-decoration:underline">full documentation</a>.</p>
 </div></section>
