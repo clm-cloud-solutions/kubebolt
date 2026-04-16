@@ -161,8 +161,9 @@ jobs:
 
       - name: Embed frontend into API
         run: |
-          mkdir -p apps/api/cmd/server/web
-          cp -r apps/web/dist apps/api/cmd/server/web/dist
+          mkdir -p apps/api/cmd/server/web/dist
+          cp -r apps/web/dist/. apps/api/cmd/server/web/dist/
+          ls -la apps/api/cmd/server/web/dist/
 
       - name: Cross-compile binaries
         run: |
