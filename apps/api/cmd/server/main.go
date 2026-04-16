@@ -33,12 +33,68 @@ var version = "dev"
 //go:embed all:web/dist
 var embeddedFS embed.FS
 
+const helpText = `KubeBolt %s — Instant Kubernetes Monitoring & Management
+
+USAGE:
+  kubebolt [flags]
+
+FLAGS:
+  --kubeconfig PATH         Path to kubeconfig file (default: $KUBECONFIG or ~/.kube/config)
+  --port N                  HTTP server port (default: 8080)
+  --host ADDR               Bind address (default: 0.0.0.0)
+  --open                    Auto-open browser on start
+  --metric-interval N       Metrics polling interval in seconds (default: 30)
+  --insight-interval N      Insight evaluation interval in seconds (default: 60)
+  --version                 Print version and exit
+  --help                    Show this help message
+
+ENVIRONMENT VARIABLES:
+  Configuration is also loaded from a '.env' file in the current directory.
+  CLI flags > system env vars > .env file > defaults.
+
+  Authentication:
+    KUBEBOLT_AUTH_ENABLED           Enable login (default: true)
+    KUBEBOLT_ADMIN_PASSWORD         Initial admin password (generated if unset)
+    KUBEBOLT_JWT_SECRET             JWT signing secret (persisted in DB if unset)
+    KUBEBOLT_DATA_DIR               Directory for user database (default: ./data)
+
+  AI Copilot (optional, BYO key):
+    KUBEBOLT_AI_PROVIDER            anthropic | openai | custom
+    KUBEBOLT_AI_API_KEY             Provider API key (enables copilot)
+    KUBEBOLT_AI_MODEL               Model name (uses provider default if unset)
+    KUBEBOLT_AI_BASE_URL            Custom endpoint for self-hosted providers
+
+EXAMPLES:
+  # Connect to current kubeconfig context
+  kubebolt
+
+  # Specific kubeconfig and port
+  kubebolt --kubeconfig ~/.kube/prod.yaml --port 3000
+
+  # Auto-open browser on start
+  kubebolt --open
+
+  # Use a .env file in the current directory for configuration
+  echo "KUBEBOLT_ADMIN_PASSWORD=MyPass123" > .env
+  kubebolt
+
+LINKS:
+  Website:       https://clm-cloud-solutions.github.io/kubebolt/
+  Documentation: https://clm-cloud-solutions.github.io/kubebolt/docs.html
+  GitHub:        https://github.com/clm-cloud-solutions/kubebolt
+  License:       MIT
+`
+
 func main() {
 	cfg := config.DefaultConfig()
 
 	var host string
 	var showVersion bool
 	var openBrowser bool
+
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, helpText, version)
+	}
 
 	flag.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
 	flag.IntVar(&cfg.Port, "port", cfg.Port, "HTTP server port")
