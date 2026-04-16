@@ -3,12 +3,16 @@ package main
 import (
 	"context"
 	crypto_rand "crypto/rand"
+	"embed"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -19,14 +23,40 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
+// version is set at build time via -ldflags.
+var version = "dev"
+
+// frontendFS embeds the production-built React frontend.
+// When building the single binary, copy apps/web/dist/ to apps/api/cmd/server/web/dist/
+// before running go build. If the directory doesn't exist, the binary works in API-only mode.
+//
+//go:embed all:web/dist
+var embeddedFS embed.FS
+
 func main() {
 	cfg := config.DefaultConfig()
 
+	var host string
+	var showVersion bool
+	var openBrowser bool
+
 	flag.StringVar(&cfg.Kubeconfig, "kubeconfig", "", "Path to kubeconfig file")
-	flag.IntVar(&cfg.Port, "port", cfg.Port, "API server port")
+	flag.IntVar(&cfg.Port, "port", cfg.Port, "HTTP server port")
+	flag.StringVar(&host, "host", "0.0.0.0", "Bind address")
 	flag.IntVar(&cfg.MetricInterval, "metric-interval", cfg.MetricInterval, "Metrics polling interval in seconds")
 	flag.IntVar(&cfg.InsightInterval, "insight-interval", cfg.InsightInterval, "Insight evaluation interval in seconds")
+	flag.BoolVar(&openBrowser, "open", false, "Auto-open browser on start")
+	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
 	flag.Parse()
+
+	if showVersion {
+		fmt.Printf("KubeBolt %s\n", version)
+		os.Exit(0)
+	}
+
+	// Load .env file (if present) before reading any config.
+	// System env vars take precedence — .env only fills in gaps.
+	config.LoadDotEnv(".env")
 
 	if cfg.Kubeconfig == "" {
 		if env := os.Getenv("KUBECONFIG"); env != "" {
@@ -37,9 +67,23 @@ func main() {
 		}
 	}
 
-	log.Printf("KubeBolt starting...")
+	// Check if frontend is embedded
+	var frontendFS fs.FS
+	if dir, err := fs.Sub(embeddedFS, "web/dist"); err == nil {
+		if _, err := fs.Stat(dir, "index.html"); err == nil {
+			frontendFS = dir
+			log.Println("Embedded frontend detected — serving UI and API on single port")
+		}
+	}
+
+	log.Printf("KubeBolt %s starting...", version)
 	log.Printf("  Kubeconfig: %s", cfg.Kubeconfig)
-	log.Printf("  API Port:   %d", cfg.Port)
+	log.Printf("  Listen:     %s:%d", host, cfg.Port)
+	if frontendFS != nil {
+		log.Printf("  Mode:       single binary (embedded frontend)")
+	} else {
+		log.Printf("  Mode:       API-only (frontend served separately)")
+	}
 
 	// Create WebSocket hub
 	wsHub := websocket.NewHub()
@@ -114,17 +158,33 @@ func main() {
 		authHandlers = auth.NewNoOpHandlers()
 	}
 
-	// Create API Router
+	// Create API Router (with optional embedded frontend)
 	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, authHandlers)
 
+	// Mount embedded frontend if available
+	if frontendFS != nil {
+		api.MountFrontend(router, frontendFS)
+	}
+
 	// Start HTTP server
+	addr := fmt.Sprintf("%s:%d", host, cfg.Port)
 	server := &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
+		Addr:    addr,
 		Handler: router,
 	}
 
 	go func() {
-		log.Printf("KubeBolt API running on http://localhost:%d", cfg.Port)
+		url := fmt.Sprintf("http://localhost:%d", cfg.Port)
+		if frontendFS != nil {
+			log.Printf("KubeBolt ready at %s", url)
+		} else {
+			log.Printf("KubeBolt API running at %s", url)
+		}
+
+		if openBrowser {
+			openURL(url)
+		}
+
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server error: %v", err)
 		}
@@ -143,4 +203,20 @@ func main() {
 		log.Printf("HTTP server shutdown error: %v", err)
 	}
 	log.Println("KubeBolt stopped")
+}
+
+// openURL opens the given URL in the default browser.
+func openURL(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		return
+	}
+	cmd.Start()
 }

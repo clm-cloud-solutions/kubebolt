@@ -47,7 +47,26 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 
 ## Quick Start
 
-### Option 1: Helm Chart (recommended for Kubernetes)
+### Option 1: Single Binary (fastest)
+
+Download the binary for your platform from the [latest release](https://github.com/clm-cloud-solutions/kubebolt/releases/latest):
+
+```bash
+# macOS Apple Silicon
+curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-darwin-arm64
+chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt
+
+# Linux amd64
+curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-linux-amd64
+chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kubebolt
+
+# Run (auto-detects kubeconfig; admin password printed to logs)
+kubebolt --kubeconfig ~/.kube/config
+```
+
+Available for `darwin-arm64`, `darwin-amd64`, `linux-arm64`, `linux-amd64`, and `windows-amd64`. The binary includes the React frontend embedded — API + UI on a single port. A `.env` file in the current directory is auto-loaded for configuration.
+
+### Option 2: Helm Chart (recommended for Kubernetes)
 
 ```bash
 helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
@@ -63,7 +82,7 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set ingress.hosts[0].host=kubebolt.example.com
 ```
 
-### Option 2: Docker Compose
+### Option 3: Docker Compose
 
 Runs the full stack (Go API + React frontend via nginx) in containers.
 
@@ -107,7 +126,7 @@ To stop: `docker compose down`
 
 To rebuild after code changes: `docker compose up -d --build`
 
-### Option 3: Local development — single command
+### Option 4: Local development — single command
 
 Requires Go 1.25+ and Node 20+.
 
@@ -127,7 +146,7 @@ make build-web    # Build only the frontend
 make test         # Run Go tests
 ```
 
-### Option 4: Local development — separate terminals
+### Option 5: Local development — separate terminals
 
 If you prefer running each service independently:
 
@@ -294,6 +313,7 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and roadmap.
 
 **Coming next:**
+- Homebrew tap, Docker single-container, kubectl plugin (krew), Kubernetes Operator (pending custom domain setup)
 - OAuth2/OIDC authentication (GitHub, Google, Azure AD)
 - Teams and organizations
 - Animated cluster map with traffic visualization

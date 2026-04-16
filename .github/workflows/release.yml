@@ -140,13 +140,74 @@ jobs:
       - name: Sign chart with Cosign
         run: cosign sign --yes ghcr.io/${{ github.repository }}/helm/kubebolt:${{ steps.chart.outputs.version }}
 
+  build-binaries:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build frontend
+        run: |
+          cd apps/web
+          npm ci
+          npm run build
+
+      - name: Embed frontend into API
+        run: |
+          mkdir -p apps/api/cmd/server/web
+          cp -r apps/web/dist apps/api/cmd/server/web/dist
+
+      - name: Cross-compile binaries
+        run: |
+          mkdir -p dist
+          VERSION="${{ github.ref_name }}"
+          for target in linux-amd64 linux-arm64 darwin-amd64 darwin-arm64 windows-amd64; do
+            GOOS="${target%-*}"
+            GOARCH="${target#*-}"
+            EXT=""
+            [ "$GOOS" = "windows" ] && EXT=".exe"
+            OUT="dist/kubebolt-${target}${EXT}"
+            echo "Building $OUT..."
+            cd apps/api
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+              go build -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "../../${OUT}" ./cmd/server/
+            cd ../..
+          done
+
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          sha256sum kubebolt-* > CHECKSUMS.txt
+          cat CHECKSUMS.txt
+
+      - name: Upload binaries artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries
+          path: dist/
+          retention-days: 1
+
   release:
-    needs: [build-api, build-web, publish-chart]
+    needs: [build-api, build-web, publish-chart, build-binaries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Download binaries artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: binaries
+          path: dist/
 
       - name: Generate changelog
         id: changelog
@@ -214,25 +275,47 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          files: |
+            dist/kubebolt-linux-amd64
+            dist/kubebolt-linux-arm64
+            dist/kubebolt-darwin-amd64
+            dist/kubebolt-darwin-arm64
+            dist/kubebolt-windows-amd64.exe
+            dist/CHECKSUMS.txt
           body: |
-            ## Container Images
-
-            ```bash
-            docker pull ${{ env.API_IMAGE }}:${{ github.ref_name }}
-            docker pull ${{ env.WEB_IMAGE }}:${{ github.ref_name }}
-            ```
-
             ## Install
 
-            **Helm:**
+            ### Helm (recommended for Kubernetes)
             ```bash
             helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
+            kubectl port-forward svc/kubebolt 3000:80
             ```
 
-            **Docker Compose:**
+            ### Single Binary (download below)
+            ```bash
+            # macOS Apple Silicon
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/kubebolt-darwin-arm64
+            chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt
+
+            # Linux amd64
+            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/kubebolt-linux-amd64
+            chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kubebolt
+
+            kubebolt --kubeconfig ~/.kube/config
+            ```
+
+            All platform binaries are attached below. Verify with `sha256sum -c CHECKSUMS.txt`.
+
+            ### Docker Compose
             ```bash
             git clone https://github.com/${{ github.repository }}.git
             cd kubebolt/deploy && docker compose up -d
+            ```
+
+            ### Container Images
+            ```bash
+            docker pull ${{ env.API_IMAGE }}:${{ github.ref_name }}
+            docker pull ${{ env.WEB_IMAGE }}:${{ github.ref_name }}
             ```
 
             ## Changelog

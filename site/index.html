@@ -345,11 +345,12 @@ footer a{color:var(--text-3);transition:color .2s}footer a:hover{color:var(--tex
 
 <span class="d"># Open http://localhost:3000</span>
 <span class="d"># Default admin password printed to logs</span></pre></div></div>
-    <div id="p-binary"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span><span class="badge bp">Windows</span></div><div class="mt">Single Binary</div><p class="md">Download and run. API server and web UI in a single process with embedded assets.</p><pre><span class="d"># Install</span>
-<span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
+    <div id="p-binary"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span><span class="badge bp">Windows</span></div><div class="mt">Single Binary</div><p class="md">Download and run. API server and web UI in a single executable. Embedded frontend, one port. Auto-loads <code>.env</code> for configuration.</p><pre><span class="d"># macOS Apple Silicon</span>
+<span class="g">curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-darwin-arm64
+chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt</span>
 
-<span class="d"># Run (auto-detects kubeconfig)</span>
-<span class="g">kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
+<span class="d"># Run</span>
+<span class="g">kubebolt --kubeconfig ~/.kube/config</span></pre></div></div>
     <div id="p-brew"><div class="ib"><div class="badges"><span class="badge be">Easy</span><span class="badge bp">macOS</span><span class="badge bp">Linux</span></div><div class="mt">Homebrew</div><p class="md">Install and update via Homebrew. Automatic version management.</p><pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span>
 <span class="g">kubebolt</span></pre><p class="md" style="margin-top:12px;font-size:12px;color:var(--text-4)">Coming soon &mdash; Phase 1.9</p></div></div>
     <div id="p-operator"><div class="ib"><div class="badges"><span class="badge ba">Advanced</span><span class="badge bp">In-Cluster</span></div><div class="mt">Kubernetes Operator</div><p class="md">Declarative management via CRD. Handles upgrades, config, and self-healing.</p><pre><span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span>

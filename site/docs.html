@@ -264,6 +264,21 @@ cd deploy && docker compose up -d</span></pre>
 <p>Frontend at <code>http://localhost:3000</code>. Admin password printed to logs (<code>docker compose logs api</code>).</p>
 <div class="callout-blue callout"><strong>EKS note:</strong> The compose file mounts <code>~/.aws</code> for AWS credential access. Ensure your AWS session is active.</div>
 
+<h2>Single Binary (macOS, Linux, Windows)</h2>
+<p>One executable with embedded frontend. API + UI in a single process on one port. Download from <a href="https://github.com/clm-cloud-solutions/kubebolt/releases/latest">GitHub Releases</a>.</p>
+<pre><span class="d"># macOS Apple Silicon</span>
+<span class="g">curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-darwin-arm64
+chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt</span>
+
+<span class="d"># Linux amd64</span>
+<span class="g">curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-linux-amd64
+chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kubebolt</span>
+
+<span class="d"># Run (auto-detects kubeconfig; admin password printed to logs)</span>
+<span class="g">kubebolt --kubeconfig ~/.kube/config</span></pre>
+<p>Available for <code>darwin-arm64</code>, <code>darwin-amd64</code>, <code>linux-arm64</code>, <code>linux-amd64</code>, and <code>windows-amd64</code>. Verify with <code>sha256sum -c CHECKSUMS.txt</code>.</p>
+<div class="callout"><strong>.env support:</strong> The binary auto-loads a <code>.env</code> file from the current directory. Put <code>KUBEBOLT_ADMIN_PASSWORD</code>, <code>KUBEBOLT_AI_API_KEY</code>, etc. in a <code>.env</code> file next to the binary. System env vars and CLI flags take precedence.</div>
+
 <h2>Local Development</h2>
 <p>Requires Go 1.25+ and Node 20+.</p>
 <pre><span class="d"># Backend (port 8080)</span>
@@ -272,32 +287,34 @@ cd deploy && docker compose up -d</span></pre>
 <span class="d"># Frontend (port 5173, proxies /api and /ws to backend)</span>
 <span class="g">cd apps/web && npm install && npm run dev</span></pre>
 
+<p>To build your own single binary:</p>
+<pre><span class="g">make build-binary</span>
+<span class="d"># Produces apps/api/kubebolt (embedded frontend)</span></pre>
+
 <hr>
 
-<h2>Coming Soon (Phase 1.9)</h2>
-<p>The following distribution methods are planned and documented in the <a href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/kubebolt-distribution-spec.md">distribution spec</a>.</p>
+<h2>Coming Soon</h2>
+<p>The following distribution methods are planned. They depend on acquiring a custom domain (<code>kubebolt.io</code>) for install scripts and tap repository setup. The spec is at <a href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/kubebolt-distribution-spec.md">docs/kubebolt-distribution-spec.md</a>.</p>
 
-<h3>Single Binary</h3>
-<p>One binary with embedded frontend assets. API server + web UI in a single process. Download and run.</p>
-<pre><span class="d"># Install (auto-detects OS/arch)</span>
-<span class="g">curl -fsSL https://get.kubebolt.dev | sh</span>
-<span class="g">kubebolt</span></pre>
+<h3>Install Script</h3>
+<p>One-command install that auto-detects OS and architecture (needs custom domain).</p>
+<pre><span class="g">curl -fsSL https://get.kubebolt.dev | sh</span></pre>
 
 <h3>Homebrew</h3>
-<p>For macOS and Linux. Automatic updates via <code>brew upgrade</code>.</p>
+<p>For macOS and Linux. Automatic updates via <code>brew upgrade</code>. Requires setting up a tap repository.</p>
 <pre><span class="g">brew install clm-cloud-solutions/tap/kubebolt</span></pre>
 
 <h3>Docker Single-Container</h3>
-<p>Single image (no nginx, no compose). Zero install on your machine.</p>
+<p>Single image (no nginx, no compose). Reuses the binary.</p>
 <pre><span class="g">docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro ghcr.io/clm-cloud-solutions/kubebolt</span></pre>
 
 <h3>kubectl Plugin (krew)</h3>
-<p>Run KubeBolt as a kubectl subcommand.</p>
+<p>Run KubeBolt as a kubectl subcommand. Requires submission to krew-index.</p>
 <pre><span class="g">kubectl krew install kubebolt
 kubectl kubebolt</span></pre>
 
 <h3>Kubernetes Operator</h3>
-<p>Declarative lifecycle management via <code>KubeBolt</code> CRD.</p>
+<p>Declarative lifecycle management via <code>KubeBolt</code> CRD. Separate controller project with Kubebuilder.</p>
 <pre><span class="g">kubectl apply -f https://get.kubebolt.dev/operator.yaml</span></pre>
 </div></div>
 
