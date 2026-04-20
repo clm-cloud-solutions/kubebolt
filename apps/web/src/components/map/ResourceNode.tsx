@@ -50,17 +50,43 @@ const kindAccent: Record<string, { bg: string; text: string; border: string }> =
 
 const defaultAccent = { bg: 'rgba(255,255,255,0.04)', text: 'var(--kb-text-tertiary)', border: 'border-kb-border' }
 
-function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
+const OK_STATUSES = new Set(['running', 'ready', 'active', 'bound', 'succeeded', 'programmed', 'accepted', 'available'])
+const ERROR_STATUSES = new Set(['failed', 'error', 'crashloopbackoff', 'imagepullbackoff', 'evicted', 'oomkilled'])
+
+// Extend TopologyNode with the runtime flag injected by ClusterMap.
+interface ResourceNodeData extends TopologyNode {
+  animationsEnabled?: boolean
+}
+
+function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) {
   const kind = data.type || data.kind || ''
   const icon = kindIcons[kind] || <Box className="w-3.5 h-3.5" />
   const accent = kindAccent[kind] || defaultAccent
 
+  const status = (data.status || '').toLowerCase()
+  const isOk = OK_STATUSES.has(status)
+  const isError = ERROR_STATUSES.has(status)
+  const pulsing = data.animationsEnabled !== false && (isOk || isError)
+
   return (
-    <div
-      className={`bg-kb-card border ${accent.border} rounded-[10px] p-2.5 w-[170px] transition-all ${
-        selected ? 'ring-1 ring-status-info shadow-lg shadow-status-info/10' : 'hover:bg-kb-card-hover'
-      }`}
-    >
+    <div className="relative w-[170px]">
+      {/* Pulse halo — absolute under the card, same rounded corners.
+          Green for healthy resources, red for errors. Reduced motion honored. */}
+      {pulsing && (
+        <div
+          className="absolute inset-0 rounded-[10px] pointer-events-none motion-reduce:hidden animate-kb-node-pulse"
+          style={{
+            boxShadow: isError
+              ? '0 0 0 0 rgba(239, 64, 86, 0.45)'
+              : '0 0 0 0 rgba(34, 214, 138, 0.40)',
+          }}
+        />
+      )}
+      <div
+        className={`relative bg-kb-card border ${accent.border} rounded-[10px] p-2.5 w-[170px] transition-all ${
+          selected ? 'ring-1 ring-status-info shadow-lg shadow-status-info/10' : 'hover:bg-kb-card-hover'
+        }`}
+      >
       <Handle type="target" position={Position.Left} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-left-1" />
       <Handle type="source" position={Position.Right} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-right-1" />
 
@@ -116,6 +142,7 @@ function ResourceNodeComponent({ data, selected }: NodeProps<TopologyNode>) {
           )}
         </div>
       )}
+      </div>
     </div>
   )
 }

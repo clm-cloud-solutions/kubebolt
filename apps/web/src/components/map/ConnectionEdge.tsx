@@ -12,22 +12,22 @@ interface EdgeStyle {
 }
 
 const EDGE_STYLES: Record<string, EdgeStyle> = {
-  // Traffic flow (Service → Pod) — green, fast flowing dots
+  // Traffic flow (Service → Pod) — green, fast flowing dots (loud, most prominent)
   selects:    { stroke: '#1DBD7D', width: 2.0, dashed: false, particles: 3, particleSize: 2.5, speed: 2,   glow: true },
   // Traffic routing (Ingress/Gateway → Service) — purple, medium dots
   routes:     { stroke: '#a78bfa', width: 1.8, dashed: false, particles: 2, particleSize: 2,   speed: 2.5, glow: true },
-  // Ownership (Deployment → ReplicaSet → Pod) — subtle gray
-  owns:       { stroke: 'rgba(255,255,255,0.10)', width: 0.8, dashed: false, particles: 0, particleSize: 0, speed: 0, glow: false },
-  // Config references — amber dashed
-  mounts:     { stroke: '#f5a623', width: 0.8, dashed: true,  particles: 0, particleSize: 0, speed: 0, glow: false },
-  envFrom:    { stroke: '#f5a623', width: 0.8, dashed: true,  particles: 0, particleSize: 0, speed: 0, glow: false },
-  imagePull:  { stroke: '#f5a623', width: 0.8, dashed: true,  particles: 0, particleSize: 0, speed: 0, glow: false },
-  // Volume usage — cyan solid
-  uses:       { stroke: '#22d3ee', width: 1.0, dashed: false, particles: 0, particleSize: 0, speed: 0, glow: false },
+  // Ownership (Deployment → ReplicaSet → Pod) — slow, subtle particle to show liveness
+  owns:       { stroke: 'rgba(255,255,255,0.18)', width: 0.8, dashed: false, particles: 1, particleSize: 1.2, speed: 5, glow: false },
+  // Config references — amber dashed with a slow pulse
+  mounts:     { stroke: '#f5a623', width: 0.8, dashed: true,  particles: 1, particleSize: 1.2, speed: 5, glow: false },
+  envFrom:    { stroke: '#f5a623', width: 0.8, dashed: true,  particles: 1, particleSize: 1.2, speed: 5, glow: false },
+  imagePull:  { stroke: '#f5a623', width: 0.8, dashed: true,  particles: 0, particleSize: 0,   speed: 0, glow: false },
+  // Volume usage — cyan with slow particle
+  uses:       { stroke: '#22d3ee', width: 1.0, dashed: false, particles: 1, particleSize: 1.5, speed: 4, glow: false },
   // Storage binding — cyan with slow dot
   bound:      { stroke: '#22d3ee', width: 1.0, dashed: false, particles: 1, particleSize: 1.5, speed: 4, glow: false },
-  // Autoscaling — purple dashed
-  hpa:        { stroke: '#a78bfa', width: 0.8, dashed: true,  particles: 0, particleSize: 0, speed: 0, glow: false },
+  // Autoscaling — purple dashed with slow particle
+  hpa:        { stroke: '#a78bfa', width: 0.8, dashed: true,  particles: 1, particleSize: 1.2, speed: 5, glow: false },
 }
 
 const DEFAULT_STYLE: EdgeStyle = {
@@ -53,6 +53,13 @@ function ConnectionEdgeComponent({
   const sourceStatus = ((data?.sourceStatus as string) || '').toLowerCase()
   const targetStatus = ((data?.targetStatus as string) || '').toLowerCase()
   const hasError = ERROR_STATUSES.has(sourceStatus) || ERROR_STATUSES.has(targetStatus)
+
+  // When the user disables animations (or the OS reports prefers-reduced-motion),
+  // we render edges without particles or pulse overlays. The data flag is set
+  // from ClusterMap based on the animation toggle.
+  const animationsEnabled = data?.animationsEnabled !== false
+  const particleCount = animationsEnabled ? cfg.particles : 0
+  const showErrorPulse = animationsEnabled && hasError && cfg.particles > 0
 
   const [edgePath] = getBezierPath({
     sourceX,
@@ -87,8 +94,8 @@ function ConnectionEdgeComponent({
         opacity={cfg.particles > 0 ? 0.6 : 0.4}
       />
 
-      {/* Error pulse overlay */}
-      {hasError && cfg.particles > 0 && (
+      {/* Error pulse overlay — only when animations are on */}
+      {showErrorPulse && (
         <path
           d={edgePath}
           fill="none"
@@ -100,8 +107,8 @@ function ConnectionEdgeComponent({
         </path>
       )}
 
-      {/* Flowing particles */}
-      {cfg.particles > 0 && Array.from({ length: cfg.particles }).map((_, i) => (
+      {/* Flowing particles — suppressed entirely when animations are disabled */}
+      {particleCount > 0 && Array.from({ length: particleCount }).map((_, i) => (
         <circle
           key={i}
           r={cfg.particleSize}
@@ -112,7 +119,7 @@ function ConnectionEdgeComponent({
             dur={`${cfg.speed}s`}
             repeatCount="indefinite"
             path={edgePath}
-            begin={`${(i / cfg.particles) * cfg.speed}s`}
+            begin={`${(i / particleCount) * cfg.speed}s`}
           />
         </circle>
       ))}

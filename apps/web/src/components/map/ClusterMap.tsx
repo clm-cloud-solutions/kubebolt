@@ -5,13 +5,14 @@ import ReactFlow, {
   MiniMap,
   ReactFlowProvider,
   useReactFlow,
+  useNodesState,
   type Node,
   type Edge,
   type NodeTypes,
   type EdgeTypes,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { LayoutGrid, GitBranch } from 'lucide-react'
+import { LayoutGrid, GitBranch, Zap, ZapOff, RotateCcw } from 'lucide-react'
 import { useTopology } from '@/hooks/useTopology'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -266,15 +267,81 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
   return allNodes
 }
 
+// LegendItem renders a single swatch+label row used by the bottom legend.
+// Kind controls the visual: dot (status), solid/dashed line (edge), or
+// dotted-line (edge with moving particles).
+function LegendItem({
+  kind,
+  color,
+  label,
+  description,
+}: {
+  kind: 'dot' | 'solid-line' | 'dashed' | 'dotted-line'
+  color: string
+  label: string
+  description?: string
+}) {
+  const tooltip = description ? `${label} — ${description}` : label
+  return (
+    <div className="flex items-center gap-1.5" title={tooltip}>
+      {kind === 'dot' && (
+        <div className="w-2 h-2 rounded-full" style={{ background: color }} />
+      )}
+      {kind === 'solid-line' && (
+        <div className="w-5 h-0.5 rounded" style={{ background: color }} />
+      )}
+      {kind === 'dashed' && (
+        <div className="w-5 h-0.5 border-t border-dashed" style={{ borderColor: color }} />
+      )}
+      {kind === 'dotted-line' && (
+        <div className="flex items-center gap-0.5">
+          <div className="w-4 h-0.5 rounded" style={{ background: color }} />
+          <div className="w-1.5 h-1.5 rounded-full" style={{ background: color }} />
+        </div>
+      )}
+      <span className="text-[10px] font-mono text-kb-text-secondary">{label}</span>
+    </div>
+  )
+}
+
+// Read/write user preferences that should persist across reloads.
+// Preferences live in localStorage and are keyed by feature name.
+const PREF_ANIMATIONS = 'kb-map-animations'
+const PREF_LAYOUT = 'kb-map-layout'
+
+function loadPref(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback
+  } catch {
+    return fallback
+  }
+}
+
+function savePref(key: string, value: string) {
+  try { localStorage.setItem(key, value) } catch { /* localStorage blocked */ }
+}
+
 function ClusterMapInner() {
   const { data: topology, isLoading, error, refetch } = useTopology()
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
   const [visibleNamespaces, setVisibleNamespaces] = useState<Set<string> | null>(null)
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
-  const [layoutMode, setLayoutMode] = useState<LayoutMode>('flow')
+  const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => (loadPref(PREF_LAYOUT, 'flow') as LayoutMode))
+  const [animationsEnabled, setAnimationsEnabled] = useState(() => loadPref(PREF_ANIMATIONS, 'on') !== 'off')
+  // Manual position overrides set by user drag. Keyed by node ID.
+  // Cleared when switching layout mode or clicking Reset.
+  const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(new Map())
   const { fitView } = useReactFlow()
   const navigate = useNavigate()
+
+  // Persist preferences on change
+  useEffect(() => { savePref(PREF_LAYOUT, layoutMode) }, [layoutMode])
+  useEffect(() => { savePref(PREF_ANIMATIONS, animationsEnabled ? 'on' : 'off') }, [animationsEnabled])
+
+  // Reset manual positions whenever the layout mode changes — the new layout
+  // picks completely different coordinates so old overrides wouldn't make sense.
+  useEffect(() => { setDragOverrides(new Map()) }, [layoutMode])
 
   const allNamespaces = useMemo(() => {
     if (!topology?.nodes) return []
@@ -315,7 +382,9 @@ function ClusterMapInner() {
 
   const showAllNamespaces = useCallback(() => setVisibleNamespaces(null), [])
 
-  const flowNodes = useMemo(() => {
+  // Compute the base layout from topology + filters. This doesn't include
+  // user drag overrides — those are applied downstream via useNodesState.
+  const computedNodes = useMemo(() => {
     if (!topology?.nodes) return []
     const filtered = filterNodes(topology.nodes, hiddenKinds, visibleNamespaces)
     if (layoutMode === 'flow') {
@@ -324,9 +393,50 @@ function ClusterMapInner() {
     return buildGridLayout(filtered)
   }, [topology?.nodes, topology?.edges, hiddenKinds, visibleNamespaces, layoutMode])
 
+  // Apply drag overrides + animation flag on top of the computed layout.
+  // This is what React Flow actually renders.
+  const initialNodes = useMemo(() => {
+    return computedNodes.map((n) => {
+      const override = dragOverrides.get(n.id)
+      const next: Node = override
+        ? { ...n, position: override }
+        : n
+      // Inject animationsEnabled into the data object so ResourceNode can
+      // pulse accordingly. Namespace regions don't need it.
+      if (next.type === 'resource') {
+        return { ...next, data: { ...next.data, animationsEnabled } }
+      }
+      return next
+    })
+  }, [computedNodes, dragOverrides, animationsEnabled])
+
+  // useNodesState lets React Flow manage node positions interactively
+  // while we still drive the initial layout. We sync whenever the layout
+  // is recomputed (topology refetch, filter change, layout switch).
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(initialNodes)
+  useEffect(() => { setFlowNodes(initialNodes) }, [initialNodes, setFlowNodes])
+
+  // Persist drag deltas when the user lets go of a node.
+  const onNodeDragStop = useCallback(
+    (_: React.MouseEvent, node: Node) => {
+      if (node.type === 'namespaceRegion') return
+      setDragOverrides((prev) => {
+        const next = new Map(prev)
+        next.set(node.id, { x: node.position.x, y: node.position.y })
+        return next
+      })
+    },
+    []
+  )
+
+  const resetLayout = useCallback(() => {
+    setDragOverrides(new Map())
+    setTimeout(() => fitView({ padding: 0.1 }), 100)
+  }, [fitView])
+
   const edges: Edge[] = useMemo(() => {
     if (!topology?.edges) return []
-    const visibleIds = new Set(flowNodes.map((n) => n.id))
+    const visibleIds = new Set(computedNodes.map((n) => n.id))
     const nodeStatusMap = new Map<string, string>()
     if (topology?.nodes) {
       for (const n of topology.nodes) {
@@ -343,17 +453,21 @@ function ClusterMapInner() {
           animated: e.animated,
           sourceStatus: nodeStatusMap.get(e.source) || '',
           targetStatus: nodeStatusMap.get(e.target) || '',
+          animationsEnabled,
         },
-        animated: e.animated,
+        animated: e.animated && animationsEnabled,
       }))
-  }, [topology?.edges, topology?.nodes, flowNodes])
+  }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled])
 
+  // Refit the view when filters or layout change, but not on every drag.
+  // We key off the computed layout (size + layout mode), not the live flowNodes
+  // state which mutates on drag.
   useEffect(() => {
-    if (flowNodes.length > 0) {
+    if (computedNodes.length > 0) {
       const t = setTimeout(() => fitView({ padding: 0.1 }), 100)
       return () => clearTimeout(t)
     }
-  }, [flowNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView])
+  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView])
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -389,6 +503,8 @@ function ClusterMapInner() {
         edges={edges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
+        onNodesChange={onNodesChange}
+        onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
         onPaneClick={() => setSelectedNode(null)}
@@ -398,6 +514,7 @@ function ClusterMapInner() {
         className="bg-kb-bg"
         minZoom={0.03}
         maxZoom={2}
+        nodesDraggable
       >
         <Background color="rgba(255,255,255,0.018)" gap={36} />
         <MiniMap
@@ -443,6 +560,32 @@ function ClusterMapInner() {
             >
               <GitBranch className="w-3 h-3" />
               Flow
+            </button>
+          </div>
+        </div>
+
+        {/* View Controls */}
+        <div>
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">View</div>
+          <div className="flex rounded-md border border-kb-border overflow-hidden">
+            <button
+              onClick={() => setAnimationsEnabled((v) => !v)}
+              title={animationsEnabled ? 'Disable animations (better performance)' : 'Enable animations'}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors ${
+                animationsEnabled ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+              }`}
+            >
+              {animationsEnabled ? <Zap className="w-3 h-3" /> : <ZapOff className="w-3 h-3" />}
+              {animationsEnabled ? 'Animated' : 'Static'}
+            </button>
+            <button
+              onClick={resetLayout}
+              disabled={dragOverrides.size === 0}
+              title={dragOverrides.size === 0 ? 'No manual positions to reset' : `Reset ${dragOverrides.size} moved node(s)`}
+              className="flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <RotateCcw className="w-3 h-3" />
+              Reset
             </button>
           </div>
         </div>
@@ -529,33 +672,24 @@ function ClusterMapInner() {
         </div>
       )}
 
-      {/* Legend */}
-      <div className="absolute bottom-4 left-64 bg-kb-card/95 backdrop-blur-sm border border-kb-border rounded-lg px-3 py-2 z-10 flex gap-3 flex-wrap">
-        {[
-          { color: '#1DBD7D', label: 'Traffic', dot: true },
-          { color: '#a78bfa', label: 'Routing', dot: true },
-          { color: '#f5a623', label: 'Config', dashed: true },
-          { color: '#22d3ee', label: 'Storage' },
-          { color: 'rgba(255,255,255,0.10)', label: 'Ownership' },
-          { color: '#22d68a', statusDot: true, label: 'Ok' },
-          { color: '#ef4056', statusDot: true, label: 'Error' },
-        ].map((item) => (
-          <div key={item.label} className="flex items-center gap-1.5">
-            {item.statusDot ? (
-              <div className="w-2 h-2 rounded-full" style={{ background: item.color }} />
-            ) : item.dashed ? (
-              <div className="w-4 h-0.5 border-t border-dashed" style={{ borderColor: item.color }} />
-            ) : item.dot ? (
-              <div className="flex items-center gap-0.5">
-                <div className="w-3 h-0.5 rounded" style={{ background: item.color }} />
-                <div className="w-1 h-1 rounded-full" style={{ background: item.color }} />
-              </div>
-            ) : (
-              <div className="w-4 h-0.5 rounded" style={{ background: item.color }} />
-            )}
-            <span className="text-[9px] font-mono text-kb-text-secondary">{item.label}</span>
-          </div>
-        ))}
+      {/* Legend — grouped by category so edge types and node status don't
+          get visually conflated. */}
+      <div className="absolute bottom-4 left-64 bg-kb-card/95 backdrop-blur-sm border border-kb-border rounded-lg p-3 z-10 space-y-2">
+        <div className="flex items-center gap-4 flex-wrap">
+          <span className="text-[8px] font-mono font-semibold text-kb-text-tertiary uppercase tracking-[0.1em] shrink-0">Edges</span>
+          <LegendItem kind="dotted-line" color="#1DBD7D" label="Traffic" description="Service → Pod" />
+          <LegendItem kind="dotted-line" color="#a78bfa" label="Routing" description="Ingress → Service" />
+          <LegendItem kind="solid-line" color="#22d3ee" label="Storage" description="PVC / Volume" />
+          <LegendItem kind="dashed" color="#f5a623" label="Config" description="ConfigMap / Secret" />
+          <LegendItem kind="solid-line" color="rgba(255,255,255,0.25)" label="Ownership" description="Deployment → Pod" />
+        </div>
+        <div className="flex items-center gap-4 flex-wrap border-t border-kb-border pt-2">
+          <span className="text-[8px] font-mono font-semibold text-kb-text-tertiary uppercase tracking-[0.1em] shrink-0">Status</span>
+          <LegendItem kind="dot" color="#22d68a" label="Healthy" />
+          <LegendItem kind="dot" color="#f5a623" label="Warning" />
+          <LegendItem kind="dot" color="#ef4056" label="Error" />
+          <LegendItem kind="dot" color="#555770" label="Unknown" />
+        </div>
       </div>
 
       {/* Detail panel */}
