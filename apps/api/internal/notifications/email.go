@@ -309,7 +309,7 @@ var htmlTemplate = template.Must(template.New("email").Parse(`<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>{{.Subject}}</title></head>
 <body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#f5f5f5;margin:0;padding:24px;color:#1a1a1a;">
 <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-  <div style="padding:20px 24px;background:linear-gradient(135deg,#1DBD7D,#22d68a);color:#fff;">
+  <div style="padding:20px 24px;background:{{.BannerBg}};color:#fff;">
     <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.1em;opacity:0.85;">KubeBolt</div>
     <div style="font-size:18px;font-weight:600;margin-top:4px;">{{.Subject}}</div>
   </div>
@@ -357,7 +357,12 @@ type emailEvent struct {
 }
 
 type emailData struct {
-	Subject   string
+	Subject  string
+	// BannerBg is the CSS gradient for the top banner, derived from the
+	// highest severity across all events. Typed as template.CSS because
+	// html/template auto-escapes strings inside style="" attributes to
+	// prevent XSS; template.CSS tells the engine the value is pre-validated.
+	BannerBg  template.CSS
 	Events    []emailEvent
 	Timestamp string
 }
@@ -409,12 +414,41 @@ func buildBodies(events []Event) (html string, text string) {
 	subject := buildSubject(events)
 	data := emailData{
 		Subject:   subject,
+		BannerBg:  bannerGradientForEvents(events),
 		Events:    renderedEvents,
 		Timestamp: time.Now().UTC().Format("2006-01-02 15:04 UTC"),
 	}
 	var buf bytes.Buffer
 	_ = htmlTemplate.Execute(&buf, data)
 	return buf.String(), textBuilder.String()
+}
+
+// bannerGradientForEvents picks a CSS gradient for the top banner based on
+// the highest severity across all events in the email. For a single event
+// (instant mode) this is simply that event's severity; for digests it's
+// the most critical one — so a digest with a single CRITICAL and ten
+// INFOs still renders in red.
+//
+// Returns template.CSS so html/template doesn't replace the gradient with
+// ZgotmplZ (its safe placeholder for unverified style content).
+func bannerGradientForEvents(events []Event) template.CSS {
+	top := 0
+	for _, e := range events {
+		if lvl := severityLevel(e.Insight.Severity); lvl > top {
+			top = lvl
+		}
+	}
+	switch top {
+	case 3: // critical
+		return template.CSS("linear-gradient(135deg,#dc2626,#ef4444)")
+	case 2: // warning
+		return template.CSS("linear-gradient(135deg,#ea580c,#f59e0b)")
+	case 1: // info
+		return template.CSS("linear-gradient(135deg,#2563eb,#3b82f6)")
+	default:
+		// Fallback — shouldn't happen since events always have a severity
+		return template.CSS("linear-gradient(135deg,#6b7280,#9ca3af)")
+	}
 }
 
 // buildMessage assembles the RFC-5322 message with multipart/alternative
