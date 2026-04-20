@@ -1,11 +1,14 @@
 package api
 
 import (
-	"log"
+	"log/slog"
 	"net/http"
 	"time"
 
+	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 // CORSMiddleware returns a CORS handler for the given allowed origins.
@@ -20,12 +23,44 @@ func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	})
 }
 
-// LoggingMiddleware logs each request.
+// LoggingMiddleware emits a structured access log for each request.
+// Uses chi's WrapResponseWriter so SSE (Flusher) and WebSocket upgrades
+// (Hijacker) keep working — our wrapper only inspects status and bytes.
 func LoggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := time.Now()
-		next.ServeHTTP(w, r)
-		log.Printf("%s %s %s", r.Method, r.URL.Path, time.Since(start))
+		ww := chimiddleware.NewWrapResponseWriter(w, r.ProtoMajor)
+
+		next.ServeHTTP(ww, r)
+
+		status := ww.Status()
+		if status == 0 {
+			status = http.StatusOK
+		}
+
+		lvl := slog.LevelInfo
+		switch {
+		case status >= 500:
+			lvl = slog.LevelError
+		case status >= 400:
+			lvl = slog.LevelWarn
+		}
+
+		attrs := []slog.Attr{
+			slog.String("method", r.Method),
+			slog.String("path", r.URL.Path),
+			slog.Int("status", status),
+			slog.Int("bytes", ww.BytesWritten()),
+			slog.Duration("duration", time.Since(start)),
+			slog.String("remote", r.RemoteAddr),
+		}
+		if reqID := chimiddleware.GetReqID(r.Context()); reqID != "" {
+			attrs = append(attrs, slog.String("reqID", reqID))
+		}
+		if uid := auth.ContextUserID(r); uid != "" {
+			attrs = append(attrs, slog.String("user", uid))
+		}
+		slog.LogAttrs(r.Context(), lvl, "http", attrs...)
 	})
 }
 

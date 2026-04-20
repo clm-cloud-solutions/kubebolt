@@ -7,7 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -20,6 +20,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
@@ -54,6 +55,12 @@ ENVIRONMENT VARIABLES:
   Configuration is also loaded from a '.env' file in the current directory.
   CLI flags > system env vars > .env file > defaults.
 
+  Logging:
+    KUBEBOLT_LOG_LEVEL              debug | info (default) | warn | error
+    KUBEBOLT_LOG_FORMAT             text (default) | json
+    KUBEBOLT_LOG_DIR                When set, tees logs to $DIR/kubebolt.log
+    KUBEBOLT_AI_DEBUG               legacy; "1" forces LOG_LEVEL=debug
+
   Authentication:
     KUBEBOLT_AUTH_ENABLED           Enable login (default: true)
     KUBEBOLT_ADMIN_PASSWORD         Initial admin password (generated if unset)
@@ -87,6 +94,12 @@ LINKS:
   License:       MIT
 `
 
+// fatal logs at error level with the given message/attrs and exits with code 1.
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
+}
+
 func main() {
 	cfg := config.DefaultConfig()
 
@@ -116,6 +129,10 @@ func main() {
 	// System env vars take precedence — .env only fills in gaps.
 	config.LoadDotEnv(".env")
 
+	// Install the structured logger as early as possible, after .env is loaded
+	// so KUBEBOLT_LOG_* vars from the file are honored.
+	logging.Setup(logging.LoadOptionsFromEnv())
+
 	if cfg.Kubeconfig == "" {
 		if env := os.Getenv("KUBECONFIG"); env != "" {
 			cfg.Kubeconfig = env
@@ -130,18 +147,20 @@ func main() {
 	if dir, err := fs.Sub(embeddedFS, "web/dist"); err == nil {
 		if _, err := fs.Stat(dir, "index.html"); err == nil {
 			frontendFS = dir
-			log.Println("Embedded frontend detected — serving UI and API on single port")
+			slog.Info("embedded frontend detected")
 		}
 	}
 
-	log.Printf("KubeBolt %s starting...", version)
-	log.Printf("  Kubeconfig: %s", cfg.Kubeconfig)
-	log.Printf("  Listen:     %s:%d", host, cfg.Port)
+	mode := "api-only"
 	if frontendFS != nil {
-		log.Printf("  Mode:       single binary (embedded frontend)")
-	} else {
-		log.Printf("  Mode:       API-only (frontend served separately)")
+		mode = "single-binary"
 	}
+	slog.Info("kubebolt starting",
+		slog.String("version", version),
+		slog.String("kubeconfig", cfg.Kubeconfig),
+		slog.String("listen", fmt.Sprintf("%s:%d", host, cfg.Port)),
+		slog.String("mode", mode),
+	)
 
 	// Create WebSocket hub
 	wsHub := websocket.NewHub()
@@ -155,19 +174,26 @@ func main() {
 		time.Duration(cfg.InsightInterval)*time.Second,
 	)
 	if err != nil {
-		log.Fatalf("Failed to create cluster manager: %v", err)
+		fatal("failed to create cluster manager", slog.String("error", err.Error()))
 	}
 	defer manager.Stop()
 
 	// Load copilot configuration from KUBEBOLT_AI_* env vars
 	copilotCfg := config.LoadCopilotConfig()
 	if copilotCfg.Enabled {
-		log.Printf("AI Copilot enabled: provider=%s model=%s", copilotCfg.Primary.Provider, copilotCfg.Primary.Model)
-		if copilotCfg.Fallback != nil {
-			log.Printf("  Fallback: provider=%s model=%s", copilotCfg.Fallback.Provider, copilotCfg.Fallback.Model)
+		attrs := []any{
+			slog.String("provider", copilotCfg.Primary.Provider),
+			slog.String("model", copilotCfg.Primary.Model),
 		}
+		if copilotCfg.Fallback != nil {
+			attrs = append(attrs,
+				slog.String("fallbackProvider", copilotCfg.Fallback.Provider),
+				slog.String("fallbackModel", copilotCfg.Fallback.Model),
+			)
+		}
+		slog.Info("AI copilot enabled", attrs...)
 	} else {
-		log.Println("AI Copilot disabled (KUBEBOLT_AI_API_KEY not set)")
+		slog.Info("AI copilot disabled (KUBEBOLT_AI_API_KEY not set)")
 	}
 
 	// Load auth configuration from KUBEBOLT_AUTH_* env vars
@@ -175,11 +201,11 @@ func main() {
 
 	var authHandlers *auth.Handlers
 	if authCfg.Enabled {
-		log.Println("Authentication enabled")
+		slog.Info("authentication enabled")
 
 		store, err := auth.NewStore(authCfg.DataDir)
 		if err != nil {
-			log.Fatalf("Failed to open auth store: %v", err)
+			fatal("failed to open auth store", slog.String("error", err.Error()))
 		}
 		defer store.Close()
 
@@ -187,26 +213,26 @@ func main() {
 		if !authCfg.JWTSecretFromEnv {
 			if secret, err := store.GetSetting("jwt_secret"); err == nil {
 				authCfg.JWTSecret = secret
-				log.Println("JWT secret loaded from database")
+				slog.Info("JWT secret loaded from database")
 			} else {
 				secret := make([]byte, 32)
 				if _, err := crypto_rand.Read(secret); err != nil {
-					log.Fatalf("Failed to generate JWT secret: %v", err)
+					fatal("failed to generate JWT secret", slog.String("error", err.Error()))
 				}
 				if err := store.SetSetting("jwt_secret", secret); err != nil {
-					log.Fatalf("Failed to persist JWT secret: %v", err)
+					fatal("failed to persist JWT secret", slog.String("error", err.Error()))
 				}
 				authCfg.JWTSecret = secret
-				log.Println("JWT secret generated and persisted to database")
+				slog.Info("JWT secret generated and persisted to database")
 			}
 		}
 
 		seeded, err := store.SeedAdmin(authCfg.InitialAdminPassword)
 		if err != nil {
-			log.Fatalf("Failed to seed admin user: %v", err)
+			fatal("failed to seed admin user", slog.String("error", err.Error()))
 		}
 		if seeded {
-			log.Println("Default admin user created (username: admin)")
+			slog.Info("default admin user created", slog.String("username", "admin"))
 		}
 
 		jwtSvc := auth.NewJWTService(authCfg)
@@ -217,10 +243,11 @@ func main() {
 		configsBucket, displayBucket := auth.ClusterBuckets()
 		clusterStorage := cluster.NewStorage(store.DB(), configsBucket, displayBucket)
 		if err := manager.SetStorage(clusterStorage); err != nil {
-			log.Printf("Warning: failed to attach cluster storage: %v — uploaded clusters won't persist", err)
+			slog.Warn("failed to attach cluster storage, uploaded clusters won't persist",
+				slog.String("error", err.Error()))
 		}
 	} else {
-		log.Println("Authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
+		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
 	}
 
@@ -231,11 +258,11 @@ func main() {
 		var notifiers []notifications.Notifier
 		if notifCfg.SlackWebhookURL != "" {
 			notifiers = append(notifiers, notifications.NewSlackNotifier(notifCfg.SlackWebhookURL))
-			log.Println("Slack notifications enabled")
+			slog.Info("slack notifications enabled")
 		}
 		if notifCfg.DiscordWebhookURL != "" {
 			notifiers = append(notifiers, notifications.NewDiscordNotifier(notifCfg.DiscordWebhookURL))
-			log.Println("Discord notifications enabled")
+			slog.Info("discord notifications enabled")
 		}
 		if notifCfg.Email.Enabled() {
 			email := notifications.NewEmailNotifier(notifications.EmailConfig{
@@ -248,7 +275,10 @@ func main() {
 				DigestMode: notifications.DigestMode(notifCfg.Email.DigestMode),
 			})
 			notifiers = append(notifiers, email)
-			log.Printf("Email notifications enabled (mode=%s, %d recipient(s))", notifCfg.Email.DigestMode, len(notifCfg.Email.To))
+			slog.Info("email notifications enabled",
+				slog.String("mode", notifCfg.Email.DigestMode),
+				slog.Int("recipients", len(notifCfg.Email.To)),
+			)
 		}
 		notifManager = notifications.NewManager(notifiers, notifications.Config{
 			MinSeverity: notifCfg.MinSeverity,
@@ -256,12 +286,15 @@ func main() {
 			BaseURL:     notifCfg.BaseURL,
 		})
 		if notifManager.Enabled() {
-			log.Printf("Notifications: minSeverity=%s cooldown=%s", notifManager.MinSeverity(), notifManager.Cooldown())
+			slog.Info("notifications configured",
+				slog.String("minSeverity", notifManager.MinSeverity()),
+				slog.Duration("cooldown", notifManager.Cooldown()),
+			)
 			manager.SetOnNewInsight(func(clusterContext string, insight models.Insight) {
 				notifManager.Enqueue(clusterContext, insight)
 			})
 		} else {
-			log.Println("Notifications disabled (no channels configured)")
+			slog.Info("notifications disabled (no channels configured)")
 		}
 	}
 	// Ensure the email digest flusher (if any) drains on shutdown
@@ -285,9 +318,9 @@ func main() {
 	go func() {
 		url := fmt.Sprintf("http://localhost:%d", cfg.Port)
 		if frontendFS != nil {
-			log.Printf("KubeBolt ready at %s", url)
+			slog.Info("kubebolt ready", slog.String("url", url))
 		} else {
-			log.Printf("KubeBolt API running at %s", url)
+			slog.Info("kubebolt API running", slog.String("url", url))
 		}
 
 		if openBrowser {
@@ -295,7 +328,7 @@ func main() {
 		}
 
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("HTTP server error: %v", err)
+			fatal("HTTP server error", slog.String("error", err.Error()))
 		}
 	}()
 
@@ -304,14 +337,14 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	log.Println("Shutting down KubeBolt...")
+	slog.Info("shutting down")
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		slog.Error("HTTP server shutdown error", slog.String("error", err.Error()))
 	}
-	log.Println("KubeBolt stopped")
+	slog.Info("kubebolt stopped")
 }
 
 // openURL opens the given URL in the default browser.

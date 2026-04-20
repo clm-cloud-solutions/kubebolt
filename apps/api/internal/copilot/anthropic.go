@@ -6,15 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
-	"os"
 	"time"
 )
-
-// debugCopilot is set when KUBEBOLT_AI_DEBUG=1 — enables verbose logging of
-// requests and responses for troubleshooting.
-var debugCopilot = os.Getenv("KUBEBOLT_AI_DEBUG") == "1"
 
 const (
 	anthropicDefaultURL = "https://api.anthropic.com/v1/messages"
@@ -68,12 +63,20 @@ type anthropicRequest struct {
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 }
 
+type anthropicUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+}
+
 type anthropicResponse struct {
 	ID         string             `json:"id"`
 	Type       string             `json:"type"`
 	Role       string             `json:"role"`
 	Content    []anthropicContent `json:"content"`
 	StopReason string             `json:"stop_reason"`
+	Usage      anthropicUsage     `json:"usage"`
 }
 
 // Chat sends a single request to the Anthropic API and returns the response.
@@ -100,10 +103,15 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		return nil, fmt.Errorf("marshal request: %w", err)
 	}
 
-	if debugCopilot {
-		log.Printf("anthropic POST %s model=%q max_tokens=%d msg_count=%d tool_count=%d",
-			url, model, req.MaxTokens, len(body.Messages), len(body.Tools))
-		log.Printf("anthropic request body: %s", string(bodyBytes))
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.DebugContext(ctx, "anthropic request",
+			slog.String("url", url),
+			slog.String("model", model),
+			slog.Int("maxTokens", req.MaxTokens),
+			slog.Int("messages", len(body.Messages)),
+			slog.Int("tools", len(body.Tools)),
+			slog.String("body", string(bodyBytes)),
+		)
 	}
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(bodyBytes))
@@ -125,8 +133,11 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
-	if debugCopilot {
-		log.Printf("anthropic response: status=%d body=%s", resp.StatusCode, string(respBody))
+	if slog.Default().Enabled(ctx, slog.LevelDebug) {
+		slog.DebugContext(ctx, "anthropic response",
+			slog.Int("status", resp.StatusCode),
+			slog.String("body", string(respBody)),
+		)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -143,7 +154,15 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	}
 
 	// Extract text and tool calls from the content blocks
-	out := &ChatResponse{StopReason: ar.StopReason}
+	out := &ChatResponse{
+		StopReason: ar.StopReason,
+		Usage: Usage{
+			InputTokens:         ar.Usage.InputTokens,
+			OutputTokens:        ar.Usage.OutputTokens,
+			CacheCreationTokens: ar.Usage.CacheCreationInputTokens,
+			CacheReadTokens:     ar.Usage.CacheReadInputTokens,
+		},
+	}
 	for _, block := range ar.Content {
 		switch block.Type {
 		case "text":

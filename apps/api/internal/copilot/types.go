@@ -43,9 +43,31 @@ type ToolDefinition struct {
 
 // StreamEvent is sent over SSE to the frontend during chat streaming.
 type StreamEvent struct {
-	Type     string `json:"type"`               // "text" | "tool_call" | "tool_result" | "done" | "error" | "meta"
+	Type     string `json:"type"`               // "text" | "tool_call" | "tool_result" | "done" | "error" | "meta" | "usage"
 	Text     string `json:"text,omitempty"`
 	ToolName string `json:"toolName,omitempty"`
 	Error    string `json:"error,omitempty"`
 	Fallback bool   `json:"fallback,omitempty"`
+}
+
+// Usage captures token consumption reported by the LLM provider for a single
+// Chat call. Cache tokens apply to providers that support prompt caching
+// (Anthropic); they are included in InputTokens when the provider counts
+// them that way, otherwise tracked separately for cost attribution.
+type Usage struct {
+	InputTokens         int `json:"inputTokens"`
+	OutputTokens        int `json:"outputTokens"`
+	CacheCreationTokens int `json:"cacheCreationTokens,omitempty"`
+	CacheReadTokens     int `json:"cacheReadTokens,omitempty"`
+}
+
+// Total returns InputTokens + OutputTokens.
+func (u Usage) Total() int { return u.InputTokens + u.OutputTokens }
+
+// Add accumulates another Usage into this one.
+func (u *Usage) Add(other Usage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CacheCreationTokens += other.CacheCreationTokens
+	u.CacheReadTokens += other.CacheReadTokens
 }

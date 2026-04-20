@@ -41,9 +41,10 @@ type ChatRequest struct {
 // ChatResponse is the result of a single Chat call. Either Text is set
 // (final answer) or ToolCalls is non-empty (need to execute and continue).
 type ChatResponse struct {
-	Text      string
-	ToolCalls []ToolCall
+	Text       string
+	ToolCalls  []ToolCall
 	StopReason string // "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+	Usage      Usage  // tokens consumed by this call, as reported by the provider
 }
 
 // providerRegistry maps provider names to their implementations.

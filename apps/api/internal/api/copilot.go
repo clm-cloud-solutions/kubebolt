@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 )
@@ -118,10 +120,56 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	executor := copilot.NewExecutor(h.manager)
 	tools := copilot.ToolDefinitions()
 
+	logger := slog.Default().With(
+		slog.String("component", "copilot"),
+		slog.String("user", auth.ContextUserID(r)),
+		slog.String("cluster", clusterName),
+		slog.String("provider", h.copilotConfig.Primary.Provider),
+		slog.String("model", h.copilotConfig.Primary.Model),
+	)
+
 	// Multi-step tool calling loop
 	const maxRounds = 10
 	messages := req.Messages
 	usedFallback := false
+
+	// Session-level accounting
+	var sessionUsage copilot.Usage
+	var sessionToolBytes int
+	var sessionToolCalls int
+	sessionStart := time.Now()
+	roundsUsed := 0
+
+	// Per-tool breakdown: nombre → {calls, bytes, errors, duration}
+	type toolStats struct {
+		Calls      int   `json:"calls"`
+		Bytes      int   `json:"bytes"`
+		Errors     int   `json:"errors"`
+		DurationMs int64 `json:"durationMs"`
+	}
+	toolBreakdown := map[string]*toolStats{}
+
+	finish := func(reason string) {
+		// Collapse breakdown into a plain map so slog.JSONHandler emits it cleanly.
+		breakdown := make(map[string]any, len(toolBreakdown))
+		for name, s := range toolBreakdown {
+			breakdown[name] = s
+		}
+		logger.Info("copilot session",
+			slog.String("reason", reason),
+			slog.Int("rounds", roundsUsed),
+			slog.Int("inputTokens", sessionUsage.InputTokens),
+			slog.Int("outputTokens", sessionUsage.OutputTokens),
+			slog.Int("cacheReadTokens", sessionUsage.CacheReadTokens),
+			slog.Int("cacheCreationTokens", sessionUsage.CacheCreationTokens),
+			slog.Int("totalTokens", sessionUsage.Total()),
+			slog.Int("toolCalls", sessionToolCalls),
+			slog.Int("toolResultBytes", sessionToolBytes),
+			slog.Duration("duration", time.Since(sessionStart)),
+			slog.Bool("fallback", usedFallback),
+			slog.Any("toolBreakdown", breakdown),
+		)
+	}
 
 	for round := 0; round < maxRounds; round++ {
 		// Build the chat request for this round
@@ -137,8 +185,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 		// On recoverable error, try fallback if configured
 		if err != nil && copilot.IsRecoverable(err) && h.copilotConfig.Fallback != nil && !usedFallback {
-			log.Printf("Copilot primary failed (%v), retrying with fallback %s/%s",
-				err, h.copilotConfig.Fallback.Provider, h.copilotConfig.Fallback.Model)
+			logger.Warn("copilot primary failed, retrying with fallback",
+				slog.String("error", err.Error()),
+				slog.String("fallbackProvider", h.copilotConfig.Fallback.Provider),
+				slog.String("fallbackModel", h.copilotConfig.Fallback.Model),
+			)
 			chatReq.Provider = *h.copilotConfig.Fallback
 			resp, err = h.callProvider(r, chatReq)
 			if err == nil {
@@ -148,11 +199,38 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err != nil {
-			log.Printf("Copilot chat error: %v", err)
+			logger.Error("copilot chat error",
+				slog.Int("round", round),
+				slog.String("error", err.Error()),
+			)
 			writeSSEEvent(w, flusher, "error", map[string]string{"error": friendlyCopilotError(err)})
 			writeSSEEvent(w, flusher, "done", nil)
+			roundsUsed = round + 1
+			finish("error")
 			return
 		}
+
+		// Accumulate token usage for the session
+		sessionUsage.Add(resp.Usage)
+		roundsUsed = round + 1
+
+		logger.Debug("copilot round",
+			slog.Int("round", round),
+			slog.String("stopReason", resp.StopReason),
+			slog.Int("inputTokens", resp.Usage.InputTokens),
+			slog.Int("outputTokens", resp.Usage.OutputTokens),
+			slog.Int("cacheReadTokens", resp.Usage.CacheReadTokens),
+			slog.Int("cacheCreationTokens", resp.Usage.CacheCreationTokens),
+			slog.Int("toolCalls", len(resp.ToolCalls)),
+			slog.Int("textBytes", len(resp.Text)),
+		)
+
+		// Emit per-round usage so the UI can show it live
+		writeSSEEvent(w, flusher, "usage", map[string]any{
+			"round":   round,
+			"turn":    resp.Usage,
+			"session": sessionUsage,
+		})
 
 		// If the model produced text, send it to the user
 		if resp.Text != "" {
@@ -162,6 +240,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// If no tool calls, we're done
 		if len(resp.ToolCalls) == 0 {
 			writeSSEEvent(w, flusher, "done", nil)
+			finish("done")
 			return
 		}
 
@@ -176,7 +255,37 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		var toolResults []copilot.ToolResult
 		for _, call := range resp.ToolCalls {
 			writeSSEEvent(w, flusher, "tool_call", map[string]string{"toolName": call.Name})
+
+			toolStart := time.Now()
 			result := executor.Execute(call)
+			toolDur := time.Since(toolStart)
+
+			outBytes := len(result.Content)
+			inBytes := len(call.Input)
+			sessionToolCalls++
+			sessionToolBytes += outBytes
+
+			s, ok := toolBreakdown[call.Name]
+			if !ok {
+				s = &toolStats{}
+				toolBreakdown[call.Name] = s
+			}
+			s.Calls++
+			s.Bytes += outBytes
+			s.DurationMs += toolDur.Milliseconds()
+			if result.IsError {
+				s.Errors++
+			}
+
+			logger.Debug("copilot tool call",
+				slog.Int("round", round),
+				slog.String("tool", call.Name),
+				slog.Int("inputBytes", inBytes),
+				slog.Int("outputBytes", outBytes),
+				slog.Bool("error", result.IsError),
+				slog.Duration("duration", toolDur),
+			)
+
 			toolResults = append(toolResults, result)
 		}
 
@@ -190,10 +299,14 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Hit the max rounds limit
+	logger.Warn("copilot hit max rounds",
+		slog.Int("maxRounds", maxRounds),
+	)
 	writeSSEEvent(w, flusher, "error", map[string]string{
 		"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
 	})
 	writeSSEEvent(w, flusher, "done", nil)
+	finish("max_rounds")
 }
 
 // callProvider invokes the configured provider for one chat turn.

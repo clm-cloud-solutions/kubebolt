@@ -69,9 +69,16 @@ type openaiChoice struct {
 	FinishReason string        `json:"finish_reason"`
 }
 
+type openaiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
+}
+
 type openaiResponse struct {
 	ID      string         `json:"id"`
 	Choices []openaiChoice `json:"choices"`
+	Usage   openaiUsage    `json:"usage"`
 }
 
 func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
@@ -142,6 +149,10 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	out := &ChatResponse{
 		Text:       text,
 		StopReason: choice.FinishReason,
+		Usage: Usage{
+			InputTokens:  or.Usage.PromptTokens,
+			OutputTokens: or.Usage.CompletionTokens,
+		},
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{

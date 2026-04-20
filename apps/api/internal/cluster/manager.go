@@ -3,7 +3,7 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sort"
 	"sync"
 	"time"
@@ -99,7 +99,9 @@ func (m *Manager) reloadUploadedContextsLocked() error {
 	for _, stored := range configs {
 		uploaded, err := clientcmd.Load(stored.Kubeconfig)
 		if err != nil {
-			log.Printf("Warning: stored kubeconfig for context %q is invalid: %v", stored.Context, err)
+			slog.Warn("stored kubeconfig is invalid",
+				slog.String("context", stored.Context),
+				slog.String("error", err.Error()))
 			continue
 		}
 		m.mergeKubeconfigLocked(uploaded)
@@ -150,7 +152,7 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 	if err != nil {
 		// Check if running inside Kubernetes (ServiceAccount token available)
 		if _, inClusterErr := rest.InClusterConfig(); inClusterErr == nil {
-			log.Printf("No kubeconfig file found, using in-cluster configuration")
+			slog.Info("no kubeconfig file found, using in-cluster configuration")
 			m := &Manager{
 				inCluster: true,
 				kubeConfig: &clientcmdapi.Config{
@@ -172,7 +174,8 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 				m.mu.Lock()
 				defer m.mu.Unlock()
 				if err := m.connectToContextLocked("in-cluster"); err != nil {
-					log.Printf("Warning: in-cluster connection failed: %v — staying in disconnected state", err)
+					slog.Warn("in-cluster connection failed, staying disconnected",
+						slog.String("error", err.Error()))
 					m.connErr = err
 				}
 			}()
@@ -197,7 +200,9 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 		m.mu.Lock()
 		defer m.mu.Unlock()
 		if err := m.connectToContextLocked(kubeConfig.CurrentContext); err != nil {
-			log.Printf("Warning: initial connection to context %q failed: %v — staying in disconnected state", kubeConfig.CurrentContext, err)
+			slog.Warn("initial cluster connection failed, staying disconnected",
+				slog.String("context", kubeConfig.CurrentContext),
+				slog.String("error", err.Error()))
 			m.connErr = err
 		}
 	}()
@@ -287,11 +292,13 @@ func (m *Manager) SwitchCluster(contextName string) error {
 	// Connect to new context; on failure, stay disconnected on contextName (no fallback).
 	if err := m.connectToContextLocked(contextName); err != nil {
 		m.connErr = err
-		log.Printf("Failed to connect to context %s: %v — staying disconnected", contextName, err)
+		slog.Warn("failed to connect to context, staying disconnected",
+			slog.String("context", contextName),
+			slog.String("error", err.Error()))
 		return err
 	}
 
-	log.Printf("Switched to cluster context: %s", contextName)
+	slog.Info("switched cluster context", slog.String("context", contextName))
 	return nil
 }
 
@@ -406,7 +413,9 @@ func (m *Manager) AddKubeconfig(rawYAML []byte, uploadedBy string) ([]string, er
 
 	// Merge into in-memory config
 	m.mergeKubeconfigLocked(parsed)
-	log.Printf("Added %d cluster context(s) from uploaded kubeconfig: %v", len(added), added)
+	slog.Info("added cluster contexts from uploaded kubeconfig",
+		slog.Int("count", len(added)),
+		slog.Any("contexts", added))
 	return added, nil
 }
 
@@ -447,7 +456,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 	// Also remove any display name override
 	m.storage.DeleteDisplayName(contextName)
 
-	log.Printf("Removed uploaded context: %s", contextName)
+	slog.Info("removed uploaded cluster context", slog.String("context", contextName))
 	return nil
 }
 
