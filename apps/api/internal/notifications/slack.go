@@ -102,11 +102,30 @@ func (s *SlackNotifier) buildPayload(e Event) map[string]any {
 		})
 	}
 
-	// Context footer
-	footer := fmt.Sprintf("KubeBolt · first seen %s", ins.FirstSeen.UTC().Format("2006-01-02 15:04 UTC"))
+	// Action button: deep link to the resource detail page when we can build one,
+	// otherwise fall back to the base URL.
 	if e.BaseURL != "" {
-		footer = fmt.Sprintf("<%s|Open in KubeBolt> · %s", e.BaseURL, footer)
+		url := resourceURL(e.BaseURL, ins)
+		label := "Open resource in KubeBolt"
+		if url == "" {
+			url = e.BaseURL
+			label = "Open KubeBolt"
+		}
+		blocks = append(blocks, map[string]any{
+			"type": "actions",
+			"elements": []map[string]any{
+				{
+					"type":  "button",
+					"text":  map[string]any{"type": "plain_text", "text": label, "emoji": true},
+					"url":   url,
+					"style": "primary",
+				},
+			},
+		})
 	}
+
+	// Context footer with timestamp
+	footer := fmt.Sprintf("KubeBolt · first seen %s", ins.FirstSeen.UTC().Format("2006-01-02 15:04 UTC"))
 	blocks = append(blocks, map[string]any{
 		"type":     "context",
 		"elements": []map[string]any{{"type": "mrkdwn", "text": footer}},

@@ -107,8 +107,14 @@ func (d *DiscordNotifier) buildPayload(e Event) map[string]any {
 		"timestamp":   ins.FirstSeen.UTC().Format("2006-01-02T15:04:05Z"),
 		"footer":      map[string]any{"text": "KubeBolt"},
 	}
+	// Clickable title: deep link to the resource when possible, base URL otherwise.
+	// Discord renders the title as a hyperlink when `url` is set.
 	if e.BaseURL != "" {
-		embed["url"] = e.BaseURL
+		if deepLink := resourceURL(e.BaseURL, ins); deepLink != "" {
+			embed["url"] = deepLink
+		} else {
+			embed["url"] = e.BaseURL
+		}
 	}
 
 	return map[string]any{
