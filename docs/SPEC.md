@@ -1011,14 +1011,15 @@ Priority: critical for open source adoption.
 | **Helm NOTES.txt** | Medium | Done | Post-install instructions template: port-forward command for ClusterIP, ingress URL when enabled, pod verification command. |
 | **Cloud-specific Guides** | Medium | Done | Dedicated guides at `docs/guides/` for EKS (IRSA, Pod Identity, ALB, Fargate), GKE (Workload Identity, GCE Ingress, Autopilot), and AKS (Azure AD Workload Identity, AGIC, Azure RBAC). |
 
-### Phase 1.6 — Animated Traffic Map & Settings
+### Phase 1.6 — Cluster Management, Notifications & Traffic Map
 
-| Feature | Impact | Description |
-|---------|--------|-------------|
-| **Animated Cluster Map** | High | Enhance the existing Cluster Map (Flow layout) with animated traffic lines — moving dots along edges to visualize communication flow between resources. Line styles differentiated by relationship type (selector, ownerRef, parentRef, volume). Uses existing topology data — no agent or service mesh required. |
-| **Cluster Management** | Medium | Add/remove/rename clusters from UI. Upload kubeconfig. Connection health status per cluster. |
-| **Slack Notifications** | Medium | Webhook integration for insights alerts. Configurable severity threshold. Channel selector. |
-| **Email Notifications** | Low | SMTP configuration. Digest mode (daily/hourly). Per-insight-type subscription. |
+| Feature | Impact | Status | Description |
+|---------|--------|--------|-------------|
+| **Animated Cluster Map** | High | Done (Phase 1.0) | React Flow with animated traffic lines — moving dots on `selects`/`routes` edges, glow effect, error pulses, dashed config edges, color-coded by relationship type (`ConnectionEdge.tsx`). Uses topology graph data — no agent required. |
+| **Cluster Management** | Medium | Done | Add/remove/rename clusters from UI. Upload kubeconfig via paste or file. Contexts persist in BoltDB, merged with kubeconfig file in memory — never modifies the user's file. Source badges ("Uploaded", "In-Cluster") and display name overrides. Admin-only mutations. |
+| **Slack Notifications** | Medium | Done | Webhook integration with Block Kit formatting. Severity threshold filter, dedup by `(cluster, resource, title)` with cooldown. Deep links to affected resource. Admin-only config + test endpoint. |
+| **Discord Notifications** | Medium | Done | Webhook integration with embeds, color-coded by severity. Same filtering/dedup/deep-link infrastructure as Slack. |
+| **Email Notifications** | Low | Pending | SMTP configuration. Digest mode (daily/hourly). Per-insight-type subscription. |
 
 ### Phase 1.7 — Authentication & Access Control
 
