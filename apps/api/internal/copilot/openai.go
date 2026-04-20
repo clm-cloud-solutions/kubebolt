@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -57,10 +58,31 @@ type openaiTool struct {
 }
 
 type openaiRequest struct {
-	Model     string          `json:"model"`
-	Messages  []openaiMessage `json:"messages"`
-	Tools     []openaiTool    `json:"tools,omitempty"`
-	MaxTokens int             `json:"max_tokens,omitempty"`
+	Model    string          `json:"model"`
+	Messages []openaiMessage `json:"messages"`
+	Tools    []openaiTool    `json:"tools,omitempty"`
+	// Reasoning and newer GPT-5+ models reject "max_tokens" and require
+	// "max_completion_tokens" instead. Only one of these two is set per
+	// request — see needsMaxCompletionTokens below.
+	MaxTokens           int `json:"max_tokens,omitempty"`
+	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+}
+
+// needsMaxCompletionTokens returns true when the model requires the newer
+// "max_completion_tokens" parameter. This applies to OpenAI reasoning models
+// (o1, o3, o4 families) and to GPT-5 and later, and is forward-compatible
+// with any model whose id starts with those prefixes (e.g. o3-mini-high).
+func needsMaxCompletionTokens(model string) bool {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "o1"),
+		strings.HasPrefix(m, "o3"),
+		strings.HasPrefix(m, "o4"),
+		strings.HasPrefix(m, "gpt-5"),
+		strings.HasPrefix(m, "gpt-6"):
+		return true
+	}
+	return false
 }
 
 type openaiChoice struct {
@@ -92,10 +114,14 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	}
 
 	body := openaiRequest{
-		Model:     model,
-		Messages:  toOpenAIMessages(req.System, req.Messages),
-		Tools:     toOpenAITools(req.Tools),
-		MaxTokens: req.MaxTokens,
+		Model:    model,
+		Messages: toOpenAIMessages(req.System, req.Messages),
+		Tools:    toOpenAITools(req.Tools),
+	}
+	if needsMaxCompletionTokens(model) {
+		body.MaxCompletionTokens = req.MaxTokens
+	} else {
+		body.MaxTokens = req.MaxTokens
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
