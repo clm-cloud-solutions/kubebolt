@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"html/template"
 	"net"
+	"net/mail"
 	"net/smtp"
 	"strings"
 	"sync"
@@ -166,7 +167,11 @@ func (n *EmailNotifier) sendEmail(ctx context.Context, events []Event) error {
 	subject := buildSubject(events)
 	htmlBody, textBody := buildBodies(events)
 
-	msg := buildMessage(n.cfg.From, n.cfg.To, subject, textBody, htmlBody)
+	// Split "Display Name <addr@host>" into envelope (addr only) and header
+	// (full form with display name). SMTP MAIL FROM does not accept the
+	// display name, but the RFC-5322 From: header does.
+	envelopeFrom, headerFrom := parseFromAddress(n.cfg.From)
+	msg := buildMessage(headerFrom, n.cfg.To, subject, textBody, htmlBody)
 
 	addr := net.JoinHostPort(n.cfg.Host, fmt.Sprintf("%d", n.cfg.Port))
 
@@ -218,7 +223,7 @@ func (n *EmailNotifier) sendEmail(ctx context.Context, events []Event) error {
 		}
 	}
 
-	if err := client.Mail(n.cfg.From); err != nil {
+	if err := client.Mail(envelopeFrom); err != nil {
 		return fmt.Errorf("email: MAIL FROM: %w", err)
 	}
 	for _, to := range n.cfg.To {
@@ -244,6 +249,37 @@ func (n *EmailNotifier) sendEmail(ctx context.Context, events []Event) error {
 // paths collapse the same repeated insight.
 func dedupKey(e Event) string {
 	return e.ClusterName + "|" + e.Insight.Resource + "|" + e.Insight.Title
+}
+
+// parseFromAddress splits an RFC-5322 style address into the bare email
+// (what goes in the SMTP envelope) and the full header form (what goes
+// in the From: header, possibly with a display name).
+//
+// Accepted inputs:
+//
+//	"alerts@example.com"                           → envelope: "alerts@example.com",              header: "alerts@example.com"
+//	"KubeBolt Alerts <alerts@example.com>"         → envelope: "alerts@example.com",              header: "KubeBolt Alerts <alerts@example.com>"
+//	"\"KubeBolt Alerts\" <alerts@example.com>"     → same as above
+//
+// If parsing fails (e.g. malformed input), returns the raw string for
+// both so the SMTP server rejects it with a clearer error than we could.
+func parseFromAddress(raw string) (envelope, header string) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", ""
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return trimmed, trimmed
+	}
+	envelope = addr.Address
+	if addr.Name != "" {
+		// addr.String() already quotes the name when necessary
+		header = addr.String()
+	} else {
+		header = envelope
+	}
+	return
 }
 
 // --- Message construction ---
