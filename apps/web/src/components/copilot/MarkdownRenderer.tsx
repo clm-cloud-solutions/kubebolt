@@ -30,7 +30,7 @@ function CodeBlock({ language, children }: { language: string; children: ReactNo
   }
 
   return (
-    <div className="my-2 rounded-lg overflow-hidden border border-kb-border bg-[#0d1117] group relative">
+    <div className="my-2 rounded-lg overflow-hidden border border-kb-border bg-[#0d1117] group relative max-w-full min-w-0">
       <div className="flex items-center justify-between px-3 py-1 border-b border-kb-border bg-kb-bg/40">
         <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-wider">
           {language || 'code'}
@@ -53,7 +53,7 @@ function CodeBlock({ language, children }: { language: string; children: ReactNo
           )}
         </button>
       </div>
-      <pre className="px-3 py-2 overflow-x-auto text-[11px] leading-relaxed">{children}</pre>
+      <pre className="px-3 py-2 overflow-x-auto text-[11px] leading-relaxed max-w-full">{children}</pre>
     </div>
   )
 }
@@ -168,7 +168,7 @@ interface MarkdownRendererProps {
 
 export function MarkdownRenderer({ content }: MarkdownRendererProps) {
   return (
-    <div className="copilot-markdown">
+    <div className="copilot-markdown min-w-0 max-w-full w-full [overflow-wrap:anywhere]">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {content}
       </ReactMarkdown>

@@ -361,12 +361,12 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
 
   // assistant — render markdown with a copy action
   return (
-    <div className="flex justify-start gap-2 group max-w-[95%]">
+    <div className="flex justify-start gap-2 group max-w-[95%] min-w-0">
       <div className="w-6 h-6 rounded-full bg-kb-accent-light flex items-center justify-center shrink-0 mt-0.5">
         <Bot className="w-3.5 h-3.5 text-kb-accent" />
       </div>
-      <div className="flex flex-col items-start min-w-0">
-        <div className="px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words">
+      <div className="flex flex-col items-start min-w-0 flex-1">
+        <div className="px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
           {message.content ? (
             <MarkdownRenderer content={message.content} />
           ) : (
