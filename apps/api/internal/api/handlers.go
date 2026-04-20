@@ -12,6 +12,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -21,6 +22,7 @@ type handlers struct {
 	pfManager     *PortForwardManager
 	copilotConfig config.CopilotConfig
 	authHandlers  *auth.Handlers
+	notifications *notifications.Manager // nil when no webhook URLs configured
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

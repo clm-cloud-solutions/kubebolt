@@ -33,16 +33,114 @@ type Manager struct {
 	insightInterval time.Duration
 	cancelFn        context.CancelFunc
 	connErr         error // set when the active context failed to connect
+	storage         *Storage // optional — nil when auth disabled; drives user-uploaded contexts and display names
+	// onNewInsight is invoked for each newly detected insight; wired to the
+	// notifications manager from main.go. Nil when notifications are disabled.
+	onNewInsight func(clusterContext string, insight models.Insight)
+}
+
+// SetOnNewInsight registers a callback invoked (asynchronously) for every new
+// insight detected in the active cluster. Wire this to a notifications manager
+// in main.go. The clusterContext passed to the callback is m.activeContext at
+// the time the insight was emitted.
+func (m *Manager) SetOnNewInsight(fn func(clusterContext string, insight models.Insight)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onNewInsight = fn
+	// If an engine is already running, wire the hook immediately.
+	if m.engine != nil {
+		m.wireInsightHookLocked()
+	}
+}
+
+// wireInsightHookLocked attaches m.onNewInsight to the current engine.
+// Assumes m.mu is held.
+func (m *Manager) wireInsightHookLocked() {
+	if m.engine == nil || m.onNewInsight == nil {
+		return
+	}
+	hook := m.onNewInsight
+	activeCtx := m.activeContext
+	m.engine.SetOnNewInsight(func(insight models.Insight) {
+		// Called with engine lock held — keep this fast, the notification
+		// manager already dispatches async.
+		hook(activeCtx, insight)
+	})
+}
+
+// SetStorage attaches a cluster storage to the manager. This must be called
+// after NewManager but before the HTTP router starts serving. After attaching,
+// the manager merges any user-uploaded kubeconfigs into its in-memory config.
+func (m *Manager) SetStorage(s *Storage) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.storage = s
+	return m.reloadUploadedContextsLocked()
+}
+
+// Storage returns the attached storage, or nil if none was set.
+func (m *Manager) Storage() *Storage {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.storage
+}
+
+// reloadUploadedContextsLocked merges kubeconfigs from BoltDB into the in-memory
+// config. Called on startup and after CRUD operations. Assumes m.mu is held.
+func (m *Manager) reloadUploadedContextsLocked() error {
+	if m.storage == nil {
+		return nil
+	}
+	configs, err := m.storage.ListKubeconfigs()
+	if err != nil {
+		return fmt.Errorf("listing stored kubeconfigs: %w", err)
+	}
+
+	for _, stored := range configs {
+		uploaded, err := clientcmd.Load(stored.Kubeconfig)
+		if err != nil {
+			log.Printf("Warning: stored kubeconfig for context %q is invalid: %v", stored.Context, err)
+			continue
+		}
+		m.mergeKubeconfigLocked(uploaded)
+	}
+	return nil
+}
+
+// mergeKubeconfigLocked merges the contexts, clusters, and authInfos from src
+// into m.kubeConfig. Existing entries with the same name are overwritten.
+// Assumes m.mu is held.
+func (m *Manager) mergeKubeconfigLocked(src *clientcmdapi.Config) {
+	if m.kubeConfig.Contexts == nil {
+		m.kubeConfig.Contexts = make(map[string]*clientcmdapi.Context)
+	}
+	if m.kubeConfig.Clusters == nil {
+		m.kubeConfig.Clusters = make(map[string]*clientcmdapi.Cluster)
+	}
+	if m.kubeConfig.AuthInfos == nil {
+		m.kubeConfig.AuthInfos = make(map[string]*clientcmdapi.AuthInfo)
+	}
+	for name, ctx := range src.Contexts {
+		m.kubeConfig.Contexts[name] = ctx
+	}
+	for name, cl := range src.Clusters {
+		m.kubeConfig.Clusters[name] = cl
+	}
+	for name, auth := range src.AuthInfos {
+		m.kubeConfig.AuthInfos[name] = auth
+	}
 }
 
 // ClusterInfo represents a cluster available in the kubeconfig.
 type ClusterInfo struct {
-	Name     string `json:"name"`
-	Context  string `json:"context"`
-	Server   string `json:"server"`
-	Active   bool   `json:"active"`
-	Status   string `json:"status"`          // "connected", "disconnected", "error"
-	Error    string `json:"error,omitempty"`  // connection error message
+	Name        string `json:"name"`
+	Context     string `json:"context"`
+	Server      string `json:"server"`
+	Active      bool   `json:"active"`
+	Status      string `json:"status"`                // "connected", "disconnected", "error"
+	Error       string `json:"error,omitempty"`       // connection error message
+	DisplayName string `json:"displayName,omitempty"` // optional user-defined friendly name
+	Source      string `json:"source"`                // "file" (kubeconfig on disk), "uploaded" (added via UI), "in-cluster"
 }
 
 // NewManager creates a new cluster manager.
@@ -112,6 +210,20 @@ func (m *Manager) ListClusters() []ClusterInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Pre-compute uploaded context names and display names (single DB read).
+	uploadedContexts := make(map[string]bool)
+	displayNames := make(map[string]string)
+	if m.storage != nil {
+		if configs, err := m.storage.ListKubeconfigs(); err == nil {
+			for _, c := range configs {
+				uploadedContexts[c.Context] = true
+			}
+		}
+		if names, err := m.storage.AllDisplayNames(); err == nil {
+			displayNames = names
+		}
+	}
+
 	var clusters []ClusterInfo
 	for ctxName, ctx := range m.kubeConfig.Contexts {
 		server := ""
@@ -129,13 +241,21 @@ func (m *Manager) ListClusters() []ClusterInfo {
 				connErrMsg = m.connErr.Error()
 			}
 		}
+		source := "file"
+		if m.inCluster {
+			source = "in-cluster"
+		} else if uploadedContexts[ctxName] {
+			source = "uploaded"
+		}
 		clusters = append(clusters, ClusterInfo{
-			Name:    ctx.Cluster,
-			Context: ctxName,
-			Server:  server,
-			Active:  isActive,
-			Status:  status,
-			Error:   connErrMsg,
+			Name:        ctx.Cluster,
+			Context:     ctxName,
+			Server:      server,
+			Active:      isActive,
+			Status:      status,
+			Error:       connErrMsg,
+			DisplayName: displayNames[ctxName],
+			Source:      source,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -231,6 +351,121 @@ func (m *Manager) stopCurrent() {
 	m.connErr = nil
 }
 
+// AddKubeconfig persists a user-uploaded kubeconfig and merges it into the
+// in-memory config. Each context in the uploaded kubeconfig is saved as a
+// separate StoredKubeconfig entry. Returns the context names that were added.
+// Returns an error if storage is not configured or the kubeconfig is invalid.
+func (m *Manager) AddKubeconfig(rawYAML []byte, uploadedBy string) ([]string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.storage == nil {
+		return nil, fmt.Errorf("cluster persistence is not available (auth may be disabled)")
+	}
+	if m.inCluster {
+		return nil, fmt.Errorf("cannot add clusters in in-cluster mode")
+	}
+
+	parsed, err := clientcmd.Load(rawYAML)
+	if err != nil {
+		return nil, fmt.Errorf("invalid kubeconfig: %w", err)
+	}
+	if len(parsed.Contexts) == 0 {
+		return nil, fmt.Errorf("kubeconfig contains no contexts")
+	}
+
+	// Check for name collisions with contexts already in the in-memory config
+	// that come from sources OTHER than the uploaded store (i.e., file).
+	existingUploaded := make(map[string]bool)
+	if configs, err := m.storage.ListKubeconfigs(); err == nil {
+		for _, c := range configs {
+			existingUploaded[c.Context] = true
+		}
+	}
+	for ctxName := range parsed.Contexts {
+		if _, existsInMemory := m.kubeConfig.Contexts[ctxName]; existsInMemory && !existingUploaded[ctxName] {
+			return nil, fmt.Errorf("context %q already exists in the kubeconfig file — rename it before uploading", ctxName)
+		}
+	}
+
+	var added []string
+	now := time.Now().UTC()
+	for ctxName := range parsed.Contexts {
+		// Persist one entry per context with the same raw YAML
+		stored := &StoredKubeconfig{
+			Context:    ctxName,
+			Kubeconfig: rawYAML,
+			UploadedAt: now,
+			UploadedBy: uploadedBy,
+		}
+		if err := m.storage.SaveKubeconfig(stored); err != nil {
+			return nil, fmt.Errorf("persisting context %q: %w", ctxName, err)
+		}
+		added = append(added, ctxName)
+	}
+
+	// Merge into in-memory config
+	m.mergeKubeconfigLocked(parsed)
+	log.Printf("Added %d cluster context(s) from uploaded kubeconfig: %v", len(added), added)
+	return added, nil
+}
+
+// RemoveUploadedContext deletes a user-uploaded context. Contexts originating
+// from the kubeconfig file cannot be removed (we never touch the user's file).
+// If the removed context is currently active, the manager disconnects.
+func (m *Manager) RemoveUploadedContext(contextName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.storage == nil {
+		return fmt.Errorf("cluster persistence is not available")
+	}
+
+	stored, err := m.storage.GetKubeconfig(contextName)
+	if err != nil {
+		return fmt.Errorf("lookup failed: %w", err)
+	}
+	if stored == nil {
+		return fmt.Errorf("context %q was not added via the UI (cannot delete file-based contexts)", contextName)
+	}
+
+	// If this context is currently active, stop the connector
+	if m.activeContext == contextName {
+		m.stopCurrent()
+		m.activeContext = ""
+	}
+
+	// Remove from BoltDB
+	if err := m.storage.DeleteKubeconfig(contextName); err != nil {
+		return err
+	}
+
+	// Remove from in-memory config. Only remove the context entry;
+	// shared clusters/authInfos may still be referenced by others.
+	delete(m.kubeConfig.Contexts, contextName)
+
+	// Also remove any display name override
+	m.storage.DeleteDisplayName(contextName)
+
+	log.Printf("Removed uploaded context: %s", contextName)
+	return nil
+}
+
+// SetClusterDisplayName sets or clears a human-friendly display name
+// for any context (file-based or uploaded). Pass an empty string to clear.
+func (m *Manager) SetClusterDisplayName(contextName, displayName string) error {
+	m.mu.RLock()
+	_, exists := m.kubeConfig.Contexts[contextName]
+	m.mu.RUnlock()
+	if !exists {
+		return fmt.Errorf("context %q not found", contextName)
+	}
+	if m.storage == nil {
+		return fmt.Errorf("cluster persistence is not available")
+	}
+	return m.storage.SetDisplayName(contextName, displayName)
+}
+
 func (m *Manager) connectToContext(contextName string) error {
 	return m.connectToContextLocked(contextName)
 }
@@ -285,6 +520,10 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	m.cancelFn = cancel
 	m.activeContext = contextName
 	m.connErr = nil
+
+	// Wire notification hook if one was registered before this connection
+	// was established (or if we just switched clusters).
+	m.wireInsightHookLocked()
 
 	return nil
 }

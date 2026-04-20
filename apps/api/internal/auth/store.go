@@ -17,6 +17,10 @@ var (
 	usernameIdxBucket  = []byte("username_index")
 	refreshTokenBucket = []byte("refresh_tokens")
 	settingsBucket     = []byte("settings")
+	// Buckets used by other packages (cluster management, etc.) —
+	// initialized here so there's a single place where DB schema is defined.
+	clustersBucket        = []byte("clusters")         // uploaded kubeconfigs
+	clusterDisplayBucket  = []byte("cluster_display")  // display name overrides
 )
 
 // Role represents a KubeBolt application-level role.
@@ -111,9 +115,9 @@ func NewStore(dataDir string) (*Store, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 
-	// Create buckets
+	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -131,6 +135,18 @@ func NewStore(dataDir string) (*Store, error) {
 // Close closes the underlying database.
 func (s *Store) Close() error {
 	return s.db.Close()
+}
+
+// DB returns the underlying BoltDB handle for use by other packages that
+// share the same data file (e.g. cluster management). All buckets used
+// across the codebase are created at Store initialization.
+func (s *Store) DB() *bolt.DB {
+	return s.db
+}
+
+// ClusterBuckets returns the bucket names used for cluster management state.
+func ClusterBuckets() (configs, displayNames []byte) {
+	return clustersBucket, clusterDisplayBucket
 }
 
 // CreateUser creates a new user with a bcrypt-hashed password.

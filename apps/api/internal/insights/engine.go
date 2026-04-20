@@ -15,6 +15,7 @@ type Engine struct {
 	insights []models.Insight
 	mu       sync.RWMutex
 	wsHub    *websocket.Hub
+	onNew    func(models.Insight) // optional hook called when a new insight is detected
 }
 
 // NewEngine creates a new insights engine with all rules.
@@ -23,6 +24,16 @@ func NewEngine(wsHub *websocket.Hub) *Engine {
 		rules: AllRules(),
 		wsHub: wsHub,
 	}
+}
+
+// SetOnNewInsight registers a callback that is invoked (synchronously, under
+// the engine lock) for every newly detected insight. Keep the callback fast
+// or dispatch asynchronously inside it — the engine holds its write lock while
+// calling this, so slow callbacks block further evaluations.
+func (e *Engine) SetOnNewInsight(fn func(models.Insight)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onNew = fn
 }
 
 // Evaluate runs all rules against the current cluster state.
@@ -67,6 +78,9 @@ func (e *Engine) Evaluate(state *ClusterState) {
 		if !existingKeys[key] {
 			e.insights = append(e.insights, insight)
 			e.wsHub.Broadcast(websocket.InsightNew, insight)
+			if e.onNew != nil {
+				e.onNew(insight)
+			}
 		}
 	}
 

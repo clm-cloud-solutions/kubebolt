@@ -187,6 +187,22 @@ export const api = {
   switchCluster: (context: string) =>
     postJSON<{ status: string; context: string }>(`${API_BASE}/clusters/switch`, { context }),
 
+  addCluster: (kubeconfig: string) =>
+    postJSON<{ added: string[] }>(`${API_BASE}/clusters`, { kubeconfig }),
+
+  renameCluster: (context: string, displayName: string) =>
+    putJSON<{ status: string }>(`${API_BASE}/clusters/${encodeURIComponent(context)}/rename`, { displayName }),
+
+  deleteCluster: (context: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/clusters/${encodeURIComponent(context)}`),
+
+  // --- Notifications (admin) ---
+  getNotificationsConfig: () =>
+    fetchJSON<import('@/types/auth').NotificationsConfig>(`${API_BASE}/notifications/config`),
+
+  testNotification: (channel: 'slack' | 'discord') =>
+    postJSON<{ status: string }>(`${API_BASE}/notifications/test/${channel}`, {}),
+
   getOverview: () => fetchJSON<ClusterOverview>(`${API_BASE}/cluster/overview`),
 
   getHealth: () => fetchJSON<ClusterHealth>(`${API_BASE}/cluster/health`),

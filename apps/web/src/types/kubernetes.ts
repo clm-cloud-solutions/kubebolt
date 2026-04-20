@@ -193,6 +193,8 @@ export interface ClusterInfo {
   active: boolean
   status: 'connected' | 'disconnected' | 'error'
   error?: string
+  displayName?: string
+  source?: 'file' | 'uploaded' | 'in-cluster'
 }
 
 // API params

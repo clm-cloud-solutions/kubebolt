@@ -20,6 +20,8 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/models"
+	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -209,13 +211,49 @@ func main() {
 
 		jwtSvc := auth.NewJWTService(authCfg)
 		authHandlers = auth.NewHandlers(store, jwtSvc, authCfg)
+
+		// Attach cluster storage (uses the same BoltDB for persistence of
+		// user-uploaded kubeconfigs and display name overrides).
+		configsBucket, displayBucket := auth.ClusterBuckets()
+		clusterStorage := cluster.NewStorage(store.DB(), configsBucket, displayBucket)
+		if err := manager.SetStorage(clusterStorage); err != nil {
+			log.Printf("Warning: failed to attach cluster storage: %v — uploaded clusters won't persist", err)
+		}
 	} else {
 		log.Println("Authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
 	}
 
+	// Load notifications config and wire up Slack/Discord notifiers if webhooks are set
+	notifCfg := config.LoadNotificationsConfig()
+	var notifManager *notifications.Manager
+	{
+		var notifiers []notifications.Notifier
+		if notifCfg.SlackWebhookURL != "" {
+			notifiers = append(notifiers, notifications.NewSlackNotifier(notifCfg.SlackWebhookURL))
+			log.Println("Slack notifications enabled")
+		}
+		if notifCfg.DiscordWebhookURL != "" {
+			notifiers = append(notifiers, notifications.NewDiscordNotifier(notifCfg.DiscordWebhookURL))
+			log.Println("Discord notifications enabled")
+		}
+		notifManager = notifications.NewManager(notifiers, notifications.Config{
+			MinSeverity: notifCfg.MinSeverity,
+			Cooldown:    notifCfg.Cooldown,
+			BaseURL:     notifCfg.BaseURL,
+		})
+		if notifManager.Enabled() {
+			log.Printf("Notifications: minSeverity=%s cooldown=%s", notifManager.MinSeverity(), notifManager.Cooldown())
+			manager.SetOnNewInsight(func(clusterContext string, insight models.Insight) {
+				notifManager.Enqueue(clusterContext, insight)
+			})
+		} else {
+			log.Println("Notifications disabled (no webhook URLs configured)")
+		}
+	}
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, authHandlers)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, authHandlers, notifManager)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

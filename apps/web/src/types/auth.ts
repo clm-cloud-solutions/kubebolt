@@ -23,3 +23,15 @@ export interface LoginResponse {
 export interface RefreshResponse {
   accessToken: string
 }
+
+export interface NotificationChannel {
+  name: string
+  enabled: boolean
+}
+
+export interface NotificationsConfig {
+  enabled: boolean
+  minSeverity: 'critical' | 'warning' | 'info'
+  cooldown: string
+  channels: NotificationChannel[]
+}

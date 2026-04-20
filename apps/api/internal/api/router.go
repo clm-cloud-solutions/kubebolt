@@ -9,11 +9,19 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
 // NewRouter creates the chi router with all API routes.
-func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []string, copilotCfg config.CopilotConfig, authHandlers *auth.Handlers) *chi.Mux {
+func NewRouter(
+	manager *cluster.Manager,
+	wsHub *websocket.Hub,
+	corsOrigins []string,
+	copilotCfg config.CopilotConfig,
+	authHandlers *auth.Handlers,
+	notifManager *notifications.Manager,
+) *chi.Mux {
 	r := chi.NewRouter()
 
 	// Middleware
@@ -28,6 +36,7 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 		pfManager:     NewPortForwardManager(),
 		copilotConfig: copilotCfg,
 		authHandlers:  authHandlers,
+		notifications: notifManager,
 	}
 
 	// Health check endpoint
@@ -69,6 +78,21 @@ func NewRouter(manager *cluster.Manager, wsHub *websocket.Hub, corsOrigins []str
 			// Cluster management — always available, no active connector required
 			r.Get("/clusters", h.listClusters)
 			r.Post("/clusters/switch", h.switchCluster)
+
+			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Post("/clusters", h.handleAddCluster)
+				r.Delete("/clusters/{context}", h.handleDeleteCluster)
+				r.Put("/clusters/{context}/rename", h.handleRenameCluster)
+			})
+
+			// Notifications — admin only (config read + test send)
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/notifications/config", h.handleNotificationsConfig)
+				r.Post("/notifications/test/{channel}", h.handleNotificationsTest)
+			})
 
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
