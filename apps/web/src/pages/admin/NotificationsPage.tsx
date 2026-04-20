@@ -1,11 +1,14 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Bell, Send, Check, AlertTriangle, Info } from 'lucide-react'
+import { Bell, Send, Check, AlertTriangle, Info, Mail } from 'lucide-react'
 import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 
 function ChannelIcon({ name }: { name: string }) {
   // Simple brand-ish glyphs — not the official logos to avoid trademark issues
+  if (name === 'email') {
+    return <Mail className="w-5 h-5" />
+  }
   if (name === 'slack') {
     return (
       <svg viewBox="0 0 24 24" className="w-5 h-5" fill="currentColor">
@@ -39,7 +42,27 @@ function SeverityBadge({ severity }: { severity: string }) {
   )
 }
 
-function ChannelCard({ name, enabled, onTest }: { name: string; enabled: boolean; onTest: () => Promise<void> }) {
+// Per-channel env var hint shown when the channel is disabled.
+// Email has many vars; we point users at the SMTP_* namespace instead.
+function envHint(name: string): React.ReactNode {
+  if (name === 'email') {
+    return (
+      <>Set <code className="text-kb-accent font-mono">KUBEBOLT_SMTP_HOST</code>, <code className="text-kb-accent font-mono">KUBEBOLT_SMTP_FROM</code>, and <code className="text-kb-accent font-mono">KUBEBOLT_SMTP_TO</code> in your environment (or <code className="text-kb-accent font-mono">.env</code> file) to enable email notifications.</>
+    )
+  }
+  return (
+    <>Set <code className="text-kb-accent font-mono">KUBEBOLT_{name.toUpperCase()}_WEBHOOK_URL</code> in your environment (or <code className="text-kb-accent font-mono">.env</code> file) to enable this channel.</>
+  )
+}
+
+function configuredHint(name: string): React.ReactNode {
+  if (name === 'email') {
+    return <>Insight alerts are delivered by email. Change SMTP settings via the <code className="text-kb-accent font-mono">KUBEBOLT_SMTP_*</code> environment variables.</>
+  }
+  return <>Insight alerts are delivered to this channel. Set <code className="text-kb-accent font-mono">KUBEBOLT_{name.toUpperCase()}_WEBHOOK_URL</code> to change the target.</>
+}
+
+function ChannelCard({ name, enabled, digestMode, onTest }: { name: string; enabled: boolean; digestMode?: string; onTest: () => Promise<void> }) {
   const [status, setStatus] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle')
   const [error, setError] = useState<string | null>(null)
 
@@ -60,19 +83,26 @@ function ChannelCard({ name, enabled, onTest }: { name: string; enabled: boolean
 
   return (
     <div className="bg-kb-card border border-kb-border rounded-xl p-5">
-      <div className="flex items-start justify-between mb-4">
-        <div className="flex items-center gap-3">
+      <div className="flex items-start justify-between mb-4 gap-2">
+        <div className="flex items-center gap-3 min-w-0">
           <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 ${enabled ? 'bg-kb-accent-light text-kb-accent' : 'bg-kb-elevated text-kb-text-tertiary'}`}>
             <ChannelIcon name={name} />
           </div>
-          <div>
-            <div className="text-sm font-semibold text-kb-text-primary">{title}</div>
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-semibold text-kb-text-primary">{title}</span>
+              {enabled && digestMode && (
+                <span className="px-1.5 py-0.5 rounded-full bg-status-info-dim text-status-info text-[9px] font-mono font-semibold uppercase tracking-wider">
+                  {digestMode}
+                </span>
+              )}
+            </div>
             <div className="text-[10px] font-mono text-kb-text-tertiary mt-0.5">
               {enabled ? 'Configured' : 'Not configured'}
             </div>
           </div>
         </div>
-        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider ${
+        <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider shrink-0 ${
           enabled ? 'bg-status-ok-dim text-status-ok' : 'bg-kb-elevated text-kb-text-tertiary'
         }`}>
           {enabled ? 'Enabled' : 'Disabled'}
@@ -82,8 +112,16 @@ function ChannelCard({ name, enabled, onTest }: { name: string; enabled: boolean
       {enabled ? (
         <>
           <p className="text-[11px] text-kb-text-secondary leading-relaxed mb-4">
-            Insight alerts are delivered to this channel. Set <code className="text-kb-accent font-mono">KUBEBOLT_{name.toUpperCase()}_WEBHOOK_URL</code> to change the target.
+            {configuredHint(name)}
           </p>
+          {name === 'email' && digestMode && digestMode !== 'instant' && (
+            <div className="mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-info-dim">
+              <Info className="w-3.5 h-3.5 text-status-info shrink-0 mt-0.5" />
+              <span className="text-[11px] text-status-info">
+                Digest mode <strong>{digestMode}</strong>: insights are buffered and sent as a single summary email every {digestMode === 'hourly' ? 'hour' : '24 hours'}.
+              </span>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <button
               onClick={handleTest}
@@ -117,7 +155,7 @@ function ChannelCard({ name, enabled, onTest }: { name: string; enabled: boolean
         </>
       ) : (
         <div className="text-[11px] text-kb-text-secondary leading-relaxed">
-          Set <code className="text-kb-accent font-mono">KUBEBOLT_{name.toUpperCase()}_WEBHOOK_URL</code> in your environment (or <code className="text-kb-accent font-mono">.env</code> file) to enable {title} notifications.
+          {envHint(name)}
         </div>
       )}
     </div>
@@ -193,7 +231,8 @@ export function NotificationsPage() {
             key={ch.name}
             name={ch.name}
             enabled={ch.enabled}
-            onTest={() => api.testNotification(ch.name as 'slack' | 'discord').then(() => {})}
+            digestMode={ch.digestMode}
+            onTest={() => api.testNotification(ch.name as 'slack' | 'discord' | 'email').then(() => {})}
           />
         ))}
       </div>

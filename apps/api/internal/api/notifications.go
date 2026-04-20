@@ -14,6 +14,8 @@ import (
 type notificationsChannelInfo struct {
 	Name    string `json:"name"`
 	Enabled bool   `json:"enabled"`
+	// DigestMode is only set for email. Empty string for webhook channels.
+	DigestMode string `json:"digestMode,omitempty"`
 }
 
 type notificationsConfigResponse struct {
@@ -23,8 +25,14 @@ type notificationsConfigResponse struct {
 	Channels    []notificationsChannelInfo `json:"channels"`
 }
 
+// digestModeReporter lets us surface the email digest mode without a type
+// assertion on the exact email package — keeps the api package decoupled.
+type digestModeReporter interface {
+	DigestMode() string
+}
+
 // handleNotificationsConfig returns the current notification settings.
-// Admin-only. Never exposes webhook URLs.
+// Admin-only. Never exposes webhook URLs or SMTP credentials.
 func (h *handlers) handleNotificationsConfig(w http.ResponseWriter, r *http.Request) {
 	// Always return a shape even when notifications are disabled, so the
 	// frontend can render a consistent "all channels: disabled" view.
@@ -32,6 +40,7 @@ func (h *handlers) handleNotificationsConfig(w http.ResponseWriter, r *http.Requ
 		Channels: []notificationsChannelInfo{
 			{Name: "slack", Enabled: false},
 			{Name: "discord", Enabled: false},
+			{Name: "email", Enabled: false},
 		},
 	}
 
@@ -50,6 +59,9 @@ func (h *handlers) handleNotificationsConfig(w http.ResponseWriter, r *http.Requ
 		for i := range resp.Channels {
 			if resp.Channels[i].Name == n.Name() {
 				resp.Channels[i].Enabled = true
+				if dm, ok := n.(digestModeReporter); ok {
+					resp.Channels[i].DigestMode = dm.DigestMode()
+				}
 			}
 		}
 	}

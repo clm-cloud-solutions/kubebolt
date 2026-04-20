@@ -27,6 +27,8 @@ export interface RefreshResponse {
 export interface NotificationChannel {
   name: string
   enabled: boolean
+  /** Present only for email: "instant" | "hourly" | "daily". */
+  digestMode?: string
 }
 
 export interface NotificationsConfig {

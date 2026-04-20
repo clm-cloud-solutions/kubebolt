@@ -150,6 +150,16 @@ func (m *Manager) SendTest(ctx context.Context, channelName string) error {
 	return errNoSuchChannel
 }
 
+// Stop shuts down any notifiers that need cleanup (e.g. email digest flusher).
+// Safe to call at any time; idempotent.
+func (m *Manager) Stop() {
+	for _, n := range m.notifiers {
+		if s, ok := n.(interface{ Stop() }); ok {
+			s.Stop()
+		}
+	}
+}
+
 // purgeExpiredLocked removes dedup entries whose cooldown has expired.
 // Must be called with m.mu held.
 func (m *Manager) purgeExpiredLocked() {

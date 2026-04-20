@@ -200,7 +200,7 @@ export const api = {
   getNotificationsConfig: () =>
     fetchJSON<import('@/types/auth').NotificationsConfig>(`${API_BASE}/notifications/config`),
 
-  testNotification: (channel: 'slack' | 'discord') =>
+  testNotification: (channel: 'slack' | 'discord' | 'email') =>
     postJSON<{ status: string }>(`${API_BASE}/notifications/test/${channel}`, {}),
 
   getOverview: () => fetchJSON<ClusterOverview>(`${API_BASE}/cluster/overview`),

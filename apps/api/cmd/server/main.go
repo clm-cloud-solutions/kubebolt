@@ -237,6 +237,19 @@ func main() {
 			notifiers = append(notifiers, notifications.NewDiscordNotifier(notifCfg.DiscordWebhookURL))
 			log.Println("Discord notifications enabled")
 		}
+		if notifCfg.Email.Enabled() {
+			email := notifications.NewEmailNotifier(notifications.EmailConfig{
+				Host:       notifCfg.Email.Host,
+				Port:       notifCfg.Email.Port,
+				Username:   notifCfg.Email.Username,
+				Password:   notifCfg.Email.Password,
+				From:       notifCfg.Email.From,
+				To:         notifCfg.Email.To,
+				DigestMode: notifications.DigestMode(notifCfg.Email.DigestMode),
+			})
+			notifiers = append(notifiers, email)
+			log.Printf("Email notifications enabled (mode=%s, %d recipient(s))", notifCfg.Email.DigestMode, len(notifCfg.Email.To))
+		}
 		notifManager = notifications.NewManager(notifiers, notifications.Config{
 			MinSeverity: notifCfg.MinSeverity,
 			Cooldown:    notifCfg.Cooldown,
@@ -248,9 +261,11 @@ func main() {
 				notifManager.Enqueue(clusterContext, insight)
 			})
 		} else {
-			log.Println("Notifications disabled (no webhook URLs configured)")
+			log.Println("Notifications disabled (no channels configured)")
 		}
 	}
+	// Ensure the email digest flusher (if any) drains on shutdown
+	defer notifManager.Stop()
 
 	// Create API Router (with optional embedded frontend)
 	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, authHandlers, notifManager)
