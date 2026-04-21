@@ -7,7 +7,11 @@
 // Keep prompts intentionally terse: pre-loading identifier + symptom is
 // enough for ronda 0. Bloated prompts inflate every session for no gain.
 
-export type CopilotTriggerType = 'manual' | 'insight' | 'not_ready_resource'
+export type CopilotTriggerType =
+  | 'manual'
+  | 'insight'
+  | 'not_ready_resource'
+  | 'warning_event'
 
 export interface InsightTriggerPayload {
   type: 'insight'
@@ -36,9 +40,23 @@ export interface NotReadyResourceTriggerPayload {
   }
 }
 
+export interface WarningEventTriggerPayload {
+  type: 'warning_event'
+  event: {
+    reason: string
+    message: string
+    object: string         // e.g. "Pod/foo" or "Deployment/bar"
+    namespace?: string
+    count?: number         // how many times it has repeated
+    firstSeen?: string
+    lastSeen?: string
+  }
+}
+
 export type CopilotTriggerPayload =
   | InsightTriggerPayload
   | NotReadyResourceTriggerPayload
+  | WarningEventTriggerPayload
 
 export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
   switch (payload.type) {
@@ -66,7 +84,7 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
       const lines = [
         `Investigate this ${r.kind} and tell me what's wrong.`,
         ``,
-        `${r.kind}: ${r.namespace}/${r.name}`,
+        r.namespace ? `${r.kind}: ${r.namespace}/${r.name}` : `${r.kind}: ${r.name}`,
       ]
       if (r.status) lines.push(`Status: ${r.status}`)
       if (r.details) {
@@ -76,6 +94,24 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
         }
       }
       lines.push(``, `Explain what's happening and suggest actionable fixes.`)
+      return lines.join('\n')
+    }
+    case 'warning_event': {
+      const e = payload.event
+      const lines = [
+        `Explain this Kubernetes Warning event and its impact.`,
+        ``,
+        `Reason: ${e.reason}`,
+        `Object: ${e.namespace ? e.namespace + '/' + e.object : e.object}`,
+        `Message: ${e.message}`,
+      ]
+      if (typeof e.count === 'number') lines.push(`Count: ${e.count} occurrences`)
+      if (e.firstSeen) lines.push(`First seen: ${e.firstSeen}`)
+      if (e.lastSeen) lines.push(`Last seen: ${e.lastSeen}`)
+      lines.push(
+        ``,
+        `Is this benign or something I need to act on? If actionable, how do I fix the root cause?`,
+      )
       return lines.join('\n')
     }
   }

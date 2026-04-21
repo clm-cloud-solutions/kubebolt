@@ -40,10 +40,19 @@ export function AskCopilotButton({
         type="button"
         onClick={handleClick}
         title={label}
-        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium bg-kb-accent-light text-kb-accent hover:bg-kb-accent/20 transition-colors ${className}`}
+        className={`group relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium text-kb-accent bg-gradient-to-r from-kb-accent-light via-kb-accent-light to-violet-500/10 ring-1 ring-kb-accent/25 shadow-[0_0_0_0_rgba(29,189,125,0)] hover:ring-kb-accent/50 hover:shadow-[0_0_14px_rgba(29,189,125,0.35)] hover:-translate-y-[0.5px] active:translate-y-0 transition-all duration-200 overflow-hidden ${className}`}
       >
-        <Bot className="w-3.5 h-3.5" />
-        {label}
+        <span className="relative flex items-center">
+          <span className="absolute inset-0 rounded-full bg-kb-accent/60 blur-[3px] animate-ping opacity-60" aria-hidden />
+          <Bot className="relative w-3.5 h-3.5" />
+        </span>
+        <span className="relative bg-gradient-to-r from-kb-accent to-violet-400 bg-clip-text text-transparent font-semibold">
+          {label}
+        </span>
+        <span
+          aria-hidden
+          className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/25 to-transparent group-hover:translate-x-full transition-transform duration-700 ease-out"
+        />
       </button>
     )
   }
@@ -54,9 +63,9 @@ export function AskCopilotButton({
       onClick={handleClick}
       title={label}
       aria-label={label}
-      className={`inline-flex items-center justify-center w-6 h-6 rounded-md text-kb-text-tertiary hover:text-kb-accent hover:bg-kb-accent-light transition-colors ${className}`}
+      className={`group relative inline-flex items-center justify-center w-6 h-6 rounded-md text-kb-accent bg-gradient-to-br from-kb-accent-light to-violet-500/10 ring-1 ring-kb-accent/20 hover:ring-kb-accent/50 hover:scale-105 hover:shadow-[0_0_12px_rgba(29,189,125,0.35)] active:scale-95 transition-all duration-200 ${className}`}
     >
-      <Bot className="w-3.5 h-3.5" />
+      <Bot className="w-3.5 h-3.5 transition-transform duration-200 group-hover:rotate-[8deg]" />
     </button>
   )
 }

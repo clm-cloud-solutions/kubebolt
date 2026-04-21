@@ -1947,7 +1947,7 @@ export function ResourceDetailPage() {
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
         <div className="flex gap-2 items-center">
-          {['pods', 'deployments', 'statefulsets'].includes(type) && (
+          {['pods', 'deployments', 'statefulsets', 'services', 'nodes'].includes(type) && (
             <AskCopilotButton
               variant="text"
               label="Ask Copilot"
@@ -1963,6 +1963,10 @@ export function ResourceDetailPage() {
                     ...(item.replicas !== undefined ? { replicas: Number(item.replicas) } : {}),
                     ...(item.restarts !== undefined ? { restarts: Number(item.restarts) } : {}),
                     ...(item.age ? { age: String(item.age) } : {}),
+                    ...(type === 'services' && item.type ? { serviceType: String(item.type) } : {}),
+                    ...(type === 'services' && item.clusterIP ? { clusterIP: String(item.clusterIP) } : {}),
+                    ...(type === 'nodes' && item.kubeletVersion ? { kubeletVersion: String(item.kubeletVersion) } : {}),
+                    ...(type === 'nodes' && item.osImage ? { osImage: String(item.osImage) } : {}),
                   },
                 },
               }}

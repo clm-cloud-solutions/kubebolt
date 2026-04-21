@@ -3,6 +3,7 @@ import { useEvents } from '@/hooks/useEvents'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { formatAge } from '@/utils/formatters'
 import type { EventParams } from '@/types/kubernetes'
 
@@ -78,6 +79,25 @@ export function EventsPage() {
               <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
                 {item.createdAt ? formatAge(item.createdAt) : item.age || '-'}
               </span>
+              {eventType === 'Warning' && (
+                <div className="shrink-0">
+                  <AskCopilotButton
+                    label="Ask Copilot about this event"
+                    payload={{
+                      type: 'warning_event',
+                      event: {
+                        reason: String(item.reason ?? 'Unknown'),
+                        message: String(item.message ?? ''),
+                        object: String(item.object ?? `${item.namespace ?? ''}/${item.name ?? ''}`),
+                        namespace: item.namespace ? String(item.namespace) : undefined,
+                        count: item.count != null ? Number(item.count) : undefined,
+                        firstSeen: item.firstTimestamp ? String(item.firstTimestamp) : undefined,
+                        lastSeen: item.createdAt ? String(item.createdAt) : undefined,
+                      },
+                    }}
+                  />
+                </div>
+              )}
             </div>
           )
         })}
