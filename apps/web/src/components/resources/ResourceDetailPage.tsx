@@ -16,6 +16,7 @@ import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
 import { PortForwardButton, PortForwardNote } from './PortForwardButton'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { useAuth } from '@/contexts/AuthContext'
 import { formatAge, formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
@@ -1946,6 +1947,27 @@ export function ResourceDetailPage() {
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
         <div className="flex gap-2 items-center">
+          {['pods', 'deployments', 'statefulsets'].includes(type) && (
+            <AskCopilotButton
+              variant="text"
+              label="Ask Copilot"
+              payload={{
+                type: 'not_ready_resource',
+                resource: {
+                  kind: routeToKind[type] ?? type,
+                  namespace: item.namespace ?? '',
+                  name: item.name,
+                  status: item.status ? String(item.status) : undefined,
+                  details: {
+                    ...(item.ready ? { ready: String(item.ready) } : {}),
+                    ...(item.replicas !== undefined ? { replicas: Number(item.replicas) } : {}),
+                    ...(item.restarts !== undefined ? { restarts: Number(item.restarts) } : {}),
+                    ...(item.age ? { age: String(item.age) } : {}),
+                  },
+                },
+              }}
+            />
+          )}
           <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
             Refresh
           </button>

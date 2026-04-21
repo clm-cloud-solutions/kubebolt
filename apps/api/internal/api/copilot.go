@@ -48,6 +48,12 @@ func truncate(s string, max int) string {
 type CopilotChatRequest struct {
 	Messages    []copilot.Message `json:"messages"`
 	CurrentPath string            `json:"currentPath,omitempty"`
+	// Trigger identifies where the session originated: "manual" when the
+	// user typed into the chat, or a specific trigger name (e.g.
+	// "insight", "not_ready_resource") for contextual "Ask Copilot"
+	// buttons across the UI. Logged with each session for adoption
+	// analytics. Defaults to "manual" when empty.
+	Trigger string `json:"trigger,omitempty"`
 }
 
 // HandleCopilotConfig returns the public copilot configuration (no API keys).
@@ -120,12 +126,18 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	executor := copilot.NewExecutor(h.manager)
 	tools := copilot.ToolDefinitions()
 
+	trigger := req.Trigger
+	if trigger == "" {
+		trigger = "manual"
+	}
+
 	logger := slog.Default().With(
 		slog.String("component", "copilot"),
 		slog.String("user", auth.ContextUserID(r)),
 		slog.String("cluster", clusterName),
 		slog.String("provider", h.copilotConfig.Primary.Provider),
 		slog.String("model", h.copilotConfig.Primary.Model),
+		slog.String("trigger", trigger),
 	)
 
 	// Multi-step tool calling loop

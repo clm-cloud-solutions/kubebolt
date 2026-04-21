@@ -1248,6 +1248,106 @@ The Helm chart exposes these via a `copilot:` block in `values.yaml` with suppor
 - `skills/kubebolt-copilot/references/integration-guide.md` — Implementation guide for backend proxy, BYO key model, fallback behavior, Helm config
 - `skills/kubebolt-copilot/references/examples.md` — 12 few-shot conversation examples
 
+#### Contextual Copilot triggers (additional)
+
+The Copilot panel is powerful but discoverable only through a toggle. Users at the point of decision — looking at a failing pod, reading an insight card, inspecting an event with 345K occurrences — should not have to (a) remember the Copilot exists, (b) open it, (c) formulate a question that re-describes context they're already seeing. This addendum adds contextual "Ask Copilot" entry points across the UI that launch the assistant with pre-loaded context.
+
+Two benefits stack: adoption (the assistant meets the user where decisions happen) and token efficiency (pre-loaded context means fewer rounds spent gathering basic info, and the LLM arrives with everything it needs to answer in ronda 0).
+
+##### Trigger placement (prioritized)
+
+Ordered by ROI — which trigger delivers most value vs. UI clutter cost:
+
+| Entry point | Canonical question | Priority |
+|---|---|---|
+| **Insight card** (active insight in sidebar or insights page) | "Explain this insight and recommend a fix" | **High** — problem already detected, Copilot provides the next step |
+| **Resource detail page** when the resource is in a not-ready state (pod CrashLoop, deployment with unavailable replicas, job failed, HPA pinned at max) | "Diagnose this resource and suggest fixes" | **High** — context is visible, user wants the why |
+| **Event row** with Warning type and high count | "Explain this event and its impact" | Medium |
+| **Service with 0 endpoints** | "Why is this service not routing traffic?" | Medium |
+| **Node with Pressure condition** | "Analyze this node's health" | Low |
+
+Ship only the two **High** entries first. Measure usage before adding the rest — every trigger is UI weight and should prove itself.
+
+##### Interaction patterns
+
+Three options with real trade-offs:
+
+- **A. Click → launch directly** (single canonical prompt per trigger). Lowest friction, least control. Best for obvious cases.
+- **B. Click → popover with 2–3 canned questions** ("Why?", "How do I fix it?", "Is this critical?"). Balance of control and friction. Best for complex cases.
+- **C. Click → open panel with editable prefilled prompt**. Maximum control, maximum friction. Redundant with the existing manual chat.
+
+Recommendation: **A for simple triggers** (event rows, single obvious question); **B for complex triggers** (insight cards, resource detail). **C is rejected** — if the user wants to rephrase, the existing chat already does that.
+
+##### Technical approach
+
+Builds entirely on existing primitives. `useCopilot()` already exposes `openPanel()` and `sendMessage(text)` — a trigger is two sequential calls.
+
+New artifacts:
+
+- `services/copilot/triggers.ts` — centralized prompt templates, one per trigger type, versioned. Easy to iterate without scattering strings across the UI.
+- `components/copilot/AskCopilotButton.tsx` — small reusable button (icon + tooltip) with variants for each trigger type. Accepts a typed `TriggerPayload` and internally resolves the prompt.
+- `CopilotContext` — extend `sendMessage` signature (or add `sendTriggeredMessage`) to accept an optional `trigger` metadata field that propagates to the backend session log.
+- Backend: extend the `copilot session` log event with a `trigger` field (default `"manual"`, or one of the canonical trigger names).
+
+Example prompt template for an insight trigger:
+
+```text
+Diagnose this insight in detail and recommend a fix.
+
+Insight: {severity} — {title}
+Resource: {namespace}/{kind}/{name}
+Detected: {timestamp}
+Message: {message}
+
+What's the root cause, and what should I do?
+```
+
+Example for a not-ready pod:
+
+```text
+Investigate this pod and tell me what's wrong.
+
+Pod: {namespace}/{name}
+Status: {phase}
+Containers: {containerStatuses}
+Restart count: {restarts}
+
+Explain what's happening and suggest actionable fixes.
+```
+
+Prompts are kept short deliberately — the LLM will call tools for more context when needed. Pre-loading the identifier and the symptom is enough for ronda 0.
+
+##### Tracking
+
+Every triggered session logs a `trigger` field in the `copilot session` event. Enables:
+
+- **Adoption by entry point**: which triggers are used? If an entry point gets <5% of sessions, remove it — it's UI clutter earning nothing.
+- **Token cost by trigger type**: different triggers will have different average consumption. Feeds the credit calibration doc (`internal/copilot-credits-pricing-calibration.md`) with per-activity data.
+- **Conversion**: does a triggered session lead to follow-up questions from the same user (engagement) or is it a dead-end?
+
+##### Guardrails
+
+- If Copilot is not configured (`config.enabled === false`), all triggers must be **invisible**, not disabled. Dead-ends hurt trust.
+- Trigger prompts use the active cluster and resource context — if the cluster is disconnected, the button is hidden or shows "Reconnect to ask".
+- Trigger prompts never include secrets, raw YAML, or redacted fields. The backend tools the LLM then calls will re-fetch with proper permission scoping.
+- Templates are versioned (`v1`, `v2`, …). Changing a template bumps the version — ensures the log retains prompt provenance for later tuning.
+
+##### MVP scope (2 days)
+
+1. Add `AskCopilotButton` component with icon + tooltip, styled to blend with existing insight cards and detail page headers.
+2. Wire it into `InsightCard` and the header of `ResourceDetailPage` for pods/deployments/statefulsets in not-ready state.
+3. Centralize prompts in `services/copilot/triggers.ts` with two templates (`insight`, `notReadyResource`).
+4. Extend `CopilotContext.sendMessage` to accept optional `trigger` metadata.
+5. Add `trigger` field to the backend SSE `usage` event and to the `copilot session` log.
+6. Hide triggers when `config.enabled === false`.
+
+Post-MVP increments (data-driven, only if used):
+
+- Event row trigger.
+- Service with 0 endpoints trigger.
+- Node conditions trigger.
+- Popover variant (interaction B) for insight triggers offering 2–3 canned questions.
+
 #### Pending (post-1.8)
 
 The following are documented in the skill but deferred to future iterations:

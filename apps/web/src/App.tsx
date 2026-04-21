@@ -16,6 +16,7 @@ import { NamespacesPage } from '@/components/resources/NamespacesPage'
 import { RBACPage } from '@/components/resources/RBACPage'
 import { SettingsPage } from '@/components/resources/SettingsPage'
 import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
+import { InsightsList } from '@/components/insights/InsightsList'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -87,6 +88,7 @@ export default function App() {
             {/* All app routes — require auth when enabled */}
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/" element={<OverviewPage />} />
+              <Route path="/insights" element={<InsightsList />} />
               <Route path="/map" element={<ClusterMap />} />
               <Route path="/pods" element={<ResourceListPage resourceType="pods" />} />
               <Route path="/nodes" element={<NodesPage />} />

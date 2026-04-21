@@ -23,6 +23,15 @@ export interface CopilotToolResult {
   isError?: boolean
 }
 
+// Usage reported by the provider for a single Chat call or an aggregated
+// session. Mirrors backend `copilot.Usage`.
+export interface CopilotUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheCreationTokens?: number
+  cacheReadTokens?: number
+}
+
 // SSE event types streamed from /api/v1/copilot/chat
 export type CopilotStreamEventType =
   | 'meta'
@@ -31,6 +40,7 @@ export type CopilotStreamEventType =
   | 'text'
   | 'error'
   | 'done'
+  | 'usage'
 
 export interface CopilotStreamEvent {
   type: CopilotStreamEventType
@@ -38,6 +48,10 @@ export interface CopilotStreamEvent {
   toolName?: string
   error?: string
   fallback?: boolean
+  // "usage" event payload: per-round delta and running session totals
+  round?: number
+  turn?: CopilotUsage
+  session?: CopilotUsage
 }
 
 export interface CopilotConfig {

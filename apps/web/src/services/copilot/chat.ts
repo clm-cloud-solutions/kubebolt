@@ -28,6 +28,7 @@ export async function* sendCopilotChat(
   messages: CopilotMessage[],
   currentPath: string,
   signal?: AbortSignal,
+  trigger?: string,
 ): AsyncGenerator<CopilotStreamEvent> {
   const token = getAccessToken()
   const res = await fetch('/api/v1/copilot/chat', {
@@ -39,6 +40,7 @@ export async function* sendCopilotChat(
     body: JSON.stringify({
       messages: serializeMessages(messages),
       currentPath,
+      trigger,
     }),
     signal,
   })

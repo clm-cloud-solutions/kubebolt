@@ -19,7 +19,25 @@ import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
 import { MarkdownRenderer } from './MarkdownRenderer'
-import type { CopilotMessage } from '@/services/copilot/types'
+import type { CopilotMessage, CopilotUsage } from '@/services/copilot/types'
+
+// Compact number formatter: 1234 → "1.2k", 15000000 → "15M"
+function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 10_000) return `${Math.round(n / 1_000)}k`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return String(n)
+}
+
+function formatUsageTooltip(u: CopilotUsage): string {
+  const parts = [
+    `Input: ${u.inputTokens.toLocaleString()}`,
+    `Output: ${u.outputTokens.toLocaleString()}`,
+  ]
+  if (u.cacheReadTokens) parts.push(`Cache read: ${u.cacheReadTokens.toLocaleString()}`)
+  if (u.cacheCreationTokens) parts.push(`Cache write: ${u.cacheCreationTokens.toLocaleString()}`)
+  return parts.join('\n')
+}
 
 export function CopilotPanel() {
   const {
@@ -30,6 +48,8 @@ export function CopilotPanel() {
     messages,
     pendingToolCalls,
     usedFallback,
+    sessionUsage,
+    sessionRounds,
     closePanel,
     sendMessage,
     clearHistory,
@@ -292,6 +312,21 @@ export function CopilotPanel() {
           AI can make mistakes. Verify important information before acting on it.
           <br />
           ⌘+Enter to send · ⌘J to toggle
+          {sessionUsage && (
+            <>
+              <br />
+              <span
+                className="text-kb-text-secondary"
+                title={formatUsageTooltip(sessionUsage)}
+              >
+                {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)} tokens
+                {sessionRounds > 0 && ` · ${sessionRounds} round${sessionRounds === 1 ? '' : 's'}`}
+                {sessionUsage.cacheReadTokens
+                  ? ` · cache ${formatTokens(sessionUsage.cacheReadTokens)}`
+                  : ''}
+              </span>
+            </>
+          )}
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import { AlertTriangle, AlertCircle, Info } from 'lucide-react'
 import type { Insight } from '@/types/kubernetes'
 import { formatAge } from '@/utils/formatters'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 interface InsightCardProps {
   insight: Insight
@@ -39,9 +40,26 @@ export function InsightCard({ insight }: InsightCardProps) {
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-1">
             <h3 className="text-sm font-medium text-kb-text-primary truncate">{insight.title}</h3>
-            <span className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-[0.06em] ${config.bg} ${config.text}`}>
-              {insight.severity}
-            </span>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <AskCopilotButton
+                payload={{
+                  type: 'insight',
+                  insight: {
+                    severity: insight.severity,
+                    title: insight.title,
+                    message: insight.message,
+                    resource: insight.resource,
+                    namespace: insight.namespace,
+                    suggestion: insight.suggestion,
+                    lastSeen: insight.lastSeen,
+                  },
+                }}
+                label="Ask Copilot about this insight"
+              />
+              <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-[0.06em] ${config.bg} ${config.text}`}>
+                {insight.severity}
+              </span>
+            </div>
           </div>
           <p className="text-xs text-kb-text-secondary mb-2">{insight.message}</p>
           {insight.suggestion && (

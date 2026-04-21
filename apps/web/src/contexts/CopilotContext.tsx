@@ -3,7 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { sendCopilotChat } from '@/services/copilot/chat'
-import type { CopilotMessage, CopilotConfig } from '@/services/copilot/types'
+import type { CopilotMessage, CopilotConfig, CopilotUsage } from '@/services/copilot/types'
 
 interface CopilotContextValue {
   config?: CopilotConfig
@@ -13,11 +13,18 @@ interface CopilotContextValue {
   messages: CopilotMessage[]
   pendingToolCalls: string[]
   usedFallback: boolean
+  sessionUsage: CopilotUsage | null
+  sessionRounds: number
   openPanel: () => void
   closePanel: () => void
   togglePanel: () => void
-  sendMessage: (text: string) => Promise<void>
+  sendMessage: (text: string, options?: SendMessageOptions) => Promise<void>
   clearHistory: () => void
+}
+
+export interface SendMessageOptions {
+  /** Origin of the message — propagated to backend logs for adoption analytics. */
+  trigger?: string
 }
 
 const CopilotContext = createContext<CopilotContextValue | null>(null)
@@ -34,6 +41,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<CopilotMessage[]>([])
   const [pendingToolCalls, setPendingToolCalls] = useState<string[]>([])
   const [usedFallback, setUsedFallback] = useState(false)
+  const [sessionUsage, setSessionUsage] = useState<CopilotUsage | null>(null)
+  const [sessionRounds, setSessionRounds] = useState(0)
 
   const { data: config } = useQuery({
     queryKey: ['copilot-config'],
@@ -43,7 +52,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   })
 
   const sendMessage = useCallback(
-    async (text: string) => {
+    async (text: string, options?: SendMessageOptions) => {
       const trimmed = text.trim()
       if (!trimmed || isLoading) return
 
@@ -61,6 +70,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       setError(null)
       setPendingToolCalls([])
       setUsedFallback(false)
+      setSessionUsage(null)
+      setSessionRounds(0)
 
       // Pre-create the assistant message that will accumulate streamed text
       const assistantId = generateId()
@@ -71,7 +82,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       ])
 
       try {
-        for await (const event of sendCopilotChat(newMessages, location.pathname)) {
+        for await (const event of sendCopilotChat(newMessages, location.pathname, undefined, options?.trigger)) {
           if (event.type === 'meta' && event.fallback) {
             setUsedFallback(true)
           } else if (event.type === 'tool_call' && event.toolName) {
@@ -81,6 +92,11 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
             setMessages((prev) =>
               prev.map((m) => (m.id === assistantId ? { ...m, content: assistantText } : m)),
             )
+          } else if (event.type === 'usage' && event.session) {
+            setSessionUsage(event.session)
+            if (typeof event.round === 'number') {
+              setSessionRounds(event.round + 1)
+            }
           } else if (event.type === 'error') {
             setError(event.error || 'Unknown error from copilot')
           } else if (event.type === 'done') {
@@ -105,6 +121,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     setError(null)
     setPendingToolCalls([])
     setUsedFallback(false)
+    setSessionUsage(null)
+    setSessionRounds(0)
   }, [])
 
   // Cmd+J / Ctrl+J shortcut to toggle the panel (if enabled)
@@ -130,6 +148,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         messages,
         pendingToolCalls,
         usedFallback,
+        sessionUsage,
+        sessionRounds,
         openPanel,
         closePanel,
         togglePanel,
