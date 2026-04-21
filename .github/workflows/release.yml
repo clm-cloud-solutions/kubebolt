@@ -458,6 +458,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # Auto-mark pre-releases so the tag doesn't claim "Latest release"
+          # on the repo front page. Any semver suffix triggers it.
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
           files: |
             dist/kubebolt-linux-amd64
             dist/kubebolt-linux-arm64
