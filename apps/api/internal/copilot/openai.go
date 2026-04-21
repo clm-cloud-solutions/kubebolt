@@ -91,10 +91,18 @@ type openaiChoice struct {
 	FinishReason string        `json:"finish_reason"`
 }
 
+// openaiPromptTokensDetails is the subobject OpenAI uses to report
+// automatic prompt caching. Populated since gpt-4o for any prompt ≥1024
+// tokens — cached_tokens are a subset of prompt_tokens (NOT disjoint).
+type openaiPromptTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
 type openaiUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
-	TotalTokens      int `json:"total_tokens"`
+	PromptTokens        int                       `json:"prompt_tokens"`
+	CompletionTokens    int                       `json:"completion_tokens"`
+	TotalTokens         int                       `json:"total_tokens"`
+	PromptTokensDetails openaiPromptTokensDetails `json:"prompt_tokens_details"`
 }
 
 type openaiResponse struct {
@@ -172,12 +180,23 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		text = "_(reasoning only — model did not produce a final response)_\n\n" + choice.Message.ReasoningContent
 	}
 
+	// OpenAI reports prompt_tokens INCLUSIVE of cached tokens; Anthropic
+	// reports input_tokens DISJOINT from cache_read_input_tokens. Normalize
+	// to the Anthropic convention (InputTokens = non-cached only) so the
+	// session summary math is consistent across providers.
+	cachedTokens := or.Usage.PromptTokensDetails.CachedTokens
+	nonCachedInput := or.Usage.PromptTokens - cachedTokens
+	if nonCachedInput < 0 {
+		nonCachedInput = 0
+	}
+
 	out := &ChatResponse{
 		Text:       text,
 		StopReason: choice.FinishReason,
 		Usage: Usage{
-			InputTokens:  or.Usage.PromptTokens,
-			OutputTokens: or.Usage.CompletionTokens,
+			InputTokens:     nonCachedInput,
+			OutputTokens:    or.Usage.CompletionTokens,
+			CacheReadTokens: cachedTokens,
 		},
 	}
 	for _, tc := range choice.Message.ToolCalls {
