@@ -37,6 +37,9 @@ type Manager struct {
 	// onNewInsight is invoked for each newly detected insight; wired to the
 	// notifications manager from main.go. Nil when notifications are disabled.
 	onNewInsight func(clusterContext string, insight models.Insight)
+	// onResolvedInsight is invoked when an insight transitions to resolved.
+	// Nil when notifications are disabled or includeResolved is false.
+	onResolvedInsight func(clusterContext string, insight models.Insight)
 }
 
 // SetOnNewInsight registers a callback invoked (asynchronously) for every new
@@ -53,19 +56,39 @@ func (m *Manager) SetOnNewInsight(fn func(clusterContext string, insight models.
 	}
 }
 
-// wireInsightHookLocked attaches m.onNewInsight to the current engine.
-// Assumes m.mu is held.
+// SetOnResolvedInsight registers a callback invoked when an insight in the
+// active cluster transitions to resolved. Same wiring semantics as
+// SetOnNewInsight.
+func (m *Manager) SetOnResolvedInsight(fn func(clusterContext string, insight models.Insight)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onResolvedInsight = fn
+	if m.engine != nil {
+		m.wireInsightHookLocked()
+	}
+}
+
+// wireInsightHookLocked attaches m.onNewInsight and m.onResolvedInsight to
+// the current engine. Assumes m.mu is held.
 func (m *Manager) wireInsightHookLocked() {
-	if m.engine == nil || m.onNewInsight == nil {
+	if m.engine == nil {
 		return
 	}
-	hook := m.onNewInsight
 	activeCtx := m.activeContext
-	m.engine.SetOnNewInsight(func(insight models.Insight) {
-		// Called with engine lock held — keep this fast, the notification
-		// manager already dispatches async.
-		hook(activeCtx, insight)
-	})
+	if m.onNewInsight != nil {
+		hook := m.onNewInsight
+		m.engine.SetOnNewInsight(func(insight models.Insight) {
+			// Called with engine lock held — keep this fast, the notification
+			// manager already dispatches async.
+			hook(activeCtx, insight)
+		})
+	}
+	if m.onResolvedInsight != nil {
+		hook := m.onResolvedInsight
+		m.engine.SetOnResolvedInsight(func(insight models.Insight) {
+			hook(activeCtx, insight)
+		})
+	}
 }
 
 // SetStorage attaches a cluster storage to the manager. This must be called

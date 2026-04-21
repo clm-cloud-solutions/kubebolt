@@ -202,7 +202,25 @@ export function NotificationsPage() {
       {/* Global config */}
       <div className="bg-kb-surface border border-kb-border rounded-xl p-5 mb-6">
         <h2 className="text-xs font-mono font-semibold text-kb-text-tertiary uppercase tracking-wider mb-3">Global Settings</h2>
-        <div className="grid grid-cols-2 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div>
+            <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1.5">Status</div>
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-mono ${
+                  data.masterEnabled
+                    ? 'bg-status-ok-dim text-status-ok border border-status-ok/20'
+                    : 'bg-status-warn-dim text-status-warn border border-status-warn/20'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${data.masterEnabled ? 'bg-status-ok' : 'bg-status-warn'}`} />
+                {data.masterEnabled ? 'Enabled' : 'Paused'}
+              </span>
+              <span className="text-[11px] text-kb-text-secondary">
+                {data.masterEnabled ? 'master toggle is on' : 'all channels muted'}
+              </span>
+            </div>
+          </div>
           <div>
             <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1.5">Minimum Severity</div>
             <div className="flex items-center gap-2">
@@ -217,9 +235,40 @@ export function NotificationsPage() {
               <span className="text-[11px] text-kb-text-secondary">between same insights</span>
             </div>
           </div>
+          <div>
+            <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1.5">Base URL</div>
+            <div className="flex items-center gap-2 min-w-0">
+              {data.baseUrl ? (
+                <span className="text-xs font-mono text-kb-text-primary px-2 py-0.5 rounded-md bg-kb-elevated border border-kb-border truncate" title={data.baseUrl}>
+                  {data.baseUrl}
+                </span>
+              ) : (
+                <span className="text-[11px] text-kb-text-tertiary italic">not configured</span>
+              )}
+              <span className="text-[11px] text-kb-text-secondary shrink-0">shown as link in messages</span>
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1.5">Resolved Insights</div>
+            <div className="flex items-center gap-2">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md text-[11px] font-mono ${
+                  data.includeResolved
+                    ? 'bg-status-ok-dim text-status-ok border border-status-ok/20'
+                    : 'bg-kb-elevated text-kb-text-tertiary border border-kb-border'
+                }`}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${data.includeResolved ? 'bg-status-ok' : 'bg-kb-text-tertiary/40'}`} />
+                {data.includeResolved ? 'Notify' : 'Skip'}
+              </span>
+              <span className="text-[11px] text-kb-text-secondary">
+                {data.includeResolved ? 'send a message when an insight clears' : 'only notify on new insights'}
+              </span>
+            </div>
+          </div>
         </div>
         <p className="text-[10px] text-kb-text-tertiary mt-4 font-mono">
-          Configure via <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_MIN_SEVERITY</code> and <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_COOLDOWN</code>
+          Configure via <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_ENABLED</code>, <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_MIN_SEVERITY</code>, <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_COOLDOWN</code>, <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_BASE_URL</code>, <code className="text-kb-accent">KUBEBOLT_NOTIFICATIONS_INCLUDE_RESOLVED</code>
         </p>
       </div>
 

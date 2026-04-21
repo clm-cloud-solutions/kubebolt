@@ -32,9 +32,14 @@ type NotificationsConfig struct {
 	SlackWebhookURL   string
 	DiscordWebhookURL string
 	Email             EmailDeliveryConfig
-	MinSeverity       string        // "critical" | "warning" | "info"
-	Cooldown          time.Duration // dedup window for the same insight
-	BaseURL           string        // optional — included as a link in messages
+	// MasterEnabled is a global kill switch. When false, no notifications are
+	// sent regardless of which channels are configured. Useful for maintenance
+	// windows or temporarily silencing alerts without un-configuring channels.
+	MasterEnabled   bool
+	MinSeverity     string        // "critical" | "warning" | "info"
+	Cooldown        time.Duration // dedup window for the same insight
+	BaseURL         string        // optional — included as a link in messages
+	IncludeResolved bool          // also notify when an insight is resolved
 }
 
 // Enabled returns true if at least one notification channel is configured.
@@ -49,8 +54,10 @@ func LoadNotificationsConfig() NotificationsConfig {
 		SlackWebhookURL:   os.Getenv("KUBEBOLT_SLACK_WEBHOOK_URL"),
 		DiscordWebhookURL: os.Getenv("KUBEBOLT_DISCORD_WEBHOOK_URL"),
 		Email:             loadEmailConfig(),
+		MasterEnabled:     parseBoolDefault(os.Getenv("KUBEBOLT_NOTIFICATIONS_ENABLED"), true),
 		MinSeverity:       os.Getenv("KUBEBOLT_NOTIFICATIONS_MIN_SEVERITY"),
 		BaseURL:           os.Getenv("KUBEBOLT_NOTIFICATIONS_BASE_URL"),
+		IncludeResolved:   parseBoolDefault(os.Getenv("KUBEBOLT_NOTIFICATIONS_INCLUDE_RESOLVED"), false),
 	}
 
 	// Default to warning if unset or invalid
@@ -70,6 +77,23 @@ func LoadNotificationsConfig() NotificationsConfig {
 	}
 
 	return cfg
+}
+
+// parseBoolDefault parses a string as a boolean, returning def on any parse
+// failure or empty input. Accepts the standard Go bool strings (1/0, t/f,
+// true/false, TRUE/FALSE) plus a few ergonomic variants.
+func parseBoolDefault(s string, def bool) bool {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return def
+	}
+	switch s {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	case "0", "f", "false", "no", "n", "off":
+		return false
+	}
+	return def
 }
 
 // loadEmailConfig reads SMTP settings from env vars. Defaults:

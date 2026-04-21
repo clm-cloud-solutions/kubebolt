@@ -19,10 +19,17 @@ type notificationsChannelInfo struct {
 }
 
 type notificationsConfigResponse struct {
-	Enabled     bool                       `json:"enabled"`
-	MinSeverity string                     `json:"minSeverity"`
-	Cooldown    string                     `json:"cooldown"` // duration as Go-style string: "1h0m0s"
-	Channels    []notificationsChannelInfo `json:"channels"`
+	// Enabled means "at least one channel configured AND master toggle on".
+	Enabled bool `json:"enabled"`
+	// MasterEnabled is the global kill switch, independent of whether any
+	// channels are configured. Useful for the UI to show "paused" state
+	// when the toggle is off but channels remain configured.
+	MasterEnabled   bool                       `json:"masterEnabled"`
+	MinSeverity     string                     `json:"minSeverity"`
+	Cooldown        string                     `json:"cooldown"` // duration as Go-style string: "1h0m0s"
+	BaseURL         string                     `json:"baseUrl"`
+	IncludeResolved bool                       `json:"includeResolved"`
+	Channels        []notificationsChannelInfo `json:"channels"`
 }
 
 // digestModeReporter lets us surface the email digest mode without a type
@@ -44,16 +51,21 @@ func (h *handlers) handleNotificationsConfig(w http.ResponseWriter, r *http.Requ
 		},
 	}
 
-	if h.notifications == nil || !h.notifications.Enabled() {
+	if h.notifications == nil {
 		resp.MinSeverity = "warning"
 		resp.Cooldown = time.Hour.String()
 		respondJSON(w, http.StatusOK, resp)
 		return
 	}
 
-	resp.Enabled = true
+	// Populate the global settings even when notifications are master-disabled
+	// so the UI can render the current state accurately.
+	resp.MasterEnabled = h.notifications.MasterEnabled()
 	resp.MinSeverity = h.notifications.MinSeverity()
 	resp.Cooldown = h.notifications.Cooldown().String()
+	resp.BaseURL = h.notifications.BaseURL()
+	resp.IncludeResolved = h.notifications.IncludeResolved()
+	resp.Enabled = h.notifications.Enabled()
 
 	for _, n := range h.notifications.Notifiers() {
 		for i := range resp.Channels {

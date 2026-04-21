@@ -32,8 +32,11 @@ export interface NotificationChannel {
 }
 
 export interface NotificationsConfig {
-  enabled: boolean
+  enabled: boolean         // masterEnabled AND at-least-one-channel
+  masterEnabled: boolean   // global kill switch state
   minSeverity: 'critical' | 'warning' | 'info'
   cooldown: string
+  baseUrl: string
+  includeResolved: boolean
   channels: NotificationChannel[]
 }

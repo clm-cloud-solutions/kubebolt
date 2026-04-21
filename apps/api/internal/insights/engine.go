@@ -11,11 +11,12 @@ import (
 
 // Engine runs insight rules and tracks findings.
 type Engine struct {
-	rules    []Rule
-	insights []models.Insight
-	mu       sync.RWMutex
-	wsHub    *websocket.Hub
-	onNew    func(models.Insight) // optional hook called when a new insight is detected
+	rules      []Rule
+	insights   []models.Insight
+	mu         sync.RWMutex
+	wsHub      *websocket.Hub
+	onNew      func(models.Insight) // hook called when a new insight is detected
+	onResolved func(models.Insight) // hook called when an insight transitions to resolved
 }
 
 // NewEngine creates a new insights engine with all rules.
@@ -34,6 +35,15 @@ func (e *Engine) SetOnNewInsight(fn func(models.Insight)) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.onNew = fn
+}
+
+// SetOnResolvedInsight registers a callback invoked (under the engine lock)
+// when an insight transitions from active to resolved. Same performance
+// caveat as SetOnNewInsight.
+func (e *Engine) SetOnResolvedInsight(fn func(models.Insight)) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onResolved = fn
 }
 
 // Evaluate runs all rules against the current cluster state.
@@ -62,6 +72,9 @@ func (e *Engine) Evaluate(state *ClusterState) {
 				now := time.Now()
 				e.insights[i].ResolvedAt = &now
 				e.wsHub.Broadcast(websocket.InsightResolved, e.insights[i])
+				if e.onResolved != nil {
+					e.onResolved(e.insights[i])
+				}
 			}
 		}
 	}

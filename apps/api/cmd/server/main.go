@@ -281,19 +281,30 @@ func main() {
 			)
 		}
 		notifManager = notifications.NewManager(notifiers, notifications.Config{
-			MinSeverity: notifCfg.MinSeverity,
-			Cooldown:    notifCfg.Cooldown,
-			BaseURL:     notifCfg.BaseURL,
+			MasterEnabled:   notifCfg.MasterEnabled,
+			MinSeverity:     notifCfg.MinSeverity,
+			Cooldown:        notifCfg.Cooldown,
+			BaseURL:         notifCfg.BaseURL,
+			IncludeResolved: notifCfg.IncludeResolved,
 		})
-		if notifManager.Enabled() {
+		switch {
+		case !notifManager.MasterEnabled():
+			slog.Info("notifications master-disabled (KUBEBOLT_NOTIFICATIONS_ENABLED=false)")
+		case notifManager.Enabled():
 			slog.Info("notifications configured",
 				slog.String("minSeverity", notifManager.MinSeverity()),
 				slog.Duration("cooldown", notifManager.Cooldown()),
+				slog.Bool("includeResolved", notifManager.IncludeResolved()),
 			)
 			manager.SetOnNewInsight(func(clusterContext string, insight models.Insight) {
 				notifManager.Enqueue(clusterContext, insight)
 			})
-		} else {
+			if notifManager.IncludeResolved() {
+				manager.SetOnResolvedInsight(func(clusterContext string, insight models.Insight) {
+					notifManager.EnqueueResolved(clusterContext, insight)
+				})
+			}
+		default:
 			slog.Info("notifications disabled (no channels configured)")
 		}
 	}

@@ -13,10 +13,12 @@ import (
 // It handles severity filtering, deduplication (same insight within a cooldown
 // window is only sent once), and async delivery so the caller is never blocked.
 type Manager struct {
-	notifiers   []Notifier
-	minSeverity int           // numeric threshold; events below this level are dropped
-	cooldown    time.Duration // minimum time between sending the same insight
-	baseURL     string        // optional base URL to include in notifications
+	notifiers       []Notifier
+	masterEnabled   bool          // global kill switch; when false, Enqueue is a no-op
+	minSeverity     int           // numeric threshold; events below this level are dropped
+	cooldown        time.Duration // minimum time between sending the same insight
+	baseURL         string        // optional base URL to include in notifications
+	includeResolved bool          // also notify when an insight transitions to resolved
 
 	mu       sync.Mutex
 	lastSent map[string]time.Time // dedup key → last sent timestamp
@@ -24,9 +26,11 @@ type Manager struct {
 
 // Config holds runtime settings for the manager.
 type Config struct {
-	MinSeverity string
-	Cooldown    time.Duration
-	BaseURL     string
+	MasterEnabled   bool
+	MinSeverity     string
+	Cooldown        time.Duration
+	BaseURL         string
+	IncludeResolved bool
 }
 
 // NewManager creates a notification manager with the given notifiers and config.
@@ -42,18 +46,31 @@ func NewManager(notifiers []Notifier, cfg Config) *Manager {
 		cooldown = time.Hour
 	}
 	return &Manager{
-		notifiers:   notifiers,
-		minSeverity: min,
-		cooldown:    cooldown,
-		baseURL:     cfg.BaseURL,
-		lastSent:    make(map[string]time.Time),
+		notifiers:       notifiers,
+		masterEnabled:   cfg.MasterEnabled,
+		minSeverity:     min,
+		cooldown:        cooldown,
+		baseURL:         cfg.BaseURL,
+		includeResolved: cfg.IncludeResolved,
+		lastSent:        make(map[string]time.Time),
 	}
 }
 
-// Enabled returns true if at least one notifier is configured.
+// Enabled returns true if at least one notifier is configured AND the
+// master toggle is on.
 func (m *Manager) Enabled() bool {
-	return len(m.notifiers) > 0
+	return len(m.notifiers) > 0 && m.masterEnabled
 }
+
+// MasterEnabled returns the state of the global kill switch (independent
+// of whether any channels are configured).
+func (m *Manager) MasterEnabled() bool { return m.masterEnabled }
+
+// BaseURL returns the configured base URL for links in messages.
+func (m *Manager) BaseURL() string { return m.baseURL }
+
+// IncludeResolved returns true when resolved-insight notifications are enabled.
+func (m *Manager) IncludeResolved() bool { return m.includeResolved }
 
 // Notifiers returns the registered notifiers (used by handlers for /test).
 func (m *Manager) Notifiers() []Notifier {
@@ -82,7 +99,7 @@ func (m *Manager) Cooldown() time.Duration {
 // Safe to call from the insights engine on every new detection.
 // Returns immediately — actual HTTP delivery happens in a goroutine.
 func (m *Manager) Enqueue(clusterName string, insight models.Insight) {
-	if len(m.notifiers) == 0 {
+	if len(m.notifiers) == 0 || !m.masterEnabled {
 		return
 	}
 
@@ -119,6 +136,52 @@ func (m *Manager) Enqueue(clusterName string, insight models.Insight) {
 			defer cancel()
 			if err := n.Send(ctx, event); err != nil {
 				log.Printf("Notification via %s failed: %v", n.Name(), err)
+			}
+		}(n)
+	}
+}
+
+// EnqueueResolved dispatches a notification when an insight transitions to
+// resolved. No-op unless both the master toggle and includeResolved are on.
+// Uses a different dedup key than Enqueue so a resolution right after a new
+// notification is not deduplicated.
+func (m *Manager) EnqueueResolved(clusterName string, insight models.Insight) {
+	if len(m.notifiers) == 0 || !m.masterEnabled || !m.includeResolved {
+		return
+	}
+
+	// Severity filter — respect the same threshold as new insights
+	if severityLevel(insight.Severity) < m.minSeverity {
+		return
+	}
+
+	key := "resolved|" + clusterName + "|" + insight.Resource + "|" + insight.Title
+	m.mu.Lock()
+	if last, ok := m.lastSent[key]; ok && time.Since(last) < m.cooldown {
+		m.mu.Unlock()
+		return
+	}
+	m.lastSent[key] = time.Now()
+	m.mu.Unlock()
+
+	// Prefix the title so existing notifiers visually distinguish the event
+	// without needing a template refactor. Preserves all other fields.
+	annotated := insight
+	annotated.Title = "[Resolved] " + insight.Title
+	annotated.Resolved = true
+
+	event := Event{
+		Insight:     annotated,
+		ClusterName: clusterName,
+		BaseURL:     m.baseURL,
+	}
+
+	for _, n := range m.notifiers {
+		go func(n Notifier) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if err := n.Send(ctx, event); err != nil {
+				log.Printf("Resolved notification via %s failed: %v", n.Name(), err)
 			}
 		}(n)
 	}
