@@ -2580,12 +2580,17 @@ func (c *Connector) AggregateWorkloadMetrics(resourceType, namespace, name strin
 }
 
 // GetPodLogs returns the tail of logs for a specific pod container.
-func (c *Connector) GetPodLogs(namespace, name, container string, tailLines int64) (string, error) {
+// When sinceSeconds > 0, only log entries newer than that many seconds ago
+// are returned (sinceSeconds is applied in addition to tailLines by the API).
+func (c *Connector) GetPodLogs(namespace, name, container string, tailLines, sinceSeconds int64) (string, error) {
 	opts := &corev1.PodLogOptions{
 		TailLines: &tailLines,
 	}
 	if container != "" {
 		opts.Container = container
+	}
+	if sinceSeconds > 0 {
+		opts.SinceSeconds = &sinceSeconds
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

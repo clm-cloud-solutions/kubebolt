@@ -49,16 +49,36 @@ type anthropicContent struct {
 	Content   string          `json:"content,omitempty"`
 }
 
-type anthropicTool struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"input_schema"`
+// anthropicCacheControl marks a content block as cacheable. The API keeps
+// the cache entry alive for 5 minutes after the last read ("ephemeral"),
+// shared across requests that reuse the same prefix.
+type anthropicCacheControl struct {
+	Type string `json:"type"` // "ephemeral"
 }
 
+type anthropicTool struct {
+	Name         string                 `json:"name"`
+	Description  string                 `json:"description"`
+	InputSchema  map[string]interface{} `json:"input_schema"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+// anthropicSystemBlock is the content-block form of the system field. We
+// use it instead of a plain string so we can attach cache_control and have
+// the system prompt cached across rounds.
+type anthropicSystemBlock struct {
+	Type         string                 `json:"type"` // "text"
+	Text         string                 `json:"text"`
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
+}
+
+// anthropicRequest mirrors the Messages API request body. System is typed
+// as `any` because Anthropic accepts either a raw string or an array of
+// content blocks — we use the array form to enable caching.
 type anthropicRequest struct {
 	Model     string             `json:"model"`
 	MaxTokens int                `json:"max_tokens"`
-	System    string             `json:"system,omitempty"`
+	System    any                `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
 }
@@ -90,13 +110,30 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		url = anthropicDefaultURL
 	}
 
-	// Build the request body
+	// Build the request body.
+	//
+	// Prompt caching: the system prompt and the tool definitions are stable
+	// across rounds of the same session, so we mark them as cacheable. The
+	// cache is ephemeral (5-minute TTL after last read) and reads are
+	// billed at ~10% of the input rate. First-round writes cost ~125% of
+	// input, so break-even sits at round 2 — a good trade for every
+	// multi-round session.
 	body := anthropicRequest{
 		Model:     model,
 		MaxTokens: req.MaxTokens,
-		System:    req.System,
 		Messages:  toAnthropicMessages(req.Messages),
 		Tools:     toAnthropicTools(req.Tools),
+	}
+	if req.System != "" {
+		body.System = []anthropicSystemBlock{{
+			Type:         "text",
+			Text:         req.System,
+			CacheControl: &anthropicCacheControl{Type: "ephemeral"},
+		}}
+	}
+	if n := len(body.Tools); n > 0 {
+		// Marking the last tool caches all tool definitions as a single prefix.
+		body.Tools[n-1].CacheControl = &anthropicCacheControl{Type: "ephemeral"}
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

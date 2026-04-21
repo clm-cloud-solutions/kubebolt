@@ -1248,6 +1248,72 @@ The Helm chart exposes these via a `copilot:` block in `values.yaml` with suppor
 - `skills/kubebolt-copilot/references/integration-guide.md` — Implementation guide for backend proxy, BYO key model, fallback behavior, Helm config
 - `skills/kubebolt-copilot/references/examples.md` — 12 few-shot conversation examples
 
+#### Tool efficiency & token optimization (additional)
+
+After Phase 1.8 shipped, the backend was instrumented (see logging foundation) and real-world measurement revealed that tool results dominate token consumption in multi-round sessions — a single diagnostic query can accumulate 50–80K tokens when tool outputs are returned verbatim. This addendum tracks the optimization work that cuts context cost while preserving diagnostic value.
+
+**Principle:** never silently hide information. Where filtering exists, the LLM opts in based on intent; where caps fire, the response carries explicit metadata so the LLM can request a narrower window. Token savings must not come from removing capability.
+
+##### Shipped
+
+| Improvement | Scope | Result |
+|---|---|---|
+| **Token accounting** | All providers + chat loop | Usage struct on ChatResponse; per-round and per-session totals logged; SSE `usage` event per round; per-tool `toolBreakdown` (calls/bytes/errors/durationMs) in session summary. Provider input/output/cache tokens match Anthropic and OpenAI billing to the token. |
+| **`get_pod_logs` optimization** | copilot/executor + connector | Optional `grep` (case-insensitive regex) + `since` duration window. Dual cap: 500 lines OR 48KB, tail-preserving (newest kept) with line-aligned truncation. Response carries `originalLines`, `returnedLines`, `truncated`, `bytesDropped` so the LLM knows what was cut. |
+| **Intent-aware system prompt** | copilot/prompt | Decision logic (read-intent vs diagnostic-intent) is language-agnostic — no per-language triggers. The LLM classifies intent in whatever language the user writes and picks `grep`/`since` accordingly. |
+| **GPT-5 / o-series compatibility** | copilot/openai | `max_completion_tokens` parameter switch for reasoning and GPT-5+ models; classic `max_tokens` preserved for gpt-4o and OpenAI-compatible endpoints (Azure, Ollama, LiteLLM, vLLM). |
+
+##### Tool catalog — current state and proposed improvements
+
+Each tool reviewed for typical output size and optimization opportunity. Status reflects what's shipped, what's proposed, and what doesn't need changes.
+
+| Tool | Typical output | Status | Proposed change | Priority |
+|---|---|---|---|---|
+| `get_cluster_overview` | ~25KB (structural, constant) | Needs work | Add `detail=summary` default (~5–8KB: counts, top insights, aggregates) and `detail=full` opt-in (current behavior) | **High** |
+| `get_topology` | Unbounded (entire graph) | Needs work | Require at least one of `namespace` or `focus=<kind/name>`; add `depth=1\|2\|3`, default 1 | **High** |
+| `list_resources` | Up to ~37KB | Needs work | Add `fields=minimal` default (name/namespace/status/age) vs `fields=full` (current). Existing `limit` kept. | **High** |
+| `get_events` | 100 items default, JSON-heavy | Needs work | Add `since` duration window + `fields=summary` default (reason/message/lastTimestamp/count) | Medium |
+| `get_pod_logs` | Variable | Done | `grep`, `since`, dual cap, metadata — shipped | — |
+| `get_workload_pods` | ~11KB | Optional | `fields=minimal` default | Medium |
+| `get_resource_detail` | Variable, usually small | No change | — | — |
+| `get_resource_yaml` | Variable | No change | Secrets already redacted, managedFields already stripped | — |
+| `get_resource_describe` | Variable, medium | No change | — | — |
+| `get_workload_history` | Small-medium | No change | — | — |
+| `get_cronjob_jobs` | Small-medium | No change | — | — |
+| `get_insights` | ~7–8KB | No change | Existing `severity`/`resolved` filters adequate | — |
+| `search_resources` | Small | No change | — | — |
+| `get_permissions` | Small | Optional | Session-level cache (TTL 60s) — never changes mid-session | Low |
+| `list_clusters` | Small | Optional | Session-level cache (TTL 60s) | Low |
+
+##### Cross-cutting improvements
+
+| Improvement | Rationale | Priority |
+|---|---|---|
+| **Anthropic prompt caching** | Mark system prompt + tool definitions with `cache_control: {"type":"ephemeral"}`. ~5.5K tokens of fixed prompt become cacheable across rounds at ~10% of the cost. Estimated saving: 15–20K tokens per 4-round session. Invariant to query type — works for every session. | **Highest** |
+| **JSON-aware truncation** | Current `truncateToolResult` (32KB generic cap) chops bytes mid-structure producing broken JSON that the LLM then has to interpret. Replace with structure-aware truncation: for arrays, keep first N items + `{"_truncated": true, "omitted": N, "hint": "..."}`; for objects, drop heaviest array fields first. Applies to `list_resources`, `get_events`, `get_topology`, `get_workload_pods`. | High |
+| **Response envelope normalization** | Standardize all tool responses as `{data, truncated, meta}` so the LLM always knows if it's looking at partial data and can inspect `meta` (count, durationMs, latencyMs) uniformly. | Medium |
+| **OpenAI `cached_tokens` parsing** | OpenAI auto-caches prompts ≥1024 tokens since gpt-4o and reports cached tokens in `prompt_tokens_details.cached_tokens`. We don't parse that field, so today `cacheReadTokens=0` always for OpenAI sessions. Parse it so the `toolBreakdown` / session log reflects reality. | Low |
+
+##### Estimated combined impact
+
+Baseline: a diagnostic session on a real production cluster consumed **79K tokens** with raw tool outputs. With shipped work alone (intent-aware `grep`), comparable sessions drop to **~53K** (−33%). Expected stacking with proposed work:
+
+| Layer | Incremental saving | Cumulative |
+|---|---|---|
+| Baseline (no optimization) | — | 79K |
+| + `get_pod_logs` intent-aware grep (shipped) | −27K | 52K |
+| + Anthropic prompt caching | −12 to −15K | 37–40K |
+| + Summary mode on aggregate tools | −8 to −12K | 25–32K |
+| + JSON-aware truncation | quality, not tokens | — |
+
+A ~60% reduction from baseline is achievable without changing the LLM, the query pattern, or the tool surface the user sees. All diagnostic capability remains intact — every optimization is opt-out (LLM can request `detail=full`, `fields=full`, broader `tailLines`, etc.) or invisible (caching).
+
+##### Considered and deferred
+
+- **Multi-pass default tool calling** (broad + focused on every query): gives back most of the savings without quality win. Better to let the LLM opt into `grep`/`since` based on intent.
+- **Migration to OpenAI Responses API**: breaks the `openai` provider for Azure OpenAI, Ollama, LiteLLM, vLLM, and other OpenAI-compatible endpoints. Revisit only if a specific feature (server-side stateful sessions) becomes compelling for a concrete customer.
+- **Backend-side AI summarization of tool outputs**: adds cost and hallucination risk, reduces determinism. The final LLM already summarizes what it returns to the user.
+
 #### Contextual Copilot triggers (additional)
 
 The Copilot panel is powerful but discoverable only through a toggle. Users at the point of decision — looking at a failing pod, reading an insight card, inspecting an event with 345K occurrences — should not have to (a) remember the Copilot exists, (b) open it, (c) formulate a question that re-describes context they're already seeing. This addendum adds contextual "Ask Copilot" entry points across the UI that launch the assistant with pre-loaded context.

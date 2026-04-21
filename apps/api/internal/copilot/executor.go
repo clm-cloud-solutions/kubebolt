@@ -3,7 +3,9 @@ package copilot
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -13,10 +15,16 @@ import (
 // Pod logs and full topology dumps can be enormous and quickly exhaust the
 // LLM's context if multiple calls are made in sequence.
 const (
-	// Max bytes a single tool result can occupy. ~32KB ≈ 8K tokens.
+	// Max bytes a generic tool result can occupy. ~32KB ≈ 8K tokens.
 	maxToolResultBytes = 32 * 1024
 	// Max lines we'll fetch from a pod log regardless of what the LLM asks.
-	maxLogTailLines = 300
+	maxLogTailLines = 500
+	// Max bytes we'll keep from pod logs after fetch+filter. Slightly larger
+	// than the generic cap because log investigation is a primary use case
+	// and lines are cheap to tokenize. ~48KB ≈ 12K tokens worst case.
+	maxLogBytes = 48 * 1024
+	// Default tail when the LLM doesn't specify one.
+	defaultLogTailLines = 200
 )
 
 // Executor runs tool calls server-side using the active Connector and Engine.
@@ -122,24 +130,42 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		ns := stringArg(args, "namespace")
 		name := stringArg(args, "name")
 		container := stringArg(args, "container")
-		// Hard cap on tailLines — even if the LLM asks for 1000, limit to
-		// maxLogTailLines to prevent context blow-up.
-		tailLines := int64(intArg(args, "tailLines", 100))
+		grep := stringArg(args, "grep")
+		since := stringArg(args, "since")
+
+		tailLines := int64(intArg(args, "tailLines", defaultLogTailLines))
+		if tailLines <= 0 {
+			tailLines = defaultLogTailLines
+		}
 		if tailLines > maxLogTailLines {
 			tailLines = maxLogTailLines
 		}
+
+		var sinceSeconds int64
+		if since != "" {
+			d, err := time.ParseDuration(since)
+			if err != nil {
+				res.Content = jsonString(map[string]string{"error": fmt.Sprintf("invalid since value %q: expected duration like '15m', '1h'", since)})
+				res.IsError = true
+				return res
+			}
+			if d > 0 {
+				sinceSeconds = int64(d.Seconds())
+			}
+		}
+
 		if ns == "" || name == "" {
 			res.Content = `{"error":"namespace and name are required"}`
 			res.IsError = true
 			return res
 		}
-		logs, err := conn.GetPodLogs(ns, name, container, tailLines)
+		logs, err := conn.GetPodLogs(ns, name, container, tailLines, sinceSeconds)
 		if err != nil {
 			res.Content = errJSON(err)
 			res.IsError = true
 			return res
 		}
-		res.Content = jsonString(map[string]string{"logs": logs})
+		res.Content = formatPodLogs(logs, grep)
 
 	case "get_workload_pods":
 		t := stringArg(args, "type")
@@ -242,9 +268,12 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 	}
 
 	// Truncate oversized results to prevent context window blow-up.
-	// Some tools (logs, topology, describe, yaml) can return huge payloads
-	// that quickly exhaust the LLM's context if multiple are made in sequence.
-	res.Content = truncateToolResult(res.Content, call.Name)
+	// Some tools (topology, describe, yaml) can return huge payloads that
+	// quickly exhaust the LLM's context if multiple are made in sequence.
+	// get_pod_logs handles its own smart truncation via formatPodLogs.
+	if call.Name != "get_pod_logs" {
+		res.Content = truncateToolResult(res.Content, call.Name)
+	}
 
 	return res
 }
@@ -265,6 +294,83 @@ func truncateToolResult(content, toolName string) string {
 		"truncated_result": truncated,
 		"notice":           notice,
 	})
+}
+
+// formatPodLogs applies optional grep filtering and a byte cap that preserves
+// the NEWEST log lines (truncates from the head, not the tail) aligned on line
+// boundaries. The response always carries metadata so the LLM can decide
+// whether to request a narrower window or a specific filter.
+func formatPodLogs(raw, grep string) string {
+	// Count original lines before any filtering
+	originalLines := 0
+	if raw != "" {
+		originalLines = strings.Count(raw, "\n")
+		if !strings.HasSuffix(raw, "\n") {
+			originalLines++
+		}
+	}
+
+	body := raw
+	filterApplied := ""
+	filteredOutLines := 0
+	if grep != "" {
+		re, err := regexp.Compile("(?i)" + grep)
+		if err != nil {
+			return jsonString(map[string]any{
+				"error": fmt.Sprintf("invalid grep pattern %q: %s", grep, err.Error()),
+			})
+		}
+		kept := make([]string, 0, 128)
+		for _, line := range strings.Split(raw, "\n") {
+			if line == "" {
+				continue
+			}
+			if re.MatchString(line) {
+				kept = append(kept, line)
+			}
+		}
+		filterApplied = grep
+		filteredOutLines = originalLines - len(kept)
+		body = strings.Join(kept, "\n")
+	}
+
+	// Byte cap: preserve the TAIL (newest lines), not the head.
+	truncated := false
+	bytesDropped := 0
+	if len(body) > maxLogBytes {
+		head := len(body) - maxLogBytes
+		// Advance to the next newline so we don't start mid-line.
+		if nl := strings.IndexByte(body[head:], '\n'); nl >= 0 {
+			head += nl + 1
+		}
+		bytesDropped = head
+		body = body[head:]
+		truncated = true
+	}
+
+	returnedLines := 0
+	if body != "" {
+		returnedLines = strings.Count(body, "\n")
+		if !strings.HasSuffix(body, "\n") {
+			returnedLines++
+		}
+	}
+
+	payload := map[string]any{
+		"logs":          body,
+		"originalLines": originalLines,
+		"returnedLines": returnedLines,
+	}
+	if filterApplied != "" {
+		payload["grep"] = filterApplied
+		payload["filteredOutLines"] = filteredOutLines
+	}
+	if truncated {
+		payload["truncated"] = true
+		payload["bytesDropped"] = bytesDropped
+		payload["hint"] = "logs truncated to preserve context; use 'since' for a narrower window or 'grep' to filter"
+	}
+	return jsonString(payload)
 }
 
 // ----- helpers -----

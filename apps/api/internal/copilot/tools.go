@@ -44,15 +44,22 @@ func ToolDefinitions() []ToolDefinition {
 			InputSchema: nsResourceSchema(),
 		},
 		{
-			Name:        "get_pod_logs",
-			Description: "Get logs from a pod. Use to diagnose crashes, errors, and application issues",
+			Name: "get_pod_logs",
+			Description: "Get logs from a pod container. Classify user intent: if the user wants to " +
+				"read/view logs verbatim, omit 'grep'. If the user wants to investigate or diagnose a " +
+				"problem, failure, or integration issue, pass 'grep' with domain-relevant keywords " +
+				"(see system prompt for decision logic). Use 'since' for time-windowed queries. " +
+				"Results capped at 500 lines / 48KB, newest preserved; response includes a 'truncated' " +
+				"flag when cut.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"namespace": strProp("Pod namespace"),
 					"name":      strProp("Pod name"),
 					"container": strProp("Container name (required for multi-container pods)"),
-					"tailLines": numProp("Lines from end (100, 500, or 1000)"),
+					"tailLines": numProp("Lines from end (default 200, max 500)"),
+					"since":     strProp("Duration window, e.g. '15m', '1h', '2h' (optional; combine with tailLines)"),
+					"grep":      strProp("Regex/keyword to filter lines, case-insensitive (optional; only when user asks to filter or when investigating incidents)"),
 				},
 				"required": []string{"namespace", "name"},
 			},

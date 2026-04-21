@@ -264,7 +264,7 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logs, err := conn.GetPodLogs(namespace, name, container, tailLines)
+	logs, err := conn.GetPodLogs(namespace, name, container, tailLines, 0)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
