@@ -170,13 +170,13 @@ export function NotificationsPage() {
 
   if (isLoading) {
     return (
-      <div className="p-6 flex justify-center"><LoadingSpinner /></div>
+      <div className="flex justify-center"><LoadingSpinner /></div>
     )
   }
 
   if (error || !data) {
     return (
-      <div className="p-6 max-w-3xl">
+      <div>
         <div className="flex items-start gap-2 px-4 py-3 rounded-lg bg-status-error-dim">
           <AlertTriangle className="w-4 h-4 text-status-error shrink-0 mt-0.5" />
           <span className="text-sm text-status-error">Failed to load notifications config</span>
@@ -186,7 +186,7 @@ export function NotificationsPage() {
   }
 
   return (
-    <div className="p-6 max-w-4xl">
+    <div>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-lg font-semibold text-kb-text-primary flex items-center gap-2">
@@ -225,7 +225,7 @@ export function NotificationsPage() {
 
       {/* Channel cards */}
       <h2 className="text-xs font-mono font-semibold text-kb-text-tertiary uppercase tracking-wider mb-3">Channels</h2>
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
         {data.channels.map((ch) => (
           <ChannelCard
             key={ch.name}

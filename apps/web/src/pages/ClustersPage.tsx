@@ -552,7 +552,7 @@ export function ClustersPage() {
   const isInCluster = clusters?.some(c => c.source === 'in-cluster') || false
 
   return (
-    <div className="p-6 max-w-5xl">
+    <div>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-lg font-semibold text-kb-text-primary">Clusters</h1>
