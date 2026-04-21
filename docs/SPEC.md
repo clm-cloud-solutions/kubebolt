@@ -1019,7 +1019,8 @@ Priority: critical for open source adoption.
 | **Cluster Management** | Medium | Done | Add/remove/rename clusters from UI. Upload kubeconfig via paste or file. Contexts persist in BoltDB, merged with kubeconfig file in memory — never modifies the user's file. Source badges ("Uploaded", "In-Cluster") and display name overrides. Admin-only mutations. |
 | **Slack Notifications** | Medium | Done | Webhook integration with Block Kit formatting. Severity threshold filter, dedup by `(cluster, resource, title)` with cooldown. Deep links to affected resource. Admin-only config + test endpoint. |
 | **Discord Notifications** | Medium | Done | Webhook integration with embeds, color-coded by severity. Same filtering/dedup/deep-link infrastructure as Slack. |
-| **Email Notifications** | Low | Pending | SMTP configuration. Digest mode (daily/hourly). Per-insight-type subscription. |
+| **Email Notifications** | Low | Done | SMTP configuration with STARTTLS/implicit TLS. Multiple recipients. Three digest modes: instant (default), hourly, daily. Display-name support in From header. Severity-colored banners. Per-channel test endpoint. |
+| **Global notification settings** | Low | Done | Master enabled toggle (`KUBEBOLT_NOTIFICATIONS_ENABLED`) as kill switch for maintenance windows. Base URL exposed in admin UI. Optional notifications on insight resolution (`KUBEBOLT_NOTIFICATIONS_INCLUDE_RESOLVED`) with a separate dedup key and `[Resolved]` title prefix. |
 
 ### Phase 1.7 — Authentication & Access Control
 
@@ -1258,10 +1259,12 @@ After Phase 1.8 shipped, the backend was instrumented (see logging foundation) a
 
 | Improvement | Scope | Result |
 |---|---|---|
-| **Token accounting** | All providers + chat loop | Usage struct on ChatResponse; per-round and per-session totals logged; SSE `usage` event per round; per-tool `toolBreakdown` (calls/bytes/errors/durationMs) in session summary. Provider input/output/cache tokens match Anthropic and OpenAI billing to the token. |
-| **`get_pod_logs` optimization** | copilot/executor + connector | Optional `grep` (case-insensitive regex) + `since` duration window. Dual cap: 500 lines OR 48KB, tail-preserving (newest kept) with line-aligned truncation. Response carries `originalLines`, `returnedLines`, `truncated`, `bytesDropped` so the LLM knows what was cut. |
-| **Intent-aware system prompt** | copilot/prompt | Decision logic (read-intent vs diagnostic-intent) is language-agnostic — no per-language triggers. The LLM classifies intent in whatever language the user writes and picks `grep`/`since` accordingly. |
-| **GPT-5 / o-series compatibility** | copilot/openai | `max_completion_tokens` parameter switch for reasoning and GPT-5+ models; classic `max_tokens` preserved for gpt-4o and OpenAI-compatible endpoints (Azure, Ollama, LiteLLM, vLLM). |
+| **Token accounting** ✅ | All providers + chat loop | Usage struct on ChatResponse; per-round and per-session totals logged; SSE `usage` event per round; per-tool `toolBreakdown` (calls/bytes/errors/durationMs) in session summary. Provider input/output/cache tokens match Anthropic and OpenAI billing to the token. Shipped in v1.5.0-rc.1. |
+| **`get_pod_logs` optimization** ✅ | copilot/executor + connector | Optional `grep` (case-insensitive regex) + `since` duration window. Dual cap: 500 lines OR 48KB, tail-preserving (newest kept) with line-aligned truncation. Response carries `originalLines`, `returnedLines`, `truncated`, `bytesDropped` so the LLM knows what was cut. Shipped in v1.5.0-rc.1. |
+| **Intent-aware system prompt** ✅ | copilot/prompt | Decision logic (read-intent vs diagnostic-intent) is language-agnostic — no per-language triggers. The LLM classifies intent in whatever language the user writes and picks `grep`/`since` accordingly. Shipped in v1.5.0-rc.1. |
+| **GPT-5 / o-series compatibility** ✅ | copilot/openai | `max_completion_tokens` parameter switch for reasoning and GPT-5+ models; classic `max_tokens` preserved for gpt-4o and OpenAI-compatible endpoints (Azure, Ollama, LiteLLM, vLLM). Shipped in v1.5.0-rc.1. |
+| **Anthropic prompt caching** ✅ | copilot/anthropic | System prompt + last tool definition marked with `cache_control: ephemeral`. Confirmed working on Sonnet 4.6 (`cacheReadTokens > 0` in round 2+). Haiku 4.5 requires ≥4,096 tokens per cacheable block so the current prefix (~3.5K combined) silently no-ops there — documented as a known limitation. Shipped in v1.5.0-rc.1. |
+| **OpenAI automatic-cache reporting** ✅ | copilot/openai | Parse `prompt_tokens_details.cached_tokens` from OpenAI responses and normalize to the Anthropic convention (InputTokens = non-cached, CacheReadTokens = cached). Session summary logs now accurately reflect OpenAI's auto-caching (gpt-4o+, prompts ≥1024 tokens). Shipped post-RC. |
 
 ##### Tool catalog — current state and proposed improvements
 
@@ -1273,7 +1276,7 @@ Each tool reviewed for typical output size and optimization opportunity. Status 
 | `get_topology` | Unbounded (entire graph) | Needs work | Require at least one of `namespace` or `focus=<kind/name>`; add `depth=1\|2\|3`, default 1 | **High** |
 | `list_resources` | Up to ~37KB | Needs work | Add `fields=minimal` default (name/namespace/status/age) vs `fields=full` (current). Existing `limit` kept. | **High** |
 | `get_events` | 100 items default, JSON-heavy | Needs work | Add `since` duration window + `fields=summary` default (reason/message/lastTimestamp/count) | Medium |
-| `get_pod_logs` | Variable | Done | `grep`, `since`, dual cap, metadata — shipped | — |
+| `get_pod_logs` | Variable | ✅ Done | `grep`, `since`, dual cap, metadata — shipped in v1.5.0-rc.1 | — |
 | `get_workload_pods` | ~11KB | Optional | `fields=minimal` default | Medium |
 | `get_resource_detail` | Variable, usually small | No change | — | — |
 | `get_resource_yaml` | Variable | No change | Secrets already redacted, managedFields already stripped | — |
@@ -1289,10 +1292,10 @@ Each tool reviewed for typical output size and optimization opportunity. Status 
 
 | Improvement | Rationale | Priority |
 |---|---|---|
-| **Anthropic prompt caching** | Mark system prompt + tool definitions with `cache_control: {"type":"ephemeral"}`. ~5.5K tokens of fixed prompt become cacheable across rounds at ~10% of the cost. Estimated saving: 15–20K tokens per 4-round session. Invariant to query type — works for every session. | **Highest** |
+| **Anthropic prompt caching** ✅ | Shipped in v1.5.0-rc.1. System prompt + last tool definition marked with `cache_control: ephemeral`. See row above. | — |
+| **OpenAI `cached_tokens` parsing** ✅ | Shipped post-RC. See row above. | — |
 | **JSON-aware truncation** | Current `truncateToolResult` (32KB generic cap) chops bytes mid-structure producing broken JSON that the LLM then has to interpret. Replace with structure-aware truncation: for arrays, keep first N items + `{"_truncated": true, "omitted": N, "hint": "..."}`; for objects, drop heaviest array fields first. Applies to `list_resources`, `get_events`, `get_topology`, `get_workload_pods`. | High |
 | **Response envelope normalization** | Standardize all tool responses as `{data, truncated, meta}` so the LLM always knows if it's looking at partial data and can inspect `meta` (count, durationMs, latencyMs) uniformly. | Medium |
-| **OpenAI `cached_tokens` parsing** | OpenAI auto-caches prompts ≥1024 tokens since gpt-4o and reports cached tokens in `prompt_tokens_details.cached_tokens`. We don't parse that field, so today `cacheReadTokens=0` always for OpenAI sessions. Parse it so the `toolBreakdown` / session log reflects reality. | Low |
 
 ##### Estimated combined impact
 
@@ -1324,15 +1327,15 @@ Two benefits stack: adoption (the assistant meets the user where decisions happe
 
 Ordered by ROI — which trigger delivers most value vs. UI clutter cost:
 
-| Entry point | Canonical question | Priority |
-|---|---|---|
-| **Insight card** (active insight in sidebar or insights page) | "Explain this insight and recommend a fix" | **High** — problem already detected, Copilot provides the next step |
-| **Resource detail page** when the resource is in a not-ready state (pod CrashLoop, deployment with unavailable replicas, job failed, HPA pinned at max) | "Diagnose this resource and suggest fixes" | **High** — context is visible, user wants the why |
-| **Event row** with Warning type and high count | "Explain this event and its impact" | Medium |
-| **Service with 0 endpoints** | "Why is this service not routing traffic?" | Medium |
-| **Node with Pressure condition** | "Analyze this node's health" | Low |
+| Entry point | Canonical question | Priority | Status |
+|---|---|---|---|
+| **Insight card** (active insight in sidebar or insights page) | "Explain this insight and recommend a fix" | **High** — problem already detected, Copilot provides the next step | ✅ Shipped in v1.5.0-rc.1 |
+| **Resource detail page** when the resource is in a not-ready state (pod CrashLoop, deployment with unavailable replicas, job failed, HPA pinned at max) | "Diagnose this resource and suggest fixes" | **High** — context is visible, user wants the why | ✅ Shipped in v1.5.0-rc.1 (pods/deployments/statefulsets) |
+| **Event row** with Warning type and high count | "Explain this event and its impact" | Medium | Pending |
+| **Service with 0 endpoints** | "Why is this service not routing traffic?" | Medium | Pending |
+| **Node with Pressure condition** | "Analyze this node's health" | Low | Pending |
 
-Ship only the two **High** entries first. Measure usage before adding the rest — every trigger is UI weight and should prove itself.
+The two **High** entries shipped in the MVP. The three **Medium/Low** are queued for 1.5.0 stable as they complete the UX arc and reuse the same `AskCopilotButton` + `services/copilot/triggers.ts` infrastructure.
 
 ##### Interaction patterns
 
