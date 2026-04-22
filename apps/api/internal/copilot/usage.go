@@ -145,12 +145,18 @@ func (s *UsageStore) pruneLocked(b *bolt.Bucket) error {
 		}
 	}
 
-	// Cap total: if still over max, drop oldest.
-	stats := b.Stats()
-	if stats.KeyN <= s.maxRecords {
+	// Cap total: count manually (Stats() does not reliably reflect
+	// pending writes within the same transaction in bbolt), then drop
+	// the oldest entries until we're within the cap.
+	keyCount := 0
+	c = b.Cursor()
+	for k, _ := c.First(); k != nil; k, _ = c.Next() {
+		keyCount++
+	}
+	if keyCount <= s.maxRecords {
 		return nil
 	}
-	over := stats.KeyN - s.maxRecords
+	over := keyCount - s.maxRecords
 	c = b.Cursor()
 	for k, _ := c.First(); k != nil && over > 0; k, _ = c.Next() {
 		if err := c.Delete(); err != nil {
@@ -199,7 +205,8 @@ func (s *UsageStore) Query(from, to time.Time, limit int) ([]SessionRecord, erro
 	return out, err
 }
 
-// Count returns the total number of records stored.
+// Count returns the total number of records stored. Iterates the bucket
+// keys rather than using Stats() because the latter can lag pending writes.
 func (s *UsageStore) Count() (int, error) {
 	var n int
 	err := s.db.View(func(tx *bolt.Tx) error {
@@ -207,7 +214,10 @@ func (s *UsageStore) Count() (int, error) {
 		if b == nil {
 			return nil
 		}
-		n = b.Stats().KeyN
+		c := b.Cursor()
+		for k, _ := c.First(); k != nil; k, _ = c.Next() {
+			n++
+		}
 		return nil
 	})
 	return n, err
