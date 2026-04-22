@@ -4,6 +4,56 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.1] — 2026-04-22
+
+Patch release focused on making auto-compact reliable. The 1.5.0 trigger
+sometimes failed to fire on follow-up questions, and when it did fire it
+often freed little because the bulky tool_results lived in the preserved
+tail. A third bug could truncate a Copilot response when a mid-request
+compact stubbed the active turn's tool_results before the LLM had
+processed them.
+
+### Fixed
+
+- **Auto-compact trigger misses on round 0 of follow-up questions.**
+  The backend underestimated context size because `ApproxTokens(messages)`
+  ignored the system prompt plus tool definitions (~15–20k tokens) and
+  was loose on JSON-dense tool results. The frontend now carries the
+  provider-reported usage of the previous round as a hint; the backend
+  seeds its check from that value so round 0 sees the same number the
+  UI shows. A server-side system-and-tools overhead estimate closes the
+  gap when the hint is absent.
+- **Compacts that freed nothing ("1 turn folded · 25k → 25k").** The
+  bulky tool_results lived in the preserved tail, not in the folded
+  history, so folding old turns alone rarely saved much. Compact now
+  stubs tool_results in the preserved tail too. The LLM keeps user
+  text, assistant text and tool_call metadata intact and can re-fetch
+  raw data on demand.
+- **Response truncated after mid-request compact.** A compact fired
+  between rounds could stub the active turn's tool_results before the
+  LLM had synthesized them, producing responses like "the output was
+  truncated." `stubToolResults` now protects every message from the
+  last user-text onward. Two regression tests lock this in.
+
+### Added
+
+- `CompactResult.ToolResultsStubbed` plus SSE/REST exposure so the UI
+  banner and the admin usage drill-down can explain what the compact
+  did, not just "N turns folded".
+- Auto-compact falls back to stubbing tool_results in earlier turns
+  when there aren't enough turns to fold. Short conversations with a
+  heavy tool call now benefit too.
+- Handler logs `copilot auto-compact noop` with a reason when neither
+  folding nor stubbing applies, ending the "triggered without applied"
+  mystery in the logs.
+
+### Known issues (unchanged from 1.5.0)
+
+- `/cluster/overview` still returns zero for `health.insights.*`.
+- Tool-result JSON truncation is still byte-aligned.
+
+---
+
 ## [1.5.0] — 2026-04-22
 
 Major release centered on production-ready AI Copilot, multi-channel
