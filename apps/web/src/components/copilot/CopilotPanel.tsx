@@ -104,6 +104,16 @@ export function CopilotPanel() {
     }
   }, [isOpen])
 
+  // Return focus to the input when a request completes so the user can
+  // keep typing without reaching for the mouse.
+  useEffect(() => {
+    if (!isOpen || isLoading) return
+    // Skip focus-steal if the user is interacting with something else
+    // (e.g. clicked a link in the response, opened the compact button).
+    if (document.activeElement && document.activeElement.tagName === 'BUTTON') return
+    inputRef.current?.focus({ preventScroll: true })
+  }, [isLoading, isOpen])
+
   // Context-size indicator: how full the conversation is relative to the
   // auto-compact trigger. Source of truth is the provider-reported input
   // (non-cached + cached) of the most recent round — this is exactly what

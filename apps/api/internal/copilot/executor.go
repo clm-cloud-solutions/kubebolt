@@ -262,6 +262,13 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		clusters := e.manager.ListClusters()
 		res.Content = jsonString(clusters)
 
+	case "get_kubebolt_docs":
+		topic := stringArg(args, "topic")
+		res.Content = jsonString(map[string]string{
+			"topic":   topic,
+			"content": KubebolDocsGet(topic),
+		})
+
 	default:
 		res.Content = fmt.Sprintf(`{"error":"unknown tool: %s"}`, call.Name)
 		res.IsError = true

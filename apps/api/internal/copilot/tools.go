@@ -1,9 +1,12 @@
 package copilot
 
+import "strings"
+
 // ToolDefinitions returns the list of tools the copilot exposes to the LLM.
 // Each tool maps to a KubeBolt API capability — execution happens server-side
 // in the chat handler via the cluster connector.
 func ToolDefinitions() []ToolDefinition {
+	docTopics := KubebolDocsTopics()
 	return []ToolDefinition{
 		{
 			Name:        "get_cluster_overview",
@@ -152,6 +155,21 @@ func ToolDefinitions() []ToolDefinition {
 			Name:        "list_clusters",
 			Description: "List all available kubeconfig contexts (clusters)",
 			InputSchema: emptyObject(),
+		},
+		{
+			Name: "get_kubebolt_docs",
+			Description: "Return product documentation about KubeBolt itself (features, navigation, admin " +
+				"pages, configuration). Use this ONLY when the user asks how to do something in the KubeBolt " +
+				"UI, what a KubeBolt feature does, how to configure something, or how the product works. " +
+				"Do NOT use for Kubernetes questions — answer those from your training. Available topics: " +
+				strings.Join(docTopics, ", ") + ".",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"topic": strProp("Topic key from the list in the description. Unknown keys return the full topic list."),
+				},
+				"required": []string{"topic"},
+			},
 		},
 	}
 }
