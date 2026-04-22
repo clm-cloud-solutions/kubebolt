@@ -6,6 +6,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useAuth } from '@/contexts/AuthContext'
+import { useCopilot } from '@/contexts/CopilotContext'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterOverview, ClusterInfo } from '@/types/kubernetes'
 import type { UserRole } from '@/types/auth'
@@ -33,6 +34,7 @@ export function Topbar({ overview }: TopbarProps) {
   }, [])
   const navigate = useNavigate()
   const { theme, toggleTheme } = useTheme()
+  const { clearHistory: clearCopilotHistory } = useCopilot()
 
   const { data: clusters } = useQuery({
     queryKey: ['clusters'],
@@ -58,6 +60,10 @@ export function Topbar({ overview }: TopbarProps) {
       setOpen(false)
     },
     onSuccess: () => {
+      // Wipe the Copilot transcript — prior conversation referenced the
+      // previous cluster's resources and would mislead the LLM on the new
+      // one. The user re-engages with a fresh session on the new cluster.
+      clearCopilotHistory()
       queryClient.invalidateQueries()
       navigate('/')
     },
