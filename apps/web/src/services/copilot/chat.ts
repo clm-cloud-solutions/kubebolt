@@ -1,22 +1,25 @@
 import { getAccessToken } from '@/services/api'
-import type { CopilotMessage, CopilotStreamEvent } from './types'
+import type { CompactResponse, CopilotMessage, CopilotStreamEvent } from './types'
 
-// Strip transient UI fields before sending to backend.
+// Strip transient UI fields before sending to backend. Compact notices are
+// UI-only markers and never leave the client.
 function serializeMessages(messages: CopilotMessage[]) {
-  return messages.map((m) => ({
-    role: m.role,
-    content: m.content,
-    toolCalls: m.toolCalls?.map((tc) => ({
-      id: tc.id,
-      name: tc.name,
-      input: tc.input ?? {},
-    })),
-    toolResults: m.toolResults?.map((tr) => ({
-      toolCallId: tr.toolCallId,
-      content: tr.content,
-      isError: tr.isError,
-    })),
-  }))
+  return messages
+    .filter((m) => m.kind !== 'compact-notice')
+    .map((m) => ({
+      role: m.role,
+      content: m.content,
+      toolCalls: m.toolCalls?.map((tc) => ({
+        id: tc.id,
+        name: tc.name,
+        input: tc.input ?? {},
+      })),
+      toolResults: m.toolResults?.map((tr) => ({
+        toolCallId: tr.toolCallId,
+        content: tr.content,
+        isError: tr.isError,
+      })),
+    }))
 }
 
 /**
@@ -75,6 +78,34 @@ export async function* sendCopilotChat(
   } finally {
     reader.releaseLock()
   }
+}
+
+/**
+ * compactCopilotSession requests a server-side summarization of the current
+ * message array. Used by the "New session with summary" button to reset the
+ * conversation while preserving the context the user cares about.
+ */
+export async function compactCopilotSession(
+  messages: CopilotMessage[],
+  resetAll: boolean,
+): Promise<CompactResponse> {
+  const token = getAccessToken()
+  const res = await fetch('/api/v1/copilot/compact', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body: JSON.stringify({
+      messages: serializeMessages(messages),
+      resetAll,
+    }),
+  })
+  if (!res.ok) {
+    const text = await res.text().catch(() => res.statusText)
+    throw new Error(`copilot compact failed (${res.status}): ${text}`)
+  }
+  return (await res.json()) as CompactResponse
 }
 
 function parseSSEEvent(raw: string): CopilotStreamEvent | null {

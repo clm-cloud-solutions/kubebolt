@@ -19,6 +19,13 @@ type CopilotConfig struct {
 	Primary   ProviderConfig
 	Fallback  *ProviderConfig // nil if not configured
 	MaxTokens int             // default 4096
+
+	// Conversation memory management. See KUBEBOLT_AI_* docs in .env.example.
+	AutoCompact          bool    // default true
+	SessionBudgetTokens  int     // 0 = auto from model context window
+	AutoCompactThreshold float64 // default 0.80
+	CompactModel         string  // empty = auto-pick cheap model for provider
+	CompactPreserveTurns int     // default 3
 }
 
 // LoadCopilotConfig reads copilot configuration from KUBEBOLT_AI_* env vars.
@@ -30,11 +37,35 @@ func LoadCopilotConfig() CopilotConfig {
 			Model:    os.Getenv("KUBEBOLT_AI_MODEL"),
 			BaseURL:  os.Getenv("KUBEBOLT_AI_BASE_URL"),
 		},
-		MaxTokens: 4096,
+		MaxTokens:            4096,
+		AutoCompact:          true,
+		AutoCompactThreshold: 0.80,
+		CompactPreserveTurns: 3,
 	}
 	if v := os.Getenv("KUBEBOLT_AI_MAX_TOKENS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxTokens = n
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_AI_AUTO_COMPACT"); v == "false" || v == "0" {
+		cfg.AutoCompact = false
+	}
+	if v := os.Getenv("KUBEBOLT_AI_SESSION_BUDGET_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.SessionBudgetTokens = n
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_AI_AUTO_COMPACT_THRESHOLD"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 && f < 1 {
+			cfg.AutoCompactThreshold = f
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_AI_COMPACT_MODEL"); v != "" {
+		cfg.CompactModel = v
+	}
+	if v := os.Getenv("KUBEBOLT_AI_COMPACT_PRESERVE_TURNS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			cfg.CompactPreserveTurns = n
 		}
 	}
 

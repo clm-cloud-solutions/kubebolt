@@ -126,6 +126,7 @@ func NewRouter(
 
 				// Copilot chat — any role can ask questions
 				r.Post("/copilot/chat", h.HandleCopilotChat)
+				r.Post("/copilot/compact", h.HandleCopilotCompact)
 
 				// Write endpoints — Editor+ role required
 				r.Group(func(r chi.Router) {

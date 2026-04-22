@@ -12,6 +12,8 @@ import {
   Copy,
   Check,
   User,
+  Scissors,
+  Sparkles,
 } from 'lucide-react'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useCopilotLayout } from '@/hooks/useCopilotLayout'
@@ -39,6 +41,27 @@ function formatUsageTooltip(u: CopilotUsage): string {
   return parts.join('\n')
 }
 
+// Approximate current context size using a 4-chars-per-token heuristic
+// (mirrors the backend's ApproxTokens). Excludes UI-only compact notices.
+function approxContextTokens(messages: CopilotMessage[]): number {
+  let chars = 0
+  for (const m of messages) {
+    if (m.kind === 'compact-notice') continue
+    chars += (m.content ?? '').length
+    if (m.toolCalls) {
+      for (const tc of m.toolCalls) {
+        chars += (tc.name ?? '').length + JSON.stringify(tc.input ?? {}).length
+      }
+    }
+    if (m.toolResults) {
+      for (const tr of m.toolResults) {
+        chars += (tr.content ?? '').length
+      }
+    }
+  }
+  return Math.floor(chars / 4)
+}
+
 export function CopilotPanel() {
   const {
     config,
@@ -53,6 +76,9 @@ export function CopilotPanel() {
     closePanel,
     sendMessage,
     clearHistory,
+    compactSession,
+    isCompacting,
+    lastRoundUsage,
   } = useCopilot()
   const { layout, toggleMode, setDockedWidth, setFloatingSize } = useCopilotLayout()
 
@@ -77,6 +103,26 @@ export function CopilotPanel() {
       })
     }
   }, [isOpen])
+
+  // Context-size indicator: how full the conversation is relative to the
+  // auto-compact trigger. Source of truth is the provider-reported input
+  // (non-cached + cached) of the most recent round — this is exactly what
+  // the LLM processed, including system prompt and tool definitions which
+  // the client-side approximation misses. We fall back to the approximation
+  // only before the first round has completed on a fresh session.
+  const approxFromClient = useMemo(() => approxContextTokens(messages), [messages])
+  const lastRoundFullInput = lastRoundUsage
+    ? (lastRoundUsage.inputTokens ?? 0) +
+      (lastRoundUsage.cacheReadTokens ?? 0) +
+      (lastRoundUsage.cacheCreationTokens ?? 0)
+    : 0
+  const contextTokens =
+    lastRoundFullInput > 0 ? lastRoundFullInput : approxFromClient
+  const contextPct = useMemo(() => {
+    if (!config?.compactTrigger || config.compactTrigger <= 0) return 0
+    return Math.min(100, Math.round((contextTokens / config.compactTrigger) * 100))
+  }, [contextTokens, config?.compactTrigger])
+  const contextLineVisible = contextTokens > 0
 
   // ─── Resize handlers ────────────────────────────────────────
   function startDockedResize(e: React.MouseEvent) {
@@ -226,6 +272,16 @@ export function CopilotPanel() {
           >
             {isDocked ? <PanelRightOpen className="w-3.5 h-3.5" /> : <PanelRightClose className="w-3.5 h-3.5" />}
           </button>
+          {messages.filter((m) => m.kind !== 'compact-notice').length >= 2 && (
+            <button
+              onClick={() => void compactSession(true)}
+              disabled={isCompacting || isLoading}
+              title="New session with summary — compress conversation and start fresh"
+              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              {isCompacting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Scissors className="w-3.5 h-3.5" />}
+            </button>
+          )}
           {messages.length > 0 && (
             <button
               onClick={clearHistory}
@@ -249,9 +305,21 @@ export function CopilotPanel() {
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {messages.length === 0 && <EmptyState />}
 
-        {messages.map((m) => (
-          <MessageBubble key={m.id} message={m} />
-        ))}
+        {messages
+          .filter((m) => {
+            // Skip tool-result-only user turns; they're internal to the
+            // tool loop and not meaningful to render as chat bubbles.
+            if (m.role === 'user' && !m.content && m.toolResults && m.toolResults.length > 0) {
+              return false
+            }
+            // Skip assistant turns with only tool_calls (no content); the
+            // actual tool call indicator is rendered via pendingToolCalls.
+            if (m.role === 'assistant' && !m.content && m.toolCalls && m.toolCalls.length > 0) {
+              return false
+            }
+            return true
+          })
+          .map((m) => <MessageBubble key={m.id} message={m} />)}
 
         {pendingToolCalls.length > 0 && (
           <div className="flex flex-col gap-1">
@@ -319,11 +387,26 @@ export function CopilotPanel() {
                 className="text-kb-text-secondary"
                 title={formatUsageTooltip(sessionUsage)}
               >
-                {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)} tokens
+                Question: {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)} billed
                 {sessionRounds > 0 && ` · ${sessionRounds} round${sessionRounds === 1 ? '' : 's'}`}
                 {sessionUsage.cacheReadTokens
                   ? ` · cache ${formatTokens(sessionUsage.cacheReadTokens)}`
                   : ''}
+              </span>
+            </>
+          )}
+          {contextLineVisible && (
+            <>
+              <br />
+              <span
+                className={`${contextPct >= 80 ? 'text-status-warn' : 'text-kb-text-secondary'}`}
+                title={`Cumulative conversation size vs auto-compact trigger${
+                  config.sessionBudget ? ` (budget ${config.sessionBudget.toLocaleString()})` : ''
+                }`}
+              >
+                Session: {formatTokens(contextTokens)}
+                {config.compactTrigger ? ` / ${formatTokens(config.compactTrigger)}` : ''}
+                {config.compactTrigger ? ` · ${contextPct}%` : ''}
               </span>
             </>
           )}
@@ -373,6 +456,10 @@ function EmptyState() {
 
 function MessageBubble({ message }: { message: CopilotMessage }) {
   const [copied, setCopied] = useState(false)
+
+  if (message.kind === 'compact-notice' && message.compactMeta) {
+    return <CompactNoticeBubble meta={message.compactMeta} />
+  }
 
   if (message.role === 'user') {
     return (
@@ -439,6 +526,40 @@ function ToolCallIndicator({ toolName }: { toolName: string }) {
       <Wrench className="w-3 h-3 text-kb-accent" />
       <span>{label}</span>
       <Loader2 className="w-3 h-3 animate-spin ml-auto" />
+    </div>
+  )
+}
+
+function CompactNoticeBubble({
+  meta,
+}: {
+  meta: NonNullable<CopilotMessage['compactMeta']>
+}) {
+  const saved = Math.max(0, meta.tokensBefore - meta.tokensAfter)
+  const pct = meta.tokensBefore > 0 ? Math.round((saved / meta.tokensBefore) * 100) : 0
+  const title = meta.auto ? 'Auto-compacted' : 'Session compacted'
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-kb-accent/30 bg-gradient-to-r from-kb-accent-light via-kb-accent-light/40 to-violet-500/5 text-[10px] font-mono text-kb-text-secondary">
+      <Sparkles className="w-3 h-3 text-kb-accent shrink-0" />
+      <span className="text-kb-accent font-semibold uppercase tracking-wider">{title}</span>
+      <span className="text-kb-text-tertiary">·</span>
+      <span>
+        {meta.turnsFolded} turn{meta.turnsFolded === 1 ? '' : 's'} folded
+      </span>
+      {meta.tokensBefore > 0 && (
+        <>
+          <span className="text-kb-text-tertiary">·</span>
+          <span>
+            {formatTokens(meta.tokensBefore)} → {formatTokens(meta.tokensAfter)}
+            {pct > 0 && <span className="text-kb-accent ml-1">(−{pct}%)</span>}
+          </span>
+        </>
+      )}
+      {meta.model && (
+        <span className="ml-auto text-kb-text-tertiary truncate" title={meta.model}>
+          {meta.model}
+        </span>
+      )}
     </div>
   )
 }

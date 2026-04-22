@@ -60,11 +60,21 @@ type CopilotChatRequest struct {
 // This endpoint is reachable even when the cluster is not connected so the
 // frontend can decide whether to render the chat panel.
 func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
+	// Expose the resolved session budget so the UI can show "context X / Y".
+	budget := h.copilotConfig.SessionBudgetTokens
+	if budget <= 0 {
+		budget = copilot.ContextWindowFor(h.copilotConfig.Primary.Provider, h.copilotConfig.Primary.Model)
+	}
+	trigger := int(float64(budget) * h.copilotConfig.AutoCompactThreshold)
+
 	resp := map[string]interface{}{
-		"enabled":   h.copilotConfig.Enabled,
-		"provider":  h.copilotConfig.Primary.Provider,
-		"model":     h.copilotConfig.Primary.Model,
-		"proxyMode": true,
+		"enabled":        h.copilotConfig.Enabled,
+		"provider":       h.copilotConfig.Primary.Provider,
+		"model":          h.copilotConfig.Primary.Model,
+		"proxyMode":      true,
+		"sessionBudget":  budget,
+		"compactTrigger": trigger,
+		"autoCompact":    h.copilotConfig.AutoCompact,
 	}
 	if h.copilotConfig.Fallback != nil {
 		resp["fallback"] = map[string]string{
@@ -183,7 +193,55 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 
+	// Resolve the compaction trigger: budget × threshold. The budget is the
+	// user's ceiling (defaults to the model's full context window); the
+	// threshold is how full the conversation gets before we compact.
+	sessionBudget := h.copilotConfig.SessionBudgetTokens
+	if sessionBudget <= 0 {
+		sessionBudget = copilot.ContextWindowFor(h.copilotConfig.Primary.Provider, h.copilotConfig.Primary.Model)
+	}
+	compactTrigger := int(float64(sessionBudget) * h.copilotConfig.AutoCompactThreshold)
+
 	for round := 0; round < maxRounds; round++ {
+		// Auto-compact when the conversation approaches the budget.
+		// Uses a cheap-tier model of the same provider to summarize the
+		// older turns, then replaces them with a single summary message.
+		if h.copilotConfig.AutoCompact {
+			if approx := copilot.ApproxTokens(messages); approx >= compactTrigger {
+				logger.Info("copilot auto-compact triggered",
+					slog.Int("approxTokens", approx),
+					slog.Int("trigger", compactTrigger),
+					slog.Int("budget", sessionBudget),
+				)
+				cr, cerr := copilot.Compact(r.Context(), messages, copilot.CompactOptions{
+					PreserveTurns: h.copilotConfig.CompactPreserveTurns,
+					Provider:      h.copilotConfig.Primary,
+					CompactModel:  h.copilotConfig.CompactModel,
+				})
+				if cerr != nil {
+					logger.Warn("copilot auto-compact failed, continuing without it",
+						slog.String("error", cerr.Error()),
+					)
+				} else if cr != nil && cr.TurnsFolded > 0 {
+					messages = cr.NewMessages
+					sessionUsage.Add(cr.Usage)
+					writeSSEEvent(w, flusher, "compact", map[string]any{
+						"turnsFolded":  cr.TurnsFolded,
+						"tokensBefore": cr.TokensBefore,
+						"tokensAfter":  cr.TokensAfter,
+						"model":        cr.UsedModel,
+						"summary":      cr.Summary,
+					})
+					logger.Info("copilot auto-compact applied",
+						slog.Int("turnsFolded", cr.TurnsFolded),
+						slog.Int("tokensBefore", cr.TokensBefore),
+						slog.Int("tokensAfter", cr.TokensAfter),
+						slog.String("compactModel", cr.UsedModel),
+					)
+				}
+			}
+		}
+
 		// Build the chat request for this round
 		chatReq := copilot.ChatRequest{
 			System:    systemPrompt,
@@ -249,9 +307,22 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			writeSSEEvent(w, flusher, "text", map[string]string{"text": resp.Text})
 		}
 
-		// If no tool calls, we're done
+		// If no tool calls, we're done. Emit the final messages array
+		// including the assistant's text response so the frontend can
+		// persist the full tool-call history across questions (this
+		// matches the accumulative context-window model documented by
+		// Anthropic and OpenAI — previous turns are preserved completely).
 		if len(resp.ToolCalls) == 0 {
-			writeSSEEvent(w, flusher, "done", nil)
+			finalMessages := messages
+			if resp.Text != "" {
+				finalMessages = append(finalMessages, copilot.Message{
+					Role:    copilot.RoleAssistant,
+					Content: resp.Text,
+				})
+			}
+			writeSSEEvent(w, flusher, "done", map[string]any{
+				"messages": finalMessages,
+			})
 			finish("done")
 			return
 		}
@@ -343,3 +414,77 @@ func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, pa
 
 // ensure config import is referenced (avoids unused import in test files)
 var _ = config.CopilotConfig{}
+
+// CopilotCompactRequest folds an existing conversation into a summary and
+// returns the compacted message array for the frontend to swap into state.
+// This powers the "new session with summary" UX — the user stays in the
+// same cluster context but with a much smaller conversation.
+type CopilotCompactRequest struct {
+	Messages []copilot.Message `json:"messages"`
+	// ResetAll true → summarize everything and return a single summary
+	// message. False → preserve the last CompactPreserveTurns turns intact.
+	ResetAll bool `json:"resetAll,omitempty"`
+}
+
+// CopilotCompactResponse mirrors copilot.CompactResult with JSON naming.
+type CopilotCompactResponse struct {
+	Summary      string            `json:"summary"`
+	Messages     []copilot.Message `json:"messages"`
+	TokensBefore int               `json:"tokensBefore"`
+	TokensAfter  int               `json:"tokensAfter"`
+	TurnsFolded  int               `json:"turnsFolded"`
+	Model        string            `json:"model"`
+}
+
+// HandleCopilotCompact runs a standalone compaction over the provided
+// messages. Used by the "new session with summary" button in the UI.
+func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) {
+	if !h.copilotConfig.Enabled {
+		respondError(w, http.StatusServiceUnavailable, "copilot is not configured (KUBEBOLT_AI_API_KEY not set)")
+		return
+	}
+	var req CopilotCompactRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(req.Messages) == 0 {
+		respondError(w, http.StatusBadRequest, "messages array is empty")
+		return
+	}
+
+	logger := slog.Default().With(
+		slog.String("component", "copilot"),
+		slog.String("op", "compact"),
+		slog.String("user", auth.ContextUserID(r)),
+	)
+
+	cr, err := copilot.Compact(r.Context(), req.Messages, copilot.CompactOptions{
+		PreserveTurns: h.copilotConfig.CompactPreserveTurns,
+		Provider:      h.copilotConfig.Primary,
+		CompactModel:  h.copilotConfig.CompactModel,
+		ResetAll:      req.ResetAll,
+	})
+	if err != nil {
+		logger.Error("copilot manual compact failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusBadGateway, friendlyCopilotError(err))
+		return
+	}
+
+	logger.Info("copilot manual compact",
+		slog.Int("turnsFolded", cr.TurnsFolded),
+		slog.Int("tokensBefore", cr.TokensBefore),
+		slog.Int("tokensAfter", cr.TokensAfter),
+		slog.Bool("resetAll", req.ResetAll),
+		slog.String("compactModel", cr.UsedModel),
+	)
+
+	respondJSON(w, http.StatusOK, CopilotCompactResponse{
+		Summary:      cr.Summary,
+		Messages:     cr.NewMessages,
+		TokensBefore: cr.TokensBefore,
+		TokensAfter:  cr.TokensAfter,
+		TurnsFolded:  cr.TurnsFolded,
+		Model:        cr.UsedModel,
+	})
+}
