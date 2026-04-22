@@ -40,8 +40,14 @@ func TestValidateAccessToken_RejectsTampered(t *testing.T) {
 	svc := testJWTService(time.Hour, 24*time.Hour)
 	tok, _ := svc.GenerateAccessToken(&User{ID: "u", Username: "x", Role: RoleViewer})
 
-	// Flip the last character to invalidate the signature
-	tampered := tok[:len(tok)-1] + "X"
+	// Flip the last character to invalidate the signature. Pick a
+	// replacement that differs from the original — JWTs end in a random
+	// base64url char, so a fixed letter like "X" is a no-op ~1/64 of the time.
+	replacement := byte('A')
+	if tok[len(tok)-1] == 'A' {
+		replacement = 'B'
+	}
+	tampered := tok[:len(tok)-1] + string(replacement)
 	if _, err := svc.ValidateAccessToken(tampered); err == nil {
 		t.Error("tampered token must not validate")
 	}
