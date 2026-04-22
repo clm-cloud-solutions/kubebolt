@@ -548,14 +548,31 @@ function CompactNoticeBubble({
   const saved = Math.max(0, meta.tokensBefore - meta.tokensAfter)
   const pct = meta.tokensBefore > 0 ? Math.round((saved / meta.tokensBefore) * 100) : 0
   const title = meta.auto ? 'Auto-compacted' : 'Session compacted'
+  // Prefer the turns summary; fall back to "tool results stubbed" when the
+  // compact only freed memory without folding (conversation still too short
+  // for a summary fold but heavy enough to warrant trimming).
+  const action =
+    meta.turnsFolded > 0
+      ? `${meta.turnsFolded} turn${meta.turnsFolded === 1 ? '' : 's'} folded`
+      : meta.toolResultsStubbed > 0
+        ? `${meta.toolResultsStubbed} tool result${
+            meta.toolResultsStubbed === 1 ? '' : 's'
+          } stubbed`
+        : 'no-op'
   return (
     <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-kb-accent/30 bg-gradient-to-r from-kb-accent-light via-kb-accent-light/40 to-violet-500/5 text-[10px] font-mono text-kb-text-secondary">
       <Sparkles className="w-3 h-3 text-kb-accent shrink-0" />
       <span className="text-kb-accent font-semibold uppercase tracking-wider">{title}</span>
       <span className="text-kb-text-tertiary">·</span>
-      <span>
-        {meta.turnsFolded} turn{meta.turnsFolded === 1 ? '' : 's'} folded
-      </span>
+      <span>{action}</span>
+      {meta.turnsFolded > 0 && meta.toolResultsStubbed > 0 && (
+        <>
+          <span className="text-kb-text-tertiary">+</span>
+          <span>
+            {meta.toolResultsStubbed} tool result{meta.toolResultsStubbed === 1 ? '' : 's'} stubbed
+          </span>
+        </>
+      )}
       {meta.tokensBefore > 0 && (
         <>
           <span className="text-kb-text-tertiary">·</span>

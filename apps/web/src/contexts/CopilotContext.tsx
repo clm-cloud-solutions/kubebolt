@@ -8,6 +8,7 @@ import type { CopilotMessage, CopilotConfig, CopilotUsage } from '@/services/cop
 /** Inline compaction notice rendered in the chat transcript. */
 export interface CompactNotice {
   turnsFolded: number
+  toolResultsStubbed: number
   tokensBefore: number
   tokensAfter: number
   model?: string
@@ -106,8 +107,20 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         { id: assistantId, role: 'assistant', content: '', timestamp: new Date() },
       ])
 
+      // Snapshot the last round's provider-reported usage BEFORE we clear
+      // it below. The backend uses it to seed its auto-compact check so
+      // the trigger fires on round 0 of a follow-up question, matching
+      // what the UI already shows.
+      const carriedLastRoundUsage = lastRoundUsage
+
       try {
-        for await (const event of sendCopilotChat(newMessages, location.pathname, undefined, options?.trigger)) {
+        for await (const event of sendCopilotChat(
+          newMessages,
+          location.pathname,
+          undefined,
+          options?.trigger,
+          carriedLastRoundUsage,
+        )) {
           if (event.type === 'meta' && event.fallback) {
             setUsedFallback(true)
           } else if (event.type === 'tool_call' && event.toolName) {
@@ -128,6 +141,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           } else if (event.type === 'compact' && typeof event.turnsFolded === 'number') {
             const notice: CompactNotice = {
               turnsFolded: event.turnsFolded,
+              toolResultsStubbed: event.toolResultsStubbed ?? 0,
               tokensBefore: event.tokensBefore ?? 0,
               tokensAfter: event.tokensAfter ?? 0,
               model: event.model,
@@ -180,7 +194,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         setPendingToolCalls([])
       }
     },
-    [messages, isLoading, location.pathname],
+    [messages, isLoading, location.pathname, lastRoundUsage],
   )
 
   const openPanel = useCallback(() => setIsOpen(true), [])
@@ -208,6 +222,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         const resp = await compactCopilotSession(chatMessages, resetAll)
         const notice: CompactNotice = {
           turnsFolded: resp.turnsFolded,
+          toolResultsStubbed: resp.toolResultsStubbed ?? 0,
           tokensBefore: resp.tokensBefore,
           tokensAfter: resp.tokensAfter,
           model: resp.model,

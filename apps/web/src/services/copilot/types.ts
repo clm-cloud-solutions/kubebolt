@@ -15,6 +15,7 @@ export interface CopilotMessage {
   kind?: 'compact-notice'
   compactMeta?: {
     turnsFolded: number
+    toolResultsStubbed: number
     tokensBefore: number
     tokensAfter: number
     model?: string
@@ -66,6 +67,7 @@ export interface CopilotStreamEvent {
   session?: CopilotUsage
   // "compact" event payload: auto-compaction occurred mid-session
   turnsFolded?: number
+  toolResultsStubbed?: number
   tokensBefore?: number
   tokensAfter?: number
   model?: string
@@ -91,6 +93,7 @@ export interface CompactResponse {
   tokensBefore: number
   tokensAfter: number
   turnsFolded: number
+  toolResultsStubbed?: number
   model: string
 }
 

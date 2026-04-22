@@ -54,6 +54,13 @@ type CopilotChatRequest struct {
 	// buttons across the UI. Logged with each session for adoption
 	// analytics. Defaults to "manual" when empty.
 	Trigger string `json:"trigger,omitempty"`
+	// LastRoundUsage is the provider-reported input usage of the most
+	// recent round from the previous chat request. The backend uses it to
+	// seed the auto-compact decision for round 0 of this request, which
+	// otherwise relies on a chars-per-token approximation that
+	// underestimates JSON-dense tool results. Optional; nil when this is
+	// the first request of a session.
+	LastRoundUsage *copilot.Usage `json:"lastRoundUsage,omitempty"`
 }
 
 // HandleCopilotConfig returns the public copilot configuration (no API keys).
@@ -240,14 +247,48 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	}
 	compactTrigger := int(float64(sessionBudget) * h.copilotConfig.AutoCompactThreshold)
 
+	// Full input size of the previous round as reported by the provider
+	// (non-cached + cache-creation + cache-read). This is what the LLM
+	// actually processed — including system prompt and tool definitions
+	// that ApproxTokens(messages) misses. Used for the auto-compact
+	// decision so the server matches what the UI displays.
+	//
+	// Seeded from the frontend hint on a follow-up request so round 0 of
+	// the new turn has the accurate context size from the previous
+	// exchange; otherwise the chars-per-token approximation would
+	// underestimate JSON-dense tool results and skip the trigger.
+	var lastRoundFullInput int
+	if req.LastRoundUsage != nil {
+		u := *req.LastRoundUsage
+		lastRoundFullInput = u.InputTokens + u.CacheReadTokens + u.CacheCreationTokens
+	}
+
+	// System prompt + tool definitions are constant across this request.
+	// Their token footprint is added to the message-only approximation so
+	// the compact check sees the real prompt size — otherwise a round
+	// whose tool results balloon the messages array would slip past a
+	// stale lastRoundFullInput and the provider would be billed the
+	// oversize on the next call.
+	systemToolsOverhead := copilot.ApproxSystemToolsTokens(systemPrompt, tools)
+
 	for round := 0; round < maxRounds; round++ {
 		// Auto-compact when the conversation approaches the budget.
 		// Uses a cheap-tier model of the same provider to summarize the
 		// older turns, then replaces them with a single summary message.
 		if h.copilotConfig.AutoCompact {
-			if approx := copilot.ApproxTokens(messages); approx >= compactTrigger {
+			// Take the max of the last provider-reported input and our
+			// own approximation of "what the next call would send right
+			// now". The provider number is accurate for what was already
+			// processed; the approximation catches tool results anexed
+			// between rounds that the provider hasn't seen yet.
+			approx := copilot.ApproxTokens(messages) + systemToolsOverhead
+			contextSize := lastRoundFullInput
+			if approx > contextSize {
+				contextSize = approx
+			}
+			if contextSize >= compactTrigger {
 				logger.Info("copilot auto-compact triggered",
-					slog.Int("approxTokens", approx),
+					slog.Int("contextTokens", contextSize),
 					slog.Int("trigger", compactTrigger),
 					slog.Int("budget", sessionBudget),
 				)
@@ -260,7 +301,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					logger.Warn("copilot auto-compact failed, continuing without it",
 						slog.String("error", cerr.Error()),
 					)
-				} else if cr != nil && cr.TurnsFolded > 0 {
+				} else if cr != nil && (cr.TurnsFolded > 0 || cr.ToolResultsStubbed > 0) {
 					messages = cr.NewMessages
 					sessionUsage.Add(cr.Usage)
 					sessionCompacts = append(sessionCompacts, copilot.CompactEvent{
@@ -270,17 +311,26 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 						Model:        cr.UsedModel,
 					})
 					writeSSEEvent(w, flusher, "compact", map[string]any{
-						"turnsFolded":  cr.TurnsFolded,
-						"tokensBefore": cr.TokensBefore,
-						"tokensAfter":  cr.TokensAfter,
-						"model":        cr.UsedModel,
-						"summary":      cr.Summary,
+						"turnsFolded":        cr.TurnsFolded,
+						"toolResultsStubbed": cr.ToolResultsStubbed,
+						"tokensBefore":       cr.TokensBefore,
+						"tokensAfter":        cr.TokensAfter,
+						"model":              cr.UsedModel,
+						"summary":            cr.Summary,
 					})
 					logger.Info("copilot auto-compact applied",
 						slog.Int("turnsFolded", cr.TurnsFolded),
+						slog.Int("toolResultsStubbed", cr.ToolResultsStubbed),
 						slog.Int("tokensBefore", cr.TokensBefore),
 						slog.Int("tokensAfter", cr.TokensAfter),
 						slog.String("compactModel", cr.UsedModel),
+					)
+				} else if cr != nil {
+					// Nothing folded and nothing stubbed — surface so the
+					// "triggered without applied" mystery in logs is gone.
+					logger.Info("copilot auto-compact noop",
+						slog.String("reason", "no foldable turns and no stubbable tool_results"),
+						slog.Int("tokensBefore", cr.TokensBefore),
 					)
 				}
 			}
@@ -328,6 +378,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		sessionUsage.Add(resp.Usage)
 		roundsUsed = round + 1
 
+		// Capture full input size (non-cached + cached) of this round for
+		// the next iteration's auto-compact decision. Matches the UI's
+		// contextTokens formula so both sides trigger at the same point.
+		lastRoundFullInput = resp.Usage.InputTokens + resp.Usage.CacheReadTokens + resp.Usage.CacheCreationTokens
+
 		logger.Debug("copilot round",
 			slog.Int("round", round),
 			slog.String("stopReason", resp.StopReason),
@@ -364,6 +419,65 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					Content: resp.Text,
 				})
 			}
+
+			// Reactive compact: if this final round's provider-reported
+			// input crossed the trigger, compact now so the client's
+			// next prompt starts from a summary instead of resending a
+			// bloated history. The proactive check at the top of the
+			// loop cannot fire for end_turn rounds — there is no next
+			// iteration to guard. Mid-loop cases are already covered by
+			// that check combined with the messages-plus-overhead
+			// approximation.
+			if h.copilotConfig.AutoCompact && lastRoundFullInput >= compactTrigger {
+				logger.Info("copilot auto-compact triggered",
+					slog.String("mode", "reactive"),
+					slog.Int("contextTokens", lastRoundFullInput),
+					slog.Int("trigger", compactTrigger),
+					slog.Int("budget", sessionBudget),
+				)
+				cr, cerr := copilot.Compact(r.Context(), finalMessages, copilot.CompactOptions{
+					PreserveTurns: h.copilotConfig.CompactPreserveTurns,
+					Provider:      h.copilotConfig.Primary,
+					CompactModel:  h.copilotConfig.CompactModel,
+				})
+				if cerr != nil {
+					logger.Warn("copilot reactive compact failed, continuing without it",
+						slog.String("error", cerr.Error()),
+					)
+				} else if cr != nil && (cr.TurnsFolded > 0 || cr.ToolResultsStubbed > 0) {
+					finalMessages = cr.NewMessages
+					sessionUsage.Add(cr.Usage)
+					sessionCompacts = append(sessionCompacts, copilot.CompactEvent{
+						TurnsFolded:  cr.TurnsFolded,
+						TokensBefore: cr.TokensBefore,
+						TokensAfter:  cr.TokensAfter,
+						Model:        cr.UsedModel,
+					})
+					writeSSEEvent(w, flusher, "compact", map[string]any{
+						"turnsFolded":        cr.TurnsFolded,
+						"toolResultsStubbed": cr.ToolResultsStubbed,
+						"tokensBefore":       cr.TokensBefore,
+						"tokensAfter":        cr.TokensAfter,
+						"model":              cr.UsedModel,
+						"summary":            cr.Summary,
+					})
+					logger.Info("copilot auto-compact applied",
+						slog.String("mode", "reactive"),
+						slog.Int("turnsFolded", cr.TurnsFolded),
+						slog.Int("toolResultsStubbed", cr.ToolResultsStubbed),
+						slog.Int("tokensBefore", cr.TokensBefore),
+						slog.Int("tokensAfter", cr.TokensAfter),
+						slog.String("compactModel", cr.UsedModel),
+					)
+				} else if cr != nil {
+					logger.Info("copilot auto-compact noop",
+						slog.String("mode", "reactive"),
+						slog.String("reason", "no foldable turns and no stubbable tool_results"),
+						slog.Int("tokensBefore", cr.TokensBefore),
+					)
+				}
+			}
+
 			writeSSEEvent(w, flusher, "done", map[string]any{
 				"messages": finalMessages,
 			})
@@ -472,12 +586,13 @@ type CopilotCompactRequest struct {
 
 // CopilotCompactResponse mirrors copilot.CompactResult with JSON naming.
 type CopilotCompactResponse struct {
-	Summary      string            `json:"summary"`
-	Messages     []copilot.Message `json:"messages"`
-	TokensBefore int               `json:"tokensBefore"`
-	TokensAfter  int               `json:"tokensAfter"`
-	TurnsFolded  int               `json:"turnsFolded"`
-	Model        string            `json:"model"`
+	Summary            string            `json:"summary"`
+	Messages           []copilot.Message `json:"messages"`
+	TokensBefore       int               `json:"tokensBefore"`
+	TokensAfter        int               `json:"tokensAfter"`
+	TurnsFolded        int               `json:"turnsFolded"`
+	ToolResultsStubbed int               `json:"toolResultsStubbed"`
+	Model              string            `json:"model"`
 }
 
 // HandleCopilotCompact runs a standalone compaction over the provided
@@ -517,6 +632,7 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 
 	logger.Info("copilot manual compact",
 		slog.Int("turnsFolded", cr.TurnsFolded),
+		slog.Int("toolResultsStubbed", cr.ToolResultsStubbed),
 		slog.Int("tokensBefore", cr.TokensBefore),
 		slog.Int("tokensAfter", cr.TokensAfter),
 		slog.Bool("resetAll", req.ResetAll),
@@ -524,11 +640,12 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 	)
 
 	respondJSON(w, http.StatusOK, CopilotCompactResponse{
-		Summary:      cr.Summary,
-		Messages:     cr.NewMessages,
-		TokensBefore: cr.TokensBefore,
-		TokensAfter:  cr.TokensAfter,
-		TurnsFolded:  cr.TurnsFolded,
-		Model:        cr.UsedModel,
+		Summary:            cr.Summary,
+		Messages:           cr.NewMessages,
+		TokensBefore:       cr.TokensBefore,
+		TokensAfter:        cr.TokensAfter,
+		TurnsFolded:        cr.TurnsFolded,
+		ToolResultsStubbed: cr.ToolResultsStubbed,
+		Model:              cr.UsedModel,
 	})
 }

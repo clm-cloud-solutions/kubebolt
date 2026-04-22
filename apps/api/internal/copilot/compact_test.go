@@ -166,6 +166,93 @@ func TestCompact_PicksCheapModelWhenEmpty(t *testing.T) {
 	}
 }
 
+func TestCompact_ProtectsActiveTurnToolResults(t *testing.T) {
+	// Regression test: a compact that fires mid-request (after a round
+	// produced tool_results the LLM hasn't yet synthesized) MUST NOT stub
+	// those tool_results. Stubbing the active turn's data makes the LLM
+	// respond with "output was truncated".
+	fp := registerFake(t, "fake-activeturn", "summary")
+
+	heavy := strings.Repeat("cluster-data ", 300) // large enough to trigger stub
+	msgs := []Message{
+		// Old turn 1 — fully resolved
+		userTurn("old question 1"),
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "t1", Name: "get_pods", Input: []byte(`{}`)}}},
+		{Role: RoleUser, ToolResults: []ToolResult{{ToolCallID: "t1", Content: heavy}}},
+		{Role: RoleAssistant, Content: "old answer 1"},
+		// Old turn 2 — fully resolved
+		userTurn("old question 2"),
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "t2", Name: "get_events", Input: []byte(`{}`)}}},
+		{Role: RoleUser, ToolResults: []ToolResult{{ToolCallID: "t2", Content: heavy}}},
+		{Role: RoleAssistant, Content: "old answer 2"},
+		// Active turn — user just asked, LLM called tools, tool_results arrived,
+		// and the LLM hasn't synthesized the response yet.
+		userTurn("CURRENT question"),
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "active", Name: "get_cluster_overview", Input: []byte(`{}`)}}},
+		{Role: RoleUser, ToolResults: []ToolResult{{ToolCallID: "active", Content: heavy}}},
+	}
+
+	res, err := Compact(context.Background(), msgs, CompactOptions{
+		PreserveTurns: 2,
+		Provider:      config.ProviderConfig{Provider: fp.name},
+	})
+	if err != nil {
+		t.Fatalf("Compact err: %v", err)
+	}
+
+	// The active turn's tool_result MUST survive intact.
+	var activeResult *ToolResult
+	for _, m := range res.NewMessages {
+		for i := range m.ToolResults {
+			if m.ToolResults[i].ToolCallID == "active" {
+				activeResult = &m.ToolResults[i]
+			}
+		}
+	}
+	if activeResult == nil {
+		t.Fatal("active turn's tool_result was dropped — LLM would lose data mid-response")
+	}
+	if strings.Contains(activeResult.Content, "stubbed during compact") {
+		t.Errorf("active turn's tool_result was stubbed — LLM would respond 'output truncated'.\nContent: %q", activeResult.Content)
+	}
+	if activeResult.Content != heavy {
+		t.Errorf("active turn's tool_result content was modified; want %d chars, got %d",
+			len(heavy), len(activeResult.Content))
+	}
+}
+
+func TestCompact_StubsNonActiveTailToolResults(t *testing.T) {
+	// Complement to the above: tool_results in preserved turns that the
+	// LLM has already synthesized (there's an assistant text after them)
+	// SHOULD get stubbed to free memory.
+	fp := registerFake(t, "fake-tailstub", "summary")
+	heavy := strings.Repeat("pod-logs ", 300)
+
+	msgs := []Message{
+		// Turn 1 — will be folded
+		userTurn("q1"),
+		{Role: RoleAssistant, Content: "a1"},
+		// Turn 2 — preserved tail, with resolved tool call (heavy result + assistant summary after)
+		userTurn("q2"),
+		{Role: RoleAssistant, ToolCalls: []ToolCall{{ID: "t2", Name: "get_logs", Input: []byte(`{}`)}}},
+		{Role: RoleUser, ToolResults: []ToolResult{{ToolCallID: "t2", Content: heavy}}},
+		{Role: RoleAssistant, Content: "a2 synthesized"},
+		// Active turn — user just asked, nothing else yet
+		userTurn("ACTIVE q3"),
+	}
+
+	res, err := Compact(context.Background(), msgs, CompactOptions{
+		PreserveTurns: 2,
+		Provider:      config.ProviderConfig{Provider: fp.name},
+	})
+	if err != nil {
+		t.Fatalf("Compact err: %v", err)
+	}
+	if res.ToolResultsStubbed < 1 {
+		t.Errorf("want >=1 tool_result stubbed in the resolved preserved turn, got %d", res.ToolResultsStubbed)
+	}
+}
+
 // stubAnthropic restores a placeholder registration under the "anthropic"
 // name after TestCompact_PicksCheapModelWhenEmpty replaced it, so other
 // tests that rely on the real registration (none currently, but defensive)

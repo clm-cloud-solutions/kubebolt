@@ -1,5 +1,5 @@
 import { getAccessToken } from '@/services/api'
-import type { CompactResponse, CopilotMessage, CopilotStreamEvent } from './types'
+import type { CompactResponse, CopilotMessage, CopilotStreamEvent, CopilotUsage } from './types'
 
 // Strip transient UI fields before sending to backend. Compact notices are
 // UI-only markers and never leave the client.
@@ -32,6 +32,7 @@ export async function* sendCopilotChat(
   currentPath: string,
   signal?: AbortSignal,
   trigger?: string,
+  lastRoundUsage?: CopilotUsage | null,
 ): AsyncGenerator<CopilotStreamEvent> {
   const token = getAccessToken()
   const res = await fetch('/api/v1/copilot/chat', {
@@ -44,6 +45,13 @@ export async function* sendCopilotChat(
       messages: serializeMessages(messages),
       currentPath,
       trigger,
+      // Seed for the backend's auto-compact threshold check. The last
+      // round's provider-reported input (fresh + cached + creation) is the
+      // accurate size of what the LLM processed; without it the backend
+      // falls back to a chars-per-token approximation that underestimates
+      // JSON-heavy tool results and misses the trigger on round 0 of
+      // follow-up requests.
+      lastRoundUsage: lastRoundUsage ?? undefined,
     }),
     signal,
   })

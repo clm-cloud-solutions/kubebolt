@@ -45,7 +45,13 @@ describe('compactCopilotSession — serialization', () => {
         role: 'system',
         content: '',
         kind: 'compact-notice',
-        compactMeta: { turnsFolded: 2, tokensBefore: 100, tokensAfter: 20, auto: true },
+        compactMeta: {
+          turnsFolded: 2,
+          toolResultsStubbed: 0,
+          tokensBefore: 100,
+          tokensAfter: 20,
+          auto: true,
+        },
       }),
       makeMsg({ id: 'a1', role: 'assistant', content: 'hi back' }),
     ]
