@@ -19,8 +19,9 @@ var (
 	settingsBucket     = []byte("settings")
 	// Buckets used by other packages (cluster management, etc.) —
 	// initialized here so there's a single place where DB schema is defined.
-	clustersBucket        = []byte("clusters")         // uploaded kubeconfigs
-	clusterDisplayBucket  = []byte("cluster_display")  // display name overrides
+	clustersBucket         = []byte("clusters")         // uploaded kubeconfigs
+	clusterDisplayBucket   = []byte("cluster_display")  // display name overrides
+	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
 )
 
 // Role represents a KubeBolt application-level role.
@@ -117,7 +118,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, copilotSessionsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -142,6 +143,11 @@ func (s *Store) Close() error {
 // across the codebase are created at Store initialization.
 func (s *Store) DB() *bolt.DB {
 	return s.db
+}
+
+// CopilotSessionsBucket returns the bucket name for copilot usage records.
+func CopilotSessionsBucket() []byte {
+	return copilotSessionsBucket
 }
 
 // ClusterBuckets returns the bucket names used for cluster management state.

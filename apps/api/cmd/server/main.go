@@ -18,6 +18,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
@@ -200,6 +201,7 @@ func main() {
 	authCfg := config.LoadAuthConfig()
 
 	var authHandlers *auth.Handlers
+	var copilotUsage *copilot.UsageStore
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -246,6 +248,10 @@ func main() {
 			slog.Warn("failed to attach cluster storage, uploaded clusters won't persist",
 				slog.String("error", err.Error()))
 		}
+
+		// Attach the copilot usage store so admin analytics survive restarts.
+		// Shares the same BoltDB file; bucket created by auth.NewStore.
+		copilotUsage = copilot.NewUsageStore(store.DB(), auth.CopilotSessionsBucket())
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
@@ -312,7 +318,7 @@ func main() {
 	defer notifManager.Stop()
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, authHandlers, notifManager)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, notifManager)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

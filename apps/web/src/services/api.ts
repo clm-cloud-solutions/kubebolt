@@ -203,6 +203,22 @@ export const api = {
   testNotification: (channel: 'slack' | 'discord' | 'email') =>
     postJSON<{ status: string }>(`${API_BASE}/notifications/test/${channel}`, {}),
 
+  // --- Copilot usage analytics (admin) ---
+  getCopilotUsageSummary: (range: string) =>
+    fetchJSON<import('@/types/copilotUsage').CopilotUsageSummary>(
+      `${API_BASE}/admin/copilot/usage/summary?range=${range}`,
+    ),
+
+  getCopilotUsageTimeseries: (range: string) =>
+    fetchJSON<import('@/types/copilotUsage').CopilotUsageBucket[]>(
+      `${API_BASE}/admin/copilot/usage/timeseries?range=${range}`,
+    ),
+
+  getCopilotUsageSessions: (range: string, limit = 100) =>
+    fetchJSON<import('@/types/copilotUsage').CopilotSessionEnriched[]>(
+      `${API_BASE}/admin/copilot/usage/sessions?range=${range}&limit=${limit}`,
+    ),
+
   getOverview: () => fetchJSON<ClusterOverview>(`${API_BASE}/cluster/overview`),
 
   getHealth: () => fetchJSON<ClusterHealth>(`${API_BASE}/cluster/health`),

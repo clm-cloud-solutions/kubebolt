@@ -171,6 +171,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	}
 	toolBreakdown := map[string]*toolStats{}
 
+	// Auto-compact events fired during this session — we attach them to
+	// the persisted SessionRecord for drill-down in the admin UI.
+	var sessionCompacts []copilot.CompactEvent
+
 	finish := func(reason string) {
 		// Collapse breakdown into a plain map so slog.JSONHandler emits it cleanly.
 		breakdown := make(map[string]any, len(toolBreakdown))
@@ -191,6 +195,40 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			slog.Bool("fallback", usedFallback),
 			slog.Any("toolBreakdown", breakdown),
 		)
+
+		// Persist for the admin analytics page. Skipped silently when auth
+		// is disabled (no usage store wired up).
+		if h.copilotUsage != nil {
+			tools := make(map[string]copilot.ToolStats, len(toolBreakdown))
+			for name, s := range toolBreakdown {
+				tools[name] = copilot.ToolStats{
+					Calls:      s.Calls,
+					Bytes:      s.Bytes,
+					Errors:     s.Errors,
+					DurationMs: s.DurationMs,
+				}
+			}
+			rec := &copilot.SessionRecord{
+				Timestamp:  time.Now(),
+				UserID:     auth.ContextUserID(r),
+				Cluster:    clusterName,
+				Provider:   h.copilotConfig.Primary.Provider,
+				Model:      h.copilotConfig.Primary.Model,
+				Trigger:    trigger,
+				Reason:     reason,
+				Rounds:     roundsUsed,
+				Usage:      sessionUsage,
+				ToolCalls:  sessionToolCalls,
+				ToolBytes:  sessionToolBytes,
+				DurationMs: time.Since(sessionStart).Milliseconds(),
+				Fallback:   usedFallback,
+				Tools:      tools,
+				Compacts:   sessionCompacts,
+			}
+			if err := h.copilotUsage.Record(rec); err != nil {
+				logger.Warn("failed to persist copilot session", slog.String("error", err.Error()))
+			}
+		}
 	}
 
 	// Resolve the compaction trigger: budget × threshold. The budget is the
@@ -225,6 +263,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				} else if cr != nil && cr.TurnsFolded > 0 {
 					messages = cr.NewMessages
 					sessionUsage.Add(cr.Usage)
+					sessionCompacts = append(sessionCompacts, copilot.CompactEvent{
+						TurnsFolded:  cr.TurnsFolded,
+						TokensBefore: cr.TokensBefore,
+						TokensAfter:  cr.TokensAfter,
+						Model:        cr.UsedModel,
+					})
 					writeSSEEvent(w, flusher, "compact", map[string]any{
 						"turnsFolded":  cr.TurnsFolded,
 						"tokensBefore": cr.TokensBefore,

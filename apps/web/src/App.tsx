@@ -22,6 +22,7 @@ import { ClustersPage } from '@/pages/ClustersPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
 import { NotificationsPage } from '@/pages/admin/NotificationsPage'
+import { CopilotUsagePage } from '@/pages/admin/CopilotUsagePage'
 import { AdminPlaceholderPage } from '@/pages/admin/AdminPlaceholderPage'
 import { CopilotProvider } from '@/contexts/CopilotContext'
 
@@ -118,6 +119,7 @@ export default function App() {
               {/* Admin routes */}
               <Route path="/admin/users" element={<RequireRole role="admin"><UsersPage /></RequireRole>} />
               <Route path="/admin/notifications" element={<RequireRole role="admin"><NotificationsPage /></RequireRole>} />
+              <Route path="/admin/copilot-usage" element={<RequireRole role="admin"><CopilotUsagePage /></RequireRole>} />
               <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
               <Route path="/admin/service-accounts" element={<RequireRole role="admin"><AdminPlaceholderPage title="Service Accounts" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
               <Route path="/admin/authentication" element={<RequireRole role="admin"><AdminPlaceholderPage title="Authentication" description="Configure single sign-on providers (GitHub, Google, Azure AD, OIDC)." /></RequireRole>} />

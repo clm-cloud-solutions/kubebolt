@@ -9,6 +9,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
@@ -19,6 +20,7 @@ func NewRouter(
 	wsHub *websocket.Hub,
 	corsOrigins []string,
 	copilotCfg config.CopilotConfig,
+	copilotUsage *copilot.UsageStore,
 	authHandlers *auth.Handlers,
 	notifManager *notifications.Manager,
 ) *chi.Mux {
@@ -35,6 +37,7 @@ func NewRouter(
 		wsHub:         wsHub,
 		pfManager:     NewPortForwardManager(),
 		copilotConfig: copilotCfg,
+		copilotUsage:  copilotUsage,
 		authHandlers:  authHandlers,
 		notifications: notifManager,
 	}
@@ -92,6 +95,14 @@ func NewRouter(
 				r.Use(auth.RequireRole(auth.RoleAdmin))
 				r.Get("/notifications/config", h.handleNotificationsConfig)
 				r.Post("/notifications/test/{channel}", h.handleNotificationsTest)
+			})
+
+			// Copilot usage analytics — admin only
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/admin/copilot/usage/summary", h.handleCopilotUsageSummary)
+				r.Get("/admin/copilot/usage/timeseries", h.handleCopilotUsageTimeseries)
+				r.Get("/admin/copilot/usage/sessions", h.handleCopilotUsageSessions)
 			})
 
 			// All other endpoints require an active cluster connection

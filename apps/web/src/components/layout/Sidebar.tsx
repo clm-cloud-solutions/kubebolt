@@ -121,6 +121,7 @@ const BOLT_EMOJIS = ['⚡', '🔥', '🌟', '💫', '✨', '🚀', '💜']
 const adminItems = [
   { label: 'Users', path: '/admin/users', icon: <Users className="w-4 h-4" /> },
   { label: 'Notifications', path: '/admin/notifications', icon: <Bell className="w-4 h-4" /> },
+  { label: 'Copilot Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
   { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },
   { label: 'Service Accounts', path: '/admin/service-accounts', icon: <Bot className="w-4 h-4" /> },
   { label: 'Authentication', path: '/admin/authentication', icon: <KeyRound className="w-4 h-4" /> },
