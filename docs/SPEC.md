@@ -1265,6 +1265,8 @@ After Phase 1.8 shipped, the backend was instrumented (see logging foundation) a
 | **GPT-5 / o-series compatibility** ✅ | copilot/openai | `max_completion_tokens` parameter switch for reasoning and GPT-5+ models; classic `max_tokens` preserved for gpt-4o and OpenAI-compatible endpoints (Azure, Ollama, LiteLLM, vLLM). Shipped in v1.5.0-rc.1. |
 | **Anthropic prompt caching** ✅ | copilot/anthropic | System prompt + last tool definition marked with `cache_control: ephemeral`. Confirmed working on Sonnet 4.6 (`cacheReadTokens > 0` in round 2+). Haiku 4.5 requires ≥4,096 tokens per cacheable block so the current prefix (~3.5K combined) silently no-ops there — documented as a known limitation. Shipped in v1.5.0-rc.1. |
 | **OpenAI automatic-cache reporting** ✅ | copilot/openai | Parse `prompt_tokens_details.cached_tokens` from OpenAI responses and normalize to the Anthropic convention (InputTokens = non-cached, CacheReadTokens = cached). Session summary logs now accurately reflect OpenAI's auto-caching (gpt-4o+, prompts ≥1024 tokens). Shipped post-RC. |
+| **Scope guardrail** ✅ | copilot/prompt | Explicit in-scope / out-of-scope section in the system prompt. In-scope: Kubernetes, DevOps/SRE supporting cluster operations, KubeBolt product. Out-of-scope: general coding unrelated to cluster resources, non-technical topics, unrelated cloud products. The LLM refuses out-of-scope questions with a one-sentence polite redirect in the user's language — never answers partially. Shipped post-RC. |
+| **Product knowledge base** ✅ | copilot/kubebolt_docs + tool + prompt | `get_kubebolt_docs` tool exposes ~25 hand-curated topics covering UI surfaces, admin pages, configuration. Topic list injected into the tool description so the LLM discovers valid keys without a round-trip; fuzzy matching on unknown keys. System prompt identity section lists main surfaces so the LLM answers trivial "what is X" without calling the tool. Shipped post-RC. |
 
 ##### Tool catalog — current state and proposed improvements
 
@@ -1417,14 +1419,19 @@ Post-MVP increments (data-driven, only if used):
 - Node conditions trigger.
 - Popover variant (interaction B) for insight triggers offering 2–3 canned questions.
 
-#### Pending (post-1.8)
+#### Post-MVP shipped in 1.5.0 stable
 
-The following are documented in the skill but deferred to future iterations:
-- Conversation memory management (context window pruning, summarization)
-- Usage metrics & analytics (token tracking, cost reporting, telemetry)
+- **Conversation memory management** ✅ — auto-compact at `KUBEBOLT_AI_SESSION_BUDGET_TOKENS × KUBEBOLT_AI_AUTO_COMPACT_THRESHOLD` using the provider's cheap-tier model (Haiku 4.5 / gpt-4o-mini). Manual "new session with summary" button (scissors) folds the full transcript into a single summary. Backend emits the full `messages` array on `done` so the frontend persists tool history across turns, matching Anthropic/OpenAI's accumulative context model. Session counter in the panel shows the real input size reported by the provider (input + cache read + cache creation). Configured via `KUBEBOLT_AI_AUTO_COMPACT`, `KUBEBOLT_AI_SESSION_BUDGET_TOKENS`, `KUBEBOLT_AI_AUTO_COMPACT_THRESHOLD`, `KUBEBOLT_AI_COMPACT_MODEL`, `KUBEBOLT_AI_COMPACT_PRESERVE_TURNS`.
+- **Usage metrics & analytics** ✅ — every session persists to a BoltDB bucket (shared with auth) with a 30-day / 5000-entry retention cap. Admin endpoints (`/admin/copilot/usage/summary`, `/timeseries`, `/sessions`) power the `/admin/copilot-usage` page with token counts, cache hit rate, estimated USD cost (list-price table per provider/model), tool breakdown, compact events, and a per-session drill-down modal.
+- **Product knowledge base** ✅ — `get_kubebolt_docs` tool returns terse product docs by topic (overview, navigation, cluster-map, resource-detail, pod-terminal, port-forward, insights, copilot, compact, admin-*, etc.). Fuzzy-matched keys. System prompt has a short identity section naming the main UI surfaces so the LLM doesn't call the tool for trivial facts.
+- **Scope guardrail** ✅ — system prompt's "Scope" section defines in-scope (Kubernetes, DevOps/SRE supporting cluster ops, KubeBolt product) vs out-of-scope (general coding help, non-technical topics, unrelated cloud products). Explicit instruction to refuse with a one-sentence polite redirect in the user's language, never answer partially. Observed refusals in practice log as `outputTokens ≈ 40`.
+- **Auto-clear on cluster switch** ✅ — Copilot transcript wipes on successful cluster switch so prior conversation doesn't mislead the LLM on resources in the new cluster.
+
+#### Pending (post-1.5.0)
+
 - Automated test suite (regression scenarios, mock cluster fixtures)
-- KubeBolt product knowledge base (questions about KubeBolt features themselves, not Kubernetes)
 - WebSocket integration for proactive context (Phase 2 enhancement)
+- JSON-aware truncation in tool results (finer control than byte cap)
 
 ### Phase 1.9 — Extended Distribution
 
