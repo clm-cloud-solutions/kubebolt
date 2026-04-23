@@ -18,6 +18,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
+	"github.com/kubebolt/kubebolt/apps/api/internal/flows"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
@@ -372,6 +373,15 @@ func main() {
 			slog.Error("agent gRPC server error", slog.String("error", err.Error()))
 		}
 	}()
+
+	// Hubble flow collector (Phase 2.1 Level 2). Opt-in via env — if the
+	// env var isn't set, the collector simply isn't started. Real
+	// deployments will get auto-detection against hubble-relay.kube-system
+	// in a later iteration.
+	if hubbleAddr := os.Getenv("KUBEBOLT_HUBBLE_RELAY_ADDR"); hubbleAddr != "" {
+		slog.Info("hubble collector enabled", slog.String("relay", hubbleAddr))
+		go flows.RunHubbleCollector(agentCtx, hubbleAddr, vmURL)
+	}
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
