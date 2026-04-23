@@ -219,74 +219,61 @@ KubeBolt builds a cluster topology graph by analyzing:
 
 ---
 
-## 4. Phase 2 — KubeBolt Agent
+## 4. Phase 2 — Data Ingestion Architecture
 
-### 4.1 Agent Design
+Phase 2 adds historical telemetry to KubeBolt via two new components:
+
+1. **VictoriaMetrics** as the time-series database (TSDB) — stores every metric received from agents and exposes PromQL for query.
+2. **kubebolt-agent** — lightweight Go DaemonSet that collects per-container metrics from each node's kubelet/cAdvisor and streams them to the backend via gRPC.
+
+The full technical design lives in `internal/kubebolt-agent-technical-spec.md`. This section summarizes the canonical architecture and the MVP scope. Strategic alternatives considered (OTel Collector fork, fully agentless ingestion) are preserved in `internal/agentless-ingestion-analysis.md` and in strategy v2.1 §8 for future reconsideration.
+
+### 4.1 Storage: VictoriaMetrics
+
+- Single-binary Go TSDB running alongside the backend (Docker Compose service, Helm sub-chart, or operator-managed deployment).
+- Accepts ingest via Prometheus `remote_write` protocol (`/api/v1/write`). OTLP and native VM protocols also supported for future reuse.
+- Query via PromQL (`/api/v1/query`, `/api/v1/query_range`).
+- Retention policies configurable per deployment. Native downsampling support for long-term storage.
+- Abstracted behind a `MetricsStorage` interface in the backend to allow future substitution (ClickHouse at SaaS scale) without rewriting ingest or query layers.
+
+### 4.2 Agent: kubebolt-agent
 
 The `kubebolt-agent` is a lightweight DaemonSet written in Go that runs one pod per node.
 
 **Requirements:**
-- Single static binary, <20MB compressed image
-- Resource consumption: <50MB RAM, <0.05 CPU per node
-- Install: `kubectl apply -f https://get.kubebolt.dev/agent.yaml`
-- Read-only access, no cluster-admin, no exec
-- Metrics collected every 15 seconds (configurable via env var)
-- Reconnects automatically if backend is unavailable (buffer up to 5min)
+- Single static binary (Go, `CGO_ENABLED=0`), <20MB compressed image (distroless)
+- Resource consumption: <50MB RAM, <0.05 CPU per node (hard targets, non-negotiable)
+- Install via Helm: `helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent`
+- Read-only access, no cluster-admin, no exec, no secret access
+- Metrics collected every 15 seconds (configurable 5-60s)
+- Reconnects automatically if backend unavailable; in-memory ring buffer (FIFO drop on overflow) up to 5 minutes
+- Read-only `/host/proc` mount; no privileged container; all capabilities dropped; `runAsNonRoot: true`
+- Independent per-node: no peer-to-peer coordination, no disk persistence, crash-clean restart
 
-### 4.2 Metrics Collected
+### 4.3 Metrics Collected (MVP core)
 
 | Category | Metrics | Source | Granularity |
 |----------|---------|--------|-------------|
-| Network | rx_bytes, tx_bytes, rx_errors, tx_errors, rx_packets, tx_packets | cAdvisor `/stats/summary` | Per container |
-| Disk | fs_usage_bytes, fs_capacity_bytes, fs_available_bytes, inode_usage | kubelet `/stats/summary` | Per volume, per node |
-| CPU (detailed) | usage_core_nanoseconds, throttled_time, throttled_periods, nr_periods | cAdvisor `/stats/summary` | Per container |
-| Memory (detailed) | working_set_bytes, rss_bytes, cache_bytes, swap_bytes, page_faults | cAdvisor `/stats/summary` | Per container |
+| CPU (detailed) | `usage_core_nanoseconds`, `throttled_time`, `throttled_periods`, `nr_periods`, `nr_throttled` | cAdvisor `/stats/summary` | Per container |
+| Memory (detailed) | `working_set_bytes`, `rss_bytes`, `cache_bytes`, `swap_bytes`, `major/minor_page_faults`, `failcnt` | cAdvisor | Per container |
+| Network | `rx_bytes`, `tx_bytes`, `rx_errors`, `tx_errors`, `rx_packets_dropped`, `tx_packets_dropped` | cAdvisor | Per container |
+| Disk (volumes) | `fs_usage_bytes`, `fs_capacity_bytes`, `fs_available_bytes`, `inodes_used`, `inodes_total` | kubelet `/stats/summary` | Per volume, per node |
+| Process | `process_count`, `thread_count`, `open_fds` | cAdvisor | Per container |
+| Node system | `load_average_1m/5m/15m`, `kernel_memory_bytes`, `uptime_seconds` | `/host/proc` | Per node |
 
-### 4.3 Agent Communication
+Full catalog (including optional super-powers like process-level, conntrack, eBPF network flows, GPU, DNS observability, log tailing) in the technical spec §4 and §20. These are **post-MVP extensions**, not part of Phase 2.0.
 
-```protobuf
-// proto/agent.proto
-syntax = "proto3";
-package kubebolt.agent.v1;
+### 4.4 Agent Communication
 
-service AgentService {
-  rpc StreamMetrics(stream NodeMetrics) returns (StreamAck);
-}
+gRPC service `AgentIngest` defined in `packages/proto/agent.proto` with three RPCs:
 
-message NodeMetrics {
-  string node_name = 1;
-  int64 timestamp = 2;
-  repeated ContainerMetric containers = 3;
-  NodeResourceMetric node_resources = 4;
-}
+- `Register` — initial handshake, agent sends node metadata, backend returns `AgentConfig` and `agent_id`.
+- `StreamMetrics` — bidirectional stream: agent pushes `MetricBatch` messages, backend responds with `IngestAck` (can carry config updates for hot-reload).
+- `Heartbeat` — periodic liveness + self-reported metrics (samples collected/sent/dropped, buffer size, own CPU/memory).
 
-message ContainerMetric {
-  string pod_namespace = 1;
-  string pod_name = 2;
-  string container_name = 3;
-  int64 cpu_usage_nanocores = 4;
-  int64 memory_working_set_bytes = 5;
-  int64 network_rx_bytes = 6;
-  int64 network_tx_bytes = 7;
-  int64 fs_usage_bytes = 8;
-  int64 cpu_throttled_time_ns = 9;
-}
+Authentication: ServiceAccount token validated by the backend via `TokenReview` against the origin cluster's Kube API (cached 5 min). TLS mandatory. Full proto schema in `internal/kubebolt-agent-technical-spec.md` §5.
 
-message NodeResourceMetric {
-  int64 cpu_usage_nanocores = 1;
-  int64 memory_usage_bytes = 2;
-  int64 fs_usage_bytes = 3;
-  int64 fs_capacity_bytes = 4;
-  int64 network_rx_bytes = 5;
-  int64 network_tx_bytes = 6;
-}
-
-message StreamAck {
-  bool ok = 1;
-}
-```
-
-### 4.4 Agent RBAC
+### 4.5 Agent RBAC
 
 ```yaml
 apiVersion: rbac.authorization.k8s.io/v1
@@ -295,13 +282,27 @@ metadata:
   name: kubebolt-agent-reader
 rules:
   - apiGroups: [""]
-    resources: ["nodes/stats"]
+    resources: ["nodes/stats", "nodes/proxy", "nodes/metrics"]
     verbs: ["get"]
   - apiGroups: [""]
-    resources: ["nodes/proxy"]
-    verbs: ["get"]
+    resources: ["pods"]
+    verbs: ["list", "watch"]   # fallback when kubelet /pods is unavailable
   # No write, no exec, no secret access
 ```
+
+### 4.6 MVP Implementation Plan
+
+Five sprints, ~8-10 weeks calendar for one full-time engineer (compressible with two engineers in parallel):
+
+| Sprint | Scope | Duration |
+|--------|-------|----------|
+| **0** | Walking skeleton: VM in Docker Compose + gRPC server skeleton + agent sending one hardcoded metric end-to-end + minimal query endpoint | 1-2 weeks |
+| **1** | Real collectors: `kubelet_stats_summary`, `kubelet_pods`, `node_proc`, enrichment processor, ring buffer, backend write to VM | 2 weeks |
+| **2** | Production backend: TokenReview auth, agent registry (BoltDB), rate limiting, cardinality guard, metrics history query API, heartbeat alerting | 2 weeks |
+| **3** | Frontend charts: chart library integration, `<MetricChart>` component, Monitor tab with historical charts replacing SVG donuts, agent admin page | 2-3 weeks |
+| **4** | Packaging: Dockerfile distroless, Helm chart `kubebolt-agent`, multi-arch build (amd64 + arm64), install docs | 1-2 weeks |
+
+Post-MVP extensions (eBPF network flows, conntrack, process-level metrics, GPU observability, DNS observability, log tailing, CNI-specific collectors, CSI observability) are documented in technical spec §20 and are deferred to later phases.
 
 ---
 
@@ -1448,6 +1449,7 @@ The full specification is in `docs/kubebolt-distribution-spec.md`.
 | **Homebrew** | High | `brew install clm-cloud-solutions/tap/kubebolt`. Tap repository with formula pointing to GitHub Release binaries. Auto-updated on release via CI. |
 | **kubectl Plugin (krew)** | Medium | `kubectl krew install kubebolt` → `kubectl kubebolt`. Same binary renamed to `kubectl-kubebolt`. Krew manifest with platform-specific archives. Submit to official krew-index. |
 | **Kubernetes Operator** | Medium | `KubeBolt` CRD managed by a Kubebuilder operator. Declarative lifecycle: install, upgrade, config changes, self-healing. Manages Deployment, Service, RBAC, Ingress. Status tracking (Pending/Running/Upgrading/Failed). |
+| **MCP Server Surface** | High | Expose KubeBolt's tool executor as a Model Context Protocol server (stdio + HTTP/SSE transports). Reuses the existing Copilot tool layer so external MCP clients (Claude Desktop, Cursor, VSCode, etc.) can operate the cluster through KubeBolt. Differentiator vs. generic K8s MCP servers: our tools carry insights, topology edges, and permission-awareness, not just CRUD. Supports `--read-only` and `--disable-destructive` flags for safe AI operation. |
 | **Release Automation** | High | Extend CI to: build frontend → embed in binary → cross-compile 5 platforms → generate checksums → attach to GitHub Release → update Homebrew tap → package krew archives. |
 
 #### Implementation order
@@ -1476,6 +1478,9 @@ Phase 3 (dedicated effort):
 | **Historical TSDB** | High | VictoriaMetrics for time-series storage. Retention policies. Materialized rollups (1m, 5m, 1h). |
 | **Live traffic cluster map** | High | Cluster map edges show real traffic volume (line thickness), direction (animated dots), and health (green/yellow/red based on error rate). Data from agent conntrack. |
 | **Container-level metrics** | Medium | Per-container CPU, memory, network — not just pod-level aggregates. |
+| **Node kubelet logs** | Medium | Stream kubelet and system logs from nodes via Kubernetes API proxy (`/api/v1/nodes/{name}/proxy/logs/...`). Enables debugging node-level issues from the UI without SSH access. Exposed as backend endpoint and Copilot/MCP tool. |
+| **Node PSI stats** | Medium | Collect Pressure Stall Information (CPU / memory / IO pressure) via node `/stats/summary` endpoint. Feeds new insights rules (real memory pressure, IO contention) that Metrics Server alone cannot detect. |
+| **Ephemeral debug pod** | Medium | Launch a short-lived debug pod from an image with optional port exposure and auto-cleanup on disconnect. Wraps `kubectl debug` / `kubectl run` semantics for UI and Copilot-driven troubleshooting (e.g. `busybox`, `nicolaka/netshoot`). |
 
 ### Phase 2.1 — Service Mesh Integration & Advanced Observability
 
@@ -1483,10 +1488,36 @@ Phase 3 (dedicated effort):
 |---------|--------|-------------|
 | **Prometheus integration** | High | Remote write receiver for Prometheus compatibility. Read existing Prometheus data. |
 | **Istio/Linkerd metrics** | High | If service mesh present, read `istio_requests_total`, `istio_request_duration_milliseconds` etc. from Prometheus. Show HTTP status codes, gRPC codes, latency p50/p95/p99 on cluster map edges. Full Kiali-like traffic visualization. |
+| **Istio config CRUD** | Medium | List, view, create, patch, and delete Istio configuration objects (VirtualServices, DestinationRules, Gateways, PeerAuthentications, etc.) from the UI and via Copilot/MCP tools. |
+| **Distributed trace viewer** | Medium | List traces for a service (with error filtering) and drill into a single trace's call hierarchy. Data source: Tempo / Jaeger / OpenTelemetry collector via Prometheus or native query. |
+| **Mesh health dashboard** | Medium | Mesh status page: control plane + data plane health, sidecar injection coverage, proxy version drift. |
 | **Protocol-aware traffic lines** | High | Differentiate cluster map edges by protocol: HTTP/S (solid blue), gRPC (solid green), TCP (dashed gray), high error rate (pulsing red). Line thickness = request volume. |
+| **Kiali parity checklist** | Medium | Functional parity with the 10 Kiali MCP tools: mesh traffic graph, mesh status, Istio config read, Istio config write, resource details, trace list, trace details, pod performance (current vs requests/limits), pod logs with mesh annotations, Istio metrics (latency/throughput). Tracked as acceptance criteria for this phase. |
 | **Custom alert rules engine** | High | Threshold, anomaly, absence, composite rules on metrics/logs/events. |
 | **AI-powered insights** | High | Anomaly detection baselines per workload. Incident correlation and root cause analysis. |
 | **Cost analysis** | Medium | Right-sizing recommendations based on actual usage vs requests/limits. |
+
+### Phase 2.2 — Kubernetes Ecosystem Breadth
+
+Priority: high — closes the gap against ecosystem-focused tooling (notably `containers/kubernetes-mcp-server` and similar Red Hat-adjacent projects) by covering the Kubernetes-native stacks that appear in most production clusters. Without this phase, KubeBolt depth (insights, topology, permissions) is not matched by ecosystem breadth.
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Generic resources layer** | Critical | Accept arbitrary `apiVersion` / `kind` in list / get / create-or-update / delete / scale via the existing dynamic client. Unlocks every CRD in the cluster without code changes. Today the backend is bounded to the 22 probed resource types. |
+| **CRD-aware detail views** | High | Detect installed CRDs at connection time, discover their schema (OpenAPI v3 from the CRD spec), and render generic detail pages (Overview / YAML / Describe / Events) without per-kind code. Custom resource instances become first-class citizens alongside built-ins. |
+| **Helm integration** | High | Backend wrapper around the Helm Go SDK: `list` releases across namespaces, `install` from chart (repo, OCI, or local), `upgrade` with values diff, `rollback` to prior revision, `uninstall`, view computed values and release history. Exposed as UI pages, REST endpoints, Copilot tools, and MCP tools. |
+| **OpenShift Routes & Projects** | Medium | First-class support for OpenShift-specific kinds: Routes (with TLS termination details and hostname), Projects (namespaces + project metadata). Detected at connection time when the OpenShift API group is present — no-op on vanilla clusters. |
+| **Tekton Pipelines** | Medium | Manage Tekton CI/CD resources: list Pipelines / PipelineRuns / Tasks / TaskRuns, start a PipelineRun or TaskRun, restart with identical spec, stream TaskRun logs via child pod resolution. Gated on Tekton CRDs being present. |
+| **`configuration_view` tool** | Low | Sanitized kubeconfig dump (no tokens, no secrets) exposed as a read-only Copilot/MCP tool so the LLM can reason about context/cluster/server URL without guessing. |
+
+### Phase 2.3 — Extended Workload Types (opt-in)
+
+Priority: medium-low — covers specialized workload kinds that matter for specific customer segments but not for the majority of clusters. Delivered behind feature flags so they do not bloat the default experience.
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **KubeVirt VMs** | Medium | VirtualMachine lifecycle: list, view (VM + VMI), start / stop / restart, clone with a new name, create from instance type + storage class. Gated on KubeVirt CRDs. Unlocks virtualization-on-K8s segment. |
+| **KCP workspaces** | Low | Multi-tenant control plane support: list and describe kcp Workspaces. Deferred until clear customer demand — kcp adoption is still narrow. |
 
 ### Phase 3.0 — SaaS Platform
 
