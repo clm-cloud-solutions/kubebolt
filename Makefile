@@ -47,17 +47,51 @@ dev-web:
 # Prerequisite: `make dev` (or `make dev-api`) must be running on the host so
 # the agent has a backend to reach at host.docker.internal:9090.
 
-## Build the agent container image locally (tag: kubebolt-agent:dev).
-agent-image:
-	docker build -f packages/agent/Dockerfile -t kubebolt-agent:dev .
+# Timestamped tag ensures every build produces a unique image reference,
+# so kubelet never sees a cached :dev from a previous session.
+AGENT_TAG ?= dev-$(shell date +%s)
 
-## Apply the dev DaemonSet manifest and force a rollout to pick up the
-## latest locally-built image (imagePullPolicy: Never means K8s reuses
-## whatever :dev tag is already in the local Docker daemon).
+## Build the agent container image locally. Tags with both a timestamped
+## :dev-N reference (so each build is unique and forces a fresh pull by
+## the node's container runtime) and the sliding :dev pointer.
+agent-image:
+	docker build -f packages/agent/Dockerfile \
+		-t kubebolt-agent:$(AGENT_TAG) \
+		-t kubebolt-agent:dev .
+	@echo "Built kubebolt-agent:$(AGENT_TAG)"
+
+## Apply the dev DaemonSet manifest pinned to the most recent dev-*
+## timestamp tag in the local Docker image store. Auto-detects kind and
+## minikube contexts and loads the image into the cluster's runtime
+## (their containerd is separate from the host Docker daemon, so
+## imagePullPolicy: Never fails unless we stage the image explicitly).
 agent-deploy:
-	kubectl apply -f deploy/agent/kubebolt-agent-dev.yaml
-	@kubectl rollout restart ds/kubebolt-agent -n kubebolt-system 2>/dev/null || true
-	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=60s
+	@LATEST_TAG=$$(docker images kubebolt-agent --format '{{.Tag}}' | grep -E '^dev-[0-9]+$$' | sort -rn -t- -k2 | head -1); \
+		if [ -z "$$LATEST_TAG" ]; then \
+			echo "No kubebolt-agent:dev-N image found. Run 'make agent-image' first."; \
+			exit 1; \
+		fi; \
+		CTX=$$(kubectl config current-context 2>/dev/null); \
+		case "$$CTX" in \
+			kind-*) \
+				KIND_NAME="$${CTX#kind-}"; \
+				echo "kind context detected ($$KIND_NAME) — loading image into nodes..."; \
+				kind load docker-image kubebolt-agent:$$LATEST_TAG --name $$KIND_NAME || exit 1; \
+				;; \
+			minikube) \
+				echo "minikube context detected — loading image..."; \
+				minikube image load kubebolt-agent:$$LATEST_TAG || exit 1; \
+				;; \
+			docker-desktop) \
+				: ;; \
+			*) \
+				echo "Context '$$CTX' — assuming image is reachable (real cluster with registry, etc.)"; \
+				;; \
+		esac; \
+		echo "Deploying kubebolt-agent:$$LATEST_TAG"; \
+		sed "s|image: kubebolt-agent:dev$$|image: kubebolt-agent:$$LATEST_TAG|" \
+			deploy/agent/kubebolt-agent-dev.yaml | kubectl apply -f -
+	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=90s
 
 ## Follow logs from all agent pods.
 agent-logs:
@@ -69,6 +103,40 @@ agent-dev: agent-image agent-deploy agent-logs
 ## Tear down the dev DaemonSet (keeps the namespace).
 agent-undeploy:
 	kubectl delete -f deploy/agent/kubebolt-agent-dev.yaml --ignore-not-found
+
+# ─── Kind testbed ──────────────────────────────────────────────────────────
+#
+# For iterating on Monitor charts with real data. Installs metrics-server
+# (so the Metrics Server donut fallback keeps working) and a small workload
+# that generates continuous CPU / memory / network traffic.
+#
+# Not docker-desktop specific, but the patches below assume kind's
+# self-signed kubelet certs.
+
+## Install metrics-server with --kubelet-insecure-tls so it works on kind.
+kind-metrics-server:
+	kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+	@# The upstream manifest ships with strict TLS verification against kubelet;
+	@# kind's kubelet uses a self-signed cert, so patch the flag in.
+	kubectl patch deployment metrics-server -n kube-system --type='json' \
+		-p='[{"op": "add", "path": "/spec/template/spec/containers/0/args/-", "value": "--kubelet-insecure-tls"}]' || true
+	kubectl rollout status deployment/metrics-server -n kube-system --timeout=120s
+
+## Install the demo workload (nginx + loadgen + redis StatefulSet).
+kind-testbed: kind-metrics-server
+	kubectl apply -f deploy/test/demo-workload.yaml
+	kubectl rollout status deployment/demo-web -n demo --timeout=90s
+	kubectl rollout status deployment/demo-load -n demo --timeout=90s
+	kubectl rollout status statefulset/demo-cache -n demo --timeout=120s
+	@echo ""
+	@echo "Testbed up. Open the KubeBolt UI and check:"
+	@echo "  - Deployment 'demo-web' in namespace 'demo' (3 nginx replicas)"
+	@echo "  - StatefulSet 'demo-cache' in namespace 'demo' (2 redis replicas)"
+	@echo "  - Any pod of demo-web for per-pod charts"
+
+## Remove the demo workload (keeps metrics-server).
+kind-testbed-down:
+	kubectl delete -f deploy/test/demo-workload.yaml --ignore-not-found
 
 # ─── Setup ────────────────────────────────────────────────────
 
