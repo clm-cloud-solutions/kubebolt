@@ -47,14 +47,36 @@ func NewAggregator(vmURL string) *Aggregator {
 
 // Record increments the running counter for the pod pair this flow
 // represents. Flows without pod identity on both ends are dropped — they
-// describe host-to-host or world-to-host traffic that isn't useful for the
-// pod-level cluster map.
+// describe host-to-host or world-to-host traffic that isn't useful for
+// the pod-level cluster map.
+//
+// Hubble emits one flow event per packet observation, and a single TCP
+// conversation generates up to four events: egress + ingress perspectives
+// for both the request and the reply. We dedupe to one event per
+// conversation by keeping only the initiator's egress view:
+//
+//   - TrafficDirection == EGRESS  → observed leaving the sender, so we
+//     don't also count the same flow from the destination's ingress
+//     perspective (true even within a single node).
+//   - IsReply != true             → the response half of a connection is
+//     the same conversation in the opposite direction; counting it would
+//     make the cluster map show edges in both directions for every HTTP
+//     call, conflating "A called B" with "B responded to A".
+//
+// Dropped flows don't have a reply (by definition) so the is_reply filter
+// is a no-op for them. Direction filter still applies.
 func (a *Aggregator) Record(f *flowpb.Flow) {
 	src, dst := f.GetSource(), f.GetDestination()
 	if src == nil || dst == nil {
 		return
 	}
 	if src.GetPodName() == "" || dst.GetPodName() == "" {
+		return
+	}
+	if f.GetIsReply() != nil && f.GetIsReply().GetValue() {
+		return
+	}
+	if f.GetTrafficDirection() != flowpb.TrafficDirection_EGRESS {
 		return
 	}
 	key := flowKey{
