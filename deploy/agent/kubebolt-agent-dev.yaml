@@ -1,0 +1,106 @@
+# kubebolt-agent dev DaemonSet.
+#
+# Targeted at docker-desktop Kubernetes: the agent reaches the KubeBolt
+# backend (running via `make dev` on the host) through host.docker.internal.
+# For kind / minikube / real clusters, replace KUBEBOLT_BACKEND_URL with
+# whatever Service / hostname routes to the backend gRPC on :9090.
+#
+# Apply with: make agent-deploy
+# (or manually: kubectl apply -f deploy/agent/kubebolt-agent-dev.yaml)
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebolt-system
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebolt-agent
+  namespace: kubebolt-system
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebolt-agent-reader
+rules:
+  # Read-only access to kubelet stats via the apiserver proxy.
+  - apiGroups: [""]
+    resources: ["nodes/stats", "nodes/proxy", "nodes/metrics"]
+    verbs: ["get"]
+  # Pods are watched for metadata enrichment; falls back on this API if the
+  # local kubelet /pods endpoint is unreachable.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebolt-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebolt-agent-reader
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubebolt-agent
+  namespace: kubebolt-system
+  labels:
+    app: kubebolt-agent
+spec:
+  selector:
+    matchLabels:
+      app: kubebolt-agent
+  template:
+    metadata:
+      labels:
+        app: kubebolt-agent
+    spec:
+      serviceAccountName: kubebolt-agent
+      # Run on every node including control-plane (for single-node dev clusters).
+      tolerations:
+        - operator: Exists
+      containers:
+        - name: agent
+          image: kubebolt-agent:dev
+          # Use the image already loaded into the local Docker daemon; never
+          # try to pull from a registry. Rebuilt by `make agent-image`.
+          imagePullPolicy: Never
+          env:
+            - name: KUBEBOLT_AGENT_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Node IP tells the agent where to reach the local kubelet
+            # (https://$NODE_IP:10250/stats/summary + /pods).
+            - name: KUBEBOLT_AGENT_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: KUBEBOLT_BACKEND_URL
+              value: "host.docker.internal:9090"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 30Mi
+            limits:
+              cpu: 100m
+              memory: 80Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
