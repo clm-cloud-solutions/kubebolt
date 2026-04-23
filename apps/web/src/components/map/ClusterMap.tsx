@@ -12,7 +12,7 @@ import ReactFlow, {
   type EdgeTypes,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { LayoutGrid, GitBranch, Zap, ZapOff, RotateCcw, Radio, RadioTower } from 'lucide-react'
+import { LayoutGrid, GitBranch, Zap, ZapOff, RotateCcw } from 'lucide-react'
 import { useTopology } from '@/hooks/useTopology'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -309,7 +309,35 @@ function LegendItem({
 // Preferences live in localStorage and are keyed by feature name.
 const PREF_ANIMATIONS = 'kb-map-animations'
 const PREF_LAYOUT = 'kb-map-layout'
-const PREF_TRAFFIC = 'kb-map-traffic'
+const PREF_HIDDEN_EDGE_GROUPS = 'kb-map-hidden-edge-groups'
+
+// Edge categories group the many underlying edge types into user-visible
+// buckets. Each bucket has one toggle so the map isn't death by a
+// thousand filter checkboxes. If a new type lands in ConnectionEdge, it
+// must be added to one of these groups (or it defaults to "other").
+type EdgeGroupKey = 'ownership' | 'service' | 'config' | 'storage' | 'autoscale' | 'traffic'
+
+const EDGE_GROUPS: Array<{
+  key: EdgeGroupKey
+  label: string
+  description: string
+  types: string[]
+}> = [
+  { key: 'ownership', label: 'Ownership', description: 'Deployment → ReplicaSet → Pod, StatefulSet → Pod, Job → Pod', types: ['owns'] },
+  { key: 'service',   label: 'Service',   description: 'Service → Pod selectors, Ingress / Gateway → Service routes', types: ['selects', 'routes'] },
+  { key: 'config',    label: 'Config',    description: 'ConfigMap / Secret mounts, envFrom, image pulls',             types: ['mounts', 'envFrom', 'imagePull'] },
+  { key: 'storage',   label: 'Storage',   description: 'Volume usage, PVC ↔ PV bindings',                             types: ['uses', 'bound'] },
+  { key: 'autoscale', label: 'Autoscale', description: 'HPA → workload target',                                       types: ['hpa'] },
+  { key: 'traffic',   label: 'Traffic',   description: 'Live observed pod-to-pod flows (Hubble)',                     types: ['traffic'] },
+]
+
+const EDGE_TYPE_TO_GROUP: Record<string, EdgeGroupKey> = (() => {
+  const out: Record<string, EdgeGroupKey> = {}
+  for (const g of EDGE_GROUPS) {
+    for (const t of g.types) out[t] = g.key
+  }
+  return out
+})()
 
 function loadPref(key: string, fallback: string): string {
   try {
@@ -331,7 +359,12 @@ function ClusterMapInner() {
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => (loadPref(PREF_LAYOUT, 'flow') as LayoutMode))
   const [animationsEnabled, setAnimationsEnabled] = useState(() => loadPref(PREF_ANIMATIONS, 'on') !== 'off')
-  const [trafficEnabled, setTrafficEnabled] = useState(() => loadPref(PREF_TRAFFIC, 'on') !== 'off')
+  const [hiddenEdgeGroups, setHiddenEdgeGroups] = useState<Set<EdgeGroupKey>>(() => {
+    const raw = loadPref(PREF_HIDDEN_EDGE_GROUPS, '')
+    if (!raw) return new Set()
+    return new Set(raw.split(',').filter(Boolean) as EdgeGroupKey[])
+  })
+  const trafficEnabled = !hiddenEdgeGroups.has('traffic')
   const { data: flowData } = useFlowEdges({ enabled: trafficEnabled, windowMinutes: 5 })
   // Manual position overrides set by user drag. Keyed by node ID.
   // Cleared when switching layout mode or clicking Reset.
@@ -342,7 +375,16 @@ function ClusterMapInner() {
   // Persist preferences on change
   useEffect(() => { savePref(PREF_LAYOUT, layoutMode) }, [layoutMode])
   useEffect(() => { savePref(PREF_ANIMATIONS, animationsEnabled ? 'on' : 'off') }, [animationsEnabled])
-  useEffect(() => { savePref(PREF_TRAFFIC, trafficEnabled ? 'on' : 'off') }, [trafficEnabled])
+  useEffect(() => { savePref(PREF_HIDDEN_EDGE_GROUPS, Array.from(hiddenEdgeGroups).join(',')) }, [hiddenEdgeGroups])
+
+  const toggleEdgeGroup = useCallback((key: EdgeGroupKey) => {
+    setHiddenEdgeGroups(prev => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
 
   // Reset manual positions whenever the layout mode changes — the new layout
   // picks completely different coordinates so old overrides wouldn't make sense.
@@ -450,6 +492,13 @@ function ClusterMapInner() {
     }
     const structural: Edge[] = topology.edges
       .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
+      .filter((e) => {
+        const group = EDGE_TYPE_TO_GROUP[e.type]
+        // Unknown edge types are shown by default — less surprising when a
+        // new type ships than silently hiding it. Add it to EDGE_GROUPS to
+        // make it filterable.
+        return !group || !hiddenEdgeGroups.has(group)
+      })
       .map((e) => ({
         id: e.id, source: e.source, target: e.target,
         type: 'connection',
@@ -492,7 +541,7 @@ function ClusterMapInner() {
       })
     }
     return [...structural, ...traffic]
-  }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled, trafficEnabled, flowData])
+  }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled, trafficEnabled, hiddenEdgeGroups, flowData])
 
   // Refit the view when filters or layout change, but not on every drag.
   // We key off the computed layout (size + layout mode), not the live flowNodes
@@ -599,24 +648,43 @@ function ClusterMapInner() {
           </div>
         </div>
 
+        {/* Edge category filters */}
+        <div>
+          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">Edges</div>
+          <div className="flex flex-wrap gap-1">
+            {EDGE_GROUPS.map((g) => {
+              const visible = !hiddenEdgeGroups.has(g.key)
+              const isTraffic = g.key === 'traffic'
+              const count = isTraffic ? (flowData?.edges?.length ?? 0) : undefined
+              return (
+                <button
+                  key={g.key}
+                  onClick={() => toggleEdgeGroup(g.key)}
+                  title={g.description}
+                  className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-all ${
+                    visible
+                      ? isTraffic
+                        ? 'bg-status-ok-dim border-status-ok/40 text-status-ok'
+                        : 'bg-kb-elevated/60 border-kb-border text-kb-text-primary hover:border-kb-border-active'
+                      : 'border-kb-border/60 text-kb-text-tertiary opacity-50 hover:opacity-80'
+                  }`}
+                >
+                  {g.label}
+                  {isTraffic && count !== undefined && count > 0 && ` (${count})`}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
         {/* View Controls */}
         <div>
           <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">View</div>
           <div className="flex rounded-md border border-kb-border overflow-hidden">
             <button
-              onClick={() => setTrafficEnabled((v) => !v)}
-              title={trafficEnabled ? 'Hide live traffic edges' : 'Show live traffic edges (requires Hubble)'}
-              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors ${
-                trafficEnabled ? 'bg-status-ok-dim text-status-ok' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
-              }`}
-            >
-              {trafficEnabled ? <RadioTower className="w-3 h-3" /> : <Radio className="w-3 h-3" />}
-              Traffic{flowData?.edges?.length ? ` (${flowData.edges.length})` : ''}
-            </button>
-            <button
               onClick={() => setAnimationsEnabled((v) => !v)}
               title={animationsEnabled ? 'Disable animations (better performance)' : 'Enable animations'}
-              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border ${
+              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors ${
                 animationsEnabled ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
               }`}
             >
