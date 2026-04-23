@@ -13,7 +13,7 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
-import { MetricChart } from '@/components/shared/MetricChart'
+import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
 import { PortForwardButton, PortForwardNote } from './PortForwardButton'
@@ -1395,14 +1395,21 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         <MetricChart
           title="CPU by container"
           unit="cores"
-          query={`container_cpu_usage_cores{${selector}}`}
+          // sum by (container) collapses historical pod_uid instances
+          // (e.g. pod restarts) into one line per container. If the pod
+          // has never been recreated the query behaves identically.
+          query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
           referenceLines={cpuRefs}
+          accents={METRIC_ACCENTS.cpu}
+          chartType="area"
         />
         <MetricChart
           title="Memory working set by container"
           unit="bytes"
-          query={`container_memory_working_set_bytes{${selector}}`}
+          query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
           referenceLines={memRefs}
+          accents={METRIC_ACCENTS.memory}
+          chartType="area"
         />
       </div>
 
@@ -1410,9 +1417,11 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         title="Network traffic (RX up / TX down)"
         unit="bytes/s"
         queries={[
-          { query: `rate(pod_network_receive_bytes_total{${selector}}[1m])`, prefix: 'RX' },
-          { query: `rate(pod_network_transmit_bytes_total{${selector}}[1m])`, prefix: 'TX', negate: true },
+          { query: `sum by (interface) (rate(pod_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
+          { query: `sum by (interface) (rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
         ]}
+        accents={METRIC_ACCENTS.networkRxTx}
+        chartType="area"
         height={200}
       />
     </div>
@@ -1476,12 +1485,16 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
           unit="cores"
           query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
           referenceLines={cpuRefs}
+          accents={METRIC_ACCENTS.cpu}
+          chartType="area"
         />
         <MetricChart
           title={`Memory working set by container (sum across ${replicaLabel})`}
           unit="bytes"
           query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
           referenceLines={memRefs}
+          accents={METRIC_ACCENTS.memory}
+          chartType="area"
         />
       </div>
 
@@ -1493,6 +1506,8 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
           { query: `sum(rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
         ]}
         seriesLabel={(_labels, prefix) => prefix ?? 'total'}
+        accents={METRIC_ACCENTS.networkRxTx}
+        chartType="area"
         height={200}
       />
     </div>
@@ -1553,17 +1568,23 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           unit="cores"
           query={`node_cpu_usage_cores{${selector}}`}
           referenceLines={cpuRefs}
+          accents={METRIC_ACCENTS.cpu}
+          chartType="area"
         />
         <MetricChart
           title="Memory working set"
           unit="bytes"
           query={`node_memory_working_set_bytes{${selector}}`}
           referenceLines={memRefs}
+          accents={METRIC_ACCENTS.memory}
+          chartType="area"
         />
         <MetricChart
           title="Filesystem used"
           unit="bytes"
           query={`node_fs_used_bytes{${selector}}`}
+          accents={METRIC_ACCENTS.filesystem}
+          chartType="area"
         />
         <MetricChart
           title="Network traffic (RX up / TX down)"
@@ -1573,6 +1594,8 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
             { query: `sum(rate(node_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
           ]}
           seriesLabel={(_labels, prefix) => prefix ?? 'total'}
+          accents={METRIC_ACCENTS.networkRxTx}
+          chartType="area"
         />
       </div>
     </div>
@@ -1581,15 +1604,35 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
 
 // ─── Helpers ────────────────────────────────────────────────────────────
 
-function buildCpuRefs(request: number | null, limit: number | null) {
-  const refs: { y: number; label: string; color?: string }[] = []
+type RefSpec = { y: number; label: string; color?: string; shortLabel?: string }
+
+function buildCpuRefs(request: number | null, limit: number | null): RefSpec[] {
+  // When request === limit (common for guaranteed QoS pods), the two lines
+  // overlap and their labels collide. Render them as one combined line.
+  if (request != null && limit != null && Math.abs(request - limit) < 1e-9) {
+    return [{
+      y: limit,
+      label: `request / limit ${(limit * 1000).toFixed(0)}m`,
+      color: '#ef4444',
+      shortLabel: 'req/limit',
+    }]
+  }
+  const refs: RefSpec[] = []
   if (request != null) refs.push({ y: request, label: `request ${(request * 1000).toFixed(0)}m` })
   if (limit != null) refs.push({ y: limit, label: `limit ${(limit * 1000).toFixed(0)}m`, color: '#ef4444' })
   return refs
 }
 
-function buildMemRefs(request: number | null, limit: number | null) {
-  const refs: { y: number; label: string; color?: string }[] = []
+function buildMemRefs(request: number | null, limit: number | null): RefSpec[] {
+  if (request != null && limit != null && request === limit) {
+    return [{
+      y: limit,
+      label: `request / limit ${formatMemoryShort(limit)}`,
+      color: '#ef4444',
+      shortLabel: 'req/limit',
+    }]
+  }
+  const refs: RefSpec[] = []
   if (request != null) refs.push({ y: request, label: `request ${formatMemoryShort(request)}` })
   if (limit != null) refs.push({ y: limit, label: `limit ${formatMemoryShort(limit)}`, color: '#ef4444' })
   return refs
