@@ -363,6 +363,30 @@ export const api = {
         step: params.step,
       })}`
     ),
+
+  // Flow edges (Phase 2.1, from pod_flow_events_total)
+  getFlowEdges: (params?: { namespace?: string; windowMinutes?: number }) =>
+    fetchJSON<FlowEdgesResponse>(
+      `${API_BASE}/flows/edges${buildQuery({
+        namespace: params?.namespace,
+        window: params?.windowMinutes,
+      })}`
+    ),
+}
+
+export interface FlowEdge {
+  srcNamespace: string
+  srcPod: string
+  dstNamespace: string
+  dstPod: string
+  verdict: string
+  ratePerSec: number
+}
+
+export interface FlowEdgesResponse {
+  edges: FlowEdge[]
+  windowMinutes: number
+  source: string
 }
 
 // Prometheus-compatible range query response (from VictoriaMetrics).

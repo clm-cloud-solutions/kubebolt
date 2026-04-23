@@ -48,7 +48,31 @@ function ConnectionEdgeComponent({
   data,
 }: EdgeProps) {
   const edgeType = (data?.edgeType as string) || ''
-  const cfg = EDGE_STYLES[edgeType] || DEFAULT_STYLE
+
+  // Traffic edges are a special case: width and particle count scale with
+  // the observed rate, and color swings on verdict ("forwarded" = emerald,
+  // anything else = rose) so drops pop without needing a separate path.
+  let cfg: EdgeStyle
+  if (edgeType === 'traffic') {
+    const rate = Math.max(0, Number(data?.ratePerSec ?? 0))
+    const verdict = String(data?.verdict ?? 'forwarded').toLowerCase()
+    const isForwarded = verdict === 'forwarded'
+    // log10 scaling: 1 rps -> 1.4px, 10 rps -> 2.2px, 100 rps -> 3px,
+    // caps around 4px so a hot service doesn't draw a black bar.
+    const width = Math.min(4, 1 + Math.log10(rate + 1) * 0.7)
+    const particles = Math.min(4, Math.max(1, Math.round(Math.log10(rate + 1) + 1)))
+    cfg = {
+      stroke: isForwarded ? '#10b981' : '#f43f5e',
+      width,
+      dashed: false,
+      particles,
+      particleSize: 2,
+      speed: Math.max(1.2, 3 - Math.log10(rate + 1) * 0.6),
+      glow: true,
+    }
+  } else {
+    cfg = EDGE_STYLES[edgeType] || DEFAULT_STYLE
+  }
 
   const sourceStatus = ((data?.sourceStatus as string) || '').toLowerCase()
   const targetStatus = ((data?.targetStatus as string) || '').toLowerCase()

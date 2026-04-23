@@ -87,6 +87,11 @@ func NewRouter(
 			r.Get("/metrics/query", h.handleMetricsQuery)
 			r.Get("/metrics/query_range", h.handleMetricsQueryRange)
 
+			// Traffic flow edges derived from pod_flow_events_total. Reads
+			// from the same TSDB. Empty response when Hubble / other
+			// traffic observability source hasn't produced any data yet.
+			r.Get("/flows/edges", h.handleFlowEdges)
+
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
