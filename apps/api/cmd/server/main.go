@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
@@ -349,12 +350,37 @@ func main() {
 		}
 	}()
 
+	// Start agent ingest gRPC server (Phase 2 walking skeleton).
+	// Listens on port 9090 and forwards samples to VictoriaMetrics.
+	agentCtx, agentCancel := context.WithCancel(context.Background())
+	defer agentCancel()
+
+	vmURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
+	if vmURL == "" {
+		vmURL = "http://localhost:8428"
+	}
+	agentAddr := os.Getenv("KUBEBOLT_AGENT_GRPC_ADDR")
+	if agentAddr == "" {
+		agentAddr = fmt.Sprintf("%s:9090", host)
+	}
+
+	writer := agent.NewVMWriter(vmURL)
+	ingestSrv := agent.NewServer(writer)
+
+	go func() {
+		if err := agent.Listen(agentCtx, agentAddr, ingestSrv); err != nil {
+			slog.Error("agent gRPC server error", slog.String("error", err.Error()))
+		}
+	}()
+
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	slog.Info("shutting down")
+
+	agentCancel()
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()

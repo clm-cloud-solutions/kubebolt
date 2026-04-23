@@ -1,7 +1,9 @@
 services:
   api:
     build: ../apps/api
-    ports: ["8080:8080"]
+    ports:
+      - "8080:8080"   # HTTP/REST + WebSocket
+      - "9090:9090"   # gRPC AgentIngest (Phase 2)
     volumes:
       - /tmp/docker-kubeconfig:/root/.kube/config:ro
       # AWS credentials are needed for EKS token generation (aws eks get-token).
@@ -9,12 +11,18 @@ services:
       - ~/.aws:/root/.aws:ro
       - kubebolt-data:/data
     extra_hosts: ["host.docker.internal:host-gateway"]
+    depends_on:
+      - victoriametrics
     environment:
       # Authentication — enabled by default. Set to false for open access (no login).
       - KUBEBOLT_AUTH_ENABLED=${KUBEBOLT_AUTH_ENABLED:-true}
       - KUBEBOLT_ADMIN_PASSWORD=${KUBEBOLT_ADMIN_PASSWORD:-}
       - KUBEBOLT_JWT_SECRET=${KUBEBOLT_JWT_SECRET:-}
       - KUBEBOLT_DATA_DIR=/data
+      # Metrics storage (Phase 2). Backend writes via Prom remote_write and
+      # queries via PromQL. VictoriaMetrics is the default; swap by pointing
+      # this URL at any Prom-compatible TSDB.
+      - KUBEBOLT_METRICS_STORAGE_URL=${KUBEBOLT_METRICS_STORAGE_URL:-http://victoriametrics:8428}
       # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
       # The copilot is disabled if no key is set; KubeBolt works fully without it.
       - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}
@@ -30,6 +38,17 @@ services:
     build: ../apps/web
     ports: ["3000:3000"]
     depends_on: [api]
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.101.0
+    ports: ["8428:8428"]
+    volumes:
+      - kubebolt-vm-data:/victoria-metrics-data
+    command:
+      - "--storageDataPath=/victoria-metrics-data"
+      - "--retentionPeriod=${KUBEBOLT_METRICS_RETENTION:-30d}"
+      - "--httpListenAddr=:8428"
+    restart: unless-stopped
 
 volumes:
   kubebolt-data:
+  kubebolt-vm-data:

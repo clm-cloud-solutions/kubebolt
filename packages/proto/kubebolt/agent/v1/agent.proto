@@ -1,0 +1,119 @@
+// Wire contract for the KubeBolt agent-to-backend ingest API.
+//
+// The full design context lives in internal/kubebolt-agent-technical-spec.md.
+// Breaking changes to this schema require bumping the package version
+// (v1 -> v2) and maintaining backward compatibility for at least one release.
+
+syntax = "proto3";
+
+package kubebolt.agent.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1;agentv1";
+
+// AgentIngest is exposed by the backend to receive telemetry from
+// kubebolt-agent DaemonSet instances.
+//
+// Authentication: every RPC carries the agent's Kubernetes ServiceAccount
+// token in the `authorization: Bearer <token>` gRPC metadata header. The
+// backend validates the token via TokenReview against the agent's origin
+// cluster and caches the result for 5 minutes.
+service AgentIngest {
+  // Register is the initial handshake. The agent reports node metadata and
+  // receives an agent_id plus the effective AgentConfig to apply.
+  rpc Register(RegisterRequest) returns (RegisterResponse);
+
+  // StreamMetrics is the continuous ingest stream. The agent pushes batches
+  // of samples; the backend acknowledges each batch and may embed a
+  // replacement AgentConfig in the ack for hot-reload of agent settings.
+  rpc StreamMetrics(stream MetricBatch) returns (stream IngestAck);
+
+  // Heartbeat is an independent liveness signal that carries the agent's
+  // self-reported health stats. Used by the backend to detect silent agent
+  // failures even when StreamMetrics appears active but produces no samples.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+// -- Register ----------------------------------------------------------------
+
+message RegisterRequest {
+  string node_name = 1;
+  string kernel_version = 2;
+  string container_runtime = 3;   // e.g. "containerd://1.7.20"
+  string cgroup_version = 4;      // "v1" or "v2"
+  string kubelet_version = 5;
+  string agent_version = 6;
+  string cluster_hint = 7;        // best-effort cluster identifier from the agent
+  map<string, string> labels = 8; // curated subset of node labels
+}
+
+message RegisterResponse {
+  string agent_id = 1;            // assigned by the backend, stable for the session
+  string cluster_id = 2;          // canonical cluster identifier
+  AgentConfig config = 3;
+}
+
+// AgentConfig carries the tunables the backend pushes to the agent.
+// Hot-reloadable fields: sample_interval_seconds, batch_size,
+// batch_flush_seconds, namespace_denylist, extra.
+// Fields that toggle collectors (collect_process_level, collect_conntrack)
+// take effect on agent restart.
+message AgentConfig {
+  uint32 sample_interval_seconds = 1;
+  uint32 batch_size = 2;
+  uint32 batch_flush_seconds = 3;
+  repeated string namespace_denylist = 4;
+  bool collect_process_level = 5;
+  bool collect_conntrack = 6;
+  map<string, string> extra = 7;
+}
+
+// -- StreamMetrics -----------------------------------------------------------
+
+message MetricBatch {
+  string agent_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  repeated Sample samples = 3;
+}
+
+message Sample {
+  google.protobuf.Timestamp timestamp = 1;
+  string metric_name = 2;
+  double value = 3;
+  map<string, string> labels = 4;
+  // Metric type (gauge/counter/histogram) is resolved server-side by
+  // metric_name lookup; it is not transmitted on the wire.
+}
+
+message IngestAck {
+  google.protobuf.Timestamp received_at = 1;
+  uint32 samples_accepted = 2;
+  uint32 samples_rejected = 3;
+  repeated string rejection_reasons = 4;  // e.g. "cardinality_limit_exceeded"
+  AgentConfig new_config = 5;             // optional hot-reload payload
+}
+
+// -- Heartbeat ---------------------------------------------------------------
+
+message HeartbeatRequest {
+  string agent_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  AgentHealthStats stats = 3;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp received_at = 1;
+  bool agent_should_reconnect = 2;  // backend asks the agent to reconnect
+}
+
+message AgentHealthStats {
+  uint64 samples_collected_total = 1;
+  uint64 samples_sent_total = 2;
+  uint64 samples_dropped_total = 3;
+  uint64 buffer_size_current = 4;
+  uint64 buffer_size_max = 5;
+  uint32 collection_errors_total = 6;
+  uint64 memory_bytes = 7;
+  double cpu_cores = 8;
+}
