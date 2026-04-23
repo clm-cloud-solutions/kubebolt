@@ -1477,7 +1477,7 @@ see "Traffic observability" below.
 | Feature | Impact | Description |
 |---------|--------|-------------|
 | **kubebolt-agent DaemonSet** | Critical | Lightweight agent per node. Single static binary, <50MB RAM, <0.05 CPU. Install: `kubectl apply -f`. |
-| **Network/Disk metrics** | High | Agent reads cAdvisor/kubelet for network I/O (bytes in/out per pod), disk/filesystem usage per container. Aggregate volume only — no peer identity; connection-level data is Phase 2.1. |
+| **Network/Disk metrics** | High | Agent reads kubelet `/stats/summary` (primary) and `/metrics/cadvisor` (fallback collector for kubelets that don't populate the pod-level network block — seen on docker-desktop) for network I/O per pod, disk/filesystem per container. Aggregate volume only — no peer identity; connection-level data is Phase 2.1. |
 | **gRPC streaming** | High | Agent streams metrics to backend every 15s. Reconnects automatically if backend unavailable. |
 | **Historical TSDB** | High | VictoriaMetrics for time-series storage. Retention policies. Materialized rollups (1m, 5m, 1h). |
 | **Container-level metrics** | Medium | Per-container CPU, memory, network — not just pod-level aggregates. |
@@ -1533,6 +1533,22 @@ from this unified data regardless of which source provided it.
 3. **Unified flow schema + cluster map rendering** — pulls 1 and 2 together; the cluster map feature is only useful once at least one source is landing data.
 4. **Agent conntrack collector** — universal fallback for clusters without mesh or Cilium. Opt-in privilege; documented trade-off. Implemented as an extension to the existing agent, see `internal/kubebolt-agent-technical-spec.md` §20.
 5. **Agent eBPF collector** — last, once the value of flows is proven and the cross-kernel complexity is justifiable. Same opt-in pattern.
+
+#### MVP state and open follow-ups
+
+What landed in the first Hubble-adapter cut (see commits `feat(flows)` and
+`feat(map): render live traffic edges`) versus the full Phase 2.1 vision:
+
+| Area | MVP state | Follow-up work |
+|------|-----------|----------------|
+| **Metric shape** | `pod_flow_events_total` — cumulative count of flow events per `(src_pod, dst_pod, verdict)`. Hubble is event-oriented and doesn't report bytes per flow natively. | Scrape Cilium's own Prometheus metrics (`cilium_forward_bytes_total`, etc.) to enrich edges with true byte rates. Emit `pod_flow_bytes_total` / `pod_flow_packets_total` alongside events. |
+| **Event dedup** | Aggregator filters `IsReply=true` and keeps only `TrafficDirection=EGRESS` so a single HTTP round trip contributes one counter bump instead of four (request + reply × ingress + egress perspectives). | No pending work — current behavior is correct. Document in the adapter source. |
+| **Source detection** | Manual env var: `KUBEBOLT_HUBBLE_RELAY_ADDR` + user-run `kubectl port-forward` when the backend is on the host. | Auto-detect the `hubble-relay` Service on cluster connect. When the backend is in-cluster, dial the Service DNS directly. When running on the host with a kubeconfig, open an in-process port-forward via client-go and use the local port automatically. Env var stays as an override for non-standard installs. |
+| **L7 enrichment** | L4 only (`src_pod`, `dst_pod`, `verdict`). L7 events arrive over the same Hubble stream when a `CiliumNetworkPolicy` with HTTP parsing is applied, but the adapter ignores them today. | Emit `pod_flow_requests_total{method, status}` and `pod_flow_latency_seconds_bucket` from L7 events. Cluster map edges light up with HTTP status color (2xx ok, 5xx red) and latency percentile. |
+| **Intent flows** | Edges reflect physical pod-to-pod connections. Services never appear in the path because Cilium's socket-level LB rewrites the destination before the packet leaves the emitter's socket, so Hubble's L3/L4 view never sees the Service IP. | Optional "Show intent flows" overlay on the cluster map that routes edges caller → Service → callee using either: (a) DNS lookups observed by Hubble, (b) HTTP Host headers when L7 is enabled, or (c) Cilium service-tracking metadata pre-rewrite. |
+| **Edge category filters** | Shipped in the cluster map: six per-group toggles (Ownership / Service / Config / Storage / Autoscale / Traffic) with localStorage persistence. | No pending work — UI primitive to reuse for other map-like views. |
+| **Multi-cluster Hubble** | Adapter is single-cluster; collector goroutine is started once on backend boot and tied to whatever context the kubeconfig points at. | On cluster switch, stop the active adapter and restart against the new cluster's Hubble Relay (if present). Keep per-cluster aggregators so flow counters don't mix. |
+| **Security (TLS / mTLS)** | Insecure gRPC to the relay; fine for port-forwarded dev and unencrypted in-cluster relays. | mTLS support for production Cilium installs that require it. Read the client cert / CA from a configurable Secret or the agent's existing mount. |
 
 ### Phase 2.2 — Kubernetes Ecosystem Breadth
 
