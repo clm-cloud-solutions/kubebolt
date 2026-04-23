@@ -80,7 +80,13 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error)
 			samples = append(samples, gauge("node_fs_capacity_bytes", float64(*v), nodeLabels, now))
 		}
 	}
-	for _, iface := range summary.Node.Network.Interfaces {
+	nodeIfaces := summary.Node.Network.Interfaces
+	if len(nodeIfaces) == 0 {
+		if fb, ok := summary.Node.Network.asFallbackInterface(); ok {
+			nodeIfaces = []netInterface{fb}
+		}
+	}
+	for _, iface := range nodeIfaces {
 		ifaceLabels := mergeLabels(nodeLabels, map[string]string{"interface": iface.Name})
 		if iface.RxBytes != nil {
 			samples = append(samples, counter("node_network_receive_bytes_total", float64(*iface.RxBytes), ifaceLabels, now))
@@ -129,8 +135,16 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error)
 			}
 		}
 
-		// Per-pod network is a sum of its network namespace interfaces.
-		for _, iface := range pod.Network.Interfaces {
+		// Per-pod network. Prefer the per-interface breakdown; fall back to
+		// the kubelet's top-level block when interfaces[] is empty (seen on
+		// docker-desktop at least).
+		podIfaces := pod.Network.Interfaces
+		if len(podIfaces) == 0 {
+			if fb, ok := pod.Network.asFallbackInterface(); ok {
+				podIfaces = []netInterface{fb}
+			}
+		}
+		for _, iface := range podIfaces {
 			ifaceLabels := mergeLabels(podLabels, map[string]string{"interface": iface.Name})
 			if iface.RxBytes != nil {
 				samples = append(samples, counter("pod_network_receive_bytes_total", float64(*iface.RxBytes), ifaceLabels, now))
@@ -217,7 +231,18 @@ type memoryStats struct {
 	MajorPageFaults *uint64   `json:"majorPageFaults"`
 }
 
+// networkStats matches the kubelet stats/summary shape. Besides the
+// per-interface breakdown, the block carries top-level fields for the
+// default interface (usually eth0). Some kubelets (notably docker-desktop
+// for pod-level stats) populate only the top-level fields and leave
+// interfaces[] empty — we treat that as a fallback so metrics land either
+// way.
 type networkStats struct {
+	Name       string         `json:"name"`
+	RxBytes    *uint64        `json:"rxBytes"`
+	RxErrors   *uint64        `json:"rxErrors"`
+	TxBytes    *uint64        `json:"txBytes"`
+	TxErrors   *uint64        `json:"txErrors"`
 	Interfaces []netInterface `json:"interfaces"`
 }
 
@@ -227,6 +252,25 @@ type netInterface struct {
 	RxErrors *uint64 `json:"rxErrors"`
 	TxBytes  *uint64 `json:"txBytes"`
 	TxErrors *uint64 `json:"txErrors"`
+}
+
+// asFallbackInterface projects the top-level network block into a single
+// "default" interface entry. Used when interfaces[] is empty.
+func (n networkStats) asFallbackInterface() (netInterface, bool) {
+	if n.RxBytes == nil && n.TxBytes == nil && n.RxErrors == nil && n.TxErrors == nil {
+		return netInterface{}, false
+	}
+	name := n.Name
+	if name == "" {
+		name = "eth0"
+	}
+	return netInterface{
+		Name:     name,
+		RxBytes:  n.RxBytes,
+		TxBytes:  n.TxBytes,
+		RxErrors: n.RxErrors,
+		TxErrors: n.TxErrors,
+	}, true
 }
 
 type fsStats struct {

@@ -24,9 +24,10 @@ import (
 	"github.com/kubebolt/kubebolt/packages/agent/internal/collector"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/shipper"
+	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
 )
 
-const agentVersion = "0.0.3-phaseB"
+const agentVersion = "0.0.5-cadvisor-nofilter"
 
 func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")
@@ -56,6 +57,7 @@ func main() {
 
 	pods := collector.NewPods(kc)
 	stats := collector.NewStats(kc, "local", *nodeName)
+	cadvisor := collector.NewCadvisor(kc, "local", *nodeName)
 	buf := buffer.New(*bufferSize)
 	ship := shipper.New(*backendURL, *nodeName, agentVersion, buf)
 
@@ -103,6 +105,25 @@ func main() {
 		}
 	}()
 
+	// cAdvisor network collector — runs on the same cadence as stats.
+	// Complements /stats/summary for kubelets that don't populate the
+	// pod-level network block (e.g. docker-desktop).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		collectAndBuffer(rootCtx, cadvisor, pods, buf)
+		tick := time.NewTicker(*statsInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-tick.C:
+				collectAndBuffer(rootCtx, cadvisor, pods, buf)
+			}
+		}
+	}()
+
 	// Shipper — reconnects internally on failure.
 	wg.Add(1)
 	go func() {
@@ -139,15 +160,25 @@ func main() {
 	slog.Info("agent stopped")
 }
 
-func collectAndBuffer(ctx context.Context, stats *collector.StatsCollector, pods *collector.PodsCache, buf *buffer.Ring) {
-	samples, err := stats.Collect(ctx)
+// Collector is the minimal interface satisfied by stats and cadvisor
+// collectors. Lets collectAndBuffer work with any source of samples.
+type Collector interface {
+	Name() string
+	Collect(ctx context.Context) ([]*agentv1.Sample, error)
+}
+
+func collectAndBuffer(ctx context.Context, c Collector, pods *collector.PodsCache, buf *buffer.Ring) {
+	samples, err := c.Collect(ctx)
 	if err != nil {
-		slog.Warn("stats collect failed", slog.String("error", err.Error()))
+		slog.Warn("collect failed", slog.String("collector", c.Name()), slog.String("error", err.Error()))
 		return
 	}
 	pods.Enrich(samples)
 	buf.Push(samples)
-	slog.Debug("samples collected", slog.Int("count", len(samples)))
+	// Info-level so the Phase B / Phase C bring-up is observable without
+	// flipping log level. Gets noisy on steady state; revisit when we have
+	// more than two collectors.
+	slog.Info("samples collected", slog.String("collector", c.Name()), slog.Int("count", len(samples)))
 }
 
 func parseLevel(s string) slog.Level {
