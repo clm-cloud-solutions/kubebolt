@@ -1,7 +1,8 @@
 import { useQueries } from '@tanstack/react-query'
 import {
-  AreaChart,
+  ComposedChart,
   Area,
+  Line,
   XAxis,
   YAxis,
   Tooltip,
@@ -33,6 +34,10 @@ interface ReferenceLineSpec {
   y: number
   label: string
   color?: string
+  // Optional override for the header toggle label. Defaults to the first
+  // space-separated word of `label`. Useful when the label has punctuation
+  // that doesn't make a clean toggle pill (e.g. "request / limit 100m").
+  shortLabel?: string
 }
 
 interface RangeOption {
@@ -63,6 +68,17 @@ interface MetricChartProps {
 
   height?: number
   showStats?: boolean
+
+  // Colors to use in order for each series. Falls back to DEFAULT_COLORS
+  // once exhausted. Use this to give each chart a distinctive accent
+  // (e.g. CPU amber, Memory blue) instead of everything defaulting to the
+  // brand green.
+  accents?: readonly string[]
+
+  // "line" draws only the stroke (lighter, used for CPU / RAM / Network).
+  // "area" draws stroke + gradient fill (used for volume-like metrics like
+  // Filesystem). Defaults to "area" for backward compatibility.
+  chartType?: 'line' | 'area'
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -76,15 +92,26 @@ const DEFAULT_RANGE_OPTIONS: RangeOption[] = [
 ]
 
 const DEFAULT_COLORS = [
-  'var(--kb-accent)',
-  '#22c55e',
-  '#f59e0b',
-  '#ef4444',
-  '#8b5cf6',
-  '#06b6d4',
-  '#ec4899',
-  '#84cc16',
+  '#22c55e', // green
+  '#3b82f6', // blue
+  '#a855f7', // violet
+  '#ef4444', // red
+  '#f97316', // orange
+  '#06b6d4', // cyan
+  '#ec4899', // pink
+  '#eab308', // yellow
 ]
+
+// Semantic palettes exported for call sites that want per-metric accents.
+// First color is used for single-series charts or as the "primary" in
+// multi-series. Remaining DEFAULT_COLORS are appended after to avoid
+// collisions when a chart has many containers.
+export const METRIC_ACCENTS = {
+  cpu: ['#22c55e'],                      // green
+  memory: ['#3b82f6'],                    // blue
+  filesystem: ['#a855f7'],                // violet
+  networkRxTx: ['#eab308', '#f97316'],   // yellow (RX), orange (TX) — warm family, visibly distinct
+} as const
 
 // ─── Formatting helpers ─────────────────────────────────────────────────────
 
@@ -150,6 +177,11 @@ interface ChartPoint {
 interface SeriesInfo {
   name: string
   color: string
+  // True when the query for this series had negate=true — the values are
+  // inverted so they render below the zero line. Used to flip the gradient
+  // direction so the fill is densest at the peak (away from zero), not
+  // near the baseline.
+  negated?: boolean
   current?: number
   min?: number
   max?: number
@@ -171,7 +203,12 @@ export function MetricChart({
   refetchMs = 15_000,
   height = 220,
   showStats = true,
+  accents,
+  chartType = 'area',
 }: MetricChartProps) {
+  const palette = accents && accents.length > 0
+    ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
+    : DEFAULT_COLORS
   const [rangeMinutes, setRangeMinutes] = useState(defaultRangeMinutes)
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const [hiddenRefs, setHiddenRefs] = useState<Set<string>>(new Set())
@@ -232,8 +269,8 @@ export function MetricChart({
           n++
           name = `${baseName} (${n})`
         }
-        const color = DEFAULT_COLORS[allSeries.length % DEFAULT_COLORS.length]
-        const info: SeriesInfo = { name, color }
+        const color = palette[allSeries.length % palette.length]
+        const info: SeriesInfo = { name, color, negated: !!spec?.negate }
 
         const seen: number[] = []
         s.values.forEach(([t, vStr]) => {
@@ -270,7 +307,8 @@ export function MetricChart({
     const sortedPoints = Array.from(pointsMap.values()).sort((a, b) => a.t - b.t)
 
     return { points: sortedPoints, series: allSeries, scale }
-  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents])
 
   const toggleSeries = (name: string) => {
     setHidden(prev => {
@@ -290,60 +328,62 @@ export function MetricChart({
         <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary">
           {title}
         </h4>
-        {hasData && (
-          <div className="flex items-center gap-3">
-            {referenceLines && referenceLines.length > 0 && (
-              <div className="flex items-center gap-1.5">
-                {referenceLines.map((rl) => {
-                  const shortLabel = rl.label.split(' ')[0]
-                  const visible = !hiddenRefs.has(rl.label)
-                  const color = rl.color ?? 'var(--kb-text-tertiary)'
-                  return (
-                    <button
-                      key={rl.label}
-                      onClick={() => toggleRef(rl.label)}
-                      className={`group flex items-center gap-1.5 px-2 py-1 rounded border text-[10px] font-mono transition-all ${
-                        visible
-                          ? 'border-kb-border bg-kb-elevated/40 text-kb-text-primary hover:border-kb-border-active'
-                          : 'border-kb-border text-kb-text-tertiary opacity-60 hover:opacity-100'
-                      }`}
-                      title={`${visible ? 'Hide' : 'Show'}: ${rl.label}`}
-                    >
-                      <span
-                        className="relative inline-block w-6 h-[1px]"
-                        style={{
-                          backgroundImage: visible
-                            ? `repeating-linear-gradient(to right, ${color} 0, ${color} 3px, transparent 3px, transparent 6px)`
-                            : 'repeating-linear-gradient(to right, var(--kb-border) 0, var(--kb-border) 3px, transparent 3px, transparent 6px)',
-                          height: '1.5px',
-                        }}
-                      />
-                      <span className="capitalize">{shortLabel}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            )}
-            <div className="flex items-center gap-1">
-              {rangeOptions.map(opt => {
-                const selected = opt.minutes === rangeMinutes
+        <div className="flex items-center gap-3">
+          {/* Ref toggles are only meaningful when series are actually rendering. */}
+          {hasData && referenceLines && referenceLines.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              {referenceLines.map((rl) => {
+                const shortLabel = rl.shortLabel ?? rl.label.split(' ')[0]
+                const visible = !hiddenRefs.has(rl.label)
+                const color = rl.color ?? 'var(--kb-text-tertiary)'
                 return (
                   <button
-                    key={opt.minutes}
-                    onClick={() => setRangeMinutes(opt.minutes)}
-                    className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
-                      selected
-                        ? 'bg-kb-accent/15 border-kb-accent/40 text-kb-text-primary'
-                        : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
+                    key={rl.label}
+                    onClick={() => toggleRef(rl.label)}
+                    className={`group flex items-center gap-1.5 px-2 py-1 rounded border text-[10px] font-mono transition-all ${
+                      visible
+                        ? 'border-kb-border bg-kb-elevated/40 text-kb-text-primary hover:border-kb-border-active'
+                        : 'border-kb-border text-kb-text-tertiary opacity-60 hover:opacity-100'
                     }`}
+                    title={`${visible ? 'Hide' : 'Show'}: ${rl.label}`}
                   >
-                    {opt.label}
+                    <span
+                      className="relative inline-block w-6 h-[1px]"
+                      style={{
+                        backgroundImage: visible
+                          ? `repeating-linear-gradient(to right, ${color} 0, ${color} 3px, transparent 3px, transparent 6px)`
+                          : 'repeating-linear-gradient(to right, var(--kb-border) 0, var(--kb-border) 3px, transparent 3px, transparent 6px)',
+                        height: '1.5px',
+                      }}
+                    />
+                    <span className="capitalize">{shortLabel}</span>
                   </button>
                 )
               })}
             </div>
+          )}
+          {/* Range selector is always visible — otherwise a wide-range
+              query that returns no data traps the user with no way back
+              to a working window. */}
+          <div className="flex items-center gap-1">
+            {rangeOptions.map(opt => {
+              const selected = opt.minutes === rangeMinutes
+              return (
+                <button
+                  key={opt.minutes}
+                  onClick={() => setRangeMinutes(opt.minutes)}
+                  className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
+                    selected
+                      ? 'bg-kb-accent/20 border-kb-accent text-kb-accent font-semibold'
+                      : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              )
+            })}
           </div>
-        )}
+        </div>
       </div>
 
       {isLoading && <LoadingSpinner size="sm" />}
@@ -357,8 +397,11 @@ export function MetricChart({
       )}
 
       {!isLoading && !error && !hasData && (
-        <div className="flex items-center justify-center py-8 text-xs text-kb-text-secondary">
-          No data yet — the agent may still be warming up
+        <div className="flex flex-col items-center justify-center py-8 gap-1 text-xs text-kb-text-secondary">
+          <span>No data in the selected range.</span>
+          <span className="text-[11px] text-kb-text-tertiary">
+            Try a narrower window — the pod may be younger than {active.label}, or the agent may still be warming up.
+          </span>
         </div>
       )}
 
@@ -366,15 +409,32 @@ export function MetricChart({
         <div className={`grid gap-3 ${showStats && series.length > 0 ? 'lg:grid-cols-[1fr_130px]' : 'grid-cols-1'}`}>
           <div style={{ height: `clamp(160px, 30vh, ${height}px)` }} className="w-full">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={points} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                <defs>
-                  {series.map((s, i) => (
-                    <linearGradient key={`g-${i}`} id={`${gradPrefix}-${i}`} x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor={s.color} stopOpacity={0.35} />
-                      <stop offset="100%" stopColor={s.color} stopOpacity={0.02} />
-                    </linearGradient>
-                  ))}
-                </defs>
+              <ComposedChart data={points} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
+                {chartType === 'area' && (
+                  <defs>
+                    {series.map((s, i) => (
+                      // Negated series render below the zero line; Recharts
+                      // applies the gradient top-to-bottom of the whole
+                      // chart, so reverse the stops to keep the fill
+                      // densest near the series peak (away from zero).
+                      <linearGradient key={`g-${i}`} id={`${gradPrefix}-${i}`} x1="0" y1="0" x2="0" y2="1">
+                        {s.negated ? (
+                          <>
+                            <stop offset="0%" stopColor={s.color} stopOpacity={0} />
+                            <stop offset="50%" stopColor={s.color} stopOpacity={0.1} />
+                            <stop offset="100%" stopColor={s.color} stopOpacity={0.3} />
+                          </>
+                        ) : (
+                          <>
+                            <stop offset="0%" stopColor={s.color} stopOpacity={0.3} />
+                            <stop offset="50%" stopColor={s.color} stopOpacity={0.1} />
+                            <stop offset="100%" stopColor={s.color} stopOpacity={0} />
+                          </>
+                        )}
+                      </linearGradient>
+                    ))}
+                  </defs>
+                )}
                 <CartesianGrid strokeDasharray="3 3" stroke="var(--kb-border)" opacity={0.25} />
                 <XAxis
                   dataKey="t"
@@ -434,6 +494,18 @@ export function MetricChart({
                     )
                   }}
                 />
+                {/* Zero divider for charts that have negated series
+                    (e.g. network RX up / TX down). Subtle so it frames the
+                    baseline without competing with the data. */}
+                {allQueries.some(q => q.negate) && (
+                  <ReferenceLine
+                    y={0}
+                    stroke="var(--kb-text-tertiary)"
+                    strokeWidth={1}
+                    strokeOpacity={0.35}
+                    ifOverflow="visible"
+                  />
+                )}
                 {effectiveRefs?.map((rl, i) => (
                   <ReferenceLine
                     key={`ref-${i}`}
@@ -450,22 +522,36 @@ export function MetricChart({
                     }}
                   />
                 ))}
-                {series.map((s, i) => (
-                  <Area
-                    key={s.name}
-                    type="monotone"
-                    dataKey={s.name}
-                    stroke={s.color}
-                    strokeWidth={1.5}
-                    fill={`url(#${gradPrefix}-${i})`}
-                    fillOpacity={1}
-                    dot={false}
-                    isAnimationActive={false}
-                    connectNulls
-                    hide={hidden.has(s.name)}
-                  />
-                ))}
-              </AreaChart>
+                {series.map((s, i) =>
+                  chartType === 'area' ? (
+                    <Area
+                      key={s.name}
+                      type="monotone"
+                      dataKey={s.name}
+                      stroke={s.color}
+                      strokeWidth={1.75}
+                      fill={`url(#${gradPrefix}-${i})`}
+                      fillOpacity={1}
+                      dot={false}
+                      isAnimationActive={false}
+                      connectNulls
+                      hide={hidden.has(s.name)}
+                    />
+                  ) : (
+                    <Line
+                      key={s.name}
+                      type="monotone"
+                      dataKey={s.name}
+                      stroke={s.color}
+                      strokeWidth={1.75}
+                      dot={false}
+                      isAnimationActive={false}
+                      connectNulls
+                      hide={hidden.has(s.name)}
+                    />
+                  ),
+                )}
+              </ComposedChart>
             </ResponsiveContainer>
           </div>
 
