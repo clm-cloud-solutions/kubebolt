@@ -90,14 +90,12 @@ export function SettingsPage() {
             </div>
             <h3 className="text-sm font-medium text-kb-text-primary mb-1">Install KubeBolt Agent</h3>
             <p className="text-xs text-kb-text-secondary mb-4 max-w-sm">
-              Unlock advanced monitoring: network traffic, real-time metrics, AI insights, and more.
+              Lightweight DaemonSet that ships per-container CPU, memory, network, and filesystem
+              time-series to KubeBolt. Enables historical charts on the Monitor tab.
             </p>
             <div className="bg-kb-bg rounded-md px-4 py-2.5 font-mono text-[11px] text-kb-text-secondary border border-kb-border select-all">
-              kubectl apply -f https://kubebolt.dev/install/agent.yaml
+              helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent
             </div>
-            <span className="text-[10px] font-mono text-kb-text-tertiary mt-2 uppercase tracking-[0.06em]">
-              Coming in Phase 2
-            </span>
           </div>
         </div>
       </div>
