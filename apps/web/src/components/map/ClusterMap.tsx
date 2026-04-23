@@ -77,6 +77,7 @@ const FLOW_COLUMNS: string[][] = [
   ['Deployment', 'StatefulSet', 'DaemonSet', 'CronJob'],
   ['ReplicaSet', 'Job'],
   ['Pod'],
+  ['ConfigMap', 'Secret'],
   ['HPA'],
   ['PersistentVolumeClaim'],
   ['PersistentVolume'],

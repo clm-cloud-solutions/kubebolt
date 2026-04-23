@@ -18,6 +18,28 @@ metadata:
   name: demo
 
 ---
+# Config + secret referenced by demo-web so the Config edge group has
+# something to draw on the cluster map.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-web-config
+  namespace: demo
+data:
+  greeting: "hello from configmap"
+  log_level: "info"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-web-secret
+  namespace: demo
+type: Opaque
+stringData:
+  api_token: "not-a-real-token"
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -44,6 +66,11 @@ spec:
           ports:
             - containerPort: 80
               name: http
+          envFrom:
+            - configMapRef:
+                name: demo-web-config
+            - secretRef:
+                name: demo-web-secret
           resources:
             requests:
               cpu: 50m

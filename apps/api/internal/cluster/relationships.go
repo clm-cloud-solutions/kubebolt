@@ -35,6 +35,20 @@ func (c *Connector) BuildEdges() []models.TopologyEdge {
 		})
 	}
 
+	// ensureRefNode adds a minimal TopologyNode for a resource referenced
+	// by an edge but not listed by the primary informers — ConfigMap and
+	// Secret today. Without this the edge would be dropped client-side
+	// because its target doesn't resolve to any node on the map. AddNode
+	// is idempotent so calling it repeatedly for the same ID is fine.
+	ensureRefNode := func(kind, namespace, name string) {
+		c.graph.AddNode(models.TopologyNode{
+			ID:        nodeID(kind, namespace, name),
+			Type:      kind,
+			Name:      name,
+			Namespace: namespace,
+		})
+	}
+
 	var pods []*corev1.Pod
 	if c.podLister != nil {
 		pods, _ = c.podLister.List(everythingSelector())
@@ -91,30 +105,70 @@ func (c *Connector) BuildEdges() []models.TopologyEdge {
 			}
 			// Pod -> ConfigMap via volumes
 			if vol.ConfigMap != nil {
+				ensureRefNode("ConfigMap", pod.Namespace, vol.ConfigMap.Name)
 				cmID := nodeID("ConfigMap", pod.Namespace, vol.ConfigMap.Name)
 				addEdge(podID, cmID, "mounts")
 			}
 			// Pod -> Secret via volumes
 			if vol.Secret != nil {
+				ensureRefNode("Secret", pod.Namespace, vol.Secret.SecretName)
 				secID := nodeID("Secret", pod.Namespace, vol.Secret.SecretName)
 				addEdge(podID, secID, "mounts")
 			}
+			// Pod -> ConfigMap/Secret via projected sources (K8s 1.24+ mounts the
+			// default ServiceAccount token + CA cert this way — a modern pod has
+			// no top-level vol.ConfigMap/vol.Secret at all).
+			if vol.Projected != nil {
+				for _, src := range vol.Projected.Sources {
+					if src.ConfigMap != nil {
+						ensureRefNode("ConfigMap", pod.Namespace, src.ConfigMap.Name)
+						cmID := nodeID("ConfigMap", pod.Namespace, src.ConfigMap.Name)
+						addEdge(podID, cmID, "mounts")
+					}
+					if src.Secret != nil {
+						ensureRefNode("Secret", pod.Namespace, src.Secret.Name)
+						secID := nodeID("Secret", pod.Namespace, src.Secret.Name)
+						addEdge(podID, secID, "mounts")
+					}
+				}
+			}
 		}
-		// Pod -> ConfigMap/Secret via envFrom
+		// Pod -> ConfigMap/Secret via envFrom (whole-resource import) and
+		// env[].valueFrom (single-key import). Both patterns are common in
+		// the wild; we treat them the same kind of edge since the
+		// distinction rarely matters on a cluster map.
 		for _, container := range pod.Spec.Containers {
 			for _, envFrom := range container.EnvFrom {
 				if envFrom.ConfigMapRef != nil {
+					ensureRefNode("ConfigMap", pod.Namespace, envFrom.ConfigMapRef.Name)
 					cmID := nodeID("ConfigMap", pod.Namespace, envFrom.ConfigMapRef.Name)
 					addEdge(podID, cmID, "envFrom")
 				}
 				if envFrom.SecretRef != nil {
+					ensureRefNode("Secret", pod.Namespace, envFrom.SecretRef.Name)
 					secID := nodeID("Secret", pod.Namespace, envFrom.SecretRef.Name)
+					addEdge(podID, secID, "envFrom")
+				}
+			}
+			for _, env := range container.Env {
+				if env.ValueFrom == nil {
+					continue
+				}
+				if env.ValueFrom.ConfigMapKeyRef != nil {
+					ensureRefNode("ConfigMap", pod.Namespace, env.ValueFrom.ConfigMapKeyRef.Name)
+					cmID := nodeID("ConfigMap", pod.Namespace, env.ValueFrom.ConfigMapKeyRef.Name)
+					addEdge(podID, cmID, "envFrom")
+				}
+				if env.ValueFrom.SecretKeyRef != nil {
+					ensureRefNode("Secret", pod.Namespace, env.ValueFrom.SecretKeyRef.Name)
+					secID := nodeID("Secret", pod.Namespace, env.ValueFrom.SecretKeyRef.Name)
 					addEdge(podID, secID, "envFrom")
 				}
 			}
 		}
 		// Pod -> Secret via imagePullSecrets
 		for _, ips := range pod.Spec.ImagePullSecrets {
+			ensureRefNode("Secret", pod.Namespace, ips.Name)
 			secID := nodeID("Secret", pod.Namespace, ips.Name)
 			addEdge(podID, secID, "imagePull")
 		}
