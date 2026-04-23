@@ -13,6 +13,7 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
+import { MetricChart } from '@/components/shared/MetricChart'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
 import { PortForwardButton, PortForwardNote } from './PortForwardButton'
@@ -1325,7 +1326,141 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
 
 // ─── Monitor Tab ─────────────────────────────────────────────────
 
-function MonitorTab({ item }: { item: ResourceItem }) {
+function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
+  // Pods get the new historical-charts treatment (Sprint 3 Option B).
+  // Other kinds still use the Metrics Server donut fallback until we expand
+  // coverage in a later iteration.
+  if (type === 'pods') {
+    return <PodMonitorCharts item={item} />
+  }
+
+  return <MonitorDonuts item={item} />
+}
+
+const MONITOR_BANNER_DISMISSED_KEY = 'kb-monitor-banner-dismissed'
+
+function PodMonitorCharts({ item }: { item: ResourceItem }) {
+  const ns = String(item.namespace)
+  const name = String(item.name)
+  // Both labels are emitted by the agent's stats collector on every sample.
+  // Filtering by namespace+name (rather than UID) keeps the chart continuous
+  // across pod recreations with the same name — useful for debugging.
+  const selector = `pod_namespace="${ns}",pod_name="${name}"`
+
+  const sums = podResourceSums(item)
+
+  const [bannerDismissed, setBannerDismissed] = useState(
+    () => typeof window !== 'undefined' && window.localStorage.getItem(MONITOR_BANNER_DISMISSED_KEY) === 'true',
+  )
+  const dismissBanner = () => {
+    try {
+      window.localStorage.setItem(MONITOR_BANNER_DISMISSED_KEY, 'true')
+    } catch {
+      // Ignore storage errors (private mode, quota, etc.) — UI still dismisses.
+    }
+    setBannerDismissed(true)
+  }
+
+  const cpuRefs: { y: number; label: string; color?: string }[] = []
+  if (sums.cpuRequest != null) cpuRefs.push({ y: sums.cpuRequest, label: `request ${(sums.cpuRequest * 1000).toFixed(0)}m` })
+  if (sums.cpuLimit != null) cpuRefs.push({ y: sums.cpuLimit, label: `limit ${(sums.cpuLimit * 1000).toFixed(0)}m`, color: '#ef4444' })
+
+  const memRefs: { y: number; label: string; color?: string }[] = []
+  if (sums.memoryRequest != null) memRefs.push({ y: sums.memoryRequest, label: `request ${formatMemoryShort(sums.memoryRequest)}` })
+  if (sums.memoryLimit != null) memRefs.push({ y: sums.memoryLimit, label: `limit ${formatMemoryShort(sums.memoryLimit)}`, color: '#ef4444' })
+
+  return (
+    <div className="space-y-4">
+      {!bannerDismissed && (
+        <div className="bg-kb-elevated border border-kb-border rounded-lg px-4 py-2 text-[11px] text-kb-text-secondary flex items-center gap-3">
+          <span className="flex-1">
+            Historical time-series from KubeBolt Agent (sampled every 15s). If the charts are empty, confirm the agent DaemonSet is running (<code>make agent-logs</code>).
+          </span>
+          <button
+            onClick={dismissBanner}
+            className="text-kb-text-tertiary hover:text-kb-text-primary transition-colors p-0.5 rounded hover:bg-kb-surface"
+            title="Dismiss"
+            aria-label="Dismiss banner"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MetricChart
+          title="CPU by container"
+          unit="cores"
+          query={`container_cpu_usage_cores{${selector}}`}
+          referenceLines={cpuRefs}
+        />
+        <MetricChart
+          title="Memory working set by container"
+          unit="bytes"
+          query={`container_memory_working_set_bytes{${selector}}`}
+          referenceLines={memRefs}
+        />
+      </div>
+
+      <MetricChart
+        title="Network traffic (RX up / TX down)"
+        unit="bytes/s"
+        queries={[
+          { query: `rate(pod_network_receive_bytes_total{${selector}}[1m])`, prefix: 'RX' },
+          { query: `rate(pod_network_transmit_bytes_total{${selector}}[1m])`, prefix: 'TX', negate: true },
+        ]}
+        height={200}
+      />
+    </div>
+  )
+}
+
+// podResourceSums aggregates requests/limits across all containers in the pod.
+// Returns null for any field that no container defined. CPU is returned in
+// cores (the backend exposes cpuRequest/cpuLimit as millicores).
+function podResourceSums(item: ResourceItem): {
+  cpuRequest: number | null
+  cpuLimit: number | null
+  memoryRequest: number | null
+  memoryLimit: number | null
+} {
+  const containers = Array.isArray(item.containers) ? (item.containers as Array<Record<string, unknown>>) : []
+  let cpuReq = 0, cpuLim = 0, memReq = 0, memLim = 0
+  let anyCpuReq = false, anyCpuLim = false, anyMemReq = false, anyMemLim = false
+
+  for (const c of containers) {
+    const r = c?.resources as Record<string, unknown> | undefined
+    if (!r) continue
+    const cpuR = typeof r.cpuRequest === 'number' ? r.cpuRequest : 0
+    const cpuL = typeof r.cpuLimit === 'number' ? r.cpuLimit : 0
+    const memR = typeof r.memoryRequest === 'number' ? r.memoryRequest : 0
+    const memL = typeof r.memoryLimit === 'number' ? r.memoryLimit : 0
+    if (cpuR > 0) { cpuReq += cpuR; anyCpuReq = true }
+    if (cpuL > 0) { cpuLim += cpuL; anyCpuLim = true }
+    if (memR > 0) { memReq += memR; anyMemReq = true }
+    if (memL > 0) { memLim += memL; anyMemLim = true }
+  }
+
+  return {
+    cpuRequest: anyCpuReq ? cpuReq / 1000 : null,
+    cpuLimit: anyCpuLim ? cpuLim / 1000 : null,
+    memoryRequest: anyMemReq ? memReq : null,
+    memoryLimit: anyMemLim ? memLim : null,
+  }
+}
+
+function formatMemoryShort(bytes: number): string {
+  const abs = Math.abs(bytes)
+  if (abs < 1024) return `${bytes} B`
+  if (abs < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KiB`
+  if (abs < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(0)} MiB`
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`
+}
+
+function MonitorDonuts({ item }: { item: ResourceItem }) {
   const cpuUsage = Number(item.cpuUsage ?? 0)
   const cpuPercent = Number(item.cpuPercent ?? 0)
   const memUsage = Number(item.memoryUsage ?? 0)
@@ -1342,7 +1477,7 @@ function MonitorTab({ item }: { item: ResourceItem }) {
   return (
     <div className="space-y-4">
       <div className="bg-status-warn-dim border border-status-warn/20 rounded-lg px-4 py-2 text-[11px] text-status-warn">
-        Current data is from metrics-server (point-in-time snapshot). Historical time-series requires KubeBolt Agent.
+        Current data is from metrics-server (point-in-time snapshot). Historical time-series for this resource type will land in a later iteration.
       </div>
 
       <div className="grid grid-cols-2 gap-4">
@@ -1898,7 +2033,7 @@ export function ResourceDetailPage() {
       case 'volumes': return <VolumesTab item={item!} />
       case 'related': return <RelatedTab type={type} item={item!} />
       case 'events': return <EventsTab type={type} namespace={namespace} name={name} />
-      case 'monitor': return <MonitorTab item={item!} />
+      case 'monitor': return <MonitorTab type={type} item={item!} />
       case 'deploy-pods': return <DeploymentPodsTab namespace={namespace} name={name} />
       case 'deploy-logs': return <DeploymentLogsTab namespace={namespace} name={name} />
       case 'sts-pods': return <StatefulSetPodsTab namespace={namespace} name={name} />

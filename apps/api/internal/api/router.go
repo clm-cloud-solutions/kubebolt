@@ -82,6 +82,11 @@ func NewRouter(
 			r.Get("/clusters", h.listClusters)
 			r.Post("/clusters/switch", h.switchCluster)
 
+			// Metrics storage (VictoriaMetrics) PromQL pass-through — no cluster
+			// connection required. Data is queried from the TSDB directly.
+			r.Get("/metrics/query", h.handleMetricsQuery)
+			r.Get("/metrics/query_range", h.handleMetricsQueryRange)
+
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))

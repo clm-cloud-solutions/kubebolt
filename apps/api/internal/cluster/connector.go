@@ -1885,6 +1885,7 @@ func podToMap(pod *corev1.Pod) map[string]interface{} {
 	return map[string]interface{}{
 		"name":            pod.Name,
 		"namespace":       pod.Namespace,
+		"uid":             string(pod.UID),
 		"status":          status,
 		"ready":           fmt.Sprintf("%d/%d", ready, total),
 		"restarts":        restarts,

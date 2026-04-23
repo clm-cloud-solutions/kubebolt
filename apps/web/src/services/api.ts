@@ -352,4 +352,29 @@ export const api = {
       proxyMode: boolean
       fallback?: { provider: string; model: string }
     }>(`${API_BASE}/copilot/config`),
+
+  // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
+  queryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>
+    fetchJSON<PromRangeResponse>(
+      `${API_BASE}/metrics/query_range${buildQuery({
+        query: params.query,
+        start: params.start,
+        end: params.end,
+        step: params.step,
+      })}`
+    ),
+}
+
+// Prometheus-compatible range query response (from VictoriaMetrics).
+export interface PromRangeResponse {
+  status: 'success' | 'error'
+  data?: {
+    resultType: 'matrix' | 'vector' | 'scalar' | 'string'
+    result: Array<{
+      metric: Record<string, string>
+      values: Array<[number, string]> // [unix_seconds, value_as_string]
+    }>
+  }
+  error?: string
+  errorType?: string
 }
