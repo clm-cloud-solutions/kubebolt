@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>KubeBolt — Instant Kubernetes Monitoring & Management</title>
-<meta name="description" content="Open-source Kubernetes monitoring platform. Full cluster visibility in under 2 minutes. No agents, no Prometheus. 23 resource views, AI copilot, cluster topology map, built-in authentication.">
+<meta name="description" content="Open-source Kubernetes monitoring platform. Full cluster visibility in under 2 minutes. No agents, no Prometheus. 23 resource views, AI copilot with cost analytics, cluster topology map, multi-channel notifications, built-in authentication.">
 <meta property="og:title" content="KubeBolt — Instant Kubernetes Monitoring & Management">
 <meta property="og:description" content="Full cluster visibility in under 2 minutes. Open source, MIT licensed.">
 <meta property="og:image" content="https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-dashboard.webp">
@@ -242,6 +242,8 @@ footer a{color:var(--text-3);transition:color .2s}footer a:hover{color:var(--tex
     <a href="#install" class="nav-a">Install</a>
     <a href="#auth" class="nav-a">Auth</a>
     <a href="#copilot" class="nav-a">AI Copilot</a>
+    <a href="#admin" class="nav-a">Admin</a>
+    <a href="#notifications" class="nav-a">Notifications</a>
     <a href="docs.html" class="nav-a">Docs</a>
     <a href="https://github.com/clm-cloud-solutions/kubebolt" class="nav-a" target="_blank">GitHub</a>
     <a href="#install" class="btn btn-em btn-sm" style="margin-left:8px">Get Started</a>
@@ -276,7 +278,7 @@ footer a{color:var(--text-3);transition:color .2s}footer a:hover{color:var(--tex
       <div class="mc"><div class="v">&lt;3s</div><div class="l">Startup</div></div>
       <div class="mc"><div class="v">23</div><div class="l">Views</div></div>
       <div class="mc"><div class="v">12</div><div class="l">Rules</div></div>
-      <div class="mc"><div class="v">16</div><div class="l">AI Tools</div></div>
+      <div class="mc"><div class="v">17</div><div class="l">AI Tools</div></div>
     </div>
   </div>
 </section>
@@ -389,7 +391,7 @@ kubectl kubebolt</span></pre></div></div>
 <section id="copilot" class="sec-matte" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
   <span class="hero-flare" style="top:-8%;right:20%;width:350px;height:250px;background:radial-gradient(ellipse 70% 60%,oklch(0.72 0.25 155/0.25),transparent 75%);animation-delay:0.3s;animation-duration:6s"></span>
   <span class="hero-flare" style="bottom:-5%;left:10%;width:200px;height:150px;background:radial-gradient(ellipse,oklch(0.68 0.20 160/0.18),transparent 70%);animation-delay:1.8s;animation-duration:7s"></span>
-  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">AI Copilot</span><h2 class="heading">Talk to your cluster in natural language</h2><p class="sub">Press Cmd+J and ask anything. 16 native tools query your live cluster data. Multi-provider, BYO key, RBAC-aware.</p></div>
+  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">AI Copilot</span><h2 class="heading">Talk to your cluster in natural language</h2><p class="sub">Press Cmd+J and ask anything. 17 native tools query your live cluster data. Contextual "Ask Copilot" buttons on insights, resources and events. Auto-compact keeps long sessions usable. Multi-provider, BYO key, RBAC-aware.</p></div>
   <div class="cpd glass-card scroll-reveal">
     <div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between">
       <span style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--emerald)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg> KubeBolt Copilot</span>
@@ -415,10 +417,42 @@ kubectl kubebolt</span></pre></div></div>
       </div>
     </div>
   </div>
-  <div class="scroll-reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:28px;max-width:620px;margin-left:auto;margin-right:auto">
-    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">16 Tools</div><div style="font-size:11px;color:var(--text-3)">Live cluster queries</div></div>
+  <div class="scroll-reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px;margin-top:28px;max-width:960px;margin-left:auto;margin-right:auto">
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">17 Tools</div><div style="font-size:11px;color:var(--text-3)">Live cluster queries</div></div>
     <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">BYO Key</div><div style="font-size:11px;color:var(--text-3)">Claude &middot; GPT &middot; Ollama &middot; vLLM</div></div>
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">Auto-compact</div><div style="font-size:11px;color:var(--text-3)">Long sessions stay cheap</div></div>
+    <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">Ask Copilot</div><div style="font-size:11px;color:var(--text-3)">Contextual from insights &amp; resources</div></div>
     <div style="padding:14px;border-radius:10px;border:1px solid var(--border);background:var(--surface);text-align:center"><div style="font-size:14px;font-weight:600">Privacy-First</div><div style="font-size:11px;color:var(--text-3)">Secrets redacted &middot; RBAC-aware</div></div>
+  </div>
+</div></section>
+
+<!-- Admin & Observability -->
+<section id="admin" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">Admin</span><h2 class="heading">Know exactly what your Copilot costs</h2><p class="sub">Every chat session persists locally. Track tokens, cache hit rate and estimated USD by provider/model. 30-day retention in BoltDB. Zero telemetry, zero SaaS — the data stays with you.</p></div>
+  <div class="scroll-reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-top:28px">
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></div><h3>Usage analytics</h3><p>Sessions, tokens billed, cache hit rate, avg duration, compact events &mdash; drill down per session.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 000 7h5a3.5 3.5 0 010 7H6"/></svg></div><h3>Estimated cost (USD)</h3><p>Built-in pricing table for Anthropic and OpenAI. Approximate since BYOK, accurate enough to spot runaway spend.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg></div><h3>Tool breakdown</h3><p>Calls, tokens, error rates per tool. Catch tools that return too much or fail too often.</p></div>
+    <div class="feat-card"><div class="icon-wrap"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 9h6v6H9z"/></svg></div><h3>Scissors &amp; compact</h3><p>Manual "new session with summary" one click away, plus automatic compaction at 80% of the context budget.</p></div>
+  </div>
+</div></section>
+
+<!-- Notifications -->
+<section id="notifications" class="sec-elevated" style="position:relative;overflow:hidden"><div class="container" style="position:relative;z-index:1">
+  <div class="center scroll-reveal" style="margin-bottom:8px"><span class="label">Notifications</span><h2 class="heading">Alerts where your team already is</h2><p class="sub">Slack, Discord and email channels for insight alerts. Global master toggle for maintenance windows, base URL for deep links back to KubeBolt, resolved-insight alerts, and email digest modes (instant / hourly / daily).</p></div>
+  <div class="scroll-reveal" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:14px;margin-top:28px">
+    <div style="padding:18px;border-radius:12px;border:1px solid var(--border);background:var(--surface)">
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Slack &middot; Discord</div>
+      <div style="font-size:12px;color:var(--text-3);line-height:1.6">Rich webhook messages with severity colour-coding and deep-link buttons back to the resource.</div>
+    </div>
+    <div style="padding:18px;border-radius:12px;border:1px solid var(--border);background:var(--surface)">
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Email with digest</div>
+      <div style="font-size:12px;color:var(--text-3);line-height:1.6">SMTP delivery with three modes: instant for criticals, hourly or daily digests to keep noise low.</div>
+    </div>
+    <div style="padding:18px;border-radius:12px;border:1px solid var(--border);background:var(--surface)">
+      <div style="font-size:14px;font-weight:600;margin-bottom:4px">Global controls</div>
+      <div style="font-size:12px;color:var(--text-3);line-height:1.6">Master enable, min severity threshold, dedup cooldown, resolved-insight notifications. All from env vars or the admin UI.</div>
+    </div>
   </div>
 </div></section>
 

@@ -235,11 +235,26 @@ Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on p
 
 ### AI Copilot (Optional)
 - **In-app chat (Cmd+J)** — Ask questions about your cluster, troubleshoot issues, explain insights
-- **16 cluster tools** — The copilot can fetch resource details, logs, events, topology, history, and more
-- **Multi-provider** — Works with Anthropic Claude, OpenAI, Groq, OpenRouter, Azure OpenAI, DeepSeek, Mistral, or self-hosted models (Ollama, vLLM, LM Studio)
+- **17 cluster tools** — Fetch resource details, logs (with grep + since), events, topology, history, kubectl describe, product docs, and more
+- **Contextual "Ask Copilot"** — One-click buttons on insights, resource detail pages (Pods, Deployments, StatefulSets, Services, Nodes) and every Warning event. Each button pre-loads a prompt with the relevant context.
+- **Conversation memory** — Auto-compact at 80% of the budget using the provider's cheap-tier model (Haiku 4.5 / gpt-4o-mini). Manual "new session with summary" via the Scissors button. Long sessions stay usable.
+- **Multi-provider** — Anthropic Claude, OpenAI (including GPT-5 with `max_completion_tokens`), Groq, OpenRouter, Azure OpenAI, DeepSeek, Mistral, or self-hosted (Ollama, vLLM, LM Studio). Prompt caching on both Anthropic and OpenAI.
 - **Fallback model** — Auto-retry with a secondary provider on rate limits or 5xx errors
 - **BYO API key** — KubeBolt has no managed AI service. You bring your own provider key. Disabled by default.
+- **Scope guardrail** — The system prompt keeps the assistant scoped to Kubernetes/DevOps/KubeBolt topics; out-of-scope questions get a polite refusal with a redirect.
+- **Product knowledge base** — `get_kubebolt_docs` tool answers how-to questions about KubeBolt features without hallucinating.
 - Setup: [docs/guides/copilot.md](docs/guides/copilot.md) · Provider reference: [docs/guides/copilot-providers.md](docs/guides/copilot-providers.md)
+
+### Notifications
+- **Slack & Discord webhooks** — Rich messages with severity colour-coding and deep-link buttons back to the resource
+- **Email (SMTP)** — Instant, hourly digest, or daily digest modes. Multiple recipients.
+- **Global settings** — Master toggle (maintenance windows), min severity threshold, dedup cooldown, base URL for deep links, resolved-insight alerts
+- Admin page at `/admin/notifications` with test-send buttons per channel
+
+### Admin analytics
+- **Copilot Usage page** — Sessions, tokens billed, cache hit rate, estimated USD cost by provider/model, top tools with error rates, per-session drill-down with tool breakdown and compact events
+- **BoltDB-backed** — 30-day / 5000-entry retention, shared with the auth database. Zero telemetry, zero SaaS.
+- Available at `/admin/copilot-usage` when authentication is enabled (Admin role only)
 
 ## Authentication
 
@@ -344,11 +359,10 @@ See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and ro
 - Install script (`curl get.kubebolt.dev | sh`) and Kubernetes Operator (pending custom domain setup)
 - OAuth2/OIDC authentication (GitHub, Google, Azure AD)
 - Teams and organizations
-- Animated cluster map with traffic visualization
-- Cluster management UI (add/remove/rename clusters)
-- Notifications (Slack, email) for insights alerts
-- Lightweight node agent for network/disk metrics
-- Live traffic visualization on cluster map
+- OTel-native lightweight node agent (<1% CPU, <50MB RAM) — fork of the OpenTelemetry Collector with KubeBolt analyzers. Exports in parallel to the customer's OTel backend.
+- Hierarchical AI agents (detectors → router → investigator → planner → executor → postmortem) with per-incident economy via tiered model selection
+- JSON-aware truncation in tool results (structure-aware rather than byte-aligned)
+- Live traffic visualization on cluster map (via the agent's connection tracking)
 
 ## License
 
