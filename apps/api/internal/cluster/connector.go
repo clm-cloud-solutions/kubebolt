@@ -1929,6 +1929,7 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"namespace":         d.Namespace,
 		"status":            deploymentStatus(d),
 		"replicas":          d.Status.Replicas,
+		"specReplicas":      int32PtrOrZero(d.Spec.Replicas),
 		"readyReplicas":     d.Status.ReadyReplicas,
 		"availableReplicas": d.Status.AvailableReplicas,
 		"updatedReplicas":   d.Status.UpdatedReplicas,
@@ -1940,6 +1941,7 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"age":               formatAge(d.CreationTimestamp.Time),
 		"ownerReferences":   ownerRefsToSlice(d.OwnerReferences),
 		"conditions":        deploymentConditionsToSlice(d.Status.Conditions),
+		"containers":        templateContainerSpecs(d.Spec.Template.Spec.Containers),
 	}
 }
 
@@ -2002,12 +2004,14 @@ func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
 		"namespace":       ss.Namespace,
 		"status":          fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
 		"replicas":        ss.Status.Replicas,
+		"specReplicas":    int32PtrOrZero(ss.Spec.Replicas),
 		"readyReplicas":   ss.Status.ReadyReplicas,
 		"labels":          safeLabels(ss.Labels),
 		"annotations":     safeAnnotations(ss.Annotations),
 		"createdAt":       ss.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":             formatAge(ss.CreationTimestamp.Time),
 		"ownerReferences": ownerRefsToSlice(ss.OwnerReferences),
+		"containers":      templateContainerSpecs(ss.Spec.Template.Spec.Containers),
 	}
 }
 
@@ -2017,6 +2021,7 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 		"namespace":       ds.Namespace,
 		"status":          fmt.Sprintf("%d/%d", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled),
 		"desired":         ds.Status.DesiredNumberScheduled,
+		"specReplicas":    ds.Status.DesiredNumberScheduled,
 		"ready":           ds.Status.NumberReady,
 		"numberAvailable": ds.Status.NumberAvailable,
 		"labels":          safeLabels(ds.Labels),
@@ -2024,6 +2029,7 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 		"createdAt":       ds.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":             formatAge(ds.CreationTimestamp.Time),
 		"ownerReferences": ownerRefsToSlice(ds.OwnerReferences),
+		"containers":      templateContainerSpecs(ds.Spec.Template.Spec.Containers),
 	}
 }
 
@@ -2383,6 +2389,33 @@ func containerResourcesToMap(r corev1.ResourceRequirements) map[string]interface
 		"memoryRequest": r.Requests.Memory().Value(),
 		"memoryLimit":   r.Limits.Memory().Value(),
 	}
+}
+
+// templateContainerSpecs turns a pod-template container list into the same
+// shape the frontend already knows from pod details (name, image, resources).
+// No status — templates don't have runtime state.
+func templateContainerSpecs(cs []corev1.Container) []map[string]interface{} {
+	if len(cs) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(cs))
+	for _, c := range cs {
+		out = append(out, map[string]interface{}{
+			"name":            c.Name,
+			"image":           c.Image,
+			"imagePullPolicy": string(c.ImagePullPolicy),
+			"resources":       containerResourcesToMap(c.Resources),
+			"ports":           c.Ports,
+		})
+	}
+	return out
+}
+
+func int32PtrOrZero(p *int32) int32 {
+	if p == nil {
+		return 0
+	}
+	return *p
 }
 
 // resourceTypeToGVR maps a resource type string to its GroupVersionResource.

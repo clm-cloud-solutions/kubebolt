@@ -1327,14 +1327,20 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
 // ─── Monitor Tab ─────────────────────────────────────────────────
 
 function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
-  // Pods get the new historical-charts treatment (Sprint 3 Option B).
-  // Other kinds still use the Metrics Server donut fallback until we expand
-  // coverage in a later iteration.
-  if (type === 'pods') {
-    return <PodMonitorCharts item={item} />
+  switch (type) {
+    case 'pods':
+      return <PodMonitorCharts item={item} />
+    case 'deployments':
+      return <DeploymentMonitorCharts item={item} />
+    case 'statefulsets':
+      return <StatefulSetMonitorCharts item={item} />
+    case 'daemonsets':
+      return <DaemonSetMonitorCharts item={item} />
+    case 'nodes':
+      return <NodeMonitorCharts item={item} />
+    default:
+      return <MonitorDonuts item={item} />
   }
-
-  return <MonitorDonuts item={item} />
 }
 
 const MONITOR_BANNER_DISMISSED_KEY = 'kb-monitor-banner-dismissed'
@@ -1361,13 +1367,8 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
     setBannerDismissed(true)
   }
 
-  const cpuRefs: { y: number; label: string; color?: string }[] = []
-  if (sums.cpuRequest != null) cpuRefs.push({ y: sums.cpuRequest, label: `request ${(sums.cpuRequest * 1000).toFixed(0)}m` })
-  if (sums.cpuLimit != null) cpuRefs.push({ y: sums.cpuLimit, label: `limit ${(sums.cpuLimit * 1000).toFixed(0)}m`, color: '#ef4444' })
-
-  const memRefs: { y: number; label: string; color?: string }[] = []
-  if (sums.memoryRequest != null) memRefs.push({ y: sums.memoryRequest, label: `request ${formatMemoryShort(sums.memoryRequest)}` })
-  if (sums.memoryLimit != null) memRefs.push({ y: sums.memoryLimit, label: `limit ${formatMemoryShort(sums.memoryLimit)}`, color: '#ef4444' })
+  const cpuRefs = buildCpuRefs(sums.cpuRequest, sums.cpuLimit)
+  const memRefs = buildMemRefs(sums.memoryRequest, sums.memoryLimit)
 
   return (
     <div className="space-y-4">
@@ -1416,6 +1417,189 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
       />
     </div>
   )
+}
+
+// ─── Workload Monitor Charts ─────────────────────────────────────────────
+// Shared by Deployment / StatefulSet / DaemonSet. Each wrapper below builds
+// the right PromQL selector and passes the replica count so reference lines
+// can be multiplied out to the workload-level budget.
+
+interface WorkloadChartsProps {
+  item: ResourceItem
+  selector: string
+  replicas: number
+  kindLabel: string // "Deployment", "StatefulSet", etc. — used in chart titles
+}
+
+function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: WorkloadChartsProps) {
+  const perPod = podResourceSums(item)
+  const mul = (v: number | null) => (v != null ? v * replicas : null)
+
+  const cpuRefs = buildCpuRefs(mul(perPod.cpuRequest), mul(perPod.cpuLimit))
+  const memRefs = buildMemRefs(mul(perPod.memoryRequest), mul(perPod.memoryLimit))
+
+  const [bannerDismissed, setBannerDismissed] = useState(
+    () => typeof window !== 'undefined' && window.localStorage.getItem(MONITOR_BANNER_DISMISSED_KEY) === 'true',
+  )
+  const dismissBanner = () => {
+    try { window.localStorage.setItem(MONITOR_BANNER_DISMISSED_KEY, 'true') } catch { /* ignore */ }
+    setBannerDismissed(true)
+  }
+
+  const replicaWord = kindLabel === 'DaemonSet' ? 'node' : 'replica'
+  const replicaLabel = `${replicas} ${replicaWord}${replicas !== 1 ? 's' : ''}`
+
+  return (
+    <div className="space-y-4">
+      {!bannerDismissed && (
+        <div className="bg-kb-elevated border border-kb-border rounded-lg px-4 py-2 text-[11px] text-kb-text-secondary flex items-center gap-3">
+          <span className="flex-1">
+            Historical time-series from KubeBolt Agent, aggregated across {replicaLabel}. Reference lines show the {kindLabel}-level request and limit budget (per-pod request × replicas).
+          </span>
+          <button
+            onClick={dismissBanner}
+            className="text-kb-text-tertiary hover:text-kb-text-primary transition-colors p-0.5 rounded hover:bg-kb-surface"
+            title="Dismiss"
+            aria-label="Dismiss banner"
+          >
+            <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MetricChart
+          title={`CPU by container (sum across ${replicaLabel})`}
+          unit="cores"
+          query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
+          referenceLines={cpuRefs}
+        />
+        <MetricChart
+          title={`Memory working set by container (sum across ${replicaLabel})`}
+          unit="bytes"
+          query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
+          referenceLines={memRefs}
+        />
+      </div>
+
+      <MetricChart
+        title={`Network traffic — total across ${replicaLabel} (RX up / TX down)`}
+        unit="bytes/s"
+        queries={[
+          { query: `sum(rate(pod_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
+          { query: `sum(rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+        ]}
+        seriesLabel={(_labels, prefix) => prefix ?? 'total'}
+        height={200}
+      />
+    </div>
+  )
+}
+
+function DeploymentMonitorCharts({ item }: { item: ResourceItem }) {
+  const ns = String(item.namespace)
+  const name = String(item.name)
+  const replicas = Math.max(1, Number(item.specReplicas ?? 1) || 1)
+  // Pods of a Deployment carry workload_kind=ReplicaSet with a name that is
+  // the deployment name plus a hash suffix (e.g. my-app-7b4d5f6c89). We match
+  // by prefix anchored at end to avoid overlap with sibling deployments that
+  // share a prefix.
+  const selector = `pod_namespace="${ns}",workload_kind="ReplicaSet",workload_name=~"${escapeRegex(name)}-[a-z0-9]+$"`
+  return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="Deployment" />
+}
+
+function StatefulSetMonitorCharts({ item }: { item: ResourceItem }) {
+  const ns = String(item.namespace)
+  const name = String(item.name)
+  const replicas = Math.max(1, Number(item.specReplicas ?? 1) || 1)
+  const selector = `pod_namespace="${ns}",workload_kind="StatefulSet",workload_name="${name}"`
+  return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="StatefulSet" />
+}
+
+function DaemonSetMonitorCharts({ item }: { item: ResourceItem }) {
+  const ns = String(item.namespace)
+  const name = String(item.name)
+  const replicas = Math.max(1, Number(item.specReplicas ?? 0) || 1)
+  const selector = `pod_namespace="${ns}",workload_kind="DaemonSet",workload_name="${name}"`
+  return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="DaemonSet" />
+}
+
+// ─── Node Monitor Charts ─────────────────────────────────────────────────
+
+function NodeMonitorCharts({ item }: { item: ResourceItem }) {
+  const name = String(item.name)
+  const selector = `node="${name}"`
+
+  // The node detail exposes total capacity (millicores + bytes). We surface
+  // it as a reference line so the chart conveys "how close are we to full".
+  const cpuCapacity = Number(item.cpuCapacity ?? 0) / 1000 // millicores → cores
+  const memCapacity = Number(item.memoryCapacity ?? 0)
+
+  const cpuRefs = cpuCapacity > 0
+    ? [{ y: cpuCapacity, label: `capacity ${cpuCapacity.toFixed(1)} cores`, color: '#ef4444' }]
+    : []
+  const memRefs = memCapacity > 0
+    ? [{ y: memCapacity, label: `capacity ${formatMemoryShort(memCapacity)}`, color: '#ef4444' }]
+    : []
+
+  return (
+    <div className="space-y-4">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MetricChart
+          title="CPU usage"
+          unit="cores"
+          query={`node_cpu_usage_cores{${selector}}`}
+          referenceLines={cpuRefs}
+        />
+        <MetricChart
+          title="Memory working set"
+          unit="bytes"
+          query={`node_memory_working_set_bytes{${selector}}`}
+          referenceLines={memRefs}
+        />
+        <MetricChart
+          title="Filesystem used"
+          unit="bytes"
+          query={`node_fs_used_bytes{${selector}}`}
+        />
+        <MetricChart
+          title="Network traffic (RX up / TX down)"
+          unit="bytes/s"
+          queries={[
+            { query: `sum(rate(node_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
+            { query: `sum(rate(node_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+          ]}
+          seriesLabel={(_labels, prefix) => prefix ?? 'total'}
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── Helpers ────────────────────────────────────────────────────────────
+
+function buildCpuRefs(request: number | null, limit: number | null) {
+  const refs: { y: number; label: string; color?: string }[] = []
+  if (request != null) refs.push({ y: request, label: `request ${(request * 1000).toFixed(0)}m` })
+  if (limit != null) refs.push({ y: limit, label: `limit ${(limit * 1000).toFixed(0)}m`, color: '#ef4444' })
+  return refs
+}
+
+function buildMemRefs(request: number | null, limit: number | null) {
+  const refs: { y: number; label: string; color?: string }[] = []
+  if (request != null) refs.push({ y: request, label: `request ${formatMemoryShort(request)}` })
+  if (limit != null) refs.push({ y: limit, label: `limit ${formatMemoryShort(limit)}`, color: '#ef4444' })
+  return refs
+}
+
+// escapeRegex quotes characters that are special in PromQL =~ matchers.
+// Resource names follow DNS-1123 (alphanumeric + dashes), but we still
+// escape defensively in case a name includes a dot or other regex glyph.
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 // podResourceSums aggregates requests/limits across all containers in the pod.
