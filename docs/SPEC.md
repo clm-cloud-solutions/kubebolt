@@ -1469,33 +1469,70 @@ Phase 3 (dedicated effort):
 
 ### Phase 2.0 — Agent, Historical Data & Network Observability
 
+The MVP agent (shipped in five sprints, see §4.6) covers aggregate per-pod
+telemetry. Connection-level flows (who talks to whom) are deliberately
+deferred to Phase 2.1 where multiple data sources are integrated —
+see "Traffic observability" below.
+
 | Feature | Impact | Description |
 |---------|--------|-------------|
 | **kubebolt-agent DaemonSet** | Critical | Lightweight agent per node. Single static binary, <50MB RAM, <0.05 CPU. Install: `kubectl apply -f`. |
-| **Network connection tracking** | High | Agent reads `/proc/net/tcp` or conntrack to capture pod-to-pod TCP connections with bytes transferred. No eBPF required — works on any kernel. Feeds real traffic data to the cluster map. |
-| **Network/Disk metrics** | High | Agent reads cAdvisor/kubelet for network I/O (bytes in/out), disk/filesystem usage per container. |
+| **Network/Disk metrics** | High | Agent reads cAdvisor/kubelet for network I/O (bytes in/out per pod), disk/filesystem usage per container. Aggregate volume only — no peer identity; connection-level data is Phase 2.1. |
 | **gRPC streaming** | High | Agent streams metrics to backend every 15s. Reconnects automatically if backend unavailable. |
 | **Historical TSDB** | High | VictoriaMetrics for time-series storage. Retention policies. Materialized rollups (1m, 5m, 1h). |
-| **Live traffic cluster map** | High | Cluster map edges show real traffic volume (line thickness), direction (animated dots), and health (green/yellow/red based on error rate). Data from agent conntrack. |
 | **Container-level metrics** | Medium | Per-container CPU, memory, network — not just pod-level aggregates. |
+| **Live traffic cluster map (structural)** | High | Cluster map edges derived from topology (ownerRefs, selectors, Gateway parentRefs, volumes) with per-edge volume aggregated from aggregate pod counters. Live flow edges (actual peer-to-peer) arrive in Phase 2.1. |
 | **Node kubelet logs** | Medium | Stream kubelet and system logs from nodes via Kubernetes API proxy (`/api/v1/nodes/{name}/proxy/logs/...`). Enables debugging node-level issues from the UI without SSH access. Exposed as backend endpoint and Copilot/MCP tool. |
 | **Node PSI stats** | Medium | Collect Pressure Stall Information (CPU / memory / IO pressure) via node `/stats/summary` endpoint. Feeds new insights rules (real memory pressure, IO contention) that Metrics Server alone cannot detect. |
 | **Ephemeral debug pod** | Medium | Launch a short-lived debug pod from an image with optional port exposure and auto-cleanup on disconnect. Wraps `kubectl debug` / `kubectl run` semantics for UI and Copilot-driven troubleshooting (e.g. `busybox`, `nicolaka/netshoot`). |
 
-### Phase 2.1 — Service Mesh Integration & Advanced Observability
+### Phase 2.1 — Traffic Observability, Service Mesh & Advanced Observability
+
+Aggregate per-pod network counters (Phase 2.0) tell you how much
+bandwidth a pod consumes, not who it talks to. To draw real flow
+edges on the cluster map — pod A → pod B with bytes, protocol,
+latency, error rate — a different class of data is required.
+
+The ladder of sources, ordered by accessibility (easier to deploy
+first) and data quality (richer later):
+
+| Level | Source | Requires | Data quality |
+|-------|--------|----------|--------------|
+| **0** | Pod aggregate counters (already in Phase 2.0) | Nothing beyond the MVP agent | Volume only, no peers |
+| **1** | Service mesh metrics (Istio / Linkerd) via Prometheus | Mesh installed on the cluster | L7 — HTTP/gRPC methods, status codes, latency percentiles |
+| **2** | Cilium Hubble API | Cilium CNI installed | L4 flows + optional L7 parsing for HTTP/DNS |
+| **3** | Agent conntrack collector (opt-in privileged mode) | Agent with `hostNetwork: true` + `CAP_NET_ADMIN`; conntrack module loaded (default on most kernels) | L4 — src/dst IP:port + bytes. Universal fallback. |
+| **4** | Agent eBPF collector (opt-in) | Kernel 5.8+ with BTF; `CAP_BPF` + `CAP_PERFMON` | L4 + L7 + connect/DNS latencies. Lowest overhead at scale. |
+
+KubeBolt consumes all of these via source-specific adapters that feed
+a unified `flows` schema (src_pod, dst_pod, protocol, bytes,
+optional L7 fields). The cluster map and service detail views render
+from this unified data regardless of which source provided it.
 
 | Feature | Impact | Description |
 |---------|--------|-------------|
 | **Prometheus integration** | High | Remote write receiver for Prometheus compatibility. Read existing Prometheus data. |
-| **Istio/Linkerd metrics** | High | If service mesh present, read `istio_requests_total`, `istio_request_duration_milliseconds` etc. from Prometheus. Show HTTP status codes, gRPC codes, latency p50/p95/p99 on cluster map edges. Full Kiali-like traffic visualization. |
+| **Istio/Linkerd metrics adapter** (Level 1) | High | Read `istio_requests_total`, `istio_request_duration_milliseconds`, `envoy_cluster_upstream_*` etc. from Prometheus. Show HTTP status codes, gRPC codes, latency p50/p95/p99 on cluster map edges. Full Kiali-like traffic visualization. |
+| **Cilium Hubble adapter** (Level 2) | High | When Cilium is detected on the cluster, query the Hubble relay API (gRPC) for flow records. Richest pod-level flow source without requiring a service mesh. Zero additional agent footprint; Cilium already captures this. |
+| **Agent conntrack collector** (Level 3) | High | Opt-in privileged collector (`KUBEBOLT_AGENT_ENABLE_CONNTRACK=true`) that reads `/proc/net/nf_conntrack` and emits `pod_flow_*` metrics keyed by src/dst pod (resolved via the agent's pods cache). Documented trade-off: agent runs with `hostNetwork: true` + CAP_NET_ADMIN. Universal fallback when no mesh and no Cilium. |
+| **Agent eBPF collector** (Level 4) | Medium | Deeper flow collection via eBPF programs attached to TCP connect/close and socket ops. CO-RE + BTF required; kernel 5.8+. Deliberate opt-in due to cross-kernel compatibility complexity. Target: <1% CPU at 10k flows/s/node. |
+| **Unified flow schema** | Critical | Normalized `pod_flow_*` metrics written to VictoriaMetrics regardless of source. Adapter layer emits: `pod_flow_bytes_total`, `pod_flow_packets_total`, `pod_flow_requests_total` (L7 only), `pod_flow_latency_seconds_bucket` (L7 only). Source label identifies provenance (mesh / hubble / conntrack / ebpf). |
+| **Live traffic cluster map** | High | Cluster map edges colored and sized by real observed flows. Line thickness = bytes/s or requests/s. Direction animated via moving dots. Color by health (green ok, yellow degraded, red errors >threshold). Protocol-aware styling when L7 data available: HTTP/S solid blue, gRPC solid green, TCP dashed gray, high error rate pulsing red. |
 | **Istio config CRUD** | Medium | List, view, create, patch, and delete Istio configuration objects (VirtualServices, DestinationRules, Gateways, PeerAuthentications, etc.) from the UI and via Copilot/MCP tools. |
 | **Distributed trace viewer** | Medium | List traces for a service (with error filtering) and drill into a single trace's call hierarchy. Data source: Tempo / Jaeger / OpenTelemetry collector via Prometheus or native query. |
 | **Mesh health dashboard** | Medium | Mesh status page: control plane + data plane health, sidecar injection coverage, proxy version drift. |
-| **Protocol-aware traffic lines** | High | Differentiate cluster map edges by protocol: HTTP/S (solid blue), gRPC (solid green), TCP (dashed gray), high error rate (pulsing red). Line thickness = request volume. |
 | **Kiali parity checklist** | Medium | Functional parity with the 10 Kiali MCP tools: mesh traffic graph, mesh status, Istio config read, Istio config write, resource details, trace list, trace details, pod performance (current vs requests/limits), pod logs with mesh annotations, Istio metrics (latency/throughput). Tracked as acceptance criteria for this phase. |
 | **Custom alert rules engine** | High | Threshold, anomaly, absence, composite rules on metrics/logs/events. |
 | **AI-powered insights** | High | Anomaly detection baselines per workload. Incident correlation and root cause analysis. |
 | **Cost analysis** | Medium | Right-sizing recommendations based on actual usage vs requests/limits. |
+
+#### Delivery order within Phase 2.1
+
+1. **Istio/Linkerd adapter first** — Prometheus is already our ingest path, so this is the cheapest source to integrate (weeks, not months) and covers the ~30-40% of clusters that run service mesh.
+2. **Cilium Hubble adapter** — second because it's also zero-agent on the cluster side (Cilium ships it) and avoids the privilege step. Covers ~15-20% of clusters, growing.
+3. **Unified flow schema + cluster map rendering** — pulls 1 and 2 together; the cluster map feature is only useful once at least one source is landing data.
+4. **Agent conntrack collector** — universal fallback for clusters without mesh or Cilium. Opt-in privilege; documented trade-off. Implemented as an extension to the existing agent, see `internal/kubebolt-agent-technical-spec.md` §20.
+5. **Agent eBPF collector** — last, once the value of flows is proven and the cross-kernel complexity is justifiable. Same opt-in pattern.
 
 ### Phase 2.2 — Kubernetes Ecosystem Breadth
 
