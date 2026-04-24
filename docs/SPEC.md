@@ -1434,6 +1434,175 @@ Post-MVP increments (data-driven, only if used):
 - WebSocket integration for proactive context (Phase 2 enhancement)
 - JSON-aware truncation in tool results (finer control than byte cap)
 
+#### Tool & skill expansion (post-Phase-2.1)
+
+Phase 1.8 shipped 16 tools — all introspective Kubernetes reads and
+the docs lookup. Phase 2.0 (kubebolt-agent + VictoriaMetrics) and
+Phase 2.1 (Hubble flow collector) added two huge data surfaces the
+Copilot is currently **blind to**: historical metrics and live
+network flows. The contextual triggers shipped in `feat(copilot):
+contextual entry points for traffic, metrics, and resources` route
+the user *to* the chat with rich payloads (chart series, edge L7
+stats, resource summaries), but once inside the chat the Copilot
+cannot follow up — it can describe what the trigger sent, not query
+deeper.
+
+This subsection tracks the work to close that gap, organized in
+three tiers from "obvious unlock" to "advanced ergonomics" to
+"mutating actions with safety rails".
+
+##### Tier 1 — Read tools that close the data gap
+
+The minimum set so the Copilot can actually look at metrics and
+flows. These are thin wrappers over endpoints that already exist
+(`/metrics/query_range`, `/flows/edges`, `/integrations`).
+
+| Tool | Wraps | Inputs | Why it matters |
+|------|-------|--------|----------------|
+| `query_metrics` | `GET /api/v1/metrics/query_range` | `promql`, `range` (e.g. `5m`/`1h`/`24h`), `step` | Single tool with the biggest unlock. The LLM constructs PromQL using the metric names emitted by the agent (`pod_cpu_usage_cores`, `node_memory_working_set_bytes`, `pod_flow_events_total`, `pod_flow_http_requests_total`, etc.). Answers any "why did X happen at time T" question that touches the time series. |
+| `get_resource_metrics_summary` | Aggregates several `query_range` calls server-side | `kind`, `namespace`, `name`, `range` | Convenience wrapper returning `{cpu: {now, avg, p95, max, min, request, limit}, memory: {...}, network: {rx, tx}, filesystem: {used}}`. Saves the LLM from authoring 4–6 PromQL queries for a routine "is this pod healthy" question — fewer rounds, fewer tokens. |
+| `get_flow_edges` | `GET /api/v1/flows/edges` | `namespace?`, `podName?`, `windowMinutes?` | Lets the Copilot see live pod-to-pod and pod-to-external traffic with verdict, rate, and L7 status classes. Required to actually answer "why are these requests failing" or "who's talking to this service". |
+| `get_external_endpoints` | Same backend as the External Endpoint side panel | `namespace?` (filter by source) | Returns the synthesized list of external endpoints (FQDN/IP) with caller pods + forwarded/dropped rates. Useful for security questions ("what is this pod calling out to?") and dependency mapping. |
+| `get_integrations_status` | `GET /api/v1/integrations` | (none) | Lets the Copilot detect whether the agent is installed and what it's collecting. Avoids confidently citing metrics that aren't available because the agent isn't there. Surfaces the first-class diagnostic "no historical data: install the kubebolt-agent". |
+
+**Guardrails on `query_metrics`:**
+
+- `range` capped server-side at 24h to prevent the LLM from issuing
+  expensive multi-day queries by accident.
+- `step` minimum enforced (e.g. 30s) so a 24h window can't return
+  86,400 samples.
+- Result envelope includes a `truncated` flag and a `seriesCount`
+  cap (e.g. 50 series) so very wide queries (`{}` matchers) get
+  cut with a clear hint to narrow the selector.
+
+##### Tier 2 — Skills (curated multi-tool routines)
+
+A "skill" is a higher-level macro the Copilot can invoke as a single
+tool, but server-side it executes a fixed recipe of existing tools
+and returns one consolidated result. Three reasons skills are worth
+introducing alongside raw tools:
+
+1. **Token efficiency** — one round-trip with a structured report is
+   cheaper than 5–6 sequential tool calls each carrying their own
+   tool-call/tool-result framing overhead.
+2. **Quality floor** — the skill guarantees a baseline set of data
+   (logs + describe + events + metrics + flows for a pod, say) so
+   the LLM's answer doesn't drift based on whether it remembered to
+   pull the events or not.
+3. **UI surface** — skills can be promoted to first-class quick
+   actions ("Diagnose this pod", "Right-size this workload") with
+   resource pickers, sitting alongside the empty-state suggestion
+   chips already in `CopilotPanel`.
+
+Initial skill set:
+
+| Skill | Bundled tools | Output shape | Use case |
+|-------|---------------|--------------|----------|
+| `diagnose_pod` | logs (last 100, intent-aware grep if reason matched) + describe + recent events + metrics_summary (15m) + flow_edges (15m, both directions) | Structured report keyed by source | "Why is this pod failing?" — gives the LLM everything for root-cause without 5 tool calls. |
+| `right_size_workload` | metrics_summary (24h, p50/p95/p99) for every pod in the workload + current `requests`/`limits` from describe | Per-container recommendation table with reasoning | "Should I bump this deployment's memory request?" — produces concrete numbers grounded in real usage. |
+| `audit_workload_security` | describe (PodSpec extraction) + checks for: `runAsRoot`, `privileged`, capabilities, hostPath mounts, hostNetwork, missing resource limits, pull policy, image source, NetworkPolicy coverage | Pass/fail report with severities | "Is this workload secure?" — replaces a manual policy-review checklist with a Copilot one-liner. |
+| `compare_replicas` | metrics_summary for every pod backing a workload | Sortable table with outliers flagged | "Is one pod hot?" — finds pod-level imbalance that aggregated workload metrics hide. |
+| `explain_flow_anomaly` | flow_edges (5m + 1h windows) + L7 status breakdown + describe of source/dest + NetworkPolicies in scope | Diff between baseline and current, candidate causes | Triggered from cluster map "high error rate" edges. Gets the Copilot from "I see the spike" to "here's what changed". |
+
+Skills are implemented in `internal/copilot/skills/` as Go
+functions that compose the existing executor. Each skill registers
+itself as a tool with a stable name (`skill_diagnose_pod`, etc.) so
+the LLM can invoke them like any other tool — the "skill" framing is
+purely a UX/architecture concept, not a separate dispatch path.
+
+##### Tier 3 — Mutating actions with propose-and-confirm
+
+The Copilot already recommends `kubectl` commands, but never
+executes them. With the integrations + agent-config infrastructure
+in place, it's natural to let it *propose* mutations the user can
+apply with one click — without giving the LLM blanket write
+permission.
+
+**Pattern:**
+
+1. Tool execution returns a **structured "action proposal"** rather
+   than performing the action.
+2. The frontend renders the proposal as a card in the chat
+   transcript: title + diff + reasoning + `Apply` / `Cancel`
+   buttons.
+3. The user click dispatches the action against the *existing*
+   write endpoint (`/restart`, `/scale`, `PUT /yaml`,
+   `/integrations/agent/install`, etc.) — authenticated with the
+   user's session and subject to the existing role gates.
+4. The card persists in the chat as `Pending → Applied / Cancelled`,
+   audit-ready.
+
+| Tool | Proposal payload | Existing endpoint |
+|------|------------------|-------------------|
+| `propose_restart_workload` | `{kind, namespace, name, reason}` | `POST /resources/{type}/{ns}/{name}/restart` (Editor+) |
+| `propose_scale_workload` | `{kind, namespace, name, replicas, reason}` | `POST /resources/{type}/{ns}/{name}/scale` (Editor+) |
+| `propose_yaml_patch` | `{kind, namespace, name, currentYaml, proposedYaml, summary}` | `PUT /resources/{type}/{ns}/{name}/yaml` (Editor+) |
+| `propose_install_integration` | `{integrationId, config}` | `POST /integrations/{id}/install` (Admin) |
+| `propose_configure_integration` | `{integrationId, config diff}` | `PUT /integrations/{id}/config` (Admin) |
+
+This preserves the security model (Copilot has no privileges of its
+own, just the user's), keeps mutations auditable in the chat
+history, and avoids "the agent did a thing I didn't expect" — the
+single biggest objection to AI write access in production tools.
+
+##### Delivery order
+
+Each tier is independently shippable and the Tier 1 tools alone
+make the contextual triggers (cluster map / metric chart / external
+panel) genuinely useful instead of one-shot summarizers.
+
+```
+Sprint 1 — Tier 1 reads (3–5 days)
+  [1] query_metrics                        ← biggest single unlock
+  [2] get_resource_metrics_summary         ← cuts tokens on routine asks
+  [3] get_flow_edges                       ← unblocks traffic Q&A
+  [4] get_external_endpoints               ← security/dependency Q&A
+  [5] get_integrations_status              ← honest "no agent" responses
+
+Sprint 2 — Tier 2 skills (1–2 weeks)
+  [6] skill_diagnose_pod                   ← demo-grade
+  [7] skill_right_size_workload            ← differentiator
+  [8] UI quick-actions (chips for skills)
+  [9] skill_audit_workload_security
+  [10] skill_explain_flow_anomaly
+
+Sprint 3 — Tier 3 propose-and-confirm (1–2 weeks)
+  [11] Proposal card UI primitive
+  [12] propose_restart_workload + propose_scale_workload
+  [13] propose_yaml_patch (with diff viewer)
+  [14] propose_install_integration / propose_configure_integration
+```
+
+##### Observability and budgets
+
+Every new tool plugs into the existing tool-breakdown logging
+(`internal/copilot/usage.go`) so its real-world cost is visible
+in `Administration → Copilot Usage`. Same observability
+discipline as the original 16 tools — measurement before
+optimization.
+
+For `query_metrics` specifically: the response carries a
+`promqlCost` hint (rough series count × samples) so future
+budget enforcement can deny queries that would push a single
+round over a token threshold.
+
+##### Open questions
+
+- **Skill overrides per cluster size.** A `diagnose_pod` skill on a
+  4-node cluster has different latency/token economics than on a
+  400-node cluster. Decide whether per-cluster skill defaults
+  (smaller windows, fewer series) are needed, or whether the
+  skill itself adapts based on cluster size at invocation time.
+- **Streaming skill output.** Skills today would return one large
+  blob. For long-running ones (`right_size_workload` over a 7d
+  window), incremental SSE updates inside the tool result would
+  improve UX. Defer until skills exist.
+- **Cross-cluster skills.** `skill_compare_clusters` could surface
+  diffs across the kubeconfig contexts (resource counts, version
+  skew, insights). Useful but Phase 3 territory — depends on
+  whether the multi-cluster scoping in `cluster_id` is exposed as
+  a tool input.
+
 ### Phase 1.9 — Extended Distribution
 
 Priority: high — lowers the barrier to adoption by offering multiple installation methods beyond Helm and Docker Compose.
