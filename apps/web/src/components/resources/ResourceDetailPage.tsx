@@ -2309,31 +2309,36 @@ export function ResourceDetailPage() {
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
         <div className="flex gap-2 items-center">
-          {['pods', 'deployments', 'statefulsets', 'services', 'nodes'].includes(type) && (
-            <AskCopilotButton
-              variant="text"
-              label="Ask Copilot"
-              payload={{
-                type: 'not_ready_resource',
-                resource: {
-                  kind: routeToKind[type] ?? type,
-                  namespace: item.namespace ?? '',
-                  name: item.name,
-                  status: item.status ? String(item.status) : undefined,
-                  details: {
-                    ...(item.ready ? { ready: String(item.ready) } : {}),
-                    ...(item.replicas !== undefined ? { replicas: Number(item.replicas) } : {}),
-                    ...(item.restarts !== undefined ? { restarts: Number(item.restarts) } : {}),
-                    ...(item.age ? { age: String(item.age) } : {}),
-                    ...(type === 'services' && item.type ? { serviceType: String(item.type) } : {}),
-                    ...(type === 'services' && item.clusterIP ? { clusterIP: String(item.clusterIP) } : {}),
-                    ...(type === 'nodes' && item.kubeletVersion ? { kubeletVersion: String(item.kubeletVersion) } : {}),
-                    ...(type === 'nodes' && item.osImage ? { osImage: String(item.osImage) } : {}),
-                  },
+          {/* Persistent Ask Copilot — uses the resource_inquiry
+              trigger which tailors the prompt to the active tab
+              ("interpret these metrics" on Monitor, "summarize log
+              errors" on Logs, etc.) without the user spelling it
+              out. Always visible so the operator doesn't have to
+              wonder whether this resource type is supported. */}
+          <AskCopilotButton
+            variant="text"
+            label="Ask Copilot"
+            payload={{
+              type: 'resource_inquiry',
+              resource: {
+                kind: routeToKind[type] ?? type,
+                namespace: item.namespace ?? '',
+                name: item.name,
+                activeTab,
+                summary: {
+                  ...(item.status ? { status: String(item.status) } : {}),
+                  ...(item.ready ? { ready: String(item.ready) } : {}),
+                  ...(item.replicas !== undefined ? { replicas: Number(item.replicas) } : {}),
+                  ...(item.restarts !== undefined ? { restarts: Number(item.restarts) } : {}),
+                  ...(item.age ? { age: String(item.age) } : {}),
+                  ...(type === 'services' && item.type ? { serviceType: String(item.type) } : {}),
+                  ...(type === 'services' && item.clusterIP ? { clusterIP: String(item.clusterIP) } : {}),
+                  ...(type === 'nodes' && item.kubeletVersion ? { kubeletVersion: String(item.kubeletVersion) } : {}),
+                  ...(type === 'nodes' && item.osImage ? { osImage: String(item.osImage) } : {}),
                 },
-              }}
-            />
-          )}
+              },
+            }}
+          />
           <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
             Refresh
           </button>

@@ -10,6 +10,10 @@ interface AskCopilotButtonProps {
   /** Override label for the text variant and the tooltip. Defaults to "Ask Copilot". */
   label?: string
   className?: string
+  /** Fired after the message is dispatched. Hosts use it to close
+   *  the transient UI (hover tooltip, popover) that launched the
+   *  button — the user's attention is on the Copilot panel now. */
+  onAfterSend?: () => void
 }
 
 /**
@@ -22,6 +26,7 @@ export function AskCopilotButton({
   variant = 'icon',
   label = 'Ask Copilot',
   className = '',
+  onAfterSend,
 }: AskCopilotButtonProps) {
   const { config, openPanel, sendMessage } = useCopilot()
 
@@ -32,6 +37,7 @@ export function AskCopilotButton({
     const prompt = buildTriggerPrompt(payload)
     openPanel()
     void sendMessage(prompt, { trigger: payload.type })
+    onAfterSend?.()
   }
 
   if (variant === 'text') {

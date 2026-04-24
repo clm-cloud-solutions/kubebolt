@@ -15,6 +15,7 @@ import { useId, useMemo, useState } from 'react'
 import { api, ApiError, type PromRangeResponse } from '@/services/api'
 import { LoadingSpinner } from './LoadingSpinner'
 import { ErrorState } from './ErrorState'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -350,9 +351,43 @@ export function MetricChart({
   return (
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
-        <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary">
-          {title}
-        </h4>
+        <div className="flex items-center gap-2 min-w-0">
+          <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary truncate">
+            {title}
+          </h4>
+          {hasData && (
+            <AskCopilotButton
+              payload={{
+                type: 'metric_anomaly',
+                metric: {
+                  title,
+                  query: allQueries[0]?.query ?? '',
+                  unit,
+                  rangeLabel: active.label,
+                  series: series.slice(0, 12).map((s) => ({
+                    name: s.name,
+                    now: s.current,
+                    avg: s.avg,
+                    max: s.max,
+                    min: s.min,
+                  })),
+                  referenceLines: effectiveRefs?.map((r) => ({
+                    label: r.label,
+                    value: r.y,
+                    // Breach detection: any series' max above a non-negative ref
+                    // or min below a negative ref is worth flagging for the LLM.
+                    breached:
+                      r.y >= 0
+                        ? series.some((s) => typeof s.max === 'number' && s.max > r.y)
+                        : series.some((s) => typeof s.min === 'number' && s.min < r.y),
+                  })),
+                },
+              }}
+              variant="icon"
+              label="Interpret this chart with Copilot"
+            />
+          )}
+        </div>
         <div className="flex items-center gap-3">
           {/* Ref toggles are only meaningful when series are actually rendering. */}
           {hasData && referenceLines && referenceLines.length > 0 && (

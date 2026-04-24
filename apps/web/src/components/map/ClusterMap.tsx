@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect, useLayoutEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactFlow, {
   Background,
@@ -23,6 +23,8 @@ import { NamespaceRegion } from './NamespaceRegion'
 import { ConnectionEdge } from './ConnectionEdge'
 import { MapControls } from './MapControls'
 import { NodeDetailPanel } from './NodeDetailPanel'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
+import type { CopilotTriggerPayload } from '@/services/copilot/triggers'
 import { ExternalEndpointDetailPanel } from './ExternalEndpointDetailPanel'
 import type { TopologyNode, TopologyEdge } from '@/types/kubernetes'
 import type { L7Summary } from '@/services/api'
@@ -106,6 +108,38 @@ function buildTrafficTooltip(
   external?: { dstFqdn?: string; dstIp?: string },
 ): TrafficTooltipData {
   return { rate, verdict, l7, ...external }
+}
+
+// parseFlowNodeId extracts the flow keys needed to build an Ask
+// Copilot payload from a ReactFlow node id. The cluster map uses
+// two id shapes:
+//
+//   "Pod/namespace/name" / "Service/namespace/name" — Kubernetes
+//     resources, owner kind prefix.
+//   "ext:fqdn:host" / "ext:ip:address" — synthetic external
+//     endpoints emitted from observed pod-to-outside flows.
+//
+// Anything else parses as { kind: fallback }, which the prompt
+// builder still renders usefully.
+function parseFlowNodeId(id: string): {
+  kind?: string
+  namespace?: string
+  name?: string
+  fqdn?: string
+  ip?: string
+  external: boolean
+} {
+  if (id.startsWith('ext:fqdn:')) {
+    return { external: true, fqdn: id.slice('ext:fqdn:'.length) }
+  }
+  if (id.startsWith('ext:ip:')) {
+    return { external: true, ip: id.slice('ext:ip:'.length) }
+  }
+  const parts = id.split('/')
+  if (parts.length >= 3) {
+    return { external: false, kind: parts[0], namespace: parts[1], name: parts.slice(2).join('/') }
+  }
+  return { external: false, kind: parts[0] }
 }
 
 // Single row inside the edge hover tooltip. Shape mirrors the Monitor
@@ -790,7 +824,16 @@ function ClusterMapInner() {
   // Leave callbacks and render a positioned div overlay instead.
   // We store only the edge id (not the tooltip text) so polling
   // refreshes update the visible tooltip while the mouse stays put.
-  const [hoveredEdge, setHoveredEdge] = useState<{ id: string; x: number; y: number } | null>(null)
+  // Edge tooltip state. The tooltip itself is pointer-events: auto
+  // so the user can mouse-over it and click its Ask Copilot button.
+  // To keep that interaction smooth, mouse-leaving the edge (or the
+  // tooltip) doesn't hide the tooltip immediately — a short delay
+  // lets the mouse travel between the two without the panel
+  // vanishing underneath the cursor.
+  const [hoveredEdge, setHoveredEdge] = useState<
+    { id: string; source: string; target: string; x: number; y: number } | null
+  >(null)
+  const hideTimeoutRef = useRef<number | null>(null)
   const { fitView } = useReactFlow()
   const navigate = useNavigate()
 
@@ -1279,12 +1322,37 @@ function ClusterMapInner() {
   // the enter coordinate on purpose: updating on every mousemove causes
   // React to re-render the map each frame, which was flickering the
   // tooltip in and out.
-  const onEdgeMouseEnter = useCallback((e: React.MouseEvent, edge: Edge) => {
-    const tooltip = (edge.data as { tooltip?: string } | undefined)?.tooltip
-    if (!tooltip) return
-    setHoveredEdge({ id: edge.id, x: e.clientX, y: e.clientY })
+  const cancelHideTooltip = useCallback(() => {
+    if (hideTimeoutRef.current != null) {
+      window.clearTimeout(hideTimeoutRef.current)
+      hideTimeoutRef.current = null
+    }
   }, [])
-  const onEdgeMouseLeave = useCallback(() => setHoveredEdge(null), [])
+  const scheduleHideTooltip = useCallback(() => {
+    cancelHideTooltip()
+    hideTimeoutRef.current = window.setTimeout(() => {
+      setHoveredEdge(null)
+      hideTimeoutRef.current = null
+    }, 180)
+  }, [cancelHideTooltip])
+  const onEdgeMouseEnter = useCallback(
+    (e: React.MouseEvent, edge: Edge) => {
+      const tooltip = (edge.data as { tooltip?: string } | undefined)?.tooltip
+      if (!tooltip) return
+      cancelHideTooltip()
+      setHoveredEdge({
+        id: edge.id,
+        source: edge.source,
+        target: edge.target,
+        x: e.clientX,
+        y: e.clientY,
+      })
+    },
+    [cancelHideTooltip],
+  )
+  const onEdgeMouseLeave = useCallback(() => {
+    scheduleHideTooltip()
+  }, [scheduleHideTooltip])
 
   // Resolve the tooltip payload freshly from the current edges on every
   // render. When useFlowEdges polls a new window, the edges memo above
@@ -1572,14 +1640,21 @@ function ClusterMapInner() {
           colored dot + label + right-aligned value per row. */}
       {hoveredEdge && hoveredTooltip && (
         <div
+          onMouseEnter={cancelHideTooltip}
+          onMouseLeave={scheduleHideTooltip}
           style={{
             position: 'fixed',
             left: hoveredEdge.x + 14,
             top: hoveredEdge.y + 14,
-            pointerEvents: 'none',
+            // pointer-events: auto lets the mouse travel onto the
+            // tooltip without triggering onEdgeMouseLeave (see the
+            // hide-delay pattern above), which in turn makes the
+            // Ask Copilot button clickable. Before this was
+            // 'none' + click-to-pin; that UX was invisible, so
+            // it's been replaced by hover-sticky.
             zIndex: 1000,
           }}
-          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[200px]"
+          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[240px] pointer-events-auto"
         >
           <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60 flex items-baseline justify-between gap-3">
             <span>{hoveredTooltip.rate.toFixed(2)} ev/s</span>
@@ -1635,10 +1710,49 @@ function ClusterMapInner() {
               </div>
             ) : null}
           </div>
+          <div className="pt-2 mt-1 border-t border-kb-border/60 flex items-center justify-end">
+            <AskCopilotButton
+              payload={buildFlowEdgePayload(hoveredEdge, hoveredTooltip)}
+              variant="text"
+              label="Ask Copilot"
+              onAfterSend={() => setHoveredEdge(null)}
+            />
+          </div>
         </div>
       )}
     </div>
   )
+}
+
+// buildFlowEdgePayload converts the ReactFlow edge + live tooltip
+// data into the trigger payload. Kept as a helper so the tooltip
+// JSX stays readable.
+function buildFlowEdgePayload(
+  edge: { id: string; source: string; target: string },
+  data: TrafficTooltipData,
+): CopilotTriggerPayload {
+  const src = parseFlowNodeId(edge.source)
+  const dst = parseFlowNodeId(edge.target)
+  return {
+    type: 'flow_edge',
+    flow: {
+      srcNamespace: src.namespace ?? '',
+      srcPod: src.name ?? src.kind ?? edge.source,
+      dstNamespace: dst.external ? undefined : dst.namespace,
+      dstPod: dst.external ? undefined : dst.name,
+      dstFqdn: data.dstFqdn ?? dst.fqdn,
+      dstIp: data.dstIp ?? dst.ip,
+      verdict: data.verdict,
+      ratePerSec: data.rate,
+      l7: data.l7
+        ? {
+            requestsPerSec: data.l7.requestsPerSec,
+            statusClass: data.l7.statusClass as Record<string, number> | undefined,
+            avgLatencyMs: data.l7.avgLatencyMs,
+          }
+        : undefined,
+    },
+  }
 }
 
 export function ClusterMap() {

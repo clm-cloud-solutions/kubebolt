@@ -1,5 +1,7 @@
 import { X, Cloud } from 'lucide-react'
 import type { FlowEdge } from '@/services/api'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
+import type { CopilotTriggerPayload } from '@/services/copilot/triggers'
 
 interface ExternalEndpointDetailPanelProps {
   // The synthetic node id (e.g. "ext:fqdn:api.github.com"). Used to
@@ -70,6 +72,31 @@ export function ExternalEndpointDetailPanel({
 
   const totalForwarded = callerList.reduce((s, c) => s + c.forwardedRate, 0)
   const totalDropped = callerList.reduce((s, c) => s + c.droppedRate, 0)
+
+  // Ask Copilot payload. Reuses the flow_edge trigger — "is this
+  // external connection expected?" framing is built into the
+  // prompt when dstPod is empty. We aggregate the caller list so
+  // the LLM sees who's talking to the endpoint.
+  const primaryIp = resolvedIPs[0]
+  const copilotPayload: CopilotTriggerPayload = {
+    type: 'flow_edge',
+    flow: {
+      // srcNamespace/srcPod stay empty — the endpoint has many
+      // callers, and the payload's callers array carries them.
+      srcNamespace: '',
+      srcPod: '',
+      dstFqdn: fqdn,
+      dstIp: primaryIp,
+      verdict: totalDropped > 0 ? 'mixed' : 'forwarded',
+      ratePerSec: totalForwarded + totalDropped,
+      callers: callerList.slice(0, 20).map((c) => ({
+        namespace: c.ns,
+        pod: c.pod,
+        forwardedRate: c.forwardedRate,
+        droppedRate: c.droppedRate,
+      })),
+    },
+  }
 
   return (
     <div className="absolute right-0 top-0 bottom-0 w-[320px] bg-kb-card border-l border-kb-border z-20 flex flex-col overflow-hidden">
@@ -188,6 +215,10 @@ export function ExternalEndpointDetailPanel({
               ))}
             </div>
           )}
+        </div>
+
+        <div className="pt-2 border-t border-kb-border/60">
+          <AskCopilotButton payload={copilotPayload} variant="text" label="Ask Copilot about this endpoint" />
         </div>
 
         <div className="text-[10px] text-kb-text-tertiary italic pt-2 border-t border-kb-border/60">
