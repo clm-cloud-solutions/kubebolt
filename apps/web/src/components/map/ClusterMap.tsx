@@ -23,6 +23,7 @@ import { NamespaceRegion } from './NamespaceRegion'
 import { ConnectionEdge } from './ConnectionEdge'
 import { MapControls } from './MapControls'
 import { NodeDetailPanel } from './NodeDetailPanel'
+import { ExternalEndpointDetailPanel } from './ExternalEndpointDetailPanel'
 import type { TopologyNode, TopologyEdge } from '@/types/kubernetes'
 import type { L7Summary } from '@/services/api'
 
@@ -90,14 +91,21 @@ export interface TrafficTooltipData {
   rate: number
   verdict: string
   l7?: L7Summary
+  // External destination fields: present on pod-to-external edges so
+  // the hover tooltip shows where the traffic is actually going, not
+  // just "FORWARDED · 5 ev/s". At least one of dstFqdn/dstIp is set
+  // when the edge terminates on an ExternalEndpoint node.
+  dstFqdn?: string
+  dstIp?: string
 }
 
 function buildTrafficTooltip(
   rate: number,
   verdict: string,
   l7?: L7Summary,
+  external?: { dstFqdn?: string; dstIp?: string },
 ): TrafficTooltipData {
-  return { rate, verdict, l7 }
+  return { rate, verdict, l7, ...external }
 }
 
 // Single row inside the edge hover tooltip. Shape mirrors the Monitor
@@ -131,6 +139,27 @@ const NS_COLORS = [
   { border: 'rgba(251,191,36,0.15)', bg: 'rgba(251,191,36,0.03)', text: '#fbbf24' },
   { border: 'rgba(74,222,128,0.15)', bg: 'rgba(74,222,128,0.03)', text: '#4ade80' },
 ]
+
+// Dedicated color for the synthetic "(external)" region. Pinning it
+// outside the rotating palette matters because the palette's 6th
+// slot is rose-red, which reads as "error" and happens to land on
+// external whenever six namespaces are visible. Sky-blue matches
+// the Cloud icon already used by its child nodes so the region
+// and its contents share a visual vocabulary.
+const EXTERNAL_NS_COLOR = {
+  border: 'rgba(56,189,248,0.25)',
+  bg: 'rgba(56,189,248,0.04)',
+  text: '#38bdf8',
+}
+
+// pickNsColor returns a stable color for a namespace region. The
+// synthetic "(external)" marker gets a dedicated shade; everything
+// else rotates through NS_COLORS based on its sorted index so
+// neighboring regions contrast.
+function pickNsColor(ns: string, idx: number) {
+  if (ns === '(external)') return EXTERNAL_NS_COLOR
+  return NS_COLORS[idx % NS_COLORS.length]
+}
 
 const KIND_ORDER: string[] = [
   'Deployment', 'StatefulSet', 'DaemonSet', 'ReplicaSet',
@@ -218,7 +247,23 @@ const NS_PAD_BOTTOM = 14
 const NS_GAP_X = 24
 const NS_GAP_Y = 24
 const GRID_COLS = 6
-const NS_COLS = 3
+// nsColsFor picks the namespace-grid column count for a given number
+// of visible blocks. The shape matters because infra namespaces and
+// the synthetic (external) region are pinned to the end of the sort
+// order, and we want them to land in the last row so the grid reads
+// as a clean "apps on top, infra+external below" layout.
+//
+// Chosen shapes:
+//   1–4 blocks   → one wide row (no wrap needed)
+//   5–6 blocks   → 3 cols  (gives 3+2 or 3+3; ends row 2 at right)
+//   7+  blocks   → 4 cols  (handles larger clusters without growing
+//                           extremely tall)
+const nsColsFor = (count: number): number => {
+  if (count <= 1) return 1
+  if (count <= 4) return count
+  if (count <= 6) return 3
+  return 4
+}
 
 // Flow layout constants
 const FLOW_COL_W = 200
@@ -264,7 +309,7 @@ function buildGridLayout(filtered: TopologyNode[]) {
 
   interface NSBlock { ns: string; resources: TopologyNode[]; color: typeof NS_COLORS[number]; width: number; height: number }
   const blocks: NSBlock[] = groups.map(({ ns, resources }, i) => {
-    const color = NS_COLORS[i % NS_COLORS.length]
+    const color = pickNsColor(ns, i)
     const cols = Math.min(resources.length, GRID_COLS)
     const rows = Math.ceil(resources.length / GRID_COLS)
     const width = Math.max(cols * (NODE_W + GAP_X) - GAP_X + NS_PAD_X * 2, 240)
@@ -273,8 +318,9 @@ function buildGridLayout(filtered: TopologyNode[]) {
   })
 
   const gridRows: NSBlock[][] = []
-  for (let i = 0; i < blocks.length; i += NS_COLS) {
-    gridRows.push(blocks.slice(i, i + NS_COLS))
+  const gridCols = nsColsFor(blocks.length)
+  for (let i = 0; i < blocks.length; i += gridCols) {
+    gridRows.push(blocks.slice(i, i + gridCols))
   }
 
   let offsetY = 0
@@ -322,7 +368,7 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
 
   // Pre-compute dimensions for every namespace block
   const blocks: FlowBlock[] = groups.map(({ ns, resources }, nsIdx) => {
-    const color = NS_COLORS[nsIdx % NS_COLORS.length]
+    const color = pickNsColor(ns, nsIdx)
 
     const columns = new Map<number, TopologyNode[]>()
     for (const n of resources) {
@@ -342,10 +388,11 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
     return { ns, resources, color, width, height, activeColumns, columns }
   })
 
-  // Arrange namespace blocks in rows of NS_COLS (same as grid layout)
+  // Arrange namespace blocks in rows (same wrapping rule as grid layout)
   const rows: FlowBlock[][] = []
-  for (let i = 0; i < blocks.length; i += NS_COLS) {
-    rows.push(blocks.slice(i, i + NS_COLS))
+  const flowCols = nsColsFor(blocks.length)
+  for (let i = 0; i < blocks.length; i += flowCols) {
+    rows.push(blocks.slice(i, i + flowCols))
   }
 
   let offsetY = 0
@@ -383,6 +430,93 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
   return allNodes
 }
 
+// isInfraNamespace marks a namespace as cluster infrastructure
+// (coredns, kube-proxy, CNI, metrics-server, KubeBolt's own agent,
+// etc.) rather than an application workload. We exclude flows
+// touching these from the traffic-direction scoring so that turning
+// them on/off in the namespace filter doesn't reshuffle the rest of
+// the grid: coredns alone absorbs enough DNS to make every caller
+// look artificially chatty and push app namespaces around. Infra
+// blocks are also pinned to the right of the grid (before (external))
+// so their position is stable.
+//
+// Rules:
+//   - Everything under the kube-* prefix (reserved by Kubernetes
+//     convention for system namespaces: kube-system, kube-public,
+//     kube-node-lease).
+//   - KubeBolt's own agent namespace (default "kubebolt-system" when
+//     deployed via Helm; others can be added as needed).
+const INFRA_NAMESPACES = new Set<string>(['kubebolt-system'])
+function isInfraNamespace(ns: string): boolean {
+  if (INFRA_NAMESPACES.has(ns)) return true
+  if (ns.startsWith('kube-')) return true
+  return false
+}
+
+// sortNamespacesByTrafficDirection reorders the per-namespace blocks so
+// the cluster map reads left-to-right along the actual flow of
+// traffic: source-heavy namespaces on the left, sink-heavy on the
+// right. Score is (outgoing cross-namespace rate) − (incoming cross-
+// namespace rate); higher score sorts earlier. Intra-namespace
+// traffic is ignored (doesn't tell us anything about relative
+// position). Alphabetical name is the tiebreaker when two namespaces
+// have the same score (e.g. both sit in pure isolation).
+//
+// Pinning rules (applied after scoring):
+//   - "(external)" is pinned to the very end — it's a synthetic
+//     "outside the cluster" marker and conceptually always belongs
+//     rightmost.
+//   - INFRA_NAMESPACES are pinned just before (external) — they're
+//     plumbing, not business traffic, so their grid slot should be
+//     stable regardless of how much DNS volume they absorb.
+function sortNamespacesByTrafficDirection<T extends { ns: string }>(
+  groups: T[],
+  flows: {
+    srcNamespace: string; srcPod: string;
+    dstNamespace: string; dstPod: string;
+    dstFqdn?: string; dstIp?: string;
+    ratePerSec: number;
+  }[],
+): T[] {
+  const scores = new Map<string, number>()
+  for (const g of groups) scores.set(g.ns, 0)
+
+  for (const f of flows) {
+    const srcNs = f.srcNamespace || '(cluster)'
+    // Pod-to-external flows land on the synthetic (external)
+    // namespace regardless of the caller's dst_namespace label
+    // (which is empty).
+    const dstNs = f.dstPod ? (f.dstNamespace || '(cluster)') : '(external)'
+    if (srcNs === dstNs) continue
+    if (!scores.has(srcNs) || !scores.has(dstNs)) continue
+    // Skip flows touching infra namespaces so that app namespaces'
+    // scores don't absorb their DNS/health-check chatter.
+    if (isInfraNamespace(srcNs) || isInfraNamespace(dstNs)) continue
+    scores.set(srcNs, (scores.get(srcNs) ?? 0) + f.ratePerSec)
+    scores.set(dstNs, (scores.get(dstNs) ?? 0) - f.ratePerSec)
+  }
+
+  // Pinning priority (larger number sorts later):
+  //   0 = regular namespace, ordered by score
+  //   1 = infra (kube-system, …)
+  //   2 = (external)
+  const bucket = (ns: string): number => {
+    if (ns === '(external)') return 2
+    if (isInfraNamespace(ns)) return 1
+    return 0
+  }
+
+  return [...groups].sort((a, b) => {
+    const ba = bucket(a.ns)
+    const bb = bucket(b.ns)
+    if (ba !== bb) return ba - bb
+    const sa = scores.get(a.ns) ?? 0
+    const sb = scores.get(b.ns) ?? 0
+    if (sa !== sb) return sb - sa
+    return a.ns.localeCompare(b.ns)
+  })
+}
+
 // ─── Traffic Layout ───
 // Kiali-style: dagre left-to-right per namespace. Intent-flow shape
 // (caller → Service → callee) is achieved by feeding dagre both the
@@ -392,9 +526,17 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
 function buildTrafficLayout(
   filtered: TopologyNode[],
   topologyEdges: TopologyEdge[],
-  flowEdges: { srcNamespace: string; srcPod: string; dstNamespace: string; dstPod: string }[],
+  flowEdges: {
+    srcNamespace: string; srcPod: string;
+    dstNamespace: string; dstPod: string;
+    dstIp?: string; dstFqdn?: string;
+    ratePerSec: number;
+  }[],
 ) {
-  const groups = groupByNamespace(filtered)
+  const groups = sortNamespacesByTrafficDirection(
+    groupByNamespace(filtered),
+    flowEdges,
+  )
   const allNodes: Node[] = []
 
   interface TrafficBlock {
@@ -417,7 +559,7 @@ function buildTrafficLayout(
   }
 
   const blocks: TrafficBlock[] = groups.map(({ ns, resources }, nsIdx) => {
-    const color = NS_COLORS[nsIdx % NS_COLORS.length]
+    const color = pickNsColor(ns, nsIdx)
 
     const g = new dagre.graphlib.Graph()
     g.setGraph({ rankdir: 'LR', nodesep: 18, ranksep: 70, marginx: 0, marginy: 0 })
@@ -498,8 +640,9 @@ function buildTrafficLayout(
   })
 
   const rows: TrafficBlock[][] = []
-  for (let i = 0; i < blocks.length; i += NS_COLS) {
-    rows.push(blocks.slice(i, i + NS_COLS))
+  const trafficCols = nsColsFor(blocks.length)
+  for (let i = 0; i < blocks.length; i += trafficCols) {
+    rows.push(blocks.slice(i, i + trafficCols))
   }
 
   let offsetY = 0
@@ -618,6 +761,14 @@ function savePref(key: string, value: string) {
 function ClusterMapInner() {
   const { data: topology, isLoading, error, refetch } = useTopology()
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
+  // Separate selection state for synthetic external nodes — they
+  // aren't in the topology and need a different detail panel (no K8s
+  // metadata, driven purely by observed flows).
+  const [selectedExternal, setSelectedExternal] = useState<{
+    id: string
+    label: string
+    fqdn?: string
+  } | null>(null)
   const [hiddenKinds, setHiddenKinds] = useState<Set<string>>(new Set())
   const [visibleNamespaces, setVisibleNamespaces] = useState<Set<string> | null>(null)
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
@@ -904,7 +1055,17 @@ function ClusterMapInner() {
       // colors by the real HTTP health of that specific pod, while the
       // Pod → Service edge shows the caller's aggregate health toward
       // the Service.
-      type Hop = { src: string; dst: string; verdict: string; rate: number; l7?: L7Aggregator }
+      type Hop = {
+        src: string
+        dst: string
+        verdict: string
+        rate: number
+        l7?: L7Aggregator
+        // Populated only for pod-to-external direct edges so the
+        // tooltip can show where the traffic is going.
+        dstFqdn?: string
+        dstIp?: string
+      }
       const firstHop = new Map<string, Hop>()
       const secondHop = new Map<string, Hop>()
       const directEdges = new Map<string, Hop>()
@@ -922,6 +1083,7 @@ function ClusterMapInner() {
           const key = `${srcId}||${dstId}||${f.verdict}`
           const direct = directEdges.get(key) ?? {
             src: srcId, dst: dstId, verdict: f.verdict, rate: 0,
+            dstFqdn: f.dstFqdn, dstIp: f.dstIp,
           }
           direct.rate += f.ratePerSec
           mergeL7(direct, f.l7)
@@ -965,13 +1127,16 @@ function ClusterMapInner() {
 
       const pushHop = (hop: Hop, idPrefix: string) => {
         const l7 = hop.l7 ? finalizeL7(hop.l7) : undefined
+        const external = (hop.dstFqdn || hop.dstIp)
+          ? { dstFqdn: hop.dstFqdn, dstIp: hop.dstIp }
+          : undefined
         trafficEdges.push({
           id: `${idPrefix}/${hop.src}->${hop.dst}/${hop.verdict}`,
           source: hop.src, target: hop.dst, type: 'connection',
           data: {
             edgeType: 'traffic', ratePerSec: hop.rate, verdict: hop.verdict,
             l7,
-            tooltip: buildTrafficTooltip(hop.rate, hop.verdict, l7),
+            tooltip: buildTrafficTooltip(hop.rate, hop.verdict, l7, external),
             sourceStatus: nodeStatusMap.get(hop.src) || '',
             targetStatus: nodeStatusMap.get(hop.dst) || '',
             animationsEnabled,
@@ -1073,8 +1238,24 @@ function ClusterMapInner() {
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
       if (node.type === 'namespaceRegion') return
+      // Synthetic external-endpoint nodes aren't in topology; they
+      // live purely in flow data. Open the external-specific panel
+      // and clear any prior topology-node selection.
+      if (node.id.startsWith('ext:')) {
+        const data = node.data as { label?: string; metadata?: { ip?: string } } | undefined
+        const label = data?.label ?? node.id
+        // If the node id encodes a FQDN, surface it explicitly so the
+        // panel can show "Hostname" even when the label was the IP.
+        const fqdn = node.id.startsWith('ext:fqdn:') ? node.id.slice('ext:fqdn:'.length) : undefined
+        setSelectedExternal({ id: node.id, label, fqdn })
+        setSelectedNode(null)
+        return
+      }
       const topoNode = topology?.nodes.find((n) => n.id === node.id)
-      if (topoNode) setSelectedNode(topoNode)
+      if (topoNode) {
+        setSelectedNode(topoNode)
+        setSelectedExternal(null)
+      }
     },
     [topology?.nodes]
   )
@@ -1135,7 +1316,7 @@ function ClusterMapInner() {
         onNodeDoubleClick={onNodeDoubleClick}
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
-        onPaneClick={() => setSelectedNode(null)}
+        onPaneClick={() => { setSelectedNode(null); setSelectedExternal(null) }}
         fitView
         fitViewOptions={{ padding: 0.1 }}
         proOptions={{ hideAttribution: true }}
@@ -1369,6 +1550,18 @@ function ClusterMapInner() {
         />
       )}
 
+      {/* Separate panel for synthetic external endpoints — they
+          aren't in topology so NodeDetailPanel can't render them. */}
+      {selectedExternal && (
+        <ExternalEndpointDetailPanel
+          nodeId={selectedExternal.id}
+          label={selectedExternal.label}
+          fqdn={selectedExternal.fqdn}
+          flows={flowData?.edges ?? []}
+          onClose={() => setSelectedExternal(null)}
+        />
+      )}
+
       {/* Edge hover tooltip. Positioned in viewport coordinates
           (position: fixed) so it doesn't inherit the map's zoom or
           panning transforms. pointer-events: none so the overlay
@@ -1393,6 +1586,23 @@ function ClusterMapInner() {
             <span className="text-[10px] font-normal uppercase tracking-wider text-kb-text-tertiary">{hoveredTooltip.verdict}</span>
           </div>
           <div className="space-y-1">
+            {/* External destination rows come first so the user
+                instantly sees *where* the traffic is going, then
+                L7 enrichment (if any) below it. */}
+            {hoveredTooltip.dstFqdn && (
+              <TooltipRow
+                color="#38bdf8"
+                label="host"
+                value={hoveredTooltip.dstFqdn}
+              />
+            )}
+            {hoveredTooltip.dstIp && (
+              <TooltipRow
+                color="#38bdf8"
+                label="ip"
+                value={hoveredTooltip.dstIp}
+              />
+            )}
             {hoveredTooltip.l7 ? (
               <>
                 <TooltipRow
@@ -1419,11 +1629,11 @@ function ClusterMapInner() {
                   />
                 )}
               </>
-            ) : (
+            ) : !hoveredTooltip.dstFqdn && !hoveredTooltip.dstIp ? (
               <div className="text-[10px] text-kb-text-tertiary italic">
                 No L7 visibility on this pair
               </div>
-            )}
+            ) : null}
           </div>
         </div>
       )}
