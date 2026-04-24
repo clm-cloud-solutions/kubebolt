@@ -8,6 +8,7 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import { ApiError } from '@/services/api'
 import { CopilotPanel } from '@/components/copilot/CopilotPanel'
 import { CopilotToggle } from '@/components/copilot/CopilotToggle'
+import { useCopilot } from '@/contexts/CopilotContext'
 
 const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
 
@@ -28,10 +29,24 @@ export function Layout() {
   const totalResources = permissions ? Object.keys(permissions).length : undefined
   const isLimited = permittedCount != null && totalResources != null && permittedCount < totalResources
 
+  // Copilot layout — when the panel is docked AND open, give the
+  // main content column a matching margin-right so it reflows to
+  // the left instead of being hidden underneath the panel. The
+  // panel itself stays position:fixed; we just reserve the space.
+  const { isOpen: copilotOpen, layout: copilotLayoutState } = useCopilot()
+  const copilotReservation =
+    copilotOpen && copilotLayoutState.layout.mode === 'docked'
+      ? copilotLayoutState.layout.dockedWidth
+      : 0
+
   return (
     <div className="flex h-screen w-screen bg-kb-bg overflow-hidden">
       <Sidebar overview={overview} />
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Topbar stays full-width across the content column —
+            even above the docked Copilot panel. The Copilot's
+            top:52 avoids covering it, so the cluster switcher,
+            search and theme toggle stay reachable.*/}
         <Topbar overview={overview} />
         {isLimited && (
           <div className="px-4 py-1.5 bg-status-warn-dim border-b border-kb-border text-xs text-status-warn flex items-center gap-2 shrink-0">
@@ -39,7 +54,13 @@ export function Layout() {
             <span>Limited access — showing {permittedCount} of {totalResources} resource types</span>
           </div>
         )}
-        <main className="flex-1 overflow-y-auto p-5">
+        {/* Reservation lives on <main> instead of the column so the
+            topbar above remains untouched — what was empty space to
+            the right of the topbar now stays as topbar. */}
+        <main
+          className="flex-1 overflow-y-auto p-5 transition-[margin] duration-200 ease-out"
+          style={{ marginRight: copilotReservation }}
+        >
           {isSwitching ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <Loader2 className="w-8 h-8 text-status-info animate-spin mb-4" />

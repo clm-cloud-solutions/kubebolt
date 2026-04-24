@@ -156,6 +156,170 @@ body,
   animation: celebrate 2.2s ease-out both;
 }
 
+/* kb-ai-bezel — animated gradient border that travels around the
+   Copilot input box, blended with a soft outer glow. Same hue
+   family as AskCopilotButton (green accent + violet) plus a touch
+   of blue to keep the rotation visually rich. Grafana and Apple
+   Intelligence use the same pattern.
+
+   Implementation: the wrapper hosts a ::before pseudo-element with
+   a conic-gradient that rotates via a custom property animation.
+   The masking trick (mask-composite: exclude) hollows out the
+   inside so only the 2px border ring is filled with the gradient. */
+@property --kb-ai-bezel-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes kb-ai-bezel-spin {
+  from { --kb-ai-bezel-angle: 0deg; }
+  to   { --kb-ai-bezel-angle: 360deg; }
+}
+
+@keyframes kb-ai-bezel-glow {
+  0%, 100% {
+    box-shadow:
+      0 0 18px 2px rgba(29, 189, 125, 0.22),
+      0 0 36px 8px rgba(29, 189, 125, 0.10);
+  }
+  50% {
+    box-shadow:
+      0 0 18px 2px rgba(139, 92, 246, 0.24),
+      0 0 36px 8px rgba(139, 92, 246, 0.12);
+  }
+}
+
+.kb-ai-bezel {
+  position: relative;
+  border-radius: 0.5rem;
+  /* Outer color-cycling glow keeps the surface alive even when no
+     border is currently passing through that side of the box. */
+  animation: kb-ai-bezel-glow 4.5s ease-in-out infinite;
+}
+
+/* Reusable: same color-cycling glow without the bezel border —
+   for round/standalone surfaces like the floating toggle button
+   that don't need a rotating destello. */
+.animate-kb-ai-glow {
+  animation: kb-ai-bezel-glow 4.5s ease-in-out infinite;
+}
+
+.kb-ai-bezel::before {
+  content: '';
+  position: absolute;
+  inset: -1.5px;
+  border-radius: inherit;
+  padding: 1.5px;
+  /* Two layers in one conic-gradient:
+     - 0° → 180° stays at a low-opacity baseline so the box always
+       has a visibly thin colored border, even when the destello is
+       on the opposite side. Since this section is a flat color,
+       rotating the angle leaves it visually unchanged.
+     - 180° → 360° ramps up to a wide bright arc (~150° including
+       the ramps) that carries the green→violet destello.
+     The combined "bright influence" covers ~40% of the perimeter
+     at any moment, well above the 30% floor, while the rotating
+     angle moves the bright crest around the box. */
+  background: conic-gradient(
+    from var(--kb-ai-bezel-angle),
+    rgba(29, 189, 125, 0.30)    0deg,
+    rgba(29, 189, 125, 0.30)  180deg,
+    rgba(29, 189, 125, 0.60)  210deg,
+    rgba(29, 189, 125, 1)     245deg,
+    rgba(139, 92, 246, 1)     310deg,
+    rgba(139, 92, 246, 0.60)  340deg,
+    rgba(29, 189, 125, 0.30)  360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  animation: kb-ai-bezel-spin 3.6s linear infinite;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* On focus, slow the comet down so the user isn't distracted
+   while typing, and pump up the outer glow so the field still
+   reads as "active AI surface". The destello keeps traveling — a
+   completely static border looked dead. */
+.kb-ai-bezel:focus-within {
+  animation: none;
+  box-shadow:
+    0 0 22px 3px rgba(29, 189, 125, 0.34),
+    0 0 40px 10px rgba(139, 92, 246, 0.16);
+}
+.kb-ai-bezel:focus-within::before {
+  animation-duration: 7s;
+}
+
+/* kb-ai-toggle-halo — soft ping that radiates outward from the
+   floating Copilot toggle button at idle. Slower and softer than
+   Tailwind's default animate-ping so it reads as "ambient
+   presence" rather than "urgent alert" on a fixed UI element. */
+@keyframes kb-ai-toggle-halo {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.7;
+  }
+  70% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+.animate-kb-ai-toggle-halo {
+  animation: kb-ai-toggle-halo 2.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* kb-ai-thinking-dot — three dots staggered to ripple in sequence,
+   used by the Copilot's "thinking" indicator instead of a single
+   spinner. Reads as an active typing/processing state much more
+   clearly than a static loader. */
+@keyframes kb-ai-thinking-bounce {
+  0%, 80%, 100% {
+    transform: scale(0.65);
+    opacity: 0.4;
+  }
+  40% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.animate-kb-ai-thinking-dot {
+  animation: kb-ai-thinking-bounce 1.2s ease-in-out infinite;
+}
+
+/* kb-ai-shimmer — slow gradient sweep across a text label, used to
+   give "Thinking" a subtle color flow that signals work is
+   happening even when the dots aren't enough on their own. */
+@keyframes kb-ai-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.kb-ai-shimmer-text {
+  background-image: linear-gradient(
+    90deg,
+    var(--kb-text-tertiary) 0%,
+    var(--kb-text-tertiary) 35%,
+    rgba(29, 189, 125, 1)   50%,
+    rgba(139, 92, 246, 1)   55%,
+    var(--kb-text-tertiary) 70%,
+    var(--kb-text-tertiary) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: kb-ai-shimmer 2.5s linear infinite;
+}
+
 /* YAML syntax highlighting classes */
 .yaml-key { color: var(--kb-yaml-key); }
 .yaml-string { color: var(--kb-yaml-string); }

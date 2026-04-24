@@ -3,6 +3,7 @@ import { useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { compactCopilotSession, sendCopilotChat } from '@/services/copilot/chat'
+import { useCopilotLayout } from '@/hooks/useCopilotLayout'
 import type { CopilotMessage, CopilotConfig, CopilotUsage } from '@/services/copilot/types'
 
 /** Inline compaction notice rendered in the chat transcript. */
@@ -31,6 +32,11 @@ interface CopilotContextValue {
    * true context the LLM saw (including tool history, system prompt and
    * tool definitions), unlike a client-side approximation of messages[]. */
   lastRoundUsage: CopilotUsage | null
+  /** Panel layout (docked vs floating + sizes). Lives on the context
+   * — not a standalone hook — so multiple subscribers (CopilotPanel
+   * itself, Layout's content-reservation logic, a future toolbar
+   * dock indicator) see the same state without a separate store. */
+  layout: ReturnType<typeof useCopilotLayout>
   openPanel: () => void
   closePanel: () => void
   togglePanel: () => void
@@ -53,6 +59,9 @@ function generateId(): string {
 
 export function CopilotProvider({ children }: { children: ReactNode }) {
   const location = useLocation()
+  // Single source of truth for panel layout — consumers read via
+  // useCopilot().layout so panel + content-reservation stay in sync.
+  const layout = useCopilotLayout()
   const [isOpen, setIsOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -288,6 +297,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         compactNotices,
         isCompacting,
         lastRoundUsage,
+        layout,
         openPanel,
         closePanel,
         togglePanel,

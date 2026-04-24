@@ -16,7 +16,6 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { useCopilot } from '@/contexts/CopilotContext'
-import { useCopilotLayout } from '@/hooks/useCopilotLayout'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
@@ -79,8 +78,9 @@ export function CopilotPanel() {
     compactSession,
     isCompacting,
     lastRoundUsage,
+    layout: layoutState,
   } = useCopilot()
-  const { layout, toggleMode, setDockedWidth, setFloatingSize } = useCopilotLayout()
+  const { layout, toggleMode, setDockedWidth, setFloatingSize } = layoutState
 
   const [input, setInput] = useState('')
   const messagesContainerRef = useRef<HTMLDivElement>(null)
@@ -202,12 +202,17 @@ export function CopilotPanel() {
     }
   }
 
-  // Container styles depend on the mode
+  // Container styles depend on the mode.
+  //
+  // Docked mode sits below the Topbar (h-[52px]) instead of
+  // covering it, and Layout adds a matching marginRight to the
+  // main content column so the app content reflows to the left
+  // rather than being hidden underneath the panel.
   const isDocked = layout.mode === 'docked'
   const containerStyle: React.CSSProperties = isDocked
     ? {
         position: 'fixed',
-        top: 0,
+        top: 52,
         right: 0,
         bottom: 0,
         width: `${layout.dockedWidth}px`,
@@ -342,10 +347,7 @@ export function CopilotPanel() {
         {isLoading &&
           messages[messages.length - 1]?.role === 'assistant' &&
           messages[messages.length - 1]?.content === '' && (
-            <div className="flex items-center gap-2 text-[11px] text-kb-text-tertiary">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              Thinking...
-            </div>
+            <ThinkingIndicator />
           )}
 
         {error && (
@@ -367,17 +369,24 @@ export function CopilotPanel() {
       {/* Input */}
       <div className="border-t border-kb-border p-3 shrink-0">
         <div className="flex gap-2 items-end">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask about your cluster..."
-            rows={1}
-            disabled={isLoading}
-            className="flex-1 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border text-xs text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-kb-accent resize-none max-h-32 disabled:opacity-50"
-            style={{ minHeight: '36px' }}
-          />
+          {/* AI bezel — gradient border that rotates around the box
+              (accent → blue → violet → back), paired with a slow
+              hue-cycling outer glow. Both effects share the same
+              palette as the Ask Copilot button so the affordance
+              reads as "this is the AI surface" wherever it appears. */}
+          <div className="kb-ai-bezel flex-1 bg-kb-bg">
+            <textarea
+              ref={inputRef}
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask about your cluster..."
+              rows={1}
+              disabled={isLoading}
+              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-xs text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 disabled:opacity-50"
+              style={{ minHeight: '36px' }}
+            />
+          </div>
           <button
             onClick={handleSend}
             disabled={!input.trim() || isLoading}
@@ -536,6 +545,34 @@ function ToolCallIndicator({ toolName }: { toolName: string }) {
       <Wrench className="w-3 h-3 text-kb-accent" />
       <span>{label}</span>
       <Loader2 className="w-3 h-3 animate-spin ml-auto" />
+    </div>
+  )
+}
+
+// ThinkingIndicator — three staggered dots + a shimmering label,
+// shown while the assistant has emitted no content yet (between
+// the user submit and the first token / tool call). The single-
+// spinner version it replaces read as "loading something" rather
+// than "actively reasoning"; the dots + color flow communicate
+// activity without overpromising progress.
+function ThinkingIndicator() {
+  return (
+    <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border w-fit">
+      <div className="flex items-center gap-1">
+        <span
+          className="w-1.5 h-1.5 rounded-full bg-kb-accent animate-kb-ai-thinking-dot"
+          style={{ animationDelay: '0s' }}
+        />
+        <span
+          className="w-1.5 h-1.5 rounded-full bg-kb-accent animate-kb-ai-thinking-dot"
+          style={{ animationDelay: '0.18s' }}
+        />
+        <span
+          className="w-1.5 h-1.5 rounded-full bg-kb-accent animate-kb-ai-thinking-dot"
+          style={{ animationDelay: '0.36s' }}
+        />
+      </div>
+      <span className="kb-ai-shimmer-text text-[11px] font-mono">Thinking</span>
     </div>
   )
 }
