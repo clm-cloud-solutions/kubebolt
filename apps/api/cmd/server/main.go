@@ -22,6 +22,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -318,8 +319,13 @@ func main() {
 	// Ensure the email digest flusher (if any) drains on shutdown
 	defer notifManager.Stop()
 
+	// Integrations registry. Populated here so adding a new adapter
+	// is one line — the handlers pick it up automatically.
+	integrationRegistry := integrations.NewRegistry()
+	integrationRegistry.Register(integrations.NewAgent())
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, notifManager)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, notifManager, integrationRegistry)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

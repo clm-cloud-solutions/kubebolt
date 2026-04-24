@@ -10,6 +10,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
@@ -23,6 +24,7 @@ func NewRouter(
 	copilotUsage *copilot.UsageStore,
 	authHandlers *auth.Handlers,
 	notifManager *notifications.Manager,
+	integrationRegistry *integrations.Registry,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -40,6 +42,7 @@ func NewRouter(
 		copilotUsage:  copilotUsage,
 		authHandlers:  authHandlers,
 		notifications: notifManager,
+		integrations:  integrationRegistry,
 	}
 
 	// Health check endpoint
@@ -144,6 +147,13 @@ func NewRouter(
 				r.Get("/insights", h.getInsights)
 				r.Get("/events", h.getEvents)
 				r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
+
+				// Integrations — detection / status of pluggable adapters
+				// (starting with kubebolt-agent). Read-only here;
+				// install / configure / uninstall will live on
+				// admin-only subroutes when they land.
+				r.Get("/integrations", h.handleListIntegrations)
+				r.Get("/integrations/{id}", h.handleGetIntegration)
 
 				// Copilot chat — any role can ask questions
 				r.Post("/copilot/chat", h.HandleCopilotChat)

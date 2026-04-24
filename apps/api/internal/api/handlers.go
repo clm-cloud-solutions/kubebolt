@@ -13,6 +13,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
@@ -25,6 +26,7 @@ type handlers struct {
 	copilotUsage  *copilot.UsageStore // nil when auth/persistence disabled
 	authHandlers  *auth.Handlers
 	notifications *notifications.Manager // nil when no webhook URLs configured
+	integrations  *integrations.Registry
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
