@@ -144,6 +144,13 @@ spec:
             # cluster (e.g. "prod-eks-us-east-1").
             - name: KUBEBOLT_AGENT_CLUSTER_NAME
               value: "kind-kubebolt-dev"
+            # Hubble flow collector kill-switch. Default is on; set to
+            # "false" to disable flow collection entirely without
+            # redeploying (e.g. while debugging, or when running on a
+            # Cilium cluster where you don't want the extra telemetry).
+            # Accepts 1/0, true/false, yes/no (case-insensitive).
+            - name: KUBEBOLT_HUBBLE_ENABLED
+              value: "true"
             # mTLS to Hubble Relay (for production Cilium installs that
             # require it). The dev cluster's relay speaks plaintext, so
             # these env vars stay commented out and the client falls

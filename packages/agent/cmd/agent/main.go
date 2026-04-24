@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -147,7 +148,14 @@ func main() {
 	// streams from Hubble Relay; other pods stand by. Silent no-op when
 	// we're not in-cluster (dev runs on host) or when the cluster
 	// doesn't have Cilium installed.
-	if leaseNs, err := flows.ResolveLeaseNamespace(); err == nil {
+	//
+	// Operator kill-switch: KUBEBOLT_HUBBLE_ENABLED=false turns this
+	// feature off entirely without code changes. Useful when running on
+	// a Cilium cluster where you don't want the extra flow telemetry,
+	// or to cut dependency on the relay while debugging.
+	if !envBool("KUBEBOLT_HUBBLE_ENABLED", true) {
+		slog.Info("hubble: flow collector disabled via KUBEBOLT_HUBBLE_ENABLED=false")
+	} else if leaseNs, err := flows.ResolveLeaseNamespace(); err == nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -226,6 +234,31 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// envBool reads a truthy/falsy env var. Empty/unset returns fallback.
+// Accepts the same tokens as strconv.ParseBool so operators can use
+// 1/0, true/false, yes/no (case-insensitive) — whichever feels most
+// natural in their deployment tooling. Unrecognized values fall back
+// instead of silently defaulting to false, so a typo doesn't turn off
+// a feature the operator expected on.
+func envBool(key string, fallback bool) bool {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	switch strings.ToLower(v) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	case "0", "f", "false", "n", "no", "off":
+		return false
+	default:
+		slog.Warn("ignoring unrecognized boolean env var",
+			slog.String("key", key),
+			slog.String("value", v),
+			slog.Bool("using_default", fallback))
+		return fallback
+	}
 }
 
 func hostname() string {
