@@ -6,51 +6,22 @@ import (
 	"time"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
+
+	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
 )
 
-// RunHubbleCollector wires a HubbleClient to an Aggregator and runs the
-// ingest + periodic flush loop until ctx is cancelled. Reconnects with
-// exponential backoff on stream errors; exits cleanly on ctx done.
-//
-// The caller supplies the VictoriaMetrics URL and the relay address.
-// Flush cadence is fixed at 5s — Hubble flows arrive quickly and the
-// write cost to VM is tiny.
-func RunHubbleCollector(ctx context.Context, relayAddr, vmURL string) {
-	agg := NewAggregator(vmURL)
+// RunCollector runs the Hubble ingest + aggregation loop until ctx is
+// cancelled. Stream errors retry with exponential backoff without
+// crashing the agent — Hubble Relay might be temporarily unreachable
+// during Cilium upgrades or node reboots.
+func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, node string) {
+	agg := NewAggregator(buf, clusterID, node)
 
-	// Flush loop runs independently of the stream so we still persist
-	// whatever we've collected even if the relay connection flaps.
+	// Flush loop independent of the stream so samples still accumulate
+	// and ship even when the relay connection is flapping.
 	flushCtx, flushCancel := context.WithCancel(ctx)
 	defer flushCancel()
-
-	go func() {
-		tick := time.NewTicker(5 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-flushCtx.Done():
-				return
-			case <-tick.C:
-				if err := agg.Flush(flushCtx); err != nil {
-					slog.Warn("hubble: flush failed", slog.String("error", err.Error()))
-				}
-			}
-		}
-	}()
-
-	// Log pair count periodically so bring-up is visible.
-	go func() {
-		tick := time.NewTicker(30 * time.Second)
-		defer tick.Stop()
-		for {
-			select {
-			case <-flushCtx.Done():
-				return
-			case <-tick.C:
-				slog.Info("hubble: flow pairs tracked", slog.Int("pairs", agg.Size()))
-			}
-		}
-	}()
+	go agg.RunFlushLoop(flushCtx, 5*time.Second)
 
 	backoff := time.Second
 	const backoffMax = 60 * time.Second
@@ -61,6 +32,7 @@ func RunHubbleCollector(ctx context.Context, relayAddr, vmURL string) {
 		}
 		if err := streamOnce(ctx, relayAddr, agg); err != nil && ctx.Err() == nil {
 			slog.Warn("hubble: stream ended, will retry",
+				slog.String("relay", relayAddr),
 				slog.String("error", err.Error()),
 				slog.Duration("backoff", backoff),
 			)
@@ -75,7 +47,6 @@ func RunHubbleCollector(ctx context.Context, relayAddr, vmURL string) {
 			}
 			continue
 		}
-		// Clean return (ctx cancelled) — exit.
 		return
 	}
 }

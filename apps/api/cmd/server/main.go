@@ -18,7 +18,6 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
-	"github.com/kubebolt/kubebolt/apps/api/internal/flows"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
@@ -374,14 +373,12 @@ func main() {
 		}
 	}()
 
-	// Hubble flow collector (Phase 2.1 Level 2). Opt-in via env — if the
-	// env var isn't set, the collector simply isn't started. Real
-	// deployments will get auto-detection against hubble-relay.kube-system
-	// in a later iteration.
-	if hubbleAddr := os.Getenv("KUBEBOLT_HUBBLE_RELAY_ADDR"); hubbleAddr != "" {
-		slog.Info("hubble collector enabled", slog.String("relay", hubbleAddr))
-		go flows.RunHubbleCollector(agentCtx, hubbleAddr, vmURL)
-	}
+	// Flow data (pod_flow_events_total, etc.) arrives from the agent as
+	// regular samples via StreamMetrics — no backend-side collector
+	// lives here anymore. The agent is a better bridge to cluster-
+	// internal sources like Hubble Relay because it works unchanged in
+	// SaaS deployments where the backend is outside the customer's
+	// cluster. See packages/agent/internal/flows/.
 
 	// Graceful shutdown
 	quit := make(chan os.Signal, 1)

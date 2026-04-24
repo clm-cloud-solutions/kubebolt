@@ -51,6 +51,35 @@ subjects:
     namespace: kubebolt-system
 
 ---
+# Namespace-scoped lease permissions for the flow-collector singleton
+# election. Only one kubebolt-agent pod streams from Hubble Relay at a
+# time; the rest sit on standby and take over if the leader dies.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebolt-agent-leader
+  namespace: kubebolt-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebolt-agent-leader
+  namespace: kubebolt-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebolt-agent-leader
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+
+---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -88,6 +117,17 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: status.hostIP
+            # POD_NAME + POD_NAMESPACE are used by the Hubble flow
+            # collector's leader-election identity and to locate the
+            # Lease in the agent's own namespace.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
             - name: KUBEBOLT_BACKEND_URL
               value: "host.docker.internal:9090"
           resources:

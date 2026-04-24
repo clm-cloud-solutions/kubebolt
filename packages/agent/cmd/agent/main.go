@@ -22,12 +22,13 @@ import (
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/collector"
+	"github.com/kubebolt/kubebolt/packages/agent/internal/flows"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/shipper"
 	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
 )
 
-const agentVersion = "0.0.5-cadvisor-nofilter"
+const agentVersion = "0.0.6-flows-leader"
 
 func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")
@@ -130,6 +131,22 @@ func main() {
 		defer wg.Done()
 		ship.Run(rootCtx)
 	}()
+
+	// Hubble flow collector (Phase 2.1 Level 2). Elects a single-pod
+	// leader via a Lease in the agent's own namespace and only that pod
+	// streams from Hubble Relay; other pods stand by. Silent no-op when
+	// we're not in-cluster (dev runs on host) or when the cluster
+	// doesn't have Cilium installed.
+	if leaseNs, err := flows.ResolveLeaseNamespace(); err == nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			flows.RunLeaderElectedCollector(rootCtx, buf, "local", *nodeName, leaseNs)
+		}()
+	} else {
+		slog.Debug("hubble: skipping flow collector (no lease namespace)",
+			slog.String("reason", err.Error()))
+	}
 
 	// Periodic buffer stats log (every minute) — lets you see drops if they happen.
 	wg.Add(1)
