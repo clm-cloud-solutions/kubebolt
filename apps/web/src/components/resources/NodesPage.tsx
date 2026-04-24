@@ -1,12 +1,14 @@
 import { Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { StatusBadge } from './StatusBadge'
 import { UsageBar } from './UsageBar'
-import { Phase2Placeholder } from '@/components/shared/Phase2Placeholder'
-import { Server } from 'lucide-react'
+import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
+import { MetricChart } from '@/components/shared/MetricChart'
+import { api } from '@/services/api'
 import { formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -97,9 +99,67 @@ export function NodesPage() {
           <NodeCard key={node.name} node={node} />
         ))}
       </div>
-      <Phase2Placeholder
+      <NodeFleetCharts />
+    </div>
+  )
+}
+
+// NodeFleetCharts renders per-node disk and network activity in two
+// multi-series charts. The agent emits node_fs_used_bytes and
+// node_network_{receive,transmit}_bytes_total with a `node` label,
+// which MetricChart auto-picks up as one series per node without
+// any extra config. When the agent is absent we fall back to the
+// install prompt — same information, no misleading empty charts.
+function NodeFleetCharts() {
+  const { data: agent, isLoading } = useQuery({
+    queryKey: ['integration', 'agent'],
+    queryFn: () => api.getIntegration('agent'),
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  })
+
+  if (isLoading) return null
+
+  const installed = agent && (agent.status === 'installed' || agent.status === 'degraded')
+  if (!installed) {
+    return (
+      <AgentRequiredPlaceholder
         title="Disk I/O & Network per node"
-        description="Detailed node metrics require KubeBolt Agent"
+        description="Detailed node metrics require the KubeBolt Agent. Install it from Administration → Integrations to unlock per-node disk and network charts on this page."
+      />
+    )
+  }
+
+  // Network chart mirrors the Overview's "RX up / TX down" layout
+  // but scoped per-node. Using two separate queries (rather than
+  // adding inside the rate()) avoids a PromQL vector-match failure
+  // when RX and TX series carry different auxiliary labels: the
+  // outer sum by (node) collapses each side to one series per node
+  // first, after which the halves can share one chart cleanly with
+  // TX negated below the axis.
+  //
+  // No accents override: with N nodes × 2 directions we'd end up
+  // with all RX lines in one color and all TX in another, losing
+  // the per-node distinction. The default palette picks a unique
+  // hue per series ("RX worker", "TX worker", "RX control-plane",
+  // "TX control-plane"), and the series label keeps the direction
+  // visible in the tooltip and legend.
+  return (
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <MetricChart
+        title="Filesystem used per node"
+        unit="bytes"
+        query="node_fs_used_bytes"
+        chartType="area"
+      />
+      <MetricChart
+        title="Network activity per node (RX up / TX down)"
+        unit="bytes/s"
+        queries={[
+          { query: 'sum by (node) (rate(node_network_receive_bytes_total[1m]))', prefix: 'RX' },
+          { query: 'sum by (node) (rate(node_network_transmit_bytes_total[1m]))', prefix: 'TX', negate: true },
+        ]}
+        chartType="area"
       />
     </div>
   )
