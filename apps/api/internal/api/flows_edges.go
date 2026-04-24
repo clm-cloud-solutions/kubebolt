@@ -10,14 +10,23 @@ import (
 	"strconv"
 )
 
-// FlowEdge is the rendered-friendly shape of a single pod-to-pod flow.
-// Matches what the frontend ClusterMap wants to read without doing
-// further PromQL parsing.
+// FlowEdge is the rendered-friendly shape of a single flow, for both
+// pod-to-pod and pod-to-external destinations. Matches what the
+// frontend ClusterMap wants to read without doing further PromQL
+// parsing.
+//
+// For external flows (destination outside the cluster), DstPod and
+// DstNamespace are empty and DstIP carries the peer address. DstFqdn
+// is populated when a DNS resolution from the same source pod to that
+// IP was observed — letting the UI show a hostname instead of a
+// raw address.
 type FlowEdge struct {
 	SrcNamespace string     `json:"srcNamespace"`
 	SrcPod       string     `json:"srcPod"`
 	DstNamespace string     `json:"dstNamespace"`
 	DstPod       string     `json:"dstPod"`
+	DstIP        string     `json:"dstIp,omitempty"`
+	DstFqdn      string     `json:"dstFqdn,omitempty"`
 	Verdict      string     `json:"verdict"`
 	RatePerSec   float64    `json:"ratePerSec"`
 	L7           *L7Summary `json:"l7,omitempty"`
@@ -87,6 +96,17 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		httpSelector = `{source="hubble"}`
 		latSelector = `{source="hubble"}`
 	}
+	// External and DNS queries always filter by src_namespace only —
+	// destinations are external so there's no dst_namespace to match
+	// when the user is scoping to a single namespace.
+	var externalSelector, dnsSelector string
+	if ns != "" {
+		externalSelector = fmt.Sprintf(`{src_namespace=%q,source="hubble"}`, ns)
+		dnsSelector = fmt.Sprintf(`{src_namespace=%q,source="hubble"}`, ns)
+	} else {
+		externalSelector = `{source="hubble"}`
+		dnsSelector = `{source="hubble"}`
+	}
 
 	// Scope all three queries to the currently-connected cluster so a
 	// secondary cluster (e.g. docker-desktop running in parallel with
@@ -107,6 +127,21 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		`sum by (src_namespace, src_pod, dst_namespace, dst_pod) (rate(pod_flow_http_latency_seconds_sum%s[%dm])) / sum by (src_namespace, src_pod, dst_namespace, dst_pod) (rate(pod_flow_http_latency_seconds_count%s[%dm]))`,
 		latSelector, windowMin, latSelector, windowMin,
 	), uid)
+	// Pod-to-external L4 flows — destination outside the cluster.
+	// dst_ip carries the peer address; the DNS query below lets us
+	// label it with an FQDN when the same pod resolved it recently.
+	externalQuery := scopeQueryByCluster(fmt.Sprintf(
+		`sum by (src_namespace, src_pod, dst_ip, verdict) (rate(pod_flow_external_events_total%s[%dm]))`,
+		externalSelector, windowMin,
+	), uid)
+	// DNS resolutions keyed to (src pod, ip) so the map below is O(1)
+	// per external flow lookup. FQDN wins from the row with the
+	// highest rate if the same IP resolves from multiple hostnames
+	// (rare, e.g. CNAMEs observed both as origin and canonical).
+	dnsQuery := scopeQueryByCluster(fmt.Sprintf(
+		`sum by (src_namespace, src_pod, resolved_ip, fqdn) (rate(pod_dns_resolutions_total%s[%dm]))`,
+		dnsSelector, windowMin,
+	), uid)
 
 	eventsRows, err := runInstantQuery(r.Context(), eventsQuery)
 	if err != nil {
@@ -119,6 +154,11 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	// falls back to verdict coloring.
 	httpRows, _ := runInstantQuery(r.Context(), httpQuery)
 	latRows, _ := runInstantQuery(r.Context(), latQuery)
+	// External flows + DNS are also best-effort. Clusters without
+	// Cilium L7 DNS visibility simply see no FQDN labels; the external
+	// edges still render, just with dst_ip as the visible peer.
+	externalRows, _ := runInstantQuery(r.Context(), externalQuery)
+	dnsRows, _ := runInstantQuery(r.Context(), dnsQuery)
 
 	// Pre-bucket HTTP by pair so the edge-build loop below is O(1) lookup.
 	type pairKey struct{ srcNs, srcPod, dstNs, dstPod string }
@@ -159,7 +199,31 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	edges := make([]FlowEdge, 0, len(eventsRows))
+	// Build a (src pod, resolved ip) → fqdn map, keeping the FQDN
+	// with the highest resolution rate when an IP is known by several
+	// names. This is the lookup table for turning external dst_ip
+	// into a human-readable hostname.
+	type dnsKey struct{ srcNs, srcPod, ip string }
+	type dnsValue struct {
+		fqdn string
+		rate float64
+	}
+	dnsByPodIP := map[dnsKey]dnsValue{}
+	for _, row := range dnsRows {
+		k := dnsKey{
+			srcNs:  row.Labels["src_namespace"],
+			srcPod: row.Labels["src_pod"],
+			ip:     row.Labels["resolved_ip"],
+		}
+		if k.ip == "" {
+			continue
+		}
+		if cur, ok := dnsByPodIP[k]; !ok || row.Value > cur.rate {
+			dnsByPodIP[k] = dnsValue{fqdn: row.Labels["fqdn"], rate: row.Value}
+		}
+	}
+
+	edges := make([]FlowEdge, 0, len(eventsRows)+len(externalRows))
 	for _, row := range eventsRows {
 		edge := FlowEdge{
 			SrcNamespace: row.Labels["src_namespace"],
@@ -176,6 +240,30 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 			if s, ok := httpByPair[k]; ok {
 				edge.L7 = s
 			}
+		}
+		edges = append(edges, edge)
+	}
+
+	// External edges come with an IP instead of a (namespace, pod)
+	// destination. Look up the IP in the DNS map to attach a hostname
+	// if one was observed from the same source pod; otherwise the UI
+	// shows the IP directly.
+	for _, row := range externalRows {
+		srcNs := row.Labels["src_namespace"]
+		srcPod := row.Labels["src_pod"]
+		ip := row.Labels["dst_ip"]
+		if ip == "" {
+			continue
+		}
+		edge := FlowEdge{
+			SrcNamespace: srcNs,
+			SrcPod:       srcPod,
+			DstIP:        ip,
+			Verdict:      row.Labels["verdict"],
+			RatePerSec:   row.Value,
+		}
+		if v, ok := dnsByPodIP[dnsKey{srcNs: srcNs, srcPod: srcPod, ip: ip}]; ok {
+			edge.DstFqdn = v.fqdn
 		}
 		edges = append(edges, edge)
 	}

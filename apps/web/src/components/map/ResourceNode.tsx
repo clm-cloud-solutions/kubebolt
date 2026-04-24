@@ -3,6 +3,7 @@ import { Handle, Position, type NodeProps } from 'reactflow'
 import {
   Box, Server, Layers, Globe, Database, FileText, Lock,
   Scale, HardDrive, Disc, ArrowRightLeft, Timer, Clock, BarChart3,
+  Cloud,
 } from 'lucide-react'
 import { getDotColor } from '@/utils/colors'
 import { UsageBar } from '@/components/resources/UsageBar'
@@ -27,6 +28,10 @@ const kindIcons: Record<string, React.ReactNode> = {
   CronJob:                <Clock className="w-3.5 h-3.5" />,
   Gateway:                <Globe className="w-3.5 h-3.5" />,
   HTTPRoute:              <ArrowRightLeft className="w-3.5 h-3.5" />,
+  // Synthetic kind injected by the cluster map for pod-to-external
+  // destinations discovered via Hubble. Not a real Kubernetes
+  // resource — never appears in topology from the backend.
+  ExternalEndpoint:       <Cloud className="w-3.5 h-3.5" />,
 }
 
 const kindAccent: Record<string, { bg: string; text: string; border: string }> = {
@@ -46,6 +51,9 @@ const kindAccent: Record<string, { bg: string; text: string; border: string }> =
   CronJob:       { bg: 'rgba(245,166,35,0.08)', text: '#f5a623', border: 'border-[#f5a623]/20' },
   Gateway:       { bg: 'rgba(167,139,250,0.08)', text: '#a78bfa', border: 'border-[#a78bfa]/20' },
   HTTPRoute:     { bg: 'rgba(167,139,250,0.08)', text: '#a78bfa', border: 'border-[#a78bfa]/20' },
+  // Sky-blue for external peers so they read clearly as "outside the
+  // cluster" without clashing with Service (teal) or Ingress (violet).
+  ExternalEndpoint: { bg: 'rgba(56,189,248,0.08)', text: '#38bdf8', border: 'border-[#38bdf8]/25' },
 }
 
 const defaultAccent = { bg: 'rgba(255,255,255,0.04)', text: 'var(--kb-text-tertiary)', border: 'border-kb-border' }

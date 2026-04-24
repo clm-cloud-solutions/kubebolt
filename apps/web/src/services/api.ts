@@ -379,6 +379,11 @@ export interface FlowEdge {
   srcPod: string
   dstNamespace: string
   dstPod: string
+  // For pod-to-external flows, dstIp carries the peer address and
+  // dstFqdn (when DNS visibility is enabled) carries the observed
+  // hostname. dstPod / dstNamespace are empty in that case.
+  dstIp?: string
+  dstFqdn?: string
   verdict: string
   ratePerSec: number
   l7?: L7Summary

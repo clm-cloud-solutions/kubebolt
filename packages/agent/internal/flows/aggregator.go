@@ -54,16 +54,42 @@ type latSummary struct {
 	count uint64
 }
 
+// externalFlowKey tracks flows where the source is a pod and the
+// destination is outside the cluster (empty pod name, non-empty IP).
+// Emitted as a separate metric so pod_flow_events_total's label set
+// stays exactly "pod pair + verdict" — the backend crosses the IP
+// with DNS resolutions to turn these into "pod → fqdn" edges.
+type externalFlowKey struct {
+	srcNs   string
+	srcPod  string
+	dstIP   string
+	verdict string
+}
+
+// dnsKey tracks observed DNS answers: which pod queried which FQDN
+// and what IP(s) came back. Used downstream to label external flow
+// edges with a human-readable hostname. Cardinality is bounded per
+// pod by its actual DNS query pattern — workloads that talk to a
+// handful of upstreams stay cheap.
+type dnsKey struct {
+	srcNs       string
+	srcPod      string
+	fqdn        string
+	resolvedIP  string
+}
+
 // Aggregator turns a stream of Hubble flow events into pod_flow_events_total
 // samples pushed to the agent's ring buffer. The shipper already owns the
 // delivery path to the backend, so the aggregator's only job is dedup,
 // count, and periodic flush into the same buffer the kubelet collectors
 // use.
 type Aggregator struct {
-	mu       sync.Mutex
-	totals   map[flowKey]uint64
-	httpReqs map[httpKey]uint64
-	httpLat  map[httpLatKey]*latSummary
+	mu        sync.Mutex
+	totals    map[flowKey]uint64
+	httpReqs  map[httpKey]uint64
+	httpLat   map[httpLatKey]*latSummary
+	externals map[externalFlowKey]uint64
+	dns       map[dnsKey]uint64
 
 	buffer      *buffer.Ring
 	clusterID   string
@@ -76,6 +102,8 @@ func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node string) *Aggre
 		totals:      make(map[flowKey]uint64),
 		httpReqs:    make(map[httpKey]uint64),
 		httpLat:     make(map[httpLatKey]*latSummary),
+		externals:   make(map[externalFlowKey]uint64),
+		dns:         make(map[dnsKey]uint64),
 		buffer:      buf,
 		clusterID:   clusterID,
 		clusterName: clusterName,
@@ -108,7 +136,70 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 	if src == nil || dst == nil {
 		return
 	}
-	if src.GetPodName() == "" || dst.GetPodName() == "" {
+	// Source needs to be a pod — flows originating from host / world
+	// aren't useful for KubeBolt's pod-level map regardless of what
+	// they're going to. Destination may be empty (external call) and
+	// still be interesting; we branch on that below.
+	if src.GetPodName() == "" {
+		return
+	}
+
+	// L7 DNS: extract the FQDN a pod just resolved so the backend can
+	// label external edges with a hostname. Only look at successful
+	// RESPONSE events with answers — REQUEST events have no Ips, and
+	// NXDOMAIN/SERVFAIL (Rcode != 0) means no resolution happened.
+	// DNS is an L7 event so it bypasses the pod-to-pod filter below.
+	if l7 := f.GetL7(); l7 != nil && l7.GetDns() != nil {
+		if dnsRec := l7.GetDns(); dnsRec != nil && l7.GetType() == flowpb.L7FlowType_RESPONSE && dnsRec.GetRcode() == 0 {
+			fqdn := strings.TrimSuffix(dnsRec.GetQuery(), ".")
+			if fqdn != "" {
+				a.mu.Lock()
+				for _, ip := range dnsRec.GetIps() {
+					if ip == "" {
+						continue
+					}
+					a.dns[dnsKey{
+						srcNs:      src.GetNamespace(),
+						srcPod:     src.GetPodName(),
+						fqdn:       fqdn,
+						resolvedIP: ip,
+					}]++
+				}
+				a.mu.Unlock()
+			}
+		}
+		// Fall through to HTTP handling (for HTTP-flavored L7 events
+		// this is a no-op because we checked GetDns).
+	}
+
+	// Pod-to-external L4 flow: destination isn't a pod but has an IP.
+	// Same IsReply / EGRESS filter as pod-to-pod so we count initiator
+	// side only. Emitted as its own metric so existing pod_flow_events
+	// consumers don't see a schema change.
+	if dst.GetPodName() == "" {
+		if f.GetL7() != nil {
+			// L7 event already handled above; don't double count the
+			// L4 counterpart.
+			return
+		}
+		if f.GetIsReply() != nil && f.GetIsReply().GetValue() {
+			return
+		}
+		if f.GetTrafficDirection() != flowpb.TrafficDirection_EGRESS {
+			return
+		}
+		dstIP := f.GetIP().GetDestination()
+		if dstIP == "" {
+			return
+		}
+		a.mu.Lock()
+		a.externals[externalFlowKey{
+			srcNs:   src.GetNamespace(),
+			srcPod:  src.GetPodName(),
+			dstIP:   dstIP,
+			verdict: strings.ToLower(f.GetVerdict().String()),
+		}]++
+		a.mu.Unlock()
 		return
 	}
 
@@ -201,7 +292,8 @@ func statusClassFor(code uint32) string {
 // ring buffer. Safe to call concurrently with Record.
 func (a *Aggregator) Flush() {
 	a.mu.Lock()
-	if len(a.totals) == 0 && len(a.httpReqs) == 0 && len(a.httpLat) == 0 {
+	if len(a.totals) == 0 && len(a.httpReqs) == 0 && len(a.httpLat) == 0 &&
+		len(a.externals) == 0 && len(a.dns) == 0 {
 		a.mu.Unlock()
 		return
 	}
@@ -216,6 +308,14 @@ func (a *Aggregator) Flush() {
 	httpLatSnap := make(map[httpLatKey]latSummary, len(a.httpLat))
 	for k, v := range a.httpLat {
 		httpLatSnap[k] = *v
+	}
+	externalSnap := make(map[externalFlowKey]uint64, len(a.externals))
+	for k, v := range a.externals {
+		externalSnap[k] = v
+	}
+	dnsSnap := make(map[dnsKey]uint64, len(a.dns))
+	for k, v := range a.dns {
+		dnsSnap[k] = v
 	}
 	a.mu.Unlock()
 
@@ -297,6 +397,47 @@ func (a *Aggregator) Flush() {
 				Labels:     base,
 			},
 		)
+	}
+
+	// External flow events: pod → non-pod IP (outside-the-cluster
+	// calls). Same shape as pod_flow_events_total but with dst_ip in
+	// place of (dst_namespace, dst_pod). The backend crosses this with
+	// DNS resolutions to turn dst_ip into a hostname where possible.
+	for k, count := range externalSnap {
+		samples = append(samples, &agentv1.Sample{
+			Timestamp:  ts,
+			MetricName: "pod_flow_external_events_total",
+			Value:      float64(count),
+			Labels: tag(map[string]string{
+				"cluster_id":    a.clusterID,
+				"node":          a.node,
+				"src_namespace": k.srcNs,
+				"src_pod":       k.srcPod,
+				"dst_ip":        k.dstIP,
+				"verdict":       k.verdict,
+				"source":        "hubble",
+			}),
+		})
+	}
+
+	// DNS resolutions: (pod, fqdn) → ip pairs. Feeds the FQDN-labeling
+	// of external edges. Only successful responses with answers land
+	// here (Record filters NXDOMAIN / REQUEST events upstream).
+	for k, count := range dnsSnap {
+		samples = append(samples, &agentv1.Sample{
+			Timestamp:  ts,
+			MetricName: "pod_dns_resolutions_total",
+			Value:      float64(count),
+			Labels: tag(map[string]string{
+				"cluster_id":    a.clusterID,
+				"node":          a.node,
+				"src_namespace": k.srcNs,
+				"src_pod":       k.srcPod,
+				"fqdn":          k.fqdn,
+				"resolved_ip":   k.resolvedIP,
+				"source":        "hubble",
+			}),
+		})
 	}
 
 	a.buffer.Push(samples)

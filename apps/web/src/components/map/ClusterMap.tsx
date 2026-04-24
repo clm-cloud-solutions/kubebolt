@@ -59,6 +59,16 @@ function finalizeL7(a: L7Aggregator): L7Summary {
   }
 }
 
+// externalNodeId returns a stable virtual node id for a pod-to-external
+// flow destination. FQDN-based when DNS was observed (most useful —
+// multiple IPs behind the same hostname collapse into one map node),
+// IP-based as fallback. Prefix keeps the id collision-free with any
+// real topology node (which use "Kind/Namespace/Name" form).
+function externalNodeId(f: { dstFqdn?: string; dstIp?: string }): string {
+  if (f.dstFqdn) return `ext:fqdn:${f.dstFqdn}`
+  return `ext:ip:${f.dstIp ?? ''}`
+}
+
 const STATUS_CLASS_LABEL: Record<string, string> = {
   ok: '2xx', redir: '3xx', client_err: '4xx', server_err: '5xx', info: '1xx', unknown: '?',
 }
@@ -732,7 +742,34 @@ function ClusterMapInner() {
       const trafficVisible = kindFiltered.filter(
         (n) => flowPodIds.has(n.id) || serviceIds.has(n.id) || externalEntryIds.has(n.id)
       )
-      return buildTrafficLayout(trafficVisible, topology.edges || [], flows)
+
+      // Synthetic nodes for pod-to-external flows. Each distinct
+      // destination outside the cluster — keyed by FQDN when Hubble
+      // DNS visibility caught the resolution, otherwise by raw IP —
+      // becomes a virtual ExternalEndpoint node rendered in an
+      // "(external)" namespace region to the right of the cluster.
+      // These nodes are frontend-only; the backend's topology view
+      // doesn't know about them.
+      const externalKeys = new Set<string>()
+      const externalNodes: TopologyNode[] = []
+      for (const f of flows) {
+        if (f.dstPod) continue
+        const label = f.dstFqdn || f.dstIp
+        if (!label) continue
+        const key = f.dstFqdn ? `fqdn:${f.dstFqdn}` : `ip:${f.dstIp}`
+        if (externalKeys.has(key)) continue
+        externalKeys.add(key)
+        externalNodes.push({
+          id: externalNodeId(f),
+          type: 'ExternalEndpoint',
+          kind: 'ExternalEndpoint',
+          name: label,
+          label,
+          namespace: '(external)',
+          status: 'active',
+        } as TopologyNode)
+      }
+      return buildTrafficLayout([...trafficVisible, ...externalNodes], topology.edges || [], flows)
     }
     const filtered = filterNodes(topology.nodes, hiddenKinds, visibleNamespaces)
     if (layoutMode === 'flow') {
@@ -867,6 +904,24 @@ function ClusterMapInner() {
 
       for (const f of flowData.edges) {
         const srcId = `Pod/${f.srcNamespace}/${f.srcPod}`
+
+        // Pod-to-external flow: no dst pod, dst is an IP or FQDN. The
+        // destination is a synthetic ExternalEndpoint node we injected
+        // into computedNodes earlier. Direct edge pod → external.
+        if (!f.dstPod) {
+          if (!f.dstIp && !f.dstFqdn) continue
+          const dstId = externalNodeId(f)
+          if (!visibleIds.has(srcId) || !visibleIds.has(dstId)) continue
+          const key = `${srcId}||${dstId}||${f.verdict}`
+          const direct = directEdges.get(key) ?? {
+            src: srcId, dst: dstId, verdict: f.verdict, rate: 0,
+          }
+          direct.rate += f.ratePerSec
+          mergeL7(direct, f.l7)
+          directEdges.set(key, direct)
+          continue
+        }
+
         const dstId = `Pod/${f.dstNamespace}/${f.dstPod}`
         if (!visibleIds.has(srcId) || !visibleIds.has(dstId)) continue
 
