@@ -149,11 +149,16 @@ func NewRouter(
 				r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
 
 				// Integrations — detection / status of pluggable adapters
-				// (starting with kubebolt-agent). Read-only here;
-				// install / configure / uninstall will live on
-				// admin-only subroutes when they land.
+				// (starting with kubebolt-agent). List + get are
+				// read-only, any role can see them. Install /
+				// uninstall mutate the cluster and require Admin.
 				r.Get("/integrations", h.handleListIntegrations)
 				r.Get("/integrations/{id}", h.handleGetIntegration)
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Post("/integrations/{id}/install", h.handleInstallIntegration)
+					r.Delete("/integrations/{id}", h.handleUninstallIntegration)
+				})
 
 				// Copilot chat — any role can ask questions
 				r.Post("/copilot/chat", h.HandleCopilotChat)

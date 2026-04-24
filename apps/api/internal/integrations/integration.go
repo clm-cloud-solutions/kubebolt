@@ -12,6 +12,7 @@ package integrations
 
 import (
 	"context"
+	"encoding/json"
 
 	"k8s.io/client-go/kubernetes"
 )
@@ -130,3 +131,62 @@ type Provider interface {
 	// handler surfaces these as StatusUnknown, not as HTTP errors.
 	Detect(ctx context.Context, cs kubernetes.Interface) (Integration, error)
 }
+
+// Installable is implemented by integrations that can be installed
+// and removed via the backend. Optional — integrations that only
+// consume external state (e.g. a Prometheus remote-read adapter)
+// can omit this interface, in which case the install/uninstall
+// handlers return 405 Method Not Allowed.
+//
+// Each provider decodes its own per-integration config shape from
+// the JSON payload so the interface stays uniform while future
+// integrations can collect wildly different values from the UI.
+type Installable interface {
+	Provider
+
+	// Install lays down the workloads this integration needs. Must
+	// be idempotent to the extent that running it twice with the
+	// same config doesn't mutate cluster state. Returning a
+	// ConflictError signals "something exists that wasn't put there
+	// by us" — the handler surfaces that to the UI so the admin can
+	// either reconcile or cancel.
+	Install(ctx context.Context, cs kubernetes.Interface, configJSON json.RawMessage) error
+
+	// Uninstall removes everything this integration put in the
+	// cluster. Implementations identify their own resources via a
+	// management label — anything not labeled that way is left
+	// alone, so an external Helm install isn't clobbered.
+	// Returns nil when nothing we own exists (already gone).
+	Uninstall(ctx context.Context, cs kubernetes.Interface) error
+}
+
+// ConflictError signals that an install encountered a resource it
+// did not create and is unwilling to overwrite. The handler
+// translates this into HTTP 409 so the UI can render a targeted
+// reconcile dialog instead of a generic error.
+type ConflictError struct {
+	// Kind/Namespace/Name identify the conflicting object.
+	Kind      string
+	Namespace string
+	Name      string
+	// Reason is a human-readable one-liner explaining why the
+	// conflict stopped the install. E.g. "already exists and was
+	// not installed by KubeBolt".
+	Reason string
+}
+
+func (e *ConflictError) Error() string {
+	if e.Namespace != "" {
+		return e.Kind + " " + e.Namespace + "/" + e.Name + ": " + e.Reason
+	}
+	return e.Kind + " " + e.Name + ": " + e.Reason
+}
+
+// Management label applied to every resource created by the backend
+// install flow. Uninstall lists and deletes by this label so we
+// never touch resources put there by helm, kubectl apply, or
+// another KubeBolt-like tool.
+const (
+	ManagedByLabel = "app.kubernetes.io/managed-by"
+	ManagedByValue = "kubebolt"
+)
