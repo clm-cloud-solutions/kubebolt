@@ -144,6 +144,26 @@ spec:
             # cluster (e.g. "prod-eks-us-east-1").
             - name: KUBEBOLT_AGENT_CLUSTER_NAME
               value: "kind-kubebolt-dev"
+            # mTLS to Hubble Relay (for production Cilium installs that
+            # require it). The dev cluster's relay speaks plaintext, so
+            # these env vars stay commented out and the client falls
+            # back to insecure transport.
+            #
+            # - name: KUBEBOLT_HUBBLE_RELAY_CA_FILE
+            #   value: /etc/hubble-tls/ca.crt
+            # - name: KUBEBOLT_HUBBLE_RELAY_CERT_FILE
+            #   value: /etc/hubble-tls/tls.crt
+            # - name: KUBEBOLT_HUBBLE_RELAY_KEY_FILE
+            #   value: /etc/hubble-tls/tls.key
+            # - name: KUBEBOLT_HUBBLE_RELAY_SERVER_NAME
+            #   value: "*.hubble-relay.cilium.io"
+          # Uncomment the volume + volumeMount below to supply cert
+          # material when mTLS is enabled. Expects a Secret named
+          # "hubble-client-tls" with keys ca.crt / tls.crt / tls.key.
+          # volumeMounts:
+          #   - name: hubble-tls
+          #     mountPath: /etc/hubble-tls
+          #     readOnly: true
           resources:
             requests:
               cpu: 10m
@@ -158,3 +178,7 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: [ALL]
+      # volumes:
+      #   - name: hubble-tls
+      #     secret:
+      #       secretName: hubble-client-tls
