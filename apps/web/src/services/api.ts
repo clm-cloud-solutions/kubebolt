@@ -381,6 +381,16 @@ export interface FlowEdge {
   dstPod: string
   verdict: string
   ratePerSec: number
+  l7?: L7Summary
+}
+
+// Present on forwarded edges when Cilium's proxy emitted HTTP L7 events
+// for the destination pod. Absent on drops and on pairs without L7
+// visibility enabled.
+export interface L7Summary {
+  requestsPerSec: number
+  statusClass: Partial<Record<'info' | 'ok' | 'redir' | 'client_err' | 'server_err' | 'unknown', number>>
+  avgLatencyMs?: number
 }
 
 export interface FlowEdgesResponse {

@@ -157,3 +157,21 @@ body,
 .yaml-bool { color: var(--kb-yaml-bool); }
 .yaml-null { color: var(--kb-yaml-null); font-style: italic; }
 .yaml-comment { color: var(--kb-yaml-comment); font-style: italic; }
+
+/* Cluster Map: namespace region wrappers let pointer events fall
+   through to the edges below them, so edge hover tooltips still
+   fire for traffic that flows inside a namespace. ReactFlow's drag
+   listener on the wrapper still fires during the event bubble phase
+   from a descendant with pointer-events: auto (the .ns-drag-handle
+   label), so drag from the label keeps working. */
+.react-flow__node-namespaceRegion {
+  pointer-events: none !important;
+}
+.react-flow__node-namespaceRegion .ns-drag-handle {
+  pointer-events: auto;
+  cursor: grab;
+}
+.react-flow__node-namespaceRegion .ns-drag-handle:active {
+  cursor: grabbing;
+}
+

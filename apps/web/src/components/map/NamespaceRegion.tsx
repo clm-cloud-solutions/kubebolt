@@ -21,7 +21,16 @@ function NamespaceRegionComponent({ data }: NodeProps<NamespaceData>) {
         pointerEvents: 'none',
       }}
     >
+      {/* The header is the drag handle. Rest of the region has
+          pointer-events: none so edges inside still surface their
+          hover tooltips. `nodrag` — actually the opposite — this
+          element *is* the drag surface; class name matches the
+          `dragHandle` selector set on the region node in
+          ClusterMap.tsx so only clicking the label reorders the
+          namespace (clicking empty space inside still passes through
+          to the edges below). */}
       <div
+        className="ns-drag-handle"
         style={{
           position: 'absolute',
           top: 12,
@@ -29,8 +38,11 @@ function NamespaceRegionComponent({ data }: NodeProps<NamespaceData>) {
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          pointerEvents: 'none',
+          pointerEvents: 'auto',
+          cursor: 'grab',
+          userSelect: 'none',
         }}
+        title="Drag to reorder this namespace"
       >
         <span style={{ fontSize: 13, fontWeight: 600, color: data.color.text }}>
           {data.namespace}

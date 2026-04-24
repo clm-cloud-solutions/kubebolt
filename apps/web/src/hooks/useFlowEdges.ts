@@ -13,7 +13,7 @@ interface Params {
 // pod_flow_events_total into per-pair rates. Returns an empty edges
 // array (not an error) when no traffic observability source is emitting
 // data yet — the UI treats "no flows" as a neutral state, not a failure.
-export function useFlowEdges({ namespace, windowMinutes = 5, enabled = true }: Params = {}) {
+export function useFlowEdges({ namespace, windowMinutes = 1, enabled = true }: Params = {}) {
   return useQuery<FlowEdgesResponse>({
     queryKey: ['flow-edges', namespace ?? 'all', windowMinutes],
     queryFn: () => api.getFlowEdges({ namespace, windowMinutes }),

@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-web agent-image agent-deploy agent-logs agent-dev agent-undeploy install build build-api build-web build-binary build-all test clean
+.PHONY: dev dev-api dev-web agent-image agent-deploy agent-logs agent-dev agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -137,6 +137,27 @@ kind-testbed: kind-metrics-server
 ## Remove the demo workload (keeps metrics-server).
 kind-testbed-down:
 	kubectl delete -f deploy/test/demo-workload.yaml --ignore-not-found
+
+## Install ingress-nginx + add Ingress routing to demo-web so external
+## HTTP can be simulated from the host. demo-workload.yaml already has
+## the Ingress resource and a CiliumNetworkPolicy that turns on L7
+## visibility for the ingress-nginx pod — so once traffic flows, the
+## cluster map's Traffic mode shows status codes on the Ingress → Pod
+## hop too. The controller install is from the official cloud
+## manifest, which works in kind without hostNetwork tricks.
+##
+## After `make kind-testbed-ingress`, start a port-forward and curl:
+##   kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80 &
+##   curl -H 'Host: demo.localhost' http://localhost:8080/
+##   curl -H 'Host: demo.localhost' http://localhost:8080/err500
+kind-testbed-ingress: kind-testbed
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.2/deploy/static/provider/cloud/deploy.yaml
+	kubectl -n ingress-nginx rollout status deploy/ingress-nginx-controller --timeout=120s
+	kubectl apply -f deploy/test/demo-workload.yaml
+	@echo ""
+	@echo "Ingress ready. Port-forward to test from the host:"
+	@echo "  kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80"
+	@echo "  curl -H 'Host: demo.localhost' http://localhost:8080/"
 
 # ─── Setup ────────────────────────────────────────────────────
 

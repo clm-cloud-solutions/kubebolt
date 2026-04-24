@@ -35,6 +35,19 @@ const DEFAULT_STYLE: EdgeStyle = {
   particles: 0, particleSize: 0, speed: 0, glow: false,
 }
 
+// Map an L7 status-class breakdown (request/sec per class) to a single
+// edge color. Returns undefined when there's no L7 data to decide on,
+// letting the caller fall back to verdict-based coloring.
+function l7ColorFor(statusClass?: Record<string, number>): string | undefined {
+  if (!statusClass) return undefined
+  const total = Object.values(statusClass).reduce((s, v) => s + (v || 0), 0)
+  if (total <= 0) return undefined
+  if ((statusClass.server_err ?? 0) > 0) return '#f43f5e'   // red
+  if ((statusClass.client_err ?? 0) > 0) return '#f59e0b'   // amber
+  if ((statusClass.redir ?? 0) > 0 && (statusClass.ok ?? 0) === 0) return '#a78bfa' // violet
+  return '#10b981'  // emerald (all ok / info)
+}
+
 const ERROR_STATUSES = new Set(['failed', 'error', 'crashloopbackoff', 'imagepullbackoff', 'evicted', 'oomkilled'])
 
 function ConnectionEdgeComponent({
@@ -52,22 +65,44 @@ function ConnectionEdgeComponent({
   // Traffic edges are a special case: width and particle count scale with
   // the observed rate, and color swings on verdict ("forwarded" = emerald,
   // anything else = rose) so drops pop without needing a separate path.
+  // When L7 HTTP data is present on a forwarded edge, status class
+  // overrides the green: any 5xx → red, any 4xx-only → amber, 3xx-only
+  // → violet. Gives the cluster map an at-a-glance HTTP health read
+  // without needing hover.
   let cfg: EdgeStyle
   if (edgeType === 'traffic') {
-    const rate = Math.max(0, Number(data?.ratePerSec ?? 0))
+    const l7 = data?.l7 as
+      | { requestsPerSec?: number; statusClass?: Record<string, number>; avgLatencyMs?: number }
+      | undefined
+    // Drive width / particle count / speed from HTTP req/sec when L7
+    // visibility is enabled — it's a much better proxy for actual
+    // activity than TCP event rate (one Hubble event per connection
+    // covers many HTTP/1.1 keep-alive requests or HTTP/2 multiplexed
+    // streams). Falls back to event rate when no L7 data exists so
+    // plain TCP / non-HTTP edges still animate.
     const verdict = String(data?.verdict ?? 'forwarded').toLowerCase()
     const isForwarded = verdict === 'forwarded'
-    // log10 scaling: 1 rps -> 1.4px, 10 rps -> 2.2px, 100 rps -> 3px,
-    // caps around 4px so a hot service doesn't draw a black bar.
-    const width = Math.min(4, 1 + Math.log10(rate + 1) * 0.7)
-    const particles = Math.min(4, Math.max(1, Math.round(Math.log10(rate + 1) + 1)))
+    // Visual scale is relative to the busiest edge on the map
+    // (ClusterMap injects `relativeRate` in [0, 1]). Using absolute
+    // rates broke for high-RPS infra — 50 rps and 5000 rps both
+    // maxed out the log curve and looked identical. Relative keeps
+    // the busiest edge pinned at peak visual intensity regardless of
+    // traffic volume, and everything else reads against it.
+    // Fallback to a modest slice of the scale when relativeRate
+    // isn't present (e.g., single edge on the map, no peer to
+    // compare against).
+    const rel = Math.min(1, Math.max(0, Number(data?.relativeRate ?? 0.3)))
+    const width = 1 + rel * 3                                 // 1px → 4px
+    const particles = rel < 0.1 ? 1 : rel < 0.4 ? 2 : rel < 0.75 ? 3 : 4
+    const speed = Math.max(0.4, 2.4 - rel * 2.0)              // 2.4s → 0.4s cycle
+    const stroke = isForwarded ? l7ColorFor(l7?.statusClass) ?? '#10b981' : '#f43f5e'
     cfg = {
-      stroke: isForwarded ? '#10b981' : '#f43f5e',
+      stroke,
       width,
       dashed: false,
       particles,
       particleSize: 2,
-      speed: Math.max(1.2, 3 - Math.log10(rate + 1) * 0.6),
+      speed,
       glow: true,
     }
   } else {
@@ -96,6 +131,20 @@ function ConnectionEdgeComponent({
 
   return (
     <g>
+      {/* Wide invisible interaction path. ReactFlow attaches pointer
+          handlers to this <g>; a thin visible stroke (1-4px) makes
+          hover fragile because a pixel of movement leaves the edge
+          DOM entirely, which would close the tooltip on every jitter.
+          The 20px transparent path gives a reliable hover target
+          without changing how the edge looks. */}
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={20}
+        className="react-flow__edge-interaction"
+      />
+
       {/* Glow effect for traffic edges */}
       {cfg.glow && (
         <path
@@ -104,6 +153,7 @@ function ConnectionEdgeComponent({
           stroke={hasError ? '#ef4056' : cfg.stroke}
           strokeWidth={cfg.width * 3}
           opacity={0.06}
+          pointerEvents="none"
         />
       )}
 
@@ -116,6 +166,7 @@ function ConnectionEdgeComponent({
         strokeWidth={cfg.width}
         strokeDasharray={cfg.dashed ? '6 4' : undefined}
         opacity={cfg.particles > 0 ? 0.6 : 0.4}
+        pointerEvents="none"
       />
 
       {/* Error pulse overlay — only when animations are on */}
@@ -126,6 +177,7 @@ function ConnectionEdgeComponent({
           stroke="#ef4056"
           strokeWidth={cfg.width * 2}
           opacity={0.15}
+          pointerEvents="none"
         >
           <animate attributeName="opacity" values="0.15;0.05;0.15" dur="2s" repeatCount="indefinite" />
         </path>
@@ -138,6 +190,7 @@ function ConnectionEdgeComponent({
           r={cfg.particleSize}
           fill={hasError ? '#ef4056' : cfg.stroke}
           opacity={0.8}
+          pointerEvents="none"
         >
           <animateMotion
             dur={`${cfg.speed}s`}

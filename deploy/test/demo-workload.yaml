@@ -40,6 +40,109 @@ stringData:
   api_token: "not-a-real-token"
 
 ---
+# Nginx config with deterministic status-code paths. Used by demo-web
+# so the L7 edge coloring in the cluster map can be exercised without
+# waiting for a real failure (curl http://demo-web/err500 etc.).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-web-nginx
+  namespace: demo
+data:
+  default.conf: |
+    server {
+      listen 80 default_server;
+      server_name _;
+
+      location / {
+        add_header Content-Type text/plain;
+        return 200 "ok\n";
+      }
+
+      # Deterministic error paths for L7 observability demos. Hit any
+      # of these from demo-load to force a status-class change on the
+      # corresponding edge in Traffic mode.
+      location /err500 { return 500; }
+      location /err502 { return 502; }
+      location /err503 { return 503; }
+      location /nope   { return 404; }
+    }
+
+---
+# Enables Cilium L7 (HTTP) visibility for ingress on demo-web. Without
+# this, Hubble only surfaces L3/L4 events and the agent can't emit
+# pod_flow_http_requests_total — so the cluster map falls back to
+# verdict-based coloring. The empty `http: - {}` rule means "parse
+# traffic as HTTP but don't restrict anything".
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: demo-web-http-visibility
+  namespace: demo
+spec:
+  endpointSelector:
+    matchLabels:
+      app: demo-web
+  ingress:
+    - toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+          rules:
+            http:
+              - {}
+
+---
+# External routing for demo-web via ingress-nginx. Only useful when
+# `kubectl apply -f https://…/ingress-nginx/deploy/static/provider/cloud/deploy.yaml`
+# has been applied first; `make demo-ingress-install` bundles both.
+# Access from the host after starting a port-forward, e.g.
+#   kubectl -n ingress-nginx port-forward svc/ingress-nginx-controller 8080:80
+#   curl -H 'Host: demo.localhost' http://localhost:8080/
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: demo-web
+  namespace: demo
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: demo.localhost
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: demo-web
+                port:
+                  name: http
+
+---
+# L7 visibility for ingress-nginx pods too, so requests that arrive
+# from outside the cluster are parsed and the ingress → demo-web edge
+# in Traffic mode shows HTTP status classes / latency. Without this
+# CNP the ingress-nginx side only emits L4 flow events.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: ingress-nginx-http-visibility
+  namespace: ingress-nginx
+spec:
+  endpointSelector:
+    matchLabels:
+      app.kubernetes.io/name: ingress-nginx
+      app.kubernetes.io/component: controller
+  ingress:
+    - toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+          rules:
+            http:
+              - {}
+
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,6 +163,10 @@ spec:
         app.kubernetes.io/name: demo-web
         app.kubernetes.io/component: frontend
     spec:
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: demo-web-nginx
       containers:
         - name: nginx
           image: nginx:1.27-alpine
@@ -71,6 +178,10 @@ spec:
                 name: demo-web-config
             - secretRef:
                 name: demo-web-secret
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
           resources:
             requests:
               cpu: 50m

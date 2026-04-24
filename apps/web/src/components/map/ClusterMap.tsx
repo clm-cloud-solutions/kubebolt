@@ -24,6 +24,86 @@ import { ConnectionEdge } from './ConnectionEdge'
 import { MapControls } from './MapControls'
 import { NodeDetailPanel } from './NodeDetailPanel'
 import type { TopologyNode, TopologyEdge } from '@/types/kubernetes'
+import type { L7Summary } from '@/services/api'
+
+// Running totals for an intent edge's L7 data. requestsPerSec and
+// statusClass sum directly; latencyWeight tracks Σ(avgLatencyMs *
+// requestsPerSec) so finalizeL7 can produce a rate-weighted average.
+type L7Aggregator = {
+  requestsPerSec: number
+  statusClass: Record<string, number>
+  latencyWeight: number
+  latencyReqs: number
+}
+
+function mergeL7(hop: { l7?: L7Aggregator }, src?: L7Summary) {
+  if (!src) return
+  if (!hop.l7) {
+    hop.l7 = { requestsPerSec: 0, statusClass: {}, latencyWeight: 0, latencyReqs: 0 }
+  }
+  hop.l7.requestsPerSec += src.requestsPerSec || 0
+  for (const [k, v] of Object.entries(src.statusClass || {})) {
+    if (typeof v === 'number') hop.l7.statusClass[k] = (hop.l7.statusClass[k] ?? 0) + v
+  }
+  if (src.avgLatencyMs && src.requestsPerSec) {
+    hop.l7.latencyWeight += src.avgLatencyMs * src.requestsPerSec
+    hop.l7.latencyReqs += src.requestsPerSec
+  }
+}
+
+function finalizeL7(a: L7Aggregator): L7Summary {
+  return {
+    requestsPerSec: a.requestsPerSec,
+    statusClass: a.statusClass,
+    avgLatencyMs: a.latencyReqs > 0 ? a.latencyWeight / a.latencyReqs : undefined,
+  }
+}
+
+const STATUS_CLASS_LABEL: Record<string, string> = {
+  ok: '2xx', redir: '3xx', client_err: '4xx', server_err: '5xx', info: '1xx', unknown: '?',
+}
+
+const STATUS_CLASS_COLOR: Record<string, string> = {
+  ok: '#10b981',
+  redir: '#a78bfa',
+  client_err: '#f59e0b',
+  server_err: '#f43f5e',
+  info: '#64748b',
+  unknown: '#64748b',
+}
+
+// Structured tooltip payload. Carried in edge.data.tooltip so the
+// hovered-edge overlay in ClusterMap can render in the same visual
+// format as the Monitor tab's chart tooltip — header with title + rule,
+// rows of colored dot / label / value.
+export interface TrafficTooltipData {
+  rate: number
+  verdict: string
+  l7?: L7Summary
+}
+
+function buildTrafficTooltip(
+  rate: number,
+  verdict: string,
+  l7?: L7Summary,
+): TrafficTooltipData {
+  return { rate, verdict, l7 }
+}
+
+// Single row inside the edge hover tooltip. Shape mirrors the Monitor
+// tab's chart tooltip: colored dot on the left, label, value flush right.
+function TooltipRow({ color, label, value }: { color: string; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span
+        className="w-2 h-2 rounded-full flex-shrink-0"
+        style={{ background: color }}
+      />
+      <span className="text-kb-text-secondary truncate max-w-[140px]">{label}</span>
+      <span className="ml-auto tabular-nums font-mono text-kb-text-primary">{value}</span>
+    </div>
+  )
+}
 
 const nodeTypes: NodeTypes = {
   resource: ResourceNode,
@@ -96,10 +176,12 @@ const KIND_TO_ROUTE: Record<string, string> = {
 type LayoutMode = 'grid' | 'flow' | 'traffic'
 
 // In Traffic mode we collapse the map down to what matters for flow
-// reading: Pods (sources and destinations, so LB fan-out is visible)
-// and Services (the junction nodes). Workloads don't appear in flows,
-// so showing them just adds isolated nodes. Config / storage /
-// autoscale / node kinds are never traffic endpoints.
+// reading: Pods (sources and destinations, so LB fan-out is visible),
+// Services (junction nodes for intent-flow routing), and external
+// entry points (Ingress / Gateway / HTTPRoute) so outside → cluster
+// traffic is visible too. Workloads don't appear in flows — showing
+// them just adds isolated nodes. Config / storage / autoscale / node
+// kinds are never traffic endpoints.
 const TRAFFIC_HIDDEN_KINDS = new Set<string>([
   'Deployment',
   'StatefulSet',
@@ -107,9 +189,6 @@ const TRAFFIC_HIDDEN_KINDS = new Set<string>([
   'Job',
   'CronJob',
   'ReplicaSet',
-  'Ingress',
-  'Gateway',
-  'HTTPRoute',
   'ConfigMap',
   'Secret',
   'PersistentVolumeClaim',
@@ -199,7 +278,7 @@ function buildGridLayout(filtered: TopologyNode[]) {
         position: { x: offsetX, y: offsetY },
         data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
         style: { width: block.width, height: block.height },
-        selectable: false, draggable: false,
+        selectable: false, draggable: true, dragHandle: ".ns-drag-handle",
       })
       block.resources.forEach((n, i) => {
         allNodes.push({
@@ -270,7 +349,7 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
         position: { x: offsetX, y: offsetY },
         data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
         style: { width: block.width, height: block.height },
-        selectable: false, draggable: false,
+        selectable: false, draggable: true, dragHandle: ".ns-drag-handle",
       })
 
       block.activeColumns.forEach((colNum, colVisualIdx) => {
@@ -424,7 +503,7 @@ function buildTrafficLayout(
         position: { x: offsetX, y: offsetY },
         data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
         style: { width: block.width, height: block.height },
-        selectable: false, draggable: false,
+        selectable: false, draggable: true, dragHandle: ".ns-drag-handle",
       })
       block.resources.forEach((n) => {
         const pos = block.positions.get(n.id)
@@ -540,10 +619,17 @@ function ClusterMapInner() {
     return new Set(raw.split(',').filter(Boolean) as EdgeGroupKey[])
   })
   const trafficEnabled = !hiddenEdgeGroups.has('traffic')
-  const { data: flowData } = useFlowEdges({ enabled: trafficEnabled, windowMinutes: 5 })
+  const { data: flowData } = useFlowEdges({ enabled: trafficEnabled, windowMinutes: 1 })
   // Manual position overrides set by user drag. Keyed by node ID.
   // Cleared when switching layout mode or clicking Reset.
   const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(new Map())
+  // Tooltip state for traffic edges. ReactFlow's own interaction layer
+  // swallows pointer events before they reach our custom edge's SVG, so
+  // an SVG <title> doesn't fire — we use ReactFlow's onEdgeMouseEnter /
+  // Leave callbacks and render a positioned div overlay instead.
+  // We store only the edge id (not the tooltip text) so polling
+  // refreshes update the visible tooltip while the mouse stays put.
+  const [hoveredEdge, setHoveredEdge] = useState<{ id: string; x: number; y: number } | null>(null)
   const { fitView } = useReactFlow()
   const navigate = useNavigate()
 
@@ -627,12 +713,24 @@ function ClusterMapInner() {
         flowPodIds.add(`Pod/${f.dstNamespace}/${f.dstPod}`)
       }
       const serviceIds = new Set<string>()
+      // External entry points (Ingress / Gateway / HTTPRoute) whose
+      // `routes` edge targets a Service that sees observed traffic.
+      // Keeping them visible in Traffic mode completes the picture
+      // "outside → Ingress → Service → Pods" without drowning the
+      // map in every Ingress in the cluster.
+      const externalEntryIds = new Set<string>()
       for (const e of topology.edges || []) {
-        if (e.type !== 'selects') continue
-        if (flowPodIds.has(e.target)) serviceIds.add(e.source)
+        if (e.type === 'selects' && flowPodIds.has(e.target)) {
+          serviceIds.add(e.source)
+        }
+      }
+      for (const e of topology.edges || []) {
+        if (e.type === 'routes' && serviceIds.has(e.target)) {
+          externalEntryIds.add(e.source)
+        }
       }
       const trafficVisible = kindFiltered.filter(
-        (n) => flowPodIds.has(n.id) || serviceIds.has(n.id)
+        (n) => flowPodIds.has(n.id) || serviceIds.has(n.id) || externalEntryIds.has(n.id)
       )
       return buildTrafficLayout(trafficVisible, topology.edges || [], flows)
     }
@@ -670,10 +768,12 @@ function ClusterMapInner() {
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(initialNodes)
   useLayoutEffect(() => { setFlowNodes(initialNodes) }, [initialNodes, setFlowNodes])
 
-  // Persist drag deltas when the user lets go of a node.
+  // Persist drag deltas when the user lets go of a node. Applies to
+  // resource nodes *and* namespace regions — the user can reorganize
+  // the whole ns layout by grabbing a region's header label, which is
+  // the only element with pointer-events: auto (see NamespaceRegion).
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      if (node.type === 'namespaceRegion') return
       setDragOverrides((prev) => {
         const next = new Map(prev)
         next.set(node.id, { x: node.position.x, y: node.position.y })
@@ -697,14 +797,14 @@ function ClusterMapInner() {
         nodeStatusMap.set(n.id, n.status || '')
       }
     }
-    // In Traffic mode the map is about the flow itself — structural
-    // 'selects' / 'owns' / 'routes' edges would either duplicate the
-    // intent edges or clutter the dagre rank layout. Hide them here;
-    // the user can still see them in Grid or Flow mode.
+    // In Traffic mode the map is about the flow itself. 'selects' and
+    // 'owns' duplicate or clutter the intent edges and are hidden.
+    // 'routes' (Ingress/Gateway → Service) stays, so external entry
+    // points connect visually to the rest of the flow graph.
     const structural: Edge[] = topology.edges
       .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
       .filter((e) => {
-        if (layoutMode === 'traffic' && (e.type === 'selects' || e.type === 'owns' || e.type === 'routes')) {
+        if (layoutMode === 'traffic' && (e.type === 'selects' || e.type === 'owns')) {
           return false
         }
         const group = EDGE_TYPE_TO_GROUP[e.type]
@@ -755,7 +855,12 @@ function ClusterMapInner() {
       // emitted two edges with the same id, which React logs as a
       // duplicate-key warning and renders with undefined behavior
       // (stale SVG particles hanging in empty space).
-      type Hop = { src: string; dst: string; verdict: string; rate: number }
+      //
+      // L7 data is carried through both hops so the Service → Pod edge
+      // colors by the real HTTP health of that specific pod, while the
+      // Pod → Service edge shows the caller's aggregate health toward
+      // the Service.
+      type Hop = { src: string; dst: string; verdict: string; rate: number; l7?: L7Aggregator }
       const firstHop = new Map<string, Hop>()
       const secondHop = new Map<string, Hop>()
       const directEdges = new Map<string, Hop>()
@@ -768,36 +873,43 @@ function ClusterMapInner() {
         const svcId = serviceForPod.get(dstId)
         if (svcId && visibleIds.has(svcId)) {
           const firstKey = `${srcId}||${svcId}||${f.verdict}`
-          const prevFirst = firstHop.get(firstKey)
-          firstHop.set(firstKey, {
-            src: srcId, dst: svcId, verdict: f.verdict,
-            rate: (prevFirst?.rate ?? 0) + f.ratePerSec,
-          })
+          const first = firstHop.get(firstKey) ?? {
+            src: srcId, dst: svcId, verdict: f.verdict, rate: 0,
+          }
+          first.rate += f.ratePerSec
+          mergeL7(first, f.l7)
+          firstHop.set(firstKey, first)
+
           const secondKey = `${svcId}||${dstId}||${f.verdict}`
-          const prevSecond = secondHop.get(secondKey)
-          secondHop.set(secondKey, {
-            src: svcId, dst: dstId, verdict: f.verdict,
-            rate: (prevSecond?.rate ?? 0) + f.ratePerSec,
-          })
+          const second = secondHop.get(secondKey) ?? {
+            src: svcId, dst: dstId, verdict: f.verdict, rate: 0,
+          }
+          second.rate += f.ratePerSec
+          mergeL7(second, f.l7)
+          secondHop.set(secondKey, second)
         } else {
           // No Service selects this pod — draw pod-to-pod directly
           // (host-network callers, standalone pods). Still aggregate
           // in case multiple flows match the same (src, dst, verdict).
           const key = `${srcId}||${dstId}||${f.verdict}`
-          const prev = directEdges.get(key)
-          directEdges.set(key, {
-            src: srcId, dst: dstId, verdict: f.verdict,
-            rate: (prev?.rate ?? 0) + f.ratePerSec,
-          })
+          const direct = directEdges.get(key) ?? {
+            src: srcId, dst: dstId, verdict: f.verdict, rate: 0,
+          }
+          direct.rate += f.ratePerSec
+          mergeL7(direct, f.l7)
+          directEdges.set(key, direct)
         }
       }
 
       const pushHop = (hop: Hop, idPrefix: string) => {
+        const l7 = hop.l7 ? finalizeL7(hop.l7) : undefined
         trafficEdges.push({
           id: `${idPrefix}/${hop.src}->${hop.dst}/${hop.verdict}`,
           source: hop.src, target: hop.dst, type: 'connection',
           data: {
             edgeType: 'traffic', ratePerSec: hop.rate, verdict: hop.verdict,
+            l7,
+            tooltip: buildTrafficTooltip(hop.rate, hop.verdict, l7),
             sourceStatus: nodeStatusMap.get(hop.src) || '',
             targetStatus: nodeStatusMap.get(hop.dst) || '',
             animationsEnabled,
@@ -825,6 +937,8 @@ function ClusterMapInner() {
             edgeType: 'traffic',
             ratePerSec: f.ratePerSec,
             verdict: f.verdict,
+            l7: f.l7,
+            tooltip: buildTrafficTooltip(f.ratePerSec, f.verdict, f.l7),
             sourceStatus: nodeStatusMap.get(sourceId) || '',
             targetStatus: nodeStatusMap.get(targetId) || '',
             animationsEnabled,
@@ -833,6 +947,30 @@ function ClusterMapInner() {
         })
       }
     }
+    // Visual intensity combines two signals:
+    //   - relative rank (edge rate / peak rate on the map) so edges
+    //     compare correctly to each other regardless of absolute scale.
+    //   - absolute headroom (log of the peak) so a cluster at 5 rps
+    //     doesn't look as loud as a cluster at 5000 rps just because
+    //     5 rps happens to be the peak of that moment.
+    // headroom hits 1.0 around ~300 rps peak traffic. Below that the
+    // full visual range is compressed — the busiest edge in a quiet
+    // cluster stays visibly calmer than the busiest edge in a hot one.
+    let peakRate = 0
+    for (const e of trafficEdges) {
+      const d = e.data as { ratePerSec?: number; l7?: { requestsPerSec?: number } } | undefined
+      const r = d?.l7?.requestsPerSec ?? d?.ratePerSec ?? 0
+      if (r > peakRate) peakRate = r
+    }
+    if (peakRate > 0) {
+      const headroom = Math.min(1, Math.log10(peakRate + 1) / 2.5)
+      for (const e of trafficEdges) {
+        const d = e.data as { ratePerSec?: number; l7?: { requestsPerSec?: number } } | undefined
+        const r = d?.l7?.requestsPerSec ?? d?.ratePerSec ?? 0
+        ;(e.data as { relativeRate?: number }).relativeRate = (r / peakRate) * headroom
+      }
+    }
+
     return [...structural, ...trafficEdges]
   }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled, trafficEnabled, hiddenEdgeGroups, flowData, layoutMode])
 
@@ -892,6 +1030,30 @@ function ClusterMapInner() {
     [topology?.nodes, navigate]
   )
 
+  // Edge hover tooltip: ReactFlow dispatches these events from its own
+  // interaction layer (which is why SVG <title> on our custom edge
+  // doesn't fire — that layer is above our SVG). Position is frozen at
+  // the enter coordinate on purpose: updating on every mousemove causes
+  // React to re-render the map each frame, which was flickering the
+  // tooltip in and out.
+  const onEdgeMouseEnter = useCallback((e: React.MouseEvent, edge: Edge) => {
+    const tooltip = (edge.data as { tooltip?: string } | undefined)?.tooltip
+    if (!tooltip) return
+    setHoveredEdge({ id: edge.id, x: e.clientX, y: e.clientY })
+  }, [])
+  const onEdgeMouseLeave = useCallback(() => setHoveredEdge(null), [])
+
+  // Resolve the tooltip payload freshly from the current edges on every
+  // render. When useFlowEdges polls a new window, the edges memo above
+  // rebuilds with updated numbers; looking up by id here means the
+  // open tooltip reflects those fresh values without needing to
+  // re-hover.
+  const hoveredTooltip = useMemo<TrafficTooltipData | null>(() => {
+    if (!hoveredEdge) return null
+    const edge = renderedEdges.find((e) => e.id === hoveredEdge.id)
+    return (edge?.data as { tooltip?: TrafficTooltipData } | undefined)?.tooltip ?? null
+  }, [hoveredEdge, renderedEdges])
+
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
 
@@ -909,6 +1071,8 @@ function ClusterMapInner() {
         onNodeDragStop={onNodeDragStop}
         onNodeClick={onNodeClick}
         onNodeDoubleClick={onNodeDoubleClick}
+        onEdgeMouseEnter={onEdgeMouseEnter}
+        onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={() => setSelectedNode(null)}
         fitView
         fitViewOptions={{ padding: 0.1 }}
@@ -1141,6 +1305,65 @@ function ClusterMapInner() {
           allNodes={topology.nodes}
           onClose={() => setSelectedNode(null)}
         />
+      )}
+
+      {/* Edge hover tooltip. Positioned in viewport coordinates
+          (position: fixed) so it doesn't inherit the map's zoom or
+          panning transforms. pointer-events: none so the overlay
+          itself doesn't steal the mouse from the edge underneath.
+          Content pulled from the *current* edges array so polling
+          refreshes keep the tooltip fresh while the mouse stays put.
+          Visual matches the Monitor tab chart tooltip: header + rule,
+          colored dot + label + right-aligned value per row. */}
+      {hoveredEdge && hoveredTooltip && (
+        <div
+          style={{
+            position: 'fixed',
+            left: hoveredEdge.x + 14,
+            top: hoveredEdge.y + 14,
+            pointerEvents: 'none',
+            zIndex: 1000,
+          }}
+          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[200px]"
+        >
+          <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60 flex items-baseline justify-between gap-3">
+            <span>{hoveredTooltip.rate.toFixed(2)} ev/s</span>
+            <span className="text-[10px] font-normal uppercase tracking-wider text-kb-text-tertiary">{hoveredTooltip.verdict}</span>
+          </div>
+          <div className="space-y-1">
+            {hoveredTooltip.l7 ? (
+              <>
+                <TooltipRow
+                  color="#94a3b8"
+                  label="HTTP"
+                  value={`${(hoveredTooltip.l7.requestsPerSec ?? 0).toFixed(2)} req/s`}
+                />
+                {Object.entries(hoveredTooltip.l7.statusClass ?? {})
+                  .filter(([, v]) => (v ?? 0) > 0)
+                  .sort(([, a], [, b]) => (b ?? 0) - (a ?? 0))
+                  .map(([sc, v]) => (
+                    <TooltipRow
+                      key={sc}
+                      color={STATUS_CLASS_COLOR[sc] ?? '#64748b'}
+                      label={STATUS_CLASS_LABEL[sc] ?? sc}
+                      value={`${(v as number).toFixed(2)}/s`}
+                    />
+                  ))}
+                {typeof hoveredTooltip.l7.avgLatencyMs === 'number' && hoveredTooltip.l7.avgLatencyMs > 0 && (
+                  <TooltipRow
+                    color="#94a3b8"
+                    label="avg latency"
+                    value={`${hoveredTooltip.l7.avgLatencyMs.toFixed(1)} ms`}
+                  />
+                )}
+              </>
+            ) : (
+              <div className="text-[10px] text-kb-text-tertiary italic">
+                No L7 visibility on this pair
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   )
