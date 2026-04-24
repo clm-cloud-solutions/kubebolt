@@ -17,7 +17,7 @@ backendUrl: ""
 
 # ─── Image ─────────────────────────────────────────────────
 image:
-  repository: ghcr.io/clm-cloud-solutions/kubebolt-agent
+  repository: ghcr.io/clm-cloud-solutions/kubebolt/agent
   # Leave empty to track Chart.appVersion. Pin explicitly in prod.
   tag: ""
   pullPolicy: IfNotPresent

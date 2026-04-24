@@ -1,0 +1,223 @@
+name: Release agent
+
+# Triggered only by tags matching agent-vX.Y.Z so the agent can ride
+# its own release cadence independent of the main kubebolt product
+# tags (vX.Y.Z). Only files under packages/agent/ and
+# deploy/helm/kubebolt-agent/ feed this workflow's changelog.
+on:
+  push:
+    tags: ['agent-v*']
+
+permissions:
+  contents: write
+  packages: write
+  id-token: write  # Cosign keyless signing
+
+env:
+  REGISTRY: ghcr.io
+  AGENT_IMAGE: ghcr.io/${{ github.repository }}/agent
+
+jobs:
+  build-agent:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Custom tag extraction because the ref is "agent-vX.Y.Z" rather
+      # than the plain "vX.Y.Z" that type=semver expects. `latest` only
+      # rolls forward on stable releases so pre-release tags can be
+      # published without clobbering the floating tag consumers rely on.
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.AGENT_IMAGE }}
+          tags: |
+            type=match,pattern=agent-v(\d+\.\d+\.\d+.*),group=1
+            type=match,pattern=agent-v(\d+\.\d+)\.\d+$,group=1
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+
+      # The Dockerfile expects the repo root as build context so it can
+      # pick up both packages/agent and packages/proto (the agent module
+      # uses a replace directive into ../proto).
+      - uses: docker/build-push-action@v5
+        id: build
+        with:
+          context: .
+          file: packages/agent/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image with Cosign
+        run: cosign sign --yes ${{ env.AGENT_IMAGE }}@${{ steps.build.outputs.digest }}
+
+  publish-agent-chart:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+
+      - name: Login to GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | helm registry login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      # Strip "agent-v" prefix. The chart's own version line becomes the
+      # tag that consumers `helm install --version X.Y.Z` against, and
+      # appVersion is what shows up in `helm list` / artifacthub UI.
+      - name: Update chart version from tag
+        id: chart_version
+        run: |
+          VERSION="${GITHUB_REF_NAME#agent-v}"
+          sed -i "s/^version:.*/version: $VERSION/" deploy/helm/kubebolt-agent/Chart.yaml
+          sed -i "s/^appVersion:.*/appVersion: \"$VERSION\"/" deploy/helm/kubebolt-agent/Chart.yaml
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Package and push chart
+        run: |
+          helm package deploy/helm/kubebolt-agent
+          CHART_TGZ=$(ls kubebolt-agent-*.tgz)
+          helm push $CHART_TGZ oci://ghcr.io/${{ github.repository }}/helm
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Login to GHCR for Cosign
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | cosign login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Sign chart with Cosign
+        run: cosign sign --yes ghcr.io/${{ github.repository }}/helm/kubebolt-agent:${{ steps.chart_version.outputs.version }}
+
+  release:
+    needs: [build-agent, publish-agent-chart]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Changelog scoped to paths the agent actually owns. The main
+      # product's changelog (release.yml) covers everything else; this
+      # one should only surface agent-relevant commits so users see
+      # signal instead of noise.
+      - name: Generate changelog
+        id: changelog
+        run: |
+          PREV_TAG=$(git describe --tags --abbrev=0 --match 'agent-v*' HEAD^ 2>/dev/null || echo "")
+          RANGE="HEAD"
+          if [ -n "$PREV_TAG" ]; then
+            RANGE="${PREV_TAG}..HEAD"
+          fi
+          COMMITS=$(git log --oneline --no-decorate "$RANGE" -- packages/agent/ deploy/helm/kubebolt-agent/)
+
+          FEATURES=""
+          FIXES=""
+          DOCS=""
+          PERF=""
+          OTHER=""
+
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            hash=$(echo "$line" | cut -d' ' -f1)
+            msg=$(echo "$line" | cut -d' ' -f2-)
+            entry="- $msg (\`$hash\`)"
+            case "$msg" in
+              feat:*|feat\(*) FEATURES="$FEATURES
+          $entry" ;;
+              fix:*|fix\(*|Fix:*|Fix\ *) FIXES="$FIXES
+          $entry" ;;
+              docs:*|docs\(*) DOCS="$DOCS
+          $entry" ;;
+              perf:*|perf\(*) PERF="$PERF
+          $entry" ;;
+              revert:*) FIXES="$FIXES
+          $entry" ;;
+              *) OTHER="$OTHER
+          $entry" ;;
+            esac
+          done <<< "$COMMITS"
+
+          BODY=""
+          [ -n "$FEATURES" ] && BODY="$BODY
+          ### Features
+          $FEATURES
+          "
+          [ -n "$FIXES" ] && BODY="$BODY
+          ### Fixes
+          $FIXES
+          "
+          [ -n "$PERF" ] && BODY="$BODY
+          ### Performance
+          $PERF
+          "
+          [ -n "$DOCS" ] && BODY="$BODY
+          ### Documentation
+          $DOCS
+          "
+          [ -n "$OTHER" ] && BODY="$BODY
+          ### Other
+          $OTHER
+          "
+
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Compute chart version
+        id: chart_version
+        run: echo "version=${GITHUB_REF_NAME#agent-v}" >> $GITHUB_OUTPUT
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # Pre-release marker matches the same semver-suffix convention
+          # used for the main product — keeps the release list filterable.
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          body: |
+            KubeBolt node agent release ${{ github.ref_name }}.
+
+            ## Install
+
+            ### Helm
+            ```bash
+            helm install kubebolt-agent oci://ghcr.io/${{ github.repository }}/helm/kubebolt-agent \
+              --version ${{ steps.chart_version.outputs.version }} \
+              --namespace kubebolt-system --create-namespace \
+              --set backendUrl=<host:port>
+            ```
+
+            ### Upgrade
+            ```bash
+            helm upgrade kubebolt-agent oci://ghcr.io/${{ github.repository }}/helm/kubebolt-agent \
+              --version ${{ steps.chart_version.outputs.version }} \
+              --namespace kubebolt-system --reuse-values
+            ```
+
+            ### Images
+            - `${{ env.AGENT_IMAGE }}:${{ steps.chart_version.outputs.version }}`
+            - `${{ env.AGENT_IMAGE }}:latest` (stable releases only)
+
+            Images are multi-arch (linux/amd64 + linux/arm64) and signed with Cosign:
+            ```bash
+            cosign verify ${{ env.AGENT_IMAGE }}:${{ steps.chart_version.outputs.version }} \
+              --certificate-identity-regexp 'https://github.com/${{ github.repository }}/.github/workflows/release-agent.yml' \
+              --certificate-oidc-issuer 'https://token.actions.githubusercontent.com'
+            ```
+
+            ## Changelog
+            ${{ steps.changelog.outputs.body }}
