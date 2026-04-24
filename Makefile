@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-web agent-image agent-deploy agent-logs agent-dev agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server
+.PHONY: dev dev-api dev-web agent-image agent-deploy agent-logs agent-dev agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -137,6 +137,43 @@ kind-testbed: kind-metrics-server
 ## Remove the demo workload (keeps metrics-server).
 kind-testbed-down:
 	kubectl delete -f deploy/test/demo-workload.yaml --ignore-not-found
+
+## Heal a kind cluster after Docker Desktop restart. Docker re-assigns bridge
+## IPs when it restarts, but the Cilium DaemonSet + Operator pin the apiserver
+## via a hardcoded KUBERNETES_SERVICE_HOST env var — so the stale IP leaves
+## Cilium unable to reach the API, which leaves every pod stuck in Unknown /
+## FailedCreatePodSandBox (no CNI → no pod network). This target reads the
+## control plane's current IP from Docker, re-patches Cilium if it drifted,
+## and sweeps up any zombie pods.
+kind-heal:
+	@CTX=$$(kubectl config current-context 2>/dev/null); \
+		case "$$CTX" in \
+			kind-*) KIND_NAME="$${CTX#kind-}" ;; \
+			*) echo "Current context '$$CTX' is not a kind cluster. Aborting."; exit 1 ;; \
+		esac; \
+		CP="$${KIND_NAME}-control-plane"; \
+		IP=$$(docker inspect "$$CP" --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' 2>/dev/null); \
+		if [ -z "$$IP" ]; then echo "Could not read IP from container '$$CP'. Is Docker running?"; exit 1; fi; \
+		CUR=$$(kubectl -n kube-system get ds cilium -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="KUBERNETES_SERVICE_HOST")].value}' 2>/dev/null); \
+		if [ -z "$$CUR" ]; then echo "Cilium DaemonSet not found or has no KUBERNETES_SERVICE_HOST env — nothing to heal."; exit 0; fi; \
+		if [ "$$CUR" = "$$IP" ]; then \
+			echo "Cilium already points at $$IP — no patch needed."; \
+		else \
+			echo "Patching Cilium: $$CUR → $$IP"; \
+			kubectl -n kube-system set env ds/cilium KUBERNETES_SERVICE_HOST=$$IP; \
+			kubectl -n kube-system set env deploy/cilium-operator KUBERNETES_SERVICE_HOST=$$IP; \
+			kubectl -n kube-system rollout status ds/cilium --timeout=120s; \
+			kubectl -n kube-system rollout status deploy/cilium-operator --timeout=120s; \
+		fi; \
+		STUCK=$$(kubectl get pods -A --field-selector=status.phase=Unknown --no-headers 2>/dev/null | wc -l | tr -d ' '); \
+		if [ "$$STUCK" -gt 0 ]; then \
+			echo "Sweeping $$STUCK zombie pod(s) stuck in Unknown..."; \
+			kubectl get pods -A --field-selector=status.phase=Unknown --no-headers 2>/dev/null | awk '{print $$1, $$2}' | while read ns name; do \
+				kubectl -n $$ns delete pod $$name --force --grace-period=0 2>/dev/null; \
+			done; \
+		fi; \
+		echo ""; \
+		echo "kind cluster '$$KIND_NAME' healed."
 
 ## Install ingress-nginx + add Ingress routing to demo-web so external
 ## HTTP can be simulated from the host. demo-workload.yaml already has
