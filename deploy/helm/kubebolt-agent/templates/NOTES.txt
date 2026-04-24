@@ -1,0 +1,39 @@
+kubebolt-agent has been installed in namespace {{ .Release.Namespace }}.
+
+Release:   {{ .Release.Name }}
+Chart:     {{ .Chart.Name }}-{{ .Chart.Version }}
+Image:     {{ include "kubebolt-agent.image" . }}
+
+Check the rollout:
+  kubectl -n {{ .Release.Namespace }} rollout status ds/{{ include "kubebolt-agent.fullname" . }}
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "kubebolt-agent.name" . }}
+
+Stream the logs from the leader pod (the one streaming flows from Hubble):
+  kubectl -n {{ .Release.Namespace }} logs -l app.kubernetes.io/name={{ include "kubebolt-agent.name" . }} --tail=50 -f
+
+The agent ships samples to:
+  {{ .Values.backendUrl }}
+
+Hubble flow collection is {{ if .Values.hubble.enabled }}ENABLED{{ else }}DISABLED{{ end }}.
+{{- if .Values.hubble.enabled }}
+{{- if .Values.hubble.relay.address }}
+Relay:     {{ .Values.hubble.relay.address }}
+{{- else }}
+Relay:     hubble-relay.kube-system.svc.cluster.local:80 (default)
+{{- end }}
+{{- if .Values.hubble.relay.tls.existingSecret }}
+TLS:       enabled via Secret/{{ .Values.hubble.relay.tls.existingSecret }}
+{{- else }}
+TLS:       disabled (plaintext — acceptable inside the pod network)
+{{- end }}
+
+If your cluster doesn't run Cilium, flow collection silently no-ops;
+the rest of the agent keeps working. To turn flow collection off
+explicitly, set --set hubble.enabled=false on upgrade.
+{{- end }}
+
+Next:
+  - Open the KubeBolt dashboard and switch to Traffic layout on the
+    Cluster Map to see live pod-to-pod flows.
+  - Historical metrics (CPU / Memory / Network) appear on the Monitor
+    tab for workloads that have been running long enough to be sampled.

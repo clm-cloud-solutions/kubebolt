@@ -1,0 +1,119 @@
+# kubebolt-agent Helm values.
+#
+# Minimum install:
+#   helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+#     --namespace kubebolt-system --create-namespace \
+#     --set backendUrl=host.docker.internal:9090
+
+# ─── Required ──────────────────────────────────────────────
+# Where the agent ships samples. No sane default exists — it depends
+# on where your KubeBolt backend runs (Docker Compose on your laptop,
+# another cluster, same cluster). Template will fail fast without it.
+# Examples:
+#   host.docker.internal:9090                            (backend on laptop via Docker Desktop)
+#   kubebolt.kubebolt.svc.cluster.local:9090             (in-cluster backend, default release)
+#   10.0.0.5:9090                                        (bare IP)
+backendUrl: ""
+
+# ─── Image ─────────────────────────────────────────────────
+image:
+  repository: ghcr.io/clm-cloud-solutions/kubebolt-agent
+  # Leave empty to track Chart.appVersion. Pin explicitly in prod.
+  tag: ""
+  pullPolicy: IfNotPresent
+# imagePullSecrets:
+#   - name: my-registry-secret
+
+# ─── Cluster identity ──────────────────────────────────────
+cluster:
+  # Human-readable label emitted alongside cluster_id. The UI
+  # prefers its own kubeconfig context name, so this is mostly for
+  # operators querying VictoriaMetrics directly.
+  name: ""
+  # Override the auto-discovered cluster_id (kube-system namespace
+  # UID). Leave empty unless migrating a legacy install that emitted
+  # a different value historically.
+  id: ""
+
+# ─── Hubble flow collector ─────────────────────────────────
+hubble:
+  # Kill-switch. Set to false to disable flow collection without
+  # uninstalling the chart. Default true; the collector silently
+  # no-ops when Cilium isn't installed.
+  enabled: true
+  relay:
+    # Override the relay address. Empty = use the agent default
+    # (hubble-relay.kube-system.svc.cluster.local:80).
+    address: ""
+    tls:
+      # Mount an existing Secret with keys ca.crt / tls.crt / tls.key.
+      # Presence of ca.crt enables TLS; tls.crt+tls.key enable mTLS.
+      # Leave empty for insecure plaintext (acceptable inside the pod
+      # network).
+      existingSecret: ""
+      # SNI / verification hostname. Empty defaults to the dial target.
+      serverName: ""
+
+# ─── Scheduling ────────────────────────────────────────────
+# The agent needs to land on every node (including control-plane) so
+# it can reach each kubelet. Defaults match the dev manifest; override
+# if you have nodes that shouldn't run the agent.
+tolerations:
+  - operator: Exists
+nodeSelector: {}
+affinity: {}
+priorityClassName: ""
+
+# ─── Resources ─────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 10m
+    memory: 30Mi
+  limits:
+    cpu: 100m
+    memory: 80Mi
+
+# ─── Pod tuning ────────────────────────────────────────────
+podAnnotations: {}
+podLabels: {}
+# Updated on every release so a `helm upgrade` rotates pods even when
+# only env values change. Leave false to keep Helm's default rolling
+# behavior based on template diffs.
+podAnnotationChecksum: true
+
+# ─── Security ──────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+containerSecurityContext:
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+
+# ─── RBAC + SA ─────────────────────────────────────────────
+serviceAccount:
+  create: true
+  # Empty = derive from the release name.
+  name: ""
+  annotations: {}
+rbac:
+  # Create the ClusterRole/ClusterRoleBinding (for kubelet stats +
+  # pod/namespace read) and Role/RoleBinding (for Lease-based leader
+  # election in the agent's namespace). Set to false if your shop
+  # provisions RBAC out of band.
+  create: true
+
+# ─── Logging ───────────────────────────────────────────────
+logLevel: info  # debug | info | warn | error
+
+# ─── Extras ────────────────────────────────────────────────
+# Inject arbitrary env vars into the agent container. Useful for
+# features we don't have first-class Helm fields for yet.
+extraEnv: []
+#   - name: KUBEBOLT_AGENT_LOG_LEVEL
+#     value: debug
+
+# Override chart-derived names when needed.
+nameOverride: ""
+fullnameOverride: ""

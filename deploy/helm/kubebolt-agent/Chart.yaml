@@ -1,0 +1,28 @@
+apiVersion: v2
+name: kubebolt-agent
+description: KubeBolt node agent — kubelet stats, cAdvisor, and Cilium Hubble flow collection
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/clm-cloud-solutions/kubebolt
+icon: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png
+sources:
+  - https://github.com/clm-cloud-solutions/kubebolt
+maintainers:
+  - name: clm-cloud-solutions
+    url: https://github.com/clm-cloud-solutions
+keywords:
+  - kubernetes
+  - monitoring
+  - observability
+  - agent
+  - daemonset
+  - cilium
+  - hubble
+  - kubebolt
+annotations:
+  artifacthub.io/license: MIT
+  artifacthub.io/links: |
+    - name: GitHub
+      url: https://github.com/clm-cloud-solutions/kubebolt
+  artifacthub.io/containsSecurityUpdates: "false"

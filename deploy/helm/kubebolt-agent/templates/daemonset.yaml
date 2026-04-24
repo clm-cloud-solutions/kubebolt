@@ -1,0 +1,126 @@
+{{- $backendUrl := required "backendUrl is required — set --set backendUrl=<host:port> or configure it in values.yaml" .Values.backendUrl -}}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "kubebolt-agent.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kubebolt-agent.selectorLabels" . | nindent 8 }}
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- if .Values.podAnnotationChecksum }}
+        # Forces a rolling restart of the DaemonSet when values affecting
+        # the Pod spec change (env, TLS secret ref, etc.) even if the
+        # rendered template looks structurally identical to Helm.
+        checksum/values: {{ toYaml .Values | sha256sum }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kubebolt-agent.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.priorityClassName }}
+      priorityClassName: {{ . }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "kubebolt-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: KUBEBOLT_BACKEND_URL
+              value: {{ $backendUrl | quote }}
+            - name: KUBEBOLT_AGENT_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            # Downward API — the kubelet target + leader-election identity
+            # are per-pod values, so they must come from fieldRefs.
+            - name: KUBEBOLT_AGENT_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: KUBEBOLT_AGENT_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.cluster.name }}
+            - name: KUBEBOLT_AGENT_CLUSTER_NAME
+              value: {{ .Values.cluster.name | quote }}
+            {{- end }}
+            {{- if .Values.cluster.id }}
+            - name: KUBEBOLT_AGENT_CLUSTER_ID
+              value: {{ .Values.cluster.id | quote }}
+            {{- end }}
+            - name: KUBEBOLT_HUBBLE_ENABLED
+              value: {{ .Values.hubble.enabled | quote }}
+            {{- if .Values.hubble.relay.address }}
+            - name: KUBEBOLT_HUBBLE_RELAY_ADDR
+              value: {{ .Values.hubble.relay.address | quote }}
+            {{- end }}
+            {{- if .Values.hubble.relay.tls.existingSecret }}
+            # Assumes keys ca.crt / tls.crt / tls.key in the Secret.
+            # ca.crt alone enables TLS; adding tls.crt+tls.key enables mTLS.
+            - name: KUBEBOLT_HUBBLE_RELAY_CA_FILE
+              value: /etc/hubble-tls/ca.crt
+            - name: KUBEBOLT_HUBBLE_RELAY_CERT_FILE
+              value: /etc/hubble-tls/tls.crt
+            - name: KUBEBOLT_HUBBLE_RELAY_KEY_FILE
+              value: /etc/hubble-tls/tls.key
+            {{- end }}
+            {{- if .Values.hubble.relay.tls.serverName }}
+            - name: KUBEBOLT_HUBBLE_RELAY_SERVER_NAME
+              value: {{ .Values.hubble.relay.tls.serverName | quote }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.hubble.relay.tls.existingSecret }}
+          volumeMounts:
+            - name: hubble-tls
+              mountPath: /etc/hubble-tls
+              readOnly: true
+          {{- end }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      {{- if .Values.hubble.relay.tls.existingSecret }}
+      volumes:
+        - name: hubble-tls
+          secret:
+            secretName: {{ .Values.hubble.relay.tls.existingSecret }}
+      {{- end }}
