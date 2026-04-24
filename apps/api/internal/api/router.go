@@ -157,6 +157,8 @@ func NewRouter(
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
 					r.Post("/integrations/{id}/install", h.handleInstallIntegration)
+					r.Get("/integrations/{id}/config", h.handleGetIntegrationConfig)
+					r.Put("/integrations/{id}/config", h.handlePutIntegrationConfig)
 					r.Delete("/integrations/{id}", h.handleUninstallIntegration)
 				})
 

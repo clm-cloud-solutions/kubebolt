@@ -372,6 +372,110 @@ export const api = {
         window: params?.windowMinutes,
       })}`
     ),
+
+  // --- Integrations ---
+  listIntegrations: () => fetchJSON<Integration[]>(`${API_BASE}/integrations`),
+
+  getIntegration: (id: string) =>
+    fetchJSON<Integration>(`${API_BASE}/integrations/${encodeURIComponent(id)}`),
+
+  installIntegration: <T = unknown>(id: string, config: T) =>
+    postJSON<Integration>(`${API_BASE}/integrations/${encodeURIComponent(id)}/install`, config),
+
+  uninstallIntegration: (id: string, opts?: { force?: boolean }) =>
+    deleteRequest<Integration>(
+      `${API_BASE}/integrations/${encodeURIComponent(id)}${opts?.force ? '?force=true' : ''}`
+    ),
+
+  // Live config read of a managed integration. UI calls this to
+  // pre-populate the configure form with what's actually running
+  // — not what the user typed at install time.
+  getIntegrationConfig: <T = unknown>(id: string) =>
+    fetchJSON<T>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`),
+
+  configureIntegration: <T = unknown>(id: string, config: T) =>
+    putJSON<Integration>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`, config),
+}
+
+// ─── Integration types ───
+// Kept in sync with the Go types in apps/api/internal/integrations.
+
+export type IntegrationStatus =
+  | 'not_installed'
+  | 'installed'
+  | 'degraded'
+  | 'unknown'
+
+export interface IntegrationHealth {
+  podsReady: number
+  podsDesired: number
+  message?: string
+}
+
+export interface IntegrationFeatureFlag {
+  key: string
+  label: string
+  description?: string
+  enabled: boolean
+  requires?: string[]
+}
+
+export interface Integration {
+  id: string
+  name: string
+  description: string
+  docsUrl?: string
+  capabilities?: string[]
+  status: IntegrationStatus
+  version?: string
+  namespace?: string
+  features?: IntegrationFeatureFlag[]
+  health?: IntegrationHealth
+  // True when the installed workload carries the
+  // managed-by=kubebolt label — i.e. KubeBolt installed it.
+  // False for workloads installed via Helm, kubectl apply, or any
+  // other external path. Meaningful only when status is
+  // 'installed' or 'degraded'.
+  managed: boolean
+}
+
+// Per-integration install configs. Each one matches the provider's
+// own decoding shape on the backend. For the agent, keeping this
+// here means the install wizard gets type-checked end to end.
+export interface AgentInstallConfig {
+  namespace?: string
+  backendUrl: string
+  clusterName?: string
+  hubbleEnabled?: boolean
+
+  imageRepo?: string
+  imageTag?: string
+  imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never'
+
+  // Override the default Hubble relay target.
+  hubbleRelayAddress?: string
+  // TLS / mTLS material. The Secret must already exist in the
+  // target namespace with keys ca.crt (+ optional tls.crt/tls.key
+  // for mTLS). Install fails fast when the Secret is missing.
+  hubbleRelayTls?: {
+    existingSecret: string
+    serverName?: string
+  }
+
+  // Scheduling. Keys must be strings; empty keys are skipped by
+  // the wizard before submit.
+  nodeSelector?: Record<string, string>
+  priorityClassName?: string
+
+  // K8s quantity strings (e.g. "100m", "128Mi").
+  resources?: {
+    cpuRequest?: string
+    cpuLimit?: string
+    memoryRequest?: string
+    memoryLimit?: string
+  }
+
+  logLevel?: string
 }
 
 export interface FlowEdge {

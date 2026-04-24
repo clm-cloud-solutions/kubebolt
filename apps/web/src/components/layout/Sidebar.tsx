@@ -30,6 +30,7 @@ import {
   Bot,
   KeyRound,
   Lightbulb,
+  Puzzle,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import type { ClusterOverview } from '@/types/kubernetes'
@@ -120,6 +121,7 @@ const BOLT_EMOJIS = ['⚡', '🔥', '🌟', '💫', '✨', '🚀', '💜']
 
 const adminItems = [
   { label: 'Users', path: '/admin/users', icon: <Users className="w-4 h-4" /> },
+  { label: 'Integrations', path: '/admin/integrations', icon: <Puzzle className="w-4 h-4" /> },
   { label: 'Notifications', path: '/admin/notifications', icon: <Bell className="w-4 h-4" /> },
   { label: 'Copilot Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
   { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },

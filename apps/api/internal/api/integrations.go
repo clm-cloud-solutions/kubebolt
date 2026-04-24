@@ -120,6 +120,105 @@ func (h *handlers) handleInstallIntegration(w http.ResponseWriter, r *http.Reque
 	respondJSON(w, http.StatusOK, snap)
 }
 
+// handleGetIntegrationConfig returns the current live config of an
+// integration — the shape the Configure endpoint accepts back.
+// Used by the UI to pre-populate the configure form so the operator
+// sees what's actually running before editing.
+//
+//	200 OK   + provider-specific JSON config
+//	404      integration id unknown
+//	405      integration doesn't implement Configurable
+//	409      integration exists but isn't managed by KubeBolt
+//	503      cluster not connected / not installed
+func (h *handlers) handleGetIntegrationConfig(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	provider, ok := h.integrations.Get(id)
+	if !ok {
+		respondError(w, http.StatusNotFound, "integration not found")
+		return
+	}
+	configurable, ok := provider.(integrations.Configurable)
+	if !ok {
+		respondError(w, http.StatusMethodNotAllowed, "integration does not support configure")
+		return
+	}
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	cfg, err := configurable.GetConfig(r.Context(), conn.Clientset())
+	if err != nil {
+		var notInstalled *integrations.NotInstalledError
+		var notManaged *integrations.NotManagedError
+		switch {
+		case errors.As(err, &notInstalled):
+			respondError(w, http.StatusServiceUnavailable, err.Error())
+		case errors.As(err, &notManaged):
+			respondJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":      err.Error(),
+				"notManaged": notManaged,
+			})
+		default:
+			respondError(w, http.StatusInternalServerError, err.Error())
+		}
+		return
+	}
+	// cfg is already JSON — stream it through verbatim.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(cfg)
+}
+
+// handlePutIntegrationConfig applies a full new config to an
+// existing managed install. Not a partial patch — the UI reads the
+// current config via GET, edits in place, and PUTs the whole thing.
+// This keeps the semantics simple (no merging) and matches the
+// Install shape exactly.
+func (h *handlers) handlePutIntegrationConfig(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	provider, ok := h.integrations.Get(id)
+	if !ok {
+		respondError(w, http.StatusNotFound, "integration not found")
+		return
+	}
+	configurable, ok := provider.(integrations.Configurable)
+	if !ok {
+		respondError(w, http.StatusMethodNotAllowed, "integration does not support configure")
+		return
+	}
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		respondError(w, http.StatusBadRequest, "read body: "+err.Error())
+		return
+	}
+	if err := configurable.Configure(r.Context(), conn.Clientset(), json.RawMessage(body)); err != nil {
+		var notInstalled *integrations.NotInstalledError
+		var notManaged *integrations.NotManagedError
+		switch {
+		case errors.As(err, &notInstalled):
+			respondError(w, http.StatusServiceUnavailable, err.Error())
+		case errors.As(err, &notManaged):
+			respondJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":      err.Error(),
+				"notManaged": notManaged,
+			})
+		default:
+			respondError(w, http.StatusBadRequest, err.Error())
+		}
+		return
+	}
+	// Return the fresh snapshot so the UI updates without a
+	// follow-up GET — same shape as Install's success response.
+	snap, _ := provider.Detect(r.Context(), conn.Clientset())
+	respondJSON(w, http.StatusOK, snap)
+}
+
 // handleUninstallIntegration removes the resources an integration
 // owns. Only touches resources labeled as managed-by=kubebolt —
 // external Helm installs are left alone.
@@ -140,7 +239,25 @@ func (h *handlers) handleUninstallIntegration(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	if err := installable.Uninstall(r.Context(), conn.Clientset()); err != nil {
+	// `force=true` bypasses the managed-by safety check so admins
+	// can remove agents installed via helm / kubectl without
+	// exiting the UI. The wizard always surfaces this as an
+	// explicit opt-in — never defaulted.
+	opts := integrations.UninstallOptions{
+		Force: r.URL.Query().Get("force") == "true",
+	}
+	if err := installable.Uninstall(r.Context(), conn.Clientset(), opts); err != nil {
+		// "Not managed by KubeBolt" is an operator-actionable
+		// state, not a server error — map to 409 so the UI can
+		// render the "confirm force uninstall" flow inline.
+		var notManaged *integrations.NotManagedError
+		if errors.As(err, &notManaged) {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":      err.Error(),
+				"notManaged": notManaged,
+			})
+			return
+		}
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}

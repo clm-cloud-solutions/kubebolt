@@ -112,6 +112,15 @@ type Integration struct {
 	Namespace string        `json:"namespace,omitempty"`
 	Features  []FeatureFlag `json:"features,omitempty"`
 	Health    *Health       `json:"health,omitempty"`
+
+	// Managed reports whether the detected workload carries the
+	// managed-by=kubebolt label — i.e. KubeBolt installed it.
+	// False for workloads installed via Helm, kubectl apply, or
+	// any other out-of-band path. The UI uses this to decide
+	// whether to expose Uninstall / Configure actions; KubeBolt
+	// will not mutate workloads it didn't create.
+	// Meaningful only when Status is Installed or Degraded.
+	Managed bool `json:"managed"`
 }
 
 // Provider is what each concrete integration implements. The
@@ -153,11 +162,63 @@ type Installable interface {
 	Install(ctx context.Context, cs kubernetes.Interface, configJSON json.RawMessage) error
 
 	// Uninstall removes everything this integration put in the
-	// cluster. Implementations identify their own resources via a
-	// management label — anything not labeled that way is left
-	// alone, so an external Helm install isn't clobbered.
-	// Returns nil when nothing we own exists (already gone).
-	Uninstall(ctx context.Context, cs kubernetes.Interface) error
+	// cluster. Default behavior (Force=false) refuses to touch
+	// resources that don't carry the managed-by=kubebolt label,
+	// returning NotManagedError. Force=true bypasses that check —
+	// the caller takes responsibility for deleting resources put
+	// there by another tool (helm, raw kubectl).
+	// Returns nil when nothing exists (already gone).
+	Uninstall(ctx context.Context, cs kubernetes.Interface, opts UninstallOptions) error
+}
+
+// UninstallOptions controls the uninstall's blast radius. Force is
+// the operator-confirmed escape hatch from the managed-by safety
+// check; it exists so an admin can still remove an agent installed
+// via helm / kubectl through KubeBolt's UI, not just via the
+// original install tool.
+type UninstallOptions struct {
+	Force bool `json:"force,omitempty"`
+}
+
+// Configurable is implemented by integrations whose settings can be
+// edited in place, without uninstall + reinstall. Optional —
+// integrations that only install/remove can omit this, in which
+// case the config endpoints return 405.
+//
+// The interface pair (GetConfig / Configure) keeps read and write
+// symmetric: the UI calls GetConfig to pre-populate its editor and
+// PUTs the edited document back through Configure.
+//
+// Scope: Configure only edits an existing managed install. If the
+// workload isn't there we return a NotInstalledError; if it exists
+// but wasn't installed by KubeBolt we return NotManagedError.
+// Those map to distinct HTTP status codes so the UI can guide the
+// operator to Install / Force uninstall instead.
+type Configurable interface {
+	Provider
+
+	// GetConfig reads the live cluster state and returns the
+	// current configuration as a JSON document in the provider's
+	// own schema. Used to pre-populate the configure form.
+	GetConfig(ctx context.Context, cs kubernetes.Interface) (json.RawMessage, error)
+
+	// Configure applies the given config to the existing install.
+	// The payload must be a full, valid config (not a diff) — the
+	// UI always reads the current config first, edits in memory,
+	// then sends the whole thing back.
+	Configure(ctx context.Context, cs kubernetes.Interface, configJSON json.RawMessage) error
+}
+
+// NotInstalledError signals that a configure/modify operation was
+// called on an integration that isn't present. Distinct from
+// NotManagedError (present but external) and from a plain "missing"
+// state (absent — which for Uninstall is a happy no-op).
+type NotInstalledError struct {
+	IntegrationID string
+}
+
+func (e *NotInstalledError) Error() string {
+	return "integration " + e.IntegrationID + " is not installed"
 }
 
 // ConflictError signals that an install encountered a resource it
@@ -180,6 +241,21 @@ func (e *ConflictError) Error() string {
 		return e.Kind + " " + e.Namespace + "/" + e.Name + ": " + e.Reason
 	}
 	return e.Kind + " " + e.Name + ": " + e.Reason
+}
+
+// NotManagedError signals that the operation refused to touch an
+// existing workload because KubeBolt didn't install it. The handler
+// maps this to HTTP 409 so the UI distinguishes "nothing happened"
+// (silent no-op) from "we stopped because it isn't ours" (needs
+// operator action via helm/kubectl).
+type NotManagedError struct {
+	Kind      string
+	Namespace string
+	Name      string
+}
+
+func (e *NotManagedError) Error() string {
+	return e.Kind + " " + e.Namespace + "/" + e.Name + " exists but was not installed by KubeBolt; remove it with helm or kubectl"
 }
 
 // Management label applied to every resource created by the backend

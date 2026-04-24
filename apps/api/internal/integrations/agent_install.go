@@ -17,10 +17,9 @@ import (
 )
 
 // AgentInstallConfig is the shape the backend accepts from the
-// install wizard. Deliberately narrow — covers the common case, not
-// every knob the Helm chart exposes. The chart remains the path for
-// power users who need affinity, priorityClassName, custom mTLS
-// mounts, and so on.
+// install wizard. Covers every production-shaped knob of the Helm
+// chart except affinity (still Helm-only — the nested selector
+// term shape is unwieldy in a wizard UI).
 //
 // Pointer for HubbleEnabled so "field omitted" (→ default on)
 // differs from "explicitly false". Plain bools can't express that.
@@ -40,14 +39,50 @@ type AgentInstallConfig struct {
 	// Kill-switch for the Hubble flow collector. nil → default (on).
 	HubbleEnabled *bool `json:"hubbleEnabled,omitempty"`
 
-	// Container image knobs. Leaving ImageTag empty uses "latest"
-	// which is fine for first installs; operators pin via the UI
-	// for reproducibility later.
-	ImageRepo string `json:"imageRepo,omitempty"`
-	ImageTag  string `json:"imageTag,omitempty"`
+	// ─── Image ─────────────────────────────────────────────
+	ImageRepo       string `json:"imageRepo,omitempty"`
+	ImageTag        string `json:"imageTag,omitempty"`
+	ImagePullPolicy string `json:"imagePullPolicy,omitempty"` // Always | IfNotPresent | Never
+
+	// ─── Hubble relay ──────────────────────────────────────
+	// Override the default relay target (hubble-relay.kube-system.svc:80).
+	HubbleRelayAddress string `json:"hubbleRelayAddress,omitempty"`
+	// mTLS / TLS material. ExistingSecret must already exist in
+	// the target namespace with keys ca.crt (+ optional tls.crt /
+	// tls.key for mTLS). Install fails fast when the Secret isn't
+	// found — better than a DaemonSet that crash-loops on mount.
+	HubbleRelayTLS *HubbleRelayTLSConfig `json:"hubbleRelayTls,omitempty"`
+
+	// ─── Scheduling ────────────────────────────────────────
+	NodeSelector      map[string]string `json:"nodeSelector,omitempty"`
+	PriorityClassName string            `json:"priorityClassName,omitempty"`
+
+	// ─── Resources ─────────────────────────────────────────
+	// Kubernetes quantity strings (e.g. "100m", "128Mi"). Empty
+	// fields fall back to the chart defaults.
+	Resources *AgentResourceConfig `json:"resources,omitempty"`
 
 	// Log level — debug/info/warn/error.
 	LogLevel string `json:"logLevel,omitempty"`
+}
+
+// HubbleRelayTLSConfig refers to a pre-existing Secret in the
+// agent's namespace. We don't accept raw cert material over the API
+// — that would force cert bytes through request logs and browser
+// history. Secrets are the K8s-native way to pass this.
+type HubbleRelayTLSConfig struct {
+	ExistingSecret string `json:"existingSecret"`
+	ServerName     string `json:"serverName,omitempty"`
+}
+
+// AgentResourceConfig mirrors the four CPU/memory fields of the
+// Helm chart's resources block. Anything unset keeps the chart
+// default.
+type AgentResourceConfig struct {
+	CPURequest    string `json:"cpuRequest,omitempty"`
+	CPULimit      string `json:"cpuLimit,omitempty"`
+	MemoryRequest string `json:"memoryRequest,omitempty"`
+	MemoryLimit   string `json:"memoryLimit,omitempty"`
 }
 
 // Defaults applied when the wizard leaves fields empty. Kept in one
@@ -100,10 +135,32 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 		hubbleEnabled = *cfg.HubbleEnabled
 	}
 
+	// Validate resource quantity strings up front so a bad value
+	// turns into a clear 400 instead of a partial install.
+	if _, _, err := resolveResources(cfg.Resources); err != nil {
+		return err
+	}
+
 	// Build + apply manifests in order. RBAC before the workload so
-	// pods never come up without the perms they need.
+	// pods never come up without the perms they need. Namespace
+	// first so the Secret check below runs against an existing ns.
+	if err := ensureNamespace(ctx, cs, ns); err != nil {
+		return err
+	}
+
+	// Hubble TLS Secret must exist before we point the DaemonSet at
+	// it — otherwise pods crash-loop on mount and the admin has no
+	// obvious feedback.
+	if cfg.HubbleRelayTLS != nil && cfg.HubbleRelayTLS.ExistingSecret != "" {
+		if _, err := cs.CoreV1().Secrets(ns).Get(ctx, cfg.HubbleRelayTLS.ExistingSecret, metav1.GetOptions{}); err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("hubble TLS secret %q not found in namespace %q — create it before install", cfg.HubbleRelayTLS.ExistingSecret, ns)
+			}
+			return fmt.Errorf("verify hubble TLS secret: %w", err)
+		}
+	}
+
 	steps := []func() error{
-		func() error { return ensureNamespace(ctx, cs, ns) },
 		func() error { return ensureServiceAccount(ctx, cs, ns) },
 		func() error { return ensureClusterRole(ctx, cs) },
 		func() error { return ensureClusterRoleBinding(ctx, cs, ns) },
@@ -119,84 +176,112 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 	return nil
 }
 
-// Uninstall deletes everything labeled as managed-by=kubebolt in the
-// agent's namespace, plus the two cluster-scoped RBAC objects whose
-// names are well-known. External Helm installs (labeled
-// managed-by=Helm) are untouched by design.
-func (a *agentProvider) Uninstall(ctx context.Context, cs kubernetes.Interface) error {
-	// Find a namespace that hosts resources we own. We can't rely
-	// on the install-time namespace because the UI may call
-	// Uninstall without re-prompting.
+// resolveResources turns the optional user config into concrete
+// ResourceList values, falling back to the chart defaults for any
+// field left empty. Returns an error when a string doesn't parse as
+// a Kubernetes quantity.
+func resolveResources(cfg *AgentResourceConfig) (corev1.ResourceList, corev1.ResourceList, error) {
+	req := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("10m"),
+		corev1.ResourceMemory: resource.MustParse("30Mi"),
+	}
+	lim := corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("100m"),
+		corev1.ResourceMemory: resource.MustParse("80Mi"),
+	}
+	if cfg == nil {
+		return req, lim, nil
+	}
+	parse := func(field, value string, into corev1.ResourceList, key corev1.ResourceName) error {
+		if value == "" {
+			return nil
+		}
+		q, err := resource.ParseQuantity(value)
+		if err != nil {
+			return fmt.Errorf("invalid resources.%s=%q: %w", field, value, err)
+		}
+		into[key] = q
+		return nil
+	}
+	if err := parse("cpuRequest", cfg.CPURequest, req, corev1.ResourceCPU); err != nil {
+		return nil, nil, err
+	}
+	if err := parse("memoryRequest", cfg.MemoryRequest, req, corev1.ResourceMemory); err != nil {
+		return nil, nil, err
+	}
+	if err := parse("cpuLimit", cfg.CPULimit, lim, corev1.ResourceCPU); err != nil {
+		return nil, nil, err
+	}
+	if err := parse("memoryLimit", cfg.MemoryLimit, lim, corev1.ResourceMemory); err != nil {
+		return nil, nil, err
+	}
+	return req, lim, nil
+}
+
+// Uninstall removes the agent's DaemonSet, RBAC, and ServiceAccount.
+// Default behavior refuses to touch anything without the
+// managed-by=kubebolt label — returning NotManagedError so the UI
+// can render guidance.
+//
+// opts.Force=true bypasses the label check and deletes by well-known
+// name. This exists so an admin can still uninstall an agent that
+// was originally laid down by `helm install` or raw `kubectl apply`
+// — KubeBolt is the single place where "remove the agent" belongs,
+// regardless of how it got there. The UI collects explicit
+// confirmation before sending force=true, so the safety property
+// ("don't silently clobber external installs") still holds; the
+// operator just has to opt in consciously.
+//
+// Namespace is intentionally NOT deleted — it may hold unrelated
+// Secrets / ConfigMaps the admin put there.
+func (a *agentProvider) Uninstall(ctx context.Context, cs kubernetes.Interface, opts UninstallOptions) error {
 	ds, ns, err := findAgentDaemonSet(ctx, cs)
 	if err != nil {
 		return fmt.Errorf("locating agent: %w", err)
 	}
-	if ds == nil || !managedByUs(ds.Labels) {
-		// Nothing of ours to remove. If something exists but isn't
-		// labeled as ours, we leave it alone — matches the "Helm
-		// install stays intact" rule.
+	if ds == nil {
+		// Nothing to do — agent isn't in the cluster at all. Not
+		// an error; the UI treats this as the happy "already
+		// uninstalled" state.
 		return nil
 	}
+	if !managedByUs(ds.Labels) && !opts.Force {
+		return &NotManagedError{
+			Kind:      "DaemonSet",
+			Namespace: ns,
+			Name:      ds.Name,
+		}
+	}
 
-	// Delete namespaced resources in the resolved namespace. We
-	// list-then-delete (rather than DeleteCollection) because the
-	// Kubernetes fake client used by tests doesn't implement
-	// DeleteCollection label filtering reliably, and the small
-	// overhead of an extra list call doesn't matter here — uninstall
-	// is rare and the resource set is small (single-digit objects).
-	listOpts := metav1.ListOptions{LabelSelector: ManagedByLabel + "=" + ManagedByValue}
+	// Delete by well-known name. Works uniformly for both cases:
+	// managed installs carry the label AND the standard names;
+	// external installs (force path) have the same standard names.
+	// Each delete tolerates NotFound so partial installs clean up.
+	return deleteAgentResources(ctx, cs, ns)
+}
+
+func deleteAgentResources(ctx context.Context, cs kubernetes.Interface, ns string) error {
 	dp := metav1.DeletePropagationForeground
-	deleteOpts := metav1.DeleteOptions{PropagationPolicy: &dp}
+	opts := metav1.DeleteOptions{PropagationPolicy: &dp}
 
-	if dss, err := cs.AppsV1().DaemonSets(ns).List(ctx, listOpts); err != nil {
-		return fmt.Errorf("list DaemonSets: %w", err)
-	} else {
-		for _, obj := range dss.Items {
-			if err := cs.AppsV1().DaemonSets(ns).Delete(ctx, obj.Name, deleteOpts); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("delete DaemonSet %s: %w", obj.Name, err)
-			}
-		}
+	if err := cs.AppsV1().DaemonSets(ns).Delete(ctx, agentDSName, opts); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete DaemonSet: %w", err)
 	}
-	if rbs, err := cs.RbacV1().RoleBindings(ns).List(ctx, listOpts); err != nil {
-		return fmt.Errorf("list RoleBindings: %w", err)
-	} else {
-		for _, obj := range rbs.Items {
-			if err := cs.RbacV1().RoleBindings(ns).Delete(ctx, obj.Name, deleteOpts); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("delete RoleBinding %s: %w", obj.Name, err)
-			}
-		}
+	if err := cs.RbacV1().RoleBindings(ns).Delete(ctx, agentLeaderBinding, opts); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete RoleBinding: %w", err)
 	}
-	if rs, err := cs.RbacV1().Roles(ns).List(ctx, listOpts); err != nil {
-		return fmt.Errorf("list Roles: %w", err)
-	} else {
-		for _, obj := range rs.Items {
-			if err := cs.RbacV1().Roles(ns).Delete(ctx, obj.Name, deleteOpts); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("delete Role %s: %w", obj.Name, err)
-			}
-		}
+	if err := cs.RbacV1().Roles(ns).Delete(ctx, agentLeaderRole, opts); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete Role: %w", err)
 	}
-	if sas, err := cs.CoreV1().ServiceAccounts(ns).List(ctx, listOpts); err != nil {
-		return fmt.Errorf("list ServiceAccounts: %w", err)
-	} else {
-		for _, obj := range sas.Items {
-			if err := cs.CoreV1().ServiceAccounts(ns).Delete(ctx, obj.Name, deleteOpts); err != nil && !apierrors.IsNotFound(err) {
-				return fmt.Errorf("delete ServiceAccount %s: %w", obj.Name, err)
-			}
-		}
+	if err := cs.CoreV1().ServiceAccounts(ns).Delete(ctx, agentSAName, opts); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete ServiceAccount: %w", err)
 	}
-
-	// Cluster-scoped RBAC. Guard each delete on the managed-by
-	// label so we never rip out RBAC we didn't install.
-	if err := deleteClusterRoleBindingIfOurs(ctx, cs, agentClusterBinding); err != nil {
-		return err
+	if err := cs.RbacV1().ClusterRoleBindings().Delete(ctx, agentClusterBinding, opts); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete ClusterRoleBinding: %w", err)
 	}
-	if err := deleteClusterRoleIfOurs(ctx, cs, agentClusterRole); err != nil {
-		return err
+	if err := cs.RbacV1().ClusterRoles().Delete(ctx, agentClusterRole, opts); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete ClusterRole: %w", err)
 	}
-
-	// Namespace itself: intentionally NOT deleted. It may hold
-	// unrelated Secrets / ConfigMaps the admin put there. Leaving
-	// it empty is safer than deleting it.
 	return nil
 }
 
@@ -381,6 +466,41 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled bool) 
 	if cfg.ClusterName != "" {
 		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_CLUSTER_NAME", Value: cfg.ClusterName})
 	}
+	if cfg.HubbleRelayAddress != "" {
+		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_ADDR", Value: cfg.HubbleRelayAddress})
+	}
+	// Hubble TLS: mounted Secret keys map to the env paths the
+	// agent expects. ca.crt alone enables TLS; tls.crt + tls.key
+	// enable mTLS — the agent's buildRelayCredentials branches on
+	// which files exist.
+	var volumes []corev1.Volume
+	var volumeMounts []corev1.VolumeMount
+	if cfg.HubbleRelayTLS != nil && cfg.HubbleRelayTLS.ExistingSecret != "" {
+		env = append(env,
+			corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_CA_FILE", Value: "/etc/hubble-tls/ca.crt"},
+			corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_CERT_FILE", Value: "/etc/hubble-tls/tls.crt"},
+			corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_KEY_FILE", Value: "/etc/hubble-tls/tls.key"},
+		)
+		if cfg.HubbleRelayTLS.ServerName != "" {
+			env = append(env, corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_SERVER_NAME", Value: cfg.HubbleRelayTLS.ServerName})
+		}
+		volumes = append(volumes, corev1.Volume{
+			Name: "hubble-tls",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: cfg.HubbleRelayTLS.ExistingSecret},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "hubble-tls", MountPath: "/etc/hubble-tls", ReadOnly: true,
+		})
+	}
+
+	req, lim, _ := resolveResources(cfg.Resources) // validated in Install
+
+	pullPolicy := corev1.PullPolicy(cfg.ImagePullPolicy)
+	// Leaving ImagePullPolicy empty defers to K8s' built-in default
+	// (Always for :latest, IfNotPresent otherwise), which matches
+	// what a plain `kubectl apply` would produce.
 
 	runAsUser := int64(65532)
 	trueVal := true
@@ -401,30 +521,26 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled bool) 
 					// Land on every node, including control-plane,
 					// so the agent sees each kubelet. Matches the
 					// Helm chart default.
-					Tolerations: []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+					Tolerations:       []corev1.Toleration{{Operator: corev1.TolerationOpExists}},
+					NodeSelector:      cfg.NodeSelector,
+					PriorityClassName: cfg.PriorityClassName,
 					SecurityContext: &corev1.PodSecurityContext{
 						RunAsNonRoot: &trueVal,
 						RunAsUser:    &runAsUser,
 					},
+					Volumes: volumes,
 					Containers: []corev1.Container{{
-						Name:  "agent",
-						Image: cfg.ImageRepo + ":" + cfg.ImageTag,
-						Env:   env,
+						Name:            "agent",
+						Image:           cfg.ImageRepo + ":" + cfg.ImageTag,
+						ImagePullPolicy: pullPolicy,
+						Env:             env,
+						VolumeMounts:    volumeMounts,
 						SecurityContext: &corev1.SecurityContext{
 							ReadOnlyRootFilesystem:   &trueVal,
 							AllowPrivilegeEscalation: &falseVal,
 							Capabilities:             &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
 						},
-						Resources: corev1.ResourceRequirements{
-							Requests: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("10m"),
-								corev1.ResourceMemory: resource.MustParse("30Mi"),
-							},
-							Limits: corev1.ResourceList{
-								corev1.ResourceCPU:    resource.MustParse("100m"),
-								corev1.ResourceMemory: resource.MustParse("80Mi"),
-							},
-						},
+						Resources: corev1.ResourceRequirements{Requests: req, Limits: lim},
 					}},
 				},
 			},
@@ -432,41 +548,4 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled bool) 
 	}
 }
 
-// deleteClusterRoleIfOurs is a tiny helper that checks the
-// managed-by label before deleting. Cluster-scoped deletes can't
-// use DeleteCollection by label selector reliably across all client
-// versions, so we Get + check + Delete.
-func deleteClusterRoleIfOurs(ctx context.Context, cs kubernetes.Interface, name string) error {
-	cr, err := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get ClusterRole %s: %w", name, err)
-	}
-	if !managedByUs(cr.Labels) {
-		return nil
-	}
-	if err := cs.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete ClusterRole %s: %w", name, err)
-	}
-	return nil
-}
-
-func deleteClusterRoleBindingIfOurs(ctx context.Context, cs kubernetes.Interface, name string) error {
-	crb, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
-	if apierrors.IsNotFound(err) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("get ClusterRoleBinding %s: %w", name, err)
-	}
-	if !managedByUs(crb.Labels) {
-		return nil
-	}
-	if err := cs.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete ClusterRoleBinding %s: %w", name, err)
-	}
-	return nil
-}
 

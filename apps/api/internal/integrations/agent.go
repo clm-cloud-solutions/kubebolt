@@ -70,6 +70,10 @@ func (a *agentProvider) Detect(ctx context.Context, cs kubernetes.Interface) (In
 	meta.Namespace = ns
 	meta.Version = extractImageVersion(ds)
 	meta.Features = extractFeatures(ds)
+	// Managed = "we installed this and still own it". Anything
+	// lacking the label came from Helm, kubectl apply, or an
+	// external operator — KubeBolt leaves it alone.
+	meta.Managed = ds.Labels[ManagedByLabel] == ManagedByValue
 
 	ready := int(ds.Status.NumberReady)
 	desired := int(ds.Status.DesiredNumberScheduled)
