@@ -17,6 +17,25 @@ historical metrics, network / disk observability, and live traffic
 flows, but everything else (inventory, insights, YAML edit, exec,
 port-forward, logs) is unchanged.
 
+## Installation methods
+
+There are three ways to install the agent. All produce the same
+DaemonSet; they differ in who owns it and which tool can later
+modify or remove it. The ownership signal is the
+`app.kubernetes.io/managed-by` label on the DaemonSet, which
+KubeBolt reads on every poll.
+
+| Method | `managed-by` label | Install command | When to use | Who can modify |
+|---|---|---|---|---|
+| **This chart** | `Helm` | `helm install kubebolt-agent oci://...` | Production. Full value surface including `affinity`, custom `tolerations`, `podAnnotations`, etc. | Helm (`helm upgrade`), KubeBolt UI with force |
+| **KubeBolt UI** | `kubebolt` | Administration → Integrations → Install | Quickest path when you already have KubeBolt running. Opinionated value set covering 90% of installs. | KubeBolt UI (Configure / Uninstall) |
+| **Raw manifest** | _(unset)_ | `kubectl apply -f deploy/agent/kubebolt-agent-dev.yaml` | Dev loops, air-gapped clusters, GitOps flows that manage their own manifests | The tool that applied it; KubeBolt UI with force |
+
+**Mixing paths:** KubeBolt's UI refuses to modify DaemonSets without
+the `managed-by=kubebolt` label by default. Uninstall has a
+Force option that removes the workload by name regardless — useful
+when migrating between methods. See the Uninstall section below.
+
 ## Install
 
 ```bash
@@ -43,21 +62,90 @@ helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 helm uninstall kubebolt-agent -n kubebolt-system
 ```
 
+This removes every resource the chart created AND the Helm release
+metadata, so `helm list -n kubebolt-system` no longer shows it.
+The release namespace itself is preserved.
+
+If the agent was installed through the KubeBolt UI instead of this
+chart, `helm uninstall` won't find anything — remove it from the
+UI (Administration → Integrations → Agent → Uninstall) or delete
+the resources by name. The other direction works too: KubeBolt's
+UI can force-uninstall a chart-installed agent, though the Helm
+release metadata will linger until you also run `helm uninstall`
+with `--keep-history=false` or delete the release Secret directly.
+
 ## Key values
+
+The values below are the ones most commonly set in production.
+Full reference with every knob the chart exposes is in
+[`values.yaml`](./values.yaml).
+
+### Required
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `backendUrl` | _(required)_ | Host:port of the KubeBolt API gRPC. |
-| `cluster.name` | `""` | Human-readable cluster label. Empty is fine. |
-| `cluster.id` | `""` | Override the auto-discovered cluster_id. Leave empty. |
-| `hubble.enabled` | `true` | Toggle the flow collector. No-op when Cilium is absent. |
-| `hubble.relay.address` | `""` | Override the relay target. Default: `hubble-relay.kube-system.svc.cluster.local:80`. |
-| `hubble.relay.tls.existingSecret` | `""` | Secret with `ca.crt` (TLS) + optional `tls.crt`/`tls.key` (mTLS). |
-| `image.tag` | `""` | Falls back to `Chart.appVersion`. Pin for prod. |
-| `rbac.create` | `true` | Creates ClusterRole/Role + bindings. |
-| `logLevel` | `info` | `debug` / `info` / `warn` / `error`. |
+| `backendUrl` | _(required)_ | Host:port of the KubeBolt API gRPC. See "Connecting to the backend" below. |
 
-Full reference in [`values.yaml`](./values.yaml).
+### Cluster identity
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `cluster.name` | `""` | Human-readable cluster label emitted alongside `cluster_id`. Empty is fine — only surfaces when querying VictoriaMetrics directly. |
+| `cluster.id` | `""` | Override the auto-discovered `cluster_id` (kube-system namespace UID). Leave empty unless migrating legacy data. |
+
+### Image
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `image.repository` | `ghcr.io/clm-cloud-solutions/kubebolt/agent` | Registry path. Override for mirrors or private registries. |
+| `image.tag` | `""` | Falls back to `Chart.appVersion`. Pin explicitly in prod. |
+| `image.pullPolicy` | `IfNotPresent` | `Always` / `IfNotPresent` / `Never`. Use `Never` for kind/dev where the image is pre-loaded with `kind load`. |
+| `imagePullSecrets` | `[]` | For private registries. |
+
+### Hubble flow collector
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `hubble.enabled` | `true` | Toggle the flow collector. Silent no-op when Cilium isn't installed — safe to leave on. |
+| `hubble.relay.address` | `""` | Override the relay target. Default: `hubble-relay.kube-system.svc.cluster.local:80`. |
+| `hubble.relay.tls.existingSecret` | `""` | Pre-existing Secret in the release namespace with `ca.crt` (TLS) + optional `tls.crt`/`tls.key` (mTLS). |
+| `hubble.relay.tls.serverName` | `""` | SNI / verification hostname. Override when the relay's cert uses a CN/SAN distinct from the dial target. |
+
+### Scheduling
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `tolerations` | `[{operator: Exists}]` | Tolerates every taint so the agent lands on control-plane nodes. Trim if you want to exclude some. |
+| `nodeSelector` | `{}` | Pin the agent to specific nodes, e.g. `{kubernetes.io/os: linux}`. |
+| `affinity` | `{}` | Full affinity object. Most installs don't need this. |
+| `priorityClassName` | `""` | Set to `system-cluster-critical` (or your own PriorityClass) in prod to avoid preemption. |
+
+### Resources
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `resources.requests.cpu` | `10m` | Agent is a light Go binary; defaults are sized for small clusters. |
+| `resources.requests.memory` | `30Mi` | Same — scale up for clusters with thousands of pods. |
+| `resources.limits.cpu` | `100m` | |
+| `resources.limits.memory` | `80Mi` | |
+
+### RBAC + ServiceAccount
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `rbac.create` | `true` | Creates ClusterRole/Role + bindings. Set `false` when RBAC is provisioned externally (e.g. Rancher, platform operators). |
+| `serviceAccount.create` | `true` | |
+| `serviceAccount.name` | `""` | Empty = derive from release name. Set explicitly when `serviceAccount.create=false`. |
+| `serviceAccount.annotations` | `{}` | Useful for IRSA (EKS) / Workload Identity (GKE). |
+
+### Extras
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `logLevel` | `info` | `debug` / `info` / `warn` / `error`. |
+| `extraEnv` | `[]` | Inject arbitrary env vars into the agent container — escape hatch for features without first-class values. |
+| `podAnnotations` | `{}` | Useful for external scrapers or policy engines. |
+| `podLabels` | `{}` | |
 
 ## Connecting to the backend
 
