@@ -88,20 +88,25 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		latSelector = `{source="hubble"}`
 	}
 
-	eventsQuery := fmt.Sprintf(
+	// Scope all three queries to the currently-connected cluster so a
+	// secondary cluster (e.g. docker-desktop running in parallel with
+	// kind) doesn't contribute flows that belong to a different
+	// visual.
+	uid := h.activeClusterUID()
+	eventsQuery := scopeQueryByCluster(fmt.Sprintf(
 		`sum by (src_namespace, src_pod, dst_namespace, dst_pod, verdict) (rate(pod_flow_events_total%s[%dm]))`,
 		eventsSelector, windowMin,
-	)
-	httpQuery := fmt.Sprintf(
+	), uid)
+	httpQuery := scopeQueryByCluster(fmt.Sprintf(
 		`sum by (src_namespace, src_pod, dst_namespace, dst_pod, status_class) (rate(pod_flow_http_requests_total%s[%dm]))`,
 		httpSelector, windowMin,
-	)
+	), uid)
 	// Avg latency = rate(sum) / rate(count). Small windows with 0 count
 	// yield NaN, which we filter out below.
-	latQuery := fmt.Sprintf(
+	latQuery := scopeQueryByCluster(fmt.Sprintf(
 		`sum by (src_namespace, src_pod, dst_namespace, dst_pod) (rate(pod_flow_http_latency_seconds_sum%s[%dm])) / sum by (src_namespace, src_pod, dst_namespace, dst_pod) (rate(pod_flow_http_latency_seconds_count%s[%dm]))`,
 		latSelector, windowMin, latSelector, windowMin,
-	)
+	), uid)
 
 	eventsRows, err := runInstantQuery(r.Context(), eventsQuery)
 	if err != nil {

@@ -65,19 +65,21 @@ type Aggregator struct {
 	httpReqs map[httpKey]uint64
 	httpLat  map[httpLatKey]*latSummary
 
-	buffer    *buffer.Ring
-	clusterID string
-	node      string
+	buffer      *buffer.Ring
+	clusterID   string
+	clusterName string
+	node        string
 }
 
-func NewAggregator(buf *buffer.Ring, clusterID, node string) *Aggregator {
+func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node string) *Aggregator {
 	return &Aggregator{
-		totals:    make(map[flowKey]uint64),
-		httpReqs:  make(map[httpKey]uint64),
-		httpLat:   make(map[httpLatKey]*latSummary),
-		buffer:    buf,
-		clusterID: clusterID,
-		node:      node,
+		totals:      make(map[flowKey]uint64),
+		httpReqs:    make(map[httpKey]uint64),
+		httpLat:     make(map[httpLatKey]*latSummary),
+		buffer:      buf,
+		clusterID:   clusterID,
+		clusterName: clusterName,
+		node:        node,
 	}
 }
 
@@ -220,12 +222,21 @@ func (a *Aggregator) Flush() {
 	ts := timestamppb.Now()
 	samples := make([]*agentv1.Sample, 0, len(flowSnap)+len(httpReqSnap)+2*len(httpLatSnap))
 
+	// Inlined tag helper — adds cluster_name when the aggregator has
+	// one configured. Keeps the sample-emission sites below compact.
+	tag := func(m map[string]string) map[string]string {
+		if a.clusterName != "" {
+			m["cluster_name"] = a.clusterName
+		}
+		return m
+	}
+
 	for k, count := range flowSnap {
 		samples = append(samples, &agentv1.Sample{
 			Timestamp:  ts,
 			MetricName: "pod_flow_events_total",
 			Value:      float64(count),
-			Labels: map[string]string{
+			Labels: tag(map[string]string{
 				"cluster_id":    a.clusterID,
 				"node":          a.node,
 				"src_namespace": k.srcNs,
@@ -234,7 +245,7 @@ func (a *Aggregator) Flush() {
 				"dst_pod":       k.dstPod,
 				"verdict":       k.verdict,
 				"source":        "hubble",
-			},
+			}),
 		})
 	}
 
@@ -243,7 +254,7 @@ func (a *Aggregator) Flush() {
 			Timestamp:  ts,
 			MetricName: "pod_flow_http_requests_total",
 			Value:      float64(count),
-			Labels: map[string]string{
+			Labels: tag(map[string]string{
 				"cluster_id":    a.clusterID,
 				"node":          a.node,
 				"src_namespace": k.srcNs,
@@ -254,7 +265,7 @@ func (a *Aggregator) Flush() {
 				"status_class":  k.statusClass,
 				"verdict":       k.verdict,
 				"source":        "hubble",
-			},
+			}),
 		})
 	}
 
@@ -262,7 +273,7 @@ func (a *Aggregator) Flush() {
 	// derive avg via `sum/count` without needing histogram buckets.
 	// P95 / P99 would require histogram shape, which is Phase 2.
 	for k, s := range httpLatSnap {
-		base := map[string]string{
+		base := tag(map[string]string{
 			"cluster_id":    a.clusterID,
 			"node":          a.node,
 			"src_namespace": k.srcNs,
@@ -271,7 +282,7 @@ func (a *Aggregator) Flush() {
 			"dst_pod":       k.dstPod,
 			"method":        k.method,
 			"source":        "hubble",
-		}
+		})
 		samples = append(samples,
 			&agentv1.Sample{
 				Timestamp:  ts,

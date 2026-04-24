@@ -20,13 +20,30 @@ import (
 )
 
 type StatsCollector struct {
-	client    *kubelet.Client
-	clusterID string
-	nodeName  string
+	client      *kubelet.Client
+	clusterID   string
+	clusterName string
+	nodeName    string
 }
 
-func NewStats(client *kubelet.Client, clusterID, nodeName string) *StatsCollector {
-	return &StatsCollector{client: client, clusterID: clusterID, nodeName: nodeName}
+func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName string) *StatsCollector {
+	return &StatsCollector{
+		client:      client,
+		clusterID:   clusterID,
+		clusterName: clusterName,
+		nodeName:    nodeName,
+	}
+}
+
+// addClusterName mutates the label map to include a cluster_name entry
+// when the collector has one configured. Called on every label set so
+// samples consistently carry the display-name dimension alongside the
+// canonical cluster_id.
+func (c *StatsCollector) addClusterName(labels map[string]string) map[string]string {
+	if c.clusterName != "" {
+		labels["cluster_name"] = c.clusterName
+	}
+	return labels
 }
 
 func (c *StatsCollector) Name() string { return "kubelet_stats_summary" }
@@ -45,10 +62,10 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error)
 	}
 
 	now := timestamppb.Now()
-	nodeLabels := map[string]string{
+	nodeLabels := c.addClusterName(map[string]string{
 		"cluster_id": c.clusterID,
 		"node":       c.nodeName,
-	}
+	})
 
 	var samples []*agentv1.Sample
 
@@ -98,13 +115,13 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error)
 
 	// Per-pod, per-container metrics.
 	for _, pod := range summary.Pods {
-		podLabels := map[string]string{
+		podLabels := c.addClusterName(map[string]string{
 			"cluster_id":    c.clusterID,
 			"node":          c.nodeName,
 			"pod_namespace": pod.PodRef.Namespace,
 			"pod_name":      pod.PodRef.Name,
 			"pod_uid":       pod.PodRef.UID,
-		}
+		})
 
 		for _, container := range pod.Containers {
 			containerLabels := mergeLabels(podLabels, map[string]string{"container": container.Name})

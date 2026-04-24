@@ -14,8 +14,8 @@ import (
 // cancelled. Stream errors retry with exponential backoff without
 // crashing the agent — Hubble Relay might be temporarily unreachable
 // during Cilium upgrades or node reboots.
-func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, node string) {
-	agg := NewAggregator(buf, clusterID, node)
+func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, clusterName, node string) {
+	agg := NewAggregator(buf, clusterID, clusterName, node)
 
 	// Flush loop independent of the stream so samples still accumulate
 	// and ship even when the relay connection is flapping.

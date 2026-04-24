@@ -1,11 +1,13 @@
 package api
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -21,6 +23,55 @@ func metricsStorageURL() string {
 }
 
 var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
+
+// activeClusterUID returns the kube-system UID of the cluster this
+// handler is currently pointed at, or empty when no connector is
+// available (startup before first connect, or connection errored).
+// Empty disables query scoping entirely — callers treat that as a
+// best-effort "query whatever's in VM" which is the pre-scoping
+// behavior.
+func (h *handlers) activeClusterUID() string {
+	conn := h.manager.Connector()
+	if conn == nil {
+		return ""
+	}
+	return conn.ClusterUID()
+}
+
+// metricSelectorRE matches PromQL label selectors — the `{...}` chunk
+// that follows a metric name or appears bare (e.g. `{source="hubble"}`).
+// The simple `\{([^}]*)\}` pattern is enough because none of our query
+// shapes include nested braces; label values can contain them in
+// principle but all of ours are plain identifiers.
+var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
+
+// scopeQueryByCluster injects `cluster_id="<uid>"` into every label
+// selector in a PromQL expression so a query can't accidentally sum
+// series from other clusters that happen to report to the same VM.
+// Does nothing when uid is empty (backend couldn't discover the UID,
+// e.g. dev-mode without in-cluster creds). Idempotent: if a selector
+// already has a cluster_id matcher, it's left alone.
+//
+// Regex-based rather than a real PromQL parser because our query shapes
+// are stable and simple (`metric{...}`, possibly wrapped in sum/rate).
+// If we ever need multi-cluster aggregation or more complex expressions,
+// switch to a proper AST rewrite.
+func scopeQueryByCluster(promQL, uid string) string {
+	if uid == "" {
+		return promQL
+	}
+	injected := fmt.Sprintf(`cluster_id=%q`, uid)
+	return metricSelectorRE.ReplaceAllStringFunc(promQL, func(sel string) string {
+		inner := sel[1 : len(sel)-1]
+		if strings.Contains(inner, "cluster_id") {
+			return sel
+		}
+		if strings.TrimSpace(inner) == "" {
+			return "{" + injected + "}"
+		}
+		return "{" + injected + "," + inner + "}"
+	})
+}
 
 // handleMetricsQueryRange proxies a PromQL range query to the TSDB.
 //
@@ -43,6 +94,8 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "query, start, end, and step are all required")
 		return
 	}
+
+	q = scopeQueryByCluster(q, h.activeClusterUID())
 
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
@@ -92,6 +145,7 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "query is required")
 		return
 	}
+	q = scopeQueryByCluster(q, h.activeClusterUID())
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {

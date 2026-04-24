@@ -19,13 +19,19 @@ import (
 // among them — leave the `network` block empty in /stats/summary, while
 // cAdvisor still reports it correctly from the pod's network namespace.
 type CadvisorCollector struct {
-	client    *kubelet.Client
-	clusterID string
-	nodeName  string
+	client      *kubelet.Client
+	clusterID   string
+	clusterName string
+	nodeName    string
 }
 
-func NewCadvisor(client *kubelet.Client, clusterID, nodeName string) *CadvisorCollector {
-	return &CadvisorCollector{client: client, clusterID: clusterID, nodeName: nodeName}
+func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName string) *CadvisorCollector {
+	return &CadvisorCollector{
+		client:      client,
+		clusterID:   clusterID,
+		clusterName: clusterName,
+		nodeName:    nodeName,
+	}
 }
 
 func (c *CadvisorCollector) Name() string { return "kubelet_cadvisor_network" }
@@ -76,17 +82,21 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv1.Sample, err
 		// We drop the container label entirely and let VM collapse the
 		// duplicates. Using a seen-set would save a few bytes per scrape
 		// but costs complexity; not worth it at our scale.
+		sampleLabels := map[string]string{
+			"cluster_id":    c.clusterID,
+			"node":          c.nodeName,
+			"pod_namespace": podNs,
+			"pod_name":      podName,
+			"interface":     iface,
+		}
+		if c.clusterName != "" {
+			sampleLabels["cluster_name"] = c.clusterName
+		}
 		samples = append(samples, &agentv1.Sample{
 			Timestamp:  now,
 			MetricName: outName,
 			Value:      value,
-			Labels: map[string]string{
-				"cluster_id":    c.clusterID,
-				"node":          c.nodeName,
-				"pod_namespace": podNs,
-				"pod_name":      podName,
-				"interface":     iface,
-			},
+			Labels:     sampleLabels,
 		})
 	}
 	if err := scanner.Err(); err != nil {

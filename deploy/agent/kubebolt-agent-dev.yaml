@@ -35,6 +35,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["list", "watch"]
+  # The agent reads the kube-system namespace UID on startup to use as
+  # its canonical cluster_id — that's the label that scopes every sample
+  # to this specific cluster. One "get" on one namespace, nothing more.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
 
 ---
 apiVersion: rbac.authorization.k8s.io/v1
@@ -130,6 +136,14 @@ spec:
                   fieldPath: metadata.namespace
             - name: KUBEBOLT_BACKEND_URL
               value: "host.docker.internal:9090"
+            # Human-readable cluster name emitted alongside the
+            # auto-discovered cluster_id UID. Purely a display label —
+            # the canonical identifier is still the kube-system UID,
+            # which the agent reads from the K8s API at startup. Change
+            # this to something meaningful when deploying to a new
+            # cluster (e.g. "prod-eks-us-east-1").
+            - name: KUBEBOLT_AGENT_CLUSTER_NAME
+              value: "kind-kubebolt-dev"
           resources:
             requests:
               cpu: 10m

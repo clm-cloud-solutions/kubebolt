@@ -68,6 +68,7 @@ type Connector struct {
 	stopCh        chan struct{}
 	mu            sync.RWMutex
 	clusterName    string
+	clusterUID     string // kube-system namespace UID, used to scope VM queries per cluster
 	collector      metricsCollector
 	topologyTimer  *time.Timer
 	permissions    ResourcePermissions
@@ -157,9 +158,31 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		clusterName:   clusterName,
 	}
 
+	// Read kube-system namespace UID to scope VM queries. Same value
+	// that the kubebolt-agent uses as `cluster_id` on every sample,
+	// so the backend can filter VM PromQL to just this cluster's
+	// series. 5s is plenty for a single GET against the apiserver.
+	if uidCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second); true {
+		defer cancel()
+		if ns, err := clientset.CoreV1().Namespaces().Get(uidCtx, "kube-system", metav1.GetOptions{}); err == nil {
+			c.clusterUID = string(ns.UID)
+		} else {
+			log.Printf("Warning: failed to read kube-system UID for cluster %q: %v", clusterName, err)
+		}
+	}
+
 	c.permissions = probePermissions(clientset)
 	c.setupInformers()
 	return c, nil
+}
+
+// ClusterUID returns the kube-system namespace UID, unique per
+// Kubernetes cluster. Empty when the connector couldn't reach the
+// apiserver to discover it (dev-mode or transient failure) — callers
+// should treat empty as "no scoping available" and fall back to
+// unscoped queries rather than blocking.
+func (c *Connector) ClusterUID() string {
+	return c.clusterUID
 }
 
 // Permissions returns the probed resource permissions for this cluster.
@@ -753,6 +776,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 
 	// Cluster info
 	overview.ClusterName = c.clusterName
+	overview.ClusterUID = c.clusterUID
 	serverVersion, err := c.clientset.Discovery().ServerVersion()
 	if err == nil {
 		overview.KubernetesVersion = serverVersion.GitVersion

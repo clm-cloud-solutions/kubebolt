@@ -5,6 +5,7 @@ import "time"
 // ClusterOverview is the top-level summary returned by GET /cluster/overview
 type ClusterOverview struct {
 	ClusterName        string              `json:"clusterName"`
+	ClusterUID         string              `json:"clusterUID,omitempty"` // kube-system namespace UID; used by the UI to scope metric queries
 	KubernetesVersion  string              `json:"kubernetesVersion"`
 	Platform           string              `json:"platform"`
 	Nodes              ResourceCount       `json:"nodes"`

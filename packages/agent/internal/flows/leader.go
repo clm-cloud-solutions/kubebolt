@@ -39,7 +39,7 @@ import (
 func RunLeaderElectedCollector(
 	ctx context.Context,
 	buf *buffer.Ring,
-	clusterID, nodeName, leaseNamespace string,
+	clusterID, clusterName, nodeName, leaseNamespace string,
 ) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -99,7 +99,7 @@ func RunLeaderElectedCollector(
 					slog.String("identity", identity))
 				collCtx, cancel := context.WithCancel(leaderCtx)
 				collectorCancel = cancel
-				RunCollector(collCtx, relayAddr, buf, clusterID, nodeName)
+				RunCollector(collCtx, relayAddr, buf, clusterID, clusterName, nodeName)
 			},
 			OnStoppedLeading: func() {
 				slog.Info("hubble: lost flow-collector lease", slog.String("identity", identity))

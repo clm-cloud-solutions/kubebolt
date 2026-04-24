@@ -20,6 +20,10 @@ import (
 	"syscall"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/collector"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/flows"
@@ -28,7 +32,7 @@ import (
 	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
 )
 
-const agentVersion = "0.0.6-flows-leader"
+const agentVersion = "0.0.7-cluster-ident"
 
 func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")
@@ -56,9 +60,15 @@ func main() {
 	kc := kubelet.New(*nodeIP)
 	slog.Info("kubelet target", slog.String("url", kc.BaseURL()))
 
+	clusterID, clusterName := resolveClusterIdent(rootCtx)
+	slog.Info("cluster identity",
+		slog.String("cluster_id", clusterID),
+		slog.String("cluster_name", clusterName),
+	)
+
 	pods := collector.NewPods(kc)
-	stats := collector.NewStats(kc, "local", *nodeName)
-	cadvisor := collector.NewCadvisor(kc, "local", *nodeName)
+	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName)
+	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName)
 	buf := buffer.New(*bufferSize)
 	ship := shipper.New(*backendURL, *nodeName, agentVersion, buf)
 
@@ -141,7 +151,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			flows.RunLeaderElectedCollector(rootCtx, buf, "local", *nodeName, leaseNs)
+			flows.RunLeaderElectedCollector(rootCtx, buf, clusterID, clusterName, *nodeName, leaseNs)
 		}()
 	} else {
 		slog.Debug("hubble: skipping flow collector (no lease namespace)",
@@ -226,4 +236,57 @@ func hostname() string {
 		return string(out)
 	}
 	return "unknown-node"
+}
+
+// resolveClusterIdent determines the (cluster_id, cluster_name) pair
+// that every sample this agent emits gets tagged with. The ID is the
+// cornerstone of multi-cluster correctness — two agents running in
+// different clusters must have different IDs, otherwise VM sums their
+// samples together and dashboards lie.
+//
+// Priority for cluster_id:
+//  1. KUBEBOLT_AGENT_CLUSTER_ID env var (operator override, e.g. to
+//     migrate legacy installs that used "local" before this feature
+//     existed).
+//  2. Auto-discover: read the `kube-system` namespace UID from the
+//     apiserver. Every K8s cluster has a unique, immutable UID there,
+//     so no two clusters can ever collide.
+//  3. Fallback to "local" when we can't reach the apiserver (e.g.
+//     dev-mode host run without in-cluster credentials). Emits a
+//     warn-level log so the operator notices.
+//
+// cluster_name is a pure display label, set via
+// KUBEBOLT_AGENT_CLUSTER_NAME, empty when not configured. The UI uses
+// whatever the backend knows from kubeconfig context instead, so this
+// is mostly for operators who query VM directly.
+func resolveClusterIdent(ctx context.Context) (clusterID, clusterName string) {
+	clusterName = os.Getenv("KUBEBOLT_AGENT_CLUSTER_NAME")
+
+	if override := os.Getenv("KUBEBOLT_AGENT_CLUSTER_ID"); override != "" {
+		return override, clusterName
+	}
+
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		slog.Warn("cluster_id: no in-cluster config, falling back to 'local'",
+			slog.String("error", err.Error()))
+		return "local", clusterName
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		slog.Warn("cluster_id: kube client init failed, falling back to 'local'",
+			slog.String("error", err.Error()))
+		return "local", clusterName
+	}
+	// 5s is plenty for a single GET against the local apiserver; longer
+	// would delay agent startup on a cluster with a flaky control plane.
+	discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	ns, err := client.CoreV1().Namespaces().Get(discoverCtx, "kube-system", metav1.GetOptions{})
+	if err != nil {
+		slog.Warn("cluster_id: failed to read kube-system UID, falling back to 'local'",
+			slog.String("error", err.Error()))
+		return "local", clusterName
+	}
+	return string(ns.UID), clusterName
 }
