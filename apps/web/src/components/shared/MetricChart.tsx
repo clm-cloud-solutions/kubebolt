@@ -445,6 +445,11 @@ export function MetricChart({
                   stroke="var(--kb-border)"
                   tickCount={5}
                   minTickGap={40}
+                  // Push the first/last ticks inward so they don't
+                  // overlap the Y-axis value labels at the bottom-left
+                  // corner (visible as a "126 KiB/s 06:19:30" stacked
+                  // glyph before this was added).
+                  padding={{ left: 24, right: 8 }}
                 />
                 <YAxis
                   tickFormatter={(v) => formatValue(v, scale, true)}
