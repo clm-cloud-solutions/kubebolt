@@ -13,8 +13,46 @@ import (
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
+	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
 )
+
+// emitLeaderStatus writes a single sample to the ring buffer marking
+// whether this pod currently holds the flow-collector Lease. One series
+// per agent pod: series for non-leaders hold steady at 0, the leader's
+// series flips to 1. Handy for dashboards that need to show which pod
+// owns the stream, and for debugging lease churn in SaaS.
+//
+// Known artifact: when a pod is SIGTERM'd, OnStoppedLeading fires and
+// emits a final value=0, but the shipper → backend → VM path is
+// asynchronous and may not drain before the pod exits. In that case
+// the dead pod's last sample (value=1) sticks around for up to 5 min
+// (VM lookback). K8s Lease is the source of truth; consumers that
+// need "actual current leader" should filter by sample age or combine
+// with the Lease object. Acceptable for now; a future iteration can
+// add a synchronous buffer-flush on shutdown if needed.
+func emitLeaderStatus(buf *buffer.Ring, clusterID, clusterName, nodeName, podName string, leading bool) {
+	labels := map[string]string{
+		"cluster_id": clusterID,
+		"node":       nodeName,
+		"pod":        podName,
+	}
+	if clusterName != "" {
+		labels["cluster_name"] = clusterName
+	}
+	value := 0.0
+	if leading {
+		value = 1.0
+	}
+	buf.Push([]*agentv1.Sample{{
+		Timestamp:  timestamppb.Now(),
+		MetricName: "kubebolt_flow_collector_leader",
+		Value:      value,
+		Labels:     labels,
+	}})
+}
 
 // RunLeaderElectedCollector starts the Hubble flow collector behind a
 // Kubernetes Lease so only one agent pod in the cluster is streaming
@@ -82,6 +120,29 @@ func RunLeaderElectedCollector(
 	// without cancelling the outer agent context.
 	var collectorCancel context.CancelFunc
 
+	// Emit an initial non-leader sample so this pod's series exists in
+	// VM even before the lease resolves — dashboards don't go blank
+	// during the election phase.
+	emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, false)
+
+	// Periodic re-emit so VM's 5-minute staleness window never lets
+	// the gauge fall off. Cheap: one sample per tick per agent pod.
+	heartbeatCtx, heartbeatCancel := context.WithCancel(ctx)
+	defer heartbeatCancel()
+	var leadingNow bool
+	go func() {
+		tick := time.NewTicker(30 * time.Second)
+		defer tick.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-tick.C:
+				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, leadingNow)
+			}
+		}
+	}()
+
 	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
 		Lock:            lock,
 		ReleaseOnCancel: true,
@@ -97,12 +158,16 @@ func RunLeaderElectedCollector(
 				slog.Info("hubble: acquired flow-collector lease",
 					slog.String("relay", relayAddr),
 					slog.String("identity", identity))
+				leadingNow = true
+				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, true)
 				collCtx, cancel := context.WithCancel(leaderCtx)
 				collectorCancel = cancel
 				RunCollector(collCtx, relayAddr, buf, clusterID, clusterName, nodeName)
 			},
 			OnStoppedLeading: func() {
 				slog.Info("hubble: lost flow-collector lease", slog.String("identity", identity))
+				leadingNow = false
+				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, false)
 				if collectorCancel != nil {
 					collectorCancel()
 					collectorCancel = nil

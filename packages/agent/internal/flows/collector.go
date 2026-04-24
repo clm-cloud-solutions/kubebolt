@@ -3,17 +3,25 @@ package flows
 import (
 	"context"
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
+	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
 )
 
 // RunCollector runs the Hubble ingest + aggregation loop until ctx is
 // cancelled. Stream errors retry with exponential backoff without
 // crashing the agent — Hubble Relay might be temporarily unreachable
 // during Cilium upgrades or node reboots.
+//
+// Also emits a `hubble_collector_up` gauge on a 30s heartbeat so the
+// UI can distinguish "Cilium working" from "Cilium unreachable" even
+// between flow samples. The gauge lives on the leader only — non-leader
+// pods don't run the collector at all.
 func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, clusterName, node string) {
 	agg := NewAggregator(buf, clusterID, clusterName, node)
 
@@ -23,6 +31,12 @@ func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clust
 	defer flushCancel()
 	go agg.RunFlushLoop(flushCtx, 5*time.Second)
 
+	// Connection state: atomic bool so the heartbeat goroutine can read
+	// while streamOnce writes without a lock. Starts at 0 (down) since
+	// we haven't connected yet.
+	var connected atomic.Bool
+	go runStatusHeartbeat(flushCtx, buf, clusterID, clusterName, node, &connected)
+
 	backoff := time.Second
 	const backoffMax = 60 * time.Second
 
@@ -30,7 +44,11 @@ func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clust
 		if ctx.Err() != nil {
 			return
 		}
-		if err := streamOnce(ctx, relayAddr, agg); err != nil && ctx.Err() == nil {
+		if err := streamOnce(ctx, relayAddr, agg, &connected); err != nil && ctx.Err() == nil {
+			connected.Store(false)
+			// Emit immediately on disconnect so the UI reflects the
+			// change without waiting for the next heartbeat tick.
+			emitCollectorStatus(buf, clusterID, clusterName, node, false)
 			slog.Warn("hubble: stream ended, will retry",
 				slog.String("relay", relayAddr),
 				slog.String("error", err.Error()),
@@ -51,7 +69,47 @@ func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clust
 	}
 }
 
-func streamOnce(ctx context.Context, relayAddr string, agg *Aggregator) error {
+// runStatusHeartbeat emits a `hubble_collector_up` sample every 30s so
+// VM never sees the gauge fall out of its 5-minute staleness window.
+// Cheap — one sample per tick per leader pod.
+func runStatusHeartbeat(ctx context.Context, buf *buffer.Ring, clusterID, clusterName, node string, connected *atomic.Bool) {
+	tick := time.NewTicker(30 * time.Second)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-tick.C:
+			emitCollectorStatus(buf, clusterID, clusterName, node, connected.Load())
+		}
+	}
+}
+
+// emitCollectorStatus writes one sample with value 1 (streaming) or 0
+// (disconnected / never connected). Labels match the flow samples so
+// dashboards can join on (cluster_id, node) without extra config.
+func emitCollectorStatus(buf *buffer.Ring, clusterID, clusterName, node string, up bool) {
+	labels := map[string]string{
+		"cluster_id": clusterID,
+		"node":       node,
+		"source":     "hubble",
+	}
+	if clusterName != "" {
+		labels["cluster_name"] = clusterName
+	}
+	value := 0.0
+	if up {
+		value = 1.0
+	}
+	buf.Push([]*agentv1.Sample{{
+		Timestamp:  timestamppb.Now(),
+		MetricName: "hubble_collector_up",
+		Value:      value,
+		Labels:     labels,
+	}})
+}
+
+func streamOnce(ctx context.Context, relayAddr string, agg *Aggregator, connected *atomic.Bool) error {
 	client, err := NewHubble(relayAddr)
 	if err != nil {
 		return err
@@ -69,6 +127,10 @@ func streamOnce(ctx context.Context, relayAddr string, agg *Aggregator) error {
 		slog.String("version", status.GetVersion()),
 		slog.Int("num_flows_buffered", int(status.GetNumFlows())),
 	)
+	connected.Store(true)
+	// Immediate emission so the UI flips to "up" without waiting for
+	// the next heartbeat tick.
+	emitCollectorStatus(agg.buffer, agg.clusterID, agg.clusterName, agg.node, true)
 
 	flows := make(chan *flowpb.Flow, 1024)
 	errCh := make(chan error, 1)
