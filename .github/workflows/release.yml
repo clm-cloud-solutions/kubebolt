@@ -153,6 +153,16 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Sync frontend version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          # src/version.ts is the single source of truth the UI
+          # chrome (sidebar / login footer) reads at build time.
+          # Keep it and package.json aligned with the git tag so the
+          # bundled binary never ships a stale version string.
+          sed -i "s/^export const VERSION = .*/export const VERSION = '$VERSION'/" apps/web/src/version.ts
+          sed -i "s/^  \"version\": \".*\",/  \"version\": \"$VERSION\",/" apps/web/package.json
+
       - name: Build frontend
         run: |
           cd apps/web

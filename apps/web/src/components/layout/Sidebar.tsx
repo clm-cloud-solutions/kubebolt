@@ -31,8 +31,11 @@ import {
   KeyRound,
   Lightbulb,
   Puzzle,
+  Info,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { VERSION } from '@/version'
+import { AboutModal } from '@/components/layout/AboutModal'
 import type { ClusterOverview } from '@/types/kubernetes'
 
 interface SidebarProps {
@@ -132,6 +135,7 @@ const adminItems = [
 export function Sidebar({ overview }: SidebarProps) {
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
+  const [aboutOpen, setAboutOpen] = useState(false)
   const { hasRole, isAuthEnabled } = useAuth()
 
   const handleLogoClick = useCallback(() => {
@@ -180,7 +184,7 @@ export function Sidebar({ overview }: SidebarProps) {
         </div>
         <div className="flex flex-col">
           <span className="text-sm font-semibold text-kb-text-primary leading-tight">KubeBolt</span>
-          <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v0.1.0 beta</span>
+          <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v{VERSION}</span>
         </div>
       </div>
 
@@ -290,8 +294,8 @@ export function Sidebar({ overview }: SidebarProps) {
         )}
       </nav>
 
-      {/* Settings */}
-      <div className="px-2 py-3 border-t border-kb-border">
+      {/* Settings + About */}
+      <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
         <NavLink
           to="/settings"
           className={({ isActive }) =>
@@ -305,7 +309,17 @@ export function Sidebar({ overview }: SidebarProps) {
           <Settings className="w-4 h-4" />
           <span>Settings</span>
         </NavLink>
+        <button
+          type="button"
+          onClick={() => setAboutOpen(true)}
+          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card transition-colors"
+        >
+          <Info className="w-4 h-4" />
+          <span>About</span>
+        </button>
       </div>
+
+      {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
     </aside>
   )
 }

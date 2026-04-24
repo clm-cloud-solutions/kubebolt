@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
 import { Zap, Eye, EyeOff } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { VERSION } from '@/version'
 
 export function LoginPage() {
   const [username, setUsername] = useState('')
@@ -108,7 +109,7 @@ export function LoginPage() {
         </form>
 
         <p className="text-center text-[10px] text-kb-text-tertiary mt-6 font-mono">
-          KubeBolt v0.1.0 beta
+          KubeBolt v{VERSION}
         </p>
       </div>
     </div>
