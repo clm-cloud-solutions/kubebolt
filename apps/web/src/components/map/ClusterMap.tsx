@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useLayoutEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactFlow, {
   Background,
@@ -12,7 +12,8 @@ import ReactFlow, {
   type EdgeTypes,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import { LayoutGrid, GitBranch, Zap, ZapOff, RotateCcw } from 'lucide-react'
+import dagre from '@dagrejs/dagre'
+import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw } from 'lucide-react'
 import { useTopology } from '@/hooks/useTopology'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -92,7 +93,31 @@ const KIND_TO_ROUTE: Record<string, string> = {
   PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
 }
 
-type LayoutMode = 'grid' | 'flow'
+type LayoutMode = 'grid' | 'flow' | 'traffic'
+
+// In Traffic mode we collapse the map down to what matters for flow
+// reading: Pods (sources and destinations, so LB fan-out is visible)
+// and Services (the junction nodes). Workloads don't appear in flows,
+// so showing them just adds isolated nodes. Config / storage /
+// autoscale / node kinds are never traffic endpoints.
+const TRAFFIC_HIDDEN_KINDS = new Set<string>([
+  'Deployment',
+  'StatefulSet',
+  'DaemonSet',
+  'Job',
+  'CronJob',
+  'ReplicaSet',
+  'Ingress',
+  'Gateway',
+  'HTTPRoute',
+  'ConfigMap',
+  'Secret',
+  'PersistentVolumeClaim',
+  'PersistentVolume',
+  'HPA',
+  'HorizontalPodAutoscaler',
+  'Node',
+])
 
 const NODE_W = 170
 const NODE_H = 90
@@ -269,6 +294,155 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
   return allNodes
 }
 
+// ─── Traffic Layout ───
+// Kiali-style: dagre left-to-right per namespace. Intent-flow shape
+// (caller → Service → callee) is achieved by feeding dagre both the
+// topology 'selects' edges (Service → Pod) and the observed pod-to-pod
+// flows, so Services naturally sit between callers and their targets
+// in the resulting rank graph.
+function buildTrafficLayout(
+  filtered: TopologyNode[],
+  topologyEdges: TopologyEdge[],
+  flowEdges: { srcNamespace: string; srcPod: string; dstNamespace: string; dstPod: string }[],
+) {
+  const groups = groupByNamespace(filtered)
+  const allNodes: Node[] = []
+
+  interface TrafficBlock {
+    ns: string
+    resources: TopologyNode[]
+    color: typeof NS_COLORS[number]
+    width: number
+    height: number
+    positions: Map<string, { x: number; y: number }>
+  }
+
+  const resourceIds = new Set(filtered.map((n) => n.id))
+  const servicesSelectingPod = new Map<string, string[]>()
+  for (const e of topologyEdges) {
+    if (e.type !== 'selects') continue
+    if (!resourceIds.has(e.source) || !resourceIds.has(e.target)) continue
+    const list = servicesSelectingPod.get(e.target) || []
+    list.push(e.source)
+    servicesSelectingPod.set(e.target, list)
+  }
+
+  const blocks: TrafficBlock[] = groups.map(({ ns, resources }, nsIdx) => {
+    const color = NS_COLORS[nsIdx % NS_COLORS.length]
+
+    const g = new dagre.graphlib.Graph()
+    g.setGraph({ rankdir: 'LR', nodesep: 18, ranksep: 70, marginx: 0, marginy: 0 })
+    g.setDefaultEdgeLabel(() => ({}))
+
+    const nsIds = new Set(resources.map((n) => n.id))
+    for (const n of resources) {
+      g.setNode(n.id, { width: NODE_W, height: NODE_H })
+    }
+
+    // Structural hints: ownership + service selectors. dagre uses these
+    // to shape ranks even when there's no live traffic yet, so an idle
+    // map still reads left-to-right.
+    for (const e of topologyEdges) {
+      if (!nsIds.has(e.source) || !nsIds.has(e.target)) continue
+      if (e.type === 'selects' || e.type === 'routes' || e.type === 'owns') {
+        g.setEdge(e.source, e.target)
+      }
+    }
+
+    // Intent-shaped flow hints: route pod → Service → pod when we know
+    // which Service selects the destination. Keeps Services in the
+    // middle rank even when they receive no direct ingress.
+    for (const f of flowEdges) {
+      if (f.srcNamespace !== ns || f.dstNamespace !== ns) continue
+      const srcId = `Pod/${f.srcNamespace}/${f.srcPod}`
+      const dstId = `Pod/${f.dstNamespace}/${f.dstPod}`
+      if (!nsIds.has(srcId) || !nsIds.has(dstId)) continue
+      const svcs = servicesSelectingPod.get(dstId)
+      if (svcs && svcs.length > 0 && nsIds.has(svcs[0])) {
+        g.setEdge(srcId, svcs[0])
+        g.setEdge(svcs[0], dstId)
+      } else {
+        g.setEdge(srcId, dstId)
+      }
+    }
+
+    dagre.layout(g)
+
+    // Dagre can emit negative coordinates depending on how ranks settle,
+    // and nodes with very few connections sometimes end up at odd
+    // positions. We normalize by shifting so the leftmost/topmost node
+    // sits at (0, 0), then size the region to exactly fit the shifted
+    // bounding box. Without this, the region width was shorter than
+    // some nodes' actual positions and `extent: 'parent'` would clamp
+    // them to the edge — edges then rendered to the *unclamped*
+    // position, landing in empty space.
+    const positions = new Map<string, { x: number; y: number }>()
+    let minX = Infinity
+    let minY = Infinity
+    const raw = new Map<string, { x: number; y: number }>()
+    for (const n of resources) {
+      const pos = g.node(n.id)
+      if (!pos) continue
+      const x = pos.x - NODE_W / 2
+      const y = pos.y - NODE_H / 2
+      raw.set(n.id, { x, y })
+      if (x < minX) minX = x
+      if (y < minY) minY = y
+    }
+    if (minX === Infinity) minX = 0
+    if (minY === Infinity) minY = 0
+
+    let maxRight = 0
+    let maxBottom = 0
+    for (const [id, { x, y }] of raw) {
+      const sx = x - minX
+      const sy = y - minY
+      positions.set(id, { x: sx, y: sy })
+      maxRight = Math.max(maxRight, sx + NODE_W)
+      maxBottom = Math.max(maxBottom, sy + NODE_H)
+    }
+
+    const width = Math.max(maxRight + NS_PAD_X * 2, 320)
+    const height = Math.max(maxBottom + NS_PAD_TOP + NS_PAD_BOTTOM, 140)
+
+    return { ns, resources, color, width, height, positions }
+  })
+
+  const rows: TrafficBlock[][] = []
+  for (let i = 0; i < blocks.length; i += NS_COLS) {
+    rows.push(blocks.slice(i, i + NS_COLS))
+  }
+
+  let offsetY = 0
+  rows.forEach((row) => {
+    let offsetX = 0
+    const rowMaxH = Math.max(...row.map((b) => b.height))
+    row.forEach((block) => {
+      const nsId = `ns__${block.ns}`
+      allNodes.push({
+        id: nsId, type: 'namespaceRegion',
+        position: { x: offsetX, y: offsetY },
+        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
+        style: { width: block.width, height: block.height },
+        selectable: false, draggable: false,
+      })
+      block.resources.forEach((n) => {
+        const pos = block.positions.get(n.id)
+        if (!pos) return
+        allNodes.push({
+          id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
+          position: { x: NS_PAD_X + pos.x, y: NS_PAD_TOP + pos.y },
+          data: n,
+        })
+      })
+      offsetX += block.width + NS_GAP_X
+    })
+    offsetY += rowMaxH + NS_GAP_Y
+  })
+
+  return allNodes
+}
+
 // LegendItem renders a single swatch+label row used by the bottom legend.
 // Kind controls the visual: dot (status), solid/dashed line (edge), or
 // dotted-line (edge with moving particles).
@@ -387,9 +561,13 @@ function ClusterMapInner() {
     })
   }, [])
 
-  // Reset manual positions whenever the layout mode changes — the new layout
-  // picks completely different coordinates so old overrides wouldn't make sense.
-  useEffect(() => { setDragOverrides(new Map()) }, [layoutMode])
+  // Reset manual positions whenever the layout mode OR filters change.
+  // Stale overrides from a prior filter state would apply their cached
+  // coordinates to nodes that now belong to a completely different
+  // region, which was rendering ghost edges hanging in empty space.
+  useEffect(() => {
+    setDragOverrides(new Map())
+  }, [layoutMode, visibleNamespaces, hiddenKinds, hiddenEdgeGroups])
 
   const allNamespaces = useMemo(() => {
     if (!topology?.nodes) return []
@@ -434,12 +612,36 @@ function ClusterMapInner() {
   // user drag overrides — those are applied downstream via useNodesState.
   const computedNodes = useMemo(() => {
     if (!topology?.nodes) return []
+    if (layoutMode === 'traffic') {
+      // Kiali-style: only render what appears in a flow. Pods that are
+      // source/destination of an observed flow, plus Services that
+      // select any destination Pod. Everything else is collapsed out,
+      // which keeps the map readable and matches the user's mental
+      // model of "show me what's actually talking".
+      const effectiveHidden = new Set<string>([...hiddenKinds, ...TRAFFIC_HIDDEN_KINDS])
+      const kindFiltered = filterNodes(topology.nodes, effectiveHidden, visibleNamespaces)
+      const flows = flowData?.edges || []
+      const flowPodIds = new Set<string>()
+      for (const f of flows) {
+        flowPodIds.add(`Pod/${f.srcNamespace}/${f.srcPod}`)
+        flowPodIds.add(`Pod/${f.dstNamespace}/${f.dstPod}`)
+      }
+      const serviceIds = new Set<string>()
+      for (const e of topology.edges || []) {
+        if (e.type !== 'selects') continue
+        if (flowPodIds.has(e.target)) serviceIds.add(e.source)
+      }
+      const trafficVisible = kindFiltered.filter(
+        (n) => flowPodIds.has(n.id) || serviceIds.has(n.id)
+      )
+      return buildTrafficLayout(trafficVisible, topology.edges || [], flows)
+    }
     const filtered = filterNodes(topology.nodes, hiddenKinds, visibleNamespaces)
     if (layoutMode === 'flow') {
       return buildFlowLayout(filtered, topology.edges || [])
     }
     return buildGridLayout(filtered)
-  }, [topology?.nodes, topology?.edges, hiddenKinds, visibleNamespaces, layoutMode])
+  }, [topology?.nodes, topology?.edges, hiddenKinds, visibleNamespaces, layoutMode, flowData?.edges])
 
   // Apply drag overrides + animation flag on top of the computed layout.
   // This is what React Flow actually renders.
@@ -461,8 +663,12 @@ function ClusterMapInner() {
   // useNodesState lets React Flow manage node positions interactively
   // while we still drive the initial layout. We sync whenever the layout
   // is recomputed (topology refetch, filter change, layout switch).
+  // useLayoutEffect (not useEffect) so flowNodes is in sync with
+  // initialNodes *before* React paints — otherwise ReactFlow would
+  // paint one frame with stale nodes but fresh edges, leaving traffic
+  // lines hanging in space pointing to just-removed nodes.
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(initialNodes)
-  useEffect(() => { setFlowNodes(initialNodes) }, [initialNodes, setFlowNodes])
+  useLayoutEffect(() => { setFlowNodes(initialNodes) }, [initialNodes, setFlowNodes])
 
   // Persist drag deltas when the user lets go of a node.
   const onNodeDragStop = useCallback(
@@ -491,9 +697,16 @@ function ClusterMapInner() {
         nodeStatusMap.set(n.id, n.status || '')
       }
     }
+    // In Traffic mode the map is about the flow itself — structural
+    // 'selects' / 'owns' / 'routes' edges would either duplicate the
+    // intent edges or clutter the dagre rank layout. Hide them here;
+    // the user can still see them in Grid or Flow mode.
     const structural: Edge[] = topology.edges
       .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
       .filter((e) => {
+        if (layoutMode === 'traffic' && (e.type === 'selects' || e.type === 'owns' || e.type === 'routes')) {
+          return false
+        }
         const group = EDGE_TYPE_TO_GROUP[e.type]
         // Unknown edge types are shown by default — less surprising when a
         // new type ships than silently hiding it. Add it to EDGE_GROUPS to
@@ -514,35 +727,138 @@ function ClusterMapInner() {
       }))
 
     // Traffic edges: only included when the toggle is on and the backend
-    // returned data. Each edge sources from pod_flow_events_total so the
-    // id is unique across (src, dst, verdict). We skip pairs whose pods
-    // aren't on the map (filtered out by kind/namespace).
+    // returned data. We skip pairs whose endpoints aren't on the map
+    // (filtered out by kind/namespace).
     if (!trafficEnabled || !flowData?.edges?.length) {
       return structural
     }
-    const traffic: Edge[] = []
-    for (const f of flowData.edges) {
-      const sourceId = `Pod/${f.srcNamespace}/${f.srcPod}`
-      const targetId = `Pod/${f.dstNamespace}/${f.dstPod}`
-      if (!visibleIds.has(sourceId) || !visibleIds.has(targetId)) continue
-      traffic.push({
-        id: `flow/${f.srcNamespace}/${f.srcPod}->${f.dstNamespace}/${f.dstPod}/${f.verdict}`,
-        source: sourceId,
-        target: targetId,
-        type: 'connection',
-        data: {
-          edgeType: 'traffic',
-          ratePerSec: f.ratePerSec,
-          verdict: f.verdict,
-          sourceStatus: nodeStatusMap.get(sourceId) || '',
-          targetStatus: nodeStatusMap.get(targetId) || '',
-          animationsEnabled,
-        },
-        animated: animationsEnabled,
-      })
+
+    const trafficEdges: Edge[] = []
+
+    if (layoutMode === 'traffic') {
+      // Intent edges: route pod → Service → pod whenever a Service
+      // selects the destination pod. Aggregate first-hop rate across
+      // all destination pods behind the same Service so the caller
+      // side shows one fat line per (caller, Service, verdict); the
+      // per-pod LB distribution appears on the second hop.
+      const serviceForPod = new Map<string, string>()
+      for (const e of topology.edges) {
+        if (e.type !== 'selects') continue
+        if (!serviceForPod.has(e.target)) serviceForPod.set(e.target, e.source)
+      }
+
+      // Aggregate BOTH hops of the intent flow so edge IDs stay unique.
+      // First hop (src_pod → Service) aggregates across all destination
+      // pods behind the same Service; the second hop (Service → dst_pod)
+      // aggregates across all source pods calling into the same pod.
+      // Without this, two demo-load pods calling the same demo-web pod
+      // emitted two edges with the same id, which React logs as a
+      // duplicate-key warning and renders with undefined behavior
+      // (stale SVG particles hanging in empty space).
+      type Hop = { src: string; dst: string; verdict: string; rate: number }
+      const firstHop = new Map<string, Hop>()
+      const secondHop = new Map<string, Hop>()
+      const directEdges = new Map<string, Hop>()
+
+      for (const f of flowData.edges) {
+        const srcId = `Pod/${f.srcNamespace}/${f.srcPod}`
+        const dstId = `Pod/${f.dstNamespace}/${f.dstPod}`
+        if (!visibleIds.has(srcId) || !visibleIds.has(dstId)) continue
+
+        const svcId = serviceForPod.get(dstId)
+        if (svcId && visibleIds.has(svcId)) {
+          const firstKey = `${srcId}||${svcId}||${f.verdict}`
+          const prevFirst = firstHop.get(firstKey)
+          firstHop.set(firstKey, {
+            src: srcId, dst: svcId, verdict: f.verdict,
+            rate: (prevFirst?.rate ?? 0) + f.ratePerSec,
+          })
+          const secondKey = `${svcId}||${dstId}||${f.verdict}`
+          const prevSecond = secondHop.get(secondKey)
+          secondHop.set(secondKey, {
+            src: svcId, dst: dstId, verdict: f.verdict,
+            rate: (prevSecond?.rate ?? 0) + f.ratePerSec,
+          })
+        } else {
+          // No Service selects this pod — draw pod-to-pod directly
+          // (host-network callers, standalone pods). Still aggregate
+          // in case multiple flows match the same (src, dst, verdict).
+          const key = `${srcId}||${dstId}||${f.verdict}`
+          const prev = directEdges.get(key)
+          directEdges.set(key, {
+            src: srcId, dst: dstId, verdict: f.verdict,
+            rate: (prev?.rate ?? 0) + f.ratePerSec,
+          })
+        }
+      }
+
+      const pushHop = (hop: Hop, idPrefix: string) => {
+        trafficEdges.push({
+          id: `${idPrefix}/${hop.src}->${hop.dst}/${hop.verdict}`,
+          source: hop.src, target: hop.dst, type: 'connection',
+          data: {
+            edgeType: 'traffic', ratePerSec: hop.rate, verdict: hop.verdict,
+            sourceStatus: nodeStatusMap.get(hop.src) || '',
+            targetStatus: nodeStatusMap.get(hop.dst) || '',
+            animationsEnabled,
+          },
+          animated: animationsEnabled,
+        })
+      }
+      for (const hop of firstHop.values()) pushHop(hop, 'intent')
+      for (const hop of secondHop.values()) pushHop(hop, 'intent')
+      for (const hop of directEdges.values()) pushHop(hop, 'flow')
+    } else {
+      // Grid / Flow modes: keep the original pod-to-pod shape. Each
+      // edge sources from pod_flow_events_total so the id is unique
+      // across (src, dst, verdict).
+      for (const f of flowData.edges) {
+        const sourceId = `Pod/${f.srcNamespace}/${f.srcPod}`
+        const targetId = `Pod/${f.dstNamespace}/${f.dstPod}`
+        if (!visibleIds.has(sourceId) || !visibleIds.has(targetId)) continue
+        trafficEdges.push({
+          id: `flow/${f.srcNamespace}/${f.srcPod}->${f.dstNamespace}/${f.dstPod}/${f.verdict}`,
+          source: sourceId,
+          target: targetId,
+          type: 'connection',
+          data: {
+            edgeType: 'traffic',
+            ratePerSec: f.ratePerSec,
+            verdict: f.verdict,
+            sourceStatus: nodeStatusMap.get(sourceId) || '',
+            targetStatus: nodeStatusMap.get(targetId) || '',
+            animationsEnabled,
+          },
+          animated: animationsEnabled,
+        })
+      }
     }
-    return [...structural, ...traffic]
-  }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled, trafficEnabled, hiddenEdgeGroups, flowData])
+    return [...structural, ...trafficEdges]
+  }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled, trafficEnabled, hiddenEdgeGroups, flowData, layoutMode])
+
+  // Final safety net: only render edges whose endpoints are in the
+  // nodes array ReactFlow is about to paint. Without this, any mismatch
+  // between computedNodes and flowNodes (rare but possible during
+  // drag/filter races) leaves ghost edges hanging in empty space.
+  const renderedEdges = useMemo(() => {
+    if (edges.length === 0) return edges
+    const liveIds = new Set(flowNodes.map((n) => n.id))
+    return edges.filter((e) => liveIds.has(e.source) && liveIds.has(e.target))
+  }, [edges, flowNodes])
+
+  // Remount ReactFlow on any filter change so its internal edge/node
+  // store starts fresh. Prevents ghost SVG paths from nodes that were
+  // in the store under a previous filter state.
+  const reactFlowKey = useMemo(
+    () =>
+      [
+        layoutMode,
+        visibleNamespaces === null ? '*' : [...visibleNamespaces].sort().join(','),
+        [...hiddenKinds].sort().join(','),
+        [...hiddenEdgeGroups].sort().join(','),
+      ].join('|'),
+    [layoutMode, visibleNamespaces, hiddenKinds, hiddenEdgeGroups]
+  )
 
   // Refit the view when filters or layout change, but not on every drag.
   // We key off the computed layout (size + layout mode), not the live flowNodes
@@ -584,8 +900,9 @@ function ClusterMapInner() {
   return (
     <div className="h-[calc(100vh-52px)] relative">
       <ReactFlow
+        key={reactFlowKey}
         nodes={flowNodes}
-        edges={edges}
+        edges={renderedEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
@@ -645,6 +962,16 @@ function ClusterMapInner() {
             >
               <GitBranch className="w-3 h-3" />
               Flow
+            </button>
+            <button
+              onClick={() => setLayoutMode('traffic')}
+              title="Traffic layout — Kiali-style intent flow: caller → Service → Pod, routed by observed traffic"
+              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border ${
+                layoutMode === 'traffic' ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+              }`}
+            >
+              <Waypoints className="w-3 h-3" />
+              Traffic
             </button>
           </div>
         </div>
