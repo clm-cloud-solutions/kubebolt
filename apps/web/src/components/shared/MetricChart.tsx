@@ -148,9 +148,34 @@ function formatValue(v: number | null | undefined, scale: UnitScale, useAbs = fa
   return `${fixed}${scale.label ? ' ' + scale.label : ''}`
 }
 
-function formatTime(unixSec: number): string {
+// Time formatters come in two shapes: axis (compact, for crowded
+// tick labels) and tooltip (verbose, shown one at a time). Both
+// branch on whether the chart's data range crosses midnight — in
+// the 24h view the first and last label can sit on different days,
+// and "23:10:00" → "06:06:40" → "23:10:00" with no date cue is
+// ambiguous about which is yesterday/today/tomorrow.
+function formatTimeAxis(unixSec: number, spansDays: boolean): string {
   const d = new Date(unixSec * 1000)
-  return `${d.getHours().toString().padStart(2, '0')}:${d.getMinutes().toString().padStart(2, '0')}:${d.getSeconds().toString().padStart(2, '0')}`
+  const hh = d.getHours().toString().padStart(2, '0')
+  const mm = d.getMinutes().toString().padStart(2, '0')
+  if (spansDays) {
+    // "MM/DD HH:MM" — drop seconds to keep the tick narrow.
+    return `${d.getMonth() + 1}/${d.getDate()} ${hh}:${mm}`
+  }
+  const ss = d.getSeconds().toString().padStart(2, '0')
+  return `${hh}:${mm}:${ss}`
+}
+
+function formatTimeTooltip(unixSec: number, spansDays: boolean): string {
+  const d = new Date(unixSec * 1000)
+  const hh = d.getHours().toString().padStart(2, '0')
+  const mm = d.getMinutes().toString().padStart(2, '0')
+  const ss = d.getSeconds().toString().padStart(2, '0')
+  const time = `${hh}:${mm}:${ss}`
+  if (spansDays) {
+    return `${d.getMonth() + 1}/${d.getDate()} ${time}`
+  }
+  return time
 }
 
 function defaultSeriesLabel(labels: Record<string, string>, prefix?: string): string {
@@ -323,7 +348,7 @@ export function MetricChart({
   const hasData = points.length > 0 && series.length > 0
 
   return (
-    <div className="rounded-lg border border-kb-border bg-kb-surface p-4">
+    <div className="rounded-lg border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary">
           {title}
@@ -405,7 +430,20 @@ export function MetricChart({
         </div>
       )}
 
-      {!isLoading && !error && hasData && (
+      {!isLoading && !error && hasData && (() => {
+        // Detect whether the data range crosses a calendar-day
+        // boundary, so tick/tooltip formatters can include a date
+        // when needed. 24h and 7d ranges almost always cross
+        // midnight; 5m-1h ranges almost never do.
+        const first = points[0]?.t ?? 0
+        const last = points[points.length - 1]?.t ?? 0
+        const spansDays =
+          first && last
+            ? new Date(first * 1000).toDateString() !== new Date(last * 1000).toDateString()
+            : false
+        const axisFmt = (v: number) => formatTimeAxis(v, spansDays)
+        const tipFmt = (v: number) => formatTimeTooltip(v, spansDays)
+        return (
         <div className={`grid gap-3 ${showStats && series.length > 0 ? 'lg:grid-cols-[1fr_130px]' : 'grid-cols-1'}`}>
           <div style={{ height: `clamp(160px, 30vh, ${height}px)` }} className="w-full">
             <ResponsiveContainer width="100%" height="100%">
@@ -440,7 +478,7 @@ export function MetricChart({
                   dataKey="t"
                   type="number"
                   domain={['dataMin', 'dataMax']}
-                  tickFormatter={formatTime}
+                  tickFormatter={axisFmt}
                   tick={{ fill: 'var(--kb-text-secondary)', fontSize: 10 }}
                   stroke="var(--kb-border)"
                   tickCount={5}
@@ -477,7 +515,7 @@ export function MetricChart({
                     return (
                       <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
                         <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
-                          {formatTime(label as number)}
+                          {tipFmt(label as number)}
                         </div>
                         <div className="space-y-1">
                           {payload.map((p, i) => (
@@ -570,7 +608,8 @@ export function MetricChart({
             />
           )}
         </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

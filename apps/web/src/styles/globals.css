@@ -6,7 +6,13 @@
   --kb-bg: #f5f6fa;
   --kb-surface: #eef0f5;
   --kb-card: #ffffff;
-  --kb-card-hover: #f5f6fa;
+  /* Hover was #f5f6fa (= page bg), which made the card visually
+     dissolve into the page on hover — the rounded border ended up
+     ringing "nothing" and looked like a dark artifact around the
+     card. Use a mid-tone between card (white) and surface (gray)
+     so the hover state reads as a clear darkening while staying
+     distinct from the page bg. */
+  --kb-card-hover: #f0f2f7;
   --kb-elevated: #e8eaf0;
   --kb-sidebar: #f0f2f8;
   --kb-border: rgba(0, 0, 0, 0.08);
