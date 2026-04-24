@@ -764,7 +764,7 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
 
   return createPortal(
     <div className="fixed inset-0 z-[99999] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70" />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         className="relative w-[90vw] max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}
@@ -870,7 +870,7 @@ function DescribeModal({ type, namespace, name, onClose }: { type: string; names
 
   return createPortal(
     <div className="fixed inset-0 z-[99999] flex items-center justify-center" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70" />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         className="relative w-[90vw] max-w-5xl max-h-[85vh] bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}

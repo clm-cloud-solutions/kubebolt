@@ -4,6 +4,7 @@ import { Users, Plus, Pencil, Trash2, KeyRound, Search } from 'lucide-react'
 import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { Modal } from '@/components/shared/Modal'
 import type { AuthUser, UserRole } from '@/types/auth'
 
 const ROLE_COLORS: Record<UserRole, string> = {
@@ -79,93 +80,92 @@ function UserFormModal({ user, onClose, onSaved }: UserFormModalProps) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-kb-card border border-kb-border rounded-xl w-full max-w-md p-6 shadow-xl" onClick={e => e.stopPropagation()}>
-        <h2 className="text-sm font-semibold text-kb-text-primary mb-4">
-          {isEdit ? 'Edit user' : 'New user'}
-        </h2>
+    <Modal
+      badge={isEdit ? 'Edit user' : 'New user'}
+      title={isEdit ? user!.username : 'Create account'}
+      onClose={onClose}
+      size="sm"
+    >
+      <form onSubmit={handleSubmit} className="p-5 space-y-3">
+        {error && (
+          <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>
+        )}
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {error && (
-            <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>
-          )}
+        <div className="space-y-1">
+          <label className="text-[11px] font-medium text-kb-text-secondary">Username</label>
+          <input
+            value={username}
+            onChange={e => setUsername(e.target.value)}
+            required
+            className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
+          />
+        </div>
 
+        <div className="space-y-1">
+          <label className="text-[11px] font-medium text-kb-text-secondary">Email</label>
+          <input
+            type="email"
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+            className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <label className="text-[11px] font-medium text-kb-text-secondary">Display name</label>
+          <input
+            value={name}
+            onChange={e => setName(e.target.value)}
+            className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
+          />
+        </div>
+
+        {!isEdit && (
           <div className="space-y-1">
-            <label className="text-[11px] font-medium text-kb-text-secondary">Username</label>
+            <label className="text-[11px] font-medium text-kb-text-secondary">Password</label>
             <input
-              value={username}
-              onChange={e => setUsername(e.target.value)}
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
               required
-              className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
+              minLength={8}
+              placeholder="Min. 8 characters"
+              className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors"
             />
           </div>
+        )}
 
-          <div className="space-y-1">
-            <label className="text-[11px] font-medium text-kb-text-secondary">Email</label>
-            <input
-              type="email"
-              value={email}
-              onChange={e => setEmail(e.target.value)}
-              className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
-            />
-          </div>
+        <div className="space-y-1">
+          <label className="text-[11px] font-medium text-kb-text-secondary">Role</label>
+          <select
+            value={role}
+            onChange={e => setRole(e.target.value as UserRole)}
+            className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
+          >
+            <option value="viewer">Viewer — read-only access</option>
+            <option value="editor">Editor — can edit, scale, restart</option>
+            <option value="admin">Admin — full access + user management</option>
+          </select>
+        </div>
 
-          <div className="space-y-1">
-            <label className="text-[11px] font-medium text-kb-text-secondary">Display name</label>
-            <input
-              value={name}
-              onChange={e => setName(e.target.value)}
-              className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
-            />
-          </div>
-
-          {!isEdit && (
-            <div className="space-y-1">
-              <label className="text-[11px] font-medium text-kb-text-secondary">Password</label>
-              <input
-                type="password"
-                value={password}
-                onChange={e => setPassword(e.target.value)}
-                required
-                minLength={8}
-                placeholder="Min. 8 characters"
-                className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors"
-              />
-            </div>
-          )}
-
-          <div className="space-y-1">
-            <label className="text-[11px] font-medium text-kb-text-secondary">Role</label>
-            <select
-              value={role}
-              onChange={e => setRole(e.target.value as UserRole)}
-              className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
-            >
-              <option value="viewer">Viewer — read-only access</option>
-              <option value="editor">Editor — can edit, scale, restart</option>
-              <option value="admin">Admin — full access + user management</option>
-            </select>
-          </div>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 text-xs text-kb-text-secondary hover:text-kb-text-primary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={saving}
-              className="px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-50 transition-colors"
-            >
-              {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create user'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs text-kb-text-secondary hover:text-kb-text-primary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-50 transition-colors"
+          >
+            {saving ? 'Saving...' : isEdit ? 'Save changes' : 'Create user'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
@@ -197,34 +197,32 @@ function ResetPasswordModal({ user, onClose }: { user: AuthUser; onClose: () => 
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-kb-card border border-kb-border rounded-xl w-full max-w-sm p-6 shadow-xl" onClick={e => e.stopPropagation()}>
-        <h2 className="text-sm font-semibold text-kb-text-primary mb-1">Reset password</h2>
-        <p className="text-xs text-kb-text-tertiary mb-4">Set a new password for <strong>{user.username}</strong></p>
+    <Modal badge="Reset password" title={user.username} onClose={onClose} size="sm">
+      <form onSubmit={handleSubmit} className="p-5 space-y-3">
+        <p className="text-xs text-kb-text-tertiary">Set a new password for <strong className="text-kb-text-primary">{user.username}</strong>.</p>
 
-        <form onSubmit={handleSubmit} className="space-y-3">
-          {error && <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>}
-          {success && <div className="px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">Password reset successfully</div>}
+        {error && <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>}
+        {success && <div className="px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">Password reset successfully</div>}
 
-          <input
-            type="password"
-            value={password}
-            onChange={e => setPassword(e.target.value)}
-            required
-            minLength={8}
-            placeholder="New password (min. 8 characters)"
-            className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors"
-          />
+        <input
+          type="password"
+          value={password}
+          onChange={e => setPassword(e.target.value)}
+          required
+          minLength={8}
+          placeholder="New password (min. 8 characters)"
+          autoFocus
+          className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors"
+        />
 
-          <div className="flex justify-end gap-2">
-            <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors">Cancel</button>
-            <button type="submit" disabled={saving || success} className="px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-50 transition-colors">
-              {saving ? 'Resetting...' : 'Reset password'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors">Cancel</button>
+          <button type="submit" disabled={saving || success} className="px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-50 transition-colors">
+            {saving ? 'Resetting...' : 'Reset password'}
+          </button>
+        </div>
+      </form>
+    </Modal>
   )
 }
 
@@ -250,23 +248,23 @@ function DeleteUserModal({ user, onClose, onDeleted }: { user: AuthUser; onClose
   }
 
   return (
-    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-kb-card border border-kb-border rounded-xl w-full max-w-sm p-6 shadow-xl" onClick={e => e.stopPropagation()}>
-        <h2 className="text-sm font-semibold text-status-error mb-1">Delete user</h2>
-        <p className="text-xs text-kb-text-tertiary mb-4">
-          Type <strong className="text-kb-text-primary">{user.username}</strong> to confirm deletion.
+    <Modal badge="Delete user" title={user.username} onClose={onClose} size="sm">
+      <div className="p-5 space-y-3">
+        <p className="text-xs text-kb-text-tertiary">
+          Type <strong className="text-kb-text-primary font-mono">{user.username}</strong> to confirm deletion. This cannot be undone.
         </p>
 
-        {error && <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs mb-3">{error}</div>}
+        {error && <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>}
 
         <input
           value={confirmName}
           onChange={e => setConfirmName(e.target.value)}
           placeholder={user.username}
-          className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-status-error transition-colors mb-3"
+          autoFocus
+          className="w-full px-3 py-1.5 text-sm font-mono bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-status-error transition-colors"
         />
 
-        <div className="flex justify-end gap-2">
+        <div className="flex justify-end gap-2 pt-1">
           <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors">Cancel</button>
           <button
             onClick={handleDelete}
@@ -277,7 +275,7 @@ function DeleteUserModal({ user, onClose, onDeleted }: { user: AuthUser; onClose
           </button>
         </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 

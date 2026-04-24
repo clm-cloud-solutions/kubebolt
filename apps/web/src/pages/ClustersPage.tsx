@@ -1,9 +1,10 @@
 import { useState, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText, X } from 'lucide-react'
+import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText } from 'lucide-react'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
+import { Modal } from '@/components/shared/Modal'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterInfo, ClusterOverview, ClusterHealth } from '@/types/kubernetes'
 
@@ -257,18 +258,7 @@ function AddClusterModal({ onClose }: { onClose: () => void }) {
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="w-full max-w-2xl bg-kb-card border border-kb-border rounded-xl shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-kb-border">
-          <div className="flex items-center gap-2">
-            <Upload className="w-4 h-4 text-kb-accent" />
-            <h2 className="text-sm font-semibold text-kb-text-primary">Add Cluster</h2>
-          </div>
-          <button onClick={onClose} className="text-kb-text-tertiary hover:text-kb-text-primary">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
+    <Modal badge="Add cluster" title="Upload kubeconfig" onClose={onClose} size="lg">
         <div className="p-6 space-y-4">
           <p className="text-xs text-kb-text-secondary">
             Paste the content of a kubeconfig file or choose a file to upload. All contexts in the file will be added.
@@ -319,11 +309,11 @@ function AddClusterModal({ onClose }: { onClose: () => void }) {
             disabled={uploading || !kubeconfig.trim()}
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {uploading ? 'Uploading...' : 'Add Cluster'}
+            <Upload className="w-3 h-3" />
+            {uploading ? 'Uploading...' : 'Add cluster'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -350,18 +340,7 @@ function RenameClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="w-full max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-kb-border">
-          <div className="flex items-center gap-2">
-            <Pencil className="w-4 h-4 text-kb-accent" />
-            <h2 className="text-sm font-semibold text-kb-text-primary">Rename Cluster</h2>
-          </div>
-          <button onClick={onClose} className="text-kb-text-tertiary hover:text-kb-text-primary">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
+    <Modal badge="Rename cluster" title={cluster.context} onClose={onClose} size="sm">
         <div className="p-6 space-y-4">
           <div>
             <label className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider block mb-1.5">Context</label>
@@ -406,8 +385,7 @@ function RenameClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
             {saving ? 'Saving...' : 'Save'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 
@@ -436,18 +414,7 @@ function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4" onClick={onClose}>
-      <div className="w-full max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-kb-border">
-          <div className="flex items-center gap-2">
-            <Trash2 className="w-4 h-4 text-status-error" />
-            <h2 className="text-sm font-semibold text-kb-text-primary">Delete Cluster</h2>
-          </div>
-          <button onClick={onClose} className="text-kb-text-tertiary hover:text-kb-text-primary">
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
+    <Modal badge="Delete cluster" title={cluster.context} onClose={onClose} size="sm">
         <div className="p-6 space-y-4">
           <div className="px-3 py-2 rounded-lg bg-status-error-dim/50 border border-status-error/20">
             <div className="flex items-start gap-2">
@@ -492,8 +459,7 @@ function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
             {deleting ? 'Deleting...' : 'Delete'}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }
 

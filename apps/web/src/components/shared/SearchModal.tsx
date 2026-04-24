@@ -108,7 +108,7 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
 
   return createPortal(
     <div className="fixed inset-0 z-[99999] flex items-start justify-center pt-[12vh]" onClick={onClose}>
-      <div className="absolute inset-0 bg-black/70" />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
       <div
         className="relative w-[90vw] max-w-xl bg-kb-card border border-kb-border rounded-xl shadow-2xl overflow-hidden"
         onClick={e => e.stopPropagation()}

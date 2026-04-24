@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { X, AlertTriangle, Check, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { api, type AgentInstallConfig, type Integration } from '@/services/api'
+import { Modal } from '@/components/shared/Modal'
 
 // The agent ships samples to the KubeBolt backend over gRPC :9090.
 // These are the shapes that typically work — the user picks the one
@@ -132,25 +133,8 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
   }
 
   return (
-    <div className="fixed inset-0 z-[250] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4">
-      <div className="bg-kb-card border border-kb-border rounded-xl w-full max-w-xl max-h-[90vh] overflow-hidden flex flex-col">
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-kb-border shrink-0">
-          <div>
-            <h2 className="text-base font-semibold text-kb-text-primary">Install KubeBolt Agent</h2>
-            <p className="text-[11px] text-kb-text-tertiary mt-0.5">
-              Ships node-level metrics and Hubble flows to the KubeBolt backend.
-            </p>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-1 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
-        <form onSubmit={submit} className="flex-1 overflow-y-auto p-5 space-y-5">
+    <Modal badge="Install" title="KubeBolt Agent" onClose={onClose} size="xl">
+      <form onSubmit={submit} className="flex-1 overflow-y-auto p-5 space-y-5">
           {/* Backend URL */}
           <div>
             <label className="block text-[11px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1.5">
@@ -449,12 +433,14 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
         {/* Footer */}
         <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-kb-border shrink-0">
           <button
+            type="button"
             onClick={onClose}
             className="px-3 py-1.5 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-primary text-xs border border-kb-border transition-colors"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={submit}
             disabled={!cfg.backendUrl.trim() || mut.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent hover:bg-kb-accent-hover text-kb-on-accent text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -474,7 +460,6 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
             )}
           </button>
         </div>
-      </div>
-    </div>
+    </Modal>
   )
 }

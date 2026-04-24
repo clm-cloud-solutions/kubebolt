@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Modal } from '@/components/shared/Modal'
 import { useQuery } from '@tanstack/react-query'
 import {
   BarChart3,
@@ -218,6 +219,15 @@ function TokensChart({ buckets, range }: { buckets: CopilotUsageBucket[]; range:
   }, [buckets])
   const bucketWidth = 100 / Math.max(buckets.length, 1)
 
+  // Hover state for the custom tooltip. Position is viewport-fixed
+  // so the tooltip follows the cursor and escapes the card's clip
+  // box — same pattern the cluster map hover tooltip uses.
+  const [hover, setHover] = useState<{
+    bucket: CopilotUsageBucket
+    x: number
+    y: number
+  } | null>(null)
+
   return (
     <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
       <h3 className="text-xs font-semibold text-kb-text-primary mb-3">Tokens over time</h3>
@@ -237,7 +247,10 @@ function TokensChart({ buckets, range }: { buckets: CopilotUsageBucket[]; range:
                 key={i}
                 className="relative flex flex-col justify-end group"
                 style={{ width: `${bucketWidth}%`, height: '100%' }}
-                title={`${new Date(b.time).toLocaleString()}\nSessions: ${b.sessions}\nInput: ${fmtTokens(b.inputTokens)}\nOutput: ${fmtTokens(b.outputTokens)}\nCache read: ${fmtTokens(b.cacheReadTokens)}`}
+                onMouseMove={(e) =>
+                  setHover({ bucket: b, x: e.clientX, y: e.clientY })
+                }
+                onMouseLeave={() => setHover(null)}
               >
                 <div
                   className="w-full transition-opacity group-hover:opacity-80"
@@ -251,12 +264,54 @@ function TokensChart({ buckets, range }: { buckets: CopilotUsageBucket[]; range:
           })
         )}
       </div>
+
+      {/* Hover tooltip — same shape as MetricChart / cluster map so
+          the styling reads as "tooltip" across every view. */}
+      {hover && (
+        <div
+          style={{
+            position: 'fixed',
+            left: hover.x + 14,
+            top: hover.y + 14,
+            pointerEvents: 'none',
+            zIndex: 1000,
+          }}
+          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[180px]"
+        >
+          <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
+            {new Date(hover.bucket.time).toLocaleString()}
+          </div>
+          <div className="space-y-1">
+            <TooltipBucketRow color="rgb(147, 197, 253)" label="Cache read" value={fmtTokens(hover.bucket.cacheReadTokens)} />
+            <TooltipBucketRow color="var(--kb-accent)" label="Input (fresh)" value={fmtTokens(hover.bucket.inputTokens)} />
+            <TooltipBucketRow color="rgb(251, 191, 36)" label="Output" value={fmtTokens(hover.bucket.outputTokens)} />
+            <div className="pt-1 mt-1 border-t border-kb-border/60 flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full flex-shrink-0 bg-transparent" />
+              <span className="text-kb-text-secondary">Sessions</span>
+              <span className="ml-auto tabular-nums font-mono text-kb-text-primary">{hover.bucket.sessions}</span>
+            </div>
+          </div>
+        </div>
+      )}
       <div className="flex items-center gap-4 mt-3 text-[10px] font-mono text-kb-text-tertiary">
         <LegendSwatch color="rgb(147, 197, 253)" label="Cache read" />
         <LegendSwatch color="var(--kb-accent)" label="Input (fresh)" />
         <LegendSwatch color="rgb(251, 191, 36)" label="Output" />
         <span className="ml-auto">{range} · {buckets.length} buckets</span>
       </div>
+    </div>
+  )
+}
+
+// Single row inside the bucket-hover tooltip. Shape matches the
+// MetricChart / cluster map tooltip conventions: colored dot, label,
+// value flush right, tabular-nums for readable alignment.
+function TooltipBucketRow({ color, label, value }: { color: string; label: string; value: string }) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: color }} />
+      <span className="text-kb-text-secondary">{label}</span>
+      <span className="ml-auto tabular-nums font-mono text-kb-text-primary">{value}</span>
     </div>
   )
 }
@@ -420,32 +475,11 @@ function SessionModal({
   session: CopilotSessionEnriched
   onClose: () => void
 }) {
+  const title = `${new Date(session.timestamp).toLocaleString()} · ${session.cluster}`
+
   return (
-    <div
-      className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4"
-      onClick={onClose}
-    >
-      <div
-        className="bg-kb-card border border-kb-border rounded-[10px] w-full max-w-2xl max-h-[80vh] overflow-auto"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="px-5 py-4 border-b border-kb-border">
-          <div className="flex items-start justify-between">
-            <div>
-              <h3 className="text-sm font-semibold text-kb-text-primary">Session detail</h3>
-              <div className="text-[10px] font-mono text-kb-text-tertiary mt-1">
-                {new Date(session.timestamp).toLocaleString()} · {session.cluster}
-              </div>
-            </div>
-            <button
-              onClick={onClose}
-              className="text-kb-text-tertiary hover:text-kb-text-primary text-xs font-mono"
-            >
-              esc
-            </button>
-          </div>
-        </div>
-        <div className="p-5 space-y-4">
+    <Modal badge="Copilot session" title={title} onClose={onClose} size="lg">
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
           <div className="grid grid-cols-2 gap-3 text-xs">
             <KV label="Model" value={`${session.provider} · ${session.model || 'default'}`} />
             <KV label="Trigger" value={session.trigger || 'manual'} />
@@ -506,9 +540,8 @@ function SessionModal({
               Fallback provider was used for this session
             </div>
           )}
-        </div>
       </div>
-    </div>
+    </Modal>
   )
 }
 

@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X, AlertTriangle, Check, Loader2 } from 'lucide-react'
+import { AlertTriangle, Check, Loader2 } from 'lucide-react'
 import { api, type AgentInstallConfig, type Integration } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
+import { Modal } from '@/components/shared/Modal'
 
 // AgentConfigureDialog edits an existing managed install in place.
 // Field set mirrors AgentInstallWizard because the backend accepts
@@ -151,40 +151,12 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
 
   const inFlight = phase === 'saving' || phase === 'rolling'
 
-  // Render into document.body via portal. Without this the dialog
-  // lives inside IntegrationDetailPanel's DOM tree — and while that
-  // shouldn't matter for event bubbling, in practice React's
-  // synthetic event system + pointer-events cascades + the panel's
-  // own backdrop created enough ambiguity that clicks on inputs
-  // appeared to close the parent panel. Portaling sidesteps the
-  // whole tangle: the dialog is now a top-level element, no
-  // ancestor has an onClose / onClick that could interfere.
-  return createPortal(
-    <div
-      className="fixed inset-0 z-[250] flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
-      onClick={(e) => e.stopPropagation()}
-    >
-      <div
-        className="bg-kb-card border border-kb-border rounded-xl w-full max-w-xl max-h-[90vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between px-5 py-4 border-b border-kb-border shrink-0">
-          <div>
-            <h2 className="text-base font-semibold text-kb-text-primary">Configure KubeBolt Agent</h2>
-            <p className="text-[11px] text-kb-text-tertiary mt-0.5">
-              Edits the live DaemonSet. A rolling restart applies the changes to every node.
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            disabled={inFlight}
-            className="p-1 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors disabled:opacity-50"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
-
+  // Modal portals to document.body — that sidesteps any lingering
+  // ambiguity from the parent detail panel's own DOM tree (React's
+  // synthetic events + pointer-events cascades used to let clicks
+  // on form inputs read as a parent-close before we portaled).
+  return (
+    <Modal badge="Configure" title="KubeBolt Agent" onClose={onClose} size="xl">
         {isLoading && (
           <div className="flex-1 flex items-center justify-center p-8">
             <LoadingSpinner />
@@ -468,9 +440,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
             )}
           </button>
         </div>
-      </div>
-    </div>,
-    document.body
+    </Modal>
   )
 }
 
