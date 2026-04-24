@@ -149,18 +149,27 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 	// RESPONSE events with answers — REQUEST events have no Ips, and
 	// NXDOMAIN/SERVFAIL (Rcode != 0) means no resolution happened.
 	// DNS is an L7 event so it bypasses the pod-to-pod filter below.
+	//
+	// Same flip as HTTP responses: Cilium's proxy emits DNS RESPONSE
+	// events with src=DNS server and dst=querying pod (because the
+	// response is flowing FROM the server TO the caller). We want
+	// src_pod to be the pod that made the query, so use the dst side
+	// of the event. src=coredns as the "asker" would be misleading —
+	// it didn't ask, it answered.
 	if l7 := f.GetL7(); l7 != nil && l7.GetDns() != nil {
 		if dnsRec := l7.GetDns(); dnsRec != nil && l7.GetType() == flowpb.L7FlowType_RESPONSE && dnsRec.GetRcode() == 0 {
 			fqdn := strings.TrimSuffix(dnsRec.GetQuery(), ".")
-			if fqdn != "" {
+			askerPod := dst.GetPodName()
+			askerNs := dst.GetNamespace()
+			if fqdn != "" && askerPod != "" {
 				a.mu.Lock()
 				for _, ip := range dnsRec.GetIps() {
 					if ip == "" {
 						continue
 					}
 					a.dns[dnsKey{
-						srcNs:      src.GetNamespace(),
-						srcPod:     src.GetPodName(),
+						srcNs:      askerNs,
+						srcPod:     askerPod,
 						fqdn:       fqdn,
 						resolvedIP: ip,
 					}]++

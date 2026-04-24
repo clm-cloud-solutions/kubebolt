@@ -750,6 +750,12 @@ function ClusterMapInner() {
       // "(external)" namespace region to the right of the cluster.
       // These nodes are frontend-only; the backend's topology view
       // doesn't know about them.
+      //
+      // When a FQDN is known, the node's label is the hostname and
+      // the raw IP is stored in metadata.ip so ResourceNode can show
+      // it as a subtitle. Multiple IPs resolving to the same FQDN
+      // collapse into one node; the first IP seen wins the subtitle.
+      // (Tooltip UX for "show all IPs" is a future refinement.)
       const externalKeys = new Set<string>()
       const externalNodes: TopologyNode[] = []
       for (const f of flows) {
@@ -767,6 +773,7 @@ function ClusterMapInner() {
           label,
           namespace: '(external)',
           status: 'active',
+          metadata: f.dstFqdn && f.dstIp ? { ip: f.dstIp } : undefined,
         } as TopologyNode)
       }
       return buildTrafficLayout([...trafficVisible, ...externalNodes], topology.edges || [], flows)

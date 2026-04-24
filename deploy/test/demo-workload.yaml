@@ -93,6 +93,37 @@ spec:
               - {}
 
 ---
+# Enables Cilium L7 (DNS) visibility for egress from every pod in the
+# demo namespace. Feeds pod_dns_resolutions_total so the cluster map
+# can label external edges with a hostname instead of a raw IP.
+# "matchPattern: *" parses every query without filtering — the CNP
+# exists for observability, not access control. Egress to non-DNS
+# targets is allowed via the catch-all `toEntities: all` rule so
+# demo-load can still reach demo-web, demo-cache, and the outside
+# world through the ingress-nginx controller.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: demo-dns-visibility
+  namespace: demo
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: ANY
+          rules:
+            dns:
+              - matchPattern: "*"
+    - toEntities:
+        - all
+
+---
 # External routing for demo-web via ingress-nginx. Only useful when
 # `kubectl apply -f https://…/ingress-nginx/deploy/static/provider/cloud/deploy.yaml`
 # has been applied first; `make demo-ingress-install` bundles both.

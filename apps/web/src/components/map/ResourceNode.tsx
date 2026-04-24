@@ -114,12 +114,22 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
         <div className={`w-2 h-2 rounded-full shrink-0 ${getDotColor(data.status)}`} />
       </div>
 
-      {/* Type + status */}
+      {/* Type + status. For ExternalEndpoint nodes we swap the ugly
+          "EXTERNALENDPOINT" label for a shorter "EXTERNAL", and if
+          we know both a hostname and the resolved IP we show the IP
+          inline so users can correlate with raw netstat / packet
+          captures. */}
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[8px] font-mono text-kb-text-tertiary uppercase tracking-[0.04em]">{kind}</span>
-        {data.metadata?.replicas && (
+        <span className="text-[8px] font-mono text-kb-text-tertiary uppercase tracking-[0.04em]">
+          {kind === 'ExternalEndpoint' ? 'EXTERNAL' : kind}
+        </span>
+        {kind === 'ExternalEndpoint' && data.metadata?.ip ? (
+          <span className="text-[9px] font-mono text-kb-text-tertiary truncate ml-2">
+            {data.metadata.ip}
+          </span>
+        ) : data.metadata?.replicas ? (
           <span className="text-[9px] font-mono text-kb-text-secondary">{data.metadata.replicas}</span>
-        )}
+        ) : null}
       </div>
 
       {/* Pod dots */}
