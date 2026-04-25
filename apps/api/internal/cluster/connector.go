@@ -161,13 +161,17 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	// Read kube-system namespace UID to scope VM queries. Same value
 	// that the kubebolt-agent uses as `cluster_id` on every sample,
 	// so the backend can filter VM PromQL to just this cluster's
-	// series. 5s is plenty for a single GET against the apiserver.
-	if uidCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second); true {
+	// series. 15s matches rest.Config.Timeout — EKS in particular can
+	// take several seconds on the first call when aws-iam-authenticator
+	// is exec'd cold, and a too-short timeout here leaves the connector
+	// with an empty UID, which previously caused unscoped queries to
+	// leak data from other clusters in the same VM.
+	if uidCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second); true {
 		defer cancel()
 		if ns, err := clientset.CoreV1().Namespaces().Get(uidCtx, "kube-system", metav1.GetOptions{}); err == nil {
 			c.clusterUID = string(ns.UID)
 		} else {
-			log.Printf("Warning: failed to read kube-system UID for cluster %q: %v", clusterName, err)
+			log.Printf("Warning: failed to read kube-system UID for cluster %q: %v — VM queries for this cluster will return empty results until reconnect", clusterName, err)
 		}
 	}
 

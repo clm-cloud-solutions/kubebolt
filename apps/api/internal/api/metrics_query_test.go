@@ -86,18 +86,29 @@ func TestScopeQueryByCluster(t *testing.T) {
 			want: `sum by (node, container, interface) (pod_network_receive_bytes_total{` + inj + `})`,
 		},
 
-		// --- empty uid disables scoping ------------------------------
+		// --- empty uid fails closed ----------------------------------
+		// When the backend can't discover the kube-system UID (e.g. EKS
+		// auth was slow at startup), unscoped queries used to leak data
+		// across clusters sharing the same VM. Now we inject a sentinel
+		// that never matches a real series, so the chart shows zero
+		// instead of bleeding another cluster's numbers.
 		{
-			name: "empty uid leaves query unchanged",
+			name: "empty uid injects sentinel into bare metric",
 			in:   `sum(node_cpu_usage_cores)`,
-			want: `sum(node_cpu_usage_cores)`,
+			want: `sum(node_cpu_usage_cores{cluster_id="__kubebolt_no_uid__"})`,
+		},
+		{
+			name: "empty uid injects sentinel into selector",
+			in:   `node_cpu_usage_cores{node="n1"}`,
+			want: `node_cpu_usage_cores{cluster_id="__kubebolt_no_uid__",node="n1"}`,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			useUID := uid
-			if tc.name == "empty uid leaves query unchanged" {
+			if tc.name == "empty uid injects sentinel into bare metric" ||
+				tc.name == "empty uid injects sentinel into selector" {
 				useUID = ""
 			}
 			got := scopeQueryByCluster(tc.in, useUID)

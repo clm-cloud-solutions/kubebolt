@@ -27,9 +27,10 @@ var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
 // activeClusterUID returns the kube-system UID of the cluster this
 // handler is currently pointed at, or empty when no connector is
 // available (startup before first connect, or connection errored).
-// Empty disables query scoping entirely — callers treat that as a
-// best-effort "query whatever's in VM" which is the pre-scoping
-// behavior.
+// scopeQueryByCluster fails closed on empty by injecting a sentinel
+// that no real cluster would ever emit, so an unknown UID returns
+// zero series rather than leaking data from other clusters that
+// happen to share the same VM.
 func (h *handlers) activeClusterUID() string {
 	conn := h.manager.Connector()
 	if conn == nil {
@@ -37,6 +38,12 @@ func (h *handlers) activeClusterUID() string {
 	}
 	return conn.ClusterUID()
 }
+
+// noClusterUIDSentinel is used in place of a real kube-system UID
+// when the backend couldn't read one (RBAC, slow EKS auth, partial
+// connection). Real UIDs are 36-char lowercase hex with dashes; this
+// value is intentionally not a valid UID so it can never collide.
+const noClusterUIDSentinel = "__kubebolt_no_uid__"
 
 // metricSelectorRE matches PromQL label selectors — the `{...}` chunk
 // that follows a metric name or appears bare (e.g. `{source="hubble"}`).
@@ -87,7 +94,12 @@ var bareMetricRE = regexp.MustCompile(
 // more complex expressions, switch to a proper AST rewrite.
 func scopeQueryByCluster(promQL, uid string) string {
 	if uid == "" {
-		return promQL
+		// Fail closed: an unknown UID becomes a sentinel that no real
+		// agent would ever emit, so the query returns 0 series instead
+		// of leaking data from other clusters in the same VM. Don't
+		// short-circuit return — we still need both passes to inject
+		// the sentinel everywhere, otherwise bare metrics slip through.
+		uid = noClusterUIDSentinel
 	}
 	injected := fmt.Sprintf(`cluster_id=%q`, uid)
 
