@@ -45,23 +45,54 @@ func (h *handlers) activeClusterUID() string {
 // principle but all of ours are plain identifiers.
 var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 
-// scopeQueryByCluster injects `cluster_id="<uid>"` into every label
-// selector in a PromQL expression so a query can't accidentally sum
+// bareMetricRE matches metric references that follow our agent's
+// naming convention (one of these prefixes + `_` + body). We use an
+// explicit prefix list rather than a generic identifier match so we
+// don't accidentally inject selectors into PromQL keywords (sum, rate,
+// by, …) or into labels passed to clauses like `by(...)`. Extend the
+// list when a new metric family ships from the agent.
+//
+// Identifiers used as label names elsewhere — `cluster_id`, `pod_name`,
+// `pod_namespace`, `pod_uid` — would also match this regex, but step 2
+// of scopeQueryByCluster skips text inside `{...}` braces so labels in
+// existing selectors are left alone. Labels passed to `by(...)` /
+// `without(...)` clauses are NOT inside braces; today none of those
+// labels in our queries match this pattern, but new code must keep
+// that invariant or scope its query manually.
+var bareMetricRE = regexp.MustCompile(
+	`\b(?:node|pod|container|kubebolt|hubble)_[a-zA-Z0-9_]+\b`,
+)
+
+// scopeQueryByCluster injects `cluster_id="<uid>"` into every metric
+// reference in a PromQL expression so a query can't accidentally sum
 // series from other clusters that happen to report to the same VM.
 // Does nothing when uid is empty (backend couldn't discover the UID,
-// e.g. dev-mode without in-cluster creds). Idempotent: if a selector
-// already has a cluster_id matcher, it's left alone.
+// e.g. dev-mode without in-cluster creds). Idempotent: existing
+// `cluster_id` matchers are left alone.
+//
+// Two passes:
+//
+//  1. Existing `{...}` selectors get `cluster_id` prepended (or are
+//     skipped if they already have one). Handles `metric{a="b"}` and
+//     bare label sets like `{source="hubble"}`.
+//  2. Bare metric references with no selector get a fresh
+//     `{cluster_id="..."}` appended. Handles `sum(node_cpu_usage_cores)`
+//     and `rate(node_network_total[1m])` — query shapes used by
+//     OverviewPage and NodesPage that have no `{...}` chunk for pass 1
+//     to find. Pass 2 walks the string honoring `{...}` boundaries so
+//     label names inside selectors aren't mistaken for metrics.
 //
 // Regex-based rather than a real PromQL parser because our query shapes
-// are stable and simple (`metric{...}`, possibly wrapped in sum/rate).
-// If we ever need multi-cluster aggregation or more complex expressions,
-// switch to a proper AST rewrite.
+// are stable and simple. If we ever need multi-cluster aggregation or
+// more complex expressions, switch to a proper AST rewrite.
 func scopeQueryByCluster(promQL, uid string) string {
 	if uid == "" {
 		return promQL
 	}
 	injected := fmt.Sprintf(`cluster_id=%q`, uid)
-	return metricSelectorRE.ReplaceAllStringFunc(promQL, func(sel string) string {
+
+	// Pass 1: existing `{...}` selectors.
+	promQL = metricSelectorRE.ReplaceAllStringFunc(promQL, func(sel string) string {
 		inner := sel[1 : len(sel)-1]
 		if strings.Contains(inner, "cluster_id") {
 			return sel
@@ -71,6 +102,76 @@ func scopeQueryByCluster(promQL, uid string) string {
 		}
 		return "{" + injected + "," + inner + "}"
 	})
+
+	// Pass 2: bare metric references. Split into "outside-braces" and
+	// "inside-braces" regions so identifiers within selectors (label
+	// names) aren't rewritten. We pass `nextChar` into injectBareMetrics
+	// so a metric that sits right at a chunk boundary followed by `{`
+	// (i.e. pass 1 just rewrote its selector) doesn't get a duplicate
+	// selector appended.
+	var out strings.Builder
+	out.Grow(len(promQL) + 32)
+	depth := 0
+	chunkStart := 0
+	for i := 0; i < len(promQL); i++ {
+		c := promQL[i]
+		if c == '{' {
+			if depth == 0 {
+				out.WriteString(injectBareMetrics(promQL[chunkStart:i], injected, '{'))
+				chunkStart = i
+			}
+			depth++
+		} else if c == '}' {
+			if depth > 0 {
+				depth--
+				if depth == 0 {
+					out.WriteString(promQL[chunkStart : i+1])
+					chunkStart = i + 1
+				}
+			}
+		}
+	}
+	if depth == 0 {
+		out.WriteString(injectBareMetrics(promQL[chunkStart:], injected, 0))
+	} else {
+		// Unbalanced braces — shouldn't happen for valid PromQL; emit
+		// the trailing chunk verbatim and let VM surface the parse
+		// error.
+		out.WriteString(promQL[chunkStart:])
+	}
+	return out.String()
+}
+
+// injectBareMetrics finds bare metric references in s and appends a
+// `{cluster_id="..."}` selector to each. A reference that's already
+// followed by `{` (either inside s or at the chunk boundary via
+// nextChar) is left as-is — pass 1 already handled the selector in
+// that case.
+func injectBareMetrics(s, injected string, nextChar byte) string {
+	matches := bareMetricRE.FindAllStringIndex(s, -1)
+	if len(matches) == 0 {
+		return s
+	}
+	var sb strings.Builder
+	sb.Grow(len(s) + len(matches)*(len(injected)+2))
+	last := 0
+	for _, m := range matches {
+		start, end := m[0], m[1]
+		sb.WriteString(s[last:start])
+		sb.WriteString(s[start:end])
+		var follow byte
+		if end < len(s) {
+			follow = s[end]
+		} else {
+			follow = nextChar
+		}
+		if follow != '{' {
+			sb.WriteString("{" + injected + "}")
+		}
+		last = end
+	}
+	sb.WriteString(s[last:])
+	return sb.String()
 }
 
 // handleMetricsQueryRange proxies a PromQL range query to the TSDB.
