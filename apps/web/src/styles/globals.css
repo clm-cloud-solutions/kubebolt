@@ -277,6 +277,55 @@ body,
   animation: kb-ai-toggle-halo 2.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
+/* kb-ai-hero-* — animations layered on the empty-state Copilot
+   hero icon. The empty state is a pause point (user just opened
+   the panel, hasn't asked anything yet) so the icon needs enough
+   presence to feel alive without being noisy. The full effect:
+   one slow float on the container, a subtle scale breath on the
+   icon itself, two staggered ping halos behind it, plus the
+   shared cycling glow underneath. */
+
+@keyframes kb-ai-hero-float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-4px); }
+}
+.animate-kb-ai-hero-float {
+  animation: kb-ai-hero-float 4s ease-in-out infinite;
+}
+
+@keyframes kb-ai-hero-breath {
+  0%, 100% { transform: scale(1); }
+  50%      { transform: scale(1.06); }
+}
+.animate-kb-ai-hero-breath {
+  animation: kb-ai-hero-breath 3.5s ease-in-out infinite;
+}
+
+/* Wide outer halo — bigger and slower than the toggle's, so it
+   reads as a real presence on the hero. */
+@keyframes kb-ai-hero-halo {
+  0%   { transform: scale(0.85); opacity: 0.55; }
+  70%  { transform: scale(1.9);  opacity: 0;    }
+  100% { transform: scale(1.9);  opacity: 0;    }
+}
+.animate-kb-ai-hero-halo {
+  animation: kb-ai-hero-halo 3.2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Sparkles around the hero twinkle in/out on stagger so the
+   surface always has motion somewhere without any single point
+   feeling busy. Scale + opacity, no rotation — rotation reads as
+   "loading" rather than "alive". */
+@keyframes kb-ai-hero-sparkle {
+  0%, 100% { transform: scale(0.6); opacity: 0;   }
+  20%      { transform: scale(1);   opacity: 1;   }
+  60%      { transform: scale(1.1); opacity: 0.6; }
+  80%      { transform: scale(0.8); opacity: 0;   }
+}
+.animate-kb-ai-hero-sparkle {
+  animation: kb-ai-hero-sparkle 3.4s ease-in-out infinite;
+}
+
 /* kb-ai-thinking-dot — three dots staggered to ripple in sequence,
    used by the Copilot's "thinking" indicator instead of a single
    spinner. Reads as an active typing/processing state much more

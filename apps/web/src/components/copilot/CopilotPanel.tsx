@@ -449,8 +449,47 @@ function EmptyState() {
 
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4 py-8">
-      <div className="w-12 h-12 rounded-2xl bg-kb-accent-light flex items-center justify-center mb-3">
-        <Bot className="w-6 h-6 text-kb-accent" />
+      {/* Hero icon — the empty state is a pause point, so the icon
+          gets the full ambient-AI treatment: float on the wrapper,
+          cycling glow on the body, two staggered halos pinging
+          outward, a subtle breath on the icon itself, and corner
+          sparkles twinkling on stagger. Each layer is reduced under
+          motion-reduce. */}
+      <div className="relative mb-4 animate-kb-ai-hero-float motion-reduce:animate-none">
+        <div className="relative w-16 h-16">
+          {/* Two staggered halos behind the body — bigger and slower
+              than the toggle's, so the empty state reads as a
+              presence, not a button. */}
+          <span
+            aria-hidden
+            className="absolute inset-0 rounded-2xl bg-kb-accent/35 animate-kb-ai-hero-halo motion-reduce:hidden"
+          />
+          <span
+            aria-hidden
+            className="absolute inset-0 rounded-2xl bg-violet-500/30 animate-kb-ai-hero-halo motion-reduce:hidden"
+            style={{ animationDelay: '1.6s' }}
+          />
+
+          {/* Gradient body carries the same green→violet identity as
+              the toggle and Ask Copilot button, plus the cycling
+              outer glow. */}
+          <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-kb-accent via-kb-accent to-violet-500 flex items-center justify-center shadow-lg shadow-kb-accent/40 overflow-hidden animate-kb-ai-glow">
+            <Bot className="relative w-8 h-8 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)] animate-kb-ai-hero-breath motion-reduce:animate-none" />
+          </div>
+
+          {/* Sparkles at the corners twinkle on stagger so motion is
+              always somewhere on the surface without any single
+              point feeling busy. */}
+          <Sparkles
+            aria-hidden
+            className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 text-kb-accent animate-kb-ai-hero-sparkle motion-reduce:hidden"
+          />
+          <Sparkles
+            aria-hidden
+            className="absolute -bottom-1.5 -left-1.5 w-3 h-3 text-violet-400 animate-kb-ai-hero-sparkle motion-reduce:hidden"
+            style={{ animationDelay: '1.7s' }}
+          />
+        </div>
       </div>
       <h3 className="text-sm font-semibold text-kb-text-primary mb-1">KubeBolt Copilot AI</h3>
       <p className="text-xs text-kb-text-tertiary mb-4 max-w-xs">
