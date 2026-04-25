@@ -1623,10 +1623,10 @@ function ClusterMapInner() {
                   </h4>
                   <Link
                     to="/admin/integrations"
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-kb-accent text-white text-[11px] font-medium hover:bg-kb-accent-bright transition-colors shrink-0"
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-kb-accent text-white text-[11px] font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all shrink-0"
                   >
                     Install agent
-                    <ArrowRight className="w-3 h-3" />
+                    <ArrowRight className="w-3 h-3" strokeWidth={2.5} />
                   </Link>
                 </div>
                 <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">

@@ -1867,10 +1867,10 @@ function AgentTrendsCTA() {
         <Link
           to="/admin/integrations"
           onClick={(e) => e.stopPropagation()}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors shrink-0"
+          className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-kb-accent text-white text-xs font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all shrink-0"
         >
           Install agent
-          <ArrowRight className="w-3.5 h-3.5" />
+          <ArrowRight className="w-3.5 h-3.5" strokeWidth={2.5} />
         </Link>
         <ChevronDown
           className={`w-4 h-4 text-kb-text-tertiary shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
