@@ -4,8 +4,8 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown } from 'lucide-react'
-import { useQueryClient } from '@tanstack/react-query'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown } from 'lucide-react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -1327,6 +1327,30 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
 // ─── Monitor Tab ─────────────────────────────────────────────────
 
 function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
+  // Trend charts read from VictoriaMetrics, which is fed by the
+  // KubeBolt Agent (and, in the future, by other metrics-providing
+  // integrations). When no such integration is installed in this
+  // cluster, all per-type charts would render empty — so we fall
+  // back to the snapshot donuts (Metrics Server) for every type
+  // and surface an inline CTA pointing operators at the install
+  // path. Same component shape as the existing Services/Jobs
+  // fallback, just with a more actionable banner.
+  const { data: agent, isLoading } = useQuery({
+    queryKey: ['integration', 'agent'],
+    queryFn: () => api.getIntegration('agent'),
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  })
+
+  if (isLoading) return <LoadingSpinner />
+
+  const trendSourceInstalled =
+    agent && (agent.status === 'installed' || agent.status === 'degraded')
+
+  if (!trendSourceInstalled) {
+    return <MonitorDonuts item={item} agentInstalled={false} />
+  }
+
   switch (type) {
     case 'pods':
       return <PodMonitorCharts item={item} />
@@ -1339,7 +1363,7 @@ function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
     case 'nodes':
       return <NodeMonitorCharts item={item} />
     default:
-      return <MonitorDonuts item={item} />
+      return <MonitorDonuts item={item} agentInstalled />
   }
 }
 
@@ -1687,7 +1711,23 @@ function formatMemoryShort(bytes: number): string {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`
 }
 
-function MonitorDonuts({ item }: { item: ResourceItem }) {
+// MonitorDonuts renders the snapshot view (current CPU/Memory from
+// Metrics Server). Used in two cases:
+//
+//   - Resource types that simply don't have agent-side trend metrics
+//     (Services, Jobs, etc.) — banner reads as "this type has no
+//     trends".
+//   - Any resource type when no metrics-providing integration is
+//     installed in the cluster — banner reads as "install the agent
+//     for trends" with an inline CTA. Caller passes `agentInstalled
+//     = false` for this case.
+function MonitorDonuts({
+  item,
+  agentInstalled = true,
+}: {
+  item: ResourceItem
+  agentInstalled?: boolean
+}) {
   const cpuUsage = Number(item.cpuUsage ?? 0)
   const cpuPercent = Number(item.cpuPercent ?? 0)
   const memUsage = Number(item.memoryUsage ?? 0)
@@ -1695,17 +1735,24 @@ function MonitorDonuts({ item }: { item: ResourceItem }) {
 
   if (cpuUsage === 0 && memUsage === 0) {
     return (
-      <div className="text-sm text-kb-text-tertiary text-center py-12">
-        No metrics available. Metrics Server may not be installed or this resource type does not report metrics.
+      <div className="space-y-4">
+        {!agentInstalled && <AgentTrendsCTA />}
+        <div className="text-sm text-kb-text-tertiary text-center py-12">
+          No metrics available. Metrics Server may not be installed or this resource type does not report metrics.
+        </div>
       </div>
     )
   }
 
   return (
     <div className="space-y-4">
-      <div className="bg-status-warn-dim border border-status-warn/20 rounded-lg px-4 py-2 text-[11px] text-status-warn">
-        Current data is from metrics-server (point-in-time snapshot). Historical time-series for this resource type will land in a later iteration.
-      </div>
+      {agentInstalled ? (
+        <div className="bg-status-warn-dim border border-status-warn/20 rounded-lg px-4 py-2 text-[11px] text-status-warn">
+          Current data is from metrics-server (point-in-time snapshot). Historical time-series for this resource type will land in a later iteration.
+        </div>
+      ) : (
+        <AgentTrendsCTA />
+      )}
 
       <div className="grid grid-cols-2 gap-4">
         {/* CPU */}
@@ -1749,20 +1796,146 @@ function MonitorDonuts({ item }: { item: ResourceItem }) {
         </Section>
       </div>
 
-      {/* Network & Disk placeholders */}
+      {/* Network & Disk placeholders — Metrics Server has no
+          equivalent for these, so they stay locked until the agent
+          ships per-pod RX/TX byte counters and per-container disk
+          I/O samples. */}
       <div className="grid grid-cols-2 gap-4">
-        <Section title="Network Usage">
-          <div className="text-sm text-kb-text-tertiary text-center py-8">
-            Requires KubeBolt Agent for network metrics
-          </div>
-        </Section>
-        <Section title="Disk I/O Usage">
-          <div className="text-sm text-kb-text-tertiary text-center py-8">
-            Requires KubeBolt Agent for disk metrics
-          </div>
-        </Section>
+        <AgentLockedTile
+          title="Network Usage"
+          description="The agent samples per-resource RX and TX bytes every 15s and renders them as a single chart with TX below the zero line — at a glance you see direction, peak, and ratio. Anomaly hooks (Ask Copilot) plug into it too."
+        />
+        <AgentLockedTile
+          title="Disk I/O Usage"
+          description="Per-container read/write throughput plus filesystem usage trends, scoped to the resource you're viewing. Catches noisy-neighbor PVCs and runaway log rotations before they fill the node."
+        />
       </div>
     </div>
+  )
+}
+
+const MONITOR_CTA_EXPANDED_KEY = 'kb-monitor-cta-expanded'
+
+// AgentTrendsCTA — banner shown above the snapshot donuts when no
+// trend-providing integration is installed. Same accent-tinted card
+// used on other "agent unlocks more" affordances. Collapses to a
+// single row by default so it doesn't dominate the Monitor tab on
+// every visit; the chevron expands a richer pitch (description,
+// feature bullets, helm one-liner). Preference is persisted so the
+// user's choice carries across navigations within the session.
+function AgentTrendsCTA() {
+  const [expanded, setExpanded] = useState(
+    () =>
+      typeof window !== 'undefined' &&
+      window.localStorage.getItem(MONITOR_CTA_EXPANDED_KEY) === 'true',
+  )
+
+  const toggle = () => {
+    const next = !expanded
+    setExpanded(next)
+    try {
+      window.localStorage.setItem(MONITOR_CTA_EXPANDED_KEY, next ? 'true' : 'false')
+    } catch {
+      // Ignore storage errors (private mode, quota); UI still toggles.
+    }
+  }
+
+  return (
+    <div className="rounded-lg border border-kb-border bg-kb-card border-l-4 border-l-kb-accent">
+      {/* Header row — clickable to toggle. The Install button sits
+          inside the header but stops propagation so its click
+          navigates instead of toggling. */}
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={expanded}
+        className="w-full flex items-center gap-3 p-3 text-left hover:bg-kb-elevated/30 transition-colors rounded-lg"
+      >
+        <div className="w-7 h-7 rounded-md bg-kb-accent-light flex items-center justify-center shrink-0">
+          <Lock className="w-3.5 h-3.5 text-kb-accent" />
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[13px] font-semibold text-kb-text-primary truncate">
+            Time-series trends require the KubeBolt Agent
+          </div>
+          {!expanded && (
+            <div className="text-[11px] text-kb-text-tertiary truncate">
+              Click to learn what the agent unlocks
+            </div>
+          )}
+        </div>
+        <Link
+          to="/admin/integrations"
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors shrink-0"
+        >
+          Install agent
+          <ArrowRight className="w-3.5 h-3.5" />
+        </Link>
+        <ChevronDown
+          className={`w-4 h-4 text-kb-text-tertiary shrink-0 transition-transform ${expanded ? 'rotate-180' : ''}`}
+        />
+      </button>
+
+      {/* Expanded body — the rich pitch. Indented so it aligns with
+          the title text in the header rather than the icon. */}
+      {expanded && (
+        <div className="px-4 pb-4 pl-[60px]">
+          <p className="text-[12px] text-kb-text-secondary leading-relaxed">
+            The donuts below show <strong className="text-kb-text-primary font-medium">current</strong> CPU and memory from the Kubernetes Metrics Server — that's everything this cluster exposes today. Install the agent (or another metrics integration when available) to unlock:
+          </p>
+          <ul className="text-[12px] text-kb-text-secondary mt-2 space-y-1 ml-1">
+            <li className="flex items-start gap-2">
+              <span className="text-kb-accent mt-1.5 shrink-0">•</span>
+              <span>Historical CPU and memory trends with selectable range (5m → 24h)</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-kb-accent mt-1.5 shrink-0">•</span>
+              <span>Network traffic charts (RX up / TX down) per resource</span>
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-kb-accent mt-1.5 shrink-0">•</span>
+              <span>Filesystem and disk I/O activity</span>
+            </li>
+          </ul>
+          <div className="mt-3 pt-3 border-t border-kb-border flex items-center gap-2 text-[10px]">
+            <span className="text-kb-text-tertiary font-mono uppercase tracking-wider shrink-0">Or via Helm</span>
+            <code className="font-mono text-kb-text-secondary bg-kb-bg border border-kb-border rounded px-2 py-1 truncate flex-1">
+              helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent --namespace kubebolt-system --create-namespace
+            </code>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// AgentLockedTile — placeholder used inside MonitorDonuts where a
+// metric (Network, Disk I/O) only exists with the agent installed.
+// Shows a lock badge, a one-line "what's missing" headline, and a
+// short paragraph explaining what the agent would have shown here
+// instead of just the bare "Requires Agent" line.
+function AgentLockedTile({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <Section title={title}>
+      <div className="flex flex-col items-center justify-center text-center py-7 px-4 gap-2">
+        <div className="w-9 h-9 rounded-full bg-kb-accent-light flex items-center justify-center">
+          <Lock className="w-4 h-4 text-kb-accent" />
+        </div>
+        <div className="text-xs font-semibold text-kb-text-primary">
+          Available with the KubeBolt Agent
+        </div>
+        <p className="text-[11px] text-kb-text-tertiary leading-relaxed max-w-xs">
+          {description}
+        </p>
+      </div>
+    </Section>
   )
 }
 

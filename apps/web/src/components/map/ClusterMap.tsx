@@ -1,5 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useLayoutEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, Link } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import ReactFlow, {
   Background,
   MiniMap,
@@ -13,9 +14,10 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw } from 'lucide-react'
+import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight } from 'lucide-react'
 import { useTopology } from '@/hooks/useTopology'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
+import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { ResourceNode } from './ResourceNode'
@@ -815,6 +817,20 @@ function ClusterMapInner() {
   })
   const trafficEnabled = !hiddenEdgeGroups.has('traffic')
   const { data: flowData } = useFlowEdges({ enabled: trafficEnabled, windowMinutes: 1 })
+  // Live traffic comes from the agent's Hubble flow collector. Without
+  // an agent (or a future flow-providing integration), the Traffic
+  // layout has nothing to draw. We don't disable the layout outright —
+  // operators sometimes want to see what the chrome looks like — but
+  // we mark the affordances with a lock and float a CTA card on the
+  // canvas when they actually engage Traffic mode.
+  const { data: agent } = useQuery({
+    queryKey: ['integration', 'agent'],
+    queryFn: () => api.getIntegration('agent'),
+    refetchInterval: 10_000,
+    staleTime: 5_000,
+  })
+  const trafficSourceAvailable =
+    !!agent && (agent.status === 'installed' || agent.status === 'degraded')
   // Manual position overrides set by user drag. Keyed by node ID.
   // Cleared when switching layout mode or clicking Reset.
   const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(new Map())
@@ -1440,13 +1456,20 @@ function ClusterMapInner() {
             </button>
             <button
               onClick={() => setLayoutMode('traffic')}
-              title="Traffic layout — Kiali-style intent flow: caller → Service → Pod, routed by observed traffic"
+              title={
+                trafficSourceAvailable
+                  ? 'Traffic layout — Kiali-style intent flow: caller → Service → Pod, routed by observed traffic'
+                  : 'Traffic layout — requires the KubeBolt Agent for live flows. Click to preview the chrome.'
+              }
               className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border ${
                 layoutMode === 'traffic' ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
               }`}
             >
               <Waypoints className="w-3 h-3" />
               Traffic
+              {!trafficSourceAvailable && (
+                <Lock className="w-2.5 h-2.5 text-kb-text-tertiary" aria-label="Requires the KubeBolt Agent" />
+              )}
             </button>
           </div>
         </div>
@@ -1459,12 +1482,17 @@ function ClusterMapInner() {
               const visible = !hiddenEdgeGroups.has(g.key)
               const isTraffic = g.key === 'traffic'
               const count = isTraffic ? (flowData?.edges?.length ?? 0) : undefined
+              const trafficLocked = isTraffic && !trafficSourceAvailable
               return (
                 <button
                   key={g.key}
                   onClick={() => toggleEdgeGroup(g.key)}
-                  title={g.description}
-                  className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-all ${
+                  title={
+                    trafficLocked
+                      ? 'Traffic edges — requires the KubeBolt Agent for live flow data'
+                      : g.description
+                  }
+                  className={`inline-flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono rounded border transition-all ${
                     visible
                       ? isTraffic
                         ? 'bg-status-ok-dim border-status-ok/40 text-status-ok'
@@ -1474,6 +1502,9 @@ function ClusterMapInner() {
                 >
                   {g.label}
                   {isTraffic && count !== undefined && count > 0 && ` (${count})`}
+                  {trafficLocked && (
+                    <Lock className="w-2.5 h-2.5 text-kb-text-tertiary" aria-label="Requires the KubeBolt Agent" />
+                  )}
                 </button>
               )
             })}
@@ -1573,6 +1604,39 @@ function ClusterMapInner() {
           )}
         </div>
       </div>
+
+      {/* Traffic layout without a flow source — float a compact CTA
+          card on the canvas explaining the chrome they're seeing.
+          Static topology continues to render underneath, so the
+          layout is still useful for orientation. */}
+      {layoutMode === 'traffic' && !trafficSourceAvailable && (
+        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
+          <div className="rounded-lg border border-kb-border bg-kb-card/95 backdrop-blur-sm border-l-4 border-l-kb-accent shadow-xl">
+            <div className="flex items-start gap-3 p-3.5">
+              <div className="w-8 h-8 rounded-lg bg-kb-accent-light flex items-center justify-center shrink-0">
+                <Lock className="w-4 h-4 text-kb-accent" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <h4 className="text-[13px] font-semibold text-kb-text-primary">
+                    Live traffic requires the KubeBolt Agent
+                  </h4>
+                  <Link
+                    to="/admin/integrations"
+                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-kb-accent text-white text-[11px] font-medium hover:bg-kb-accent-bright transition-colors shrink-0"
+                  >
+                    Install agent
+                    <ArrowRight className="w-3 h-3" />
+                  </Link>
+                </div>
+                <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">
+                  Showing static topology only. Install the agent (or another flow-providing integration when available) to surface pod-to-pod traffic, HTTP latency, DNS resolutions, and external endpoint flows on this layout.
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Flow column headers (only in flow mode) */}
       {layoutMode === 'flow' && (
