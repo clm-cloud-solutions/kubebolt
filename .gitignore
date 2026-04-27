@@ -47,3 +47,6 @@ Thumbs.db
 
 # Internal planning (not versioned)
 /internal/
+
+# Claude Code harness (hooks, settings, worktrees) — local agent state
+.claude/
