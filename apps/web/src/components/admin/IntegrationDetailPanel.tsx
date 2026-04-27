@@ -85,7 +85,7 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
 
   const isInstalled = integration.status === 'installed' || integration.status === 'degraded'
 
-  // Position below the Topbar (h-[52px], z-[200]) so the cluster
+  // Position below the Topbar (h-[52px], z-[400]) so the cluster
   // switcher + search remain accessible while the panel is open.
   // Panel and backdrop both start at top-[52px] for the same reason.
   return (

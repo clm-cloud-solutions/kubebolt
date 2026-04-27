@@ -86,7 +86,7 @@ export function Topbar({ overview }: TopbarProps) {
   const hasMultipleClusters = clusters && clusters.length > 1
 
   return (
-    <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[200]">
+    <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]">
       {/* Left side */}
       <div className="flex items-center gap-4">
         {/* Cluster selector */}
