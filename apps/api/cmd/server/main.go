@@ -204,7 +204,7 @@ func main() {
 
 	var authHandlers *auth.Handlers
 	var tenantHandlers *auth.TenantHandlers
-	var bearerIngestAuth *auth.BearerIngestAuth
+	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
@@ -264,13 +264,26 @@ func main() {
 		if err != nil {
 			fatal("failed to open tenants store", slog.String("error", err.Error()))
 		}
-		// Sprint A wires only BearerIngestAuth as a cache invalidator.
-		// TokenReviewAuth (commit 3) lands here once we resolve the
-		// in-cluster client at startup; for now BearerIngestAuth is the
-		// only cache that needs eviction on revoke / rotate / disable.
-		bearerIngestAuth = auth.NewBearerIngestAuth(tenantsStore, 5*time.Minute)
-		tenantHandlers = auth.NewTenantHandlers(tenantsStore, bearerIngestAuth)
-		_ = bearerIngestAuth // wired into the agent interceptor in commit 7+
+
+		// Build the agent authenticator. TokenReview mode is best-effort:
+		// if there is no in-cluster client (KubeBolt running outside K8s,
+		// e.g. via `go run`) the bundle still includes BearerIngestAuth
+		// for SaaS / cross-cluster ingest tokens.
+		factoryOpts := agent.LoadAuthenticatorOptionsFromEnv()
+		factoryOpts.TenantsStore = tenantsStore
+		if c, err := agent.NewInClusterKubeClient(); err == nil {
+			factoryOpts.KubeClient = c
+		} else {
+			slog.Info("agent auth: in-cluster client unavailable; TokenReview mode skipped",
+				slog.String("error", err.Error()),
+			)
+		}
+		bundle, err := agent.BuildAuthenticator(context.Background(), factoryOpts)
+		if err != nil {
+			fatal("agent auth bundle", slog.String("error", err.Error()))
+		}
+		agentAuthBundle = bundle
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, bundle.AsCacheInvalidators()...)
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
@@ -392,9 +405,7 @@ func main() {
 
 	// Sprint A migration window: enforcement defaults to "disabled" so
 	// existing fleets without auth credentials keep working. Operators
-	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials;
-	// the authenticator wiring lands in commit 6+ once tenant config
-	// is available.
+	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials.
 	agentAuthCfg := agent.AuthConfig{
 		Enforcement: agent.EnforcementDisabled,
 	}
@@ -406,6 +417,19 @@ func main() {
 				slog.String("requested", v),
 			)
 		}
+	}
+	// Plug the composite authenticator into the interceptor. Available
+	// only when auth is enabled at the application level — without it,
+	// there is no tenants store, so enforced/permissive cannot validate
+	// anything. In that combination main.go below logs a warning and
+	// the agent channel keeps running disabled.
+	if agentAuthBundle != nil {
+		agentAuthCfg.Authenticator = agentAuthBundle.Composite
+	} else if agentAuthCfg.Enforcement != agent.EnforcementDisabled {
+		slog.Warn("agent auth enforcement requested but app auth is disabled — falling back to disabled mode",
+			slog.String("requested", string(agentAuthCfg.Enforcement)),
+		)
+		agentAuthCfg.Enforcement = agent.EnforcementDisabled
 	}
 
 	// TLS (and optional mTLS) for the agent gRPC channel. Half-set env

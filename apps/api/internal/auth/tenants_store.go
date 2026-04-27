@@ -153,6 +153,14 @@ func (s *TenantsStore) ensureDefaultTenant() (*Tenant, error) {
 	return s.CreateTenant(DefaultTenantName, "self-hosted")
 }
 
+// GetDefaultTenant returns the auto-seeded "default" tenant. Callers
+// in self-hosted single-cluster paths use this as the canonical tenant
+// for TokenReview-authenticated agents (where the credential identifies
+// the cluster, not a tenant).
+func (s *TenantsStore) GetDefaultTenant() (*Tenant, error) {
+	return s.getTenantByName(DefaultTenantName)
+}
+
 func (s *TenantsStore) getTenantByName(name string) (*Tenant, error) {
 	var t Tenant
 	err := s.db.View(func(tx *bolt.Tx) error {

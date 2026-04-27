@@ -248,9 +248,18 @@ func (c *authCache) invalidate() {
 // CompositeAuth dispatches to the right AgentAuthenticator based on the
 // "kubebolt-auth-mode" metadata header. Each member is registered once
 // at startup; lookup is a map check, no fan-out.
+//
+// CompositeAuth itself satisfies AgentAuthenticator: Mode() returns ""
+// (no single mode). Registering a Composite inside another Composite
+// is not a supported pattern — the empty mode would never match the
+// header.
 type CompositeAuth struct {
 	authers map[AgentAuthMode]AgentAuthenticator
 }
+
+// Mode satisfies AgentAuthenticator. CompositeAuth has no single mode;
+// it dispatches based on the request's metadata.
+func (c *CompositeAuth) Mode() AgentAuthMode { return "" }
 
 // NewCompositeAuth builds the dispatcher. Order does not matter — the
 // last registered authenticator wins for a given mode if duplicates are
