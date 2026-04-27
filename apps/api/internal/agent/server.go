@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
@@ -151,10 +152,13 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 	}, nil
 }
 
-// ListenOptions configures Listen. Auth.Enforcement="" defaults to
-// EnforcementDisabled with a warning at startup.
+// ListenOptions configures Listen.
+//
+//	Auth.Enforcement=""  defaults to EnforcementDisabled (with a startup warning).
+//	TLS=nil              runs plaintext (with a startup warning).
 type ListenOptions struct {
 	Auth AuthConfig
+	TLS  *TLSConfig
 }
 
 // Listen binds a gRPC listener at addr and serves AgentIngest on it
@@ -169,10 +173,20 @@ func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) e
 	}
 	LogStartupMode(opts.Auth)
 
-	grpcSrv := grpc.NewServer(
+	serverOpts := []grpc.ServerOption{
 		grpc.UnaryInterceptor(UnaryAuthInterceptor(opts.Auth)),
 		grpc.StreamInterceptor(StreamAuthInterceptor(opts.Auth)),
-	)
+	}
+	if opts.TLS != nil && opts.TLS.Config != nil {
+		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(opts.TLS.Config)))
+		slog.Info("agent gRPC TLS enabled",
+			slog.Bool("require_mtls", opts.TLS.RequireMTLS),
+		)
+	} else {
+		slog.Warn("agent gRPC server running plaintext (no TLS configured)")
+	}
+
+	grpcSrv := grpc.NewServer(serverOpts...)
 	agentv1.RegisterAgentIngestServer(grpcSrv, srv)
 	slog.Info("agent gRPC server listening", slog.String("addr", addr))
 

@@ -376,7 +376,8 @@ func main() {
 	// Sprint A migration window: enforcement defaults to "disabled" so
 	// existing fleets without auth credentials keep working. Operators
 	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials;
-	// commit 5+ wires up the actual authenticator behind enforcement.
+	// the authenticator wiring lands in commit 6+ once tenant config
+	// is available.
 	agentAuthCfg := agent.AuthConfig{
 		Enforcement: agent.EnforcementDisabled,
 	}
@@ -390,8 +391,24 @@ func main() {
 		}
 	}
 
+	// TLS (and optional mTLS) for the agent gRPC channel. Half-set env
+	// surfaces as an error here so misconfigurations fail loud at boot.
+	agentTLS, err := agent.LoadServerTLSFromEnv()
+	if err != nil {
+		fatal("agent TLS configuration invalid", slog.String("error", err.Error()))
+	}
+	if agentTLS != nil && agentTLS.RequireMTLS {
+		// Mirror to the auth interceptor so identity.TLSVerified is
+		// re-checked post-auth, even though tls.RequireAndVerifyClientCert
+		// already gates the handshake.
+		agentAuthCfg.RequireMTLS = true
+	}
+
 	go func() {
-		if err := agent.Listen(agentCtx, agentAddr, ingestSrv, agent.ListenOptions{Auth: agentAuthCfg}); err != nil {
+		if err := agent.Listen(agentCtx, agentAddr, ingestSrv, agent.ListenOptions{
+			Auth: agentAuthCfg,
+			TLS:  agentTLS,
+		}); err != nil {
 			slog.Error("agent gRPC server error", slog.String("error", err.Error()))
 		}
 	}()
