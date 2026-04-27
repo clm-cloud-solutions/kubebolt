@@ -1636,6 +1636,28 @@ Phase 3 (dedicated effort):
   [5] Kubernetes Operator ← Kubebuilder controller project
 ```
 
+### Phase 1.10 — Real-Time UX Hardening
+
+Priority: medium — closes a class of UX bugs where user actions (scale, restart, delete) and fast resource transitions (Pod phase changes) are invisible until the next poll interval. The backend already receives informer updates within ~200ms of a Kubernetes API change, but the frontend's query-cache layer doesn't always consume them, so the user sees the result only after the configurable poll fires (5s–2m).
+
+| Feature | Impact | Description |
+|---------|--------|-------------|
+| **Detail-page WS invalidation** | Critical | `useWebSocket` only invalidates `['resources', type]` (list queries). Resource detail pages use `['resource-detail', type, ns, name]` and are never refreshed by WS — they rely on the poll interval. Extend the handler to match the WS event payload (kind + namespace + name) against the active route and invalidate the detail key when it matches. |
+| **Mutation responses return updated object** | High | `POST /resources/:type/:ns/:name/restart`, `/scale`, and `DELETE /resources/:type/:ns/:name` currently return only status. The Kubernetes API response already contains the post-mutation object — serialize it in the body and have the client call `setQueryData` so the change is visible immediately, before any WS event or poll. Independent of the WS path; works even if WS is dropped. |
+| **Push payload, drop refetch** | Medium | WS already transports the full informer object as `data`. Frontend currently does `invalidateQueries` → REST GET → re-render, adding a 100-300ms roundtrip per event and dropping intermediate states under bursts. Switch to `setQueryData(payload)` for both list and detail queries, eliminating the GET and capturing fast Pod phase transitions (`Pending → ContainerCreating → Running`). Trade-off: larger WS payloads, which is acceptable since `managedFields` is already stripped at informer setup. |
+| **Dedicated live stream for active detail page** | Medium | Open a per-resource WS subscription when a detail page mounts (e.g. `subscribe:resource:{type}/{ns}/{name}`). Backend emits every informer event for that object directly, bypassing the 2s topology debounce. Closes the gap for sub-second transitions and brings the detail view to parity with `kubectl get -w`. Only worth doing if items [1] and [3] still leave visible gaps in practice. |
+| **Query cache & real-time strategy (§6.5)** | Medium | Add §6.5 to this spec enumerating every query key, its `staleTime`/poll interval, the events that invalidate it, and the source of fresh data (poll vs WS vs mutation response). Prevents future drift between query keys and the WS handler — the root cause of the detail-page bug. |
+
+#### Implementation order
+
+```
+[1] Detail-page WS invalidation        ← unblocks 80% of perceived staleness
+[2] Mutation responses return object   ← independent, parallelizable with [1]
+[3] Push payload, drop refetch         ← protocol change, requires [1] in place
+[4] Dedicated detail-page live stream  ← largest scope, only if [1]+[3] still leave gaps
+[5] §6.5 documentation                 ← written alongside [3] when the contract solidifies
+```
+
 ### Phase 2.0 — Agent, Historical Data & Network Observability
 
 The MVP agent (shipped in five sprints, see §4.6) covers aggregate per-pod
