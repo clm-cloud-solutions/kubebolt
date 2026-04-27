@@ -1,10 +1,14 @@
 // Package agent hosts the backend-side of the kubebolt-agent wire contract:
 // the gRPC AgentIngest service and its metrics storage writer.
 //
-// This is the walking-skeleton scope (Sprint 0): no TokenReview auth, no
-// agent registry persistence, no rate limiting. Every call is accepted and
-// samples are forwarded to the MetricsWriter. Production concerns are added
-// in Sprint 2.
+// Sprint A wired authentication onto this service: a CompositeAuth
+// dispatches by metadata header (tokenreview vs ingest-token) and the
+// interceptor stamps an *auth.AgentIdentity on the request context.
+// Handlers consume that identity via auth.AgentIdentityFromContext to
+// derive a stable agent_id and enrich audit logs.
+//
+// Persistence (agents bucket, ULID identifiers) and rate limiting land
+// in Sprints B and A-week3 respectively.
 package agent
 
 import (
@@ -18,6 +22,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
 )
 
@@ -38,18 +43,46 @@ func NewServer(writer MetricsWriter) *Server {
 	return &Server{writer: writer}
 }
 
+// resolveAgentID returns a stable agent identifier. With an authenticated
+// identity it derives sha256(tenant|cluster|node)[:16] so reconnects
+// land on the same id without persistence (Sprint B replaces with ULID
+// stored in the agents bucket). Without an identity (auth disabled) it
+// falls back to a fresh UUID — the legacy Sprint 0 behavior.
+func resolveAgentID(id *auth.AgentIdentity, nodeName string) (agentID, clusterID string) {
+	if id == nil || id.Mode == auth.ModeDisabled || id.TenantID == "" {
+		return uuid.NewString(), "local"
+	}
+	cluster := id.ClusterID
+	if cluster == "" {
+		cluster = "local"
+	}
+	return auth.DeriveAgentID(id.TenantID, cluster, nodeName), cluster
+}
+
 func (s *Server) Register(ctx context.Context, req *agentv1.RegisterRequest) (*agentv1.RegisterResponse, error) {
-	agentID := uuid.NewString()
-	slog.Info("agent registered",
+	id := auth.AgentIdentityFromContext(ctx)
+	agentID, clusterID := resolveAgentID(id, req.GetNodeName())
+
+	logAttrs := []any{
 		slog.String("agent_id", agentID),
+		slog.String("cluster_id", clusterID),
 		slog.String("node_name", req.GetNodeName()),
 		slog.String("agent_version", req.GetAgentVersion()),
 		slog.String("kernel", req.GetKernelVersion()),
 		slog.String("runtime", req.GetContainerRuntime()),
-	)
+	}
+	if id != nil {
+		logAttrs = append(logAttrs,
+			slog.String("auth_mode", string(id.Mode)),
+			slog.String("tenant_id", id.TenantID),
+			slog.Bool("tls_verified", id.TLSVerified),
+		)
+	}
+	slog.Info("agent registered", logAttrs...)
+
 	return &agentv1.RegisterResponse{
 		AgentId:   agentID,
-		ClusterId: "local",
+		ClusterId: clusterID,
 		Config: &agentv1.AgentConfig{
 			SampleIntervalSeconds: 15,
 			BatchSize:             500,
@@ -60,6 +93,7 @@ func (s *Server) Register(ctx context.Context, req *agentv1.RegisterRequest) (*a
 
 func (s *Server) StreamMetrics(stream agentv1.AgentIngest_StreamMetricsServer) error {
 	ctx := stream.Context()
+	id := auth.AgentIdentityFromContext(ctx)
 	for {
 		batch, err := stream.Recv()
 		if err == io.EOF {
@@ -68,10 +102,14 @@ func (s *Server) StreamMetrics(stream agentv1.AgentIngest_StreamMetricsServer) e
 		if err != nil {
 			return err
 		}
-		slog.Info("received metric batch",
+		logAttrs := []any{
 			slog.String("agent_id", batch.GetAgentId()),
 			slog.Int("samples", len(batch.GetSamples())),
-		)
+		}
+		if id != nil {
+			logAttrs = append(logAttrs, slog.String("tenant_id", id.TenantID))
+		}
+		slog.Info("received metric batch", logAttrs...)
 		if werr := s.writer.Write(ctx, batch.GetSamples()); werr != nil {
 			slog.Error("metrics write failed", slog.String("error", werr.Error()))
 			if sendErr := stream.Send(&agentv1.IngestAck{
@@ -96,12 +134,16 @@ func (s *Server) StreamMetrics(stream agentv1.AgentIngest_StreamMetricsServer) e
 func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (*agentv1.HeartbeatResponse, error) {
 	stats := req.GetStats()
 	if stats != nil {
-		slog.Info("agent heartbeat",
+		logAttrs := []any{
 			slog.String("agent_id", req.GetAgentId()),
 			slog.Uint64("samples_sent", stats.GetSamplesSentTotal()),
 			slog.Uint64("samples_dropped", stats.GetSamplesDroppedTotal()),
 			slog.Uint64("buffer_size", stats.GetBufferSizeCurrent()),
-		)
+		}
+		if id := auth.AgentIdentityFromContext(ctx); id != nil {
+			logAttrs = append(logAttrs, slog.String("tenant_id", id.TenantID))
+		}
+		slog.Info("agent heartbeat", logAttrs...)
 	}
 	return &agentv1.HeartbeatResponse{
 		ReceivedAt:           timestamppb.Now(),
@@ -109,14 +151,28 @@ func (s *Server) Heartbeat(ctx context.Context, req *agentv1.HeartbeatRequest) (
 	}, nil
 }
 
-// Listen binds a gRPC listener at addr and serves AgentIngest on it until
-// ctx is cancelled. Blocks until the server exits.
-func Listen(ctx context.Context, addr string, srv *Server) error {
+// ListenOptions configures Listen. Auth.Enforcement="" defaults to
+// EnforcementDisabled with a warning at startup.
+type ListenOptions struct {
+	Auth AuthConfig
+}
+
+// Listen binds a gRPC listener at addr and serves AgentIngest on it
+// until ctx is cancelled. Blocks until the server exits.
+func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) error {
 	lis, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("agent gRPC listen %s: %w", addr, err)
 	}
-	grpcSrv := grpc.NewServer()
+	if opts.Auth.Enforcement == "" {
+		opts.Auth.Enforcement = EnforcementDisabled
+	}
+	LogStartupMode(opts.Auth)
+
+	grpcSrv := grpc.NewServer(
+		grpc.UnaryInterceptor(UnaryAuthInterceptor(opts.Auth)),
+		grpc.StreamInterceptor(StreamAuthInterceptor(opts.Auth)),
+	)
 	agentv1.RegisterAgentIngestServer(grpcSrv, srv)
 	slog.Info("agent gRPC server listening", slog.String("addr", addr))
 

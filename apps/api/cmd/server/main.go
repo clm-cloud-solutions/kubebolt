@@ -373,8 +373,25 @@ func main() {
 	writer := agent.NewVMWriter(vmURL)
 	ingestSrv := agent.NewServer(writer)
 
+	// Sprint A migration window: enforcement defaults to "disabled" so
+	// existing fleets without auth credentials keep working. Operators
+	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials;
+	// commit 5+ wires up the actual authenticator behind enforcement.
+	agentAuthCfg := agent.AuthConfig{
+		Enforcement: agent.EnforcementDisabled,
+	}
+	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
+		if parsed, ok := agent.ParseEnforcement(v); ok {
+			agentAuthCfg.Enforcement = parsed
+		} else {
+			slog.Warn("KUBEBOLT_AGENT_AUTH_MODE has unknown value, defaulting to disabled",
+				slog.String("requested", v),
+			)
+		}
+	}
+
 	go func() {
-		if err := agent.Listen(agentCtx, agentAddr, ingestSrv); err != nil {
+		if err := agent.Listen(agentCtx, agentAddr, ingestSrv, agent.ListenOptions{Auth: agentAuthCfg}); err != nil {
 			slog.Error("agent gRPC server error", slog.String("error", err.Error()))
 		}
 	}()

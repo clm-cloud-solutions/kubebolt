@@ -37,6 +37,11 @@ type AgentAuthMode string
 const (
 	ModeTokenReview AgentAuthMode = "tokenreview"
 	ModeIngestToken AgentAuthMode = "ingest-token"
+	// ModeDisabled is the sentinel the interceptor stamps on the
+	// synthetic identity it injects when running in enforcement
+	// "disabled" — Sprint A migration window. Handlers can branch on it
+	// to skip tenant-aware logic until enforcement flips to "enforced".
+	ModeDisabled AgentAuthMode = "disabled"
 )
 
 const (
@@ -147,6 +152,31 @@ func peerHasVerifiedClientCert(p *peer.Peer) bool {
 func DeriveAgentID(tenantID, clusterID, nodeName string) string {
 	sum := sha256.Sum256([]byte(tenantID + "|" + clusterID + "|" + nodeName))
 	return hex.EncodeToString(sum[:8])
+}
+
+// ─── Context plumbing ─────────────────────────────────────────────────
+//
+// The gRPC interceptor (apps/api/internal/agent/auth_interceptor.go)
+// stores the authenticated AgentIdentity on the request context. Handlers
+// pull it back with AgentIdentityFromContext.
+
+type agentIdentityCtxKey struct{}
+
+// WithAgentIdentity returns a context carrying the supplied identity.
+// Used by the interceptor; handlers should not call this directly.
+func WithAgentIdentity(ctx context.Context, id *AgentIdentity) context.Context {
+	if id == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, agentIdentityCtxKey{}, id)
+}
+
+// AgentIdentityFromContext returns the authenticated identity, or nil
+// when the call was not authenticated (auth disabled, or interceptor
+// not installed).
+func AgentIdentityFromContext(ctx context.Context) *AgentIdentity {
+	v, _ := ctx.Value(agentIdentityCtxKey{}).(*AgentIdentity)
+	return v
 }
 
 // ─── Cache ───────────────────────────────────────────────────────────
