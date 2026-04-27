@@ -117,18 +117,18 @@ function buildQuery(params?: Record<string, string | number | boolean | undefine
   return str ? `?${str}` : ''
 }
 
-async function deleteRequest<T>(url: string): Promise<T> {
-  const res = await fetchWithAuth(url, { method: 'DELETE' })
+async function deleteRequest<T>(url: string, headers?: Record<string, string>): Promise<T> {
+  const res = await fetchWithAuth(url, { method: 'DELETE', headers })
   if (!res.ok) {
     throw new ApiError(res.status, await extractErrorMessage(res))
   }
   return res.json()
 }
 
-async function postJSON<T>(url: string, body: unknown): Promise<T> {
+async function postJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
   const res = await fetchWithAuth(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify(body),
   })
   if (!res.ok) {
@@ -314,20 +314,54 @@ export const api = {
       `${API_BASE}/search?q=${encodeURIComponent(query)}`
     ),
 
-  // Resource actions
-  deleteResource: (type: string, namespace: string, name: string, options?: { orphan?: boolean; force?: boolean }) => {
+  // Resource actions. The optional `source` tags the audit log entry —
+  // UI buttons leave it default ("ui"); Copilot proposal cards pass
+  // "copilot_proposal" via the X-KubeBolt-Action-Source header so the
+  // audit trail distinguishes execution paths.
+  deleteResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    options?: { orphan?: boolean; force?: boolean; source?: string },
+  ) => {
     const params = new URLSearchParams()
     if (options?.orphan) params.set('orphan', 'true')
     if (options?.force) params.set('force', 'true')
     const query = params.toString()
-    return deleteRequest<{ status: string }>(`${API_BASE}/resources/${type}/${namespace}/${name}${query ? '?' + query : ''}`)
+    return deleteRequest<{ status: string }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}${query ? '?' + query : ''}`,
+      options?.source ? { 'X-KubeBolt-Action-Source': options.source } : undefined,
+    )
   },
 
-  restartResource: (type: string, namespace: string, name: string) =>
-    postJSON<{ status: string }>(`${API_BASE}/resources/${type}/${namespace}/${name}/restart`, {}),
+  // The optional `source` argument tags the audit log entry. UI buttons
+  // leave it default ("ui"); Copilot proposal cards pass "copilot_proposal"
+  // so the audit trail distinguishes the two execution paths.
+  // The `resource` field carries the post-mutation object in the same
+  // shape as `useResourceDetail`, so callers can call `setQueryData`
+  // and reflect the change without waiting for a WS event or poll.
+  restartResource: (type: string, namespace: string, name: string, source?: string) =>
+    postJSON<{ status: string; resource: ResourceItem | null }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/restart`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
 
-  scaleResource: (type: string, namespace: string, name: string, replicas: number) =>
-    postJSON<{ status: string; fromReplicas: number; toReplicas: number }>(`${API_BASE}/resources/${type}/${namespace}/${name}/scale`, { replicas }),
+  scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string) =>
+    postJSON<{ status: string; fromReplicas: number; toReplicas: number; resource: ResourceItem | null }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/scale`,
+      { replicas },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Rollback a Deployment to a previous revision (kubectl rollout undo).
+  // toRevision = 0 (or omitted) means "previous revision".
+  rollbackResource: (type: string, namespace: string, name: string, toRevision?: number, source?: string) =>
+    postJSON<{ status: string; fromRevision: number; toRevision: number; resource: ResourceItem | null }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/rollback`,
+      { toRevision: toRevision ?? 0 },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
 
   // Port forwarding
   createPortForward: (body: { namespace: string; pod: string; container?: string; remotePort: number }) =>

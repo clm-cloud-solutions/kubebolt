@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -261,6 +262,233 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 	case "list_clusters":
 		clusters := e.manager.ListClusters()
 		res.Content = jsonString(clusters)
+
+	case "propose_restart_workload":
+		t := stringArg(args, "type")
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		if t == "" || ns == "" || name == "" {
+			res.Content = `{"error":"type, namespace, and name are required"}`
+			res.IsError = true
+			return res
+		}
+		switch t {
+		case "deployments", "statefulsets", "daemonsets":
+		default:
+			res.Content = fmt.Sprintf(`{"error":"cannot restart %s — only deployments, statefulsets, daemonsets"}`, t)
+			res.IsError = true
+			return res
+		}
+		// Verify the target exists so we don't propose ghost actions. This is
+		// a read against the local informer cache — cheap.
+		if _, err := conn.GetResourceDetail(t, ns, name); err != nil {
+			res.Content = errJSON(fmt.Errorf("target %s/%s/%s not found: %w", t, ns, name, err))
+			res.IsError = true
+			return res
+		}
+		p := newProposal("restart_workload")
+		p.Target = ProposalTarget{Type: t, Namespace: ns, Name: name}
+		p.Summary = fmt.Sprintf("Restart %s %s/%s", strings.TrimSuffix(t, "s"), ns, name)
+		p.Rationale = rationale
+		p.Risk = resolveRisk(stringArg(args, "risk"), "low")
+		p.Reversible = true
+		res.Content = jsonString(p)
+
+	case "propose_scale_workload":
+		t := stringArg(args, "type")
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		replicas := intArg(args, "replicas", -1)
+		if t == "" || ns == "" || name == "" {
+			res.Content = `{"error":"type, namespace, and name are required"}`
+			res.IsError = true
+			return res
+		}
+		if replicas < 0 {
+			res.Content = `{"error":"replicas must be >= 0"}`
+			res.IsError = true
+			return res
+		}
+		switch t {
+		case "deployments", "statefulsets":
+		default:
+			res.Content = fmt.Sprintf(`{"error":"cannot scale %s — only deployments and statefulsets"}`, t)
+			res.IsError = true
+			return res
+		}
+		if _, err := conn.GetResourceDetail(t, ns, name); err != nil {
+			res.Content = errJSON(fmt.Errorf("target %s/%s/%s not found: %w", t, ns, name, err))
+			res.IsError = true
+			return res
+		}
+		p := newProposal("scale_workload")
+		p.Target = ProposalTarget{Type: t, Namespace: ns, Name: name}
+		p.Params["replicas"] = replicas
+		p.Summary = fmt.Sprintf("Scale %s %s/%s to %d replica(s)", strings.TrimSuffix(t, "s"), ns, name, replicas)
+		p.Rationale = rationale
+		// Default: scale-to-zero is medium (pauses the workload); other
+		// scales are low. The LLM can override via the `risk` arg when
+		// situational context warrants a different level.
+		defaultRisk := "low"
+		if replicas == 0 {
+			defaultRisk = "medium"
+		}
+		p.Risk = resolveRisk(stringArg(args, "risk"), defaultRisk)
+		p.Reversible = true
+		res.Content = jsonString(p)
+
+	case "propose_rollback_deployment":
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		toRevision := intArg(args, "toRevision", 0)
+		if ns == "" || name == "" {
+			res.Content = `{"error":"namespace and name are required"}`
+			res.IsError = true
+			return res
+		}
+		// Verify the deployment exists.
+		dep, err := conn.GetResourceDetail("deployments", ns, name)
+		if err != nil {
+			res.Content = errJSON(fmt.Errorf("target deployments/%s/%s not found: %w", ns, name, err))
+			res.IsError = true
+			return res
+		}
+		// Verify there is rollback history (>= 2 revisions). Without this
+		// the action is impossible and the LLM should fall back to a
+		// different remediation.
+		history := conn.GetDeploymentHistory(ns, name)
+		if len(history) < 2 {
+			res.Content = jsonString(map[string]interface{}{
+				"error":           fmt.Sprintf("deployment %s/%s has no rollback history (need >= 2 revisions, found %d)", ns, name, len(history)),
+				"revisionsFound":  len(history),
+				"hint":            "the deployment was never updated after creation; suggest a different remediation (restart, edit yaml, etc.)",
+			})
+			res.IsError = true
+			return res
+		}
+		// Resolve current revision and the target.
+		fromRev := 0
+		if a, ok := dep["annotations"].(map[string]string); ok {
+			if v := a["deployment.kubernetes.io/revision"]; v != "" {
+				fromRev, _ = strconv.Atoi(v)
+			}
+		}
+		resolvedTo := toRevision
+		if resolvedTo == 0 {
+			// Default: most recent revision != current.
+			for _, h := range history {
+				rstr, _ := h["revision"].(string)
+				r, _ := strconv.Atoi(rstr)
+				if r != fromRev && r > 0 {
+					resolvedTo = r
+					break
+				}
+			}
+		} else {
+			// Confirm specified revision exists in history.
+			found := false
+			for _, h := range history {
+				rstr, _ := h["revision"].(string)
+				r, _ := strconv.Atoi(rstr)
+				if r == toRevision {
+					found = true
+					break
+				}
+			}
+			if !found {
+				res.Content = jsonString(map[string]interface{}{
+					"error": fmt.Sprintf("revision %d not found in history of deployments/%s/%s", toRevision, ns, name),
+				})
+				res.IsError = true
+				return res
+			}
+		}
+		if resolvedTo == 0 || resolvedTo == fromRev {
+			res.Content = jsonString(map[string]interface{}{
+				"error": fmt.Sprintf("could not resolve a target revision distinct from the current (%d)", fromRev),
+			})
+			res.IsError = true
+			return res
+		}
+		p := newProposal("rollback_deployment")
+		p.Target = ProposalTarget{Type: "deployments", Namespace: ns, Name: name}
+		p.Params["toRevision"] = resolvedTo
+		if fromRev > 0 {
+			p.Params["fromRevision"] = fromRev
+		}
+		if fromRev > 0 {
+			p.Summary = fmt.Sprintf("Roll back deployment %s/%s from revision %d to revision %d", ns, name, fromRev, resolvedTo)
+		} else {
+			p.Summary = fmt.Sprintf("Roll back deployment %s/%s to revision %d", ns, name, resolvedTo)
+		}
+		p.Rationale = rationale
+		// Default: medium (deployment-wide template change), but the LLM
+		// can downgrade to "low" when the target revision is well-tested
+		// and the change is small, or upgrade to "high" when rolling back
+		// across many revisions or affecting critical production paths.
+		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
+		p.Reversible = true
+		res.Content = jsonString(p)
+
+	case "propose_delete_resource":
+		t := stringArg(args, "type")
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		force := boolArg(args, "force")
+		orphan := boolArg(args, "orphan")
+		if t == "" || name == "" {
+			res.Content = `{"error":"type, namespace, and name are required"}`
+			res.IsError = true
+			return res
+		}
+		// Whitelist enforcement at the executor level. Even if the LLM
+		// somehow constructs a tool_call with a blocked type, we refuse
+		// to materialize the proposal. Prompt injection defense: no
+		// payload shape change can route around this switch.
+		switch t {
+		case "deployments", "statefulsets", "daemonsets",
+			"services", "configmaps", "secrets",
+			"jobs", "cronjobs", "pods", "ingresses":
+			// allowed
+		default:
+			res.Content = jsonString(map[string]interface{}{
+				"error": fmt.Sprintf("resource type %q cannot be deleted via Copilot proposal — recommend kubectl directly", t),
+				"hint":  "Allowed types: deployments, statefulsets, daemonsets, services, configmaps, secrets, jobs, cronjobs, pods, ingresses. Namespaces, nodes, PVs, PVCs, RBAC resources are blocked by design.",
+			})
+			res.IsError = true
+			return res
+		}
+		// Verify the target exists.
+		if _, err := conn.GetResourceDetail(t, ns, name); err != nil {
+			res.Content = errJSON(fmt.Errorf("target %s/%s/%s not found: %w", t, ns, name, err))
+			res.IsError = true
+			return res
+		}
+
+		// Compute blast radius from the informer cache. Read-only; safe
+		// to call from any tool. The LLM should read this and reflect
+		// the consequences in its text response.
+		blast := conn.ComputeDeleteBlastRadius(t, ns, name)
+
+		p := newProposal("delete_resource")
+		p.Target = ProposalTarget{Type: t, Namespace: ns, Name: name}
+		p.Params["force"] = force
+		p.Params["orphan"] = orphan
+		p.Params["blastRadius"] = blast
+		p.Summary = fmt.Sprintf("Delete %s %s/%s (irreversible)", strings.TrimSuffix(t, "s"), ns, name)
+		p.Rationale = rationale
+		// Default high — the LLM can technically downgrade per riskProp's
+		// guidance, but for delete the tool description tells it to keep
+		// high. Reversible is always false: deleting a resource is
+		// irreversible (only "recoverable" if the user has the YAML
+		// stored elsewhere, which we cannot verify).
+		p.Risk = resolveRisk(stringArg(args, "risk"), "high")
+		p.Reversible = false
+		res.Content = jsonString(p)
 
 	case "get_kubebolt_docs":
 		topic := stringArg(args, "topic")

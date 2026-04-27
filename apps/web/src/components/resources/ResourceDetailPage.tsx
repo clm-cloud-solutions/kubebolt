@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
@@ -2395,7 +2395,21 @@ function WorkloadHistoryTab({ type, namespace, name }: { type: string; namespace
 export function ResourceDetailPage() {
   const { type = '', namespace = '', name = '' } = useParams<{ type: string; namespace: string; name: string }>()
   const { data: item, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResourceDetail(type, namespace, name)
-  const [activeTab, setActiveTab] = useState('overview')
+  // Tab is URL-driven (?tab=pods etc.) so deep links from the Copilot's
+  // ActionProposalCard land directly on the right view. Default is "overview".
+  const [searchParams, setSearchParams] = useSearchParams()
+  const activeTab = searchParams.get('tab') ?? 'overview'
+  const setActiveTab = (tab: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (tab === 'overview') next.delete('tab')
+        else next.set('tab', tab)
+        return next
+      },
+      { replace: true },
+    )
+  }
   const [showDescribe, setShowDescribe] = useState(false)
   const [showRestart, setShowRestart] = useState(false)
   const [showScale, setShowScale] = useState(false)
@@ -2408,10 +2422,9 @@ export function ResourceDetailPage() {
   const canEdit = hasRole('editor')
   const canDelete = hasRole('admin')
 
-  // Reset to overview tab when navigating to a different resource
-  useEffect(() => {
-    setActiveTab('overview')
-  }, [type, namespace, name])
+  // Tab state lives in the URL so changing resource (different path) starts
+  // fresh without an explicit reset. If the previous URL had ?tab=, that's
+  // dropped naturally on navigation.
 
   if (isLoading) return <LoadingSpinner />
   if (error || !item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
@@ -2558,8 +2571,15 @@ export function ResourceDetailPage() {
                       setActionLoading('scale')
                       setShowScale(false)
                       try {
-                        await api.scaleResource(type, namespace, name, scaleValue)
-                        queryClient.invalidateQueries({ queryKey: ['resource-detail'] })
+                        const res = await api.scaleResource(type, namespace, name, scaleValue)
+                        // Seed the detail-page cache with the post-mutation
+                        // object so the UI reflects the new replicas count
+                        // immediately. WS events that follow keep status
+                        // (readyReplicas, etc.) in sync as the controller
+                        // reconciles.
+                        if (res.resource) {
+                          queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
+                        }
                         queryClient.invalidateQueries({ queryKey: ['resources'] })
                       } catch (err) {
                         alert(err instanceof Error ? err.message : 'Scale failed')
@@ -2610,8 +2630,10 @@ export function ResourceDetailPage() {
                         setActionLoading('restart')
                         setShowRestart(false)
                         try {
-                          await api.restartResource(type, namespace, name)
-                          queryClient.invalidateQueries({ queryKey: ['resource-detail'] })
+                          const res = await api.restartResource(type, namespace, name)
+                          if (res.resource) {
+                            queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
+                          }
                           queryClient.invalidateQueries({ queryKey: ['resources'] })
                         } catch (err) {
                           alert(err instanceof Error ? err.message : 'Restart failed')

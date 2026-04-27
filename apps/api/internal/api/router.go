@@ -172,6 +172,7 @@ func NewRouter(
 					r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
 					r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
+					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)
 					r.Post("/portforward", h.handleCreatePortForward)
 					r.Delete("/portforward/{id}", h.handleDeletePortForward)
 				})

@@ -20,7 +20,8 @@ import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
 import { MarkdownRenderer } from './MarkdownRenderer'
-import type { CopilotMessage, CopilotUsage } from '@/services/copilot/types'
+import { ActionProposalCard } from './ActionProposalCard'
+import { parseActionProposal, type CopilotMessage, type CopilotUsage } from '@/services/copilot/types'
 
 // Compact number formatter: 1234 → "1.2k", 15000000 → "15M"
 function formatTokens(n: number): string {
@@ -322,10 +323,13 @@ export function CopilotPanel() {
 
         {messages
           .filter((m) => {
-            // Skip tool-result-only user turns; they're internal to the
-            // tool loop and not meaningful to render as chat bubbles.
+            // Skip tool-result-only user turns UNLESS they carry an action
+            // proposal — those render as interactive ActionProposalCards.
             if (m.role === 'user' && !m.content && m.toolResults && m.toolResults.length > 0) {
-              return false
+              const hasProposal = m.toolResults.some(
+                (tr) => parseActionProposal(tr.content) !== null,
+              )
+              if (!hasProposal) return false
             }
             // Skip assistant turns with only tool_calls (no content); the
             // actual tool call indicator is rendered via pendingToolCalls.
@@ -334,13 +338,45 @@ export function CopilotPanel() {
             }
             return true
           })
-          .map((m) => <MessageBubble key={m.id} message={m} />)}
+          .map((m) => {
+            // User turns whose tool results include proposals render as
+            // interactive cards, not chat bubbles. The LLM never executes —
+            // the user clicks Execute on the card to trigger the mutation.
+            if (
+              m.role === 'user' &&
+              !m.content &&
+              m.toolResults &&
+              m.toolResults.some((tr) => parseActionProposal(tr.content) !== null)
+            ) {
+              return (
+                <div key={m.id} className="flex flex-col gap-1">
+                  {m.toolResults.map((tr) => {
+                    const proposal = parseActionProposal(tr.content)
+                    if (!proposal) return null
+                    return (
+                      <ActionProposalCard
+                        key={tr.toolCallId}
+                        proposal={proposal}
+                        toolCallId={tr.toolCallId}
+                      />
+                    )
+                  })}
+                </div>
+              )
+            }
+            return <MessageBubble key={m.id} message={m} />
+          })}
 
         {pendingToolCalls.length > 0 && (
           <div className="flex flex-col gap-1">
-            {pendingToolCalls.map((toolName, i) => (
-              <ToolCallIndicator key={i} toolName={toolName} />
-            ))}
+            {pendingToolCalls
+              // Proposal tools are no-ops on the backend (they just build a
+              // payload); showing a "loading propose_restart_workload" spinner
+              // is misleading and slow-feeling, so hide them from the indicator.
+              .filter((toolName) => !toolName.startsWith('propose_'))
+              .map((toolName, i) => (
+                <ToolCallIndicator key={i} toolName={toolName} />
+              ))}
           </div>
         )}
 

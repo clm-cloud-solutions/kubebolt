@@ -157,6 +157,104 @@ func ToolDefinitions() []ToolDefinition {
 			InputSchema: emptyObject(),
 		},
 		{
+			Name: "propose_restart_workload",
+			Description: "Propose a rollout restart for a Deployment, StatefulSet, or DaemonSet. " +
+				"This DOES NOT execute the restart — it returns a structured proposal that the UI " +
+				"renders as a confirmation card. The user must click an explicit button to actually " +
+				"trigger the restart, and execution runs under the user's RBAC role (not yours). " +
+				"Use this only when a restart is a sensible remediation (crash-loops, stale config, " +
+				"OOMKilled with transient cause). Always include a clear rationale.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type":      strPropEnum("Workload type", []string{"deployments", "statefulsets", "daemonsets"}),
+					"namespace": strProp("Workload namespace"),
+					"name":      strProp("Workload name"),
+					"rationale": strProp("Why a restart is the right action here. Shown to the user in the confirmation card."),
+					"risk":      riskProp(),
+				},
+				"required": []string{"type", "namespace", "name", "rationale"},
+			},
+		},
+		{
+			Name: "propose_scale_workload",
+			Description: "Propose scaling a Deployment or StatefulSet to a target replica count. " +
+				"This DOES NOT execute the scale — it returns a structured proposal that the UI " +
+				"renders as a confirmation card. The user must click an explicit button to actually " +
+				"trigger the scale, and execution runs under the user's RBAC role (not yours). " +
+				"Use this when the user asks to scale, when a workload is clearly under/over-provisioned, " +
+				"or when scaling to 0 is the right pause action. Always include a rationale.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type":      strPropEnum("Workload type", []string{"deployments", "statefulsets"}),
+					"namespace": strProp("Workload namespace"),
+					"name":      strProp("Workload name"),
+					"replicas":  numProp("Target replica count (>= 0). Use 0 to pause the workload."),
+					"rationale": strProp("Why this is the right replica count. Shown to the user in the confirmation card."),
+					"risk":      riskProp(),
+				},
+				"required": []string{"type", "namespace", "name", "replicas", "rationale"},
+			},
+		},
+		{
+			Name: "propose_rollback_deployment",
+			Description: "Propose rolling back a Deployment to a previous revision (equivalent to " +
+				"`kubectl rollout undo`). DOES NOT execute — returns a structured proposal that the UI " +
+				"renders as a confirmation card; the user must click Execute to actually trigger the " +
+				"rollback, and execution runs under the user's RBAC role (not yours). " +
+				"Use this when a recent deploy caused issues (crash-loops, errors after rollout, bad " +
+				"image tag) and reverting is the fastest remediation. Always call get_workload_history " +
+				"first to confirm the deployment has at least 2 revisions and to identify the right " +
+				"target. Pass toRevision when you know the specific target; omit (or pass 0) to roll " +
+				"back to the immediately previous revision (the default).",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"namespace":  strProp("Deployment namespace"),
+					"name":       strProp("Deployment name"),
+					"toRevision": numProp("Target revision number; omit or 0 to roll back to the previous revision"),
+					"rationale":  strProp("Why a rollback is the right action here. Shown to the user in the confirmation card."),
+					"risk":       riskProp(),
+				},
+				"required": []string{"namespace", "name", "rationale"},
+			},
+		},
+		{
+			Name: "propose_delete_resource",
+			Description: "Propose deleting a Kubernetes resource (irreversible — there is no rollback). " +
+				"DOES NOT execute — returns a structured proposal that the UI renders as a HIGH-RISK " +
+				"confirmation card requiring the user to type the resource's namespace/name to confirm. " +
+				"Execution runs under the user's Admin role (not yours). " +
+				"WHEN to use: ONLY when the user explicitly asks to delete something, OR when a resource " +
+				"is clearly orphaned/zombie (e.g. a Deployment whose ReplicaSets are all empty and the " +
+				"user has confirmed it's no longer needed). NEVER propose delete as a default remediation " +
+				"for crash-loops or errors — restart, scale, or rollback are almost always better. " +
+				"WHITELIST: only deployments, statefulsets, daemonsets, services, configmaps, secrets, " +
+				"jobs, cronjobs, pods, ingresses can be deleted via this tool. Namespaces, nodes, PVs, " +
+				"PVCs, and RBAC resources are explicitly blocked — recommend kubectl for those. " +
+				"The proposal payload includes a computed blast radius (owned pods, affected services, " +
+				"orphaned HPAs, etc.) — read it and summarize the consequences in your text response so " +
+				"the user understands what they are confirming.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type": strPropEnum("Resource type — restricted whitelist", []string{
+						"deployments", "statefulsets", "daemonsets",
+						"services", "configmaps", "secrets",
+						"jobs", "cronjobs", "pods", "ingresses",
+					}),
+					"namespace": strProp("Resource namespace"),
+					"name":      strProp("Resource name"),
+					"force":     map[string]interface{}{"type": "boolean", "description": "Skip grace period (force=true). Use sparingly — sets gracePeriodSeconds=0."},
+					"orphan":    map[string]interface{}{"type": "boolean", "description": "Don't cascade-delete dependents (orphan=true)."},
+					"rationale": strProp("Why deletion is the right action AND what consequences the user is accepting. Shown to the user in the confirmation card."),
+					"risk":      riskProp(),
+				},
+				"required": []string{"type", "namespace", "name", "rationale"},
+			},
+		},
+		{
 			Name: "get_kubebolt_docs",
 			Description: "Return product documentation about KubeBolt itself (features, navigation, admin " +
 				"pages, configuration). Use this ONLY when the user asks how to do something in the KubeBolt " +
@@ -197,6 +295,24 @@ func strPropEnum(desc string, values []string) map[string]interface{} {
 
 func numProp(desc string) map[string]interface{} {
 	return map[string]interface{}{"type": "number", "description": desc}
+}
+
+// riskProp is the shared schema for the risk argument across all proposal
+// tools. The LLM picks the risk based on situational context (a rollback to
+// a long-tested revision can be "low"; a delete-with-force is "high"); the
+// executor falls back to a sensible default per action type when omitted.
+// This keeps the card's risk badge consistent with the way the LLM
+// describes the action in its accompanying text response.
+func riskProp() map[string]interface{} {
+	return map[string]interface{}{
+		"type": "string",
+		"enum": []string{"low", "medium", "high"},
+		"description": "Risk level shown as a badge on the confirmation card. " +
+			"low = routine, fully reversible, narrow blast radius (e.g. restart of a single workload). " +
+			"medium = affects multiple pods or pauses traffic, brief impact window, judgment call. " +
+			"high = irreversible or affects critical production paths (e.g. delete, drain). " +
+			"Match this with how you describe the action in your text response — don't say 'low risk' in text and pass 'medium' here.",
+	}
 }
 
 func nsResourceSchema() map[string]interface{} {

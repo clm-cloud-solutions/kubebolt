@@ -97,6 +97,70 @@ export interface CompactResponse {
   model: string
 }
 
+// ─── Action Proposals (Copilot execution capacity) ─────────────────
+//
+// `propose_*` tools on the backend return an ActionProposal payload as the
+// tool result content. The Copilot panel detects these by parsing
+// CopilotToolResult.content and looking for `kind === "action_proposal"`,
+// then renders an interactive card. The LLM never executes mutations —
+// the user clicks Execute, and the existing mutation endpoints run under
+// the user's RBAC role.
+//
+// Mirrors the Go `ActionProposal` struct in apps/api/internal/copilot/proposals.go.
+
+export type ActionProposalRisk = 'low' | 'medium' | 'high'
+
+export interface ActionProposalTarget {
+  type: string
+  namespace: string
+  name: string
+}
+
+export interface ActionProposal {
+  kind: 'action_proposal'
+  version: number
+  action: string // e.g. "restart_workload", "scale_workload"
+  target: ActionProposalTarget
+  params: Record<string, unknown>
+  summary: string
+  rationale: string
+  risk: ActionProposalRisk
+  reversible: boolean
+  // Execution metadata — written by the frontend AFTER the user acts on the
+  // card (Execute or Dismiss) so the LLM sees the outcome on the next turn
+  // and doesn't re-propose the same action. Absent on freshly-emitted
+  // proposals.
+  executionStatus?: 'executed' | 'failed' | 'dismissed'
+  executionResult?: string | null
+  executedAt?: string // ISO timestamp
+  // True once the post-Execute progress poller has reached its terminal
+  // state (rollout converged / pods drained / etc). When the chat panel
+  // re-renders for any reason — typically a follow-up message rebuilding
+  // messages[] — we honor this and skip re-polling. Without it, an old
+  // card's poller would resume against a now-stale target (e.g. another
+  // scale was issued in the meantime) and report a confusing "still in
+  // progress" line for an action that already finished cleanly.
+  progressSettled?: boolean
+}
+
+/**
+ * parseActionProposal returns the parsed proposal if `content` is a JSON
+ * payload with `kind === "action_proposal"`, otherwise null. Tool results
+ * are JSON strings; non-proposal tools return data that just won't match.
+ */
+export function parseActionProposal(content: string): ActionProposal | null {
+  if (!content) return null
+  try {
+    const parsed = JSON.parse(content)
+    if (parsed && typeof parsed === 'object' && parsed.kind === 'action_proposal') {
+      return parsed as ActionProposal
+    }
+  } catch {
+    // Not JSON — definitely not a proposal.
+  }
+  return null
+}
+
 export interface CopilotConfig {
   enabled: boolean
   provider: string

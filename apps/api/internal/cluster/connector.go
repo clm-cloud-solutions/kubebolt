@@ -1600,7 +1600,16 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return deploymentToMap(d), nil
+		m := deploymentToMap(d)
+		// livePodCount = actual pods owned by this workload that still
+		// exist in the API (any phase, including Terminating). Differs
+		// from status.replicas — which the K8s controller computes
+		// excluding pods with DeletionTimestamp, so it drops to 0 the
+		// instant a delete is issued, NOT when pods are actually gone.
+		// Clients that need a true "all pods gone" signal (e.g. the
+		// Copilot's scale-to-0 progress polling) should use this field.
+		m["livePodCount"] = len(c.GetDeploymentPods(namespace, name))
+		return m, nil
 	case "services":
 		svc, err := c.serviceLister.Services(namespace).Get(name)
 		if err != nil {
@@ -1632,13 +1641,17 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return statefulSetToMap(ss), nil
+		m := statefulSetToMap(ss)
+		m["livePodCount"] = len(c.GetStatefulSetPods(namespace, name))
+		return m, nil
 	case "daemonsets":
 		ds, err := c.daemonSetLister.DaemonSets(namespace).Get(name)
 		if err != nil {
 			return nil, err
 		}
-		return daemonSetToMap(ds), nil
+		m := daemonSetToMap(ds)
+		m["livePodCount"] = len(c.GetDaemonSetPods(namespace, name))
+		return m, nil
 	case "jobs":
 		job, err := c.jobLister.Jobs(namespace).Get(name)
 		if err != nil {
@@ -1977,6 +1990,11 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"readyReplicas":     d.Status.ReadyReplicas,
 		"availableReplicas": d.Status.AvailableReplicas,
 		"updatedReplicas":   d.Status.UpdatedReplicas,
+		// generation / observedGeneration let clients implement the same
+		// rollout-converged check as `kubectl rollout status`: the controller
+		// has caught up to the latest spec when observedGeneration >= generation.
+		"generation":         d.Generation,
+		"observedGeneration": d.Status.ObservedGeneration,
 		"labels":            safeLabels(d.Labels),
 		"annotations":       safeAnnotations(d.Annotations),
 		"selector":          d.Spec.Selector,
@@ -2044,12 +2062,16 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 
 func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
 	return map[string]interface{}{
-		"name":            ss.Name,
-		"namespace":       ss.Namespace,
-		"status":          fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
-		"replicas":        ss.Status.Replicas,
-		"specReplicas":    int32PtrOrZero(ss.Spec.Replicas),
-		"readyReplicas":   ss.Status.ReadyReplicas,
+		"name":               ss.Name,
+		"namespace":          ss.Namespace,
+		"status":             fmt.Sprintf("%d/%d", ss.Status.ReadyReplicas, ss.Status.Replicas),
+		"replicas":           ss.Status.Replicas,
+		"specReplicas":       int32PtrOrZero(ss.Spec.Replicas),
+		"readyReplicas":      ss.Status.ReadyReplicas,
+		"currentReplicas":    ss.Status.CurrentReplicas,
+		"updatedReplicas":    ss.Status.UpdatedReplicas,
+		"generation":         ss.Generation,
+		"observedGeneration": ss.Status.ObservedGeneration,
 		"labels":          safeLabels(ss.Labels),
 		"annotations":     safeAnnotations(ss.Annotations),
 		"createdAt":       ss.CreationTimestamp.Time.Format(time.RFC3339),
@@ -2061,13 +2083,16 @@ func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
 
 func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 	return map[string]interface{}{
-		"name":            ds.Name,
-		"namespace":       ds.Namespace,
-		"status":          fmt.Sprintf("%d/%d", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled),
-		"desired":         ds.Status.DesiredNumberScheduled,
-		"specReplicas":    ds.Status.DesiredNumberScheduled,
-		"ready":           ds.Status.NumberReady,
-		"numberAvailable": ds.Status.NumberAvailable,
+		"name":               ds.Name,
+		"namespace":          ds.Namespace,
+		"status":             fmt.Sprintf("%d/%d", ds.Status.NumberReady, ds.Status.DesiredNumberScheduled),
+		"desired":            ds.Status.DesiredNumberScheduled,
+		"specReplicas":       ds.Status.DesiredNumberScheduled,
+		"ready":              ds.Status.NumberReady,
+		"numberAvailable":    ds.Status.NumberAvailable,
+		"updatedNumber":      ds.Status.UpdatedNumberScheduled,
+		"generation":         ds.Generation,
+		"observedGeneration": ds.Status.ObservedGeneration,
 		"labels":          safeLabels(ds.Labels),
 		"annotations":     safeAnnotations(ds.Annotations),
 		"createdAt":       ds.CreationTimestamp.Time.Format(time.RFC3339),
@@ -3652,6 +3677,107 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 	})
 
 	return items
+}
+
+// RollbackDeployment reverts a Deployment's pod template to a previous
+// ReplicaSet's template. If toRevision == 0, the immediately previous
+// revision is used (matching `kubectl rollout undo`'s default). Otherwise
+// the specified revision is the target.
+//
+// Mechanics: locate the target ReplicaSet (owned by the deployment, with
+// matching revision annotation), copy its pod template spec into the
+// deployment, strip the auto-managed `pod-template-hash` label so the
+// controller recomputes it cleanly, and Update the deployment. The
+// deployment controller observes the (= old) template, matches it
+// against the existing RS for that revision, and scales that RS up while
+// scaling the current one down — same end-state as `kubectl rollout undo`.
+//
+// Returns (fromRevision, toRevision) as recorded by the deployment
+// annotations at the time of the call. Errors if the deployment has fewer
+// than 2 revisions, if the target revision can't be found, or if the
+// target equals the current (no-op).
+func (c *Connector) RollbackDeployment(namespace, name string, toRevision int) (int, int, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	// Fetch live (not informer-cached) so the Update call has the latest
+	// resourceVersion and we don't write stale data.
+	dep, err := c.clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return 0, 0, err
+	}
+
+	fromRev := 0
+	if dep.Annotations != nil {
+		fromRev, _ = strconv.Atoi(dep.Annotations["deployment.kubernetes.io/revision"])
+	}
+
+	rsList, err := c.clientset.AppsV1().ReplicaSets(namespace).List(ctx, metav1.ListOptions{})
+	if err != nil {
+		return fromRev, 0, err
+	}
+
+	var owned []appsv1.ReplicaSet
+	for _, rs := range rsList.Items {
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Deployment" && ref.Name == name && ref.UID == dep.UID {
+				owned = append(owned, rs)
+				break
+			}
+		}
+	}
+
+	sort.Slice(owned, func(i, j int) bool {
+		ri, _ := strconv.Atoi(owned[i].Annotations["deployment.kubernetes.io/revision"])
+		rj, _ := strconv.Atoi(owned[j].Annotations["deployment.kubernetes.io/revision"])
+		return ri > rj
+	})
+
+	if len(owned) < 2 {
+		return fromRev, 0, fmt.Errorf("deployment has no rollback history (need at least 2 revisions, found %d)", len(owned))
+	}
+
+	var target *appsv1.ReplicaSet
+	if toRevision == 0 {
+		// Default: the most recent revision that isn't the current one.
+		for i := range owned {
+			r, _ := strconv.Atoi(owned[i].Annotations["deployment.kubernetes.io/revision"])
+			if r != fromRev {
+				target = &owned[i]
+				break
+			}
+		}
+	} else {
+		for i := range owned {
+			r, _ := strconv.Atoi(owned[i].Annotations["deployment.kubernetes.io/revision"])
+			if r == toRevision {
+				target = &owned[i]
+				break
+			}
+		}
+	}
+	if target == nil {
+		return fromRev, 0, fmt.Errorf("target revision %d not found", toRevision)
+	}
+
+	toRev, _ := strconv.Atoi(target.Annotations["deployment.kubernetes.io/revision"])
+	if toRev == fromRev {
+		return fromRev, toRev, fmt.Errorf("target revision %d is the current one (no-op)", toRev)
+	}
+	if len(target.Spec.Template.Spec.Containers) == 0 {
+		return fromRev, toRev, fmt.Errorf("target revision %d has empty pod template", toRev)
+	}
+
+	newTemplate := target.Spec.Template.DeepCopy()
+	if newTemplate.Labels != nil {
+		delete(newTemplate.Labels, "pod-template-hash")
+	}
+	dep.Spec.Template = *newTemplate
+
+	if _, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
+		return fromRev, toRev, err
+	}
+	return fromRev, toRev, nil
 }
 
 // GetStatefulSetPods returns all pods owned by a statefulset (direct ownership).

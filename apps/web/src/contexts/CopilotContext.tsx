@@ -44,6 +44,20 @@ interface CopilotContextValue {
   clearHistory: () => void
   /** Trigger manual compaction. resetAll=true starts a fresh session keeping only a summary. */
   compactSession: (resetAll?: boolean) => Promise<void>
+  /** Record that the user acted on an action proposal card. Mutates the
+   * tool result's content to include executionStatus/executionResult so
+   * the LLM, on the next turn, sees the outcome and won't re-propose the
+   * same action. Called from ActionProposalCard on success/error/dismissed. */
+  recordProposalOutcome: (
+    toolCallId: string,
+    outcome: 'executed' | 'failed' | 'dismissed',
+    resultSummary?: string,
+  ) => void
+  /** Record that the post-Execute progress poller has reached terminal
+   * state. Persisted into the proposal so a re-mount (caused by a
+   * follow-up message rebuilding messages[]) doesn't restart polling
+   * against the cluster — the action already landed; the poller was UX. */
+  recordProposalProgressSettled: (toolCallId: string) => void
 }
 
 export interface SendMessageOptions {
@@ -269,6 +283,80 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     [messages, isCompacting, isLoading],
   )
 
+  // Patch the tool result that emitted an action proposal with execution
+  // metadata, so the LLM on the next turn sees the outcome (executed /
+  // failed / dismissed) and won't propose the same action again. Without
+  // this signal, the LLM has no way to know the user already acted on the
+  // card — the proposal sits forever as "pending" in its mental model.
+  const recordProposalOutcome = useCallback(
+    (
+      toolCallId: string,
+      outcome: 'executed' | 'failed' | 'dismissed',
+      resultSummary?: string,
+    ) => {
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (!m.toolResults || m.toolResults.length === 0) return m
+          let mutated = false
+          const updatedResults = m.toolResults.map((tr) => {
+            if (tr.toolCallId !== toolCallId) return tr
+            try {
+              const parsed = JSON.parse(tr.content)
+              if (parsed && typeof parsed === 'object' && parsed.kind === 'action_proposal') {
+                const augmented = {
+                  ...parsed,
+                  executionStatus: outcome,
+                  executionResult: resultSummary ?? null,
+                  executedAt: new Date().toISOString(),
+                }
+                mutated = true
+                return { ...tr, content: JSON.stringify(augmented) }
+              }
+            } catch {
+              // Not parseable JSON; leave as-is.
+            }
+            return tr
+          })
+          return mutated ? { ...m, toolResults: updatedResults } : m
+        }),
+      )
+    },
+    [],
+  )
+
+  // Counterpart of recordProposalOutcome for the polling lifecycle. The
+  // outcome ("executed") happens on Execute click; "settled" happens later
+  // when the cluster actually reached the target state. We persist both
+  // because they answer different questions on a re-mount: outcome tells
+  // the LLM "the user decided"; settled tells the card "don't re-poll".
+  const recordProposalProgressSettled = useCallback((toolCallId: string) => {
+    setMessages((prev) =>
+      prev.map((m) => {
+        if (!m.toolResults || m.toolResults.length === 0) return m
+        let mutated = false
+        const updatedResults = m.toolResults.map((tr) => {
+          if (tr.toolCallId !== toolCallId) return tr
+          try {
+            const parsed = JSON.parse(tr.content)
+            if (
+              parsed &&
+              typeof parsed === 'object' &&
+              parsed.kind === 'action_proposal' &&
+              !parsed.progressSettled
+            ) {
+              mutated = true
+              return { ...tr, content: JSON.stringify({ ...parsed, progressSettled: true }) }
+            }
+          } catch {
+            // not JSON — leave as-is
+          }
+          return tr
+        })
+        return mutated ? { ...m, toolResults: updatedResults } : m
+      }),
+    )
+  }, [])
+
   // Cmd+J / Ctrl+J shortcut to toggle the panel (if enabled)
   useEffect(() => {
     if (!config?.enabled) return
@@ -304,6 +392,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         sendMessage,
         clearHistory,
         compactSession,
+        recordProposalOutcome,
+        recordProposalProgressSettled,
       }}
     >
       {children}
