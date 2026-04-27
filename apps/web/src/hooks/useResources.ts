@@ -40,11 +40,18 @@ export function useResourceDescribe(type: string, namespace: string, name: strin
   })
 }
 
+// Topology drives both the Cluster Map and the "Related" tab on detail
+// pages. Real-time freshness comes from the WS handler in useWebSocket
+// (debounced 2s, matching the backend's scheduleTopologyRebuild). The
+// 60s refetchInterval is a fallback for when the WS connection is down
+// or stale; staleTime keeps remounts from re-fetching unnecessarily.
 export function useTopology() {
   return useQuery({
     queryKey: ['topology'],
     queryFn: () => api.getTopology(),
+    refetchInterval: 60_000,
     staleTime: 30_000,
+    retry: 2,
   })
 }
 

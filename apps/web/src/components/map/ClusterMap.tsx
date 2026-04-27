@@ -15,7 +15,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
 import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight } from 'lucide-react'
-import { useTopology } from '@/hooks/useTopology'
+import { useTopology } from '@/hooks/useResources'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
