@@ -214,6 +214,22 @@ func (c *Connector) MetricsClient() metricsv.Interface {
 	return c.metricsClient
 }
 
+// PodLister exposes the shared informer's pod lister for read-only callers
+// that need to resolve pods by IP, label, etc. without re-querying the
+// API server. Returns nil if the pod informer hasn't started (e.g. when
+// the connected ServiceAccount lacks list permission on pods).
+func (c *Connector) PodLister() corelisters.PodLister {
+	return c.podLister
+}
+
+// NodeLister exposes the shared informer's node lister for read-only
+// callers that need cluster-wide node metadata (e.g. PodCIDR ranges to
+// classify IPs as cluster-internal vs external). Returns nil when the
+// node informer hasn't started.
+func (c *Connector) NodeLister() corelisters.NodeLister {
+	return c.nodeLister
+}
+
 func (c *Connector) setupInformers() {
 	can := c.permissions.CanListWatch
 	isNS := func(key string) bool {

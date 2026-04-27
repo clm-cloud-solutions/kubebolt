@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
+
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 // FlowEdge is the rendered-friendly shape of a single flow, for both
@@ -244,10 +247,67 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		edges = append(edges, edge)
 	}
 
+	// Build a pod-IP → (namespace, name) index from the informer cache so
+	// "external" rows whose dst_ip is actually a pod IP get reclassified
+	// as pod-to-pod edges. Hubble drops the destination identity when its
+	// resolver loses the race against pod restarts, identity propagation,
+	// or hostNetwork hops; the cluster state we already hold lets us
+	// recover the mapping without an extra round trip. Built once per
+	// request — the lister is in-memory and the index is GC'd after.
+	type podRef struct{ namespace, name string }
+	podByIP := map[string]podRef{}
+	// Pod CIDR ranges (one per node) let us distinguish a stale internal
+	// IP — pod that died inside the metric rate window so the lister no
+	// longer has it — from a genuinely external destination. Stale
+	// internal IPs would otherwise pile up in the synthetic (external)
+	// region after every pod restart.
+	var podCIDRs []*net.IPNet
+	if conn := h.manager.Connector(); conn != nil {
+		if pl := conn.PodLister(); pl != nil {
+			if pods, err := pl.List(labels.Everything()); err == nil {
+				for _, p := range pods {
+					if ip := p.Status.PodIP; ip != "" {
+						podByIP[ip] = podRef{namespace: p.Namespace, name: p.Name}
+					}
+				}
+			}
+		}
+		if nl := conn.NodeLister(); nl != nil {
+			if nodes, err := nl.List(labels.Everything()); err == nil {
+				for _, n := range nodes {
+					cidrs := n.Spec.PodCIDRs
+					if len(cidrs) == 0 && n.Spec.PodCIDR != "" {
+						cidrs = []string{n.Spec.PodCIDR}
+					}
+					for _, c := range cidrs {
+						if _, ipnet, err := net.ParseCIDR(c); err == nil {
+							podCIDRs = append(podCIDRs, ipnet)
+						}
+					}
+				}
+			}
+		}
+	}
+	isClusterInternalIP := func(s string) bool {
+		ip := net.ParseIP(s)
+		if ip == nil {
+			return false
+		}
+		for _, cidr := range podCIDRs {
+			if cidr.Contains(ip) {
+				return true
+			}
+		}
+		return false
+	}
+
 	// External edges come with an IP instead of a (namespace, pod)
-	// destination. Look up the IP in the DNS map to attach a hostname
-	// if one was observed from the same source pod; otherwise the UI
-	// shows the IP directly.
+	// destination. Three cases:
+	//   1. IP matches a current pod        → rewrite as pod-to-pod edge
+	//   2. IP is in a pod CIDR but no match → drop (orphan from rate
+	//      window — pod died, IP not yet recycled in metrics)
+	//   3. IP is outside all pod CIDRs     → keep as external; attach
+	//      hostname from this pod's recent DNS if available
 	for _, row := range externalRows {
 		srcNs := row.Labels["src_namespace"]
 		srcPod := row.Labels["src_pod"]
@@ -258,12 +318,22 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		edge := FlowEdge{
 			SrcNamespace: srcNs,
 			SrcPod:       srcPod,
-			DstIP:        ip,
 			Verdict:      row.Labels["verdict"],
 			RatePerSec:   row.Value,
 		}
-		if v, ok := dnsByPodIP[dnsKey{srcNs: srcNs, srcPod: srcPod, ip: ip}]; ok {
-			edge.DstFqdn = v.fqdn
+		if ref, ok := podByIP[ip]; ok {
+			edge.DstNamespace = ref.namespace
+			edge.DstPod = ref.name
+		} else if isClusterInternalIP(ip) {
+			// Stale pod IP — drop so it doesn't clutter the (external)
+			// region. The matching live pod, if any, is already
+			// represented by its current edge.
+			continue
+		} else {
+			edge.DstIP = ip
+			if v, ok := dnsByPodIP[dnsKey{srcNs: srcNs, srcPod: srcPod, ip: ip}]; ok {
+				edge.DstFqdn = v.fqdn
+			}
 		}
 		edges = append(edges, edge)
 	}
