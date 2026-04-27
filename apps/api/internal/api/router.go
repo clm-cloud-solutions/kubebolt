@@ -16,6 +16,11 @@ import (
 )
 
 // NewRouter creates the chi router with all API routes.
+//
+// tenantHandlers is optional — pass nil to skip the /admin/tenants
+// surface. Self-hosted single-cluster builds without auth wired can
+// keep skipping it; the agent gRPC channel still works in disabled
+// enforcement mode.
 func NewRouter(
 	manager *cluster.Manager,
 	wsHub *websocket.Hub,
@@ -23,6 +28,7 @@ func NewRouter(
 	copilotCfg config.CopilotConfig,
 	copilotUsage *copilot.UsageStore,
 	authHandlers *auth.Handlers,
+	tenantHandlers *auth.TenantHandlers,
 	notifManager *notifications.Manager,
 	integrationRegistry *integrations.Registry,
 ) *chi.Mux {
@@ -117,6 +123,17 @@ func NewRouter(
 				r.Get("/admin/copilot/usage/timeseries", h.handleCopilotUsageTimeseries)
 				r.Get("/admin/copilot/usage/sessions", h.handleCopilotUsageSessions)
 			})
+
+			// Tenant + ingest token administration — global admin only.
+			// Sprint A model: one global admin manages every tenant's
+			// tokens. Per-tenant self-service requires User.TenantID
+			// (Sprint B+). See auth/tenant_handlers.go for context.
+			if tenantHandlers != nil {
+				r.Route("/admin/tenants", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					tenantHandlers.RegisterRoutes(r)
+				})
+			}
 
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {

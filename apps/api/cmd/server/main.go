@@ -203,6 +203,8 @@ func main() {
 	authCfg := config.LoadAuthConfig()
 
 	var authHandlers *auth.Handlers
+	var tenantHandlers *auth.TenantHandlers
+	var bearerIngestAuth *auth.BearerIngestAuth
 	var copilotUsage *copilot.UsageStore
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
@@ -254,6 +256,21 @@ func main() {
 		// Attach the copilot usage store so admin analytics survive restarts.
 		// Shares the same BoltDB file; bucket created by auth.NewStore.
 		copilotUsage = copilot.NewUsageStore(store.DB(), auth.CopilotSessionsBucket())
+
+		// Tenants + ingest tokens (Sprint A). Auto-seeds the "default"
+		// tenant on first boot; the admin REST surface lets operators
+		// create more, issue tokens, and rotate / revoke them.
+		tenantsStore, err := auth.NewTenantsStore(store.DB())
+		if err != nil {
+			fatal("failed to open tenants store", slog.String("error", err.Error()))
+		}
+		// Sprint A wires only BearerIngestAuth as a cache invalidator.
+		// TokenReviewAuth (commit 3) lands here once we resolve the
+		// in-cluster client at startup; for now BearerIngestAuth is the
+		// only cache that needs eviction on revoke / rotate / disable.
+		bearerIngestAuth = auth.NewBearerIngestAuth(tenantsStore, 5*time.Minute)
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, bearerIngestAuth)
+		_ = bearerIngestAuth // wired into the agent interceptor in commit 7+
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
@@ -325,7 +342,7 @@ func main() {
 	integrationRegistry.Register(integrations.NewAgent())
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, notifManager, integrationRegistry)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
