@@ -25,13 +25,22 @@ var ErrAgentNotConnected = errors.New("channel: no agent connected for cluster")
 // REST helpers) treats this as a normal Transport — the request goes
 // in as *http.Request, the response comes out as *http.Response, and
 // the on-the-wire bytes are framed inside KubeProxyRequest /
-// KubeProxyResponse / KubeProxyWatchEvent messages.
+// KubeProxyResponse / KubeProxyWatchEvent / KubeStreamData messages.
 //
 // Lookup is dynamic: every RoundTrip resolves the current Agent for
 // ClusterID via the registry. That way a reconnect mid-RoundTrip just
 // means the next call hits the fresh agent, with no transport-level
 // reconfiguration. In-flight calls fail with ErrAgentClosed when the
 // owning agent disconnects (Agent.Close cancels the Multiplexor slot).
+//
+// Three flow modes (Sprint A.5):
+//
+//   - Unary (REST): block on a single KubeProxyResponse.
+//   - Watch (?watch=true): server-driven NDJSON pipe over
+//     KubeProxyWatchEvent messages.
+//   - Tunnel (Connection: Upgrade header): SPDY/WebSocket bytes
+//     tunneled via KubeStreamData with credit-based flow control on
+//     KubeStreamAck (commit 8d, §0.7-§0.9).
 type AgentProxyTransport struct {
 	ClusterID string
 	Registry  *AgentRegistry
@@ -41,6 +50,13 @@ type AgentProxyTransport struct {
 	// outside tests because a hung agent would leak request_ids
 	// forever. NewAgentProxyTransport sets a sensible default.
 	DefaultTimeout time.Duration
+
+	// TunnelWindowBytes overrides DefaultTunnelWindowBytes for credit
+	// flow control on tunnel sessions opened via this transport. 0
+	// means use the default (256 KiB). Set per-transport so different
+	// clusters can run different windows when one of them is on a
+	// fat pipe and another on a constrained one.
+	TunnelWindowBytes uint64
 }
 
 // DefaultProxyTimeout is the unary fall-back used when neither the
@@ -68,6 +84,11 @@ func NewAgentProxyTransport(clusterID string, registry *AgentRegistry) *AgentPro
 // muddies the apiserver's audit log. Hop-by-hop headers per RFC 7230
 // §6.1 are stripped for the same reason a normal reverse proxy
 // strips them.
+//
+// EXCEPTION: for upgrade requests (Connection: Upgrade + Upgrade:
+// SPDY/3.1|websocket), Connection AND Upgrade MUST be forwarded —
+// they carry the protocol the agent will negotiate against its own
+// apiserver. Caller decides via the isUpgrade param to flattenRequestHeaders.
 var stripRequestHeaders = []string{
 	"Authorization",
 	"Connection",
@@ -78,6 +99,13 @@ var stripRequestHeaders = []string{
 	"Trailer",
 	"Transfer-Encoding",
 	"Upgrade",
+}
+
+// upgradeAllowedHeaders are the strip-list members that we forward
+// anyway when the request is itself an upgrade attempt.
+var upgradeAllowedHeaders = map[string]bool{
+	"Connection": true,
+	"Upgrade":    true,
 }
 
 // RoundTrip executes one HTTP request through the agent. Watch URLs
@@ -96,6 +124,7 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 
 	isWatch := strings.EqualFold(req.URL.Query().Get("watch"), "true")
+	isUpgrade := isUpgradeRequest(req)
 
 	body, err := drainBody(req)
 	if err != nil {
@@ -104,7 +133,10 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 	requestID := uuid.NewString()
 	mode := SlotUnary
-	if isWatch {
+	switch {
+	case isUpgrade:
+		mode = SlotTunnel
+	case isWatch:
 		mode = SlotWatch
 	}
 	replies, cancel, err := agent.Pending.Register(requestID, mode)
@@ -115,10 +147,10 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	kubeReq := &agentv2.KubeProxyRequest{
 		Method:         req.Method,
 		Path:           req.URL.RequestURI(),
-		Headers:        flattenRequestHeaders(req.Header),
+		Headers:        flattenRequestHeaders(req.Header, isUpgrade),
 		Body:           body,
 		Watch:          isWatch,
-		TimeoutSeconds: timeoutSecondsFor(req, t.DefaultTimeout, isWatch),
+		TimeoutSeconds: timeoutSecondsFor(req, t.DefaultTimeout, isWatch || isUpgrade),
 	}
 	backendMsg := &agentv2.BackendMessage{
 		RequestId: requestID,
@@ -128,6 +160,14 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if err := agent.Send(backendMsg); err != nil {
 		cancel()
 		return nil, err
+	}
+
+	if isUpgrade {
+		// Block on the first reply: must be the 101 Switching Protocols
+		// handshake from the agent. Anything else is a protocol error
+		// (e.g. apiserver returned 403 during upgrade) and surfaces
+		// as a regular non-101 *http.Response.
+		return t.awaitTunnelHandshake(req, requestID, replies, cancel, agent)
 	}
 
 	if isWatch {
@@ -174,13 +214,13 @@ func drainBody(req *http.Request) ([]byte, error) {
 	return io.ReadAll(req.Body)
 }
 
-func flattenRequestHeaders(h http.Header) map[string]string {
+func flattenRequestHeaders(h http.Header, isUpgrade bool) map[string]string {
 	if len(h) == 0 {
 		return nil
 	}
 	out := make(map[string]string, len(h))
 	for k, v := range h {
-		if shouldStripHeader(k) || len(v) == 0 {
+		if shouldStripHeader(k, isUpgrade) || len(v) == 0 {
 			continue
 		}
 		out[k] = strings.Join(v, ", ")
@@ -191,9 +231,12 @@ func flattenRequestHeaders(h http.Header) map[string]string {
 	return out
 }
 
-func shouldStripHeader(key string) bool {
+func shouldStripHeader(key string, isUpgrade bool) bool {
 	for _, k := range stripRequestHeaders {
 		if strings.EqualFold(key, k) {
+			if isUpgrade && upgradeAllowedHeaders[http.CanonicalHeaderKey(key)] {
+				return false
+			}
 			return true
 		}
 	}
@@ -304,6 +347,91 @@ func buildWatchResponse(req *http.Request, replies <-chan *agentv2.AgentMessage,
 		Header:     http.Header{"Content-Type": []string{"application/json"}},
 		Body:       pr,
 		Request:    req,
+	}
+}
+
+// isUpgradeRequest reports whether the HTTP request is a protocol
+// upgrade attempt — `Connection: Upgrade` plus an `Upgrade:` header
+// naming SPDY/3.1 (today) or websocket (K8s 1.30+ via KEP-4006).
+//
+// k8s.io/apimachinery sometimes lists Upgrade as a value in the
+// Connection header (canonical RFC 7230 §6.1) and sometimes as a
+// separate `X-Stream-Protocol-Version` header that hints at the
+// upgrade target. We normalize by checking BOTH — the existing
+// hop-by-hop header strip already preserves the Upgrade header
+// because we filter by exact name match in stripRequestHeaders.
+func isUpgradeRequest(req *http.Request) bool {
+	for _, v := range req.Header.Values("Connection") {
+		for _, token := range strings.Split(v, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
+				return req.Header.Get("Upgrade") != ""
+			}
+		}
+	}
+	return false
+}
+
+// awaitTunnelHandshake blocks for the agent's reply to an upgrade
+// request. The first message MUST be a KubeProxyResponse:
+//
+//   - status=101 → handshake succeeded; build a TunnelConn-backed
+//     *http.Response and return it. From here on, KubeStreamData /
+//     KubeStreamAck flow in both directions until either side closes.
+//   - status≠101 → upgrade failed at the apiserver (auth denied,
+//     pod gone, command rejected, etc.). Surface as a regular
+//     *http.Response so the caller can inspect the status code +
+//     body — same shape they'd see if they'd dialed the apiserver
+//     directly and gotten the same rejection.
+//   - StreamClosed (premature) → agent disconnected mid-handshake.
+//   - chan closed → ErrAgentClosed.
+//   - ctx done → context.Canceled / DeadlineExceeded.
+//   - agent.Closed() → ErrAgentClosed.
+func (t *AgentProxyTransport) awaitTunnelHandshake(req *http.Request, requestID string, replies <-chan *agentv2.AgentMessage, cancel func(), agent *Agent) (*http.Response, error) {
+	ctx := req.Context()
+	select {
+	case msg, ok := <-replies:
+		if !ok {
+			return nil, ErrAgentClosed
+		}
+		if sc := msg.GetStreamClosed(); sc != nil {
+			cancel()
+			return nil, fmt.Errorf("agent-proxy tunnel: peer closed before handshake (%s)", sc.GetReason())
+		}
+		resp := msg.GetKubeResponse()
+		if resp == nil {
+			cancel()
+			return nil, fmt.Errorf("agent-proxy tunnel: expected kube_response handshake, got %T", msg.GetKind())
+		}
+		if resp.GetError() != "" {
+			cancel()
+			return nil, fmt.Errorf("agent-proxy tunnel handshake: %s", resp.GetError())
+		}
+		if resp.GetStatusCode() != 101 {
+			// Non-101: upgrade failed cleanly at the apiserver.
+			// Return as a regular response — the caller's SPDY
+			// library will see the failure and report it through its
+			// normal error path.
+			cancel()
+			return responseFromMessage(req, msg)
+		}
+		// 101 Switching Protocols. Promote to a tunnel-backed Response.
+		conn := newTunnelConn(requestID, t.ClusterID, agent, replies, cancel, t.TunnelWindowBytes)
+		return &http.Response{
+			Status:     "101 Switching Protocols",
+			StatusCode: 101,
+			Proto:      "HTTP/1.1",
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     expandHeaders(resp.GetHeaders()),
+			Body:       conn,
+			Request:    req,
+		}, nil
+	case <-ctx.Done():
+		cancel()
+		return nil, ctx.Err()
+	case <-agent.Closed():
+		cancel()
+		return nil, ErrAgentClosed
 	}
 }
 
