@@ -31,3 +31,25 @@ spec:
   selector:
     {{- include "kubebolt.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: api
+{{- if and .Values.agentIngest.enabled .Values.agentIngest.service.create }}
+---
+# Sprint A: agent ingest gRPC. Separate Service so DaemonSets / external
+# clients can dial it without colliding with the HTTP api Service.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubebolt.fullname" . }}-agent-ingest
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: agent-ingest
+spec:
+  type: {{ .Values.agentIngest.service.type }}
+  ports:
+    - port: {{ .Values.agentIngest.port }}
+      targetPort: {{ .Values.agentIngest.port }}
+      protocol: TCP
+      name: grpc
+  selector:
+    {{- include "kubebolt.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: api
+{{- end }}

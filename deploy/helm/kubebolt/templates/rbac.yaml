@@ -55,6 +55,15 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"]
     verbs: ["delete", "update"]
+  {{- if and .Values.agentIngest.enabled .Values.agentIngest.rbac.enableTokenReview }}
+  # Agent ingest auth (Sprint A): the BearerIngest path needs no RBAC,
+  # but TokenReview validation requires create on tokenreviews. Toggle
+  # off (agentIngest.rbac.enableTokenReview=false) when no agent uses
+  # tokenreview mode — typical for SaaS / cross-cluster setups.
+  - apiGroups: ["authentication.k8s.io"]
+    resources: ["tokenreviews"]
+    verbs: ["create"]
+  {{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

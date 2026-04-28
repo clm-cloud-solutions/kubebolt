@@ -18,8 +18,9 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: {{ include "kubebolt.serviceAccountName" . }}
-      {{- if .Values.auth.enabled }}
+      {{- if or .Values.auth.enabled (and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled) }}
       volumes:
+        {{- if .Values.auth.enabled }}
         - name: data
           {{- if .Values.auth.persistence.enabled }}
           persistentVolumeClaim:
@@ -27,6 +28,29 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        {{- end }}
+        {{- if and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled }}
+        # Sprint A: server cert (+ optional client CA for mTLS) for the
+        # agent ingest channel. The Secret(s) are owned by the operator
+        # — the chart never sees the cert / key bytes.
+        - name: agent-ingest-tls
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.agentIngest.tls.existingSecret | quote }}
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key
+              {{- if .Values.agentIngest.tls.clientCASecret }}
+              - secret:
+                  name: {{ .Values.agentIngest.tls.clientCASecret | quote }}
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              {{- end }}
+        {{- end }}
       {{- end }}
       containers:
         - name: api
@@ -35,6 +59,12 @@ spec:
           ports:
             - containerPort: {{ .Values.api.port }}
               protocol: TCP
+              name: api
+            {{- if .Values.agentIngest.enabled }}
+            - containerPort: {{ .Values.agentIngest.port }}
+              protocol: TCP
+              name: agent-ingest
+            {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
           env:
@@ -127,11 +157,45 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
-          {{- if .Values.auth.enabled }}
+            {{- /* ── Agent ingest (Sprint A) ── */ -}}
+            {{- if .Values.agentIngest.enabled }}
+            - name: KUBEBOLT_AGENT_GRPC_ADDR
+              value: "0.0.0.0:{{ .Values.agentIngest.port }}"
+            - name: KUBEBOLT_AGENT_AUTH_MODE
+              value: {{ .Values.agentIngest.authMode | quote }}
+            - name: KUBEBOLT_AGENT_TOKEN_AUDIENCE
+              value: {{ .Values.agentIngest.tokenAudience | quote }}
+            {{- if .Values.agentIngest.tls.enabled }}
+            {{- if not .Values.agentIngest.tls.existingSecret }}
+            {{- fail "agentIngest.tls.enabled=true requires agentIngest.tls.existingSecret" }}
+            {{- end }}
+            - name: KUBEBOLT_AGENT_TLS_CERT_FILE
+              value: /etc/kubebolt-agent-tls/tls.crt
+            - name: KUBEBOLT_AGENT_TLS_KEY_FILE
+              value: /etc/kubebolt-agent-tls/tls.key
+            {{- if .Values.agentIngest.tls.clientCASecret }}
+            - name: KUBEBOLT_AGENT_TLS_CLIENT_CA
+              value: /etc/kubebolt-agent-tls/ca.crt
+            {{- end }}
+            {{- if .Values.agentIngest.tls.requireClientCert }}
+            {{- if not .Values.agentIngest.tls.clientCASecret }}
+            {{- fail "agentIngest.tls.requireClientCert=true requires agentIngest.tls.clientCASecret" }}
+            {{- end }}
+            - name: KUBEBOLT_AGENT_REQUIRE_MTLS
+              value: "true"
+            {{- end }}
+            {{- end }}
+            {{- end }}
           volumeMounts:
+            {{- if .Values.auth.enabled }}
             - name: data
               mountPath: /data
-          {{- end }}
+            {{- end }}
+            {{- if and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled }}
+            - name: agent-ingest-tls
+              mountPath: /etc/kubebolt-agent-tls
+              readOnly: true
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health

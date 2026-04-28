@@ -57,6 +57,52 @@ serviceAccount:
 rbac:
   create: true
 
+# Agent ingest gRPC channel (Sprint A).
+# Receives telemetry from kubebolt-agent DaemonSet instances. The
+# authentication interceptor lives inside the API process; this block
+# controls how it is exposed to the cluster network.
+agentIngest:
+  enabled: true
+  port: 9090
+
+  # Enforcement matrix for the agent auth interceptor:
+  #   disabled    — accept every connection (Sprint 0 migration default)
+  #   permissive  — try to authenticate; on failure, log + accept
+  #   enforced    — reject any unauthenticated connection
+  authMode: disabled
+
+  # Audience the apiserver-issued projected SA token must carry. Must
+  # match auth.tokenReview.audience in the kubebolt-agent chart.
+  tokenAudience: kubebolt-backend
+
+  service:
+    # Expose the gRPC port as a separate Service so agents (DaemonSets,
+    # external clusters via LoadBalancer, etc.) can reach it without
+    # piggy-backing on the HTTP service.
+    create: true
+    type: ClusterIP
+
+  rbac:
+    # Adds tokenreviews/create to the backend ClusterRole. Required when
+    # any agent uses auth.mode=tokenreview. Set false in SaaS deployments
+    # that only accept ingest tokens (BearerIngest mode).
+    enableTokenReview: true
+
+  # Transport security for the agent channel.
+  #
+  # ENTERPRISE-CANDIDATE (mTLS): plain TLS (server cert only) stays OSS;
+  # the client cert verification path (clientCASecret + requireClientCert)
+  # is a candidate to move behind a license gate when the SaaS hospedado
+  # launches.
+  tls:
+    enabled: false
+    # Secret with tls.crt + tls.key for the server certificate.
+    existingSecret: ""
+    # Optional CA bundle to validate client certs (mTLS).
+    clientCASecret: ""
+    # When true, the server rejects clients without a verified cert.
+    requireClientCert: false
+
 # Number of replicas
 replicaCount: 1
 
