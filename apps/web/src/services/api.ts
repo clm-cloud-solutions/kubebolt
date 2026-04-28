@@ -513,6 +513,24 @@ export interface AgentInstallConfig {
   clusterName?: string
   hubbleEnabled?: boolean
 
+  // K8s API proxy (Sprint A.5). When true, the agent advertises
+  // the kube-proxy capability and accepts KubeProxyRequest payloads
+  // from the backend against the in-cluster apiserver. Required for
+  // SaaS multi-cluster setups where the backend can't reach the
+  // apiserver directly. Default off — single-cluster self-hosted
+  // installs (backend has direct kubeconfig) leave it unset.
+  //
+  // Enabling proxy alone gives metrics-tier RBAC reads only. To
+  // unlock the full UI through the proxy (terminal / files /
+  // portforward / restart / scale / delete) the operator-tier RBAC
+  // ClusterRole must ALSO be granted — see proxyOperatorRbac below.
+  proxyEnabled?: boolean
+  // Apply the operator-tier ClusterRole + binding alongside the
+  // base manifest. Effectively cluster-admin scoped to the agent's
+  // ServiceAccount — opt-in deliberately. Ignored when proxyEnabled
+  // is not set.
+  proxyOperatorRbac?: boolean
+
   imageRepo?: string
   imageTag?: string
   imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never'

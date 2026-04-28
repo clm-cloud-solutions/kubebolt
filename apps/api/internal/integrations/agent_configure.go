@@ -34,6 +34,15 @@ func (a *agentProvider) GetConfig(ctx context.Context, cs kubernetes.Interface) 
 	}
 
 	cfg := extractConfigFromDaemonSet(ds, ns)
+	// ProxyOperatorRBAC isn't on the DaemonSet — it's a ClusterRole
+	// living outside the namespace. Best-effort lookup so the
+	// configure dialog can render the correct toggle state. Errors
+	// (RBAC denied) leave the field nil → UI shows the conservative
+	// default (off).
+	if hasOperatorClusterRole(ctx, cs) {
+		t := true
+		cfg.ProxyOperatorRBAC = &t
+	}
 	return json.Marshal(cfg)
 }
 
@@ -82,6 +91,17 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 	if cfg.HubbleEnabled != nil {
 		hubbleEnabled = *cfg.HubbleEnabled
 	}
+	proxyEnabled := false
+	if cfg.ProxyEnabled != nil {
+		proxyEnabled = *cfg.ProxyEnabled
+	}
+	proxyOperatorRBAC := false
+	if cfg.ProxyOperatorRBAC != nil {
+		proxyOperatorRBAC = *cfg.ProxyOperatorRBAC
+	}
+	if proxyOperatorRBAC && !proxyEnabled {
+		return fmt.Errorf("proxyOperatorRbac requires proxyEnabled=true")
+	}
 	if _, _, err := resolveResources(cfg.Resources); err != nil {
 		return err
 	}
@@ -96,13 +116,17 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 	// Re-apply every resource. The ensure* helpers detect existing
 	// managed resources and Update them; new fields (e.g. newly
 	// mounted TLS secret) propagate via rolling restart of the DS.
+	// Operator-tier RBAC is added or removed based on the toggle —
+	// flipping it off cleanly revokes the cluster-admin grant.
 	steps := []func() error{
 		func() error { return ensureServiceAccount(ctx, cs, ns) },
 		func() error { return ensureClusterRole(ctx, cs) },
 		func() error { return ensureClusterRoleBinding(ctx, cs, ns) },
 		func() error { return ensureLeaderRole(ctx, cs, ns) },
 		func() error { return ensureLeaderRoleBinding(ctx, cs, ns) },
-		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled) },
+		func() error { return ensureOperatorClusterRole(ctx, cs, proxyOperatorRBAC) },
+		func() error { return ensureOperatorClusterRoleBinding(ctx, cs, ns, proxyOperatorRBAC) },
+		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled, proxyEnabled) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -159,6 +183,15 @@ func extractConfigFromDaemonSet(ds *appsv1.DaemonSet, ns string) AgentInstallCon
 		b := envBoolDefault(map[string]string{"K": v}, "K", true)
 		cfg.HubbleEnabled = &b
 	}
+	if v, ok := env["KUBEBOLT_AGENT_PROXY_ENABLED"]; ok {
+		b := envBoolDefault(map[string]string{"K": v}, "K", false)
+		cfg.ProxyEnabled = &b
+	}
+	// ProxyOperatorRBAC isn't in the DaemonSet — it's a separate
+	// ClusterRole. Detection is best-effort by ClusterRole presence;
+	// caller (Configure handler) populates this field after looking
+	// it up via the Kubernetes API. Leaving nil here means "unknown
+	// from DS alone".
 
 	// mTLS reconstruction: the agent always gets CA_FILE / CERT_FILE
 	// / KEY_FILE pointed at /etc/hubble-tls/*. If that volume is

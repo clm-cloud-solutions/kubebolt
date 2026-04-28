@@ -200,6 +200,55 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
             </button>
           </div>
 
+          {/* K8s API proxy (SPDY tunneling) */}
+          <div className="space-y-3 p-3 rounded-lg bg-kb-elevated border border-kb-border">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm text-kb-text-primary font-medium">K8s API proxy (SPDY tunneling)</div>
+                <p className="text-[11px] text-kb-text-secondary mt-0.5">
+                  Routes the backend's API calls through the agent's outbound channel. Required for SaaS multi-cluster — when on, terminal / file browser / port-forward / kubectl-style mutations work via the agent. Leave off for single-cluster self-hosted (backend already has kubeconfig).
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={cfg.proxyEnabled ?? false}
+                onClick={() => setCfg({ ...cfg, proxyEnabled: !cfg.proxyEnabled, proxyOperatorRbac: cfg.proxyEnabled ? false : cfg.proxyOperatorRbac })}
+                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.proxyEnabled ? 'bg-kb-accent' : 'bg-kb-border'}`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.proxyEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`}
+                />
+              </button>
+            </div>
+            {cfg.proxyEnabled && (
+              <div className="flex items-start justify-between gap-3 pt-2 border-t border-kb-border">
+                <div>
+                  <div className="text-sm text-kb-text-primary font-medium flex items-center gap-2">
+                    Operator-tier RBAC
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-status-warning/10 text-status-warning border border-status-warning/30">
+                      cluster-admin
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-kb-text-secondary mt-0.5">
+                    Grants the agent's ServiceAccount wildcard read+write across the apiserver — required for the dashboard to render fully through the proxy. Without it, agent-proxy reads come back as "No access" for most resources. Effectively cluster-admin scoped to the agent's pod.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={cfg.proxyOperatorRbac ?? false}
+                  onClick={() => setCfg({ ...cfg, proxyOperatorRbac: !cfg.proxyOperatorRbac })}
+                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.proxyOperatorRbac ? 'bg-kb-accent' : 'bg-kb-border'}`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.proxyOperatorRbac ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`}
+                  />
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Advanced */}
           <div>
             <button
