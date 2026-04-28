@@ -32,7 +32,10 @@ func (s *stubRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 // newProxyWith wires a KubeAPIProxy directly with a stub transport,
-// bypassing rest.Config. Tests don't need a real cluster.
+// bypassing rest.Config. Tests don't need a real cluster. Production
+// HandleUpgrade does a manual TLS dial that can't be exercised
+// without a real apiserver — those tests substitute the transport
+// path via a separate helper (see TestHandleUpgrade_*).
 func newProxyWith(rt http.RoundTripper) *KubeAPIProxy {
 	return &KubeAPIProxy{transport: rt, baseURL: "https://apiserver.test"}
 }

@@ -415,6 +415,9 @@ func (t *AgentProxyTransport) awaitTunnelHandshake(req *http.Request, requestID 
 			return responseFromMessage(req, msg)
 		}
 		// 101 Switching Protocols. Promote to a tunnel-backed Response.
+		// Body is wrapped in TunnelHandshakeBody so K8s' spdy.Negotiate
+		// `defer resp.Body.Close()` doesn't tear down the tunnel
+		// before the SPDY layer's handshake — see the type's doc.
 		conn := newTunnelConn(requestID, t.ClusterID, agent, replies, cancel, t.TunnelWindowBytes)
 		return &http.Response{
 			Status:     "101 Switching Protocols",
@@ -423,7 +426,7 @@ func (t *AgentProxyTransport) awaitTunnelHandshake(req *http.Request, requestID 
 			ProtoMajor: 1,
 			ProtoMinor: 1,
 			Header:     expandHeaders(resp.GetHeaders()),
-			Body:       conn,
+			Body:       NewTunnelHandshakeBody(conn),
 			Request:    req,
 		}, nil
 	case <-ctx.Done():

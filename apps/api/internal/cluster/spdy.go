@@ -2,7 +2,7 @@ package cluster
 
 import (
 	"fmt"
-	"net"
+	"log/slog"
 	"net/http"
 
 	"k8s.io/apimachinery/pkg/util/httpstream"
@@ -57,26 +57,61 @@ type agentProxyUpgrader struct {
 	transport *channel.AgentProxyTransport
 }
 
-// RoundTrip is just the AgentProxyTransport's RoundTrip — agent-proxy
-// already detects upgrade requests in commit 8d. The 101 response
-// carries TunnelConn as Body.
+// RoundTrip adds the Connection: Upgrade + Upgrade: SPDY/3.1
+// headers that K8s' standard spdy.SpdyRoundTripper injects
+// internally — our AgentProxyTransport detects upgrades by these
+// headers (commit 8d), so without them the request would slip
+// through as a regular unary POST and the apiserver would reject
+// /exec / /attach / /portforward with 400.
+//
+// We mirror K8s' SpdyRoundTripper.RoundTrip header injection. Clone
+// before mutating so we don't touch the caller's req — the Negotiate
+// caller may reuse it across protocol attempts.
 func (u *agentProxyUpgrader) RoundTrip(req *http.Request) (*http.Response, error) {
-	return u.transport.RoundTrip(req)
+	clone := req.Clone(req.Context())
+	clone.Header = req.Header.Clone()
+	clone.Header.Set("Connection", "Upgrade")
+	clone.Header.Set("Upgrade", "SPDY/3.1")
+
+	slog.Info("agent-proxy SPDY: RoundTrip start",
+		slog.String("url", clone.URL.String()),
+		slog.String("method", clone.Method),
+		slog.Any("headers", clone.Header),
+	)
+	resp, err := u.transport.RoundTrip(clone)
+	if err != nil {
+		slog.Warn("agent-proxy SPDY: RoundTrip failed",
+			slog.String("error", err.Error()))
+		return nil, err
+	}
+	slog.Info("agent-proxy SPDY: RoundTrip got response",
+		slog.Int("status", resp.StatusCode),
+		slog.Any("headers", resp.Header),
+	)
+	return resp, nil
 }
 
-// NewConnection wraps the tunnel as a SPDY-framed httpstream.Connection.
-// The upper layer (remotecommand executor, portforward) treats this
-// like any other SPDY connection — multiplexes stdin/stdout/stderr/error
-// streams over it, just like it would over a direct apiserver SPDY
-// conn. The bytes flowing through the SPDY framing layer are tunneled
-// over our gRPC channel transparently.
+// NewConnection extracts the raw TunnelConn from the response body
+// and wraps it in K8s' SPDY framing. Going through Extract() — not a
+// direct net.Conn type assertion on resp.Body — is critical because
+// K8s' spdy.Negotiate calls `defer resp.Body.Close()` right after
+// our return; with a naive type assertion that defer would tear down
+// the tunnel before SPDY's handshake. TunnelHandshakeBody.Extract()
+// flips the body's Close into a no-op (the SPDY conn now owns the
+// conn lifecycle). See TunnelHandshakeBody's doc for full rationale.
 func (u *agentProxyUpgrader) NewConnection(resp *http.Response) (httpstream.Connection, error) {
 	if resp.StatusCode != http.StatusSwitchingProtocols {
+		slog.Warn("agent-proxy SPDY: NewConnection got non-101",
+			slog.Int("status", resp.StatusCode))
 		return nil, fmt.Errorf("agent-proxy SPDY: expected 101 Switching Protocols, got %d", resp.StatusCode)
 	}
-	conn, ok := resp.Body.(net.Conn)
+	body, ok := resp.Body.(*channel.TunnelHandshakeBody)
 	if !ok {
-		return nil, fmt.Errorf("agent-proxy SPDY: response body is %T, want net.Conn", resp.Body)
+		slog.Warn("agent-proxy SPDY: response body is not TunnelHandshakeBody",
+			slog.String("body_type", fmt.Sprintf("%T", resp.Body)))
+		return nil, fmt.Errorf("agent-proxy SPDY: response body is %T, want *channel.TunnelHandshakeBody", resp.Body)
 	}
+	conn := body.Extract()
+	slog.Info("agent-proxy SPDY: building SPDY connection over tunnel")
 	return utilspdy.NewClientConnection(conn)
 }

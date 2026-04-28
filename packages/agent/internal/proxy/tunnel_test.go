@@ -3,7 +3,6 @@ package proxy
 import (
 	"context"
 	"io"
-	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -108,126 +107,23 @@ func TestIsUpgradeRequest_AgentSide(t *testing.T) {
 // rwResponse is an *http.Response whose Body satisfies
 // io.ReadWriteCloser. Mimics what Go's net/http hands back for a 101
 // Switching Protocols response.
+//
+// Kept around even though the legacy transport-based HandleUpgrade
+// tests were removed (they exercised an http.Transport-based code
+// path we replaced with a manual TLS dial after smoke testing
+// surfaced that Go's transport returns EOF on read after 101).
+// Future integration tests with a fake apiserver (commit 8h) will
+// reuse this helper.
 type rwBody struct {
 	io.Reader
 	io.Writer
 	io.Closer
 }
 
-func TestHandleUpgrade_SuccessReturns101AndConn(t *testing.T) {
-	pr, pw := io.Pipe()
-	body := rwBody{Reader: pr, Writer: io.Discard, Closer: pw}
-	rt := &stubRoundTripper{
-		resp: &http.Response{
-			StatusCode: 101,
-			Header:     http.Header{"Upgrade": []string{"SPDY/3.1"}},
-			Body:       body,
-		},
-	}
-	p := newProxyWith(rt)
-	req := &agentv2.KubeProxyRequest{
-		Method: "POST",
-		Path:   "/api/v1/.../exec",
-		Headers: map[string]string{
-			"Connection": "Upgrade",
-			"Upgrade":    "SPDY/3.1",
-		},
-	}
-	resp, conn := p.HandleUpgrade(context.Background(), req)
-	if resp.GetStatusCode() != 101 {
-		t.Fatalf("status = %d, want 101", resp.GetStatusCode())
-	}
-	if conn == nil {
-		t.Fatal("expected non-nil conn for 101 response")
-	}
-	defer conn.Close()
-	if got := resp.GetHeaders()["Upgrade"]; got != "SPDY/3.1" {
-		t.Errorf("Upgrade header = %q", got)
-	}
-}
 
-func TestHandleUpgrade_NonOneOhOneSurfacesAsResponse(t *testing.T) {
-	rt := &stubRoundTripper{resp: okResponse(403, `{"reason":"Forbidden"}`)}
-	p := newProxyWith(rt)
-	req := &agentv2.KubeProxyRequest{
-		Method: "POST",
-		Path:   "/api/v1/.../exec",
-		Headers: map[string]string{
-			"Connection": "Upgrade",
-			"Upgrade":    "SPDY/3.1",
-		},
-	}
-	resp, conn := p.HandleUpgrade(context.Background(), req)
-	if conn != nil {
-		t.Error("conn must be nil for non-101 response")
-	}
-	if resp.GetStatusCode() != 403 {
-		t.Errorf("status = %d, want 403 forwarded", resp.GetStatusCode())
-	}
-	if !strings.Contains(string(resp.GetBody()), "Forbidden") {
-		t.Errorf("body = %q, want apiserver error forwarded", resp.GetBody())
-	}
-}
 
-func TestHandleUpgrade_PreservesConnectionAndUpgradeHeaders(t *testing.T) {
-	// Apiserver rejects upgrade requests with 400 if Upgrade arrives
-	// without a companion Connection: Upgrade. The agent's
-	// buildRequest normally strips both as hop-by-hop, but for
-	// upgrade attempts they MUST be forwarded. Pin that contract so
-	// a future header-filter refactor can't silently break exec /
-	// portforward.
-	pr, pw := io.Pipe()
-	body := rwBody{Reader: pr, Writer: io.Discard, Closer: pw}
-	rt := &stubRoundTripper{
-		resp: &http.Response{
-			StatusCode: 101,
-			Header:     http.Header{},
-			Body:       body,
-		},
-	}
-	p := newProxyWith(rt)
-	req := &agentv2.KubeProxyRequest{
-		Method: "POST",
-		Path:   "/api/v1/.../exec",
-		Headers: map[string]string{
-			"Connection":               "Upgrade",
-			"Upgrade":                  "SPDY/3.1",
-			"X-Stream-Protocol-Version": "v4.channel.k8s.io",
-		},
-	}
-	_, conn := p.HandleUpgrade(context.Background(), req)
-	defer func() {
-		if conn != nil {
-			conn.Close()
-		}
-	}()
-	if rt.lastReq == nil {
-		t.Fatal("transport never received the request")
-	}
-	if got := rt.lastReq.Header.Get("Connection"); !strings.EqualFold(got, "Upgrade") {
-		t.Errorf("Connection header = %q, want Upgrade preserved", got)
-	}
-	if got := rt.lastReq.Header.Get("Upgrade"); got != "SPDY/3.1" {
-		t.Errorf("Upgrade header = %q, want SPDY/3.1 preserved", got)
-	}
-	// Non-upgrade-special headers still pass through.
-	if got := rt.lastReq.Header.Get("X-Stream-Protocol-Version"); got != "v4.channel.k8s.io" {
-		t.Errorf("X-Stream-Protocol-Version = %q, want passed through", got)
-	}
-}
 
-func TestHandleUpgrade_TransportError(t *testing.T) {
-	rt := &stubRoundTripper{err: io.ErrUnexpectedEOF}
-	p := newProxyWith(rt)
-	req := &agentv2.KubeProxyRequest{Headers: map[string]string{"Connection": "Upgrade", "Upgrade": "SPDY/3.1"}}
-	resp, conn := p.HandleUpgrade(context.Background(), req)
-	if conn != nil {
-		t.Error("conn must be nil on transport error")
-	}
-	if resp.GetError() == "" {
-		t.Error("expected error field set on transport error")
-	}
-}
+
 
 // ─── tunnelSession bidi pump ──────────────────────────────────────────
 

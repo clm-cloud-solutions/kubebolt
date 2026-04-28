@@ -256,10 +256,23 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 				slog.Error("metrics write failed", slog.String("error", werr.Error()))
 			}
 
-		case *agentv2.AgentMessage_KubeResponse, *agentv2.AgentMessage_KubeEvent, *agentv2.AgentMessage_StreamClosed:
+		case *agentv2.AgentMessage_KubeResponse,
+			*agentv2.AgentMessage_KubeEvent,
+			*agentv2.AgentMessage_StreamClosed,
+			*agentv2.AgentMessage_KubeStreamData,
+			*agentv2.AgentMessage_KubeStreamAck:
 			// Route to the agent's Multiplexor. The AgentProxyTransport
 			// (commit 5+) issues kube_requests and registers request_ids
 			// in advance; without a matching slot, Deliver no-ops.
+			//
+			// KubeStreamData / KubeStreamAck (Sprint A.5 §0.7-§0.9
+			// SPDY tunneling) ride the same dispatch — TunnelConn's
+			// demuxLoop on the backend side reads them via the same
+			// per-request-id slot. Missing this case is what caused
+			// the "tunnel hangs after 101" bug observed during smoke
+			// test: bytes from apiserver→backend never reached
+			// TunnelConn, so SPDY framing on the backend stalled
+			// waiting for SETTINGS frame forever.
 			_ = k
 			registeredAgent.Pending.Deliver(msg)
 

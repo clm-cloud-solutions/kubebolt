@@ -108,10 +108,11 @@ func TestAgentProxyTransport_UpgradeHandshakeReturnsTunnelConn(t *testing.T) {
 	if r.resp.StatusCode != 101 {
 		t.Errorf("status = %d, want 101", r.resp.StatusCode)
 	}
-	conn, ok := r.resp.Body.(*TunnelConn)
+	body, ok := r.resp.Body.(*TunnelHandshakeBody)
 	if !ok {
-		t.Fatalf("Body = %T, want *TunnelConn", r.resp.Body)
+		t.Fatalf("Body = %T, want *TunnelHandshakeBody", r.resp.Body)
 	}
+	conn := body.Extract()
 	defer conn.Close()
 	// Must satisfy net.Conn for SPDY layer's hijack.
 	var _ net.Conn = conn
@@ -196,7 +197,7 @@ func TestTunnelConn_ReadDeliversBytesUntilEOF(t *testing.T) {
 		},
 	})
 	resp := <-out
-	conn := resp.Body.(*TunnelConn)
+	conn := resp.Body.(*TunnelHandshakeBody).Extract()
 
 	// Stream a few stdout chunks then EOF.
 	for _, chunk := range [][]byte{
@@ -237,7 +238,7 @@ func TestTunnelConn_WriteEmitsKubeStreamData(t *testing.T) {
 		},
 	})
 	resp := <-out
-	conn := resp.Body.(*TunnelConn)
+	conn := resp.Body.(*TunnelHandshakeBody).Extract()
 	defer conn.Close()
 
 	// Write some stdin data — should emerge as one or more
@@ -284,7 +285,7 @@ func TestTunnelConn_WriteChunksLargePayload(t *testing.T) {
 		}
 		// Use a large window so we don't block on credits — the chunking
 		// behavior is what we care about here, not flow control.
-		conn := resp.Body.(*TunnelConn)
+		conn := resp.Body.(*TunnelHandshakeBody).Extract()
 		defer conn.Close()
 		big := make([]byte, MaxTunnelChunkBytes*3+512)
 		for i := range big {
@@ -349,7 +350,7 @@ func TestTunnelConn_WriteBlocksOnSaturatedWindow(t *testing.T) {
 		},
 	})
 	resp := <-out
-	conn := resp.Body.(*TunnelConn)
+	conn := resp.Body.(*TunnelHandshakeBody).Extract()
 	defer conn.Close()
 
 	writeDone := make(chan error, 1)
@@ -408,7 +409,7 @@ func TestTunnelConn_CloseSendsEofAndUnregisters(t *testing.T) {
 			KubeResponse: &agentv2.KubeProxyResponse{StatusCode: 101},
 		},
 	})
-	conn := (<-out).Body.(*TunnelConn)
+	conn := (<-out).Body.(*TunnelHandshakeBody).Extract()
 
 	if got := agent.Pending.Pending(); got != 1 {
 		t.Fatalf("Pending = %d, want 1", got)
@@ -459,7 +460,7 @@ func TestTunnelConn_ReadDeadline(t *testing.T) {
 			t.Errorf("RoundTrip err = %v", err)
 			return
 		}
-		conn := resp.Body.(*TunnelConn)
+		conn := resp.Body.(*TunnelHandshakeBody).Extract()
 		defer conn.Close()
 		_ = conn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 		buf := make([]byte, 16)

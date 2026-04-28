@@ -149,7 +149,8 @@ func (t *TunnelConn) demuxLoop() {
 			}
 			switch m := msg.GetKind().(type) {
 			case *agentv2.AgentMessage_KubeStreamData:
-				if data := m.KubeStreamData.GetData(); len(data) > 0 {
+				data := m.KubeStreamData.GetData()
+				if len(data) > 0 {
 					select {
 					case t.readBytes <- data:
 					case <-t.closed:
@@ -384,6 +385,75 @@ func (a tunnelAddr) String() string {
 		return fmt.Sprintf("%s:%s.agent.local", a.role, a.cluster)
 	}
 	return a.role
+}
+
+// TunnelHandshakeBody is the *http.Response.Body we return after a
+// successful 101 Switching Protocols handshake. It wraps the actual
+// TunnelConn but presents a deliberately decoupled lifecycle:
+//
+//   - Read on the body returns EOF immediately (HTTP-level body for
+//     a 101 response is empty by definition).
+//   - Close on the body is a no-op AFTER Extract() has been called.
+//
+// Why: K8s' spdy.Negotiate (used by remotecommand exec / portforward)
+// does `defer resp.Body.Close()` immediately after a successful
+// upgrade. If our Body were the TunnelConn directly, that defer would
+// terminate the tunnel ~microseconds after 101 — before the SPDY
+// framing layer even starts the handshake. Pinned by the SPDY
+// smoke-test failure where pumpToApiserver exited 1ms after pumping
+// began, with bytes_received=0.
+//
+// Extract() is the handoff: the upgrader (NewConnection) calls
+// Extract to take ownership of the raw TunnelConn. After that,
+// closing the body is a no-op (Negotiate's defer is harmless), and
+// the TunnelConn lifecycle is managed by the SPDY conn that wraps
+// it (utilspdy.NewClientConnection). When the SPDY conn legitimately
+// closes — exec session ended, user closed terminal — it calls
+// TunnelConn.Close, which sends KubeStreamData{eof:true} and
+// releases the multiplexor slot.
+type TunnelHandshakeBody struct {
+	conn      *TunnelConn
+	extracted atomic.Bool
+}
+
+// NewTunnelHandshakeBody wraps a TunnelConn for use as *http.Response.Body
+// of a 101 Switching Protocols response.
+func NewTunnelHandshakeBody(conn *TunnelConn) *TunnelHandshakeBody {
+	return &TunnelHandshakeBody{conn: conn}
+}
+
+// Read returns io.EOF immediately — the HTTP body of a 101 response
+// is always empty per spec, and post-extraction the underlying conn
+// is owned by the SPDY layer.
+func (b *TunnelHandshakeBody) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+
+// Close is the lifecycle hinge:
+//
+//   - Before Extract() was called: the upgrade attempt is being
+//     abandoned (handler error path); close the underlying tunnel
+//     so the slot doesn't leak.
+//   - After Extract() was called: the SPDY layer owns the conn —
+//     return nil so Negotiate's defer is harmless. The SPDY conn's
+//     own Close path will reach TunnelConn.Close when the session
+//     legitimately ends.
+func (b *TunnelHandshakeBody) Close() error {
+	if b.extracted.Load() {
+		return nil
+	}
+	return b.conn.Close()
+}
+
+// Extract takes ownership of the raw TunnelConn. After this call,
+// Body.Close becomes a no-op so Negotiate's `defer resp.Body.Close()`
+// in K8s' spdy.Negotiate doesn't tear down the tunnel. The caller
+// is now responsible for closing the returned conn — typically by
+// passing it to utilspdy.NewClientConnection, which closes the conn
+// when the SPDY session ends.
+func (b *TunnelHandshakeBody) Extract() *TunnelConn {
+	b.extracted.Store(true)
+	return b.conn
 }
 
 // deadlineError is the net-package-style error returned when a

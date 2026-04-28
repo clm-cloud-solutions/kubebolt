@@ -13,15 +13,20 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"k8s.io/client-go/rest"
 
@@ -37,9 +42,32 @@ import (
 const MaxBodyBytes = 10 * 1024 * 1024
 
 // KubeAPIProxy executes KubeProxyRequest against the local apiserver.
+//
+// transport is rest.TransportFor(cfg) — used for unary REST + watch.
+// Modern K8s apiservers negotiate HTTP/2 here, which is fine.
+//
+// SPDY upgrade requests (exec / portforward / attach) take a
+// completely different code path: Go's http.Transport doesn't expose
+// a usable raw conn after a 101 Switching Protocols response — the
+// returned resp.Body returns EOF immediately on Read. K8s' own
+// spdy.SpdyRoundTripper avoids this by NOT using http.Transport at
+// all: it dials TCP+TLS directly, writes the HTTP/1.1 request
+// manually, parses the response with http.ReadResponse, and returns
+// the raw conn (with bufio buffering for any bytes the apiserver
+// piggy-backed onto the 101 packet).
+//
+// We mirror that approach in HandleUpgrade — see upgradeTLSConfig +
+// upgradeBearerToken below for the pieces that the manual dial needs.
 type KubeAPIProxy struct {
 	transport http.RoundTripper
-	baseURL   string
+
+	// Pieces needed to manually dial+write+read for upgrade requests.
+	upgradeTLSConfig *tls.Config
+	upgradeHost      string // host:port, no scheme
+	bearerToken      string
+	bearerTokenFile  string // re-read on each upgrade (token rotation)
+
+	baseURL string
 }
 
 // New builds a KubeAPIProxy from a rest.Config — typically
@@ -49,10 +77,46 @@ func New(cfg *rest.Config) (*KubeAPIProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("kube proxy: build transport: %w", err)
 	}
+
+	tlsCfg, err := rest.TLSConfigFor(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("kube proxy: build TLS config for upgrades: %w", err)
+	}
+	// Force HTTP/1.1 ALPN — apiserver-side SPDY upgrade requires
+	// HTTP/1.1, and our manual dial uses tls.Conn directly (no
+	// HTTP/2 magic to opt into anyway). Setting NextProtos
+	// explicitly keeps the wire predictable.
+	if tlsCfg != nil {
+		tlsCfg.NextProtos = []string{"http/1.1"}
+	}
+
+	host := strings.TrimPrefix(cfg.Host, "https://")
+	host = strings.TrimPrefix(host, "http://")
+	host = strings.TrimRight(host, "/")
+	if !strings.Contains(host, ":") {
+		host = host + ":443"
+	}
+
 	return &KubeAPIProxy{
-		transport: transport,
-		baseURL:   strings.TrimRight(cfg.Host, "/"),
+		transport:        transport,
+		upgradeTLSConfig: tlsCfg,
+		upgradeHost:      host,
+		bearerToken:      cfg.BearerToken,
+		bearerTokenFile:  cfg.BearerTokenFile,
+		baseURL:          strings.TrimRight(cfg.Host, "/"),
 	}, nil
+}
+
+// loadBearerToken returns the current bearer token, re-reading the
+// projected SA token file each call so kubelet rotations are picked
+// up without restarting the agent.
+func (p *KubeAPIProxy) loadBearerToken() string {
+	if p.bearerTokenFile != "" {
+		if b, err := os.ReadFile(p.bearerTokenFile); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return p.bearerToken
 }
 
 // HandleRequest executes a unary kube call and returns a
@@ -103,22 +167,91 @@ func (p *KubeAPIProxy) HandleRequest(ctx context.Context, req *agentv2.KubeProxy
 // as a regular *http.Response, so the caller's SPDY library sees
 // the upgrade failure on its normal path.
 func (p *KubeAPIProxy) HandleUpgrade(ctx context.Context, req *agentv2.KubeProxyRequest) (resp *agentv2.KubeProxyResponse, conn io.ReadWriteCloser) {
+	slog.Info("agent proxy upgrade: request received from backend",
+		slog.String("method", req.GetMethod()),
+		slog.String("path", req.GetPath()),
+		slog.Int("headers_count", len(req.GetHeaders())),
+		slog.Any("headers_in", req.GetHeaders()),
+	)
+
 	httpReq, err := p.buildRequest(ctx, req)
 	if err != nil {
+		slog.Warn("agent proxy upgrade: buildRequest failed",
+			slog.String("error", err.Error()))
 		return &agentv2.KubeProxyResponse{Error: err.Error()}, nil
 	}
 
-	httpResp, err := p.transport.RoundTrip(httpReq)
+	// Inject the agent's SA bearer token. The standard transport
+	// wrapper (rest.TransportFor) does this for unary/watch but
+	// we're bypassing the transport entirely for upgrades — see
+	// the New() comment for why. Re-read the token file each call
+	// so kubelet rotations propagate without an agent restart.
+	if token := p.loadBearerToken(); token != "" {
+		httpReq.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	slog.Info("agent proxy upgrade: dialing apiserver",
+		slog.String("url", httpReq.URL.String()),
+		slog.String("method", httpReq.Method),
+		slog.String("host", p.upgradeHost),
+		slog.Any("headers_out", redactAuthForLog(httpReq.Header)),
+	)
+
+	dialCtx := ctx
+	if _, ok := dialCtx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		dialCtx, cancel = context.WithTimeout(dialCtx, 30*time.Second)
+		defer cancel()
+	}
+
+	dialer := &net.Dialer{Timeout: 15 * time.Second}
+	rawConn, err := tls.DialWithDialer(dialer, "tcp", p.upgradeHost, p.upgradeTLSConfig)
 	if err != nil {
-		return &agentv2.KubeProxyResponse{Error: err.Error()}, nil
+		slog.Warn("agent proxy upgrade: TLS dial failed",
+			slog.String("host", p.upgradeHost),
+			slog.String("error", err.Error()))
+		return &agentv2.KubeProxyResponse{Error: fmt.Sprintf("dial: %v", err)}, nil
+	}
+	if dl, ok := dialCtx.Deadline(); ok {
+		_ = rawConn.SetDeadline(dl)
+	}
+
+	// Go's *http.Request.Write serializes the request as HTTP/1.1
+	// with the headers we set. Pass it directly to the conn — same
+	// thing K8s' SpdyRoundTripper does in their Dial().
+	if err := httpReq.Write(rawConn); err != nil {
+		_ = rawConn.Close()
+		slog.Warn("agent proxy upgrade: write request failed",
+			slog.String("error", err.Error()))
+		return &agentv2.KubeProxyResponse{Error: fmt.Sprintf("write: %v", err)}, nil
+	}
+
+	// Parse the response from the conn. bufReader retains any
+	// post-headers bytes the apiserver piggy-backed on the 101
+	// packet (typically nothing, but sometimes the SPDY SETTINGS
+	// frame arrives before we read).
+	bufReader := bufio.NewReader(rawConn)
+	httpResp, err := http.ReadResponse(bufReader, httpReq)
+	if err != nil {
+		_ = rawConn.Close()
+		slog.Warn("agent proxy upgrade: read response failed",
+			slog.String("error", err.Error()))
+		return &agentv2.KubeProxyResponse{Error: fmt.Sprintf("read response: %v", err)}, nil
 	}
 
 	if httpResp.StatusCode != 101 {
-		// Non-101: surface the apiserver's response as-is. Body capped
-		// at MaxBodyBytes — same shape as a unary response so client-go
-		// on the backend handles the failure on its normal error path.
 		body, _ := io.ReadAll(io.LimitReader(httpResp.Body, MaxBodyBytes))
 		_ = httpResp.Body.Close()
+		_ = rawConn.Close()
+		bodyPreview := body
+		if len(bodyPreview) > 512 {
+			bodyPreview = bodyPreview[:512]
+		}
+		slog.Warn("agent proxy upgrade: apiserver rejected upgrade",
+			slog.Int("status", httpResp.StatusCode),
+			slog.Any("response_headers", httpResp.Header),
+			slog.String("body_preview", string(bodyPreview)),
+		)
 		return &agentv2.KubeProxyResponse{
 			StatusCode: uint32(httpResp.StatusCode),
 			Headers:    flattenHeaders(httpResp.Header),
@@ -126,22 +259,53 @@ func (p *KubeAPIProxy) HandleUpgrade(ctx context.Context, req *agentv2.KubeProxy
 		}, nil
 	}
 
-	// 101 Switching Protocols. Go's transport guarantees Body is a
-	// live ReadWriteCloser (since Go 1.12) but the static type is
-	// only io.ReadCloser — type-assert. If the assertion fails we
-	// can't tunnel writes (very unlikely in practice; would mean
-	// some transport wrapper stripped the WriteCloser interface).
-	rwc, ok := httpResp.Body.(io.ReadWriteCloser)
-	if !ok {
-		_ = httpResp.Body.Close()
-		return &agentv2.KubeProxyResponse{
-			Error: "agent proxy: 101 response body is not a ReadWriteCloser — transport stripped Write?",
-		}, nil
-	}
+	// Clear the deadline now that we're past the upgrade — tunnel
+	// reads/writes need to be unbounded; the upper layer (SPDY
+	// frame handler on the backend) manages its own timing.
+	_ = rawConn.SetDeadline(time.Time{})
+
+	slog.Info("agent proxy upgrade: 101 Switching Protocols received from apiserver",
+		slog.Any("response_headers", httpResp.Header),
+	)
+
+	// Wrap the conn so reads come from bufReader first (any
+	// piggy-backed bytes) before falling through to the raw conn.
+	wrapped := &bufConn{r: bufReader, conn: rawConn}
 	return &agentv2.KubeProxyResponse{
 		StatusCode: 101,
 		Headers:    flattenHeaders(httpResp.Header),
-	}, rwc
+	}, wrapped
+}
+
+// bufConn satisfies net.Conn (and therefore io.ReadWriteCloser) over
+// a bufio.Reader + raw net.Conn pair. After http.ReadResponse drains
+// the response headers, the bufReader may hold bytes that arrived in
+// the same TCP segment as the headers — those belong to the upgraded
+// protocol and MUST be returned to the caller before falling through
+// to the raw conn.
+type bufConn struct {
+	r    *bufio.Reader
+	conn net.Conn
+}
+
+func (b *bufConn) Read(p []byte) (int, error)         { return b.r.Read(p) }
+func (b *bufConn) Write(p []byte) (int, error)        { return b.conn.Write(p) }
+func (b *bufConn) Close() error                       { return b.conn.Close() }
+func (b *bufConn) LocalAddr() net.Addr                { return b.conn.LocalAddr() }
+func (b *bufConn) RemoteAddr() net.Addr               { return b.conn.RemoteAddr() }
+func (b *bufConn) SetDeadline(t time.Time) error      { return b.conn.SetDeadline(t) }
+func (b *bufConn) SetReadDeadline(t time.Time) error  { return b.conn.SetReadDeadline(t) }
+func (b *bufConn) SetWriteDeadline(t time.Time) error { return b.conn.SetWriteDeadline(t) }
+
+// redactAuthForLog returns a copy of h with the Authorization value
+// elided. We log headers for debugging but the bearer token is
+// sensitive — keep it out of stderr.
+func redactAuthForLog(h http.Header) http.Header {
+	out := h.Clone()
+	if out.Get("Authorization") != "" {
+		out.Set("Authorization", "Bearer <redacted>")
+	}
+	return out
 }
 
 // HandleWatch opens a watch stream against the apiserver and returns a
@@ -240,6 +404,29 @@ func (p *KubeAPIProxy) buildRequest(ctx context.Context, req *agentv2.KubeProxyR
 			}
 			continue
 		}
+		if upgradeAttempt {
+			// Multi-value headers (X-Stream-Protocol-Version chief
+			// among them) were comma-joined at the backend's
+			// flattenRequestHeaders because our proto's
+			// map<string,string> only carries one value per key.
+			// K8s' SPDY negotiation reads
+			// req.Header["X-Stream-Protocol-Version"] expecting a
+			// distinct entry per protocol; one comma-joined entry
+			// matches no supported protocol and the apiserver
+			// rejects with 400 Bad Request. Split back here.
+			//
+			// RFC 7230 §3.2.2 explicitly allows comma-merge/split
+			// round-trips, so this is safe even for headers that
+			// were originally single-valued — the apiserver sees
+			// the same logical content either way.
+			for _, part := range strings.Split(v, ",") {
+				part = strings.TrimSpace(part)
+				if part != "" {
+					httpReq.Header.Add(k, part)
+				}
+			}
+			continue
+		}
 		httpReq.Header.Set(k, v)
 	}
 	return httpReq, nil
@@ -313,6 +500,10 @@ func (h *Handler) HandleKubeStreamData(requestID string, data *agentv2.KubeStrea
 	sess, ok := h.tunnels[requestID]
 	h.tunnelsMu.RUnlock()
 	if !ok {
+		// Stale message — tunnel was already torn down. Drop silently;
+		// the originator's Multiplexor slot is gone too.
+		slog.Debug("agent proxy: KubeStreamData for unknown tunnel",
+			slog.String("request_id", requestID))
 		return
 	}
 	select {
@@ -391,11 +582,12 @@ func (h *Handler) HandleKubeRequest(ctx context.Context, client *channel.Client,
 //   5. Send a final StreamClosed so the backend's TunnelConn / slot
 //      cleans up promptly instead of waiting for a timeout.
 func (h *Handler) handleUpgrade(ctx context.Context, client *channel.Client, requestID string, req *agentv2.KubeProxyRequest) {
+	slog.Info("agent proxy: tunnel session starting",
+		slog.String("request_id", requestID),
+		slog.String("path", req.GetPath()),
+	)
 	sess := newTunnelSession(requestID)
 
-	// Register early so any KubeStreamData that races the response
-	// (it shouldn't — backend waits for 101 first — but defending
-	// against reorder via fast network is cheap) finds the session.
 	h.tunnelsMu.Lock()
 	h.tunnels[requestID] = sess
 	h.tunnelsMu.Unlock()
@@ -404,12 +596,13 @@ func (h *Handler) handleUpgrade(ctx context.Context, client *channel.Client, req
 		delete(h.tunnels, requestID)
 		h.tunnelsMu.Unlock()
 		sess.close()
+		slog.Info("agent proxy: tunnel session ended",
+			slog.String("request_id", requestID),
+		)
 	}()
 
 	resp, conn := h.proxy.HandleUpgrade(ctx, req)
 
-	// Always send the response (101 or non-101 or error). Backend's
-	// awaitTunnelHandshake matches on this first message.
 	if err := client.Send(&agentv2.AgentMessage{
 		RequestId: requestID,
 		Kind:      &agentv2.AgentMessage_KubeResponse{KubeResponse: resp},
@@ -424,9 +617,10 @@ func (h *Handler) handleUpgrade(ctx context.Context, client *channel.Client, req
 	}
 
 	if resp.GetStatusCode() != 101 || conn == nil {
-		// Upgrade rejected by apiserver (auth, RBAC, pod gone, etc.)
-		// or transport-level error. Backend forwards the response
-		// shape to client-go's SPDY library — nothing more to do here.
+		slog.Info("agent proxy upgrade: not 101, no tunnel to maintain",
+			slog.String("request_id", requestID),
+			slog.Uint64("status", uint64(resp.GetStatusCode())),
+		)
 		return
 	}
 	defer func() { _ = conn.Close() }()
@@ -435,6 +629,10 @@ func (h *Handler) handleUpgrade(ctx context.Context, client *channel.Client, req
 	if window == 0 {
 		window = DefaultTunnelWindowBytes
 	}
+	slog.Info("agent proxy tunnel: pumping bytes",
+		slog.String("request_id", requestID),
+		slog.Uint64("window_bytes", window),
+	)
 	sess.run(ctx, conn, client, window)
 
 	// Final terminator so the backend's TunnelConn slot cleans up

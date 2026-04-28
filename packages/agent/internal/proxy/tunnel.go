@@ -122,6 +122,13 @@ func (s *tunnelSession) run(ctx context.Context, conn io.ReadWriteCloser, sender
 func (s *tunnelSession) pumpToBackend(ctx context.Context, conn io.Reader, sender MessageSender, window uint64) {
 	credit := window
 	buf := make([]byte, TunnelChunkBytes)
+	var totalBytes uint64
+	defer func() {
+		slog.Info("agent proxy tunnel: pumpToBackend exiting",
+			slog.String("request_id", s.requestID),
+			slog.Uint64("bytes_sent", totalBytes),
+		)
+	}()
 	for {
 		// Wait for credits if local window is exhausted.
 		for credit == 0 {
@@ -143,10 +150,18 @@ func (s *tunnelSession) pumpToBackend(ctx context.Context, conn io.Reader, sende
 		}
 
 		n, err := conn.Read(buf[:toRead])
+		if err != nil || n == 0 {
+			slog.Info("agent proxy tunnel: conn.Read returned",
+				slog.String("request_id", s.requestID),
+				slog.Int("n", n),
+				slog.Any("error", err),
+			)
+		}
 		if n > 0 {
 			data := make([]byte, n)
 			copy(data, buf[:n])
 			credit -= uint64(n)
+			totalBytes += uint64(n)
 			if sendErr := sender.Send(&agentv2.AgentMessage{
 				RequestId: s.requestID,
 				Kind: &agentv2.AgentMessage_KubeStreamData{
@@ -191,6 +206,13 @@ func (s *tunnelSession) pumpToBackend(ctx context.Context, conn io.Reader, sende
 // use it; otherwise we exit and let pumpToBackend's eventual conn
 // teardown propagate.
 func (s *tunnelSession) pumpToApiserver(ctx context.Context, conn io.WriteCloser, sender MessageSender) {
+	var totalBytes uint64
+	defer func() {
+		slog.Info("agent proxy tunnel: pumpToApiserver exiting",
+			slog.String("request_id", s.requestID),
+			slog.Uint64("bytes_received", totalBytes),
+		)
+	}()
 	for {
 		select {
 		case data, ok := <-s.inbound:
@@ -216,6 +238,7 @@ func (s *tunnelSession) pumpToApiserver(ctx context.Context, conn io.WriteCloser
 					slog.String("error", err.Error()))
 				return
 			}
+			totalBytes += uint64(len(payload))
 			// Credit refund: backend can send another payload of this
 			// size before having to wait. Safe to drop on Send error
 			// — the session is tearing down anyway.
