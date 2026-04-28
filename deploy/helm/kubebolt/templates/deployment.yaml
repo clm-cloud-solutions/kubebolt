@@ -165,6 +165,14 @@ spec:
               value: {{ .Values.agentIngest.authMode | quote }}
             - name: KUBEBOLT_AGENT_TOKEN_AUDIENCE
               value: {{ .Values.agentIngest.tokenAudience | quote }}
+            {{- if .Values.agentIngest.rateLimit.enabled }}
+            - name: KUBEBOLT_AGENT_RATE_LIMIT_ENABLED
+              value: "true"
+            - name: KUBEBOLT_AGENT_RATE_LIMIT_RPS
+              value: {{ .Values.agentIngest.rateLimit.requestsPerSec | quote }}
+            - name: KUBEBOLT_AGENT_RATE_LIMIT_BURST
+              value: {{ .Values.agentIngest.rateLimit.burst | quote }}
+            {{- end }}
             {{- if .Values.agentIngest.tls.enabled }}
             {{- if not .Values.agentIngest.tls.existingSecret }}
             {{- fail "agentIngest.tls.enabled=true requires agentIngest.tls.existingSecret" }}

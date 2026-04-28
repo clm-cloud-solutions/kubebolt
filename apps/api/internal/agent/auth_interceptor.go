@@ -55,13 +55,23 @@ func ParseEnforcement(s string) (AuthEnforcement, bool) {
 // succeeds, missing a verified client cert rejects the call. Has no
 // effect when EnforcementDisabled.
 //
+// RateLimiter is optional. When non-nil and Enabled(), the interceptor
+// consumes 1 token per RPC keyed on identity.TenantID. Empty TenantID
+// (disabled / permissive-fallback) bypasses the limiter — see
+// rate_limiter.go for the rationale.
+//
 // ENTERPRISE-CANDIDATE (mTLS): see tls_config.go for the split rule.
 // RequireMTLS itself is the gating flag here; the OSS edition would
 // reject any AuthConfig with RequireMTLS=true at startup.
+//
+// ENTERPRISE-CANDIDATE (plan-aware rate limiting): see
+// auth/rate_limiter.go. The OSS edition gets a single global limit;
+// per-tenant plans land with the SaaS edition.
 type AuthConfig struct {
 	Enforcement   AuthEnforcement
 	Authenticator auth.AgentAuthenticator
 	RequireMTLS   bool
+	RateLimiter   *auth.RateLimiter
 }
 
 // dummyIdentity is the placeholder the interceptor stamps when
@@ -101,6 +111,13 @@ func authenticateMD(ctx context.Context, cfg AuthConfig) (*auth.AgentIdentity, e
 	}
 	if cfg.RequireMTLS && !id.TLSVerified {
 		return nil, mapAuthError(auth.ErrTLSRequired)
+	}
+	if cfg.RateLimiter != nil && cfg.RateLimiter.Enabled() {
+		if ok, retryAfter := cfg.RateLimiter.Allow(id.TenantID); !ok {
+			return nil, status.Errorf(codes.ResourceExhausted,
+				"agent ingest rate limit exceeded for tenant; retry after %s",
+				retryAfter.Round(time.Millisecond))
+		}
 	}
 	return id, nil
 }

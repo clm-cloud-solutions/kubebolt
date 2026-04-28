@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,6 +170,57 @@ func TestAuthenticateMD_RequireMTLSWithoutCertRejects(t *testing.T) {
 	st, ok := status.FromError(err)
 	if !ok || st.Code() != codes.Unauthenticated {
 		t.Errorf("RequireMTLS without verified cert must return Unauthenticated, got %v", err)
+	}
+}
+
+func TestAuthenticateMD_RateLimiterDeniesPastBurst(t *testing.T) {
+	want := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "t1"}
+	a := &stubAuther{mode: auth.ModeIngestToken, returns: want}
+	rl := auth.NewRateLimiter(auth.RateLimitConfig{Enabled: true, RequestsPerSec: 1, Burst: 2})
+	cfg := AuthConfig{Enforcement: EnforcementEnforced, Authenticator: a, RateLimiter: rl}
+
+	// Burst (2) succeed.
+	for i := 0; i < 2; i++ {
+		if _, err := authenticateMD(context.Background(), cfg); err != nil {
+			t.Fatalf("burst[%d] should succeed: %v", i, err)
+		}
+	}
+	// Next call denied with ResourceExhausted.
+	_, err := authenticateMD(context.Background(), cfg)
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status, got %v", err)
+	}
+	if st.Code() != codes.ResourceExhausted {
+		t.Errorf("code = %s, want ResourceExhausted", st.Code())
+	}
+	if !strings.Contains(st.Message(), "retry after") {
+		t.Errorf("message should advertise retry-after, got %q", st.Message())
+	}
+}
+
+func TestAuthenticateMD_RateLimiterIgnoresEmptyTenant(t *testing.T) {
+	// disabled-mode synthetic identity has TenantID="" — the rate
+	// limiter must not start denying those.
+	rl := auth.NewRateLimiter(auth.RateLimitConfig{Enabled: true, RequestsPerSec: 1, Burst: 1})
+	cfg := AuthConfig{Enforcement: EnforcementDisabled, RateLimiter: rl}
+	for i := 0; i < 100; i++ {
+		if _, err := authenticateMD(context.Background(), cfg); err != nil {
+			t.Fatalf("disabled mode + empty tenant must always allow, denied at %d: %v", i, err)
+		}
+	}
+}
+
+func TestAuthenticateMD_RateLimiterDisabledIsNoop(t *testing.T) {
+	want := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "t1"}
+	a := &stubAuther{mode: auth.ModeIngestToken, returns: want}
+	rl := auth.NewRateLimiter(auth.RateLimitConfig{Enabled: false, RequestsPerSec: 1, Burst: 1})
+	cfg := AuthConfig{Enforcement: EnforcementEnforced, Authenticator: a, RateLimiter: rl}
+	// Even with tiny limits, disabled limiter must allow everything.
+	for i := 0; i < 50; i++ {
+		if _, err := authenticateMD(context.Background(), cfg); err != nil {
+			t.Fatalf("disabled limiter must always allow, denied at %d: %v", i, err)
+		}
 	}
 }
 

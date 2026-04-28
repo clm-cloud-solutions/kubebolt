@@ -445,6 +445,19 @@ func main() {
 		agentAuthCfg.RequireMTLS = true
 	}
 
+	// Per-tenant rate limiter (ENTERPRISE-CANDIDATE). Off by default;
+	// operator opts in via KUBEBOLT_AGENT_RATE_LIMIT_ENABLED=true. With
+	// the OSS edition every tenant gets the same global config; the
+	// SaaS edition will swap in plan-aware lookups.
+	rateLimitCfg := auth.LoadRateLimitConfigFromEnv()
+	if rateLimitCfg.Enabled {
+		agentAuthCfg.RateLimiter = auth.NewRateLimiter(rateLimitCfg)
+		slog.Info("agent ingest rate limit enabled",
+			slog.Float64("requests_per_sec", rateLimitCfg.RequestsPerSec),
+			slog.Float64("burst", rateLimitCfg.Burst),
+		)
+	}
+
 	go func() {
 		if err := agent.Listen(agentCtx, agentAddr, ingestSrv, agent.ListenOptions{
 			Auth: agentAuthCfg,

@@ -88,6 +88,18 @@ agentIngest:
     # that only accept ingest tokens (BearerIngest mode).
     enableTokenReview: true
 
+  # Per-tenant rate limiting on the agent ingest channel.
+  #
+  # ENTERPRISE-CANDIDATE (plan-aware policies):
+  # The token-bucket algorithm itself stays OSS — operators get a single
+  # global limit. Per-tenant plan-based policies (free / team / enterprise
+  # with distinct thresholds) are a candidate to move behind a license
+  # gate when the SaaS hospedado launches.
+  rateLimit:
+    enabled: false
+    requestsPerSec: 1000
+    burst: 2000
+
   # Transport security for the agent channel.
   #
   # ENTERPRISE-CANDIDATE (mTLS): plain TLS (server cert only) stays OSS;
