@@ -71,6 +71,20 @@ func NewServer(writer MetricsWriter, opts ...Option) *Server {
 	return s
 }
 
+// streamSender adapts a server-side gRPC stream to the channel.Sender
+// interface so the Agent can serialize all outbound writes through a
+// single mutex. The underlying stream itself is NOT safe for
+// concurrent Send; the mutex inside Agent.sendMu ensures serialization
+// across the heartbeat-ack path (read loop) and the
+// AgentProxyTransport.RoundTrip path.
+type streamSender struct {
+	stream agentv2.AgentChannel_ChannelServer
+}
+
+func (s streamSender) Send(msg *agentv2.BackendMessage) error {
+	return s.stream.Send(msg)
+}
+
 // Channel handles the bidi stream from a single agent. Lifecycle:
 //
 //  1. Read first AgentMessage. MUST be Hello — anything else is a
@@ -111,6 +125,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		slog.String("agent_version", hello.GetAgentVersion()),
 		slog.String("kernel", hello.GetKernelVersion()),
 		slog.String("runtime", hello.GetContainerRuntime()),
+		slog.Any("capabilities", hello.GetCapabilities()),
 	}
 	if id != nil {
 		logAttrs = append(logAttrs,
@@ -121,7 +136,24 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	}
 	slog.Info("agent registered", logAttrs...)
 
-	if err := stream.Send(&agentv2.BackendMessage{
+	// Build an Agent that wraps this stream as its Sender. All
+	// outbound BackendMessages funnel through agent.Send so concurrent
+	// writers (heartbeat ack on the read loop + AgentProxyTransport
+	// from commit 5+) coordinate via a single mutex inside the Agent.
+	registeredAgent := channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id, streamSender{stream})
+	defer registeredAgent.Close()
+	if s.registry != nil {
+		if evicted := s.registry.Register(registeredAgent); evicted != nil {
+			slog.Info("evicting prior agent for cluster",
+				slog.String("cluster_id", clusterID),
+				slog.String("evicted_agent_id", evicted.AgentID),
+			)
+			evicted.Close()
+		}
+		defer s.registry.Unregister(registeredAgent)
+	}
+
+	if err := registeredAgent.Send(&agentv2.BackendMessage{
 		Kind: &agentv2.BackendMessage_Welcome{
 			Welcome: &agentv2.Welcome{
 				AgentId:   agentID,
@@ -135,25 +167,6 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		},
 	}); err != nil {
 		return err
-	}
-
-	// Register the agent so the AgentProxyTransport (commit 5+) and
-	// admin handlers can find this stream. evicted handles the
-	// reconnect-from-same-cluster_id race: the previous handler is
-	// signalled to exit via its Closed() chan and any in-flight kube
-	// requests on its Multiplexor are cancelled.
-	var registeredAgent *channel.Agent
-	if s.registry != nil {
-		registeredAgent = channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id)
-		if evicted := s.registry.Register(registeredAgent); evicted != nil {
-			slog.Info("evicting prior agent for cluster",
-				slog.String("cluster_id", clusterID),
-				slog.String("evicted_agent_id", evicted.AgentID),
-			)
-			evicted.Close()
-		}
-		defer s.registry.Unregister(registeredAgent)
-		defer registeredAgent.Close()
 	}
 
 	for {
@@ -180,7 +193,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 				}
 				slog.Info("agent heartbeat", hbAttrs...)
 			}
-			if err := stream.Send(&agentv2.BackendMessage{
+			if err := registeredAgent.Send(&agentv2.BackendMessage{
 				Kind: &agentv2.BackendMessage_HeartbeatAck{
 					HeartbeatAck: &agentv2.HeartbeatAck{ReceivedAt: timestamppb.Now()},
 				},
@@ -206,14 +219,11 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			}
 
 		case *agentv2.AgentMessage_KubeResponse, *agentv2.AgentMessage_KubeEvent, *agentv2.AgentMessage_StreamClosed:
-			// Route to the agent's Multiplexor. Commit 5 of this sprint
-			// wires the AgentProxyTransport that issues kube_requests
-			// and registers the request_ids in advance; until then,
-			// these messages are unsolicited and Deliver no-ops them.
+			// Route to the agent's Multiplexor. The AgentProxyTransport
+			// (commit 5+) issues kube_requests and registers request_ids
+			// in advance; without a matching slot, Deliver no-ops.
 			_ = k
-			if registeredAgent != nil {
-				registeredAgent.Pending.Deliver(msg)
-			}
+			registeredAgent.Pending.Deliver(msg)
 
 		case *agentv2.AgentMessage_Hello:
 			return status.Error(codes.InvalidArgument, "Hello sent twice on the same stream")
