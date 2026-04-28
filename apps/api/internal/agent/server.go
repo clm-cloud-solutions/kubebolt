@@ -269,19 +269,36 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	}
 }
 
+// agentProxySuffix differentiates auto-registered agent-proxy
+// entries from kubeconfig-backed contexts in the cluster dropdown
+// when both happen to point at the same physical cluster (single-
+// cluster self-hosted dev: laptop has both kubeconfig direct AND
+// agent in the cluster). Without it the operator sees two entries
+// titled identically and has to read the URL to tell them apart.
+//
+// The suffix is also a clear signal in the SaaS multi-cluster case:
+// every cluster reached via agent-proxy carries the marker so an
+// operator looking at a fleet listing knows which path serves a
+// given cluster. Frontend can later replace this with a badge/icon
+// driven by `source: "agent-proxy"`; until then the textual suffix
+// is the cheapest disambiguator.
+const agentProxySuffix = " (via agent)"
+
 // autoRegisterDisplayName picks the friendly label for the
 // agent-proxy cluster entry in the manager's listing. Today it
 // honors a `kubebolt.io/cluster-name` label in Hello.Labels (set
 // agent-side from KUBEBOLT_AGENT_CLUSTER_NAME) and falls back to
-// the cluster_id itself. Operators can always override via
+// the cluster_id itself. Either way the result carries the
+// agentProxySuffix marker. Operators can always override via
 // Manager.SetClusterDisplayName.
 func autoRegisterDisplayName(hello *agentv2.Hello, clusterID string) string {
+	base := clusterID
 	if hello != nil {
 		if name := hello.GetLabels()["kubebolt.io/cluster-name"]; name != "" {
-			return name
+			base = name
 		}
 	}
-	return clusterID
+	return base + agentProxySuffix
 }
 
 // resolveAgentID returns a stable agent identifier. With an authenticated

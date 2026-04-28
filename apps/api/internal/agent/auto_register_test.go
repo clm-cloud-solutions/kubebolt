@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // fakeRegistrar captures calls so tests can assert on them. Methods
@@ -46,6 +47,43 @@ func TestMaybeAutoRegister_RegistersWhenAllConditionsMet(t *testing.T) {
 	}
 	if len(reg.added) != 1 || reg.added[0].clusterID != "c-prod" || reg.added[0].displayName != "Prod EU" {
 		t.Errorf("added = %+v", reg.added)
+	}
+}
+
+func TestAutoRegisterDisplayName_AppendsSuffix(t *testing.T) {
+	// Pin the disambiguation contract: agent-proxy clusters MUST be
+	// visually distinguishable from kubeconfig contexts in the listing,
+	// even when they target the same physical cluster.
+	cases := []struct {
+		hello    *agentv2.Hello
+		clusterID string
+		want     string
+	}{
+		{
+			// Honors the cluster_name label when present.
+			hello:     &agentv2.Hello{Labels: map[string]string{"kubebolt.io/cluster-name": "kind-kubebolt-dev"}},
+			clusterID: "local",
+			want:      "kind-kubebolt-dev (via agent)",
+		},
+		{
+			// Falls back to the cluster_id when label is missing.
+			hello:     &agentv2.Hello{},
+			clusterID: "local",
+			want:      "local (via agent)",
+		},
+		{
+			// Nil Hello tolerated (defensive — shouldn't happen in
+			// production but the helper must not panic).
+			hello:     nil,
+			clusterID: "abc123",
+			want:      "abc123 (via agent)",
+		},
+	}
+	for _, tc := range cases {
+		got := autoRegisterDisplayName(tc.hello, tc.clusterID)
+		if got != tc.want {
+			t.Errorf("displayName(%v, %q) = %q, want %q", tc.hello, tc.clusterID, got, tc.want)
+		}
 	}
 }
 
