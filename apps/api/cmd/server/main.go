@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
@@ -401,7 +402,12 @@ func main() {
 	}
 
 	writer := agent.NewVMWriter(vmURL)
-	ingestSrv := agent.NewServer(writer)
+	// AgentRegistry indexes connected agents by cluster_id. The
+	// AgentProxyTransport (Sprint A.5 commit 5) consumes it; admin
+	// handlers and the cluster manager will reach for it once auto-
+	// register lands (commit 7).
+	agentRegistry := channel.NewAgentRegistry()
+	ingestSrv := agent.NewServer(writer, agent.WithRegistry(agentRegistry))
 
 	// Sprint A migration window: enforcement defaults to "disabled" so
 	// existing fleets without auth credentials keep working. Operators

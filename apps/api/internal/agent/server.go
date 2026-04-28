@@ -28,6 +28,7 @@ import (
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
@@ -39,13 +40,35 @@ type MetricsWriter interface {
 }
 
 // Server implements agentv2.AgentChannelServer.
+//
+// registry is optional. When non-nil the handler registers each connected
+// agent under its cluster_id so other parts of the backend (the
+// AgentProxyTransport in commit 5+, admin REST handlers, etc.) can locate
+// the live channel. nil keeps the legacy stand-alone behavior — useful
+// for unit tests that exercise only the auth/proto path.
 type Server struct {
 	agentv2.UnimplementedAgentChannelServer
-	writer MetricsWriter
+	writer   MetricsWriter
+	registry *channel.AgentRegistry
 }
 
-func NewServer(writer MetricsWriter) *Server {
-	return &Server{writer: writer}
+// Option configures a Server. Functional-options pattern keeps NewServer
+// backward-compatible while allowing the registry to be plugged in by
+// main.go without breaking call sites that don't need it (tests).
+type Option func(*Server)
+
+// WithRegistry attaches the AgentRegistry the handler uses to track
+// the lifecycle of each connected agent. nil is tolerated.
+func WithRegistry(r *channel.AgentRegistry) Option {
+	return func(s *Server) { s.registry = r }
+}
+
+func NewServer(writer MetricsWriter, opts ...Option) *Server {
+	s := &Server{writer: writer}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // Channel handles the bidi stream from a single agent. Lifecycle:
@@ -114,6 +137,25 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		return err
 	}
 
+	// Register the agent so the AgentProxyTransport (commit 5+) and
+	// admin handlers can find this stream. evicted handles the
+	// reconnect-from-same-cluster_id race: the previous handler is
+	// signalled to exit via its Closed() chan and any in-flight kube
+	// requests on its Multiplexor are cancelled.
+	var registeredAgent *channel.Agent
+	if s.registry != nil {
+		registeredAgent = channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id)
+		if evicted := s.registry.Register(registeredAgent); evicted != nil {
+			slog.Info("evicting prior agent for cluster",
+				slog.String("cluster_id", clusterID),
+				slog.String("evicted_agent_id", evicted.AgentID),
+			)
+			evicted.Close()
+		}
+		defer s.registry.Unregister(registeredAgent)
+		defer registeredAgent.Close()
+	}
+
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -164,11 +206,14 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			}
 
 		case *agentv2.AgentMessage_KubeResponse, *agentv2.AgentMessage_KubeEvent, *agentv2.AgentMessage_StreamClosed:
-			// Until commit 5 wires the proxy dispatcher, the backend never
-			// initiates a kube_request, so any kube_* message is unsolicited.
-			// Drop without erroring out.
+			// Route to the agent's Multiplexor. Commit 5 of this sprint
+			// wires the AgentProxyTransport that issues kube_requests
+			// and registers the request_ids in advance; until then,
+			// these messages are unsolicited and Deliver no-ops them.
 			_ = k
-			slog.Debug("dropped unsolicited kube_* message", slog.String("agent_id", agentID))
+			if registeredAgent != nil {
+				registeredAgent.Pending.Deliver(msg)
+			}
 
 		case *agentv2.AgentMessage_Hello:
 			return status.Error(codes.InvalidArgument, "Hello sent twice on the same stream")
