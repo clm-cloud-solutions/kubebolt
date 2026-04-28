@@ -152,7 +152,7 @@ type recordingHandler struct {
 	disconnects      atomic.Int32
 	kubeRequests     atomic.Int32
 	disconnectErrFn  func(*agentv2.Disconnect) error
-	kubeRequestFn    func(c *Client, rid string, req *agentv2.KubeProxyRequest)
+	kubeRequestFn    func(ctx context.Context, c *Client, rid string, req *agentv2.KubeProxyRequest)
 }
 
 func (r *recordingHandler) HandleHeartbeatAck(*agentv2.HeartbeatAck) {
@@ -168,10 +168,10 @@ func (r *recordingHandler) HandleDisconnect(d *agentv2.Disconnect) error {
 	}
 	return nil
 }
-func (r *recordingHandler) HandleKubeRequest(c *Client, rid string, req *agentv2.KubeProxyRequest) {
+func (r *recordingHandler) HandleKubeRequest(ctx context.Context, c *Client, rid string, req *agentv2.KubeProxyRequest) {
 	r.kubeRequests.Add(1)
 	if r.kubeRequestFn != nil {
-		r.kubeRequestFn(c, rid, req)
+		r.kubeRequestFn(ctx, c, rid, req)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestClient_HandleKubeRequestReceivesPayload(t *testing.T) {
 
 	receivedPath := make(chan string, 1)
 	h := &recordingHandler{
-		kubeRequestFn: func(c *Client, rid string, req *agentv2.KubeProxyRequest) {
+		kubeRequestFn: func(_ context.Context, c *Client, rid string, req *agentv2.KubeProxyRequest) {
 			receivedPath <- req.GetPath()
 		},
 	}
@@ -481,7 +481,7 @@ func TestClient_SendDuringRunSucceeds(t *testing.T) {
 	// the same code path that commit 4 (KubeAPIProxy) will use.
 	sendDone := make(chan error, 1)
 	h := &recordingHandler{
-		kubeRequestFn: func(c *Client, rid string, req *agentv2.KubeProxyRequest) {
+		kubeRequestFn: func(_ context.Context, c *Client, rid string, req *agentv2.KubeProxyRequest) {
 			err := c.Send(&agentv2.AgentMessage{
 				RequestId: rid,
 				Kind: &agentv2.AgentMessage_KubeResponse{

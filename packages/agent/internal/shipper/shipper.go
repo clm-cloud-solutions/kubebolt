@@ -37,6 +37,8 @@ type Shipper struct {
 	nodeName     string
 	agentVersion string
 	auth         AuthOptions
+	handler      channel.Handler
+	capabilities []string
 
 	// Populated each time a session reaches Welcome.
 	agentID string
@@ -52,12 +54,27 @@ func WithAuth(opts AuthOptions) Option {
 	return func(s *Shipper) { s.auth = opts }
 }
 
+// WithHandler attaches a channel.Handler to the shipper. Used by the
+// kube-proxy wiring (Sprint A.5 commit 4) to plug in a KubeAPIProxy
+// dispatcher. nil falls back to channel.NoopHandler.
+func WithHandler(h channel.Handler) Option {
+	return func(s *Shipper) { s.handler = h }
+}
+
+// WithCapabilities advertises agent capabilities in the Hello message.
+// The kube-proxy wiring sets ["metrics", "kube-proxy"] when the proxy
+// is built. Default is ["metrics"].
+func WithCapabilities(caps ...string) Option {
+	return func(s *Shipper) { s.capabilities = caps }
+}
+
 func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Option) *Shipper {
 	s := &Shipper{
 		backendURL:   backendURL,
 		buf:          buf,
 		nodeName:     nodeName,
 		agentVersion: agentVersion,
+		capabilities: []string{"metrics"},
 	}
 	for _, o := range opts {
 		o(s)
@@ -128,12 +145,14 @@ func (s *Shipper) runSession(ctx context.Context) error {
 		ContainerRuntime: "phaseB",
 		CgroupVersion:    "n/a",
 		KubeletVersion:   "n/a",
-		// Sprint A.5 commit 4 advertises "kube-proxy" once the agent
-		// has a KubeAPIProxy implementation. Until then, only metrics.
-		Capabilities: []string{"metrics"},
+		Capabilities:     s.capabilities,
 	}
 
-	client := channel.NewClient(conn, s.buf, hello, channel.NoopHandler{})
+	handler := s.handler
+	if handler == nil {
+		handler = channel.NoopHandler{}
+	}
+	client := channel.NewClient(conn, s.buf, hello, handler)
 	if err := client.Run(ctx); err != nil {
 		return err
 	}
