@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // VMWriter writes samples to VictoriaMetrics via its Prometheus plain-text
@@ -29,7 +29,7 @@ func NewVMWriter(endpoint string) *VMWriter {
 	}
 }
 
-func (w *VMWriter) Write(ctx context.Context, samples []*agentv1.Sample) error {
+func (w *VMWriter) Write(ctx context.Context, samples []*agentv2.Sample) error {
 	if len(samples) == 0 {
 		return nil
 	}

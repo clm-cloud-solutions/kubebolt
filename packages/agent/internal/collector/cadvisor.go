@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // CadvisorCollector scrapes the kubelet's /metrics/cadvisor endpoint
@@ -47,14 +47,14 @@ var cadvisorToPodMetric = map[string]string{
 	"container_network_transmit_packets_dropped_total": "pod_network_transmit_packets_dropped_total",
 }
 
-func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error) {
+func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 	body, err := c.client.Get(ctx, "/metrics/cadvisor")
 	if err != nil {
 		return nil, err
 	}
 
 	now := timestamppb.Now()
-	var samples []*agentv1.Sample
+	var samples []*agentv2.Sample
 
 	scanner := bufio.NewScanner(bytes.NewReader(body))
 	// /metrics/cadvisor output can be large; bump the scan buffer past the
@@ -92,7 +92,7 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv1.Sample, err
 		if c.clusterName != "" {
 			sampleLabels["cluster_name"] = c.clusterName
 		}
-		samples = append(samples, &agentv1.Sample{
+		samples = append(samples, &agentv2.Sample{
 			Timestamp:  now,
 			MetricName: outName,
 			Value:      value,

@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // startServer spins up the AgentIngest service over a real localhost
@@ -36,7 +36,7 @@ func startServer(t *testing.T, opts ListenOptions) (addr string, stop func()) {
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(opts.TLS.Config)))
 	}
 	srv := grpc.NewServer(serverOpts...)
-	agentv1.RegisterAgentIngestServer(srv, NewServer(&captureWriter{}))
+	agentv2.RegisterAgentChannelServer(srv, NewServer(&captureWriter{}))
 	go func() { _ = srv.Serve(lis) }()
 	return lis.Addr().String(), func() { srv.Stop(); _ = lis.Close() }
 }
@@ -86,9 +86,8 @@ func TestServer_TLS_ServerOnly_AcceptsTLSClient(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	client := agentv1.NewAgentIngestClient(conn)
-	if _, err := client.Register(ctx, &agentv1.RegisterRequest{NodeName: "tls-node"}); err != nil {
-		t.Fatalf("Register over TLS: %v", err)
+	if _, err := helloAndWait(ctx, conn, "tls-node"); err != nil {
+		t.Fatalf("handshake over TLS: %v", err)
 	}
 }
 
@@ -110,8 +109,7 @@ func TestServer_TLS_RejectsPlaintextClient(t *testing.T) {
 	// gRPC.NewClient is lazy. The error surfaces on the first RPC.
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	client := agentv1.NewAgentIngestClient(conn)
-	if _, err := client.Register(ctx, &agentv1.RegisterRequest{NodeName: "plaintext"}); err == nil {
+	if _, err := helloAndWait(ctx, conn, "plaintext"); err == nil {
 		t.Error("plaintext client must be rejected by TLS server")
 	}
 }
@@ -136,8 +134,7 @@ func TestServer_MTLS_RequiredButClientHasNoCert(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	client := agentv1.NewAgentIngestClient(conn)
-	if _, err := client.Register(ctx, &agentv1.RegisterRequest{NodeName: "no-client-cert"}); err == nil {
+	if _, err := helloAndWait(ctx, conn, "no-client-cert"); err == nil {
 		t.Error("mTLS server must reject client without cert")
 	}
 }
@@ -163,9 +160,8 @@ func TestServer_MTLS_AcceptsClientWithCASignedCert(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	c := agentv1.NewAgentIngestClient(conn)
-	if _, err := c.Register(ctx, &agentv1.RegisterRequest{NodeName: "mtls-node"}); err != nil {
-		t.Fatalf("Register over mTLS: %v", err)
+	if _, err := helloAndWait(ctx, conn, "mtls-node"); err != nil {
+		t.Fatalf("handshake over mTLS: %v", err)
 	}
 }
 
@@ -193,8 +189,7 @@ func TestServer_MTLS_RejectsClientWithUnknownCA(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	c := agentv1.NewAgentIngestClient(conn)
-	if _, err := c.Register(ctx, &agentv1.RegisterRequest{NodeName: "wrong-ca"}); err == nil {
+	if _, err := helloAndWait(ctx, conn, "wrong-ca"); err == nil {
 		t.Error("server must reject client cert signed by an untrusted CA")
 	}
 }

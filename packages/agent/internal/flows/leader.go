@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // emitLeaderStatus writes a single sample to the ring buffer marking
@@ -46,7 +46,7 @@ func emitLeaderStatus(buf *buffer.Ring, clusterID, clusterName, nodeName, podNam
 	if leading {
 		value = 1.0
 	}
-	buf.Push([]*agentv1.Sample{{
+	buf.Push([]*agentv2.Sample{{
 		Timestamp:  timestamppb.Now(),
 		MetricName: "kubebolt_flow_collector_leader",
 		Value:      value,

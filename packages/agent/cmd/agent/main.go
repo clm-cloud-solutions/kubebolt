@@ -30,7 +30,7 @@ import (
 	"github.com/kubebolt/kubebolt/packages/agent/internal/flows"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/shipper"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 const agentVersion = "0.0.7-cluster-ident"
@@ -216,7 +216,7 @@ func main() {
 // collectors. Lets collectAndBuffer work with any source of samples.
 type Collector interface {
 	Name() string
-	Collect(ctx context.Context) ([]*agentv1.Sample, error)
+	Collect(ctx context.Context) ([]*agentv2.Sample, error)
 }
 
 func collectAndBuffer(ctx context.Context, c Collector, pods *collector.PodsCache, buf *buffer.Ring) {
