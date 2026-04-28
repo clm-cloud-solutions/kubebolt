@@ -1,9 +1,15 @@
 # Sprint A.5 — Design Doc: agent-as-K8s-API-proxy
 
-**Estado**: Pre-execution. Decisiones confirmadas, listo para arrancar commit 1.
+**Estado**: En ejecución. Commits 1-7 ✅ (REST + watch). Commits 8a-8h en curso (SPDY tunneling).
 **Pre-requisito**: Sprint A ✅ (17 commits en `feat/agent-auth`).
 **Branch**: `feat/agent-kube-proxy`.
-**Estimación (actualizada con decisiones)**: 3-4 semanas full-time / 5-7 semanas calendar.
+**Estimación (actualizada con SPDY scope-in)**: 4-5 semanas full-time / 6-8 semanas calendar.
+
+**Cambio de scope** (mid-sprint): SPDY/WebSocket tunneling para exec/portforward/attach
+entra al sprint. Originalmente marcado como out-of-scope §8 con etiqueta "A.5.5 si surge
+necesidad". Razón del scope-in: KubeBolt SaaS productivo no es viable sin pod terminal
++ portforward via agent-proxy. Sin ellos, agent-proxy es read-only-ish para los flujos
+interactivos críticos. Decisiones técnicas en §0.7-§0.9.
 
 ---
 
@@ -78,6 +84,118 @@ Sirve para logs (en grep se ve qué cluster vía qué proxy), para evitar
 ambigüedades en SNI (client-go puede validar host name aunque la conexión
 vaya por el Transport custom), y deja claro a cualquier dev que se topa con
 el log que NO es un host real DNS-resolvible.
+
+### 0.7 — SPDY/WebSocket tunneling: **opaque byte-tunnel**
+
+> **Decisión**: opción D (byte-tunnel) — el `AgentProxyTransport` detecta
+> el header `Connection: Upgrade` en la request y, a partir del 101
+> Switching Protocols, ambas direcciones intercambian bytes crudos vía
+> mensajes `KubeStreamData{data, eof}` correlacionados por `request_id`.
+
+K8s usa SPDY (y WebSocket desde 1.30+ vía KEP-4006) para `pods/exec`,
+`pods/attach` y `pods/portforward`. Estos protocolos son bidireccionales
+multi-stream (stdin/stdout/stderr/error/resize) que NO caben en el modelo
+unary-or-watch del proto actual.
+
+**Alternativas consideradas y descartadas**:
+
+| Approach | Por qué se descarta |
+|---|---|
+| Decodificar SPDY en el agent + re-encode per-stream | 500+ LOC framing; SPDY es protocolo en sunset (K8s migra a WebSocket); doble código path para WS futuro |
+| Endpoint WebSocket separado en el agent | Rompe el modelo outbound-only — agents detrás de NAT no aceptan inbound; mata la propiedad SaaS-friendly |
+| Stream gRPC dedicado por tunnel | El agent es quien dial-ea; backend no puede crear streams nuevos hacia agents |
+
+**El byte-tunnel funciona idéntico para SPDY y WebSocket** — no parseamos
+nada, sólo movemos bytes. client-go en el backend hace su framing SPDY
+normal **encima** del tunnel. Cuando K8s deprecate SPDY completo y todos
+los clientes hablen WS, no tocamos nada.
+
+**Wire format** (proto v2, oneof addition):
+
+```proto
+// Either direction. Adds to AgentMessage.kind and BackendMessage.kind.
+message KubeStreamData {
+  bytes data = 1;
+  bool eof = 2;     // signals end-of-stream from sender's side
+}
+```
+
+**Flow para un exec request**:
+
+```
+1. backend → agent : KubeProxyRequest{method=POST, path=/.../exec?...,
+                                      headers={Connection: Upgrade,
+                                               Upgrade: SPDY/3.1, ...}}
+2. agent: detecta Upgrade, dialea apiserver con SPDY upgrade
+3. agent → backend : KubeProxyResponse{status_code=101, headers=...}
+4. (a partir de aquí ambas direcciones envían KubeStreamData)
+5. backend → agent : KubeStreamData{data=<stdin bytes>}      (loop)
+6. agent  → backend: KubeStreamData{data=<stdout bytes>}     (loop)
+7. cualquier lado: KubeStreamData{eof=true}  o  StreamClosed
+```
+
+### 0.8 — Backpressure en tunnels: **credit-based flow control**
+
+> **Decisión**: opción A — flow control explícito con ACKs, NO blocking.
+> Cada tunnel mantiene una ventana de bytes outstanding (default 256 KiB).
+> El receiver envía `KubeStreamAck{request_id, bytes_consumed}` cuando
+> consume datos; el sender pausa cuando outstanding ≥ window.
+
+Diferencia crítica vs watch streams: en watch podemos drop-oldest porque
+el reflector de client-go re-lista (§0.2). En tunnels **cualquier byte
+perdido corrompe la sesión** — un solo byte de stdout faltante en un
+exec significa caracteres fantasma en la terminal.
+
+**Por qué credit-based y no "blocking on saturation"**:
+- 50 watches + 5 exec sessions comparten el mismo bidi gRPC channel
+- "Blocking" en un buffer compartido hace que un exec slow-consumer **ahoga** los 50 watches
+- Credit-based aísla: cada tunnel tiene su propia ventana, lentitud en uno NO afecta otros
+- Es exactamente lo que hace HTTP/2 a nivel de stream — pero como estamos multiplexando MUCHOS tunnels logical en UN stream HTTP/2, necesitamos hacerlo a nivel de aplicación
+
+**Wire format** (segunda adición a oneof):
+
+```proto
+message KubeStreamAck {
+  uint64 bytes_consumed = 1;  // delta since last ACK, monotonic
+}
+```
+
+**Tamaño de ventana** (256 KiB inicial — heurística):
+- Demasiado pequeño: round-trip cada N kilobytes mata throughput de portforward de DB streams
+- Demasiado grande: una sesión exec puede acaparar 16 MiB con un stdout flood
+- 256 KiB cubre típica latencia de 50ms con throughput de 5 MB/s — sweet spot
+- Configurable vía `KUBEBOLT_AGENT_TUNNEL_WINDOW_BYTES`
+
+### 0.9 — Hardening de tunnels para SaaS productivo
+
+> **Decisión**: defaults conservadores en OSS, override por env vars.
+> Defaults asumen un tenant de buena fe; SaaS multi-tenant los baja
+> (per-tenant rate limiting es ENTERPRISE-CANDIDATE).
+
+| Limit | Default | Env var | Justificación |
+|---|---|---|---|
+| Idle timeout | 5 min | `KUBEBOLT_TUNNEL_IDLE_TIMEOUT` | Sesión exec olvidada por usuario que cerró laptop sin Ctrl+D |
+| Max duration | 24 h | `KUBEBOLT_TUNNEL_MAX_DURATION` | Hard cap; security defense in depth |
+| Max tunnels per agent | 50 | `KUBEBOLT_TUNNEL_MAX_PER_AGENT` | Evita un cliente abriendo 10k tunnels |
+| Max bytes/sec per tunnel | 50 MiB/s | `KUBEBOLT_TUNNEL_MAX_BPS` | Cap a portforward abusivo (kubectl cp de 100 GB) |
+| Window bytes | 256 KiB | `KUBEBOLT_AGENT_TUNNEL_WINDOW_BYTES` | Ver §0.8 |
+
+**Audit logging** (siempre on, no configurable): cada tunnel open/close
+emite una línea `slog.Info` con `event=tunnel_open|tunnel_close,
+tenant_id, cluster_id, user_id, target_pod, namespace, container, bytes_in,
+bytes_out, duration_ms`. Sin esto, compliance es imposible (SOC2 requiere
+audit trail de quién accedió a qué pod cuándo).
+
+**Métricas Prometheus** (Sprint C polish — backend ya tiene scaffolding
+para métricas en commit ENTERPRISE-CANDIDATE):
+- `kubebolt_tunnel_active_total{cluster_id, kind}` — gauge
+- `kubebolt_tunnel_bytes_total{cluster_id, direction}` — counter
+- `kubebolt_tunnel_window_saturated_total{cluster_id}` — counter (cuántas veces el sender pausó por falta de credits)
+- `kubebolt_tunnel_idle_closes_total` — counter
+
+**ENTERPRISE-CANDIDATE**: per-tenant rate limiting (max-tunnels y max-bps
+diferentes por plan free/team/enterprise) — el algoritmo OSS, las
+políticas SaaS.
 
 ---
 
@@ -710,12 +828,28 @@ Sequenced commits, each compiling + green tests:
 | 5 | `feat(api): AgentProxyTransport + watch adapter` | 600 | the http.RoundTripper that bridges client-go to the channel |
 | 6 | `feat(cluster): ClusterAccess factory + Mode=local\|agent-proxy` | 400 | manager.go refactor |
 | 7 | `feat(cluster): auto-register agent-proxy clusters (opt-in)` | 250 | Helm value gate |
-| 8 | `feat(api-helm): proxy.enabled value + backend wiring` | 100 | helm template polish |
-| 9 | `feat(agent-helm): proxy.enabled value` | 80 | helm template polish |
-| 10 | `test(integration): client-go calls via proxy` | 300 | the smoking-gun test |
-| 11 | `test(e2e): multi-cluster sprint A.5` | 400 | bash + manifests |
+| 7b | `fix(agent): suffix " (via agent)" para disambiguar dropdown` | 60 | mid-sprint smoke test fix |
+| 7c | `feat(agent): operator-tier RBAC manifest` | 150 | dual ClusterRole, opt-in |
+| **8a** | **`docs(sprint-a5): include SPDY tunneling — design`** | **200** | **§0.7-§0.9 doc additions** |
+| **8b** | **`feat(proto)!: KubeStreamData + KubeStreamAck for upgrade tunnels`** | **80** | **proto + buf regen** |
+| **8c** | **`feat(agent-channel): tunnel slot mode + credit-based flow control`** | **350** | **Multiplexor extends Register(mode)** |
+| **8d** | **`feat(api-channel): hijackable conn + Upgrade detection`** | **400** | **AgentProxyTransport detects upgrade, returns net.Conn-shaped Body** |
+| **8e** | **`feat(agent-proxy): SPDY upgrade handler dialing apiserver`** | **300** | **agent dial + bidi byte shovel** |
+| **8f** | **`feat(api-proxy): tunnel limits + idle-timeout + audit logging`** | **350** | **§0.9 hardening** |
+| **8g** | **`feat(api-proxy): tunnel Prometheus metrics`** | **150** | **observability** |
+| **8h** | **`test(integration): pod exec via agent-proxy`** | **400** | **real SPDY round-trip test** |
+| 9 | `feat(api-helm): proxy.enabled value + backend wiring` | 100 | helm template polish |
+| 10 | `feat(agent-helm): proxy.enabled + rbac.mode values` | 120 | helm template (incluye operator RBAC del 7c) |
+| 11 | `test(integration): client-go calls via proxy` | 300 | the smoking-gun test (REST path) |
+| 12 | `test(e2e): multi-cluster sprint A.5 (REST + SPDY)` | 500 | bash + manifests + exec scenario |
 
-**Estimación total**: ~3980 líneas de código + ~1500 de tests.
+**Estimación total** (post-SPDY scope-in): ~5800 líneas de código + ~2400 de tests.
+
+Los commits 8a-8h son el grueso del scope-in mid-sprint (~2200 LOC). Si necesitas
+pausar después de 8a-8e (SPDY funcional pero sin hardening) está OK — el
+commit 8e marca el punto donde exec/portforward funcionan en kind/dev. Los
+commits 8f/8g/8h son hardening y observability obligatorios antes de promover
+a SaaS productivo.
 
 Eliminados respecto al borrador original:
 - Migrar Heartbeat/Metrics como commit aparte → ya forma parte del commit 1+2 (flip duro).
@@ -741,8 +875,11 @@ Eliminados respecto al borrador original:
 - **Cluster discovery vía agent registration en SaaS** — Sprint A.5 deja `autoRegisterClusters` opt-in. El `agents` bucket persistente queda para Sprint B.
 - **Métricas detalladas del proxy** (latencia per-call, error rate per-cluster) — quedan como `slog.Info` lines en A.5; Prometheus metrics en Sprint C.
 - **Agent → Agent comunicación** (ej. flow data sharing) — fuera de scope.
-- **Proxy de exec / port-forward / WebSocket** — el proxy A.5 cubre sólo K8s API REST + watch. Exec/port-forward usan SPDY que es otra bestia. Tracked para Sprint A.5.5 si surge necesidad.
+- ~~**Proxy de exec / port-forward / WebSocket**~~ → **scope-in mid-sprint**, ver §0.7-§0.9 + commits 8a-8h. SaaS productivo no es viable sin estos paths interactivos vía agent-proxy.
 - **Encriptación por-mensaje** sobre el canal ya autenticado — fuera de scope; mTLS a nivel transport ya existe (Sprint A).
+- **Per-tenant rate limiting de tunnels** (max-tunnels-por-plan, max-bps-por-plan diferenciado free/team/enterprise) — el algoritmo OSS, las políticas SaaS. ENTERPRISE-CANDIDATE.
+- **Sharding del AgentRegistry para horizontal scaling** — un solo backend instance maneja ~500 customers; más allá se shardea en Sprint C+.
+- **Tunnel session resume** después de reconnect — sesión exec rota = sesión perdida, igual que kubectl exec con red caída. No intentamos replay.
 
 ---
 
@@ -756,6 +893,10 @@ Eliminados respecto al borrador original:
 | §0.4 | Capacity target | **100 agentes / ~5k watches concurrentes** |
 | §0.5 | Arquitectura | **Monolito** — proxy dentro del binario actual |
 | §0.6 | Pseudoendpoint REST | **`https://<cluster_id>.agent.local`** |
+| §0.7 | SPDY/WebSocket tunneling | **opaque byte-tunnel** — `KubeStreamData{data, eof}` opcional en oneof |
+| §0.8 | Backpressure en tunnels | **credit-based flow control** — `KubeStreamAck`, ventana 256 KiB |
+| §0.9 | Tunnel hardening | **defaults conservadores** + audit logging always-on + Prom metrics |
 | extra | Deprecation v1 | **No aplica** — agente no publicado externamente, flip duro alcanza |
 
-Próximo paso: arrancar commit 1 (`feat(proto)!: AgentChannel v2 — replaces AgentIngest v1`).
+**Estado actual** (al finalizar 8a): commits 1-7 + 7b + 7c ✅ mergeados en `feat/agent-kube-proxy`.
+Próximo paso: commit 8b (`feat(proto)!: KubeStreamData + KubeStreamAck`).
