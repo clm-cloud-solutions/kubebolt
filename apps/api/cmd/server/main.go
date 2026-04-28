@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -402,12 +403,29 @@ func main() {
 	}
 
 	writer := agent.NewVMWriter(vmURL)
-	// AgentRegistry indexes connected agents by cluster_id. The
-	// AgentProxyTransport (Sprint A.5 commit 5) consumes it; admin
-	// handlers and the cluster manager will reach for it once auto-
-	// register lands (commit 7).
+	// AgentRegistry indexes connected agents by (cluster_id, agent_id).
+	// The AgentProxyTransport (Sprint A.5 commit 5) consumes it via the
+	// cluster.Manager; admin handlers will too (commit 8). The manager
+	// also gets a reference so AddAgentProxyCluster can later resolve
+	// reachability via the live registry.
 	agentRegistry := channel.NewAgentRegistry()
-	ingestSrv := agent.NewServer(writer, agent.WithRegistry(agentRegistry))
+	manager.SetAgentRegistry(agentRegistry)
+
+	// Auto-register agent-proxy clusters: when an agent advertises the
+	// kube-proxy capability AND this flag is on, its cluster shows up
+	// in ListClusters automatically. Off by default — single-cluster
+	// self-hosted setups don't need it, and surprise discovery would
+	// be hard to undo. Multi-cluster SaaS / fleet operators flip it on.
+	autoRegisterClusters := parseAutoRegisterFlag(os.Getenv("KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS"))
+	if autoRegisterClusters {
+		slog.Info("agent-proxy cluster auto-register enabled")
+	}
+
+	ingestSrv := agent.NewServer(writer,
+		agent.WithRegistry(agentRegistry),
+		agent.WithClusterRegistrar(manager),
+		agent.WithAutoRegisterClusters(autoRegisterClusters),
+	)
 
 	// Sprint A migration window: enforcement defaults to "disabled" so
 	// existing fleets without auth credentials keep working. Operators
@@ -495,6 +513,18 @@ func main() {
 		slog.Error("HTTP server shutdown error", slog.String("error", err.Error()))
 	}
 	slog.Info("kubebolt stopped")
+}
+
+// parseAutoRegisterFlag interprets KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS.
+// Empty string defaults to false. Accepts the same ergonomic spellings
+// the agent's bool env vars use (1/0, true/false, yes/no, on/off,
+// case-insensitive).
+func parseAutoRegisterFlag(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	}
+	return false
 }
 
 // openURL opens the given URL in the default browser.

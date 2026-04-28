@@ -50,6 +50,16 @@ type Server struct {
 	agentv2.UnimplementedAgentChannelServer
 	writer   MetricsWriter
 	registry *channel.AgentRegistry
+
+	// clusterRegistrar bridges to cluster.Manager so agent-proxy
+	// clusters can be added/removed in lockstep with agent
+	// registration. nil when the wiring isn't enabled (e.g. unit
+	// tests that exercise only the auth/proto path).
+	clusterRegistrar ClusterRegistrar
+	// autoRegisterClusters gates the auto-register behavior. Defaults
+	// to false so single-cluster self-hosted setups don't surprise
+	// operators with extra clusters appearing in the UI.
+	autoRegisterClusters bool
 }
 
 // Option configures a Server. Functional-options pattern keeps NewServer
@@ -61,6 +71,22 @@ type Option func(*Server)
 // the lifecycle of each connected agent. nil is tolerated.
 func WithRegistry(r *channel.AgentRegistry) Option {
 	return func(s *Server) { s.registry = r }
+}
+
+// WithClusterRegistrar plugs the cluster.Manager-shaped registrar so
+// the handler can call AddAgentProxyCluster / RemoveAgentProxyCluster
+// in step with each agent's Hello / disconnect. nil tolerated.
+func WithClusterRegistrar(r ClusterRegistrar) Option {
+	return func(s *Server) { s.clusterRegistrar = r }
+}
+
+// WithAutoRegisterClusters toggles agent-proxy cluster auto-discovery.
+// false (the default) means an agent that advertises the kube-proxy
+// capability connects but its cluster does NOT appear in the manager
+// — the operator must register it explicitly. true means every
+// kube-proxy capable Hello triggers AddAgentProxyCluster.
+func WithAutoRegisterClusters(enabled bool) Option {
+	return func(s *Server) { s.autoRegisterClusters = enabled }
 }
 
 func NewServer(writer MetricsWriter, opts ...Option) *Server {
@@ -141,6 +167,18 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	// writers (heartbeat ack on the read loop + AgentProxyTransport
 	// from commit 5+) coordinate via a single mutex inside the Agent.
 	registeredAgent := channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id, streamSender{stream})
+
+	// Defer ordering matters here. LIFO means later-registered defers
+	// fire FIRST. The teardown chain we want at execution time:
+	//   1. Unregister(agent)             — removes this agent from the registry
+	//   2. agent.Close()                 — cancels in-flight RoundTrips
+	//   3. RemoveAgentProxyCluster(...)  — only if no peers remain (count == 0)
+	// To get that order we register them in reverse: cluster cleanup
+	// FIRST (runs last), then Close, then Unregister.
+	if maybeAutoRegisterCluster(s.clusterRegistrar, s.registry, s.autoRegisterClusters,
+		clusterID, autoRegisterDisplayName(hello, clusterID), hello.GetCapabilities()) {
+		defer maybeAutoUnregisterCluster(s.clusterRegistrar, s.registry, clusterID)
+	}
 	defer registeredAgent.Close()
 	if s.registry != nil {
 		if evicted := s.registry.Register(registeredAgent); evicted != nil {
@@ -229,6 +267,21 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			return status.Error(codes.InvalidArgument, "Hello sent twice on the same stream")
 		}
 	}
+}
+
+// autoRegisterDisplayName picks the friendly label for the
+// agent-proxy cluster entry in the manager's listing. Today it
+// honors a `kubebolt.io/cluster-name` label in Hello.Labels (set
+// agent-side from KUBEBOLT_AGENT_CLUSTER_NAME) and falls back to
+// the cluster_id itself. Operators can always override via
+// Manager.SetClusterDisplayName.
+func autoRegisterDisplayName(hello *agentv2.Hello, clusterID string) string {
+	if hello != nil {
+		if name := hello.GetLabels()["kubebolt.io/cluster-name"]; name != "" {
+			return name
+		}
+	}
+	return clusterID
 }
 
 // resolveAgentID returns a stable agent identifier. With an authenticated
