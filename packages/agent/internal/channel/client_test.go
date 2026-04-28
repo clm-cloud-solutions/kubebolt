@@ -151,6 +151,8 @@ type recordingHandler struct {
 	configUpdates    atomic.Int32
 	disconnects      atomic.Int32
 	kubeRequests     atomic.Int32
+	streamData       atomic.Int32
+	streamAcks       atomic.Int32
 	disconnectErrFn  func(*agentv2.Disconnect) error
 	kubeRequestFn    func(ctx context.Context, c *Client, rid string, req *agentv2.KubeProxyRequest)
 }
@@ -173,6 +175,12 @@ func (r *recordingHandler) HandleKubeRequest(ctx context.Context, c *Client, rid
 	if r.kubeRequestFn != nil {
 		r.kubeRequestFn(ctx, c, rid, req)
 	}
+}
+func (r *recordingHandler) HandleKubeStreamData(string, *agentv2.KubeStreamData) {
+	r.streamData.Add(1)
+}
+func (r *recordingHandler) HandleKubeStreamAck(string, *agentv2.KubeStreamAck) {
+	r.streamAcks.Add(1)
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────

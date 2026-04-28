@@ -61,8 +61,9 @@ type SamplesProvider interface {
 //     Hello if the agent can't service requests)
 //
 // Implementations may invoke Client.Send to reply (KubeProxyResponse,
-// KubeProxyWatchEvent). Send is safe to call concurrently from
-// multiple handler goroutines — it serializes writes internally.
+// KubeProxyWatchEvent, KubeStreamData, KubeStreamAck). Send is safe
+// to call concurrently from multiple handler goroutines — it
+// serializes writes internally.
 //
 // HandleKubeRequest receives a context bound to the live stream — when
 // Run() returns, the ctx is cancelled and any in-flight watches /
@@ -79,6 +80,16 @@ type Handler interface {
 	// Client.Send and correlating with requestID. ctx is cancelled
 	// when the stream ends.
 	HandleKubeRequest(ctx context.Context, client *Client, requestID string, req *agentv2.KubeProxyRequest)
+
+	// Tunnel messages (Sprint A.5 §0.7-§0.9). Both methods MUST
+	// return quickly — they run on the read loop and a slow handler
+	// blocks all incoming traffic on this agent's bidi channel. The
+	// proxy.Handler implementation routes each message to the
+	// per-request_id tunnel session (started by an earlier
+	// HandleKubeRequest with Upgrade headers) via a buffered chan;
+	// the per-session goroutine does the actual work.
+	HandleKubeStreamData(requestID string, data *agentv2.KubeStreamData)
+	HandleKubeStreamAck(requestID string, ack *agentv2.KubeStreamAck)
 }
 
 // NoopHandler implements Handler with no-ops. Useful for the Sprint A.5
@@ -90,6 +101,8 @@ func (NoopHandler) HandleHeartbeatAck(*agentv2.HeartbeatAck)                    
 func (NoopHandler) HandleConfigUpdate(*agentv2.ConfigUpdate)                                       {}
 func (NoopHandler) HandleDisconnect(*agentv2.Disconnect) error                                     { return nil }
 func (NoopHandler) HandleKubeRequest(context.Context, *Client, string, *agentv2.KubeProxyRequest) {}
+func (NoopHandler) HandleKubeStreamData(string, *agentv2.KubeStreamData)                          {}
+func (NoopHandler) HandleKubeStreamAck(string, *agentv2.KubeStreamAck)                            {}
 
 // Client owns one bidi stream with the backend.
 type Client struct {
@@ -240,6 +253,17 @@ func (c *Client) Run(ctx context.Context) error {
 			// in-flight kube calls / watches wake up and exit.
 			rid := msg.GetRequestId()
 			go c.handler.HandleKubeRequest(streamCtx, c, rid, k.KubeRequest)
+		case *agentv2.BackendMessage_KubeStreamData:
+			// Tunnel data inbound (backend→agent direction). MUST be
+			// dispatched synchronously from the read loop — the
+			// handler routes to a buffered chan; reordering across
+			// messages on the same request_id would corrupt exec
+			// streams.
+			c.handler.HandleKubeStreamData(msg.GetRequestId(), k.KubeStreamData)
+		case *agentv2.BackendMessage_KubeStreamAck:
+			// Backend ack-ing bytes the agent sent. Routes to the
+			// per-session credit tracker — no goroutine spawn here.
+			c.handler.HandleKubeStreamAck(msg.GetRequestId(), k.KubeStreamAck)
 		case *agentv2.BackendMessage_Disconnect:
 			hErr := c.handler.HandleDisconnect(k.Disconnect)
 			streamCancel()
