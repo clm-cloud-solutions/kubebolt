@@ -49,6 +49,14 @@ message AgentMessage {
     KubeProxyResponse kube_response = 5;
     KubeProxyWatchEvent kube_event = 6;
     StreamClosed stream_closed = 7;
+
+    // SPDY/WebSocket tunneling (Sprint A.5 §0.7-§0.9). Either side
+    // can send these; correlated by request_id. The unary
+    // KubeProxyResponse{status_code=101} starts the tunnel; from
+    // there KubeStreamData carries raw bytes, KubeStreamAck carries
+    // credit-based flow control acks.
+    KubeStreamData kube_stream_data = 8;
+    KubeStreamAck kube_stream_ack = 9;
   }
 }
 
@@ -61,6 +69,11 @@ message BackendMessage {
     KubeProxyRequest kube_request = 4;
     ConfigUpdate config_update = 5;
     Disconnect disconnect = 6;
+
+    // Tunnel data + ACKs flow in BOTH directions. Same field numbers
+    // as AgentMessage to keep wire decoders symmetric.
+    KubeStreamData kube_stream_data = 8;
+    KubeStreamAck kube_stream_ack = 9;
   }
 }
 
@@ -181,6 +194,39 @@ message KubeProxyWatchEvent {
 // without an HTTP-level error. Reason is for logs / debugging.
 message StreamClosed {
   string reason = 1;          // "client_done", "buffer_overflow", "agent_shutdown"
+                              // For tunnels: "idle_timeout", "max_duration_exceeded",
+                              // "rate_limit_exceeded", "agent_shutdown".
+}
+
+// ─── SPDY/WebSocket tunneling (Sprint A.5 §0.7-§0.9) ─────────────────
+//
+// Pod exec / attach / portforward ride on protocols that the K8s
+// apiserver upgrades into via `Connection: Upgrade` (SPDY/3.1 today,
+// WebSocket on 1.30+). The unary KubeProxyRequest carries the upgrade
+// headers; the agent dials the apiserver, gets the 101 Switching
+// Protocols, and replies with KubeProxyResponse{status_code=101,
+// headers=...}.
+//
+// From that point both directions exchange raw bytes via
+// KubeStreamData. The receiver reports consumption via KubeStreamAck;
+// the sender pauses when bytes outstanding exceed the negotiated
+// window (default 256 KiB — see §0.8). End-of-stream from either
+// side is signaled by KubeStreamData{eof=true} OR a StreamClosed
+// with a tunnel-specific reason.
+//
+// Why credit-based ACKs and not blocking on saturation: the bidi
+// gRPC channel multiplexes ALL traffic (heartbeat + metrics + N
+// watches + M tunnels) for a single agent. A single slow consumer
+// MUST NOT starve peer streams sharing the channel — credit-based
+// flow control isolates each tunnel's congestion (§0.8).
+
+message KubeStreamData {
+  bytes data = 1;             // opaque bytes; whatever SPDY/WS framed
+  bool eof = 2;               // sender's half of the duplex is done
+}
+
+message KubeStreamAck {
+  uint64 bytes_consumed = 1;  // delta since last ACK from this side, monotonic
 }
 
 // ─── Control messages ────────────────────────────────────────────────
