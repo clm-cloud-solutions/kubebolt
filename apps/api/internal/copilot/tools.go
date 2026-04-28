@@ -231,7 +231,7 @@ func ToolDefinitions() []ToolDefinition {
 				"user has confirmed it's no longer needed). NEVER propose delete as a default remediation " +
 				"for crash-loops or errors — restart, scale, or rollback are almost always better. " +
 				"WHITELIST: only deployments, statefulsets, daemonsets, services, configmaps, secrets, " +
-				"jobs, cronjobs, pods, ingresses can be deleted via this tool. Namespaces, nodes, PVs, " +
+				"jobs, cronjobs, pods, ingresses, hpas can be deleted via this tool. Namespaces, nodes, PVs, " +
 				"PVCs, and RBAC resources are explicitly blocked — recommend kubectl for those. " +
 				"The proposal payload includes a computed blast radius (owned pods, affected services, " +
 				"orphaned HPAs, etc.) — read it and summarize the consequences in your text response so " +
@@ -243,6 +243,7 @@ func ToolDefinitions() []ToolDefinition {
 						"deployments", "statefulsets", "daemonsets",
 						"services", "configmaps", "secrets",
 						"jobs", "cronjobs", "pods", "ingresses",
+						"hpas",
 					}),
 					"namespace": strProp("Resource namespace"),
 					"name":      strProp("Resource name"),

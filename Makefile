@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-web agent-image agent-deploy agent-logs agent-dev agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
+.PHONY: dev dev-api dev-web agent-image agent-deploy agent-deploy-auth agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -65,7 +65,15 @@ agent-image:
 ## minikube contexts and loads the image into the cluster's runtime
 ## (their containerd is separate from the host Docker daemon, so
 ## imagePullPolicy: Never fails unless we stage the image explicitly).
+##
+## NOTE: this target deploys the agent WITHOUT backend auth. The agent
+## dials the gRPC channel in plaintext + no token. For an auth-enabled
+## deployment use `make agent-deploy-auth` (Sprint A onwards).
 agent-deploy:
+	@echo ""
+	@echo "⚠️  Deploying agent WITHOUT backend auth (Sprint A migration default)."
+	@echo "    For auth-enabled, run: make agent-deploy-auth TOKEN_SECRET=<your-secret>"
+	@echo ""
 	@LATEST_TAG=$$(docker images kubebolt-agent --format '{{.Tag}}' | grep -E '^dev-[0-9]+$$' | sort -rn -t- -k2 | head -1); \
 		if [ -z "$$LATEST_TAG" ]; then \
 			echo "No kubebolt-agent:dev-N image found. Run 'make agent-image' first."; \
@@ -90,19 +98,85 @@ agent-deploy:
 		esac; \
 		echo "Deploying kubebolt-agent:$$LATEST_TAG"; \
 		sed "s|image: kubebolt-agent:dev$$|image: kubebolt-agent:$$LATEST_TAG|" \
-			deploy/agent/kubebolt-agent-dev.yaml | kubectl apply -f -
+			deploy/agent/kubebolt-agent-dev.yaml | kubectl apply --validate=false -f -
+	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=90s
+
+## Apply the dev DaemonSet WITH backend auth (Sprint A: ingest-token mode).
+## Requires:
+##   - A Secret with the bearer token in the kubebolt-system namespace.
+##     Default name: kubebolt-agent-token, key: token. Override with
+##     TOKEN_SECRET=<name> and TOKEN_KEY=<key>.
+##   - Backend running with KUBEBOLT_AGENT_AUTH_MODE=enforced (or permissive)
+##     and a valid token issued via POST /api/v1/admin/tenants/<id>/tokens.
+##
+## Usage:
+##   # Issue a token via REST first, store it in a Secret:
+##   kubectl create namespace kubebolt-system --dry-run=client -o yaml | kubectl apply -f -
+##   kubectl create secret generic kubebolt-agent-token \
+##     -n kubebolt-system --from-literal=token=kb_xxxxxxxxx
+##
+##   # Then deploy:
+##   make agent-deploy-auth
+##
+##   # Or with custom secret:
+##   make agent-deploy-auth TOKEN_SECRET=my-token TOKEN_KEY=mykey
+TOKEN_SECRET ?= kubebolt-agent-token
+TOKEN_KEY ?= token
+agent-deploy-auth:
+	@LATEST_TAG=$$(docker images kubebolt-agent --format '{{.Tag}}' | grep -E '^dev-[0-9]+$$' | sort -rn -t- -k2 | head -1); \
+		if [ -z "$$LATEST_TAG" ]; then \
+			echo "No kubebolt-agent:dev-N image found. Run 'make agent-image' first."; \
+			exit 1; \
+		fi; \
+		CTX=$$(kubectl config current-context 2>/dev/null); \
+		case "$$CTX" in \
+			kind-*) \
+				KIND_NAME="$${CTX#kind-}"; \
+				echo "kind context detected ($$KIND_NAME) — loading image into nodes..."; \
+				kind load docker-image kubebolt-agent:$$LATEST_TAG --name $$KIND_NAME || exit 1; \
+				;; \
+			minikube) \
+				echo "minikube context detected — loading image..."; \
+				minikube image load kubebolt-agent:$$LATEST_TAG || exit 1; \
+				;; \
+			docker-desktop) \
+				: ;; \
+			*) \
+				echo "Context '$$CTX' — assuming image is reachable (real cluster with registry, etc.)"; \
+				;; \
+		esac; \
+		kubectl get namespace kubebolt-system >/dev/null 2>&1 || kubectl create namespace kubebolt-system; \
+		if ! kubectl get secret -n kubebolt-system $(TOKEN_SECRET) >/dev/null 2>&1; then \
+			echo ""; \
+			echo "✗ Secret '$(TOKEN_SECRET)' not found in namespace kubebolt-system."; \
+			echo ""; \
+			echo "  Create it first:"; \
+			echo "    kubectl create secret generic $(TOKEN_SECRET) \\"; \
+			echo "      -n kubebolt-system --from-literal=$(TOKEN_KEY)=<paste-plaintext-token>"; \
+			echo ""; \
+			exit 1; \
+		fi; \
+		echo "Deploying kubebolt-agent:$$LATEST_TAG with auth (secret=$(TOKEN_SECRET), key=$(TOKEN_KEY))"; \
+		sed -e "s|image: kubebolt-agent:dev$$|image: kubebolt-agent:$$LATEST_TAG|" \
+		    -e "s|__TOKEN_SECRET__|$(TOKEN_SECRET)|g" \
+		    -e "s|__TOKEN_KEY__|$(TOKEN_KEY)|g" \
+			deploy/agent/kubebolt-agent-dev-auth.yaml | kubectl apply --validate=false -f -
 	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=90s
 
 ## Follow logs from all agent pods.
 agent-logs:
 	kubectl logs -n kubebolt-system -l app=kubebolt-agent -f --tail=50
 
-## Inner loop: build image, deploy, follow logs.
+## Inner loop: build image, deploy (no auth), follow logs.
 agent-dev: agent-image agent-deploy agent-logs
+
+## Inner loop: build image, deploy WITH auth, follow logs.
+agent-dev-auth: agent-image agent-deploy-auth agent-logs
 
 ## Tear down the dev DaemonSet (keeps the namespace).
 agent-undeploy:
 	kubectl delete -f deploy/agent/kubebolt-agent-dev.yaml --ignore-not-found
+	kubectl delete -f deploy/agent/kubebolt-agent-dev-auth.yaml --ignore-not-found 2>/dev/null || true
 
 # ─── Kind testbed ──────────────────────────────────────────────────────────
 #

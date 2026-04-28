@@ -1,0 +1,44 @@
+# Dockerfile for the Sprint A e2e harness — builds the API with root
+# context so the `replace ../../packages/proto` directive in apps/api/go.mod
+# resolves. The shipped apps/api/Dockerfile (context=apps/api) only works
+# when packages/proto is unused at build time; for production releases CI
+# fixes this another way. This file is e2e-only.
+#
+# Build from the repo root:
+#   docker build -f tests/e2e/Dockerfile.api-e2e -t kubebolt-api:e2e .
+
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /src
+
+ENV GOWORK=off
+ENV CGO_ENABLED=0
+
+# Module manifests first so go mod download caches well.
+COPY packages/proto/go.mod packages/proto/go.sum ./packages/proto/
+COPY apps/api/go.mod apps/api/go.sum ./apps/api/
+RUN cd apps/api && go mod download
+
+# Sources.
+COPY packages/proto/ ./packages/proto/
+COPY apps/api/ ./apps/api/
+
+# The web/dist embed in cmd/server/main.go uses //go:embed all:web/dist.
+# Without that directory present we'd fail compilation. Provide an empty
+# placeholder so the binary builds in API-only mode.
+RUN mkdir -p apps/api/cmd/server/web/dist && \
+    echo '<!doctype html>' > apps/api/cmd/server/web/dist/.gitkeep
+
+RUN cd apps/api && \
+    GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/kubebolt-api ./cmd/server
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+RUN mkdir -p /data
+COPY --from=builder /out/kubebolt-api /usr/local/bin/kubebolt-api
+VOLUME ["/data"]
+EXPOSE 8080
+ENTRYPOINT ["kubebolt-api"]

@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
@@ -30,19 +29,34 @@ type Shipper struct {
 	nodeName     string
 	agentVersion string
 	batchSize    int
+	auth         AuthOptions
 
 	// Populated on every successful Register.
 	agentID string
 }
 
-func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring) *Shipper {
-	return &Shipper{
+// Option mutates a Shipper at construction time. Used to keep New
+// backward-compatible while adding new optional dependencies.
+type Option func(*Shipper)
+
+// WithAuth attaches credentials to the shipper. The zero AuthOptions
+// (no Mode, no TLS) keeps the legacy plaintext-no-token behavior.
+func WithAuth(opts AuthOptions) Option {
+	return func(s *Shipper) { s.auth = opts }
+}
+
+func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Option) *Shipper {
+	s := &Shipper{
 		backendURL:   backendURL,
 		buf:          buf,
 		nodeName:     nodeName,
 		agentVersion: agentVersion,
 		batchSize:    500,
 	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
 }
 
 // AgentID is the id assigned by the backend on the latest successful
@@ -81,8 +95,20 @@ func (s *Shipper) Run(ctx context.Context) {
 // runSession opens a fresh connection, registers, and drains the buffer
 // until the stream errors or ctx is cancelled.
 func (s *Shipper) runSession(ctx context.Context) error {
-	slog.Info("dialing backend", slog.String("addr", s.backendURL))
-	conn, err := grpc.NewClient(s.backendURL, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	slog.Info("dialing backend",
+		slog.String("addr", s.backendURL),
+		slog.Bool("tls", s.auth.TLSEnabled),
+		slog.String("auth_mode", string(s.auth.Mode)),
+	)
+	transport, err := BuildTransportCredentials(s.auth)
+	if err != nil {
+		return fmt.Errorf("transport credentials: %w", err)
+	}
+	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(transport)}
+	if creds := NewTokenCreds(s.auth); creds != nil {
+		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(creds))
+	}
+	conn, err := grpc.NewClient(s.backendURL, dialOpts...)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
 	}
