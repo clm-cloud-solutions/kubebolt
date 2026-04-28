@@ -14,6 +14,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/remotecommand"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 type fileEntry struct {
@@ -47,7 +49,11 @@ func (h *handlers) execCommand(namespace, name, container string, command []stri
 			Stderr:    true,
 		}, scheme.ParameterCodec)
 
-	executor, err := remotecommand.NewSPDYExecutor(&restConfig, "POST", req.URL())
+	transport, upgrader, err := cluster.SPDYTransportsFor(&restConfig)
+	if err != nil {
+		return "", "", fmt.Errorf("building SPDY transports: %w", err)
+	}
+	executor, err := remotecommand.NewSPDYExecutorForTransports(transport, upgrader, "POST", req.URL())
 	if err != nil {
 		return "", "", fmt.Errorf("creating executor: %w", err)
 	}

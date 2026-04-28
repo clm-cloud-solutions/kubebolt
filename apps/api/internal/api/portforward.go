@@ -74,8 +74,10 @@ func (m *PortForwardManager) Start(conn *cluster.Connector, namespace, pod, cont
 		SubResource("portforward").
 		URL()
 
-	// Create SPDY transport and dialer
-	transport, upgrader, err := spdy.RoundTripperFor(&restConfig)
+	// Create SPDY transport and dialer. cluster.SPDYTransportsFor
+	// transparently picks the agent-proxy aware path when restConfig
+	// targets an agent-proxy cluster.
+	transport, upgrader, err := cluster.SPDYTransportsFor(&restConfig)
 	if err != nil {
 		return nil, fmt.Errorf("creating SPDY round-tripper: %w", err)
 	}
