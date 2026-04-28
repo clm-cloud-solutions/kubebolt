@@ -1,4 +1,11 @@
-# kubebolt-agent dev DaemonSet.
+# kubebolt-agent dev DaemonSet — NO BACKEND AUTH.
+#
+# Sprint A note: this manifest deploys the agent without auth credentials.
+# The agent dials the gRPC channel in plaintext + no token, which only
+# works against a backend in the migration default mode
+# (KUBEBOLT_AGENT_AUTH_MODE=disabled). For an auth-enabled deployment,
+# use kubebolt-agent-dev-auth.yaml in this same directory (applied via
+# `make agent-deploy-auth`) or the helm chart at deploy/helm/kubebolt-agent/.
 #
 # Targeted at docker-desktop Kubernetes: the agent reaches the KubeBolt
 # backend (running via `make dev` on the host) through host.docker.internal.
