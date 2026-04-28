@@ -181,6 +181,37 @@ export const api = {
   deleteUser: (id: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/users/${id}`),
 
+  // --- Agent ingest tokens (admin) ---
+  //
+  // The OSS UI operates on the auto-seeded "default" tenant only.
+  // Multi-tenant management UI is ENTERPRISE-CANDIDATE — the backend
+  // exposes everything (see auth/tenant_handlers.go) but the OSS
+  // frontend deliberately surfaces only the default tenant.
+  listTenants: () => fetchJSON<Tenant[]>(`${API_BASE}/admin/tenants`),
+
+  getTenant: (id: string) =>
+    fetchJSON<TenantWithTokens>(`${API_BASE}/admin/tenants/${id}`),
+
+  listAgentTokens: (tenantID: string) =>
+    fetchJSON<IngestToken[]>(`${API_BASE}/admin/tenants/${tenantID}/tokens`),
+
+  issueAgentToken: (tenantID: string, label: string, ttlSeconds?: number) =>
+    postJSON<IssuedToken>(`${API_BASE}/admin/tenants/${tenantID}/tokens`, {
+      label,
+      ttlSeconds: ttlSeconds ?? 0,
+    }),
+
+  rotateAgentToken: (tenantID: string, tokenID: string) =>
+    postJSON<IssuedToken>(
+      `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}/rotate`,
+      {},
+    ),
+
+  revokeAgentToken: (tenantID: string, tokenID: string) =>
+    deleteRequest<{ status: string }>(
+      `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}`,
+    ),
+
   // --- Cluster management ---
   listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
 
@@ -540,6 +571,43 @@ export interface FlowEdgesResponse {
   edges: FlowEdge[]
   windowMinutes: number
   source: string
+}
+
+// --- Agent ingest tokens ---
+//
+// The backend redacts plaintext + hashes from list/get responses.
+// Plaintext appears ONLY in IssuedToken.token, returned by issue and
+// rotate. The UI must surface it once and never persist it client-side.
+export interface Tenant {
+  id: string
+  name: string
+  plan: string
+  disabled: boolean
+  createdAt: string
+  updatedAt: string
+  tokenCount: number
+  activeTokenCount: number
+}
+
+export interface IngestToken {
+  id: string
+  prefix: string // first 8 chars after "kb_" — safe to display
+  label: string
+  createdAt: string
+  createdBy: string
+  lastUsedAt?: string
+  expiresAt?: string
+  revokedAt?: string
+  active: boolean
+}
+
+export interface TenantWithTokens extends Tenant {
+  ingestTokens: IngestToken[]
+}
+
+export interface IssuedToken {
+  token: string // plaintext — shown once
+  info: IngestToken
 }
 
 // Prometheus-compatible range query response (from VictoriaMetrics).

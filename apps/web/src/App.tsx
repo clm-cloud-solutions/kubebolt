@@ -21,6 +21,7 @@ import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
+import { AgentTokensPage } from '@/pages/admin/AgentTokensPage'
 import { NotificationsPage } from '@/pages/admin/NotificationsPage'
 import { CopilotUsagePage } from '@/pages/admin/CopilotUsagePage'
 import { IntegrationsPage } from '@/pages/admin/IntegrationsPage'
@@ -119,6 +120,7 @@ export default function App() {
 
               {/* Admin routes */}
               <Route path="/admin/users" element={<RequireRole role="admin"><UsersPage /></RequireRole>} />
+              <Route path="/admin/agent-tokens" element={<RequireRole role="admin"><AgentTokensPage /></RequireRole>} />
               <Route path="/admin/notifications" element={<RequireRole role="admin"><NotificationsPage /></RequireRole>} />
               <Route path="/admin/copilot-usage" element={<RequireRole role="admin"><CopilotUsagePage /></RequireRole>} />
               <Route path="/admin/integrations" element={<RequireRole role="admin"><IntegrationsPage /></RequireRole>} />
