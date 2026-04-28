@@ -6,6 +6,22 @@
 // every tenant's tokens. Self-service for tenant operators (their own
 // users seeing only their own tokens) requires User.TenantID and a
 // RoleTenantAdmin role; tracked for Sprint B+.
+//
+// ENTERPRISE-CANDIDATE (multi-tenant management):
+// The OSS edition operates against a single auto-seeded "default"
+// tenant. The endpoints in this file are split:
+//
+//   OSS               GetTenant/ListTokens/IssueToken/RotateToken/RevokeToken
+//                     (operating on the default tenant)
+//   Enterprise        ListTenants / CreateTenant / UpdateTenant /
+//                     DeleteTenant — and operating any of the
+//                     token endpoints against a non-default tenant.
+//
+// The split is enforced in the frontend (commit 8): the OSS UI only
+// shows the default tenant. The backend exposes everything because
+// drawing the line server-side would require a license check, which
+// we are deferring per ENTERPRISE-CANDIDATE policy until the SaaS
+// edition has a license model.
 package auth
 
 import (

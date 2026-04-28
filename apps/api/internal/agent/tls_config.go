@@ -10,6 +10,14 @@ import (
 
 // TLSConfig is the resolved server TLS configuration. Listen treats
 // nil as plaintext mode (with a startup warning).
+//
+// ENTERPRISE-CANDIDATE (mTLS):
+// Plain TLS (server cert only) stays OSS — that is baseline transport
+// security. The mTLS path (client cert verification, ClientCA-driven
+// chains, RequireMTLS) is a candidate to move behind a license gate
+// when the SaaS hospedado launches. The split point is the ClientAuth
+// configuration in BuildServerTLSConfig: server-only TLS = OSS, any
+// VerifyClientCert variant = Enterprise.
 type TLSConfig struct {
 	Config *tls.Config
 	// RequireMTLS is exposed so AuthConfig.RequireMTLS can be derived

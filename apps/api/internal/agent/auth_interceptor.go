@@ -54,6 +54,10 @@ func ParseEnforcement(s string) (AuthEnforcement, bool) {
 // RequireMTLS layers on top of the chosen mode: even if authentication
 // succeeds, missing a verified client cert rejects the call. Has no
 // effect when EnforcementDisabled.
+//
+// ENTERPRISE-CANDIDATE (mTLS): see tls_config.go for the split rule.
+// RequireMTLS itself is the gating flag here; the OSS edition would
+// reject any AuthConfig with RequireMTLS=true at startup.
 type AuthConfig struct {
 	Enforcement   AuthEnforcement
 	Authenticator auth.AgentAuthenticator
