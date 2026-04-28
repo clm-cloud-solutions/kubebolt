@@ -146,7 +146,7 @@ func TestAgent_CloseClosesChanAndCancelsPending(t *testing.T) {
 	a := NewAgent("c1", "agent-1", "node-a", nil, nil)
 
 	// Reserve a pending request_id so we can verify Close() cleans it.
-	_, _, err := a.Pending.Register("rid", false)
+	_, _, err := a.Pending.Register("rid", SlotUnary)
 	if err != nil {
 		t.Fatal(err)
 	}

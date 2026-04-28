@@ -103,7 +103,11 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 
 	requestID := uuid.NewString()
-	replies, cancel, err := agent.Pending.Register(requestID, isWatch)
+	mode := SlotUnary
+	if isWatch {
+		mode = SlotWatch
+	}
+	replies, cancel, err := agent.Pending.Register(requestID, mode)
 	if err != nil {
 		return nil, err
 	}
