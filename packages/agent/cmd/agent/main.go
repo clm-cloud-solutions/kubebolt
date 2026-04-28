@@ -71,7 +71,24 @@ func main() {
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName)
 	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName)
 	buf := buffer.New(*bufferSize)
-	ship := shipper.New(*backendURL, *nodeName, agentVersion, buf)
+
+	// Auth + TLS config from helm-injected env vars. Half-set
+	// combinations fail loud here so misconfigurations don't silently
+	// keep an agent running unauthenticated.
+	authOpts := shipper.LoadAuthFromEnv()
+	if err := authOpts.Validate(); err != nil {
+		slog.Error("agent auth configuration invalid", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	switch {
+	case !authOpts.HasAuth():
+		slog.Warn("agent dialing backend WITHOUT credentials (Sprint 0 migration window)")
+	case authOpts.HasAuth() && !authOpts.TLSEnabled:
+		slog.Warn("agent has auth credentials but TLS is disabled — bearer token will travel in plaintext",
+			slog.String("auth_mode", string(authOpts.Mode)),
+		)
+	}
+	ship := shipper.New(*backendURL, *nodeName, agentVersion, buf, shipper.WithAuth(authOpts))
 
 	var wg sync.WaitGroup
 
