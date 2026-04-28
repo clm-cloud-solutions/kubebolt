@@ -169,6 +169,53 @@ func TestHandleUpgrade_NonOneOhOneSurfacesAsResponse(t *testing.T) {
 	}
 }
 
+func TestHandleUpgrade_PreservesConnectionAndUpgradeHeaders(t *testing.T) {
+	// Apiserver rejects upgrade requests with 400 if Upgrade arrives
+	// without a companion Connection: Upgrade. The agent's
+	// buildRequest normally strips both as hop-by-hop, but for
+	// upgrade attempts they MUST be forwarded. Pin that contract so
+	// a future header-filter refactor can't silently break exec /
+	// portforward.
+	pr, pw := io.Pipe()
+	body := rwBody{Reader: pr, Writer: io.Discard, Closer: pw}
+	rt := &stubRoundTripper{
+		resp: &http.Response{
+			StatusCode: 101,
+			Header:     http.Header{},
+			Body:       body,
+		},
+	}
+	p := newProxyWith(rt)
+	req := &agentv2.KubeProxyRequest{
+		Method: "POST",
+		Path:   "/api/v1/.../exec",
+		Headers: map[string]string{
+			"Connection":               "Upgrade",
+			"Upgrade":                  "SPDY/3.1",
+			"X-Stream-Protocol-Version": "v4.channel.k8s.io",
+		},
+	}
+	_, conn := p.HandleUpgrade(context.Background(), req)
+	defer func() {
+		if conn != nil {
+			conn.Close()
+		}
+	}()
+	if rt.lastReq == nil {
+		t.Fatal("transport never received the request")
+	}
+	if got := rt.lastReq.Header.Get("Connection"); !strings.EqualFold(got, "Upgrade") {
+		t.Errorf("Connection header = %q, want Upgrade preserved", got)
+	}
+	if got := rt.lastReq.Header.Get("Upgrade"); got != "SPDY/3.1" {
+		t.Errorf("Upgrade header = %q, want SPDY/3.1 preserved", got)
+	}
+	// Non-upgrade-special headers still pass through.
+	if got := rt.lastReq.Header.Get("X-Stream-Protocol-Version"); got != "v4.channel.k8s.io" {
+		t.Errorf("X-Stream-Protocol-Version = %q, want passed through", got)
+	}
+}
+
 func TestHandleUpgrade_TransportError(t *testing.T) {
 	rt := &stubRoundTripper{err: io.ErrUnexpectedEOF}
 	p := newProxyWith(rt)

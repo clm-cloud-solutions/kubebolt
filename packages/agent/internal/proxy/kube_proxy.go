@@ -211,7 +211,13 @@ func (p *KubeAPIProxy) HandleWatch(ctx context.Context, req *agentv2.KubeProxyRe
 // impersonate other principals if it ever became compromised.
 //
 // Hop-by-hop headers (Connection / Transfer-Encoding / Content-Length)
-// are stripped because http.NewRequest synthesizes its own.
+// are stripped because http.NewRequest synthesizes its own — EXCEPT
+// for upgrade requests (Sprint A.5 §0.7), where Connection: Upgrade
+// + Upgrade: SPDY/3.1|websocket are exactly what the apiserver needs
+// to enter the protocol-switch state. Without the exception the
+// apiserver responds 400 Bad Request because it sees `Upgrade: ...`
+// in isolation (no companion Connection token). Pinned by the
+// terminal/portforward smoke test.
 func (p *KubeAPIProxy) buildRequest(ctx context.Context, req *agentv2.KubeProxyRequest) (*http.Request, error) {
 	method := req.GetMethod()
 	if method == "" {
@@ -226,8 +232,12 @@ func (p *KubeAPIProxy) buildRequest(ctx context.Context, req *agentv2.KubeProxyR
 	if err != nil {
 		return nil, fmt.Errorf("build request: %w", err)
 	}
+	upgradeAttempt := isUpgradeRequest(req)
 	for k, v := range req.GetHeaders() {
 		if isStrippedHeader(k) {
+			if upgradeAttempt && (strings.EqualFold(k, "Connection") || strings.EqualFold(k, "Upgrade")) {
+				httpReq.Header.Set(k, v)
+			}
 			continue
 		}
 		httpReq.Header.Set(k, v)
