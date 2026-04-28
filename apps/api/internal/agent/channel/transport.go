@@ -108,6 +108,18 @@ var upgradeAllowedHeaders = map[string]bool{
 	"Upgrade":    true,
 }
 
+// CancelRequest implements the legacy http.Transport-shaped
+// canceler interface that client-go's tryCancelRequest probes via
+// type assertion. Without this, every cancellation logs a noisy
+// `Warning: unable to cancel request roundTripperType="*channel.AgentProxyTransport"`.
+//
+// The actual cancellation already happens via the request's
+// context.Context — RoundTrip selects on req.Context().Done() and
+// frees the Multiplexor slot, so no per-request bookkeeping is
+// needed here. This is a no-op specifically to satisfy the
+// interface and silence the warning.
+func (t *AgentProxyTransport) CancelRequest(*http.Request) {}
+
 // RoundTrip executes one HTTP request through the agent. Watch URLs
 // (`?watch=true`) return immediately with an *http.Response whose
 // Body is a server-driven NDJSON pipe; client-go's StreamWatcher
