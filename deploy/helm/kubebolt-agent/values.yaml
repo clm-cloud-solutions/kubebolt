@@ -104,6 +104,58 @@ rbac:
   # provisions RBAC out of band.
   create: true
 
+# ─── Backend authentication (Sprint A) ─────────────────────
+# How the agent identifies itself to the backend. The backend's
+# KUBEBOLT_AGENT_AUTH_MODE setting controls whether unauthenticated
+# connections are allowed (disabled / permissive / enforced).
+auth:
+  # disabled        — no credentials. Backend must allow unauthenticated
+  #                   connections (Sprint 0 migration default).
+  # tokenreview     — projected SA token, validated by the backend via
+  #                   the apiserver TokenReview API. Requires the backend
+  #                   to live in the same cluster as this agent.
+  # ingest-token    — long-lived bearer token issued by the backend admin
+  #                   UI. Required for SaaS / cross-cluster deployments
+  #                   where the backend cannot reach this cluster's
+  #                   apiserver.
+  mode: disabled
+
+  # Used when mode=tokenreview. Kubelet mints a projected token with
+  # this audience; the backend rejects mismatching audiences.
+  tokenReview:
+    audience: kubebolt-backend
+    expirationSeconds: 3600  # kubelet renews well before expiry
+
+  # Used when mode=ingest-token. The operator creates a Secret out of
+  # band — the chart never sees the plaintext.
+  #   kubectl create secret generic kubebolt-ingest-token \
+  #     --from-literal=token=kb_xxxxxxxx
+  ingestToken:
+    existingSecret: ""
+    key: token
+
+# ─── Transport security to backend ──────────────────────────
+# Encrypts the gRPC dial. Independent from auth.mode — combining
+# auth + plaintext is permitted (the agent logs a WARN at startup)
+# but only sane for dev / trusted internal networks.
+#
+# ENTERPRISE-CANDIDATE (mTLS): plain server-cert TLS stays OSS;
+# the mTLS path (clientCertSecret) is a candidate to move behind a
+# license gate when the SaaS hospedado launches.
+tls:
+  enabled: false
+  # CA bundle to verify the backend's server cert. Empty means use the
+  # system trust store (right for SaaS with a public CA chain).
+  caSecret: ""
+  caKey: ca.crt
+  # mTLS — agent presents a client cert. The backend's TLS_CLIENT_CA
+  # configuration decides whether it's required or optional.
+  clientCertSecret: ""
+  clientCertKey: tls.crt
+  clientKeyKey: tls.key
+  # SNI override. Empty = derive from backendUrl host.
+  serverName: ""
+
 # ─── Logging ───────────────────────────────────────────────
 logLevel: info  # debug | info | warn | error
 
