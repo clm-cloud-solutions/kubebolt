@@ -12,6 +12,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -34,6 +35,18 @@ type Manager struct {
 	cancelFn        context.CancelFunc
 	connErr         error // set when the active context failed to connect
 	storage         *Storage // optional — nil when auth disabled; drives user-uploaded contexts and display names
+
+	// agentRegistry is the live registry of connected kubebolt-agents.
+	// Set by main.go via SetAgentRegistry once the gRPC server is up.
+	// nil when the agent channel is disabled — agent-proxy clusters
+	// then refuse to register.
+	agentRegistry *channel.AgentRegistry
+	// agentProxyContexts maps the synthetic contextName under which an
+	// agent-proxy cluster is exposed in ListClusters → cluster_id.
+	// Lookup-on-connect lets the manager pick the right ClusterAccess
+	// without bolting a new field onto every kubeconfig entry.
+	agentProxyContexts map[string]string
+
 	// onNewInsight is invoked for each newly detected insight; wired to the
 	// notifications manager from main.go. Nil when notifications are disabled.
 	onNewInsight func(clusterContext string, insight models.Insight)
@@ -89,6 +102,89 @@ func (m *Manager) wireInsightHookLocked() {
 			hook(activeCtx, insight)
 		})
 	}
+}
+
+// SetAgentRegistry attaches the live AgentRegistry to the manager so
+// agent-proxy clusters can resolve their access at connect time. nil
+// is tolerated (agent channel disabled) — AddAgentProxyCluster then
+// returns an error.
+func (m *Manager) SetAgentRegistry(r *channel.AgentRegistry) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.agentRegistry = r
+}
+
+// AgentRegistry returns the registry the manager was wired with, or
+// nil. Used by handlers that surface live-agent state (admin endpoints
+// in commit 8) without needing a separate plumbing path.
+func (m *Manager) AgentRegistry() *channel.AgentRegistry {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.agentRegistry
+}
+
+// AddAgentProxyCluster registers a cluster reachable only via the
+// kubebolt-agent's outbound channel. The cluster shows up in
+// ListClusters alongside kubeconfig-backed contexts under the
+// synthetic name returned by AgentProxyContextName(clusterID), so
+// the existing SwitchCluster + ListClusters flow keeps working with
+// no special-casing in handlers. Idempotent — re-adding the same
+// clusterID with a different displayName updates the display name
+// only.
+func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, error) {
+	if clusterID == "" {
+		return "", fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.agentRegistry == nil {
+		return "", fmt.Errorf("agent registry is not configured")
+	}
+	contextName := AgentProxyContextName(clusterID)
+	if m.agentProxyContexts == nil {
+		m.agentProxyContexts = make(map[string]string)
+	}
+	m.agentProxyContexts[contextName] = clusterID
+	if m.kubeConfig.Contexts == nil {
+		m.kubeConfig.Contexts = map[string]*clientcmdapi.Context{}
+	}
+	if m.kubeConfig.Clusters == nil {
+		m.kubeConfig.Clusters = map[string]*clientcmdapi.Cluster{}
+	}
+	m.kubeConfig.Clusters[contextName] = &clientcmdapi.Cluster{Server: agentProxyAPIServerURL(clusterID)}
+	m.kubeConfig.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName}
+	if displayName != "" && m.storage != nil {
+		_ = m.storage.SetDisplayName(contextName, displayName)
+	}
+	slog.Info("registered agent-proxy cluster",
+		slog.String("cluster_id", clusterID),
+		slog.String("context", contextName),
+		slog.String("display_name", displayName),
+	)
+	return contextName, nil
+}
+
+// RemoveAgentProxyCluster removes the agent-proxy registration for
+// clusterID. If the manager is currently switched to it, disconnects
+// first. No-op if the cluster wasn't registered.
+func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	if _, ok := m.agentProxyContexts[contextName]; !ok {
+		return
+	}
+	if m.activeContext == contextName {
+		m.stopCurrent()
+		m.activeContext = ""
+	}
+	delete(m.agentProxyContexts, contextName)
+	delete(m.kubeConfig.Contexts, contextName)
+	delete(m.kubeConfig.Clusters, contextName)
+	if m.storage != nil {
+		m.storage.DeleteDisplayName(contextName)
+	}
+	slog.Info("removed agent-proxy cluster", slog.String("cluster_id", clusterID))
 }
 
 // SetStorage attaches a cluster storage to the manager. This must be called
@@ -270,9 +366,12 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			}
 		}
 		source := "file"
-		if m.inCluster {
+		switch {
+		case m.agentProxyContexts[ctxName] != "":
+			source = "agent-proxy"
+		case m.inCluster && ctxName == "in-cluster":
 			source = "in-cluster"
-		} else if uploadedContexts[ctxName] {
+		case uploadedContexts[ctxName]:
 			source = "uploaded"
 		}
 		clusters = append(clusters, ClusterInfo{
@@ -502,15 +601,30 @@ func (m *Manager) connectToContext(contextName string) error {
 	return m.connectToContextLocked(contextName)
 }
 
-func (m *Manager) connectToContextLocked(contextName string) error {
-	var connector *Connector
-	var err error
-
-	if m.inCluster {
-		connector, err = NewConnectorInCluster(m.wsHub)
-	} else {
-		connector, err = NewConnectorForContext(m.kubeconfigPath, contextName, m.wsHub)
+// accessForContextLocked picks the right ClusterAccess for contextName.
+// Agent-proxy registrations win over kubeconfig contexts so a cluster
+// reached via agent-proxy can never be silently shadowed by a stale
+// kubeconfig entry of the same name. Returns nil when the context is
+// unknown.
+func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
+	if cid, ok := m.agentProxyContexts[contextName]; ok {
+		return NewAgentProxyAccess(cid, m.agentRegistry)
 	}
+	if m.inCluster && contextName == "in-cluster" {
+		return NewInClusterAccess()
+	}
+	if _, ok := m.kubeConfig.Contexts[contextName]; ok {
+		return NewLocalAccess(m.kubeconfigPath, contextName)
+	}
+	return nil
+}
+
+func (m *Manager) connectToContextLocked(contextName string) error {
+	access := m.accessForContextLocked(contextName)
+	if access == nil {
+		return fmt.Errorf("context %q is not registered", contextName)
+	}
+	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
 		return fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
@@ -586,29 +700,16 @@ func (m *Manager) ReloadKubeconfig() error {
 	return nil
 }
 
-// NewConnectorForContext creates a connector for a specific kubeconfig context.
+// NewConnectorForContext creates a connector for a specific kubeconfig
+// context. Thin wrapper around the access-aware entry point; kept for
+// callers that haven't migrated to ClusterAccess yet.
 func NewConnectorForContext(kubeconfigPath, contextName string, wsHub *websocket.Hub) (*Connector, error) {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	rules.ExplicitPath = kubeconfigPath
-
-	overrides := &clientcmd.ConfigOverrides{CurrentContext: contextName}
-	clientConfig := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(rules, overrides)
-
-	restConfig, err := clientConfig.ClientConfig()
-	if err != nil {
-		return nil, fmt.Errorf("building config for context %s: %w", contextName, err)
-	}
-
-	return newConnectorFromConfig(restConfig, contextName, wsHub)
+	return NewConnectorFromAccess(NewLocalAccess(kubeconfigPath, contextName), wsHub)
 }
 
 // NewConnectorInCluster creates a connector using in-cluster ServiceAccount credentials.
 func NewConnectorInCluster(wsHub *websocket.Hub) (*Connector, error) {
-	restConfig, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, fmt.Errorf("building in-cluster config: %w", err)
-	}
-	return newConnectorFromConfig(restConfig, "in-cluster", wsHub)
+	return NewConnectorFromAccess(NewInClusterAccess(), wsHub)
 }
 
 // GetClusterInfoForContext returns models.ClusterInfo for a specific context.
