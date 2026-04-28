@@ -89,7 +89,10 @@ func main() {
 			slog.String("auth_mode", string(authOpts.Mode)),
 		)
 	}
-	shipperOpts := []shipper.Option{shipper.WithAuth(authOpts)}
+	shipperOpts := []shipper.Option{
+		shipper.WithAuth(authOpts),
+		shipper.WithClusterIdent(clusterID, clusterName),
+	}
 
 	// Sprint A.5: optional K8s API proxy. When enabled, the agent
 	// advertises the "kube-proxy" capability in Hello and dispatches

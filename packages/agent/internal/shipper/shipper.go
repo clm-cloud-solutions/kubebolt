@@ -40,6 +40,14 @@ type Shipper struct {
 	handler      channel.Handler
 	capabilities []string
 
+	// Cluster identity that goes into Hello. clusterHint is the
+	// agent's best-effort cluster_id (auto-derived from kube-system
+	// UID); clusterName is a human label sourced from
+	// KUBEBOLT_AGENT_CLUSTER_NAME. Both are forwarded so the backend
+	// can pick a friendlier display when auto-registering.
+	clusterHint string
+	clusterName string
+
 	// Populated each time a session reaches Welcome.
 	agentID string
 }
@@ -66,6 +74,19 @@ func WithHandler(h channel.Handler) Option {
 // is built. Default is ["metrics"].
 func WithCapabilities(caps ...string) Option {
 	return func(s *Shipper) { s.capabilities = caps }
+}
+
+// WithClusterIdent sets the cluster identity carried in Hello. The
+// agent resolves these from kube-system UID + KUBEBOLT_AGENT_CLUSTER_NAME
+// at startup; passing them here lets the backend's auto-register
+// pick a human-friendly display name for the cluster entry. Empty
+// strings are forwarded unchanged — the backend falls back to the
+// cluster_id it derives from auth.
+func WithClusterIdent(clusterID, clusterName string) Option {
+	return func(s *Shipper) {
+		s.clusterHint = clusterID
+		s.clusterName = clusterName
+	}
 }
 
 func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Option) *Shipper {
@@ -145,7 +166,11 @@ func (s *Shipper) runSession(ctx context.Context) error {
 		ContainerRuntime: "phaseB",
 		CgroupVersion:    "n/a",
 		KubeletVersion:   "n/a",
+		ClusterHint:      s.clusterHint,
 		Capabilities:     s.capabilities,
+	}
+	if s.clusterName != "" {
+		hello.Labels = map[string]string{"kubebolt.io/cluster-name": s.clusterName}
 	}
 
 	handler := s.handler
