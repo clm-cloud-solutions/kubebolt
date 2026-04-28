@@ -1,8 +1,8 @@
 # Sprint A.5 — Design Doc: agent-as-K8s-API-proxy
 
-**Estado**: En ejecución. Commits 1-7 ✅ (REST + watch). Commits 8a-8h en curso (SPDY tunneling).
+**Estado**: Funcional core ✅. Commits 1-8e + fixes de smoke test ✅. Pendientes: 8f-8h (hardening + tests), 9-10 (helm), 11-12 (integration + e2e).
 **Pre-requisito**: Sprint A ✅ (17 commits en `feat/agent-auth`).
-**Branch**: `feat/agent-kube-proxy`.
+**Branch**: `feat/agent-kube-proxy` (25 commits ahead de `develop` al cerrar el core).
 **Estimación (actualizada con SPDY scope-in)**: 4-5 semanas full-time / 6-8 semanas calendar.
 
 **Cambio de scope** (mid-sprint): SPDY/WebSocket tunneling para exec/portforward/attach
@@ -10,6 +10,11 @@ entra al sprint. Originalmente marcado como out-of-scope §8 con etiqueta "A.5.5
 necesidad". Razón del scope-in: KubeBolt SaaS productivo no es viable sin pod terminal
 + portforward via agent-proxy. Sin ellos, agent-proxy es read-only-ish para los flujos
 interactivos críticos. Decisiones técnicas en §0.7-§0.9.
+
+**Verificado en vivo** (smoke test contra kind-kubebolt-dev): pod terminal, file browser,
+port-forward, restart deployment, scale, delete, YAML apply, Copilot tool calls — todos
+funcionando vía agent-proxy con sesión interactiva real (`v4.channel.k8s.io` negotiated,
+6 KiB+ exec output flowing through tunnel).
 
 ---
 
@@ -825,31 +830,113 @@ Sequenced commits, each compiling + green tests:
 | 2 | `feat(agent-channel): backend AgentRegistry + Multiplexor` | 600 | registry, multiplexor, Hello/Welcome handshake, Heartbeat + Metrics handling on v2 |
 | 3 | `feat(agent-channel): agent-side Channel client` | 500 | dispatcher, writer/reader loops, shipper rewrite against v2 |
 | 4 | `feat(agent): KubeAPIProxy implementation` | 400 | HandleRequest + HandleWatch — agent side only, exercised via tests |
-| 5 | `feat(api): AgentProxyTransport + watch adapter` | 600 | the http.RoundTripper that bridges client-go to the channel |
-| 6 | `feat(cluster): ClusterAccess factory + Mode=local\|agent-proxy` | 400 | manager.go refactor |
-| 7 | `feat(cluster): auto-register agent-proxy clusters (opt-in)` | 250 | Helm value gate |
-| 7b | `fix(agent): suffix " (via agent)" para disambiguar dropdown` | 60 | mid-sprint smoke test fix |
-| 7c | `feat(agent): operator-tier RBAC manifest` | 150 | dual ClusterRole, opt-in |
-| **8a** | **`docs(sprint-a5): include SPDY tunneling — design`** | **200** | **§0.7-§0.9 doc additions** |
-| **8b** | **`feat(proto)!: KubeStreamData + KubeStreamAck for upgrade tunnels`** | **80** | **proto + buf regen** |
-| **8c** | **`feat(agent-channel): tunnel slot mode + credit-based flow control`** | **350** | **Multiplexor extends Register(mode)** |
-| **8d** | **`feat(api-channel): hijackable conn + Upgrade detection`** | **400** | **AgentProxyTransport detects upgrade, returns net.Conn-shaped Body** |
-| **8e** | **`feat(agent-proxy): SPDY upgrade handler dialing apiserver`** | **300** | **agent dial + bidi byte shovel** |
-| **8f** | **`feat(api-proxy): tunnel limits + idle-timeout + audit logging`** | **350** | **§0.9 hardening** |
-| **8g** | **`feat(api-proxy): tunnel Prometheus metrics`** | **150** | **observability** |
-| **8h** | **`test(integration): pod exec via agent-proxy`** | **400** | **real SPDY round-trip test** |
-| 9 | `feat(api-helm): proxy.enabled value + backend wiring` | 100 | helm template polish |
-| 10 | `feat(agent-helm): proxy.enabled + rbac.mode values` | 120 | helm template (incluye operator RBAC del 7c) |
-| 11 | `test(integration): client-go calls via proxy` | 300 | the smoking-gun test (REST path) |
-| 12 | `test(e2e): multi-cluster sprint A.5 (REST + SPDY)` | 500 | bash + manifests + exec scenario |
+| 5 | ✅ `feat(api): AgentProxyTransport + watch adapter` | 600 | the http.RoundTripper that bridges client-go to the channel |
+| 6 | ✅ `feat(cluster): ClusterAccess factory + Mode=local\|agent-proxy` | 400 | manager.go refactor |
+| 7 | ✅ `feat(cluster): auto-register agent-proxy clusters (opt-in)` | 250 | Helm value gate |
+| 7a | ✅ `feat(agent): forward cluster name to backend via Hello.Labels` | 65 | post-smoke: agent ships KUBEBOLT_AGENT_CLUSTER_NAME so backend uses friendly displayName |
+| 7b | ✅ `fix(agent): suffix " (via agent)" para disambiguar dropdown` | 60 | post-smoke: avoid name collision when kubeconfig + agent reach same cluster |
+| 7c | ✅ `feat(agent): operator-tier RBAC manifest` | 150 | dual ClusterRole, opt-in (apply via `make agent-rbac-operator`) |
+| 8a | ✅ `docs(sprint-a5): include SPDY tunneling — design` | 200 | §0.7-§0.9 doc additions |
+| 8b | ✅ `feat(proto)!: KubeStreamData + KubeStreamAck for upgrade tunnels` | 80 | proto + buf regen |
+| 8c | ✅ `feat(agent-channel): tunnel slot mode in Multiplexor` | 350 | SlotTunnel with overflow→close (loss-intolerant) |
+| 8d | ✅ `feat(api-channel): hijackable conn + Upgrade detection` | 400 | AgentProxyTransport detects upgrade, TunnelConn implements net.Conn |
+| 8e | ✅ `feat(agent-proxy): SPDY upgrade handler dialing apiserver` | 300 | agent dial + bidi byte pump with credit window |
+| 8e+ | ✅ `fix(api): wire AgentProxyTransport into exec/files/portforward SPDY` | 105 | mid-sprint: handlers use cluster.SPDYTransportsFor instead of standard spdy.RoundTripperFor |
+| 8e+ | ✅ `fix(agent-proxy): preserve Connection/Upgrade headers on upgrade` | 60 | post-smoke: don't strip them as hop-by-hop when isUpgradeRequest |
+| **8e+** | ✅ **`fix(agent-proxy): make SPDY tunnel actually work end-to-end`** | **400** | **6-bug fix chain — see §6.5 Smoke-test postmortem** |
+| 8e+ | ✅ `chore(agent-proxy): CancelRequest no-op` | 12 | silence client-go warning on every cancellation |
+| 8f | ⏳ `feat(api-proxy): tunnel limits + idle-timeout + audit logging` | 350 | §0.9 hardening — **required before SaaS productivo** |
+| 8g | ⏳ `feat(api-proxy): tunnel Prometheus metrics` | 150 | observability — **required before SaaS productivo** |
+| 8h | ⏳ `test(integration): pod exec via fake apiserver` | 400 | real SPDY round-trip; replaces removed legacy HandleUpgrade tests |
+| 9 | ⏳ `feat(api-helm): proxy.enabled value + backend wiring` | 100 | helm template polish |
+| 10 | ⏳ `feat(agent-helm): proxy.enabled + rbac.mode values` | 120 | helm template (incluye operator RBAC del 7c) |
+| 11 | ⏳ `test(integration): client-go calls via proxy` | 300 | the smoking-gun test (REST path) |
+| 12 | ⏳ `test(e2e): multi-cluster sprint A.5 (REST + SPDY)` | 500 | bash + manifests + exec scenario |
 
-**Estimación total** (post-SPDY scope-in): ~5800 líneas de código + ~2400 de tests.
+**Total real al cerrar core funcional**: 25 commits, ~6300 LOC + 2200 de tests.
 
-Los commits 8a-8h son el grueso del scope-in mid-sprint (~2200 LOC). Si necesitas
-pausar después de 8a-8e (SPDY funcional pero sin hardening) está OK — el
-commit 8e marca el punto donde exec/portforward funcionan en kind/dev. Los
-commits 8f/8g/8h son hardening y observability obligatorios antes de promover
-a SaaS productivo.
+**Estado**: el core funcional está cerrado en `feat/agent-kube-proxy`. Las operaciones
+REST + watch + exec + portforward + files vía agent-proxy están **verificadas end-to-end
+contra un cluster kind real** (smoke test, sesión exec con `v4.channel.k8s.io` negociado,
+6 KiB+ output fluyendo). Lo que queda (8f-12) es hardening, helm packaging y test
+automation — obligatorio antes de SaaS productivo, opcional para uso self-hosted
+single-tenant en inner-dev loop.
+
+### 6.5 Smoke-test postmortem (commits 8e+)
+
+El último commit grande del core (`fix(agent-proxy): make SPDY tunnel actually work
+end-to-end`, ~400 LOC) consolida una cadena de 6 bugs encontrados durante smoke testing
+en vivo. Vale documentarlos porque cada uno es lección para futuros tunnel-style
+features:
+
+**1. Multi-value HTTP headers serializados como string única**.
+Nuestro proto `KubeProxyRequest.headers` es `map<string,string>` — un slot por nombre.
+K8s' SPDY exec manda `X-Stream-Protocol-Version` con N entradas (una por protocolo
+soportado). El backend hacía `strings.Join(values, ", ")` para meter en el map. El
+agent recibía la string joined, hacía `Header.Set` con un único valor, apiserver leía
+`req.Header[X-Stream-Protocol-Version]` esperando `[]string` con cada protocolo
+distinto y no encontraba match exacto → **400 Bad Request**.
+*Fix*: agent splittea por `,` para upgrade requests y hace `Header.Add` por cada parte.
+*Lesson*: HTTP semántico requiere multi-value para algunos headers — un proto
+`map<string,string>` es lossy. Considerar `map<string, StringList>` en futura iteración
+si aparecen más casos.
+
+**2. Hop-by-hop strip eliminaba `Connection` y `Upgrade` siempre**.
+`buildRequest` del agent stripeaba ambos headers como hop-by-hop por RFC 7230. Para
+upgrade requests esos son **el contenido principal** que el apiserver inspecciona —
+no son hop-by-hop en este contexto. Stripeados → apiserver veía `Upgrade: SPDY/3.1`
+en aislamiento → 400.
+*Fix*: excepción cuando `isUpgradeRequest(req)` es true.
+
+**3. Backend's agentProxyUpgrader no inyectaba `Connection`/`Upgrade`**.
+El SPDY library estándar de K8s (`spdy.SpdyRoundTripper.RoundTrip`) clona el request
+internamente y `header.Add(Connection, Upgrade)` antes de dialear. Como nosotros
+reemplazamos ese RoundTripper con nuestro `agentProxyUpgrader`, asumimos esa
+responsabilidad. Sin esa adición, `AgentProxyTransport.RoundTrip` veía un POST sin
+upgrade headers → ruteaba como **unary** → agent forwardeaba sin upgrade → apiserver 400.
+*Fix*: clonar request y `Header.Set` ambos antes de delegar.
+
+**4. HTTP/2 transport rechaza `Upgrade` headers**.
+K8s apiservers modernos negocian HTTP/2 vía ALPN. La implementación HTTP/2 de Go
+responde con `http2: invalid Upgrade request header: ["SPDY/3.1"]` — HTTP/2 no tiene
+mecanismo de protocol upgrade. El SPDY library de K8s evita esto **no usando
+`http.Transport`** — dialea TCP+TLS directamente y escribe el HTTP/1.1 manual.
+*Fix*: agent's `HandleUpgrade` reemplaza `p.transport.RoundTrip` con `tls.Dial` +
+`httpReq.Write(conn)` + `http.ReadResponse(bufio.NewReader(conn))` + `bufConn` wrapper
+que mantiene los bytes post-headers que pueda haber piggy-back-eado el apiserver en el
+packet del 101.
+*Lesson*: HTTP/1.1 upgrade y HTTP/2 son incompatibles a nivel de wire. Si el server
+soporta ambos, hay que forzar 1.1 explícito vía `tls.Config.NextProtos = ["http/1.1"]`
+o (más robusto) bypass total del http.Transport para upgrades.
+
+**5. `defer resp.Body.Close()` de Negotiate cerraba el túnel**.
+K8s' `spdy.Negotiate` (que llama `executor.StreamWithContext` indirectamente) hace
+`defer resp.Body.Close()` justo después del upgrade. Si nuestro `resp.Body` ES la
+`TunnelConn` directamente, ese defer **terminaba el túnel ~microsegundos después del
+101**, antes que SPDY framing comenzara su propio handshake. El agent recibía
+`KubeStreamData{eof:true}` instantáneo y `pumpToApiserver` salía con `bytes_received=0`.
+*Fix*: nuevo type `TunnelHandshakeBody` que envuelve `TunnelConn`. Tiene método
+`Extract()` que el upgrader llama antes que la SPDY library wrap-ee la conn; tras
+`Extract`, `Body.Close()` es no-op (la SPDY conn ahora es dueña del lifecycle del
+`TunnelConn`).
+
+**6. El backend no enrutaba `KubeStreamData`/`Ack` al Multiplexor**.
+La switch case en `apps/api/internal/agent/server.go` solo manejaba `KubeResponse`,
+`KubeEvent`, `StreamClosed` — heredada de antes que añadiéramos las dos variantes
+nuevas en commit 8b. Los `KubeStreamData` del agent caían al default y se
+descartaban silenciosamente. El `TunnelConn.Read` del backend bloqueaba para siempre
+esperando bytes que sí llegaban a la gRPC stream pero nunca al slot del Multiplexor.
+*Fix*: añadir las dos variantes a la switch case (literalmente 2 líneas).
+*Lesson*: cuando se extiende un protocolo bidireccional, **TODOS los extremos** (no
+solo el que origina los nuevos mensajes) tienen que reconocerlos. Tests unitarios por
+componente no captan esto — necesita test integration que ejerza el ciclo completo
+(commits 8h y 11 son justo para eso).
+
+**Workflow takeaway**: cada bug agregaba ~3 minutos de iteración (rebuild image →
+load into kind → rolling DaemonSet → re-test). Total ~1h de iteraciones serie para
+encontrar los 6 bugs. Hubiéramos tardado la mitad si hubiéramos instrumentado los
+puntos críticos del túnel (Read/Write/demuxLoop, headers in/out) **antes** de empezar
+a iterar — lección guardada en memoria del usuario para futuros sprints de protocolo.
 
 Eliminados respecto al borrador original:
 - Migrar Heartbeat/Metrics como commit aparte → ya forma parte del commit 1+2 (flip duro).
@@ -898,5 +985,17 @@ Eliminados respecto al borrador original:
 | §0.9 | Tunnel hardening | **defaults conservadores** + audit logging always-on + Prom metrics |
 | extra | Deprecation v1 | **No aplica** — agente no publicado externamente, flip duro alcanza |
 
-**Estado actual** (al finalizar 8a): commits 1-7 + 7b + 7c ✅ mergeados en `feat/agent-kube-proxy`.
-Próximo paso: commit 8b (`feat(proto)!: KubeStreamData + KubeStreamAck`).
+**Estado actual** (core funcional cerrado): commits 1-8e + serie de fixes post-smoke
+test ✅ en `feat/agent-kube-proxy` (25 commits ahead de `develop`). Pod terminal,
+files, portforward, plus todas las operaciones REST del Sprint A.5 verificadas en
+vivo contra kind-kubebolt-dev. Branch listo para merge a `develop` antes de seguir
+con hardening.
+
+**Próximos pasos** (post-merge, en este orden):
+1. Commit 8f — hardening (idle timeout, max duration, max-per-agent, bps cap, audit log)
+2. Commit 8g — Prometheus metrics (active_tunnels, bytes_total, window_saturated)
+3. Commit 8h — integration test (pod exec via fake apiserver)
+4. Commits 9, 10 — helm chart wiring para api + agent (proxy.enabled + rbac.mode)
+5. Commits 11, 12 — integration tests (REST smoking gun) + e2e multi-cluster
+
+8f + 8g son bloqueadores de SaaS productivo. Los demás son polish y test automation.
