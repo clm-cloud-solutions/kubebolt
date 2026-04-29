@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Bot, Sparkles } from 'lucide-react'
+import { Sparkles } from 'lucide-react'
 import { useCopilot } from '@/contexts/CopilotContext'
+import { KobiSigil } from '@/components/kobi'
 
 // CopilotToggle — floating launcher at the bottom-right.
 // Visually matches the AskCopilotButton + Copilot input bezel
@@ -40,11 +41,11 @@ export function CopilotToggle() {
         <div className="flex items-center gap-1.5">
           <Sparkles className="w-3 h-3 text-kb-accent shrink-0" />
           <span className="text-xs font-semibold bg-gradient-to-r from-kb-accent via-kb-accent to-violet-400 bg-clip-text text-transparent leading-tight whitespace-nowrap">
-            KubeBolt Copilot AI
+            Kobi
           </span>
         </div>
         <div className="text-[10px] font-mono text-kb-text-tertiary mt-1 whitespace-nowrap flex items-center gap-1.5">
-          <span>Ask anything about your cluster</span>
+          <span>Ask about your cluster</span>
           <kbd className="px-1.5 py-px rounded border border-kb-border bg-kb-elevated text-[9px] text-kb-text-secondary shadow-[inset_0_-1px_0_rgba(0,0,0,0.06)]">
             ⌘J
           </kbd>
@@ -64,7 +65,7 @@ export function CopilotToggle() {
 
         <button
           onClick={togglePanel}
-          aria-label="Open KubeBolt Copilot AI"
+          aria-label="Open Kobi"
           className="group relative w-12 h-12 rounded-full bg-gradient-to-br from-kb-accent via-kb-accent to-violet-500 hover:scale-110 active:scale-95 transition-transform shadow-lg shadow-kb-accent/40 flex items-center justify-center overflow-hidden"
         >
           {/* Shimmer sweep on hover — reuses the same diagonal
@@ -74,7 +75,12 @@ export function CopilotToggle() {
             aria-hidden
             className="pointer-events-none absolute inset-0 -translate-x-full bg-gradient-to-r from-transparent via-white/30 to-transparent group-hover:translate-x-full transition-transform duration-700 ease-out"
           />
-          <Bot className="relative w-5 h-5 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.25)]" />
+          <KobiSigil
+            state="static"
+            inheritColor
+            size={22}
+            className="relative text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.25)]"
+          />
         </button>
       </div>
     </div>
