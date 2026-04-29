@@ -10,7 +10,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // RunCollector runs the Hubble ingest + aggregation loop until ctx is
@@ -101,7 +101,7 @@ func emitCollectorStatus(buf *buffer.Ring, clusterID, clusterName, node string, 
 	if up {
 		value = 1.0
 	}
-	buf.Push([]*agentv1.Sample{{
+	buf.Push([]*agentv2.Sample{{
 		Timestamp:  timestamppb.Now(),
 		MetricName: "hubble_collector_up",
 		Value:      value,

@@ -6,12 +6,12 @@ package buffer
 import (
 	"sync"
 
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 type Ring struct {
 	mu       sync.Mutex
-	samples  []*agentv1.Sample
+	samples  []*agentv2.Sample
 	capacity int
 
 	collectedTotal uint64
@@ -23,13 +23,13 @@ func New(capacity int) *Ring {
 		capacity = 10_000
 	}
 	return &Ring{
-		samples:  make([]*agentv1.Sample, 0, capacity),
+		samples:  make([]*agentv2.Sample, 0, capacity),
 		capacity: capacity,
 	}
 }
 
 // Push appends samples, dropping the oldest ones if the ring would overflow.
-func (r *Ring) Push(samples []*agentv1.Sample) {
+func (r *Ring) Push(samples []*agentv2.Sample) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.collectedTotal += uint64(len(samples))
@@ -57,7 +57,7 @@ func (r *Ring) Push(samples []*agentv1.Sample) {
 }
 
 // PopBatch removes and returns up to n samples. Returns nil when empty.
-func (r *Ring) PopBatch(n int) []*agentv1.Sample {
+func (r *Ring) PopBatch(n int) []*agentv2.Sample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.samples) == 0 {
@@ -66,7 +66,7 @@ func (r *Ring) PopBatch(n int) []*agentv1.Sample {
 	if n <= 0 || n > len(r.samples) {
 		n = len(r.samples)
 	}
-	out := make([]*agentv1.Sample, n)
+	out := make([]*agentv2.Sample, n)
 	copy(out, r.samples[:n])
 	r.samples = r.samples[n:]
 	return out

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -38,6 +39,49 @@ type AgentInstallConfig struct {
 
 	// Kill-switch for the Hubble flow collector. nil → default (on).
 	HubbleEnabled *bool `json:"hubbleEnabled,omitempty"`
+
+	// K8s API proxy (Sprint A.5). Sets KUBEBOLT_AGENT_PROXY_ENABLED
+	// in the agent's env so it advertises the kube-proxy capability
+	// and accepts SPDY tunnel requests from the backend. Default off
+	// (nil → false). Required for SaaS multi-cluster topology.
+	ProxyEnabled *bool `json:"proxyEnabled,omitempty"`
+
+	// Apply the operator-tier ClusterRole + binding alongside the
+	// base RBAC. Effectively cluster-admin scoped to the agent's SA
+	// — required for the dashboard to render fully through the
+	// proxy (else proxy reads come back as "No access"). Ignored
+	// when ProxyEnabled is not true.
+	ProxyOperatorRBAC *bool `json:"proxyOperatorRbac,omitempty"`
+
+	// ─── Auth ──────────────────────────────────────────────
+	// Authentication mode the agent uses against the backend's
+	// gRPC channel. Set to match the backend's
+	// KUBEBOLT_AGENT_AUTH_MODE — when the backend runs in
+	// `enforced` or `permissive` mode, this MUST be set or the
+	// agent connects without credentials and gets rejected with
+	// "unknown auth mode" on first Welcome.
+	//
+	// Empty (default) leaves auth off — only valid when the
+	// backend runs in `disabled` mode (Sprint A migration default).
+	//   - "ingest-token"  long-lived bearer token (typical SaaS).
+	//                     Requires AuthTokenSecret pointing at a
+	//                     pre-existing Secret in the agent's
+	//                     namespace with a `token` key.
+	//   - "tokenreview"   projected ServiceAccount token; the
+	//                     backend validates via apiserver
+	//                     TokenReview API. Requires backend to
+	//                     run in the same cluster as the agent.
+	//                     (Wizard support: future — for now use
+	//                     the dev manifest or Helm directly.)
+	AuthMode string `json:"authMode,omitempty"`
+
+	// Name of an existing Secret in the agent's namespace whose
+	// `token` key holds the ingest token. Required when AuthMode
+	// is "ingest-token". The wizard's helper text instructs the
+	// user to generate the token on the Agent Tokens admin page
+	// then `kubectl create secret generic <name>
+	// --from-literal=token=<paste>`.
+	AuthTokenSecret string `json:"authTokenSecret,omitempty"`
 
 	// ─── Image ─────────────────────────────────────────────
 	ImageRepo       string `json:"imageRepo,omitempty"`
@@ -134,6 +178,41 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 	if cfg.HubbleEnabled != nil {
 		hubbleEnabled = *cfg.HubbleEnabled
 	}
+	proxyEnabled := false
+	if cfg.ProxyEnabled != nil {
+		proxyEnabled = *cfg.ProxyEnabled
+	}
+	proxyOperatorRBAC := false
+	if cfg.ProxyOperatorRBAC != nil {
+		proxyOperatorRBAC = *cfg.ProxyOperatorRBAC
+	}
+	// Operator-tier RBAC is meaningless without proxy enabled —
+	// the SA token is only used by the agent for proxy traffic.
+	if proxyOperatorRBAC && !proxyEnabled {
+		return fmt.Errorf("proxyOperatorRbac requires proxyEnabled=true")
+	}
+
+	// Auth mode validation: when set, must be a recognized value
+	// AND the matching token Secret must exist. We don't try to
+	// auto-detect the backend's enforcement mode here — the wizard
+	// is the source of truth for what the operator wants to deploy
+	// against. Mismatches surface at agent boot via the
+	// "unknown auth mode" / "invalid credentials" gRPC errors.
+	switch cfg.AuthMode {
+	case "":
+		// no auth — fine when backend runs disabled.
+	case "ingest-token":
+		if cfg.AuthTokenSecret == "" {
+			return fmt.Errorf("authMode=ingest-token requires authTokenSecret to name an existing Secret in namespace %q", ns)
+		}
+	case "tokenreview":
+		// tokenreview uses projected SA token, no Secret reference
+		// from the user — the agent's pod spec already mounts one
+		// via the standard token volume. Future wizard work can
+		// surface the audience knob.
+	default:
+		return fmt.Errorf("authMode %q not recognized; expected one of: ingest-token, tokenreview, or empty", cfg.AuthMode)
+	}
 
 	// Validate resource quantity strings up front so a bad value
 	// turns into a clear 400 instead of a partial install.
@@ -160,13 +239,31 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 		}
 	}
 
+	// Same pre-flight for the auth token Secret: fail fast with a
+	// clear error before we create RBAC + DS that will crash-loop
+	// on mount.
+	if cfg.AuthMode == "ingest-token" {
+		sec, err := cs.CoreV1().Secrets(ns).Get(ctx, cfg.AuthTokenSecret, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("auth token secret %q not found in namespace %q — create it before install (kubectl create secret generic %s -n %s --from-literal=token=<paste-token-from-Agent-Tokens-admin-page>)", cfg.AuthTokenSecret, ns, cfg.AuthTokenSecret, ns)
+			}
+			return fmt.Errorf("verify auth token secret: %w", err)
+		}
+		if _, ok := sec.Data["token"]; !ok {
+			return fmt.Errorf("auth token secret %q has no `token` key — recreate with --from-literal=token=<paste>", cfg.AuthTokenSecret)
+		}
+	}
+
 	steps := []func() error{
 		func() error { return ensureServiceAccount(ctx, cs, ns) },
 		func() error { return ensureClusterRole(ctx, cs) },
 		func() error { return ensureClusterRoleBinding(ctx, cs, ns) },
 		func() error { return ensureLeaderRole(ctx, cs, ns) },
 		func() error { return ensureLeaderRoleBinding(ctx, cs, ns) },
-		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled) },
+		func() error { return ensureOperatorClusterRole(ctx, cs, proxyOperatorRBAC) },
+		func() error { return ensureOperatorClusterRoleBinding(ctx, cs, ns, proxyOperatorRBAC) },
+		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled, proxyEnabled) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -381,6 +478,166 @@ func ensureClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, ns s
 	return err
 }
 
+// agentOperatorClusterRole is the ClusterRole granting wildcard
+// read+write to the agent SA — required for the dashboard to render
+// fully through the SPDY proxy. Off by default; opt-in via
+// AgentInstallConfig.ProxyOperatorRBAC. Kept as a parallel resource
+// (NOT merging into kubebolt-agent-reader) so revoking it stays a
+// single delete instead of a rule diff.
+const (
+	agentOperatorClusterRole    = "kubebolt-agent-operator"
+	agentOperatorClusterBinding = "kubebolt-agent-operator"
+)
+
+// ensureOperatorClusterRole applies (when grant=true) or removes
+// (when grant=false) the operator-tier ClusterRole. Removal is
+// idempotent and only touches resources we own (managed-by label).
+func ensureOperatorClusterRole(ctx context.Context, cs kubernetes.Interface, grant bool) error {
+	if !grant {
+		return removeManagedClusterRole(ctx, cs, agentOperatorClusterRole)
+	}
+	cr := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: agentOperatorClusterRole,
+			Labels: mergeLabels(managedLabels(), map[string]string{
+				"kubebolt.dev/rbac-tier": "operator",
+			}),
+		},
+		Rules: []rbacv1.PolicyRule{
+			// Wildcard read+write on every resource. Verbose alternative
+			// (enumerated verbs/resources) ages poorly when new dashboard
+			// features land — see deploy/agent/kubebolt-agent-rbac-operator.yaml
+			// for the same rationale shipped to manual installers.
+			{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"}},
+			// Subresources don't match the wildcard above — enumerated.
+			{APIGroups: []string{""}, Resources: []string{"pods/exec", "pods/portforward", "pods/log", "pods/eviction", "pods/proxy", "services/proxy", "nodes/proxy"}, Verbs: []string{"get", "create"}},
+			{APIGroups: []string{"apps"}, Resources: []string{"deployments/scale", "statefulsets/scale", "replicasets/scale"}, Verbs: []string{"get", "update", "patch"}},
+			// Non-resource URLs (/api, /apis, /healthz). client-go's
+			// discovery touches these on every connection.
+			{NonResourceURLs: []string{"*"}, Verbs: []string{"get"}},
+		},
+	}
+	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentOperatorClusterRole, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	// Adopt CRs that came from our shipped manifest
+	// (deploy/agent/kubebolt-agent-rbac-operator.yaml) — they
+	// carry our `kubebolt.dev/rbac-tier=operator` signature. Older
+	// versions of that manifest didn't stamp the managed-by label,
+	// so a clean kubectl-apply leaves it un-adoptable. Detecting the
+	// signature lets the UI toggle take ownership safely without an
+	// extra "delete it manually first" step. Anything without the
+	// signature is genuinely foreign — refuse.
+	if !managedByUs(existing.Labels) {
+		if existing.Labels["kubebolt.dev/rbac-tier"] != "operator" {
+			return &ConflictError{Kind: "ClusterRole", Name: agentOperatorClusterRole, Reason: "already exists and was not installed by KubeBolt"}
+		}
+		slog.Info("agent integration: adopting pre-existing operator ClusterRole",
+			slog.String("name", agentOperatorClusterRole),
+		)
+	}
+	existing.Rules = cr.Rules
+	existing.Labels = cr.Labels
+	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
+	return err
+}
+
+// ensureOperatorClusterRoleBinding applies/removes the binding to
+// the agent's SA. Mirrors ensureOperatorClusterRole's grant flag.
+func ensureOperatorClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, ns string, grant bool) error {
+	if !grant {
+		return removeManagedClusterRoleBinding(ctx, cs, agentOperatorClusterBinding)
+	}
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: agentOperatorClusterBinding,
+			Labels: mergeLabels(managedLabels(), map[string]string{
+				"kubebolt.dev/rbac-tier": "operator",
+			}),
+		},
+		RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: agentOperatorClusterRole},
+		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: agentSAName, Namespace: ns}},
+	}
+	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentOperatorClusterBinding, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	// Same adoption rule as ensureOperatorClusterRole: the shipped
+	// manifest stamps `kubebolt.dev/rbac-tier=operator` on the
+	// binding, so the toggle can take ownership of a manually-applied
+	// install. Foreign bindings (no signature) still error out.
+	if !managedByUs(existing.Labels) {
+		if existing.Labels["kubebolt.dev/rbac-tier"] != "operator" {
+			return &ConflictError{Kind: "ClusterRoleBinding", Name: agentOperatorClusterBinding, Reason: "already exists and was not installed by KubeBolt"}
+		}
+		slog.Info("agent integration: adopting pre-existing operator ClusterRoleBinding",
+			slog.String("name", agentOperatorClusterBinding),
+		)
+	}
+	existing.Subjects = crb.Subjects
+	existing.RoleRef = crb.RoleRef
+	existing.Labels = crb.Labels
+	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
+	return err
+}
+
+// removeManagedClusterRole deletes the named ClusterRole if it
+// exists AND carries our managed-by label. Returns nil when the
+// resource isn't there (idempotent revoke); errors when an
+// unmanaged resource has the same name (caller can keep going).
+func removeManagedClusterRole(ctx context.Context, cs kubernetes.Interface, name string) error {
+	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !managedByUs(existing.Labels) {
+		// Not ours — leave it alone; warn via ConflictError so the
+		// caller can decide.
+		return &ConflictError{Kind: "ClusterRole", Name: name, Reason: "exists but not managed by KubeBolt — leaving in place"}
+	}
+	return cs.RbacV1().ClusterRoles().Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+func removeManagedClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, name string) error {
+	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, name, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !managedByUs(existing.Labels) {
+		return &ConflictError{Kind: "ClusterRoleBinding", Name: name, Reason: "exists but not managed by KubeBolt — leaving in place"}
+	}
+	return cs.RbacV1().ClusterRoleBindings().Delete(ctx, name, metav1.DeleteOptions{})
+}
+
+// mergeLabels combines two label maps, second wins on key collision.
+// Pulled out so the operator-tier resources can extend managedLabels()
+// with their tier marker without copy-pasting boilerplate.
+func mergeLabels(a, b map[string]string) map[string]string {
+	out := make(map[string]string, len(a)+len(b))
+	for k, v := range a {
+		out[k] = v
+	}
+	for k, v := range b {
+		out[k] = v
+	}
+	return out
+}
+
 func ensureLeaderRole(ctx context.Context, cs kubernetes.Interface, ns string) error {
 	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{Name: agentLeaderRole, Namespace: ns, Labels: managedLabels()},
@@ -427,11 +684,12 @@ func ensureLeaderRoleBinding(ctx context.Context, cs kubernetes.Interface, ns st
 	return err
 }
 
-func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cfg AgentInstallConfig, hubbleEnabled bool) error {
-	ds := buildAgentDaemonSet(ns, cfg, hubbleEnabled)
+func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cfg AgentInstallConfig, hubbleEnabled, proxyEnabled bool) error {
+	ds := buildAgentDaemonSet(ns, cfg, hubbleEnabled, proxyEnabled)
 	existing, err := cs.AppsV1().DaemonSets(ns).Get(ctx, agentDSName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, err = cs.AppsV1().DaemonSets(ns).Create(ctx, ds, metav1.CreateOptions{})
+		logAgentDSEnv("Create", ds, err)
 		return err
 	}
 	if err != nil {
@@ -444,10 +702,32 @@ func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cf
 	// than being silently overwritten.
 	ds.ResourceVersion = existing.ResourceVersion
 	_, err = cs.AppsV1().DaemonSets(ns).Update(ctx, ds, metav1.UpdateOptions{})
+	logAgentDSEnv("Update", ds, err)
 	return err
 }
 
-func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled bool) *appsv1.DaemonSet {
+// logAgentDSEnv emits the env vars we just wrote to the DaemonSet
+// so a "values didn't persist" report is decidable from logs alone:
+// either the expected vars are here (UI/cache bug) or they aren't
+// (Configure handler / build path bug).
+func logAgentDSEnv(op string, ds *appsv1.DaemonSet, err error) {
+	if err != nil {
+		slog.Error("agent integration: DaemonSet "+op+" failed",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	envs := agentContainerEnv(ds)
+	slog.Info("agent integration: DaemonSet "+op+" applied",
+		slog.String("KUBEBOLT_AGENT_PROXY_ENABLED", envs["KUBEBOLT_AGENT_PROXY_ENABLED"]),
+		slog.String("KUBEBOLT_HUBBLE_ENABLED", envs["KUBEBOLT_HUBBLE_ENABLED"]),
+		slog.String("KUBEBOLT_AGENT_AUTH_MODE", envs["KUBEBOLT_AGENT_AUTH_MODE"]),
+		slog.String("KUBEBOLT_AGENT_CLUSTER_NAME", envs["KUBEBOLT_AGENT_CLUSTER_NAME"]),
+		slog.String("KUBEBOLT_BACKEND_URL", envs["KUBEBOLT_BACKEND_URL"]),
+	)
+}
+
+func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled, proxyEnabled bool) *appsv1.DaemonSet {
 	selector := map[string]string{"app.kubernetes.io/name": AgentName}
 	podLabels := map[string]string{
 		"app.kubernetes.io/name": AgentName,
@@ -462,9 +742,21 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled bool) 
 		{Name: "POD_NAME", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.name"}}},
 		{Name: "POD_NAMESPACE", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.namespace"}}},
 		{Name: "KUBEBOLT_HUBBLE_ENABLED", Value: strconv.FormatBool(hubbleEnabled)},
+		{Name: "KUBEBOLT_AGENT_PROXY_ENABLED", Value: strconv.FormatBool(proxyEnabled)},
 	}
 	if cfg.ClusterName != "" {
 		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_CLUSTER_NAME", Value: cfg.ClusterName})
+	}
+	// Auth wiring — mirrors deploy/agent/kubebolt-agent-dev-auth.yaml.
+	// For ingest-token: mount the user-supplied Secret at a fixed
+	// path and point KUBEBOLT_AGENT_TOKEN_FILE at it. For
+	// tokenreview: just set the mode (the agent uses its projected
+	// SA token via the default token volume).
+	if cfg.AuthMode != "" {
+		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_AUTH_MODE", Value: cfg.AuthMode})
+	}
+	if cfg.AuthMode == "ingest-token" && cfg.AuthTokenSecret != "" {
+		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_TOKEN_FILE", Value: "/var/run/secrets/kubebolt/token"})
 	}
 	if cfg.HubbleRelayAddress != "" {
 		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_ADDR", Value: cfg.HubbleRelayAddress})
@@ -475,6 +767,19 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled bool) 
 	// which files exist.
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
+	// Mount the auth token Secret read-only.
+	if cfg.AuthMode == "ingest-token" && cfg.AuthTokenSecret != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "kubebolt-agent-token",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: cfg.AuthTokenSecret},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "kubebolt-agent-token", MountPath: "/var/run/secrets/kubebolt", ReadOnly: true,
+		})
+	}
+
 	if cfg.HubbleRelayTLS != nil && cfg.HubbleRelayTLS.ExistingSecret != "" {
 		env = append(env,
 			corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_CA_FILE", Value: "/etc/hubble-tls/ca.crt"},

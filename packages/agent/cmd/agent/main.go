@@ -29,8 +29,9 @@ import (
 	"github.com/kubebolt/kubebolt/packages/agent/internal/collector"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/flows"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
+	"github.com/kubebolt/kubebolt/packages/agent/internal/proxy"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/shipper"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 const agentVersion = "0.0.7-cluster-ident"
@@ -88,7 +89,37 @@ func main() {
 			slog.String("auth_mode", string(authOpts.Mode)),
 		)
 	}
-	ship := shipper.New(*backendURL, *nodeName, agentVersion, buf, shipper.WithAuth(authOpts))
+	shipperOpts := []shipper.Option{
+		shipper.WithAuth(authOpts),
+		shipper.WithClusterIdent(clusterID, clusterName),
+	}
+
+	// Sprint A.5: optional K8s API proxy. When enabled, the agent
+	// advertises the "kube-proxy" capability in Hello and dispatches
+	// kube_request payloads from the backend against the local
+	// in-cluster apiserver. Default off — operators opt-in via
+	// KUBEBOLT_AGENT_PROXY_ENABLED=true (Helm value lands in
+	// commit 9 as proxy.enabled).
+	if envBool("KUBEBOLT_AGENT_PROXY_ENABLED", false) {
+		cfg, err := rest.InClusterConfig()
+		if err != nil {
+			slog.Error("agent proxy requested but in-cluster config unavailable",
+				slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		kp, err := proxy.New(cfg)
+		if err != nil {
+			slog.Error("agent proxy: build failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		shipperOpts = append(shipperOpts,
+			shipper.WithHandler(proxy.NewHandler(kp)),
+			shipper.WithCapabilities("metrics", "kube-proxy"),
+		)
+		slog.Info("agent proxy enabled — backend can issue kube_request via this agent")
+	}
+
+	ship := shipper.New(*backendURL, *nodeName, agentVersion, buf, shipperOpts...)
 
 	var wg sync.WaitGroup
 
@@ -216,7 +247,7 @@ func main() {
 // collectors. Lets collectAndBuffer work with any source of samples.
 type Collector interface {
 	Name() string
-	Collect(ctx context.Context) ([]*agentv1.Sample, error)
+	Collect(ctx context.Context) ([]*agentv2.Sample, error)
 }
 
 func collectAndBuffer(ctx context.Context, c Collector, pods *collector.PodsCache, buf *buffer.Ring) {

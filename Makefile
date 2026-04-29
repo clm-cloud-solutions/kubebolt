@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-web agent-image agent-deploy agent-deploy-auth agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
+.PHONY: dev dev-api dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -162,6 +162,34 @@ agent-deploy-auth:
 		    -e "s|__TOKEN_KEY__|$(TOKEN_KEY)|g" \
 			deploy/agent/kubebolt-agent-dev-auth.yaml | kubectl apply --validate=false -f -
 	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=90s
+
+## Grant the agent-proxy operator-tier RBAC.
+##
+## The base deploy (agent-deploy / agent-deploy-auth) gives the agent
+## the metrics-only minimum (`kubebolt-agent-reader`). When the
+## backend talks to the apiserver via AgentProxyTransport (Sprint
+## A.5), every request travels with the agent's SA token — and the
+## metrics-only RBAC blocks reads on Nodes/Services/etc. Apply this
+## target to give the agent SA full read+write across all common
+## resources so the dashboard works end-to-end through the proxy.
+##
+## ⚠️  This is effectively cluster-admin scoped to the agent's pod.
+## Applying it is a deliberate choice — see the manifest header for
+## the trade-off + when it's appropriate.
+##
+## Idempotent. Pairs with `agent-rbac-operator-undo` to revert.
+agent-rbac-operator:
+	kubectl apply -f deploy/agent/kubebolt-agent-rbac-operator.yaml
+	@echo ""
+	@echo "✓ Operator-tier RBAC granted to ServiceAccount kubebolt-agent."
+	@echo "  Run 'make agent-rbac-operator-undo' to revert to metrics-only."
+
+## Revoke operator-tier RBAC. The agent reverts to the metrics-only
+## minimum (kubebolt-agent-reader). Idempotent.
+agent-rbac-operator-undo:
+	kubectl delete -f deploy/agent/kubebolt-agent-rbac-operator.yaml --ignore-not-found
+	@echo ""
+	@echo "✓ Operator-tier RBAC revoked. Agent is back to metrics-only."
 
 ## Follow logs from all agent pods.
 agent-logs:

@@ -1,0 +1,115 @@
+# Operator-level RBAC for the kubebolt-agent ServiceAccount.
+#
+# Apply this manifest ON TOP OF kubebolt-agent-dev-auth.yaml when you
+# want the agent-proxy path to support full read AND mutating
+# operations (the dashboard's restart / scale / delete / YAML apply,
+# kubectl-style Copilot actions, exec into pods, etc.). Without it
+# the agent's RBAC is the metrics-only minimum
+# (kubebolt-agent-reader) and the UI shows "No access" for everything
+# beyond pods + namespaces.
+#
+# ─── Trade-off ───────────────────────────────────────────────────
+# This grant is effectively cluster-admin scoped to the agent's
+# ServiceAccount token. The pod's mounted token can read every Secret
+# and patch any resource; if the pod is compromised the blast radius
+# is the entire cluster.
+#
+# Justification for opt-in (not default): the operator who installs
+# the agent ALREADY has cluster-admin (otherwise they couldn't apply
+# the ClusterRoleBinding). They are explicitly choosing to delegate
+# that authority to a long-lived pod credential. Default-OFF forces
+# that decision to be intentional and auditable.
+#
+# Recommended posture:
+#   - Production / SaaS multi-cluster:  apply this manifest. The
+#     agent IS the backend's only path to the cluster; without it
+#     the UI is read-only and only on a few resource types.
+#   - Single-cluster self-hosted (backend has direct kubeconfig):
+#     skip this manifest. The kubeconfig path already serves the
+#     full UI; agent-proxy is just a redundant alternative.
+#
+# Sprint A.5 commit 9 (`feat(agent-helm): proxy.enabled value`) wires
+# the same logic into the helm chart as `proxy.rbac.mode=operator`.
+# This dev manifest is the kubectl-apply equivalent for the kind /
+# docker-desktop dev loop.
+#
+# Apply with:
+#   kubectl apply -f deploy/agent/kubebolt-agent-rbac-operator.yaml
+#
+# Remove with:
+#   kubectl delete -f deploy/agent/kubebolt-agent-rbac-operator.yaml
+# (the agent reverts to kubebolt-agent-reader minimum)
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebolt-agent-operator
+  labels:
+    app: kubebolt-agent
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/managed-by: kubebolt
+    kubebolt.dev/rbac-tier: operator
+rules:
+  # Wildcard read+write on every namespaced + cluster-scoped resource.
+  # Deliberately broad — narrowing the verb list would block specific
+  # dashboard actions (e.g. dropping `delete` breaks the delete
+  # button, dropping `patch` breaks scale + rollout-restart). If you
+  # need finer control, fork this manifest and trim verbs / resources
+  # explicitly rather than relying on a "almost-admin" middle ground
+  # that ages poorly when new dashboard features land.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs:
+      - get
+      - list
+      - watch
+      - create
+      - update
+      - patch
+      - delete
+      - deletecollection
+
+  # Subresources don't match the wildcard above (they need explicit
+  # listing under their parent's apiGroup). Enumerated here for the
+  # operations the dashboard exposes.
+  - apiGroups: [""]
+    resources:
+      - pods/exec      # pod terminal
+      - pods/portforward
+      - pods/log
+      - pods/eviction  # rollout-restart-style operations
+      - pods/proxy
+      - services/proxy
+      - nodes/proxy    # already in kubebolt-agent-reader; redundant but harmless
+    verbs: ["get", "create"]
+
+  - apiGroups: ["apps"]
+    resources:
+      - deployments/scale
+      - statefulsets/scale
+      - replicasets/scale
+    verbs: ["get", "update", "patch"]
+
+  # Non-resource URLs (/api, /apis, /healthz). client-go's discovery
+  # touches these on every connection.
+  - nonResourceURLs: ["*"]
+    verbs: ["get"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebolt-agent-operator
+  labels:
+    app: kubebolt-agent
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/managed-by: kubebolt
+    kubebolt.dev/rbac-tier: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebolt-agent-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system

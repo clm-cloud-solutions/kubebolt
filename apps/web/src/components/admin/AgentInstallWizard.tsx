@@ -1,7 +1,7 @@
-import { useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, Loader2 } from 'lucide-react'
-import { api, type AgentInstallConfig, type Integration } from '@/services/api'
+import { useEffect, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { AlertTriangle, Check, Loader2, KeyRound } from 'lucide-react'
+import { api, type AgentInstallConfig, type AgentIssueTokenResponse, type Integration } from '@/services/api'
 import { Modal } from '@/components/shared/Modal'
 
 // The agent ships samples to the KubeBolt backend over gRPC :9090.
@@ -62,6 +62,24 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
   const [nodeSelector, setNodeSelector] = useState<Array<{ k: string; v: string }>>([])
   const [advancedOpen, setAdvancedOpen] = useState(false)
 
+  // Backend agent-auth posture. Drives the Save button gating and
+  // the tenant dropdown for the Generate Token flow.
+  const { data: authInfo } = useQuery({
+    queryKey: ['agent-auth-info'],
+    queryFn: () => api.getAgentAuthInfo(),
+    staleTime: 30_000,
+  })
+
+  const [issuedToken, setIssuedToken] = useState<AgentIssueTokenResponse | null>(null)
+  const [issueError, setIssueError] = useState<string | null>(null)
+  const [selectedTenantId, setSelectedTenantId] = useState<string>('')
+
+  useEffect(() => {
+    if (selectedTenantId || !authInfo?.tenants?.length) return
+    const firstActive = authInfo.tenants.find((t) => !t.disabled)
+    if (firstActive) setSelectedTenantId(firstActive.id)
+  }, [authInfo, selectedTenantId])
+
   // Server-side conflicts come back as HTTP 409 with the conflicting
   // resource broken out. We render a tailored hint for that case.
   const [conflict, setConflict] = useState<{
@@ -70,6 +88,25 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
     name: string
     reason: string
   } | null>(null)
+
+  const issueToken = useMutation({
+    mutationFn: () =>
+      api.issueAgentTokenAndMaterializeSecret({
+        tenantId: selectedTenantId,
+        namespace: cfg.namespace?.trim() || 'kubebolt-system',
+        secretName: cfg.authTokenSecret?.trim() || 'kubebolt-agent-token',
+        label: `agent-install ${new Date().toISOString().slice(0, 10)}`,
+      }),
+    onSuccess: (resp) => {
+      setIssueError(null)
+      setIssuedToken(resp)
+      setCfg((prev) => ({ ...prev, authTokenSecret: resp.secretName }))
+    },
+    onError: (err) => {
+      setIssuedToken(null)
+      setIssueError(err instanceof Error ? err.message : String(err))
+    },
+  })
 
   const mut = useMutation({
     mutationFn: (body: AgentInstallConfig) => api.installIntegration('agent', body),
@@ -179,6 +216,107 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
             </p>
           </div>
 
+          {/* Auth — must match the backend's KUBEBOLT_AGENT_AUTH_MODE.
+              Mismatch → agent gets `unknown auth mode` from Welcome
+              and reconnect-loops forever. Wizard surfaces this to
+              avoid the day-zero footgun. */}
+          <div className="space-y-3 p-3 rounded-lg bg-kb-elevated border border-kb-border">
+            <div>
+              <div className="text-sm text-kb-text-primary font-medium">Auth to backend</div>
+              <p className="text-[11px] text-kb-text-secondary mt-0.5">
+                How the agent identifies itself when talking to the backend's gRPC channel. Must match the backend's <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">KUBEBOLT_AGENT_AUTH_MODE</code> — when the backend runs <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">enforced</code> or <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">permissive</code>, leaving this on "Disabled" gets the agent rejected with <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">unknown auth mode</code> and a reconnect loop.
+              </p>
+            </div>
+            <select
+              value={cfg.authMode ?? ''}
+              onChange={(e) => setCfg({ ...cfg, authMode: e.target.value as AgentInstallConfig['authMode'], authTokenSecret: e.target.value === 'ingest-token' ? cfg.authTokenSecret : '' })}
+              className="w-full px-3 py-2 rounded-lg bg-kb-card border border-kb-border text-sm text-kb-text-primary focus:outline-none focus:ring-1 focus:ring-kb-accent"
+            >
+              <option value="">Disabled — backend accepts unauthenticated agents</option>
+              <option value="ingest-token">Ingest Token — long-lived bearer (typical for SaaS)</option>
+              <option value="tokenreview" disabled>TokenReview — projected SA token (in-cluster only; not yet wizard-supported)</option>
+            </select>
+            {cfg.authMode === 'ingest-token' && (
+              <div className="space-y-2 pt-2 border-t border-kb-border">
+                <label className="text-xs font-mono text-kb-text-secondary uppercase tracking-wider">
+                  Token Secret <span className="text-status-error">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="kubebolt-agent-token"
+                  value={cfg.authTokenSecret ?? ''}
+                  onChange={(e) => setCfg({ ...cfg, authTokenSecret: e.target.value })}
+                  className="w-full px-3 py-2 rounded-lg bg-kb-card border border-kb-border text-sm text-kb-text-primary font-mono focus:outline-none focus:ring-1 focus:ring-kb-accent"
+                />
+
+                {(authInfo?.tenants?.length ?? 0) > 0 && (
+                  <div className="pt-2 space-y-2">
+                    {(authInfo?.tenants?.length ?? 0) > 1 && (
+                      <select
+                        value={selectedTenantId}
+                        onChange={(e) => setSelectedTenantId(e.target.value)}
+                        className="w-full px-2.5 py-1.5 rounded bg-kb-card border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:ring-1 focus:ring-kb-accent"
+                      >
+                        {authInfo!.tenants.map((t) => (
+                          <option key={t.id} value={t.id} disabled={t.disabled}>
+                            {t.name}{t.disabled ? ' (disabled)' : ''}
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => issueToken.mutate()}
+                      disabled={!selectedTenantId || issueToken.isPending}
+                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-card hover:bg-kb-card-hover text-kb-text-primary text-xs border border-kb-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {issueToken.isPending ? (
+                        <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Issuing…</>
+                      ) : (
+                        <><KeyRound className="w-3.5 h-3.5" /> Generate token + create Secret</>
+                      )}
+                    </button>
+                    {issuedToken && (
+                      <div className="flex items-start gap-2 px-2.5 py-2 rounded bg-status-ok-dim border border-status-ok/30">
+                        <Check className="w-3.5 h-3.5 text-status-ok shrink-0 mt-0.5" />
+                        <div className="text-[11px] text-kb-text-primary">
+                          <div className="font-semibold">Secret <code className="font-mono">{issuedToken.secretName}</code> ready in <code className="font-mono">{issuedToken.namespace}</code></div>
+                          <div className="text-kb-text-secondary mt-0.5">
+                            Token <code className="font-mono">{issuedToken.tokenPrefix}…</code> stored under key <code className="font-mono">token</code>. The wizard will reference this Secret on Install.
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                    {issueError && (
+                      <div className="flex items-start gap-2 px-2.5 py-2 rounded bg-status-error-dim border border-status-error/30">
+                        <AlertTriangle className="w-3.5 h-3.5 text-status-error shrink-0 mt-0.5" />
+                        <div className="text-[11px] text-status-error">{issueError}</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                <p className="text-[11px] text-kb-text-tertiary">
+                  Use the button above to generate a token + create the Secret in one click, or point at a Secret you've already created.
+                </p>
+              </div>
+            )}
+            {/* Refusal banner — Install button is disabled while
+                this shows. Mirrors the backend's pre-flight error. */}
+            {authInfo?.enforcement === 'enforced' && cfg.proxyEnabled && (cfg.authMode ?? '') === '' && (
+              <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-error-dim border border-status-error/30">
+                <AlertTriangle className="w-4 h-4 text-status-error shrink-0 mt-0.5" />
+                <div className="text-[11px] text-kb-text-primary">
+                  <div className="font-semibold">Auth required when proxy is on</div>
+                  <div className="text-kb-text-secondary">
+                    Backend is in <code className="font-mono">enforced</code> mode. Pick <strong>Ingest Token</strong> above and use Generate to create the Secret — the agent will be rejected at the welcome handshake otherwise.
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Hubble toggle */}
           <div className="flex items-start justify-between gap-3 p-3 rounded-lg bg-kb-elevated border border-kb-border">
             <div>
@@ -198,6 +336,55 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
                 className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.hubbleEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`}
               />
             </button>
+          </div>
+
+          {/* K8s API proxy (SPDY tunneling) */}
+          <div className="space-y-3 p-3 rounded-lg bg-kb-elevated border border-kb-border">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm text-kb-text-primary font-medium">K8s API proxy (SPDY tunneling)</div>
+                <p className="text-[11px] text-kb-text-secondary mt-0.5">
+                  Routes the backend's API calls through the agent's outbound channel. Required for SaaS multi-cluster — when on, terminal / file browser / port-forward / kubectl-style mutations work via the agent. Leave off for single-cluster self-hosted (backend already has kubeconfig).
+                </p>
+              </div>
+              <button
+                type="button"
+                role="switch"
+                aria-checked={cfg.proxyEnabled ?? false}
+                onClick={() => setCfg({ ...cfg, proxyEnabled: !cfg.proxyEnabled, proxyOperatorRbac: cfg.proxyEnabled ? false : cfg.proxyOperatorRbac })}
+                className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.proxyEnabled ? 'bg-kb-accent' : 'bg-kb-border'}`}
+              >
+                <span
+                  className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.proxyEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`}
+                />
+              </button>
+            </div>
+            {cfg.proxyEnabled && (
+              <div className="flex items-start justify-between gap-3 pt-2 border-t border-kb-border">
+                <div>
+                  <div className="text-sm text-kb-text-primary font-medium flex items-center gap-2">
+                    Operator-tier RBAC
+                    <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-status-warning/10 text-status-warning border border-status-warning/30">
+                      cluster-admin
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-kb-text-secondary mt-0.5">
+                    Grants the agent's ServiceAccount wildcard read+write across the apiserver — required for the dashboard to render fully through the proxy. Without it, agent-proxy reads come back as "No access" for most resources. Effectively cluster-admin scoped to the agent's pod.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={cfg.proxyOperatorRbac ?? false}
+                  onClick={() => setCfg({ ...cfg, proxyOperatorRbac: !cfg.proxyOperatorRbac })}
+                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.proxyOperatorRbac ? 'bg-kb-accent' : 'bg-kb-border'}`}
+                >
+                  <span
+                    className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.proxyOperatorRbac ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`}
+                  />
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Advanced */}
@@ -442,7 +629,8 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
           <button
             type="button"
             onClick={submit}
-            disabled={!cfg.backendUrl.trim() || mut.isPending}
+            disabled={!cfg.backendUrl.trim() || mut.isPending || (authInfo?.enforcement === 'enforced' && !!cfg.proxyEnabled && !(cfg.authMode ?? '').trim())}
+            title={authInfo?.enforcement === 'enforced' && !!cfg.proxyEnabled && !(cfg.authMode ?? '').trim() ? 'Backend is in enforced auth mode — pick Ingest Token before installing' : undefined}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent hover:bg-kb-accent-hover text-kb-on-accent text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {mut.isPending ? (

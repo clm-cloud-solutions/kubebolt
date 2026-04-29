@@ -1,0 +1,247 @@
+// Wire contract for the kubebolt-agent ↔ backend bidi channel (Sprint A.5).
+//
+// Replaces the v1 AgentIngest service (Register / StreamMetrics / Heartbeat)
+// with a single bidi RPC that multiplexes ALL traffic — handshake, metrics,
+// heartbeat, and the K8s API proxy (kube_request / kube_response /
+// kube_event). The proxy is what enables SaaS multi-cluster: the backend
+// runs outside the customer's cluster and reaches the apiserver through
+// the agent's persistent outbound stream.
+//
+// Migration: hard cutover from v1. The agent and backend in this branch
+// only speak v2.
+//
+// Design doc: docs/architecture/sprint-a5-agent-proxy.md.
+
+syntax = "proto3";
+
+package kubebolt.agent.v2;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2;agentv2";
+
+// AgentChannel is the single bidi stream the agent maintains with the
+// backend for the lifetime of its session. All traffic — metrics push,
+// heartbeat, K8s API proxy — multiplexes here.
+//
+// Authentication: every connection carries the agent's credential in
+// gRPC metadata (Authorization: Bearer + kubebolt-auth-mode). The
+// interceptor (apps/api/internal/agent/auth_interceptor.go) validates
+// once at stream open and stamps the identity on the context.
+service AgentChannel {
+  // Channel opens the stream. The first AgentMessage MUST be Hello;
+  // the backend replies with Welcome and the agreed AgentConfig.
+  rpc Channel(stream AgentMessage) returns (stream BackendMessage);
+}
+
+// ─── Envelope messages ───────────────────────────────────────────────
+
+message AgentMessage {
+  // Set on responses to correlate with the BackendMessage that
+  // triggered them (kube_response, kube_event). Empty for unsolicited
+  // messages (heartbeat, metrics, hello).
+  string request_id = 1;
+
+  oneof kind {
+    Hello hello = 2;
+    Heartbeat heartbeat = 3;
+    MetricBatch metrics = 4;
+    KubeProxyResponse kube_response = 5;
+    KubeProxyWatchEvent kube_event = 6;
+    StreamClosed stream_closed = 7;
+
+    // SPDY/WebSocket tunneling (Sprint A.5 §0.7-§0.9). Either side
+    // can send these; correlated by request_id. The unary
+    // KubeProxyResponse{status_code=101} starts the tunnel; from
+    // there KubeStreamData carries raw bytes, KubeStreamAck carries
+    // credit-based flow control acks.
+    KubeStreamData kube_stream_data = 8;
+    KubeStreamAck kube_stream_ack = 9;
+  }
+}
+
+message BackendMessage {
+  string request_id = 1;
+
+  oneof kind {
+    Welcome welcome = 2;
+    HeartbeatAck heartbeat_ack = 3;
+    KubeProxyRequest kube_request = 4;
+    ConfigUpdate config_update = 5;
+    Disconnect disconnect = 6;
+
+    // Tunnel data + ACKs flow in BOTH directions. Same field numbers
+    // as AgentMessage to keep wire decoders symmetric.
+    KubeStreamData kube_stream_data = 8;
+    KubeStreamAck kube_stream_ack = 9;
+  }
+}
+
+// ─── Handshake ───────────────────────────────────────────────────────
+
+// Hello is the first AgentMessage on a fresh stream. Replaces the
+// v1 RegisterRequest (the unary Register RPC is gone).
+message Hello {
+  string node_name = 1;
+  string agent_version = 2;
+  string container_runtime = 3;   // e.g. "containerd://1.7.20"
+  string kernel_version = 4;
+  string cgroup_version = 5;      // "v1" or "v2"
+  string kubelet_version = 6;
+  string cluster_hint = 7;        // best-effort cluster_id from agent
+  repeated string capabilities = 8; // ["metrics", "kube-proxy"]
+  map<string, string> labels = 9; // curated subset of node labels
+}
+
+// Welcome is the backend's response to Hello. Replaces v1 RegisterResponse.
+message Welcome {
+  string agent_id = 1;            // sha256(tenant|cluster|node)[:16]
+  string cluster_id = 2;          // canonical cluster identifier
+  AgentConfig config = 3;
+}
+
+// AgentConfig carries the tunables the backend pushes to the agent.
+// Re-emitted via ConfigUpdate for hot-reload.
+message AgentConfig {
+  uint32 sample_interval_seconds = 1;
+  uint32 batch_size = 2;
+  uint32 batch_flush_seconds = 3;
+  repeated string namespace_denylist = 4;
+  bool collect_process_level = 5;
+  bool collect_conntrack = 6;
+  map<string, string> extra = 7;
+}
+
+// ─── Metrics ─────────────────────────────────────────────────────────
+//
+// MetricBatch + Sample are unchanged in shape from v1; field numbers
+// preserved so any proto-aware tooling that captured v1 traffic can
+// still decode v2 batches.
+
+message MetricBatch {
+  string agent_id = 1;
+  google.protobuf.Timestamp sent_at = 2;
+  repeated Sample samples = 3;
+}
+
+message Sample {
+  google.protobuf.Timestamp timestamp = 1;
+  string metric_name = 2;
+  double value = 3;
+  map<string, string> labels = 4;
+  // Metric type (gauge/counter/histogram) is resolved server-side by
+  // metric_name lookup; not transmitted.
+}
+
+// ─── Heartbeat ───────────────────────────────────────────────────────
+
+message Heartbeat {
+  google.protobuf.Timestamp sent_at = 1;
+  AgentHealthStats stats = 2;
+}
+
+message HeartbeatAck {
+  google.protobuf.Timestamp received_at = 1;
+}
+
+message AgentHealthStats {
+  uint64 samples_collected_total = 1;
+  uint64 samples_sent_total = 2;
+  uint64 samples_dropped_total = 3;
+  uint64 buffer_size_current = 4;
+  uint64 buffer_size_max = 5;
+  uint32 collection_errors_total = 6;
+  uint64 memory_bytes = 7;
+  double cpu_cores = 8;
+}
+
+// ─── K8s API proxy ───────────────────────────────────────────────────
+//
+// The backend issues KubeProxyRequest; the agent executes it against
+// the local in-cluster apiserver and replies with KubeProxyResponse.
+//
+// Watch is special: when KubeProxyRequest.watch=true, the agent emits
+// zero or more KubeProxyWatchEvent messages on the same request_id
+// before terminating with either a KubeProxyResponse (final status)
+// or StreamClosed.
+
+message KubeProxyRequest {
+  string method = 1;          // GET / POST / PATCH / PUT / DELETE
+  string path = 2;            // /api/v1/namespaces/foo/pods/bar
+  map<string, string> headers = 3;  // Accept, Content-Type, etc.
+  bytes body = 4;             // request body for non-GET
+  bool watch = 5;             // if true, opens a long-lived stream
+  uint32 timeout_seconds = 6; // bound non-watch calls; 0 = no bound
+}
+
+message KubeProxyResponse {
+  uint32 status_code = 1;
+  map<string, string> headers = 2;
+  bytes body = 3;
+  string error = 4;           // network / serialization failures
+                              // (HTTP status >= 400 is NOT an error here)
+}
+
+// KubeProxyWatchEvent carries one event from a watch stream. The
+// stream terminates when KubeProxyResponse arrives with the same
+// request_id (final status) or StreamClosed arrives.
+message KubeProxyWatchEvent {
+  string event_type = 1;      // ADDED / MODIFIED / DELETED / BOOKMARK / ERROR
+  bytes object = 2;           // raw apiserver event JSON (passed through)
+}
+
+// StreamClosed signals voluntary termination of a watch stream
+// without an HTTP-level error. Reason is for logs / debugging.
+message StreamClosed {
+  string reason = 1;          // "client_done", "buffer_overflow", "agent_shutdown"
+                              // For tunnels: "idle_timeout", "max_duration_exceeded",
+                              // "rate_limit_exceeded", "agent_shutdown".
+}
+
+// ─── SPDY/WebSocket tunneling (Sprint A.5 §0.7-§0.9) ─────────────────
+//
+// Pod exec / attach / portforward ride on protocols that the K8s
+// apiserver upgrades into via `Connection: Upgrade` (SPDY/3.1 today,
+// WebSocket on 1.30+). The unary KubeProxyRequest carries the upgrade
+// headers; the agent dials the apiserver, gets the 101 Switching
+// Protocols, and replies with KubeProxyResponse{status_code=101,
+// headers=...}.
+//
+// From that point both directions exchange raw bytes via
+// KubeStreamData. The receiver reports consumption via KubeStreamAck;
+// the sender pauses when bytes outstanding exceed the negotiated
+// window (default 256 KiB — see §0.8). End-of-stream from either
+// side is signaled by KubeStreamData{eof=true} OR a StreamClosed
+// with a tunnel-specific reason.
+//
+// Why credit-based ACKs and not blocking on saturation: the bidi
+// gRPC channel multiplexes ALL traffic (heartbeat + metrics + N
+// watches + M tunnels) for a single agent. A single slow consumer
+// MUST NOT starve peer streams sharing the channel — credit-based
+// flow control isolates each tunnel's congestion (§0.8).
+
+message KubeStreamData {
+  bytes data = 1;             // opaque bytes; whatever SPDY/WS framed
+  bool eof = 2;               // sender's half of the duplex is done
+}
+
+message KubeStreamAck {
+  uint64 bytes_consumed = 1;  // delta since last ACK from this side, monotonic
+}
+
+// ─── Control messages ────────────────────────────────────────────────
+
+// ConfigUpdate hot-reloads the AgentConfig. Settings that toggle
+// collectors take effect on next agent restart; sample_interval_seconds
+// / batch_size / batch_flush_seconds / namespace_denylist apply live.
+message ConfigUpdate {
+  AgentConfig config = 1;
+}
+
+// Disconnect asks the agent to drop the channel and reconnect. Used
+// when the backend redeploys, the agent is being moved to a different
+// shard, or token rotation requires re-authentication.
+message Disconnect {
+  string reason = 1;
+  uint32 reconnect_after_seconds = 2;  // 0 = immediate
+}

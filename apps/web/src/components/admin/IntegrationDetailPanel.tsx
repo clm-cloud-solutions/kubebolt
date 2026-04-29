@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { X, Trash2, AlertTriangle, Loader2, ExternalLink, Check, Minus, Info, CircleDot, Settings } from 'lucide-react'
-import { api, type Integration } from '@/services/api'
+import { X, Trash2, AlertTriangle, Loader2, ExternalLink, Check, Minus, Info, CircleDot, Settings, Zap } from 'lucide-react'
+import { api, ApiError, type Integration } from '@/services/api'
 import { StatusBadge } from '@/pages/admin/IntegrationsPage'
 import { AgentConfigureDialog } from '@/components/admin/AgentConfigureDialog'
 
@@ -47,6 +47,17 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
   // kills the "one-click catastrophe" failure mode for resources we
   // didn't install ourselves.
   const [forceConfirmText, setForceConfirmText] = useState('')
+  // selfTargeted is set when the backend refuses an uninstall with
+  // 409 because the agent being removed is the one backing the
+  // active cluster session — uninstalling would sever the only path
+  // to that cluster. We surface this as a separate warning state
+  // (above the standard force-confirm) so the operator sees the
+  // session impact spelled out, not just a generic "force" prompt.
+  const [selfTargeted, setSelfTargeted] = useState<{
+    proxyClusterId?: string
+    activeContext?: string
+    hint?: string
+  } | null>(null)
 
   const uninstall = useMutation({
     mutationFn: (opts: { force?: boolean }) => api.uninstallIntegration(integration.id, opts),
@@ -59,7 +70,24 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
       setPhase('verifying')
       qc.invalidateQueries({ queryKey: ['integration', integration.id] })
     },
-    onError: () => {
+    onError: (err) => {
+      // 409 + selfTargetedProxy is the self-DoS guard from the
+      // backend: keep the confirm dialog open and switch it into
+      // self-targeted mode so the operator sees the explicit
+      // "you'll cut your own session" warning before deciding
+      // whether to force the operation.
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        err.payload?.selfTargetedProxy === true
+      ) {
+        setSelfTargeted({
+          proxyClusterId: typeof err.payload.proxyClusterId === 'string' ? err.payload.proxyClusterId : undefined,
+          activeContext: typeof err.payload.activeContext === 'string' ? err.payload.activeContext : undefined,
+          hint: typeof err.payload.hint === 'string' ? err.payload.hint : undefined,
+        })
+        setForceConfirmText('')
+      }
       // Stay on the confirm dialog so the user sees the error and
       // can retry or cancel.
       setPhase('idle')
@@ -78,6 +106,7 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
         setPhase('idle')
         setConfirming(false)
         setForceConfirmText('')
+        setSelfTargeted(null)
       }, 1200)
       return () => clearTimeout(t)
     }
@@ -270,6 +299,24 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
                     />
                   ) : (
                     <>
+                      {selfTargeted && (
+                        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/40">
+                          <Zap className="w-4 h-4 text-status-warning shrink-0 mt-0.5" />
+                          <div className="text-[11px] text-kb-text-primary space-y-1">
+                            <div className="font-semibold">This agent backs your active session</div>
+                            <div className="text-kb-text-secondary">
+                              {selfTargeted.activeContext && (
+                                <>The active cluster <code className="font-mono">{selfTargeted.activeContext}</code> is reached through this agent's proxy. </>
+                              )}
+                              Uninstalling will make the cluster unreachable from KubeBolt — no auto-recovery.
+                            </div>
+                            {selfTargeted.hint && (
+                              <div className="text-kb-text-secondary italic">{selfTargeted.hint}</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex items-start gap-2">
                         <AlertTriangle className="w-4 h-4 text-status-error shrink-0 mt-0.5" />
                         <div className="text-[11px] text-kb-text-primary">
@@ -287,8 +334,12 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
                         </div>
                       </div>
 
-                      {/* Typed confirmation — only for the force path */}
-                      {!integration.managed && (
+                      {/* Typed confirmation — required for the force
+                          path AND for the self-targeted-proxy path,
+                          since both have catastrophic blast radius
+                          (data loss for force; session loss for
+                          self-targeted). */}
+                      {(!integration.managed || selfTargeted) && (
                         <div>
                           <label className="block text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1">
                             Type <span className="text-status-error">uninstall</span> to confirm
@@ -303,7 +354,7 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
                         </div>
                       )}
 
-                      {uninstall.isError && (
+                      {uninstall.isError && !selfTargeted && (
                         <div className="text-[11px] text-status-error">{(uninstall.error as Error).message}</div>
                       )}
                     </>
@@ -311,21 +362,26 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
 
                   <div className="flex items-center justify-end gap-2">
                     <button
-                      onClick={() => { setConfirming(false); setForceConfirmText('') }}
+                      onClick={() => { setConfirming(false); setForceConfirmText(''); setSelfTargeted(null) }}
                       disabled={phase !== 'idle'}
                       className="px-3 py-1.5 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-primary text-xs border border-kb-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Cancel
                     </button>
                     <button
-                      onClick={() => uninstall.mutate({ force: !integration.managed })}
-                      disabled={phase !== 'idle' || (!integration.managed && forceConfirmText.trim().toLowerCase() !== 'uninstall')}
+                      onClick={() => uninstall.mutate({ force: !integration.managed || !!selfTargeted })}
+                      disabled={
+                        phase !== 'idle' ||
+                        ((!integration.managed || !!selfTargeted) && forceConfirmText.trim().toLowerCase() !== 'uninstall')
+                      }
                       className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-status-error hover:bg-status-error/90 text-white text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       {phase === 'deleting' || phase === 'verifying' ? (
                         <><Loader2 className="w-3.5 h-3.5 animate-spin" /> In progress…</>
                       ) : phase === 'done' ? (
                         <><Check className="w-3.5 h-3.5" /> Done</>
+                      ) : selfTargeted ? (
+                        <><Trash2 className="w-3.5 h-3.5" /> Sever session and uninstall</>
                       ) : !integration.managed ? (
                         <><Trash2 className="w-3.5 h-3.5" /> Force uninstall</>
                       ) : (

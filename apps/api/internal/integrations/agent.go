@@ -28,6 +28,18 @@ const (
 	// Env var keys the agent reads — mirrored here so the feature
 	// flags we report back match what the agent actually consults.
 	envHubbleEnabled = "KUBEBOLT_HUBBLE_ENABLED"
+	envProxyEnabled  = "KUBEBOLT_AGENT_PROXY_ENABLED"
+
+	// Capabilities the agent advertises to the backend on Hello.
+	// "kube-proxy" gates SPDY tunneling for exec/portforward/files.
+	capabilityKubeProxy = "kube-proxy"
+
+	// Operator-tier RBAC ClusterRole that, when bound to the agent's
+	// SA, unlocks full read+write proxy access (mutating ops via
+	// agent-proxy: restart/scale/delete/exec/portforward). Detected
+	// for UI display so operators see whether they applied
+	// kubebolt-agent-rbac-operator.yaml or not.
+	operatorClusterRole = "kubebolt-agent-operator"
 )
 
 // agentProvider implements Provider for the kubebolt-agent.
@@ -41,12 +53,13 @@ func (a *agentProvider) Meta() Integration {
 	return Integration{
 		ID:          AgentID,
 		Name:        "KubeBolt Agent",
-		Description: "Per-node DaemonSet that ships kubelet stats, cAdvisor metrics, and Cilium Hubble flows to KubeBolt. Required for historical metrics, network / disk observability, and the Traffic layout.",
+		Description: "Per-node DaemonSet that ships kubelet stats, cAdvisor metrics, and Cilium Hubble flows to KubeBolt. Optionally acts as the cluster's K8s API gateway for SaaS multi-cluster — exec / port-forward / files routed through the agent's outbound channel when proxy is enabled.",
 		DocsURL:     "https://github.com/clm-cloud-solutions/kubebolt/tree/main/deploy/helm/kubebolt-agent",
 		Capabilities: []string{
 			"metrics.historical",
 			"metrics.network",
-			"flows", // L4 + L7 HTTP via Hubble when Cilium is present
+			"flows",      // L4 + L7 HTTP via Hubble when Cilium is present
+			"kube-proxy", // SPDY tunneling for exec/portforward/files (Sprint A.5)
 		},
 	}
 }
@@ -69,7 +82,7 @@ func (a *agentProvider) Detect(ctx context.Context, cs kubernetes.Interface) (In
 
 	meta.Namespace = ns
 	meta.Version = extractImageVersion(ds)
-	meta.Features = extractFeatures(ds)
+	meta.Features = extractFeatures(ctx, cs, ds)
 	// Managed = "we installed this and still own it". Anything
 	// lacking the label came from Helm, kubectl apply, or an
 	// external operator — KubeBolt leaves it alone.
@@ -155,12 +168,32 @@ func extractImageVersion(ds *appsv1.DaemonSet) string {
 	return ""
 }
 
-// extractFeatures reads the agent container's env and returns the
-// observed feature flag states. We only surface flags the UI knows
-// how to present — the agent has other env vars (log level, backend
-// URL) that aren't user-facing toggles.
-func extractFeatures(ds *appsv1.DaemonSet) []FeatureFlag {
+// extractFeatures reads the agent container's env (and the cluster's
+// RBAC) to surface the observed feature-flag states. We only report
+// flags the UI knows how to present — the agent has other env vars
+// (log level, backend URL) that aren't user-facing toggles.
+//
+// The operator-tier RBAC check is best-effort: if listing
+// ClusterRoles is denied, we report the proxy feature without the
+// "operator" qualifier and the UI shows the conservative default.
+func extractFeatures(ctx context.Context, cs kubernetes.Interface, ds *appsv1.DaemonSet) []FeatureFlag {
 	envs := agentContainerEnv(ds)
+
+	proxyEnabled := envBoolDefault(envs, envProxyEnabled, false)
+	operatorRBAC := hasOperatorClusterRole(ctx, cs)
+
+	proxyDescription := "SPDY tunneling lets the backend reach the cluster's apiserver " +
+		"through the agent's outbound channel. Required for SaaS multi-cluster — when " +
+		"enabled, pod terminal / file browser / port-forward / kubectl-style mutations " +
+		"work via the agent. Default off; operators in single-cluster self-hosted " +
+		"setups (backend has direct kubeconfig) leave it that way."
+	if proxyEnabled && !operatorRBAC {
+		proxyDescription += " ⚠️ Operator-tier RBAC NOT detected — the agent's SA only has " +
+			"metrics-only ClusterRole, so dashboard reads via proxy will surface " +
+			"\"No access\" for most resources. Apply " +
+			"deploy/agent/kubebolt-agent-rbac-operator.yaml (or run " +
+			"`make agent-rbac-operator`) to unlock full UI through the proxy."
+	}
 
 	return []FeatureFlag{
 		{
@@ -172,7 +205,35 @@ func extractFeatures(ds *appsv1.DaemonSet) []FeatureFlag {
 			Enabled:  envBoolDefault(envs, envHubbleEnabled, true),
 			Requires: []string{"cilium"},
 		},
+		{
+			Key:         "proxy",
+			Label:       "K8s API proxy (SPDY tunneling)",
+			Description: proxyDescription,
+			Enabled:     proxyEnabled,
+		},
+		{
+			Key:   "proxy-operator-rbac",
+			Label: "Operator-tier RBAC for proxy",
+			Description: "ClusterRole `kubebolt-agent-operator` granting wildcard " +
+				"read+write to the agent's ServiceAccount. Required for full " +
+				"UI access (terminal/files/portforward/restart/scale/delete) " +
+				"through the proxy. Effectively cluster-admin for the agent " +
+				"pod — opt-in by design (apply " +
+				"`deploy/agent/kubebolt-agent-rbac-operator.yaml`).",
+			Enabled:  operatorRBAC,
+			Requires: []string{"proxy"},
+		},
 	}
+}
+
+// hasOperatorClusterRole returns true when the operator-tier
+// ClusterRole exists in the cluster. It does NOT verify the
+// ClusterRoleBinding — the manifest ships both as a unit, and
+// checking just the ClusterRole keeps the call cheap. RBAC denied →
+// returns false (we couldn't tell, conservative default).
+func hasOperatorClusterRole(ctx context.Context, cs kubernetes.Interface) bool {
+	_, err := cs.RbacV1().ClusterRoles().Get(ctx, operatorClusterRole, metav1.GetOptions{})
+	return err == nil
 }
 
 // agentContainerEnv returns the env vars declared on the "agent"

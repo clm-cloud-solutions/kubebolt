@@ -1,12 +1,21 @@
-// Package shipper owns the gRPC connection to the backend and runs the
-// forever-loop that drains the buffer into the StreamMetrics stream.
+// Package shipper owns the long-lived gRPC connection to the backend
+// and the reconnect loop. The actual session state machine — Hello,
+// Welcome, heartbeat, metrics flush, BackendMessage dispatch — lives
+// in packages/agent/internal/channel.
 //
-// Design choices:
-//   - One connection for the whole process; recreated on disconnect.
-//   - Exponential backoff 1s -> 60s cap between reconnect attempts.
-//   - Register is called once per session (each reconnect = new agent_id).
-//   - The ship loop polls the buffer every 1s. Low-latency enough for
-//     Phase B; Phase C can switch to a condvar-based wait.
+// shipper composes:
+//
+//   AuthOptions / NewTokenCreds / BuildTransportCredentials
+//     → builds the *grpc.ClientConn with auth + TLS as decided in
+//       Sprint A.
+//
+//   channel.NewClient(conn, ring buffer, hello info, handler)
+//     → owns one session. Returns when the session ends.
+//
+// Reconnect: exponential 1s → 60s on session end. Each retry builds
+// a fresh Client (the underlying conn is reused — gRPC handles its
+// own connection-level recovery, the session state is the bit we
+// rebuild).
 package shipper
 
 import (
@@ -17,10 +26,9 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
-	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	"github.com/kubebolt/kubebolt/packages/agent/internal/channel"
 )
 
 type Shipper struct {
@@ -28,21 +36,57 @@ type Shipper struct {
 	buf          *buffer.Ring
 	nodeName     string
 	agentVersion string
-	batchSize    int
 	auth         AuthOptions
+	handler      channel.Handler
+	capabilities []string
 
-	// Populated on every successful Register.
+	// Cluster identity that goes into Hello. clusterHint is the
+	// agent's best-effort cluster_id (auto-derived from kube-system
+	// UID); clusterName is a human label sourced from
+	// KUBEBOLT_AGENT_CLUSTER_NAME. Both are forwarded so the backend
+	// can pick a friendlier display when auto-registering.
+	clusterHint string
+	clusterName string
+
+	// Populated each time a session reaches Welcome.
 	agentID string
 }
 
-// Option mutates a Shipper at construction time. Used to keep New
-// backward-compatible while adding new optional dependencies.
+// Option mutates a Shipper at construction time. Functional-options
+// pattern keeps New backward-compatible.
 type Option func(*Shipper)
 
 // WithAuth attaches credentials to the shipper. The zero AuthOptions
-// (no Mode, no TLS) keeps the legacy plaintext-no-token behavior.
+// keeps the legacy plaintext-no-token behavior.
 func WithAuth(opts AuthOptions) Option {
 	return func(s *Shipper) { s.auth = opts }
+}
+
+// WithHandler attaches a channel.Handler to the shipper. Used by the
+// kube-proxy wiring (Sprint A.5 commit 4) to plug in a KubeAPIProxy
+// dispatcher. nil falls back to channel.NoopHandler.
+func WithHandler(h channel.Handler) Option {
+	return func(s *Shipper) { s.handler = h }
+}
+
+// WithCapabilities advertises agent capabilities in the Hello message.
+// The kube-proxy wiring sets ["metrics", "kube-proxy"] when the proxy
+// is built. Default is ["metrics"].
+func WithCapabilities(caps ...string) Option {
+	return func(s *Shipper) { s.capabilities = caps }
+}
+
+// WithClusterIdent sets the cluster identity carried in Hello. The
+// agent resolves these from kube-system UID + KUBEBOLT_AGENT_CLUSTER_NAME
+// at startup; passing them here lets the backend's auto-register
+// pick a human-friendly display name for the cluster entry. Empty
+// strings are forwarded unchanged — the backend falls back to the
+// cluster_id it derives from auth.
+func WithClusterIdent(clusterID, clusterName string) Option {
+	return func(s *Shipper) {
+		s.clusterHint = clusterID
+		s.clusterName = clusterName
+	}
 }
 
 func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Option) *Shipper {
@@ -51,7 +95,7 @@ func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Op
 		buf:          buf,
 		nodeName:     nodeName,
 		agentVersion: agentVersion,
-		batchSize:    500,
+		capabilities: []string{"metrics"},
 	}
 	for _, o := range opts {
 		o(s)
@@ -59,8 +103,8 @@ func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Op
 	return s
 }
 
-// AgentID is the id assigned by the backend on the latest successful
-// Register. Empty until the first connection succeeds.
+// AgentID is the id assigned by the backend on the latest session.
+// Empty until the first session reaches Welcome.
 func (s *Shipper) AgentID() string { return s.agentID }
 
 // Run owns the reconnect loop and returns only when ctx is cancelled.
@@ -92,8 +136,9 @@ func (s *Shipper) Run(ctx context.Context) {
 	}
 }
 
-// runSession opens a fresh connection, registers, and drains the buffer
-// until the stream errors or ctx is cancelled.
+// runSession dials the backend, runs one channel.Client session, and
+// returns whatever Client.Run returns. The reconnect loop above turns
+// non-nil errors into another attempt.
 func (s *Shipper) runSession(ctx context.Context) error {
 	slog.Info("dialing backend",
 		slog.String("addr", s.backendURL),
@@ -114,75 +159,28 @@ func (s *Shipper) runSession(ctx context.Context) error {
 	}
 	defer conn.Close()
 
-	client := agentv1.NewAgentIngestClient(conn)
-
-	regCtx, regCancel := context.WithTimeout(ctx, 10*time.Second)
-	regResp, err := client.Register(regCtx, &agentv1.RegisterRequest{
+	hello := channel.HelloInfo{
 		NodeName:         s.nodeName,
+		AgentVersion:     s.agentVersion,
 		KernelVersion:    runtime.GOOS + "/" + runtime.GOARCH,
 		ContainerRuntime: "phaseB",
 		CgroupVersion:    "n/a",
 		KubeletVersion:   "n/a",
-		AgentVersion:     s.agentVersion,
-	})
-	regCancel()
-	if err != nil {
-		return fmt.Errorf("register: %w", err)
+		ClusterHint:      s.clusterHint,
+		Capabilities:     s.capabilities,
 	}
-	s.agentID = regResp.GetAgentId()
-	slog.Info("registered",
-		slog.String("agent_id", s.agentID),
-		slog.String("cluster_id", regResp.GetClusterId()),
-	)
-
-	stream, err := client.StreamMetrics(ctx)
-	if err != nil {
-		return fmt.Errorf("open stream: %w", err)
+	if s.clusterName != "" {
+		hello.Labels = map[string]string{"kubebolt.io/cluster-name": s.clusterName}
 	}
 
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			_ = stream.CloseSend()
-			return nil
-		case <-ticker.C:
-			if err := s.flushOnce(stream); err != nil {
-				return err
-			}
-		}
+	handler := s.handler
+	if handler == nil {
+		handler = channel.NoopHandler{}
 	}
-}
-
-// flushOnce drains one batch (if any) from the buffer and sends it.
-// No-op when the buffer is empty.
-func (s *Shipper) flushOnce(stream agentv1.AgentIngest_StreamMetricsClient) error {
-	samples := s.buf.PopBatch(s.batchSize)
-	if len(samples) == 0 {
-		return nil
+	client := channel.NewClient(conn, s.buf, hello, handler)
+	if err := client.Run(ctx); err != nil {
+		return err
 	}
-	if err := stream.Send(&agentv1.MetricBatch{
-		AgentId: s.agentID,
-		SentAt:  timestamppb.Now(),
-		Samples: samples,
-	}); err != nil {
-		return fmt.Errorf("send batch: %w", err)
-	}
-	ack, err := stream.Recv()
-	if err != nil {
-		return fmt.Errorf("recv ack: %w", err)
-	}
-	if ack.GetSamplesRejected() > 0 {
-		slog.Warn("backend rejected samples",
-			slog.Uint64("rejected", uint64(ack.GetSamplesRejected())),
-			slog.Any("reasons", ack.GetRejectionReasons()),
-		)
-	}
-	slog.Debug("batch flushed",
-		slog.Int("samples", len(samples)),
-		slog.Uint64("accepted", uint64(ack.GetSamplesAccepted())),
-	)
+	s.agentID = client.AgentID()
 	return nil
 }

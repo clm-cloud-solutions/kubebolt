@@ -11,7 +11,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // flowKey dedupes per-conversation samples. The aggregator groups raw
@@ -297,7 +297,7 @@ func statusClassFor(code uint32) string {
 	return "unknown"
 }
 
-// Flush pushes the current cumulative totals as agentv1.Sample into the
+// Flush pushes the current cumulative totals as agentv2.Sample into the
 // ring buffer. Safe to call concurrently with Record.
 func (a *Aggregator) Flush() {
 	a.mu.Lock()
@@ -329,7 +329,7 @@ func (a *Aggregator) Flush() {
 	a.mu.Unlock()
 
 	ts := timestamppb.Now()
-	samples := make([]*agentv1.Sample, 0, len(flowSnap)+len(httpReqSnap)+2*len(httpLatSnap))
+	samples := make([]*agentv2.Sample, 0, len(flowSnap)+len(httpReqSnap)+2*len(httpLatSnap))
 
 	// Inlined tag helper — adds cluster_name when the aggregator has
 	// one configured. Keeps the sample-emission sites below compact.
@@ -341,7 +341,7 @@ func (a *Aggregator) Flush() {
 	}
 
 	for k, count := range flowSnap {
-		samples = append(samples, &agentv1.Sample{
+		samples = append(samples, &agentv2.Sample{
 			Timestamp:  ts,
 			MetricName: "pod_flow_events_total",
 			Value:      float64(count),
@@ -359,7 +359,7 @@ func (a *Aggregator) Flush() {
 	}
 
 	for k, count := range httpReqSnap {
-		samples = append(samples, &agentv1.Sample{
+		samples = append(samples, &agentv2.Sample{
 			Timestamp:  ts,
 			MetricName: "pod_flow_http_requests_total",
 			Value:      float64(count),
@@ -393,13 +393,13 @@ func (a *Aggregator) Flush() {
 			"source":        "hubble",
 		})
 		samples = append(samples,
-			&agentv1.Sample{
+			&agentv2.Sample{
 				Timestamp:  ts,
 				MetricName: "pod_flow_http_latency_seconds_sum",
 				Value:      float64(s.sumNs) / 1e9,
 				Labels:     base,
 			},
-			&agentv1.Sample{
+			&agentv2.Sample{
 				Timestamp:  ts,
 				MetricName: "pod_flow_http_latency_seconds_count",
 				Value:      float64(s.count),
@@ -413,7 +413,7 @@ func (a *Aggregator) Flush() {
 	// place of (dst_namespace, dst_pod). The backend crosses this with
 	// DNS resolutions to turn dst_ip into a hostname where possible.
 	for k, count := range externalSnap {
-		samples = append(samples, &agentv1.Sample{
+		samples = append(samples, &agentv2.Sample{
 			Timestamp:  ts,
 			MetricName: "pod_flow_external_events_total",
 			Value:      float64(count),
@@ -433,7 +433,7 @@ func (a *Aggregator) Flush() {
 	// of external edges. Only successful responses with answers land
 	// here (Record filters NXDOMAIN / REQUEST events upstream).
 	for k, count := range dnsSnap {
-		samples = append(samples, &agentv1.Sample{
+		samples = append(samples, &agentv2.Sample{
 			Timestamp:  ts,
 			MetricName: "pod_dns_resolutions_total",
 			Value:      float64(count),

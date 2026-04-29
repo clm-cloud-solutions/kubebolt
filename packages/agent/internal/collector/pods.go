@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // PodsCache holds a recent snapshot of the pods on this node, keyed by pod
@@ -99,7 +99,7 @@ func (c *PodsCache) Size() int {
 // Enrich attaches pod labels and workload identity to each sample that
 // carries a pod_uid label. Samples without a pod_uid pass through unchanged.
 // Enrichment is additive — existing sample labels are preserved.
-func (c *PodsCache) Enrich(samples []*agentv1.Sample) {
+func (c *PodsCache) Enrich(samples []*agentv2.Sample) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	for _, s := range samples {

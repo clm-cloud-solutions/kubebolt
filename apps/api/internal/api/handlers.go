@@ -27,6 +27,20 @@ type handlers struct {
 	authHandlers  *auth.Handlers
 	notifications *notifications.Manager // nil when no webhook URLs configured
 	integrations  *integrations.Registry
+	// agentAuthEnforcement mirrors the agent gRPC server's
+	// EnforcementMode ("enforced"/"permissive"/"disabled"). The agent
+	// integration handlers consult it to refuse misconfigurations
+	// (e.g. proxyEnabled=true with authMode="" against an enforced
+	// backend) up-front, instead of letting the agent crash-loop on
+	// the welcome handshake. Empty string == disabled.
+	agentAuthEnforcement string
+	// tenantsStore is the source of truth for ingest tokens. The
+	// agent integration's "Generate token + create Secret" flow
+	// issues here, then materializes a K8s Secret in the agent
+	// namespace so the operator never has to copy the plaintext.
+	// nil when auth is disabled — the issue-token endpoint refuses
+	// in that case.
+	tenantsStore *auth.TenantsStore
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

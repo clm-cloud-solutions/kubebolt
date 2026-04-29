@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 // ─── ParseEnforcement ─────────────────────────────────────────────────
@@ -239,11 +240,11 @@ func TestAuthenticateMD_RequireMTLSWithVerifiedCertAccepts(t *testing.T) {
 
 // ─── End-to-end with bufconn ──────────────────────────────────────────
 
-// captureWriter trivially absorbs Write calls so the StreamMetrics
-// handler does not fail on a nil writer.
+// captureWriter trivially absorbs Write calls so the metrics path does
+// not fail on a nil writer when tests don't exercise it.
 type captureWriter struct{ batches int }
 
-func (c *captureWriter) Write(_ context.Context, samples []*agentv1.Sample) error {
+func (c *captureWriter) Write(_ context.Context, samples []*agentv2.Sample) error {
 	c.batches++
 	return nil
 }
@@ -258,7 +259,7 @@ func startBufconnServer(t *testing.T, cfg AuthConfig) (func(ctx context.Context)
 		grpc.UnaryInterceptor(UnaryAuthInterceptor(cfg)),
 		grpc.StreamInterceptor(StreamAuthInterceptor(cfg)),
 	)
-	agentv1.RegisterAgentIngestServer(srv, NewServer(&captureWriter{}))
+	agentv2.RegisterAgentChannelServer(srv, NewServer(&captureWriter{}))
 	go func() { _ = srv.Serve(lis) }()
 
 	dial := func(ctx context.Context) (*grpc.ClientConn, error) {
@@ -275,6 +276,36 @@ func startBufconnServer(t *testing.T, cfg AuthConfig) (func(ctx context.Context)
 	return dial, stop
 }
 
+// helloAndWait dials the AgentChannel, sends Hello, and waits for the
+// first BackendMessage. Returns Welcome on success, or the auth error
+// when the interceptor rejects the stream (which surfaces on the first
+// Recv, not the Send — gRPC streams open optimistically).
+func helloAndWait(ctx context.Context, conn *grpc.ClientConn, nodeName string) (*agentv2.Welcome, error) {
+	client := agentv2.NewAgentChannelClient(conn)
+	stream, err := client.Channel(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := stream.Send(&agentv2.AgentMessage{
+		Kind: &agentv2.AgentMessage_Hello{
+			Hello: &agentv2.Hello{NodeName: nodeName, AgentVersion: "test"},
+		},
+	}); err != nil {
+		// Send may succeed before the server's auth rejection lands; if it
+		// errors immediately though, propagate.
+		return nil, err
+	}
+	msg, err := stream.Recv()
+	if err != nil {
+		return nil, err
+	}
+	w := msg.GetWelcome()
+	if w == nil {
+		return nil, fmt.Errorf("expected Welcome, got %T", msg.Kind)
+	}
+	return w, nil
+}
+
 func TestInterceptor_E2E_DisabledAcceptsCallWithoutCreds(t *testing.T) {
 	dial, stop := startBufconnServer(t, AuthConfig{Enforcement: EnforcementDisabled})
 	defer stop()
@@ -287,12 +318,11 @@ func TestInterceptor_E2E_DisabledAcceptsCallWithoutCreds(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := agentv1.NewAgentIngestClient(conn)
-	resp, err := client.Register(ctx, &agentv1.RegisterRequest{NodeName: "node-a", AgentVersion: "test"})
+	w, err := helloAndWait(ctx, conn, "node-a")
 	if err != nil {
-		t.Fatalf("Register: %v", err)
+		t.Fatalf("handshake: %v", err)
 	}
-	if resp.GetAgentId() == "" {
+	if w.GetAgentId() == "" {
 		t.Error("expected agent_id to be populated even in disabled mode")
 	}
 }
@@ -310,8 +340,7 @@ func TestInterceptor_E2E_EnforcedRejectsMissingCredentials(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := agentv1.NewAgentIngestClient(conn)
-	_, err = client.Register(ctx, &agentv1.RegisterRequest{NodeName: "node-a"})
+	_, err = helloAndWait(ctx, conn, "node-a")
 	st, ok := status.FromError(err)
 	if !ok {
 		t.Fatalf("expected gRPC status error, got %v", err)
@@ -335,26 +364,25 @@ func TestInterceptor_E2E_EnforcedAcceptsValidCredentials(t *testing.T) {
 	}
 	defer conn.Close()
 
-	client := agentv1.NewAgentIngestClient(conn)
-	// Inject some metadata so the interceptor's metadata.FromIncomingContext
-	// path is exercised even though our stub ignores the values.
+	// Inject metadata so the interceptor's FromIncomingContext path is
+	// exercised even though our stub ignores the values.
 	md := metadata.New(map[string]string{
 		auth.MetadataAuthMode:      string(auth.ModeIngestToken),
 		auth.MetadataAuthorization: "Bearer kb_dummy",
 	})
 	ctx = metadata.NewOutgoingContext(ctx, md)
 
-	resp, err := client.Register(ctx, &agentv1.RegisterRequest{NodeName: "node-a"})
+	w, err := helloAndWait(ctx, conn, "node-a")
 	if err != nil {
-		t.Fatalf("Register: %v", err)
+		t.Fatalf("handshake: %v", err)
 	}
 	// agent_id must be the deterministic derive from identity, not a UUID.
 	derived := auth.DeriveAgentID(want.TenantID, want.ClusterID, "node-a")
-	if resp.GetAgentId() != derived {
-		t.Errorf("agent_id = %s, want derived %s", resp.GetAgentId(), derived)
+	if w.GetAgentId() != derived {
+		t.Errorf("agent_id = %s, want derived %s", w.GetAgentId(), derived)
 	}
-	if resp.GetClusterId() != want.ClusterID {
-		t.Errorf("cluster_id = %s, want %s", resp.GetClusterId(), want.ClusterID)
+	if w.GetClusterId() != want.ClusterID {
+		t.Errorf("cluster_id = %s, want %s", w.GetClusterId(), want.ClusterID)
 	}
 }
 
