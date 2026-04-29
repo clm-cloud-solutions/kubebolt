@@ -35,16 +35,31 @@ func (a *agentProvider) GetConfig(ctx context.Context, cs kubernetes.Interface) 
 	}
 
 	cfg := extractConfigFromDaemonSet(ds, ns)
-	// ProxyOperatorRBAC isn't on the DaemonSet — it's a ClusterRole
-	// living outside the namespace. Best-effort lookup so the
-	// configure dialog can render the correct toggle state. Errors
-	// (RBAC denied) leave the field nil → UI shows the conservative
-	// default (off).
-	if hasOperatorClusterRole(ctx, cs) {
+	// RBACMode isn't on the DaemonSet — it's encoded in WHICH
+	// ClusterRoles exist. Best-effort lookup; errors (RBAC denied)
+	// leave the field empty so the UI falls back to its default.
+	cfg.RBACMode = detectInstalledRBACMode(ctx, cs)
+	// Backwards-compat: keep emitting ProxyOperatorRBAC for clients
+	// that haven't been upgraded yet to read RBACMode.
+	if cfg.RBACMode == RBACModeOperator {
 		t := true
 		cfg.ProxyOperatorRBAC = &t
 	}
 	return json.Marshal(cfg)
+}
+
+// detectInstalledRBACMode reads ClusterRole presence to figure out
+// which mode the cluster is in. Operator wins over reader (operator
+// includes reader's permissions); fallback is metrics if neither
+// upper-tier CR is present (the metrics CR is always installed).
+func detectInstalledRBACMode(ctx context.Context, cs kubernetes.Interface) AgentRBACMode {
+	if hasOperatorClusterRole(ctx, cs) {
+		return RBACModeOperator
+	}
+	if _, err := cs.RbacV1().ClusterRoles().Get(ctx, agentReaderClusterRole, metav1.GetOptions{}); err == nil {
+		return RBACModeReader
+	}
+	return RBACModeMetrics
 }
 
 // Configure applies a new config to the existing managed install.
@@ -84,8 +99,9 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 		slog.String("backendUrl", cfg.BackendURL),
 		slog.String("clusterName", cfg.ClusterName),
 		slog.String("authMode", cfg.AuthMode),
-		slog.Bool("proxyEnabled", cfg.ProxyEnabled != nil && *cfg.ProxyEnabled),
-		slog.Bool("proxyOperatorRbac", cfg.ProxyOperatorRBAC != nil && *cfg.ProxyOperatorRBAC),
+		slog.String("rbacMode", string(cfg.RBACMode)),
+		slog.Bool("proxyEnabledExplicit", cfg.ProxyEnabled != nil && *cfg.ProxyEnabled),
+		slog.Bool("proxyOperatorRbacLegacy", cfg.ProxyOperatorRBAC != nil && *cfg.ProxyOperatorRBAC),
 		slog.Bool("hubbleEnabled", cfg.HubbleEnabled == nil || *cfg.HubbleEnabled),
 		slog.String("imageTag", cfg.ImageTag),
 		slog.String("logLevel", cfg.LogLevel),
@@ -109,16 +125,10 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 	if cfg.HubbleEnabled != nil {
 		hubbleEnabled = *cfg.HubbleEnabled
 	}
-	proxyEnabled := false
-	if cfg.ProxyEnabled != nil {
-		proxyEnabled = *cfg.ProxyEnabled
-	}
-	proxyOperatorRBAC := false
-	if cfg.ProxyOperatorRBAC != nil {
-		proxyOperatorRBAC = *cfg.ProxyOperatorRBAC
-	}
-	if proxyOperatorRBAC && !proxyEnabled {
-		return fmt.Errorf("proxyOperatorRbac requires proxyEnabled=true")
+
+	mode, proxyEnabled, err := resolveModeAndProxy(cfg)
+	if err != nil {
+		return err
 	}
 	if _, _, err := resolveResources(cfg.Resources); err != nil {
 		return err
@@ -131,19 +141,16 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 		}
 	}
 
-	// Re-apply every resource. The ensure* helpers detect existing
-	// managed resources and Update them; new fields (e.g. newly
-	// mounted TLS secret) propagate via rolling restart of the DS.
-	// Operator-tier RBAC is added or removed based on the toggle —
-	// flipping it off cleanly revokes the cluster-admin grant.
+	// Re-apply every resource. applyRBACForMode is the single entry
+	// point for the 3-tier RBAC machinery — switching modes
+	// (e.g. operator → reader) cleanly removes the previously-applied
+	// tier and applies the new one. The DS rollout picks up env var
+	// changes (proxy on/off, etc.) via the standard rolling update.
 	steps := []func() error{
 		func() error { return ensureServiceAccount(ctx, cs, ns) },
-		func() error { return ensureClusterRole(ctx, cs) },
-		func() error { return ensureClusterRoleBinding(ctx, cs, ns) },
+		func() error { return applyRBACForMode(ctx, cs, ns, mode) },
 		func() error { return ensureLeaderRole(ctx, cs, ns) },
 		func() error { return ensureLeaderRoleBinding(ctx, cs, ns) },
-		func() error { return ensureOperatorClusterRole(ctx, cs, proxyOperatorRBAC) },
-		func() error { return ensureOperatorClusterRoleBinding(ctx, cs, ns, proxyOperatorRBAC) },
 		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled, proxyEnabled) },
 	}
 	for _, step := range steps {

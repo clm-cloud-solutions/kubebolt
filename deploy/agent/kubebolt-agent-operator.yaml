@@ -1,0 +1,272 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# kubebolt-agent — Operator install (cluster-wide read+write, proxy + auth)
+#
+# ⚠️  SECURITY NOTICE
+# This manifest grants the agent's ServiceAccount cluster-admin-equivalent
+# permissions (wildcard read+write on `*/*`). Anyone able to dial the
+# KubeBolt backend's gRPC port and present a valid token can pivot to
+# cluster-admin in this cluster. Auth is therefore MANDATORY here —
+# the manifest references a Secret (`kubebolt-agent-token`) that you
+# MUST create before kubectl apply.
+#
+# Use this manifest when:
+#   - The cluster's apiserver is NOT directly reachable from the
+#     KubeBolt backend, AND
+#   - You explicitly want full UI parity through the agent: exec,
+#     port-forward, scale, restart, delete, YAML edit, file write,
+#     pod log streaming, all of it.
+#
+# What this gives you in the dashboard:
+#   - Everything from reader mode, PLUS every kubectl-style mutation
+#     the dashboard exposes.
+#
+# Apply (after the prerequisite step below):
+#   kubectl apply -f kubebolt-agent-operator.yaml
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# PREREQUISITE — create the auth Secret BEFORE applying this manifest
+# ─────────────────────────────────────────────────────────────────────────────
+#
+#   1. Generate an ingest token:
+#        - From the KubeBolt admin UI: Administration → Agent Tokens →
+#          New Token. Copy it (shown once; treat it like a password).
+#        - Or via REST:
+#            curl -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+#              -d '{"label":"agent-operator-install"}' \
+#              https://YOUR-BACKEND/api/v1/admin/tenants/<tenant-id>/tokens
+#
+#   2. Create the namespace + Secret:
+#        kubectl create namespace kubebolt-system
+#        kubectl create secret generic kubebolt-agent-token \
+#          -n kubebolt-system \
+#          --from-literal=token=<paste-the-token-here>
+#
+#   3. Then `kubectl apply -f kubebolt-agent-operator.yaml`. If the
+#      Secret is missing the agent pods will fail to mount and stay
+#      in CreateContainerConfigError until you create it.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURABLE — edit these before kubectl apply
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. KUBEBOLT_BACKEND_URL value — replace "PLACEHOLDER:9090" with
+#    your KubeBolt backend's gRPC address.
+#
+# 2. (optional) Secret name — the manifest references
+#    "kubebolt-agent-token". If you used a different name in step 2
+#    of the prerequisite, change every occurrence below.
+#
+# 3. Image tag (default v0.2.0).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/part-of: kubebolt
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebolt-agent
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+---
+# ─── Metrics tier (always installed; the agent's own runtime needs) ───
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebolt-agent-metrics
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+    kubebolt.dev/rbac-tier: metrics
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/stats", "nodes/proxy", "nodes/metrics"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebolt-agent-metrics
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+    kubebolt.dev/rbac-tier: metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebolt-agent-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+---
+# ─── Operator tier (wildcard read+write on `*/*`) ───
+# WARNING: cluster-admin equivalent — see security notice at top.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebolt-agent-operator
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+    kubebolt.dev/rbac-tier: operator
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  # Subresources don't match the wildcard above — enumerated.
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward", "pods/log", "pods/eviction", "pods/proxy", "services/proxy", "nodes/proxy"]
+    verbs: ["get", "create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale", "replicasets/scale"]
+    verbs: ["get", "update", "patch"]
+  - nonResourceURLs: ["*"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebolt-agent-operator
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+    kubebolt.dev/rbac-tier: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebolt-agent-operator
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+---
+# ─── Leader election (namespace-scoped Lease) ───
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebolt-agent-leader
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebolt-agent-leader
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebolt-agent-leader
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubebolt-agent
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebolt-agent
+      app.kubernetes.io/instance: kubebolt-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubebolt-agent
+        app.kubernetes.io/instance: kubebolt-agent
+        app.kubernetes.io/component: agent
+        app.kubernetes.io/part-of: kubebolt
+    spec:
+      serviceAccountName: kubebolt-agent
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      volumes:
+        - name: kubebolt-agent-token
+          secret:
+            secretName: kubebolt-agent-token  # CHANGE ME if you used a different Secret name
+      containers:
+        - name: agent
+          image: ghcr.io/clm-cloud-solutions/kubebolt/agent:v0.2.0
+          imagePullPolicy: IfNotPresent
+          env:
+            # CHANGE ME — see CONFIGURABLE block at the top.
+            - name: KUBEBOLT_BACKEND_URL
+              value: "PLACEHOLDER:9090"
+            - name: KUBEBOLT_AGENT_LOG_LEVEL
+              value: "info"
+            - name: KUBEBOLT_AGENT_NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: KUBEBOLT_AGENT_NODE_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: KUBEBOLT_HUBBLE_ENABLED
+              value: "true"
+            # Proxy ON — mandatory for the operator tier (no other
+            # path for the backend to reach the apiserver).
+            - name: KUBEBOLT_AGENT_PROXY_ENABLED
+              value: "true"
+            # Auth — mandatory for the operator tier. The Secret
+            # mount + token file is wired below.
+            - name: KUBEBOLT_AGENT_AUTH_MODE
+              value: "ingest-token"
+            - name: KUBEBOLT_AGENT_TOKEN_FILE
+              value: /var/run/secrets/kubebolt/token
+          volumeMounts:
+            - name: kubebolt-agent-token
+              mountPath: /var/run/secrets/kubebolt
+              readOnly: true
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 30Mi
+            limits:
+              cpu: 100m
+              memory: 80Mi

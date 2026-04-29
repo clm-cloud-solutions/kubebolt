@@ -98,11 +98,49 @@ serviceAccount:
   name: ""
   annotations: {}
 rbac:
-  # Create the ClusterRole/ClusterRoleBinding (for kubelet stats +
-  # pod/namespace read) and Role/RoleBinding (for Lease-based leader
-  # election in the agent's namespace). Set to false if your shop
-  # provisions RBAC out of band.
+  # Create the ClusterRole/ClusterRoleBinding tiers and the Role
+  # /RoleBinding for Lease-based leader election. Set to false if
+  # your shop provisions RBAC out of band.
   create: true
+
+  # ─── Permission tier (3 modes, picks the agent SA's scope) ───
+  #
+  # metrics  — narrow ClusterRole: kubelet stats + pods list/watch +
+  #            namespaces get. The agent ships kubelet metrics +
+  #            Hubble flows; nothing else leaves the cluster. Privacy-
+  #            conscious default for orgs that don't want any
+  #            apiserver call to traverse the agent's tunnel.
+  #            Implies proxy.enabled=false unless overridden.
+  #
+  # reader   — cluster-wide get/list/watch on `*/*`. The backend
+  #            reads inventory through the agent's SPDY tunnel; write
+  #            verbs come back 403. Pick this when the cluster's
+  #            apiserver isn't directly reachable from the backend
+  #            and you want full read-only dashboard. Implies
+  #            proxy.enabled=true (mandatory).
+  #
+  # operator — wildcard read+write on `*/*`. Effectively cluster-admin
+  #            scoped to the agent SA. Required for exec / scale /
+  #            restart / delete / YAML edit through the dashboard.
+  #            REQUIRES auth.mode != "disabled" — without auth,
+  #            anyone who can dial the backend's gRPC port pivots to
+  #            cluster-admin in this cluster. Implies
+  #            proxy.enabled=true (mandatory).
+  mode: reader
+
+# ─── K8s API proxy ─────────────────────────────────────────
+# The agent advertises a `kube-proxy` capability on its outbound
+# gRPC channel; when on, the backend can route apiserver calls
+# through the tunnel. This is the only mechanism by which the
+# backend reaches a cluster whose apiserver isn't publicly
+# routable.
+#
+# Auto-derived from rbac.mode (off for metrics, on for
+# reader/operator) unless overridden here. Overriding to false
+# while rbac.mode=reader|operator fails the template — those
+# modes only make sense WITH the proxy.
+proxy: {}
+  # enabled: true   # explicit override; defaults to rbac.mode-derived
 
 # ─── Backend authentication (Sprint A) ─────────────────────
 # How the agent identifies itself to the backend. The backend's

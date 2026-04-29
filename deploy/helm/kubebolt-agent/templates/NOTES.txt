@@ -14,6 +14,31 @@ Stream the logs from the leader pod (the one streaming flows from Hubble):
 The agent ships samples to:
   {{ .Values.backendUrl }}
 
+{{- $mode := default "reader" .Values.rbac.mode }}
+RBAC tier: {{ $mode }}
+{{- if eq $mode "metrics" }}
+  Narrow permissions — kubelet stats + pods list/watch + namespaces.
+  Proxy off; only metrics + Hubble flows leave the cluster.
+{{- else if eq $mode "reader" }}
+  Cluster-wide get/list/watch on `*/*`. Backend reads inventory
+  through the agent's SPDY tunnel (proxy on). Mutations come back
+  403 — switch to rbac.mode=operator if you need them.
+{{- else if eq $mode "operator" }}
+  Wildcard read+write on `*/*` — effectively cluster-admin scoped
+  to the agent's ServiceAccount. Proxy on (mandatory).
+{{- end }}
+
+{{- if and (eq $mode "operator") (or (not .Values.auth.mode) (eq .Values.auth.mode "disabled")) }}
+
+⚠️  WARNING — operator-tier RBAC without auth!
+  The agent's ServiceAccount has cluster-admin power, but the
+  gRPC channel to the backend has no authentication. Anyone who
+  can dial the backend's port can pivot to cluster-admin in this
+  cluster. Set auth.mode=ingest-token (with auth.ingestToken
+  .existingSecret) before exposing this to anything beyond a
+  trusted private network.
+{{- end }}
+
 Hubble flow collection is {{ if .Values.hubble.enabled }}ENABLED{{ else }}DISABLED{{ end }}.
 {{- if .Values.hubble.enabled }}
 {{- if .Values.hubble.relay.address }}

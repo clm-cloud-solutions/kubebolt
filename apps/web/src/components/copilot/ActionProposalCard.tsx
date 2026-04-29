@@ -87,18 +87,34 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
         navigate(`/${target.type}`)
       }
     } catch (e) {
-      const msg =
-        e instanceof ApiError
-          ? e.status === 403
-            ? `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
-            : e.status === 404
-              ? `Target ${target.namespace}/${target.name} no longer exists. The cluster may have changed since this was proposed.`
-              : e.status === 503
-                ? `Cluster is unreachable. Try again once the connection is restored.`
-                : e.message
-          : e instanceof Error
-            ? e.message
-            : 'Unknown error'
+      // Distinguish three flavors of 403:
+      //   - agentRbacForbidden (backend payload flag) → the agent's
+      //     SA can't do the verb, point to Configure to switch tier.
+      //   - generic 403 → user role too low.
+      //   - 404 / 503 / other → existing recipes.
+      let msg: string
+      if (e instanceof ApiError) {
+        if (e.status === 403 && e.payload?.agentRbacForbidden === true) {
+          const verb = typeof e.payload.verb === 'string' ? e.payload.verb : 'modify'
+          const resource = typeof e.payload.resource === 'string' ? e.payload.resource : 'this resource'
+          msg =
+            `Agent is in read-only mode — its ServiceAccount can't ${verb} ${resource}. ` +
+            `Open Administration → Integrations → KubeBolt Agent → Configure and switch the Permission tier ` +
+            `to "Cluster-wide read + write".`
+        } else if (e.status === 403) {
+          msg = `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
+        } else if (e.status === 404) {
+          msg = `Target ${target.namespace}/${target.name} no longer exists. The cluster may have changed since this was proposed.`
+        } else if (e.status === 503) {
+          msg = `Cluster is unreachable. Try again once the connection is restored.`
+        } else {
+          msg = e.message
+        }
+      } else if (e instanceof Error) {
+        msg = e.message
+      } else {
+        msg = 'Unknown error'
+      }
       setError(msg)
       setStatus('error')
       recordProposalOutcome(toolCallId, 'failed', msg)

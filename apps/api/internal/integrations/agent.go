@@ -173,27 +173,25 @@ func extractImageVersion(ds *appsv1.DaemonSet) string {
 // flags the UI knows how to present — the agent has other env vars
 // (log level, backend URL) that aren't user-facing toggles.
 //
-// The operator-tier RBAC check is best-effort: if listing
-// ClusterRoles is denied, we report the proxy feature without the
-// "operator" qualifier and the UI shows the conservative default.
+// Two surfaced flags:
+//   - hubble:           binary on/off
+//   - permission-tier:  multi-state (metrics | reader | operator),
+//                       reads `Value` instead of `Enabled` for the
+//                       displayed label. Enabled is set true for
+//                       reader/operator (i.e. "anything beyond
+//                       the privacy-conscious default") so the UI's
+//                       green-pill heuristic still works.
+//
+// The mode lookup is best-effort: if listing ClusterRoles is denied,
+// detectInstalledRBACMode falls back to "metrics" (the conservative
+// default).
 func extractFeatures(ctx context.Context, cs kubernetes.Interface, ds *appsv1.DaemonSet) []FeatureFlag {
 	envs := agentContainerEnv(ds)
 
+	mode := detectInstalledRBACMode(ctx, cs)
 	proxyEnabled := envBoolDefault(envs, envProxyEnabled, false)
-	operatorRBAC := hasOperatorClusterRole(ctx, cs)
 
-	proxyDescription := "SPDY tunneling lets the backend reach the cluster's apiserver " +
-		"through the agent's outbound channel. Required for SaaS multi-cluster — when " +
-		"enabled, pod terminal / file browser / port-forward / kubectl-style mutations " +
-		"work via the agent. Default off; operators in single-cluster self-hosted " +
-		"setups (backend has direct kubeconfig) leave it that way."
-	if proxyEnabled && !operatorRBAC {
-		proxyDescription += " ⚠️ Operator-tier RBAC NOT detected — the agent's SA only has " +
-			"metrics-only ClusterRole, so dashboard reads via proxy will surface " +
-			"\"No access\" for most resources. Apply " +
-			"deploy/agent/kubebolt-agent-rbac-operator.yaml (or run " +
-			"`make agent-rbac-operator`) to unlock full UI through the proxy."
-	}
+	tierLabel, tierDesc := tierDisplay(mode, proxyEnabled)
 
 	return []FeatureFlag{
 		{
@@ -206,24 +204,56 @@ func extractFeatures(ctx context.Context, cs kubernetes.Interface, ds *appsv1.Da
 			Requires: []string{"cilium"},
 		},
 		{
-			Key:         "proxy",
-			Label:       "K8s API proxy (SPDY tunneling)",
-			Description: proxyDescription,
-			Enabled:     proxyEnabled,
-		},
-		{
-			Key:   "proxy-operator-rbac",
-			Label: "Operator-tier RBAC for proxy",
-			Description: "ClusterRole `kubebolt-agent-operator` granting wildcard " +
-				"read+write to the agent's ServiceAccount. Required for full " +
-				"UI access (terminal/files/portforward/restart/scale/delete) " +
-				"through the proxy. Effectively cluster-admin for the agent " +
-				"pod — opt-in by design (apply " +
-				"`deploy/agent/kubebolt-agent-rbac-operator.yaml`).",
-			Enabled:  operatorRBAC,
-			Requires: []string{"proxy"},
+			Key:         "permission-tier",
+			Label:       "Permission tier",
+			Description: tierDesc,
+			Enabled:     mode != RBACModeMetrics,
+			Value:       tierLabel,
 		},
 	}
+}
+
+// tierDisplay maps the (mode, proxy) pair to a human label + a
+// descriptive paragraph for the integration detail panel. Surfaces
+// drift (proxy off in reader/operator mode, etc.) inline so a
+// misconfigured install is visible without the operator having to
+// inspect env vars.
+func tierDisplay(mode AgentRBACMode, proxyEnabled bool) (label, description string) {
+	switch mode {
+	case RBACModeMetrics:
+		label = "Metrics only"
+		description = "Narrow ClusterRole — kubelet stats + pods list/watch + " +
+			"namespaces. The agent ships kubelet metrics + Hubble flows; nothing " +
+			"else leaves the cluster. Privacy-conscious default; switch to reader " +
+			"or operator if you want the dashboard to render inventory through this " +
+			"agent's tunnel."
+	case RBACModeReader:
+		label = "Cluster-wide read"
+		description = "Cluster-wide get/list/watch on `*/*`. Backend reads inventory, " +
+			"YAML, describe output, and pod logs through the agent's SPDY tunnel. " +
+			"Mutations come back 403 — switch to operator if you need exec / scale / " +
+			"restart / delete / YAML edit through the dashboard."
+		if !proxyEnabled {
+			description += " ⚠️ Proxy disabled in env — reader RBAC is wasted without " +
+				"the proxy capability. Re-run install/configure to fix."
+		}
+	case RBACModeOperator:
+		label = "Cluster-wide read + write"
+		description = "Wildcard read+write on `*/*` — effectively cluster-admin scoped " +
+			"to the agent's ServiceAccount. Full UI parity through the dashboard: " +
+			"exec, scale, restart, delete, YAML edit, file write. Auth on the " +
+			"backend's gRPC channel is the only thing keeping a network attacker " +
+			"from pivoting to admin in this cluster."
+		if !proxyEnabled {
+			description += " ⚠️ Proxy disabled in env — operator RBAC is wasted without " +
+				"the proxy capability. Re-run install/configure to fix."
+		}
+	default:
+		label = string(mode)
+		description = "Unknown RBAC mode — the agent's ClusterRole set doesn't match " +
+			"any of the recognized tiers. Re-run install/configure to recover."
+	}
+	return label, description
 }
 
 // hasOperatorClusterRole returns true when the operator-tier

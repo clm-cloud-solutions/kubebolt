@@ -58,8 +58,19 @@ type FeatureFlag struct {
 	Description string `json:"description,omitempty"`
 
 	// Enabled is the currently-observed state (not the desired
-	// state — Detect reports what's running).
+	// state — Detect reports what's running). For boolean flags
+	// this is the only signal the UI needs; for multi-state flags
+	// (see Value below) Enabled doubles as "is this in any non-
+	// default state?" so the UI can pick a green vs grey pill.
 	Enabled bool `json:"enabled"`
+
+	// Value carries non-boolean state for flags that aren't a
+	// simple on/off — e.g. the agent's RBAC mode is metrics /
+	// reader / operator, not a yes/no. When Value is non-empty the
+	// UI renders it instead of the on/off pill. Empty means the
+	// flag is binary (drop the field from JSON to keep payloads
+	// tight).
+	Value string `json:"value,omitempty"`
 
 	// Requires lists logical preconditions the UI can surface as a
 	// "needs Cilium installed" hint. Opaque strings — the UI

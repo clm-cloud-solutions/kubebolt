@@ -42,15 +42,44 @@ type AgentInstallConfig struct {
 
 	// K8s API proxy (Sprint A.5). Sets KUBEBOLT_AGENT_PROXY_ENABLED
 	// in the agent's env so it advertises the kube-proxy capability
-	// and accepts SPDY tunnel requests from the backend. Default off
-	// (nil → false). Required for SaaS multi-cluster topology.
+	// and accepts SPDY tunnel requests from the backend. Required
+	// for SaaS multi-cluster topology. Auto-derived from RBACMode
+	// (off for metrics, on for reader/operator) unless explicitly
+	// overridden — most callers should leave this nil and let the
+	// resolution happen from RBACMode.
 	ProxyEnabled *bool `json:"proxyEnabled,omitempty"`
 
-	// Apply the operator-tier ClusterRole + binding alongside the
-	// base RBAC. Effectively cluster-admin scoped to the agent's SA
-	// — required for the dashboard to render fully through the
-	// proxy (else proxy reads come back as "No access"). Ignored
-	// when ProxyEnabled is not true.
+	// RBACMode picks the agent ServiceAccount's permission tier:
+	//
+	//   - "metrics"  : narrow (kubelet stats + pods list/watch +
+	//                  namespaces). Proxy stays OFF — only metrics +
+	//                  Hubble flows ship to the backend. The
+	//                  privacy-conscious default for clusters that
+	//                  don't want any apiserver call to leave their
+	//                  perimeter.
+	//   - "reader"   : cluster-wide get/list/watch on `*/*`. Proxy
+	//                  REQUIRED — the backend uses the tunnel to
+	//                  read inventory/yaml/logs/etc. Mutations via
+	//                  proxy come back 403 because the SA has no
+	//                  write verbs. The typical install when the
+	//                  cluster's apiserver isn't reachable directly.
+	//   - "operator" : wildcard read+write on `*/*`. Proxy REQUIRED.
+	//                  Auth REQUIRED. Effectively cluster-admin
+	//                  scoped to the agent's SA — exec, scale,
+	//                  restart, delete, YAML edit all work through
+	//                  the proxy. Without auth, anyone who can dial
+	//                  the backend's gRPC port pivots to cluster-
+	//                  admin in this cluster.
+	//
+	// Empty falls back via legacy fields (ProxyOperatorRBAC=true →
+	// operator; ProxyEnabled=true → reader; else metrics). New
+	// callers should always set RBACMode explicitly.
+	RBACMode AgentRBACMode `json:"rbacMode,omitempty"`
+
+	// ProxyOperatorRBAC is the previous binary toggle (now superseded
+	// by RBACMode). Kept for wire-compat with older clients; the
+	// resolution logic in Install/Configure folds it into RBACMode
+	// when RBACMode is empty.
 	ProxyOperatorRBAC *bool `json:"proxyOperatorRbac,omitempty"`
 
 	// ─── Auth ──────────────────────────────────────────────
@@ -129,6 +158,82 @@ type AgentResourceConfig struct {
 	MemoryLimit   string `json:"memoryLimit,omitempty"`
 }
 
+// AgentRBACMode picks the ServiceAccount permission tier. See the
+// AgentInstallConfig.RBACMode comment for the full semantics of each
+// value, and project_agent_rbac_modes.md in the user-memory folder
+// for the rationale behind the 3-tier split.
+type AgentRBACMode string
+
+const (
+	RBACModeMetrics  AgentRBACMode = "metrics"
+	RBACModeReader   AgentRBACMode = "reader"
+	RBACModeOperator AgentRBACMode = "operator"
+)
+
+// IsValid reports whether m is one of the recognized modes. The
+// empty string is NOT valid here — callers should resolve a default
+// (via legacy fields or "reader" for SaaS-style installs) before
+// validating.
+func (m AgentRBACMode) IsValid() bool {
+	switch m {
+	case RBACModeMetrics, RBACModeReader, RBACModeOperator:
+		return true
+	}
+	return false
+}
+
+// resolveModeAndProxy folds the legacy ProxyOperatorRBAC + ProxyEnabled
+// fields into the new RBACMode + a final proxyEnabled bool. Resolution
+// rules (precedence top-down):
+//
+//   1. cfg.RBACMode if set wins. proxyEnabled defaults to ON for
+//      reader/operator (the proxy is the path) and OFF for metrics
+//      (the agent ships metrics+flows directly, no apiserver calls).
+//      An explicit cfg.ProxyEnabled override is honored only for
+//      mode=metrics — reader/operator without proxy is invalid and
+//      surfaces as an error.
+//   2. cfg.ProxyOperatorRBAC=true (legacy) → mode=operator.
+//   3. cfg.ProxyEnabled=true (legacy) → mode=reader.
+//   4. Default → mode=metrics, proxy=off.
+//
+// Validation:
+//   - Unknown mode value → error.
+//   - reader/operator without proxy → error (architectural invariant).
+//   - operator without auth → error (cluster-admin without auth = pivot).
+func resolveModeAndProxy(cfg AgentInstallConfig) (AgentRBACMode, bool, error) {
+	mode := cfg.RBACMode
+	if mode == "" {
+		switch {
+		case cfg.ProxyOperatorRBAC != nil && *cfg.ProxyOperatorRBAC:
+			mode = RBACModeOperator
+		case cfg.ProxyEnabled != nil && *cfg.ProxyEnabled:
+			mode = RBACModeReader
+		default:
+			mode = RBACModeMetrics
+		}
+	}
+	if !mode.IsValid() {
+		return "", false, fmt.Errorf("rbacMode %q not recognized; expected one of: metrics, reader, operator", mode)
+	}
+
+	proxyEnabled := mode == RBACModeReader || mode == RBACModeOperator
+	if cfg.ProxyEnabled != nil {
+		// Honor explicit override only when it doesn't violate the
+		// architectural rule (reader/operator REQUIRE proxy).
+		if mode == RBACModeMetrics {
+			proxyEnabled = *cfg.ProxyEnabled
+		} else if !*cfg.ProxyEnabled {
+			return "", false, fmt.Errorf("rbacMode=%s requires proxyEnabled=true (proxy is the only path to apiserver via the agent)", mode)
+		}
+	}
+
+	if mode == RBACModeOperator && cfg.AuthMode == "" {
+		return "", false, fmt.Errorf("rbacMode=operator requires authMode (cluster-admin scoped to the agent SA cannot be exposed without authentication — pick ingest-token or tokenreview)")
+	}
+
+	return mode, proxyEnabled, nil
+}
+
 // Defaults applied when the wizard leaves fields empty. Kept in one
 // place so Install, the UI wizard, and tests all agree on the same
 // values.
@@ -138,10 +243,28 @@ const (
 	agentDefaultLogLevel = "info"
 	agentSAName          = "kubebolt-agent"
 	agentDSName          = "kubebolt-agent"
-	agentClusterRole     = "kubebolt-agent-reader"
-	agentClusterBinding  = "kubebolt-agent"
 	agentLeaderRole      = "kubebolt-agent-leader"
 	agentLeaderBinding   = "kubebolt-agent-leader"
+
+	// Metrics tier — narrow (kubelet stats + pods + namespaces).
+	// This was historically named "kubebolt-agent-reader"; renamed
+	// here so the new mode-based naming reads correctly. The legacy
+	// CR name is cleaned up on first apply (see migrateLegacyRBAC).
+	agentMetricsClusterRole    = "kubebolt-agent-metrics"
+	agentMetricsClusterBinding = "kubebolt-agent-metrics"
+
+	// Reader tier — cluster-wide get/list/watch on every resource.
+	// New in v0.2.0. The CR name `kubebolt-agent-reader` was
+	// previously used for the narrow metrics rules; on migration we
+	// either overwrite the CR's rules (when mode=reader) or delete
+	// it (when mode=metrics/operator) — see migrateLegacyRBAC.
+	agentReaderClusterRole    = "kubebolt-agent-reader"
+	agentReaderClusterBinding = "kubebolt-agent-reader"
+
+	// Legacy ClusterRoleBinding name from pre-0.2.0 installs that
+	// bound the SA to the narrow CR. Always deleted on apply (the
+	// new metrics-tier Binding replaces it).
+	legacyAgentClusterBinding = "kubebolt-agent"
 )
 
 // Install applies the agent's manifests to the active cluster.
@@ -178,18 +301,10 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 	if cfg.HubbleEnabled != nil {
 		hubbleEnabled = *cfg.HubbleEnabled
 	}
-	proxyEnabled := false
-	if cfg.ProxyEnabled != nil {
-		proxyEnabled = *cfg.ProxyEnabled
-	}
-	proxyOperatorRBAC := false
-	if cfg.ProxyOperatorRBAC != nil {
-		proxyOperatorRBAC = *cfg.ProxyOperatorRBAC
-	}
-	// Operator-tier RBAC is meaningless without proxy enabled —
-	// the SA token is only used by the agent for proxy traffic.
-	if proxyOperatorRBAC && !proxyEnabled {
-		return fmt.Errorf("proxyOperatorRbac requires proxyEnabled=true")
+
+	mode, proxyEnabled, err := resolveModeAndProxy(cfg)
+	if err != nil {
+		return err
 	}
 
 	// Auth mode validation: when set, must be a recognized value
@@ -257,12 +372,9 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 
 	steps := []func() error{
 		func() error { return ensureServiceAccount(ctx, cs, ns) },
-		func() error { return ensureClusterRole(ctx, cs) },
-		func() error { return ensureClusterRoleBinding(ctx, cs, ns) },
+		func() error { return applyRBACForMode(ctx, cs, ns, mode) },
 		func() error { return ensureLeaderRole(ctx, cs, ns) },
 		func() error { return ensureLeaderRoleBinding(ctx, cs, ns) },
-		func() error { return ensureOperatorClusterRole(ctx, cs, proxyOperatorRBAC) },
-		func() error { return ensureOperatorClusterRoleBinding(ctx, cs, ns, proxyOperatorRBAC) },
 		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled, proxyEnabled) },
 	}
 	for _, step := range steps {
@@ -373,11 +485,29 @@ func deleteAgentResources(ctx context.Context, cs kubernetes.Interface, ns strin
 	if err := cs.CoreV1().ServiceAccounts(ns).Delete(ctx, agentSAName, opts); err != nil && !apierrors.IsNotFound(err) {
 		return fmt.Errorf("delete ServiceAccount: %w", err)
 	}
-	if err := cs.RbacV1().ClusterRoleBindings().Delete(ctx, agentClusterBinding, opts); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete ClusterRoleBinding: %w", err)
+	// Tear down all three RBAC tiers + the legacy Binding name. Each
+	// delete tolerates NotFound so a partial / mode-mixed install
+	// cleans up regardless of which tiers were ever applied.
+	clusterBindings := []string{
+		agentMetricsClusterBinding,
+		agentReaderClusterBinding,
+		agentOperatorClusterBinding,
+		legacyAgentClusterBinding,
 	}
-	if err := cs.RbacV1().ClusterRoles().Delete(ctx, agentClusterRole, opts); err != nil && !apierrors.IsNotFound(err) {
-		return fmt.Errorf("delete ClusterRole: %w", err)
+	for _, name := range clusterBindings {
+		if err := cs.RbacV1().ClusterRoleBindings().Delete(ctx, name, opts); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete ClusterRoleBinding %q: %w", name, err)
+		}
+	}
+	clusterRoles := []string{
+		agentMetricsClusterRole,
+		agentReaderClusterRole,
+		agentOperatorClusterRole,
+	}
+	for _, name := range clusterRoles {
+		if err := cs.RbacV1().ClusterRoles().Delete(ctx, name, opts); err != nil && !apierrors.IsNotFound(err) {
+			return fmt.Errorf("delete ClusterRole %q: %w", name, err)
+		}
 	}
 	return nil
 }
@@ -428,16 +558,42 @@ func ensureServiceAccount(ctx context.Context, cs kubernetes.Interface, ns strin
 	return nil
 }
 
-func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
-	cr := &rbacv1.ClusterRole{
-		ObjectMeta: metav1.ObjectMeta{Name: agentClusterRole, Labels: managedLabels()},
-		Rules: []rbacv1.PolicyRule{
-			{APIGroups: []string{""}, Resources: []string{"nodes/stats", "nodes/proxy", "nodes/metrics"}, Verbs: []string{"get"}},
-			{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list", "watch"}},
-			{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"get"}},
-		},
+// metricsClusterRoleRules is the narrow rule set the agent's SA
+// always carries — kubelet stats + the small set of resources the
+// agent itself reads at startup (pods for metric enrichment,
+// namespaces for cluster_id discovery). Mode=metrics installs ONLY
+// this; mode=reader/operator add their tier on top.
+func metricsClusterRoleRules() []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"nodes/stats", "nodes/proxy", "nodes/metrics"}, Verbs: []string{"get"}},
+		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"namespaces"}, Verbs: []string{"get"}},
 	}
-	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentClusterRole, metav1.GetOptions{})
+}
+
+// readerClusterRoleRules grants cluster-wide get/list/watch on every
+// resource — the read-only tier exposed to the backend through the
+// SPDY proxy. Subresources don't match the wildcard (apiserver
+// quirk), so pods/log + the proxy variants are enumerated.
+func readerClusterRoleRules() []rbacv1.PolicyRule {
+	return []rbacv1.PolicyRule{
+		{APIGroups: []string{"*"}, Resources: []string{"*"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/log"}, Verbs: []string{"get", "list", "watch"}},
+		{APIGroups: []string{""}, Resources: []string{"pods/proxy", "services/proxy", "nodes/proxy"}, Verbs: []string{"get"}},
+		// Discovery — client-go hits these on every connection.
+		{NonResourceURLs: []string{"*"}, Verbs: []string{"get"}},
+	}
+}
+
+// ensureMetricsClusterRole applies the always-present narrow CR
+// (renamed from "kubebolt-agent-reader" in v0.2.0). The companion
+// migrateLegacyRBAC removes the old name on first apply.
+func ensureMetricsClusterRole(ctx context.Context, cs kubernetes.Interface) error {
+	cr := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{Name: agentMetricsClusterRole, Labels: managedLabels()},
+		Rules:      metricsClusterRoleRules(),
+	}
+	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentMetricsClusterRole, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
 		return err
@@ -446,22 +602,20 @@ func ensureClusterRole(ctx context.Context, cs kubernetes.Interface) error {
 		return err
 	}
 	if !managedByUs(existing.Labels) {
-		return &ConflictError{Kind: "ClusterRole", Name: agentClusterRole, Reason: "already exists and was not installed by KubeBolt"}
+		return &ConflictError{Kind: "ClusterRole", Name: agentMetricsClusterRole, Reason: "already exists and was not installed by KubeBolt"}
 	}
-	// Keep the rule set fresh even for our own resource — covers
-	// upgrades that grow the rule list.
 	existing.Rules = cr.Rules
 	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
 	return err
 }
 
-func ensureClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, ns string) error {
+func ensureMetricsClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, ns string) error {
 	crb := &rbacv1.ClusterRoleBinding{
-		ObjectMeta: metav1.ObjectMeta{Name: agentClusterBinding, Labels: managedLabels()},
-		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: agentClusterRole},
+		ObjectMeta: metav1.ObjectMeta{Name: agentMetricsClusterBinding, Labels: managedLabels()},
+		RoleRef:    rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: agentMetricsClusterRole},
 		Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: agentSAName, Namespace: ns}},
 	}
-	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentClusterBinding, metav1.GetOptions{})
+	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentMetricsClusterBinding, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
 		return err
@@ -470,12 +624,166 @@ func ensureClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, ns s
 		return err
 	}
 	if !managedByUs(existing.Labels) {
-		return &ConflictError{Kind: "ClusterRoleBinding", Name: agentClusterBinding, Reason: "already exists and was not installed by KubeBolt"}
+		return &ConflictError{Kind: "ClusterRoleBinding", Name: agentMetricsClusterBinding, Reason: "already exists and was not installed by KubeBolt"}
 	}
 	existing.Subjects = crb.Subjects
 	existing.RoleRef = crb.RoleRef
 	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
 	return err
+}
+
+// ensureReaderClusterRole applies (grant=true) or removes
+// (grant=false) the cluster-wide read CR. Same shape as the operator
+// helpers — symmetric so applyRBACForMode just toggles based on the
+// requested mode.
+//
+// Note: the CR name "kubebolt-agent-reader" was reused from the
+// pre-0.2.0 metrics-tier. When mode=reader, the rules under that name
+// are REPLACED by the new wildcard read set. The old narrow rules
+// migrate to the renamed kubebolt-agent-metrics CR via
+// ensureMetricsClusterRole.
+func ensureReaderClusterRole(ctx context.Context, cs kubernetes.Interface, grant bool) error {
+	if !grant {
+		return removeManagedClusterRole(ctx, cs, agentReaderClusterRole)
+	}
+	cr := &rbacv1.ClusterRole{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: agentReaderClusterRole,
+			Labels: mergeLabels(managedLabels(), map[string]string{
+				"kubebolt.dev/rbac-tier": "reader",
+			}),
+		},
+		Rules: readerClusterRoleRules(),
+	}
+	existing, err := cs.RbacV1().ClusterRoles().Get(ctx, agentReaderClusterRole, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cs.RbacV1().ClusterRoles().Create(ctx, cr, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	// Adopt CRs that came from the same shipped manifest (or from a
+	// previous install). Since we're reusing the legacy name with new
+	// rules, BOTH legacy-managed CRs and signature-labeled new CRs
+	// are owned by us — overwrite rules in either case. Foreign CRs
+	// (no managed-by, no signature) still error out.
+	if !managedByUs(existing.Labels) {
+		if existing.Labels["kubebolt.dev/rbac-tier"] != "reader" {
+			return &ConflictError{Kind: "ClusterRole", Name: agentReaderClusterRole, Reason: "already exists and was not installed by KubeBolt"}
+		}
+		slog.Info("agent integration: adopting pre-existing reader ClusterRole",
+			slog.String("name", agentReaderClusterRole),
+		)
+	}
+	existing.Rules = cr.Rules
+	existing.Labels = cr.Labels
+	_, err = cs.RbacV1().ClusterRoles().Update(ctx, existing, metav1.UpdateOptions{})
+	return err
+}
+
+func ensureReaderClusterRoleBinding(ctx context.Context, cs kubernetes.Interface, ns string, grant bool) error {
+	if !grant {
+		return removeManagedClusterRoleBinding(ctx, cs, agentReaderClusterBinding)
+	}
+	crb := &rbacv1.ClusterRoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: agentReaderClusterBinding,
+			Labels: mergeLabels(managedLabels(), map[string]string{
+				"kubebolt.dev/rbac-tier": "reader",
+			}),
+		},
+		RoleRef:  rbacv1.RoleRef{APIGroup: "rbac.authorization.k8s.io", Kind: "ClusterRole", Name: agentReaderClusterRole},
+		Subjects: []rbacv1.Subject{{Kind: "ServiceAccount", Name: agentSAName, Namespace: ns}},
+	}
+	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, agentReaderClusterBinding, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		_, err = cs.RbacV1().ClusterRoleBindings().Create(ctx, crb, metav1.CreateOptions{})
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if !managedByUs(existing.Labels) {
+		if existing.Labels["kubebolt.dev/rbac-tier"] != "reader" {
+			return &ConflictError{Kind: "ClusterRoleBinding", Name: agentReaderClusterBinding, Reason: "already exists and was not installed by KubeBolt"}
+		}
+		slog.Info("agent integration: adopting pre-existing reader ClusterRoleBinding",
+			slog.String("name", agentReaderClusterBinding),
+		)
+	}
+	existing.Subjects = crb.Subjects
+	existing.RoleRef = crb.RoleRef
+	existing.Labels = crb.Labels
+	_, err = cs.RbacV1().ClusterRoleBindings().Update(ctx, existing, metav1.UpdateOptions{})
+	return err
+}
+
+// migrateLegacyRBAC handles the pre-0.2.0 → 0.2.0 transition. The
+// legacy install put metrics rules under name "kubebolt-agent-reader"
+// + bound them via "kubebolt-agent" Binding. v0.2.0 splits these:
+// metrics rules → "kubebolt-agent-metrics" (new), reader rules
+// (cluster-wide) → "kubebolt-agent-reader" (rules replaced).
+//
+// We handle:
+//   - Legacy Binding "kubebolt-agent" — always delete (replaced by
+//     "kubebolt-agent-metrics" Binding).
+//   - Legacy CR "kubebolt-agent-reader" with metrics rules — left
+//     for the mode-driven flow to handle: when mode=reader its rules
+//     get overwritten with cluster-wide read; when mode!=reader it
+//     gets deleted by ensureReaderClusterRole(grant=false).
+//
+// Idempotent — safe to run on already-migrated installs.
+func migrateLegacyRBAC(ctx context.Context, cs kubernetes.Interface) error {
+	existing, err := cs.RbacV1().ClusterRoleBindings().Get(ctx, legacyAgentClusterBinding, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("check legacy ClusterRoleBinding: %w", err)
+	}
+	if !managedByUs(existing.Labels) {
+		// Foreign Binding with the same name — leave it alone.
+		return nil
+	}
+	if err := cs.RbacV1().ClusterRoleBindings().Delete(ctx, legacyAgentClusterBinding, metav1.DeleteOptions{}); err != nil && !apierrors.IsNotFound(err) {
+		return fmt.Errorf("delete legacy ClusterRoleBinding: %w", err)
+	}
+	slog.Info("agent integration: deleted legacy ClusterRoleBinding",
+		slog.String("name", legacyAgentClusterBinding),
+	)
+	return nil
+}
+
+// applyRBACForMode is the single entry point for RBAC apply. Always
+// installs the metrics tier; conditionally adds reader/operator on
+// top based on mode. Switching modes (e.g. operator → reader)
+// cleanly removes the previously-applied tier.
+func applyRBACForMode(ctx context.Context, cs kubernetes.Interface, ns string, mode AgentRBACMode) error {
+	if err := migrateLegacyRBAC(ctx, cs); err != nil {
+		return err
+	}
+	if err := ensureMetricsClusterRole(ctx, cs); err != nil {
+		return err
+	}
+	if err := ensureMetricsClusterRoleBinding(ctx, cs, ns); err != nil {
+		return err
+	}
+	grantReader := mode == RBACModeReader
+	if err := ensureReaderClusterRole(ctx, cs, grantReader); err != nil {
+		return err
+	}
+	if err := ensureReaderClusterRoleBinding(ctx, cs, ns, grantReader); err != nil {
+		return err
+	}
+	grantOperator := mode == RBACModeOperator
+	if err := ensureOperatorClusterRole(ctx, cs, grantOperator); err != nil {
+		return err
+	}
+	if err := ensureOperatorClusterRoleBinding(ctx, cs, ns, grantOperator); err != nil {
+		return err
+	}
+	return nil
 }
 
 // agentOperatorClusterRole is the ClusterRole granting wildcard
