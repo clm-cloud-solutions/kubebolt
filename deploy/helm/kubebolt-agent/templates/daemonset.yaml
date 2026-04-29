@@ -89,6 +89,22 @@ spec:
             {{- end }}
             - name: KUBEBOLT_HUBBLE_ENABLED
               value: {{ .Values.hubble.enabled | quote }}
+            {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
+            {{- /* Auto-derive proxy enable from rbac.mode unless an
+                   explicit override was given. proxy is the path the
+                   backend uses to reach the apiserver via the agent —
+                   reader/operator REQUIRE it; metrics doesn't use it. */ -}}
+            {{- $mode := default "reader" .Values.rbac.mode -}}
+            {{- $proxyAuto := or (eq $mode "reader") (eq $mode "operator") -}}
+            {{- $proxyEnabled := $proxyAuto -}}
+            {{- if hasKey .Values.proxy "enabled" -}}
+              {{- $proxyEnabled = .Values.proxy.enabled -}}
+              {{- if and (not $proxyEnabled) (or (eq $mode "reader") (eq $mode "operator")) -}}
+                {{- fail (printf "rbac.mode=%s requires proxy.enabled=true (proxy is the only path to apiserver via the agent)" $mode) -}}
+              {{- end -}}
+            {{- end }}
+            - name: KUBEBOLT_AGENT_PROXY_ENABLED
+              value: {{ $proxyEnabled | quote }}
             {{- if .Values.hubble.relay.address }}
             - name: KUBEBOLT_HUBBLE_RELAY_ADDR
               value: {{ .Values.hubble.relay.address | quote }}

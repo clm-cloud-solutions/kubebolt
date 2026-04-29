@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -173,8 +174,28 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 
 // upsertAgentTokenSecret creates the Secret on first use, updates
 // otherwise. Labels mark it managed-by KubeBolt so future cleanup
-// paths can reason about ownership.
+// paths can reason about ownership. Auto-creates the namespace
+// when it doesn't exist — the wizard's "Generate token + create
+// Secret" button is supposed to be self-contained, the operator
+// shouldn't have to pre-provision the namespace.
 func upsertAgentTokenSecret(ctx context.Context, cs kubernetes.Interface, ns, name, token string) error {
+	// Ensure the namespace exists. Tolerate AlreadyExists for the
+	// common case where Install / Configure already ran (or the
+	// operator pre-created it manually). Real errors (RBAC denied,
+	// API down) bubble up.
+	nsObj := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/managed-by": "kubebolt",
+				"app.kubernetes.io/name":       "kubebolt-agent",
+			},
+		},
+	}
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+		return fmt.Errorf("ensure namespace %q: %w", ns, err)
+	}
+
 	desired := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,

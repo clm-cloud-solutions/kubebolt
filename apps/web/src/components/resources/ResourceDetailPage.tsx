@@ -11,6 +11,7 @@ import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEve
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
+import { MutationErrorToast, classifyMutationError, type MutationErrorVariant } from '@/components/shared/MutationErrorToast'
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
@@ -739,7 +740,7 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
   const [confirmText, setConfirmText] = useState('')
   const [forceDelete, setForceDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<MutationErrorVariant | null>(null)
 
   const resourceLabel = resourceLabels[type] ? resourceLabels[type].replace(/s$/, '') : type
   const canDelete = confirmText === name
@@ -757,7 +758,7 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
       await api.deleteResource(type, namespace, name, { force: forceDelete })
       onDeleted()
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Delete failed')
+      setError(classifyMutationError(err))
       setDeleting(false)
     }
   }
@@ -828,10 +829,28 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
           </label>
         </div>
 
-        {/* Error */}
+        {/* Error — classified so reader-mode 403s render a friendly
+            tier hint with a link to Configure instead of raw apiserver
+            text. */}
         {error && (
-          <div className="mx-5 mt-3 px-3 py-2 rounded-lg bg-status-error-dim border border-status-error/20 text-xs text-status-error font-mono">
-            {error}
+          <div className="mx-5 mt-3 px-3 py-2.5 rounded-lg bg-status-error-dim border border-status-error/20 text-xs text-kb-text-primary">
+            {error.title && <div className="font-semibold text-status-error mb-1">{error.title}</div>}
+            <div className="text-kb-text-secondary leading-relaxed">{error.body}</div>
+            {error.cta && (
+              <Link
+                to={error.cta.to}
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded bg-kb-accent text-kb-on-accent text-[11px] font-medium hover:bg-kb-accent-hover transition-colors"
+              >
+                {error.cta.label}
+              </Link>
+            )}
+            {error.detail && (
+              <details className="mt-1.5">
+                <summary className="text-[10px] font-mono text-kb-text-tertiary cursor-pointer">Server error</summary>
+                <pre className="mt-1 text-[10px] font-mono text-kb-text-tertiary whitespace-pre-wrap break-all">{error.detail}</pre>
+              </details>
+            )}
           </div>
         )}
 
@@ -2416,6 +2435,11 @@ export function ResourceDetailPage() {
   const [scaleValue, setScaleValue] = useState(0)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
+  // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
+  // the bare alert() that used to dump raw apiserver text. The toast
+  // detects agentRbacForbidden and offers a 1-click jump to the
+  // Integrations page so the operator can switch the agent's tier.
+  const [mutationError, setMutationError] = useState<{ err: unknown; action: string } | null>(null)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const { hasRole } = useAuth()
@@ -2582,7 +2606,7 @@ export function ResourceDetailPage() {
                         }
                         queryClient.invalidateQueries({ queryKey: ['resources'] })
                       } catch (err) {
-                        alert(err instanceof Error ? err.message : 'Scale failed')
+                        setMutationError({ err, action: 'Scale' })
                       } finally {
                         setActionLoading(null)
                       }
@@ -2636,7 +2660,7 @@ export function ResourceDetailPage() {
                           }
                           queryClient.invalidateQueries({ queryKey: ['resources'] })
                         } catch (err) {
-                          alert(err instanceof Error ? err.message : 'Restart failed')
+                          setMutationError({ err, action: 'Restart' })
                         } finally {
                           setActionLoading(null)
                         }
@@ -2678,6 +2702,16 @@ export function ResourceDetailPage() {
             queryClient.invalidateQueries({ queryKey: ['resources'] })
             navigate(`/${type}`)
           }}
+        />
+      )}
+
+      {/* Mutation error toast — fixed bottom-right; replaces the
+          old alert() calls for restart/scale/etc. */}
+      {mutationError && (
+        <MutationErrorToast
+          error={mutationError.err}
+          action={mutationError.action}
+          onDismiss={() => setMutationError(null)}
         />
       )}
 

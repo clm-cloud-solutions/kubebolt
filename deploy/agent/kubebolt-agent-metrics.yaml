@@ -1,0 +1,206 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# kubebolt-agent — Metrics-only install
+#
+# Use this manifest when:
+#   - You want the privacy-conscious minimum: only kubelet metrics +
+#     Hubble flows leave the cluster. Nothing else.
+#   - You DO NOT want the KubeBolt backend to make apiserver calls
+#     through the agent (no inventory render, no exec, no port-forward
+#     via this agent — those need rbac.mode=reader|operator).
+#
+# What this gives you in the dashboard:
+#   - Historical CPU / memory / network counters (kubelet stats).
+#   - Pod-to-pod / DNS / L7 HTTP flows (Hubble — silent no-op when
+#     Cilium isn't installed).
+#
+# What this does NOT give you:
+#   - Inventory views (Pods / Deployments / etc.) through this agent.
+#     If the backend has direct kubeconfig access to the cluster it
+#     can still render those; if it doesn't, this mode leaves them
+#     blank for this cluster.
+#   - Any kubectl-style operation (exec / scale / restart / delete /
+#     YAML edit) through this agent.
+#
+# Apply:
+#   kubectl apply -f kubebolt-agent-metrics.yaml
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# CONFIGURABLE — edit these before kubectl apply
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# 1. The line below in the DaemonSet env:
+#       value: "PLACEHOLDER:9090"
+#    Replace PLACEHOLDER with your KubeBolt backend's gRPC host,
+#    e.g. "kubebolt.kubebolt.svc.cluster.local:9090" (in-cluster
+#    backend) or "host.docker.internal:9090" (Docker Desktop laptop).
+#
+# 2. Image tag (default v0.2.0). Pin to a specific release; "latest"
+#    is fine for dev loops but unstable for prod.
+#
+# 3. (optional) namespace — defaults to "kubebolt-system". To install
+#    elsewhere, change every `namespace:` line plus the SA's
+#    namespace + the ClusterRoleBinding subject namespace.
+#
+# 4. (optional) auth — leave it disabled for the metrics tier unless
+#    your backend runs with KUBEBOLT_AGENT_AUTH_MODE=enforced. To
+#    enable, follow the recipe in the operator manifest's header
+#    (same Secret + env vars apply here).
+#
+# ─────────────────────────────────────────────────────────────────────────────
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/part-of: kubebolt
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: kubebolt-agent
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+---
+# ─── Metrics tier (narrow ClusterRole) ───
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: kubebolt-agent-metrics
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+    kubebolt.dev/rbac-tier: metrics
+rules:
+  - apiGroups: [""]
+    resources: ["nodes/stats", "nodes/proxy", "nodes/metrics"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list", "watch"]
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: kubebolt-agent-metrics
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+    kubebolt.dev/rbac-tier: metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: kubebolt-agent-metrics
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+---
+# ─── Leader election (namespace-scoped Lease) ───
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kubebolt-agent-leader
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kubebolt-agent-leader
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kubebolt-agent-leader
+subjects:
+  - kind: ServiceAccount
+    name: kubebolt-agent
+    namespace: kubebolt-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kubebolt-agent
+  namespace: kubebolt-system
+  labels:
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/component: agent
+    app.kubernetes.io/part-of: kubebolt
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: kubebolt-agent
+      app.kubernetes.io/instance: kubebolt-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: kubebolt-agent
+        app.kubernetes.io/instance: kubebolt-agent
+        app.kubernetes.io/component: agent
+        app.kubernetes.io/part-of: kubebolt
+    spec:
+      serviceAccountName: kubebolt-agent
+      tolerations:
+        - operator: Exists
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+      containers:
+        - name: agent
+          # CHANGE ME — pin to the release tag you want.
+          image: ghcr.io/clm-cloud-solutions/kubebolt/agent:v0.2.0
+          imagePullPolicy: IfNotPresent
+          env:
+            # CHANGE ME — see CONFIGURABLE block at the top of this file.
+            - name: KUBEBOLT_BACKEND_URL
+              value: "PLACEHOLDER:9090"
+            - name: KUBEBOLT_AGENT_LOG_LEVEL
+              value: "info"
+            - name: KUBEBOLT_AGENT_NODE_NAME
+              valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
+            - name: KUBEBOLT_AGENT_NODE_IP
+              valueFrom: { fieldRef: { fieldPath: status.hostIP } }
+            - name: POD_NAME
+              valueFrom: { fieldRef: { fieldPath: metadata.name } }
+            - name: POD_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: KUBEBOLT_HUBBLE_ENABLED
+              value: "true"
+            # Proxy is OFF for metrics-only mode — the backend cannot
+            # make apiserver calls through this agent. To allow that,
+            # use kubebolt-agent-reader.yaml or kubebolt-agent-operator
+            # .yaml instead.
+            - name: KUBEBOLT_AGENT_PROXY_ENABLED
+              value: "false"
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 30Mi
+            limits:
+              cpu: 100m
+              memory: 80Mi

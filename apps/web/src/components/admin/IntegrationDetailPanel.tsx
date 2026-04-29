@@ -194,16 +194,31 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
                     className="flex items-start justify-between gap-3 p-3 rounded-lg bg-kb-elevated border border-kb-border"
                   >
                     <div className="min-w-0">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm text-kb-text-primary font-medium">{f.label}</span>
-                        <span
-                          className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono font-semibold uppercase tracking-wider ${
-                            f.enabled ? 'bg-status-ok-dim text-status-ok' : 'bg-kb-card text-kb-text-tertiary'
-                          }`}
-                        >
-                          {f.enabled ? <Check className="w-2.5 h-2.5" /> : <Minus className="w-2.5 h-2.5" />}
-                          {f.enabled ? 'On' : 'Off'}
-                        </span>
+                        {f.value ? (
+                          // Multi-state flag (e.g. permission tier).
+                          // Render the value as a pill so the operator
+                          // sees "Cluster-wide read" instead of just "On".
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold ${
+                              f.enabled
+                                ? 'bg-status-ok-dim text-status-ok border border-status-ok/30'
+                                : 'bg-kb-card text-kb-text-tertiary border border-kb-border'
+                            }`}
+                          >
+                            {f.value}
+                          </span>
+                        ) : (
+                          <span
+                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-mono font-semibold uppercase tracking-wider ${
+                              f.enabled ? 'bg-status-ok-dim text-status-ok' : 'bg-kb-card text-kb-text-tertiary'
+                            }`}
+                          >
+                            {f.enabled ? <Check className="w-2.5 h-2.5" /> : <Minus className="w-2.5 h-2.5" />}
+                            {f.enabled ? 'On' : 'Off'}
+                          </span>
+                        )}
                       </div>
                       {f.description && (
                         <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">{f.description}</p>

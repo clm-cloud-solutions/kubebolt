@@ -576,6 +576,11 @@ export interface IntegrationFeatureFlag {
   label: string
   description?: string
   enabled: boolean
+  // Optional non-boolean state (e.g. the agent's "Permission tier"
+  // surfaces "Cluster-wide read" / "Operator" / "Metrics only"
+  // here). When present, the panel renders it instead of the
+  // on/off pill.
+  value?: string
   requires?: string[]
 }
 
@@ -607,22 +612,32 @@ export interface AgentInstallConfig {
   clusterName?: string
   hubbleEnabled?: boolean
 
-  // K8s API proxy (Sprint A.5). When true, the agent advertises
-  // the kube-proxy capability and accepts KubeProxyRequest payloads
-  // from the backend against the in-cluster apiserver. Required for
-  // SaaS multi-cluster setups where the backend can't reach the
-  // apiserver directly. Default off — single-cluster self-hosted
-  // installs (backend has direct kubeconfig) leave it unset.
+  // RBACMode picks the agent SA's permission tier. Maps 1:1 to
+  // helm chart values.rbac.mode and to the OSS manifests
+  // deploy/agent/kubebolt-agent-{metrics,reader,operator}.yaml.
   //
-  // Enabling proxy alone gives metrics-tier RBAC reads only. To
-  // unlock the full UI through the proxy (terminal / files /
-  // portforward / restart / scale / delete) the operator-tier RBAC
-  // ClusterRole must ALSO be granted — see proxyOperatorRbac below.
+  //   metrics  — narrow (kubelet stats + pods + namespaces). Proxy
+  //              stays OFF; only metrics + Hubble flows ship.
+  //   reader   — cluster-wide get/list/watch on `*/*`. Proxy ON
+  //              (mandatory). Mutations come back 403.
+  //   operator — wildcard read+write on `*/*`. Proxy ON (mandatory).
+  //              Auth REQUIRED (cluster-admin scoped to SA token).
+  //
+  // Default in the wizard is "reader" — the typical install for the
+  // SaaS-style topology where the backend reaches the cluster via
+  // the agent's outbound channel.
+  rbacMode?: 'metrics' | 'reader' | 'operator'
+
+  // K8s API proxy explicit override. The backend auto-derives this
+  // from rbacMode (off for metrics, on for reader/operator), so
+  // most callers leave it unset. Setting it to false while
+  // rbacMode is reader/operator is rejected — those modes only make
+  // sense with the proxy on.
   proxyEnabled?: boolean
-  // Apply the operator-tier ClusterRole + binding alongside the
-  // base manifest. Effectively cluster-admin scoped to the agent's
-  // ServiceAccount — opt-in deliberately. Ignored when proxyEnabled
-  // is not set.
+
+  // Deprecated: superseded by rbacMode. Kept for wire-compat with
+  // older clients; backend folds it into rbacMode=operator when
+  // rbacMode is empty.
   proxyOperatorRbac?: boolean
 
   // Auth wiring against the backend's gRPC channel. Empty → no

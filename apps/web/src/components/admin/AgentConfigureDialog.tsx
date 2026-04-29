@@ -4,6 +4,7 @@ import { AlertTriangle, Check, Loader2, Zap, KeyRound } from 'lucide-react'
 import { api, type AgentInstallConfig, type Integration, type AgentIssueTokenResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { Modal } from '@/components/shared/Modal'
+import { RBACModePicker } from '@/components/admin/RBACModePicker'
 
 // AgentConfigureDialog edits an existing managed install in place.
 // Field set mirrors AgentInstallWizard because the backend accepts
@@ -222,14 +223,20 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
 
   const inFlight = phase === 'saving' || phase === 'rolling'
 
-  // Mirrors the backend's refuseProxyWithoutAuth pre-flight: when
-  // the backend is enforced and the operator has proxy on with auth
-  // off, Save would land on a 400. Disable client-side and surface
-  // the inline banner so the fix is one click away.
-  const enforcedMisconfig =
-    authInfo?.enforcement === 'enforced' &&
-    !!cfg?.proxyEnabled &&
-    !(cfg?.authMode ?? '').trim()
+  // Save gating: two failure modes that the backend would reject
+  // anyway, surfaced client-side so the fix is one click away.
+  //   (1) Operator mode without auth — architectural rule (cluster-
+  //       admin without auth = pivot risk). Backend enforces this
+  //       regardless of its own enforcement setting.
+  //   (2) Backend in enforced auth mode + proxy on (mode in
+  //       reader/operator) + auth missing — backend pre-flight
+  //       returns 400.
+  const _resolvedMode = cfg?.rbacMode ?? 'reader'
+  const _proxyOn = _resolvedMode === 'reader' || _resolvedMode === 'operator'
+  const _authMissing = !(cfg?.authMode ?? '').trim()
+  const operatorMisconfig = _resolvedMode === 'operator' && _authMissing
+  const enforcedMisconfig = authInfo?.enforcement === 'enforced' && _proxyOn && _authMissing
+  const saveBlocked = operatorMisconfig || enforcedMisconfig
 
   // Modal portals to document.body — that sidesteps any lingering
   // ambiguity from the parent detail panel's own DOM tree (React's
@@ -393,16 +400,20 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
                     </div>
                   )}
                   {/* Refusal banner — Save is disabled while this
-                      shows. Mirrors the backend's pre-flight error
-                      so the operator knows exactly why and how to
-                      proceed. */}
-                  {authInfo?.enforcement === 'enforced' && cfg.proxyEnabled && (cfg.authMode ?? '') === '' && (
+                      shows. Two trigger conditions mirror the gating
+                      in saveBlocked: operator-no-auth (architectural)
+                      OR enforced-backend-no-auth (backend pre-flight). */}
+                  {saveBlocked && (
                     <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-error-dim border border-status-error/30">
                       <AlertTriangle className="w-4 h-4 text-status-error shrink-0 mt-0.5" />
                       <div className="text-[11px] text-kb-text-primary">
-                        <div className="font-semibold">Auth required when proxy is on</div>
+                        <div className="font-semibold">{operatorMisconfig ? 'Auth required for cluster-wide read+write' : 'Auth required when proxy is on'}</div>
                         <div className="text-kb-text-secondary">
-                          Backend is in <code className="font-mono">enforced</code> mode. Pick <strong>Ingest Token</strong> above (the agent will be rejected at the welcome handshake otherwise).
+                          {operatorMisconfig ? (
+                            <>Operator mode grants the agent ServiceAccount cluster-admin power. Without auth, anyone reaching the backend's gRPC port pivots to admin in this cluster. Pick <strong>Ingest Token</strong> above.</>
+                          ) : (
+                            <>Backend is in <code className="font-mono">enforced</code> mode. Pick <strong>Ingest Token</strong> above (the agent will be rejected at the welcome handshake otherwise).</>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -425,46 +436,13 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
                   </button>
                 </div>
 
-                {/* K8s API proxy (SPDY tunneling) */}
-                <div className="space-y-3 p-3 rounded-lg bg-kb-elevated border border-kb-border">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm text-kb-text-primary font-medium">K8s API proxy (SPDY tunneling)</div>
-                      <p className="text-[11px] text-kb-text-secondary mt-0.5">
-                        Routes the backend's API calls through the agent's outbound channel. Required for SaaS multi-cluster — when on, terminal / file browser / port-forward / kubectl-style mutations work via the agent. Toggling this re-rolls the DaemonSet on save.
-                      </p>
-                    </div>
-                    <button
-                      type="button" role="switch" aria-checked={cfg.proxyEnabled ?? false}
-                      onClick={() => setCfg({ ...cfg, proxyEnabled: !cfg.proxyEnabled, proxyOperatorRbac: cfg.proxyEnabled ? false : cfg.proxyOperatorRbac })}
-                      className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.proxyEnabled ? 'bg-kb-accent' : 'bg-kb-border'}`}
-                    >
-                      <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.proxyEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`} />
-                    </button>
-                  </div>
-                  {cfg.proxyEnabled && (
-                    <div className="flex items-start justify-between gap-3 pt-2 border-t border-kb-border">
-                      <div>
-                        <div className="text-sm text-kb-text-primary font-medium flex items-center gap-2">
-                          Operator-tier RBAC
-                          <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-status-warning/10 text-status-warning border border-status-warning/30">
-                            cluster-admin
-                          </span>
-                        </div>
-                        <p className="text-[11px] text-kb-text-secondary mt-0.5">
-                          Grants the agent's SA wildcard read+write — required for the dashboard to render fully through the proxy. Without it, agent-proxy reads come back as "No access". Effectively cluster-admin scoped to the agent's pod.
-                        </p>
-                      </div>
-                      <button
-                        type="button" role="switch" aria-checked={cfg.proxyOperatorRbac ?? false}
-                        onClick={() => setCfg({ ...cfg, proxyOperatorRbac: !cfg.proxyOperatorRbac })}
-                        className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.proxyOperatorRbac ? 'bg-kb-accent' : 'bg-kb-border'}`}
-                      >
-                        <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.proxyOperatorRbac ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`} />
-                      </button>
-                    </div>
-                  )}
-                </div>
+                {/* RBAC mode picker — same shape as the Install
+                    wizard's. Defaults to whatever the cluster already
+                    has (extractInstalledRBACMode on the backend). */}
+                <RBACModePicker
+                  mode={cfg.rbacMode ?? 'reader'}
+                  onChange={(rbacMode) => setCfg({ ...cfg, rbacMode })}
+                />
 
                 <div>
                   <button
@@ -668,8 +646,14 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
           <button
             type="button"
             onClick={submit}
-            disabled={!cfg || !cfg.backendUrl?.trim() || inFlight || phase === 'done' || enforcedMisconfig}
-            title={enforcedMisconfig ? 'Backend is in enforced auth mode — pick Ingest Token before saving' : undefined}
+            disabled={!cfg || !cfg.backendUrl?.trim() || inFlight || phase === 'done' || saveBlocked}
+            title={
+              operatorMisconfig
+                ? 'Operator mode requires auth — pick Ingest Token (cluster-admin without auth = pivot risk)'
+                : enforcedMisconfig
+                  ? 'Backend is in enforced auth mode — pick Ingest Token before saving'
+                  : undefined
+            }
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent hover:bg-kb-accent-hover text-kb-on-accent text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {phase === 'saving' ? (
