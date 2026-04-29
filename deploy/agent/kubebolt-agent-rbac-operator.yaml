@@ -46,6 +46,8 @@ metadata:
   name: kubebolt-agent-operator
   labels:
     app: kubebolt-agent
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/managed-by: kubebolt
     kubebolt.dev/rbac-tier: operator
 rules:
   # Wildcard read+write on every namespaced + cluster-scoped resource.
@@ -100,6 +102,8 @@ metadata:
   name: kubebolt-agent-operator
   labels:
     app: kubebolt-agent
+    app.kubernetes.io/name: kubebolt-agent
+    app.kubernetes.io/managed-by: kubebolt
     kubebolt.dev/rbac-tier: operator
 roleRef:
   apiGroup: rbac.authorization.k8s.io

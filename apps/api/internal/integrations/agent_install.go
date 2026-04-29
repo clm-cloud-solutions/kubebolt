@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -51,6 +52,36 @@ type AgentInstallConfig struct {
 	// proxy (else proxy reads come back as "No access"). Ignored
 	// when ProxyEnabled is not true.
 	ProxyOperatorRBAC *bool `json:"proxyOperatorRbac,omitempty"`
+
+	// ─── Auth ──────────────────────────────────────────────
+	// Authentication mode the agent uses against the backend's
+	// gRPC channel. Set to match the backend's
+	// KUBEBOLT_AGENT_AUTH_MODE — when the backend runs in
+	// `enforced` or `permissive` mode, this MUST be set or the
+	// agent connects without credentials and gets rejected with
+	// "unknown auth mode" on first Welcome.
+	//
+	// Empty (default) leaves auth off — only valid when the
+	// backend runs in `disabled` mode (Sprint A migration default).
+	//   - "ingest-token"  long-lived bearer token (typical SaaS).
+	//                     Requires AuthTokenSecret pointing at a
+	//                     pre-existing Secret in the agent's
+	//                     namespace with a `token` key.
+	//   - "tokenreview"   projected ServiceAccount token; the
+	//                     backend validates via apiserver
+	//                     TokenReview API. Requires backend to
+	//                     run in the same cluster as the agent.
+	//                     (Wizard support: future — for now use
+	//                     the dev manifest or Helm directly.)
+	AuthMode string `json:"authMode,omitempty"`
+
+	// Name of an existing Secret in the agent's namespace whose
+	// `token` key holds the ingest token. Required when AuthMode
+	// is "ingest-token". The wizard's helper text instructs the
+	// user to generate the token on the Agent Tokens admin page
+	// then `kubectl create secret generic <name>
+	// --from-literal=token=<paste>`.
+	AuthTokenSecret string `json:"authTokenSecret,omitempty"`
 
 	// ─── Image ─────────────────────────────────────────────
 	ImageRepo       string `json:"imageRepo,omitempty"`
@@ -161,6 +192,28 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 		return fmt.Errorf("proxyOperatorRbac requires proxyEnabled=true")
 	}
 
+	// Auth mode validation: when set, must be a recognized value
+	// AND the matching token Secret must exist. We don't try to
+	// auto-detect the backend's enforcement mode here — the wizard
+	// is the source of truth for what the operator wants to deploy
+	// against. Mismatches surface at agent boot via the
+	// "unknown auth mode" / "invalid credentials" gRPC errors.
+	switch cfg.AuthMode {
+	case "":
+		// no auth — fine when backend runs disabled.
+	case "ingest-token":
+		if cfg.AuthTokenSecret == "" {
+			return fmt.Errorf("authMode=ingest-token requires authTokenSecret to name an existing Secret in namespace %q", ns)
+		}
+	case "tokenreview":
+		// tokenreview uses projected SA token, no Secret reference
+		// from the user — the agent's pod spec already mounts one
+		// via the standard token volume. Future wizard work can
+		// surface the audience knob.
+	default:
+		return fmt.Errorf("authMode %q not recognized; expected one of: ingest-token, tokenreview, or empty", cfg.AuthMode)
+	}
+
 	// Validate resource quantity strings up front so a bad value
 	// turns into a clear 400 instead of a partial install.
 	if _, _, err := resolveResources(cfg.Resources); err != nil {
@@ -183,6 +236,22 @@ func (a *agentProvider) Install(ctx context.Context, cs kubernetes.Interface, co
 				return fmt.Errorf("hubble TLS secret %q not found in namespace %q — create it before install", cfg.HubbleRelayTLS.ExistingSecret, ns)
 			}
 			return fmt.Errorf("verify hubble TLS secret: %w", err)
+		}
+	}
+
+	// Same pre-flight for the auth token Secret: fail fast with a
+	// clear error before we create RBAC + DS that will crash-loop
+	// on mount.
+	if cfg.AuthMode == "ingest-token" {
+		sec, err := cs.CoreV1().Secrets(ns).Get(ctx, cfg.AuthTokenSecret, metav1.GetOptions{})
+		if err != nil {
+			if apierrors.IsNotFound(err) {
+				return fmt.Errorf("auth token secret %q not found in namespace %q — create it before install (kubectl create secret generic %s -n %s --from-literal=token=<paste-token-from-Agent-Tokens-admin-page>)", cfg.AuthTokenSecret, ns, cfg.AuthTokenSecret, ns)
+			}
+			return fmt.Errorf("verify auth token secret: %w", err)
+		}
+		if _, ok := sec.Data["token"]; !ok {
+			return fmt.Errorf("auth token secret %q has no `token` key — recreate with --from-literal=token=<paste>", cfg.AuthTokenSecret)
 		}
 	}
 
@@ -456,8 +525,21 @@ func ensureOperatorClusterRole(ctx context.Context, cs kubernetes.Interface, gra
 	if err != nil {
 		return err
 	}
+	// Adopt CRs that came from our shipped manifest
+	// (deploy/agent/kubebolt-agent-rbac-operator.yaml) — they
+	// carry our `kubebolt.dev/rbac-tier=operator` signature. Older
+	// versions of that manifest didn't stamp the managed-by label,
+	// so a clean kubectl-apply leaves it un-adoptable. Detecting the
+	// signature lets the UI toggle take ownership safely without an
+	// extra "delete it manually first" step. Anything without the
+	// signature is genuinely foreign — refuse.
 	if !managedByUs(existing.Labels) {
-		return &ConflictError{Kind: "ClusterRole", Name: agentOperatorClusterRole, Reason: "already exists and was not installed by KubeBolt"}
+		if existing.Labels["kubebolt.dev/rbac-tier"] != "operator" {
+			return &ConflictError{Kind: "ClusterRole", Name: agentOperatorClusterRole, Reason: "already exists and was not installed by KubeBolt"}
+		}
+		slog.Info("agent integration: adopting pre-existing operator ClusterRole",
+			slog.String("name", agentOperatorClusterRole),
+		)
 	}
 	existing.Rules = cr.Rules
 	existing.Labels = cr.Labels
@@ -489,8 +571,17 @@ func ensureOperatorClusterRoleBinding(ctx context.Context, cs kubernetes.Interfa
 	if err != nil {
 		return err
 	}
+	// Same adoption rule as ensureOperatorClusterRole: the shipped
+	// manifest stamps `kubebolt.dev/rbac-tier=operator` on the
+	// binding, so the toggle can take ownership of a manually-applied
+	// install. Foreign bindings (no signature) still error out.
 	if !managedByUs(existing.Labels) {
-		return &ConflictError{Kind: "ClusterRoleBinding", Name: agentOperatorClusterBinding, Reason: "already exists and was not installed by KubeBolt"}
+		if existing.Labels["kubebolt.dev/rbac-tier"] != "operator" {
+			return &ConflictError{Kind: "ClusterRoleBinding", Name: agentOperatorClusterBinding, Reason: "already exists and was not installed by KubeBolt"}
+		}
+		slog.Info("agent integration: adopting pre-existing operator ClusterRoleBinding",
+			slog.String("name", agentOperatorClusterBinding),
+		)
 	}
 	existing.Subjects = crb.Subjects
 	existing.RoleRef = crb.RoleRef
@@ -598,6 +689,7 @@ func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cf
 	existing, err := cs.AppsV1().DaemonSets(ns).Get(ctx, agentDSName, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		_, err = cs.AppsV1().DaemonSets(ns).Create(ctx, ds, metav1.CreateOptions{})
+		logAgentDSEnv("Create", ds, err)
 		return err
 	}
 	if err != nil {
@@ -610,7 +702,29 @@ func ensureDaemonSet(ctx context.Context, cs kubernetes.Interface, ns string, cf
 	// than being silently overwritten.
 	ds.ResourceVersion = existing.ResourceVersion
 	_, err = cs.AppsV1().DaemonSets(ns).Update(ctx, ds, metav1.UpdateOptions{})
+	logAgentDSEnv("Update", ds, err)
 	return err
+}
+
+// logAgentDSEnv emits the env vars we just wrote to the DaemonSet
+// so a "values didn't persist" report is decidable from logs alone:
+// either the expected vars are here (UI/cache bug) or they aren't
+// (Configure handler / build path bug).
+func logAgentDSEnv(op string, ds *appsv1.DaemonSet, err error) {
+	if err != nil {
+		slog.Error("agent integration: DaemonSet "+op+" failed",
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	envs := agentContainerEnv(ds)
+	slog.Info("agent integration: DaemonSet "+op+" applied",
+		slog.String("KUBEBOLT_AGENT_PROXY_ENABLED", envs["KUBEBOLT_AGENT_PROXY_ENABLED"]),
+		slog.String("KUBEBOLT_HUBBLE_ENABLED", envs["KUBEBOLT_HUBBLE_ENABLED"]),
+		slog.String("KUBEBOLT_AGENT_AUTH_MODE", envs["KUBEBOLT_AGENT_AUTH_MODE"]),
+		slog.String("KUBEBOLT_AGENT_CLUSTER_NAME", envs["KUBEBOLT_AGENT_CLUSTER_NAME"]),
+		slog.String("KUBEBOLT_BACKEND_URL", envs["KUBEBOLT_BACKEND_URL"]),
+	)
 }
 
 func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled, proxyEnabled bool) *appsv1.DaemonSet {
@@ -633,6 +747,17 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled, proxy
 	if cfg.ClusterName != "" {
 		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_CLUSTER_NAME", Value: cfg.ClusterName})
 	}
+	// Auth wiring — mirrors deploy/agent/kubebolt-agent-dev-auth.yaml.
+	// For ingest-token: mount the user-supplied Secret at a fixed
+	// path and point KUBEBOLT_AGENT_TOKEN_FILE at it. For
+	// tokenreview: just set the mode (the agent uses its projected
+	// SA token via the default token volume).
+	if cfg.AuthMode != "" {
+		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_AUTH_MODE", Value: cfg.AuthMode})
+	}
+	if cfg.AuthMode == "ingest-token" && cfg.AuthTokenSecret != "" {
+		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_AGENT_TOKEN_FILE", Value: "/var/run/secrets/kubebolt/token"})
+	}
 	if cfg.HubbleRelayAddress != "" {
 		env = append(env, corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_ADDR", Value: cfg.HubbleRelayAddress})
 	}
@@ -642,6 +767,19 @@ func buildAgentDaemonSet(ns string, cfg AgentInstallConfig, hubbleEnabled, proxy
 	// which files exist.
 	var volumes []corev1.Volume
 	var volumeMounts []corev1.VolumeMount
+	// Mount the auth token Secret read-only.
+	if cfg.AuthMode == "ingest-token" && cfg.AuthTokenSecret != "" {
+		volumes = append(volumes, corev1.Volume{
+			Name: "kubebolt-agent-token",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{SecretName: cfg.AuthTokenSecret},
+			},
+		})
+		volumeMounts = append(volumeMounts, corev1.VolumeMount{
+			Name: "kubebolt-agent-token", MountPath: "/var/run/secrets/kubebolt", ReadOnly: true,
+		})
+	}
+
 	if cfg.HubbleRelayTLS != nil && cfg.HubbleRelayTLS.ExistingSecret != "" {
 		env = append(env,
 			corev1.EnvVar{Name: "KUBEBOLT_HUBBLE_RELAY_CA_FILE", Value: "/etc/hubble-tls/ca.crt"},
