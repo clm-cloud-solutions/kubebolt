@@ -4,12 +4,53 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 )
+
+// refuseProxyWithoutAuth is the agent-integration pre-flight that
+// catches the most common config foot-gun before it reaches the
+// cluster: proxy enabled, but the agent will dial the backend
+// without credentials against an enforced auth mode. Without this
+// the install / configure succeeds, the DaemonSet rolls, and the
+// agent then crash-loops on a Welcome with "unknown auth mode" —
+// confusing because the symptom (cluster never appears in the
+// switcher) is far from the cause (auth mode mismatch).
+//
+// Only fires for the agent integration; other adapters get a
+// no-op pass-through. Returns (errorMessage, false) when the body
+// describes a misconfiguration; (_, true) means proceed.
+func (h *handlers) refuseProxyWithoutAuth(id string, raw json.RawMessage) (string, bool) {
+	if id != "agent" {
+		return "", true
+	}
+	if h.agentAuthEnforcement != "enforced" {
+		return "", true
+	}
+	if len(raw) == 0 {
+		return "", true
+	}
+	// Surface-level peek — the provider re-unmarshals into the full
+	// shape later. We only care about two fields, and tolerating
+	// missing/extra fields keeps us in sync with provider evolution.
+	var probe struct {
+		ProxyEnabled *bool  `json:"proxyEnabled,omitempty"`
+		AuthMode     string `json:"authMode,omitempty"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		// Bad JSON — let the provider produce the precise parser
+		// error. Pre-flight is opportunistic, not a replacement.
+		return "", true
+	}
+	if probe.ProxyEnabled != nil && *probe.ProxyEnabled && probe.AuthMode == "" {
+		return "Backend is running with KUBEBOLT_AGENT_AUTH_MODE=enforced. Enable proxy together with an auth method (ingest-token or tokenreview) — agents that dial without credentials are rejected at the welcome handshake.", false
+	}
+	return "", true
+}
 
 // handleListIntegrations returns every registered integration with
 // its current detected state against the active cluster. Read-only;
@@ -101,6 +142,11 @@ func (h *handlers) handleInstallIntegration(w http.ResponseWriter, r *http.Reque
 		raw = json.RawMessage(body)
 	}
 
+	if msg, ok := h.refuseProxyWithoutAuth(id, raw); !ok {
+		respondError(w, http.StatusBadRequest, msg)
+		return
+	}
+
 	if err := installable.Install(r.Context(), conn.Clientset(), raw); err != nil {
 		var conflict *integrations.ConflictError
 		if errors.As(err, &conflict) {
@@ -166,6 +212,17 @@ func (h *handlers) handleGetIntegrationConfig(w http.ResponseWriter, r *http.Req
 	}
 	// cfg is already JSON — stream it through verbatim.
 	w.Header().Set("Content-Type", "application/json")
+	// Configure-time warning: if the integration being configured is
+	// the agent AND the active cluster reaches its apiserver via
+	// THIS agent's proxy, the rolling restart of the DaemonSet that
+	// happens after Configure will briefly drop our session. Tell
+	// the UI so it can render a banner instead of letting the user
+	// click Save and watch the connection error mid-rollout.
+	if id == "agent" {
+		if proxyID := h.manager.ActiveAgentProxyClusterID(); proxyID != "" {
+			w.Header().Set("X-Self-Targeted-Proxy", proxyID)
+		}
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(cfg)
 }
@@ -197,7 +254,19 @@ func (h *handlers) handlePutIntegrationConfig(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusBadRequest, "read body: "+err.Error())
 		return
 	}
+	if msg, ok := h.refuseProxyWithoutAuth(id, json.RawMessage(body)); !ok {
+		respondError(w, http.StatusBadRequest, msg)
+		return
+	}
 	if err := configurable.Configure(r.Context(), conn.Clientset(), json.RawMessage(body)); err != nil {
+		// Log the full error before mapping to HTTP status — keeps
+		// the wrapped chain visible (errors.As-discriminated 4xx
+		// codes still go to operators, but the underlying cause
+		// stays in the server log for diagnosis).
+		slog.Error("integration Configure failed",
+			slog.String("integration", id),
+			slog.String("error", err.Error()),
+		)
 		var notInstalled *integrations.NotInstalledError
 		var notManaged *integrations.NotManagedError
 		switch {
@@ -243,8 +312,29 @@ func (h *handlers) handleUninstallIntegration(w http.ResponseWriter, r *http.Req
 	// can remove agents installed via helm / kubectl without
 	// exiting the UI. The wizard always surfaces this as an
 	// explicit opt-in — never defaulted.
+	force := r.URL.Query().Get("force") == "true"
+
+	// Self-DoS guard: when the agent integration is being uninstalled
+	// AND the active cluster is reached via THIS agent's proxy, we
+	// would sever the only path to the cluster mid-action. Refuse
+	// with 409 unless the operator has explicitly confirmed.
+	// The UI surfaces this as a typed-name confirmation modal that
+	// flips force=true on submit.
+	if id == "agent" && !force {
+		if proxyID := h.manager.ActiveAgentProxyClusterID(); proxyID != "" {
+			respondJSON(w, http.StatusConflict, map[string]interface{}{
+				"error":              "Refusing to uninstall the agent that backs the active cluster session — this would make the cluster unreachable from KubeBolt.",
+				"selfTargetedProxy":  true,
+				"activeContext":      h.manager.ActiveContext(),
+				"proxyClusterId":     proxyID,
+				"hint":               "Switch to a different cluster context before uninstalling, or pass force=true with a typed-name confirmation if you have an alternate path to this cluster.",
+			})
+			return
+		}
+	}
+
 	opts := integrations.UninstallOptions{
-		Force: r.URL.Query().Get("force") == "true",
+		Force: force,
 	}
 	if err := installable.Uninstall(r.Context(), conn.Clientset(), opts); err != nil {
 		// "Not managed by KubeBolt" is an operator-actionable

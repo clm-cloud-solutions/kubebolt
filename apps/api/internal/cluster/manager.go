@@ -438,6 +438,22 @@ func (m *Manager) ActiveContext() string {
 	return m.activeContext
 }
 
+// ActiveAgentProxyClusterID returns the cluster_id when the active
+// session reaches its apiserver via agent-proxy (i.e. the only path
+// to that cluster is through the connected kubebolt-agent). Empty
+// string when the active session goes via kubeconfig / in-cluster /
+// no active session at all.
+//
+// Used by destructive admin operations (Uninstall agent, force
+// rolling restart) to detect "the action is about to sever the
+// only path to the cluster I'm operating on" and gate behind an
+// explicit force confirmation.
+func (m *Manager) ActiveAgentProxyClusterID() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.agentProxyContexts[m.activeContext]
+}
+
 // Connector returns the active cluster connector.
 func (m *Manager) Connector() *Connector {
 	m.mu.RLock()

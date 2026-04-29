@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -73,6 +74,23 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 	// Configure never moves the workload. If the operator wants a
 	// different namespace they have to uninstall + reinstall.
 	cfg.Namespace = ns
+
+	// Surface what landed on the wire so operators can correlate
+	// a "values didn't persist" report with the actual payload — the
+	// most common culprit historically has been UI-side caching, not
+	// the apply path.
+	slog.Info("agent integration: Configure received",
+		slog.String("namespace", ns),
+		slog.String("backendUrl", cfg.BackendURL),
+		slog.String("clusterName", cfg.ClusterName),
+		slog.String("authMode", cfg.AuthMode),
+		slog.Bool("proxyEnabled", cfg.ProxyEnabled != nil && *cfg.ProxyEnabled),
+		slog.Bool("proxyOperatorRbac", cfg.ProxyOperatorRBAC != nil && *cfg.ProxyOperatorRBAC),
+		slog.Bool("hubbleEnabled", cfg.HubbleEnabled == nil || *cfg.HubbleEnabled),
+		slog.String("imageTag", cfg.ImageTag),
+		slog.String("logLevel", cfg.LogLevel),
+		slog.Int("payloadBytes", len(configJSON)),
+	)
 
 	// Apply the same defaults and validation the Install path uses.
 	if strings.TrimSpace(cfg.BackendURL) == "" {
@@ -186,6 +204,26 @@ func extractConfigFromDaemonSet(ds *appsv1.DaemonSet, ns string) AgentInstallCon
 	if v, ok := env["KUBEBOLT_AGENT_PROXY_ENABLED"]; ok {
 		b := envBoolDefault(map[string]string{"K": v}, "K", false)
 		cfg.ProxyEnabled = &b
+	}
+	// Auth mode + token Secret reconstruction. The mode comes from
+	// the env directly; the Secret name comes from the volume that
+	// backs /var/run/secrets/kubebolt (matching where Install
+	// mounts ingest-token). Missing volume → user installed
+	// without ingest auth (disabled or tokenreview).
+	if v, ok := env["KUBEBOLT_AGENT_AUTH_MODE"]; ok {
+		cfg.AuthMode = v
+	}
+	if cfg.AuthMode == "ingest-token" {
+		for _, vm := range container.VolumeMounts {
+			if vm.MountPath != "/var/run/secrets/kubebolt" {
+				continue
+			}
+			for _, v := range ds.Spec.Template.Spec.Volumes {
+				if v.Name == vm.Name && v.Secret != nil {
+					cfg.AuthTokenSecret = v.Secret.SecretName
+				}
+			}
+		}
 	}
 	// ProxyOperatorRBAC isn't in the DaemonSet — it's a separate
 	// ClusterRole. Detection is best-effort by ClusterRole presence;

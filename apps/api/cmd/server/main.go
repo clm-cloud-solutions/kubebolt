@@ -208,6 +208,11 @@ func main() {
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// Hoisted out of the auth-enabled scope so the API router can see
+	// it for the agent integration's "issue token + create Secret"
+	// flow (router-level handler talks to the same store the agent
+	// gRPC interceptor validates against).
+	var tenantsStore *auth.TenantsStore
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -262,10 +267,11 @@ func main() {
 		// Tenants + ingest tokens (Sprint A). Auto-seeds the "default"
 		// tenant on first boot; the admin REST surface lets operators
 		// create more, issue tokens, and rotate / revoke them.
-		tenantsStore, err := auth.NewTenantsStore(store.DB())
+		ts, err := auth.NewTenantsStore(store.DB())
 		if err != nil {
 			fatal("failed to open tenants store", slog.String("error", err.Error()))
 		}
+		tenantsStore = ts
 
 		// Build the agent authenticator. TokenReview mode is best-effort:
 		// if there is no in-cluster client (KubeBolt running outside K8s,
@@ -356,8 +362,24 @@ func main() {
 	integrationRegistry := integrations.NewRegistry()
 	integrationRegistry.Register(integrations.NewAgent())
 
+	// Resolve the agent auth enforcement that the router will surface
+	// to the UI for "refuse proxy + empty auth on enforced backend"
+	// gating. This mirrors the logic applied to agentAuthCfg.Enforcement
+	// further down: env says X, but if app auth is disabled (no
+	// agentAuthBundle), the agent gRPC server forces "disabled" — the
+	// UI must reflect the EFFECTIVE mode, not the requested one.
+	resolvedEnforcement := string(agent.EnforcementDisabled)
+	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
+		if parsed, ok := agent.ParseEnforcement(v); ok {
+			resolvedEnforcement = string(parsed)
+		}
+	}
+	if agentAuthBundle == nil && resolvedEnforcement != string(agent.EnforcementDisabled) {
+		resolvedEnforcement = string(agent.EnforcementDisabled)
+	}
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

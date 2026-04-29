@@ -16,9 +16,15 @@ import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/typ
 const API_BASE = '/api/v1'
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  // Optional structured payload that callers parse out of 4xx
+  // responses for tailored UX (typed-confirmation modals, conflict
+  // hints, etc.). Backed by the JSON body — `payload?.someKey`
+  // pattern keeps callers tolerant when the server omits fields.
+  public payload?: Record<string, unknown>
+  constructor(public status: number, message: string, payload?: Record<string, unknown>) {
     super(message)
     this.name = 'ApiError'
+    this.payload = payload
   }
 }
 
@@ -40,6 +46,22 @@ export function clearAccessToken() {
 }
 
 // --- Fetch helpers with auth ---
+
+// extractErrorPayload returns both the human message + the parsed
+// JSON body so callers can pull structured fields (selfTargetedProxy,
+// notManaged, etc.) without re-fetching. The response body is
+// consumed once — JSON failure falls back to plain text.
+async function extractErrorPayload(res: Response): Promise<{ message: string; payload?: Record<string, unknown> }> {
+  try {
+    const json = await res.json()
+    return {
+      message: typeof json === 'object' && json && (json.error || json.message) ? String(json.error || json.message) : res.statusText,
+      payload: typeof json === 'object' && json ? (json as Record<string, unknown>) : undefined,
+    }
+  } catch {
+    return { message: await res.text().catch(() => res.statusText) }
+  }
+}
 
 async function extractErrorMessage(res: Response): Promise<string> {
   try {
@@ -120,7 +142,8 @@ function buildQuery(params?: Record<string, string | number | boolean | undefine
 async function deleteRequest<T>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await fetchWithAuth(url, { method: 'DELETE', headers })
   if (!res.ok) {
-    throw new ApiError(res.status, await extractErrorMessage(res))
+    const { message, payload } = await extractErrorPayload(res)
+    throw new ApiError(res.status, message, payload)
   }
   return res.json()
 }
@@ -458,8 +481,79 @@ export const api = {
   getIntegrationConfig: <T = unknown>(id: string) =>
     fetchJSON<T>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`),
 
+  // Same as getIntegrationConfig but returns the response headers
+  // alongside the body — needed to surface the
+  // `X-Self-Targeted-Proxy` warning that the configure dialog uses
+  // to render its banner. Separate function so the common path
+  // stays narrow.
+  getIntegrationConfigWithHeaders: async <T = unknown>(id: string): Promise<{ config: T; selfTargetedProxyClusterId?: string }> => {
+    const res = await fetchWithAuth(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`)
+    if (!res.ok) {
+      const { message, payload } = await extractErrorPayload(res)
+      throw new ApiError(res.status, message, payload)
+    }
+    const config = (await res.json()) as T
+    return {
+      config,
+      selfTargetedProxyClusterId: res.headers.get('X-Self-Targeted-Proxy') || undefined,
+    }
+  },
+
   configureIntegration: <T = unknown>(id: string, config: T) =>
     putJSON<Integration>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`, config),
+
+  // Agent-specific helpers. The dialog calls these to (1) gate Save
+  // when proxy is enabled but auth would mismatch the backend's
+  // enforced mode, and (2) generate an ingest token + materialize a
+  // K8s Secret in one click — eliminating the manual `kubectl create
+  // secret` step that was the dominant install friction point.
+  getAgentAuthInfo: () =>
+    fetchJSON<AgentAuthInfo>(`${API_BASE}/integrations/agent/auth-info`),
+
+  // Issues a token AND materializes a K8s Secret in one round-trip.
+  // Distinct from the existing `issueAgentToken` (which only issues
+  // and returns plaintext for the operator to copy/paste) — this
+  // wires the result straight into the cluster, leaving nothing
+  // for the operator to manage manually.
+  issueAgentTokenAndMaterializeSecret: (body: AgentIssueTokenRequest) =>
+    postJSON<AgentIssueTokenResponse>(`${API_BASE}/integrations/agent/issue-token`, body),
+}
+
+// Backend agent auth posture. The UI uses `enforcement` to decide
+// whether the dialog can save with authMode="" — when enforced, the
+// Save button is disabled with a tooltip until the operator picks
+// ingest-token (or tokenreview, if the backend is in-cluster).
+// `tenants` populates the dropdown for the Generate Token flow.
+export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'
+
+export interface AgentAuthInfo {
+  enforcement: AgentAuthEnforcement
+  tenants: AgentTenantBrief[]
+}
+
+export interface AgentTenantBrief {
+  id: string
+  name: string
+  disabled: boolean
+}
+
+export interface AgentIssueTokenRequest {
+  tenantId: string
+  label?: string
+  namespace?: string
+  secretName?: string
+  ttlSeconds?: number
+}
+
+// Note: the backend deliberately omits the plaintext token — it
+// lives only in the cluster Secret. The dialog uses `secretName` to
+// pre-fill AgentInstallConfig.authTokenSecret.
+export interface AgentIssueTokenResponse {
+  secretName: string
+  namespace: string
+  tokenPrefix: string
+  tokenLabel: string
+  tenantId: string
 }
 
 // ─── Integration types ───
@@ -530,6 +624,15 @@ export interface AgentInstallConfig {
   // ServiceAccount — opt-in deliberately. Ignored when proxyEnabled
   // is not set.
   proxyOperatorRbac?: boolean
+
+  // Auth wiring against the backend's gRPC channel. Empty → no
+  // auth headers (only valid when backend runs auth-disabled).
+  // "ingest-token" → backend admin issues a long-lived token from
+  // the Agent Tokens page; user creates a Secret in the agent's
+  // namespace; this field names that Secret. "tokenreview" not
+  // wizard-supported yet (in-cluster scenarios use Helm directly).
+  authMode?: '' | 'ingest-token' | 'tokenreview'
+  authTokenSecret?: string
 
   imageRepo?: string
   imageTag?: string

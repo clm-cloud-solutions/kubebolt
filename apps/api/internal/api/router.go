@@ -31,6 +31,8 @@ func NewRouter(
 	tenantHandlers *auth.TenantHandlers,
 	notifManager *notifications.Manager,
 	integrationRegistry *integrations.Registry,
+	agentAuthEnforcement string,
+	tenantsStore *auth.TenantsStore,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -41,14 +43,16 @@ func NewRouter(
 	r.Use(CORSMiddleware(corsOrigins))
 
 	h := &handlers{
-		manager:       manager,
-		wsHub:         wsHub,
-		pfManager:     NewPortForwardManager(),
-		copilotConfig: copilotCfg,
-		copilotUsage:  copilotUsage,
-		authHandlers:  authHandlers,
-		notifications: notifManager,
-		integrations:  integrationRegistry,
+		manager:              manager,
+		wsHub:                wsHub,
+		pfManager:            NewPortForwardManager(),
+		copilotConfig:        copilotCfg,
+		copilotUsage:         copilotUsage,
+		authHandlers:         authHandlers,
+		notifications:        notifManager,
+		integrations:         integrationRegistry,
+		agentAuthEnforcement: agentAuthEnforcement,
+		tenantsStore:         tenantsStore,
 	}
 
 	// Health check endpoint
@@ -177,6 +181,14 @@ func NewRouter(
 					r.Get("/integrations/{id}/config", h.handleGetIntegrationConfig)
 					r.Put("/integrations/{id}/config", h.handlePutIntegrationConfig)
 					r.Delete("/integrations/{id}", h.handleUninstallIntegration)
+					// Agent-specific helpers — surface backend auth
+					// posture and let the dialog issue an ingest token
+					// + materialize the Secret in one click. Hard-coded
+					// to /integrations/agent/* (not parameterized) so
+					// other integrations don't accidentally inherit
+					// the tenants-store-backed flow.
+					r.Get("/integrations/agent/auth-info", h.handleAgentAuthInfo)
+					r.Post("/integrations/agent/issue-token", h.handleAgentIssueToken)
 				})
 
 				// Copilot chat — any role can ask questions
