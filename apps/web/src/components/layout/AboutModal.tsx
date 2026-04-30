@@ -76,7 +76,7 @@ export function AboutModal({ onClose }: Props) {
           />
           <div className="flex items-start justify-between gap-3 text-[11px]">
             <span className="text-kb-text-tertiary font-mono uppercase tracking-[0.08em]">License</span>
-            <span className="text-kb-text-primary">MIT</span>
+            <span className="text-kb-text-primary">Apache 2.0</span>
           </div>
         </div>
 

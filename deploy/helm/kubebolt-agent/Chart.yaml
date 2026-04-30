@@ -21,7 +21,7 @@ keywords:
   - hubble
   - kubebolt
 annotations:
-  artifacthub.io/license: MIT
+  artifacthub.io/license: Apache-2.0
   artifacthub.io/links: |
     - name: GitHub
       url: https://github.com/clm-cloud-solutions/kubebolt

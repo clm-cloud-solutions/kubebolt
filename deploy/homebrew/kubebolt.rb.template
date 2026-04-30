@@ -20,7 +20,7 @@ class Kubebolt < Formula
   desc "Instant Kubernetes monitoring and management — full cluster visibility in under 2 minutes"
   homepage "https://github.com/clm-cloud-solutions/kubebolt"
   version "__VERSION__"
-  license "MIT"
+  license "Apache-2.0"
 
   on_macos do
     on_arm do
