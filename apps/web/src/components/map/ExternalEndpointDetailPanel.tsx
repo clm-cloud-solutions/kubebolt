@@ -218,7 +218,7 @@ export function ExternalEndpointDetailPanel({
         </div>
 
         <div className="pt-2 border-t border-kb-border/60">
-          <AskCopilotButton payload={copilotPayload} variant="text" label="Ask Copilot about this endpoint" />
+          <AskCopilotButton payload={copilotPayload} variant="text" label="Ask Kobi about this endpoint" />
         </div>
 
         <div className="text-[10px] text-kb-text-tertiary italic pt-2 border-t border-kb-border/60">

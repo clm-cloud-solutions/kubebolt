@@ -1778,7 +1778,7 @@ function ClusterMapInner() {
             <AskCopilotButton
               payload={buildFlowEdgePayload(hoveredEdge, hoveredTooltip)}
               variant="text"
-              label="Ask Copilot"
+              label="Ask Kobi"
               onAfterSend={() => setHoveredEdge(null)}
             />
           </div>
