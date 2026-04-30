@@ -24,6 +24,11 @@
   --kb-bar-track: rgba(0, 0, 0, 0.1);
   --kb-accent: #16a34a;
   --kb-accent-light: #dcf5e7;
+  /* Kobi Sigil state colors — same in light and dark, the brand
+     reads against either surface. */
+  --kb-kobi-watching: #34d399;
+  --kb-kobi-investigating: #fbbf24;
+  --kb-kobi-awaiting: #38bdf8;
   /* YAML syntax highlighting (code block always has dark bg) */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;
@@ -49,6 +54,10 @@
   --kb-bar-track: rgba(255, 255, 255, 0.06);
   --kb-accent: #1DBD7D;
   --kb-accent-light: rgba(29, 189, 125, 0.12);
+  /* Kobi Sigil state colors */
+  --kb-kobi-watching: #34d399;
+  --kb-kobi-investigating: #fbbf24;
+  --kb-kobi-awaiting: #38bdf8;
   /* YAML syntax highlighting */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;

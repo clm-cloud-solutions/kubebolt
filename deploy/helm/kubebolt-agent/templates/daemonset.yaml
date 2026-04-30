@@ -89,6 +89,22 @@ spec:
             {{- end }}
             - name: KUBEBOLT_HUBBLE_ENABLED
               value: {{ .Values.hubble.enabled | quote }}
+            {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
+            {{- /* Auto-derive proxy enable from rbac.mode unless an
+                   explicit override was given. proxy is the path the
+                   backend uses to reach the apiserver via the agent —
+                   reader/operator REQUIRE it; metrics doesn't use it. */ -}}
+            {{- $mode := default "reader" .Values.rbac.mode -}}
+            {{- $proxyAuto := or (eq $mode "reader") (eq $mode "operator") -}}
+            {{- $proxyEnabled := $proxyAuto -}}
+            {{- if hasKey .Values.proxy "enabled" -}}
+              {{- $proxyEnabled = .Values.proxy.enabled -}}
+              {{- if and (not $proxyEnabled) (or (eq $mode "reader") (eq $mode "operator")) -}}
+                {{- fail (printf "rbac.mode=%s requires proxy.enabled=true (proxy is the only path to apiserver via the agent)" $mode) -}}
+              {{- end -}}
+            {{- end }}
+            - name: KUBEBOLT_AGENT_PROXY_ENABLED
+              value: {{ $proxyEnabled | quote }}
             {{- if .Values.hubble.relay.address }}
             - name: KUBEBOLT_HUBBLE_RELAY_ADDR
               value: {{ .Values.hubble.relay.address | quote }}
@@ -107,20 +123,107 @@ spec:
             - name: KUBEBOLT_HUBBLE_RELAY_SERVER_NAME
               value: {{ .Values.hubble.relay.tls.serverName | quote }}
             {{- end }}
+            {{- /* ── Backend auth (Sprint A) ── */ -}}
+            {{- if eq .Values.auth.mode "tokenreview" }}
+            - name: KUBEBOLT_AGENT_AUTH_MODE
+              value: "tokenreview"
+            - name: KUBEBOLT_AGENT_TOKEN_FILE
+              value: /var/run/secrets/kubebolt/token
+            {{- else if eq .Values.auth.mode "ingest-token" }}
+            {{- if not .Values.auth.ingestToken.existingSecret }}
+            {{- fail "auth.mode=ingest-token requires auth.ingestToken.existingSecret" }}
+            {{- end }}
+            - name: KUBEBOLT_AGENT_AUTH_MODE
+              value: "ingest-token"
+            - name: KUBEBOLT_AGENT_TOKEN_FILE
+              value: /var/run/secrets/kubebolt/token
+            {{- end }}
+            {{- /* ── Transport TLS ── */ -}}
+            {{- if .Values.tls.enabled }}
+            - name: KUBEBOLT_AGENT_TLS_ENABLED
+              value: "true"
+            {{- if .Values.tls.serverName }}
+            - name: KUBEBOLT_AGENT_TLS_SERVER_NAME
+              value: {{ .Values.tls.serverName | quote }}
+            {{- end }}
+            {{- if .Values.tls.caSecret }}
+            - name: KUBEBOLT_AGENT_TLS_CA_FILE
+              value: /etc/kubebolt-tls/ca.crt
+            {{- end }}
+            {{- if .Values.tls.clientCertSecret }}
+            - name: KUBEBOLT_AGENT_TLS_CERT_FILE
+              value: /etc/kubebolt-tls/tls.crt
+            - name: KUBEBOLT_AGENT_TLS_KEY_FILE
+              value: /etc/kubebolt-tls/tls.key
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
-          {{- if .Values.hubble.relay.tls.existingSecret }}
           volumeMounts:
+            {{- if .Values.hubble.relay.tls.existingSecret }}
             - name: hubble-tls
               mountPath: /etc/hubble-tls
               readOnly: true
-          {{- end }}
+            {{- end }}
+            {{- if or (eq .Values.auth.mode "tokenreview") (eq .Values.auth.mode "ingest-token") }}
+            - name: kubebolt-token
+              mountPath: /var/run/secrets/kubebolt
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.tls.enabled (or .Values.tls.caSecret .Values.tls.clientCertSecret) }}
+            - name: kubebolt-tls
+              mountPath: /etc/kubebolt-tls
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
-      {{- if .Values.hubble.relay.tls.existingSecret }}
       volumes:
+        {{- if .Values.hubble.relay.tls.existingSecret }}
         - name: hubble-tls
           secret:
             secretName: {{ .Values.hubble.relay.tls.existingSecret }}
-      {{- end }}
+        {{- end }}
+        {{- if eq .Values.auth.mode "tokenreview" }}
+        # Projected SA token. Kubelet mints the token with the audience
+        # the backend expects and rotates well before expiry.
+        - name: kubebolt-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  audience: {{ .Values.auth.tokenReview.audience | quote }}
+                  expirationSeconds: {{ .Values.auth.tokenReview.expirationSeconds }}
+                  path: token
+        {{- else if eq .Values.auth.mode "ingest-token" }}
+        # Long-lived bearer token from a Secret the operator owns. The
+        # chart never sees the plaintext.
+        - name: kubebolt-token
+          secret:
+            secretName: {{ .Values.auth.ingestToken.existingSecret | quote }}
+            items:
+              - key: {{ .Values.auth.ingestToken.key | quote }}
+                path: token
+        {{- end }}
+        {{- if and .Values.tls.enabled (or .Values.tls.caSecret .Values.tls.clientCertSecret) }}
+        # CA + optional client cert. Same Secret can carry both, or
+        # split across two Secrets via projected sources if needed.
+        - name: kubebolt-tls
+          projected:
+            sources:
+              {{- if .Values.tls.caSecret }}
+              - secret:
+                  name: {{ .Values.tls.caSecret | quote }}
+                  items:
+                    - key: {{ .Values.tls.caKey | quote }}
+                      path: ca.crt
+              {{- end }}
+              {{- if .Values.tls.clientCertSecret }}
+              - secret:
+                  name: {{ .Values.tls.clientCertSecret | quote }}
+                  items:
+                    - key: {{ .Values.tls.clientCertKey | quote }}
+                      path: tls.crt
+                    - key: {{ .Values.tls.clientKeyKey | quote }}
+                      path: tls.key
+              {{- end }}
+        {{- end }}

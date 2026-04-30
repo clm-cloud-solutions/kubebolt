@@ -36,7 +36,7 @@ func TestAgentInstall_FreshCluster(t *testing.T) {
 		t.Error("serviceaccount missing managed-by label")
 	}
 
-	cr, _ := cs.RbacV1().ClusterRoles().Get(context.Background(), agentClusterRole, metav1.GetOptions{})
+	cr, _ := cs.RbacV1().ClusterRoles().Get(context.Background(), agentMetricsClusterRole, metav1.GetOptions{})
 	if !managedByUs(cr.Labels) {
 		t.Error("clusterrole missing managed-by label")
 	}
@@ -44,9 +44,9 @@ func TestAgentInstall_FreshCluster(t *testing.T) {
 		t.Errorf("expected >=3 rules on ClusterRole, got %d", len(cr.Rules))
 	}
 
-	crb, _ := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), agentClusterBinding, metav1.GetOptions{})
-	if crb.RoleRef.Name != agentClusterRole {
-		t.Errorf("binding references %q, want %q", crb.RoleRef.Name, agentClusterRole)
+	crb, _ := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), agentMetricsClusterBinding, metav1.GetOptions{})
+	if crb.RoleRef.Name != agentMetricsClusterRole {
+		t.Errorf("binding references %q, want %q", crb.RoleRef.Name, agentMetricsClusterRole)
 	}
 
 	role, _ := cs.RbacV1().Roles(agentNamespace).Get(context.Background(), agentLeaderRole, metav1.GetOptions{})
@@ -172,10 +172,10 @@ func TestAgentUninstall_RemovesOwnResources(t *testing.T) {
 	if _, err := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{}); err == nil {
 		t.Error("DaemonSet still present after uninstall")
 	}
-	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), agentClusterRole, metav1.GetOptions{}); err == nil {
+	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), agentMetricsClusterRole, metav1.GetOptions{}); err == nil {
 		t.Error("ClusterRole still present after uninstall")
 	}
-	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), agentClusterBinding, metav1.GetOptions{}); err == nil {
+	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), agentMetricsClusterBinding, metav1.GetOptions{}); err == nil {
 		t.Error("ClusterRoleBinding still present after uninstall")
 	}
 	if _, err := cs.CoreV1().Namespaces().Get(context.Background(), agentNamespace, metav1.GetOptions{}); err != nil {
@@ -200,7 +200,7 @@ func TestAgentUninstall_LeavesExternalInstallAlone(t *testing.T) {
 		},
 		&rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{
-				Name: agentClusterRole,
+				Name: agentMetricsClusterRole,
 				Labels: map[string]string{"app.kubernetes.io/managed-by": "Helm"},
 			},
 		},
@@ -216,7 +216,7 @@ func TestAgentUninstall_LeavesExternalInstallAlone(t *testing.T) {
 	if _, err := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{}); err != nil {
 		t.Error("external DaemonSet was deleted — should have been preserved")
 	}
-	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), agentClusterRole, metav1.GetOptions{}); err != nil {
+	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), agentMetricsClusterRole, metav1.GetOptions{}); err != nil {
 		t.Error("external ClusterRole was deleted — should have been preserved")
 	}
 }
@@ -248,10 +248,10 @@ func TestAgentUninstall_ForceRemovesExternalInstall(t *testing.T) {
 			},
 		},
 		&rbacv1.ClusterRole{
-			ObjectMeta: metav1.ObjectMeta{Name: agentClusterRole, Labels: helmLabels},
+			ObjectMeta: metav1.ObjectMeta{Name: agentMetricsClusterRole, Labels: helmLabels},
 		},
 		&rbacv1.ClusterRoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: agentClusterBinding, Labels: helmLabels},
+			ObjectMeta: metav1.ObjectMeta{Name: agentMetricsClusterBinding, Labels: helmLabels},
 		},
 	)
 
@@ -263,10 +263,10 @@ func TestAgentUninstall_ForceRemovesExternalInstall(t *testing.T) {
 	if _, err := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{}); err == nil {
 		t.Error("DaemonSet still present after force uninstall")
 	}
-	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), agentClusterRole, metav1.GetOptions{}); err == nil {
+	if _, err := cs.RbacV1().ClusterRoles().Get(context.Background(), agentMetricsClusterRole, metav1.GetOptions{}); err == nil {
 		t.Error("ClusterRole still present after force uninstall")
 	}
-	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), agentClusterBinding, metav1.GetOptions{}); err == nil {
+	if _, err := cs.RbacV1().ClusterRoleBindings().Get(context.Background(), agentMetricsClusterBinding, metav1.GetOptions{}); err == nil {
 		t.Error("ClusterRoleBinding still present after force uninstall")
 	}
 }

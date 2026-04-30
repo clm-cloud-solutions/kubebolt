@@ -16,9 +16,15 @@ import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/typ
 const API_BASE = '/api/v1'
 
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  // Optional structured payload that callers parse out of 4xx
+  // responses for tailored UX (typed-confirmation modals, conflict
+  // hints, etc.). Backed by the JSON body — `payload?.someKey`
+  // pattern keeps callers tolerant when the server omits fields.
+  public payload?: Record<string, unknown>
+  constructor(public status: number, message: string, payload?: Record<string, unknown>) {
     super(message)
     this.name = 'ApiError'
+    this.payload = payload
   }
 }
 
@@ -40,6 +46,22 @@ export function clearAccessToken() {
 }
 
 // --- Fetch helpers with auth ---
+
+// extractErrorPayload returns both the human message + the parsed
+// JSON body so callers can pull structured fields (selfTargetedProxy,
+// notManaged, etc.) without re-fetching. The response body is
+// consumed once — JSON failure falls back to plain text.
+async function extractErrorPayload(res: Response): Promise<{ message: string; payload?: Record<string, unknown> }> {
+  try {
+    const json = await res.json()
+    return {
+      message: typeof json === 'object' && json && (json.error || json.message) ? String(json.error || json.message) : res.statusText,
+      payload: typeof json === 'object' && json ? (json as Record<string, unknown>) : undefined,
+    }
+  } catch {
+    return { message: await res.text().catch(() => res.statusText) }
+  }
+}
 
 async function extractErrorMessage(res: Response): Promise<string> {
   try {
@@ -120,7 +142,8 @@ function buildQuery(params?: Record<string, string | number | boolean | undefine
 async function deleteRequest<T>(url: string, headers?: Record<string, string>): Promise<T> {
   const res = await fetchWithAuth(url, { method: 'DELETE', headers })
   if (!res.ok) {
-    throw new ApiError(res.status, await extractErrorMessage(res))
+    const { message, payload } = await extractErrorPayload(res)
+    throw new ApiError(res.status, message, payload)
   }
   return res.json()
 }
@@ -180,6 +203,37 @@ export const api = {
 
   deleteUser: (id: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/users/${id}`),
+
+  // --- Agent ingest tokens (admin) ---
+  //
+  // The OSS UI operates on the auto-seeded "default" tenant only.
+  // Multi-tenant management UI is ENTERPRISE-CANDIDATE — the backend
+  // exposes everything (see auth/tenant_handlers.go) but the OSS
+  // frontend deliberately surfaces only the default tenant.
+  listTenants: () => fetchJSON<Tenant[]>(`${API_BASE}/admin/tenants`),
+
+  getTenant: (id: string) =>
+    fetchJSON<TenantWithTokens>(`${API_BASE}/admin/tenants/${id}`),
+
+  listAgentTokens: (tenantID: string) =>
+    fetchJSON<IngestToken[]>(`${API_BASE}/admin/tenants/${tenantID}/tokens`),
+
+  issueAgentToken: (tenantID: string, label: string, ttlSeconds?: number) =>
+    postJSON<IssuedToken>(`${API_BASE}/admin/tenants/${tenantID}/tokens`, {
+      label,
+      ttlSeconds: ttlSeconds ?? 0,
+    }),
+
+  rotateAgentToken: (tenantID: string, tokenID: string) =>
+    postJSON<IssuedToken>(
+      `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}/rotate`,
+      {},
+    ),
+
+  revokeAgentToken: (tenantID: string, tokenID: string) =>
+    deleteRequest<{ status: string }>(
+      `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}`,
+    ),
 
   // --- Cluster management ---
   listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
@@ -427,8 +481,79 @@ export const api = {
   getIntegrationConfig: <T = unknown>(id: string) =>
     fetchJSON<T>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`),
 
+  // Same as getIntegrationConfig but returns the response headers
+  // alongside the body — needed to surface the
+  // `X-Self-Targeted-Proxy` warning that the configure dialog uses
+  // to render its banner. Separate function so the common path
+  // stays narrow.
+  getIntegrationConfigWithHeaders: async <T = unknown>(id: string): Promise<{ config: T; selfTargetedProxyClusterId?: string }> => {
+    const res = await fetchWithAuth(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`)
+    if (!res.ok) {
+      const { message, payload } = await extractErrorPayload(res)
+      throw new ApiError(res.status, message, payload)
+    }
+    const config = (await res.json()) as T
+    return {
+      config,
+      selfTargetedProxyClusterId: res.headers.get('X-Self-Targeted-Proxy') || undefined,
+    }
+  },
+
   configureIntegration: <T = unknown>(id: string, config: T) =>
     putJSON<Integration>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`, config),
+
+  // Agent-specific helpers. The dialog calls these to (1) gate Save
+  // when proxy is enabled but auth would mismatch the backend's
+  // enforced mode, and (2) generate an ingest token + materialize a
+  // K8s Secret in one click — eliminating the manual `kubectl create
+  // secret` step that was the dominant install friction point.
+  getAgentAuthInfo: () =>
+    fetchJSON<AgentAuthInfo>(`${API_BASE}/integrations/agent/auth-info`),
+
+  // Issues a token AND materializes a K8s Secret in one round-trip.
+  // Distinct from the existing `issueAgentToken` (which only issues
+  // and returns plaintext for the operator to copy/paste) — this
+  // wires the result straight into the cluster, leaving nothing
+  // for the operator to manage manually.
+  issueAgentTokenAndMaterializeSecret: (body: AgentIssueTokenRequest) =>
+    postJSON<AgentIssueTokenResponse>(`${API_BASE}/integrations/agent/issue-token`, body),
+}
+
+// Backend agent auth posture. The UI uses `enforcement` to decide
+// whether the dialog can save with authMode="" — when enforced, the
+// Save button is disabled with a tooltip until the operator picks
+// ingest-token (or tokenreview, if the backend is in-cluster).
+// `tenants` populates the dropdown for the Generate Token flow.
+export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'
+
+export interface AgentAuthInfo {
+  enforcement: AgentAuthEnforcement
+  tenants: AgentTenantBrief[]
+}
+
+export interface AgentTenantBrief {
+  id: string
+  name: string
+  disabled: boolean
+}
+
+export interface AgentIssueTokenRequest {
+  tenantId: string
+  label?: string
+  namespace?: string
+  secretName?: string
+  ttlSeconds?: number
+}
+
+// Note: the backend deliberately omits the plaintext token — it
+// lives only in the cluster Secret. The dialog uses `secretName` to
+// pre-fill AgentInstallConfig.authTokenSecret.
+export interface AgentIssueTokenResponse {
+  secretName: string
+  namespace: string
+  tokenPrefix: string
+  tokenLabel: string
+  tenantId: string
 }
 
 // ─── Integration types ───
@@ -451,6 +576,11 @@ export interface IntegrationFeatureFlag {
   label: string
   description?: string
   enabled: boolean
+  // Optional non-boolean state (e.g. the agent's "Permission tier"
+  // surfaces "Cluster-wide read" / "Operator" / "Metrics only"
+  // here). When present, the panel renders it instead of the
+  // on/off pill.
+  value?: string
   requires?: string[]
 }
 
@@ -481,6 +611,43 @@ export interface AgentInstallConfig {
   backendUrl: string
   clusterName?: string
   hubbleEnabled?: boolean
+
+  // RBACMode picks the agent SA's permission tier. Maps 1:1 to
+  // helm chart values.rbac.mode and to the OSS manifests
+  // deploy/agent/kubebolt-agent-{metrics,reader,operator}.yaml.
+  //
+  //   metrics  — narrow (kubelet stats + pods + namespaces). Proxy
+  //              stays OFF; only metrics + Hubble flows ship.
+  //   reader   — cluster-wide get/list/watch on `*/*`. Proxy ON
+  //              (mandatory). Mutations come back 403.
+  //   operator — wildcard read+write on `*/*`. Proxy ON (mandatory).
+  //              Auth REQUIRED (cluster-admin scoped to SA token).
+  //
+  // Default in the wizard is "reader" — the typical install for the
+  // SaaS-style topology where the backend reaches the cluster via
+  // the agent's outbound channel.
+  rbacMode?: 'metrics' | 'reader' | 'operator'
+
+  // K8s API proxy explicit override. The backend auto-derives this
+  // from rbacMode (off for metrics, on for reader/operator), so
+  // most callers leave it unset. Setting it to false while
+  // rbacMode is reader/operator is rejected — those modes only make
+  // sense with the proxy on.
+  proxyEnabled?: boolean
+
+  // Deprecated: superseded by rbacMode. Kept for wire-compat with
+  // older clients; backend folds it into rbacMode=operator when
+  // rbacMode is empty.
+  proxyOperatorRbac?: boolean
+
+  // Auth wiring against the backend's gRPC channel. Empty → no
+  // auth headers (only valid when backend runs auth-disabled).
+  // "ingest-token" → backend admin issues a long-lived token from
+  // the Agent Tokens page; user creates a Secret in the agent's
+  // namespace; this field names that Secret. "tokenreview" not
+  // wizard-supported yet (in-cluster scenarios use Helm directly).
+  authMode?: '' | 'ingest-token' | 'tokenreview'
+  authTokenSecret?: string
 
   imageRepo?: string
   imageTag?: string
@@ -540,6 +707,43 @@ export interface FlowEdgesResponse {
   edges: FlowEdge[]
   windowMinutes: number
   source: string
+}
+
+// --- Agent ingest tokens ---
+//
+// The backend redacts plaintext + hashes from list/get responses.
+// Plaintext appears ONLY in IssuedToken.token, returned by issue and
+// rotate. The UI must surface it once and never persist it client-side.
+export interface Tenant {
+  id: string
+  name: string
+  plan: string
+  disabled: boolean
+  createdAt: string
+  updatedAt: string
+  tokenCount: number
+  activeTokenCount: number
+}
+
+export interface IngestToken {
+  id: string
+  prefix: string // first 8 chars after "kb_" — safe to display
+  label: string
+  createdAt: string
+  createdBy: string
+  lastUsedAt?: string
+  expiresAt?: string
+  revokedAt?: string
+  active: boolean
+}
+
+export interface TenantWithTokens extends Tenant {
+  ingestTokens: IngestToken[]
+}
+
+export interface IssuedToken {
+  token: string // plaintext — shown once
+  info: IngestToken
 }
 
 // Prometheus-compatible range query response (from VictoriaMetrics).

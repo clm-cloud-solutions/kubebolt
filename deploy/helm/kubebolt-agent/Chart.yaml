@@ -1,9 +1,9 @@
 apiVersion: v2
 name: kubebolt-agent
-description: KubeBolt node agent — kubelet stats, cAdvisor, and Cilium Hubble flow collection
+description: KubeBolt node agent — kubelet stats, Hubble flows, and SPDY-tunneled K8s API proxy with 3-tier RBAC
 type: application
-version: 0.1.0
-appVersion: "0.1.0"
+version: 0.2.0
+appVersion: "0.2.0"
 home: https://github.com/clm-cloud-solutions/kubebolt
 icon: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png
 sources:

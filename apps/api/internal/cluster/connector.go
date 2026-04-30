@@ -123,6 +123,20 @@ func NewConnector(kubeconfigPath string, wsHub *websocket.Hub) (*Connector, erro
 	return newConnectorFromConfig(restConfig, clusterName, wsHub)
 }
 
+// NewConnectorFromAccess builds a Connector from a ClusterAccess —
+// the mode-aware entry point the cluster.Manager uses for both local
+// kubeconfig contexts and agent-proxy clusters. The resulting
+// *rest.Config carries either the stock HTTPS Transport (local) or
+// our channel.AgentProxyTransport (agent-proxy); newConnectorFromConfig
+// is oblivious to the difference.
+func NewConnectorFromAccess(access *ClusterAccess, wsHub *websocket.Hub) (*Connector, error) {
+	cfg, err := access.RestConfig()
+	if err != nil {
+		return nil, err
+	}
+	return newConnectorFromConfig(cfg, access.Name(), wsHub)
+}
+
 // newConnectorFromConfig creates a connector from an existing rest.Config.
 func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *websocket.Hub) (*Connector, error) {
 	// Bound individual K8s API calls so the server doesn't hang if a cluster

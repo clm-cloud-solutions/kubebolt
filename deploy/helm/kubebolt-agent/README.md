@@ -48,6 +48,47 @@ Replace `backendUrl` with wherever your KubeBolt backend's gRPC port
 (`:9090`) is reachable from inside the cluster. See the "Connecting
 to the backend" section below for concrete examples.
 
+## Permission tier — `rbac.mode`
+
+The chart applies a 3-tier permission model. Pick the one that
+matches what you want the dashboard to be able to do in this
+cluster:
+
+| `rbac.mode` | What the agent SA can do | Proxy | Auth | When to pick |
+|---|---|---|---|---|
+| `metrics` | Kubelet stats + pods list/watch + namespaces get | OFF | optional | Privacy-conscious. Only kubelet metrics + Hubble flows leave the cluster. The dashboard shows historical CPU / memory / flows but no inventory through this agent. |
+| `reader` (default) | Cluster-wide `get`/`list`/`watch` on `*/*` | ON (mandatory) | optional but recommended | "I want to see everything but not change it." Backend renders inventory + YAML + describe + logs through the agent's tunnel. Write attempts come back 403. |
+| `operator` | Wildcard `get/list/watch/create/update/patch/delete` on `*/*` | ON (mandatory) | **REQUIRED** | Full UI parity through the agent — exec, scale, restart, delete, YAML edit. Effectively cluster-admin scoped to the SA; auth on the gRPC channel is the only thing keeping random network probers from pivoting to admin. |
+
+**Pre-0.2.0 readers**: this replaces the binary
+`proxy.enabled` + (apply-out-of-band) operator-tier ClusterRole
+overlay. Wire-compat is preserved on the backend's install
+endpoint, but the chart only speaks `rbac.mode` — pick one of the
+three values.
+
+## Auth (`auth.mode`)
+
+Independent toggle from `rbac.mode`. Three values:
+
+- `disabled` (default for self-hosted lab): no credentials. The
+  agent dials in plaintext + no token. Only valid against a backend
+  that runs in `KUBEBOLT_AGENT_AUTH_MODE=disabled`.
+- `ingest-token`: long-lived bearer token. The operator generates
+  it via the KubeBolt backend's admin UI ("Agent Tokens") or
+  REST (`POST /admin/tenants/{id}/tokens`), then either:
+   - creates the Secret manually
+     (`kubectl create secret generic kubebolt-agent-token -n
+     kubebolt-system --from-literal=token=<paste>`), OR
+   - uses the dashboard's
+     "Generate token + create Secret" button which does both in one
+     request and pre-fills the chart's `auth.ingestToken
+     .existingSecret` for you.
+- `tokenreview`: projected ServiceAccount token validated by the
+  backend via `apiserver TokenReview`. Requires the backend in
+  the same cluster as the agent. Set
+  `auth.tokenReview.audience=kubebolt-backend` (matches the
+  backend's expected audience).
+
 ## Upgrade
 
 ```bash

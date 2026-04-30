@@ -72,6 +72,8 @@ func (c *Connector) ComputeDeleteBlastRadius(resourceType, namespace, name strin
 		return c.podBlastRadius(namespace, name)
 	case "ingresses":
 		return c.ingressBlastRadius(namespace, name)
+	case "hpas", "horizontalpodautoscalers":
+		return c.hpaBlastRadius(namespace, name)
 	}
 	return BlastRadius{Notes: []string{fmt.Sprintf("blast radius computation not implemented for %s", resourceType)}}
 }
@@ -344,6 +346,34 @@ func (c *Connector) servicesMatchingLabels(ns string, podLabels labels.Set) []st
 		}
 	}
 	return out
+}
+
+// ─── HPA ────────────────────────────────────────────────────────────
+
+// hpaBlastRadius reports the consequences of deleting an HPA. The
+// underlying workload keeps running unchanged — only the autoscaling
+// is removed. The note reproduces the target reference + current
+// replica count so the user can verify they are about to freeze the
+// scale, not break the workload.
+func (c *Connector) hpaBlastRadius(ns, name string) BlastRadius {
+	br := BlastRadius{}
+	if c.hpaLister == nil {
+		return br
+	}
+	hpa, err := c.hpaLister.HorizontalPodAutoscalers(ns).Get(name)
+	if err != nil {
+		return BlastRadius{Notes: []string{"target HPA not found in informer cache"}}
+	}
+	ref := hpa.Spec.ScaleTargetRef
+	min := int32(1)
+	if hpa.Spec.MinReplicas != nil {
+		min = *hpa.Spec.MinReplicas
+	}
+	br.Notes = append(br.Notes, fmt.Sprintf(
+		"Autoscaling target: %s/%s (range %d–%d, currently %d replicas). After delete the target keeps running at the current replica count and is no longer auto-adjusted.",
+		ref.Kind, ref.Name, min, hpa.Spec.MaxReplicas, hpa.Status.CurrentReplicas,
+	))
+	return br
 }
 
 // hpasTargeting returns names of HPAs whose scaleTargetRef matches.

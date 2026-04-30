@@ -13,10 +13,12 @@ import (
 	"os/exec"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
@@ -203,7 +205,14 @@ func main() {
 	authCfg := config.LoadAuthConfig()
 
 	var authHandlers *auth.Handlers
+	var tenantHandlers *auth.TenantHandlers
+	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// Hoisted out of the auth-enabled scope so the API router can see
+	// it for the agent integration's "issue token + create Secret"
+	// flow (router-level handler talks to the same store the agent
+	// gRPC interceptor validates against).
+	var tenantsStore *auth.TenantsStore
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -254,6 +263,35 @@ func main() {
 		// Attach the copilot usage store so admin analytics survive restarts.
 		// Shares the same BoltDB file; bucket created by auth.NewStore.
 		copilotUsage = copilot.NewUsageStore(store.DB(), auth.CopilotSessionsBucket())
+
+		// Tenants + ingest tokens (Sprint A). Auto-seeds the "default"
+		// tenant on first boot; the admin REST surface lets operators
+		// create more, issue tokens, and rotate / revoke them.
+		ts, err := auth.NewTenantsStore(store.DB())
+		if err != nil {
+			fatal("failed to open tenants store", slog.String("error", err.Error()))
+		}
+		tenantsStore = ts
+
+		// Build the agent authenticator. TokenReview mode is best-effort:
+		// if there is no in-cluster client (KubeBolt running outside K8s,
+		// e.g. via `go run`) the bundle still includes BearerIngestAuth
+		// for SaaS / cross-cluster ingest tokens.
+		factoryOpts := agent.LoadAuthenticatorOptionsFromEnv()
+		factoryOpts.TenantsStore = tenantsStore
+		if c, err := agent.NewInClusterKubeClient(); err == nil {
+			factoryOpts.KubeClient = c
+		} else {
+			slog.Info("agent auth: in-cluster client unavailable; TokenReview mode skipped",
+				slog.String("error", err.Error()),
+			)
+		}
+		bundle, err := agent.BuildAuthenticator(context.Background(), factoryOpts)
+		if err != nil {
+			fatal("agent auth bundle", slog.String("error", err.Error()))
+		}
+		agentAuthBundle = bundle
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, bundle.AsCacheInvalidators()...)
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
@@ -324,8 +362,24 @@ func main() {
 	integrationRegistry := integrations.NewRegistry()
 	integrationRegistry.Register(integrations.NewAgent())
 
+	// Resolve the agent auth enforcement that the router will surface
+	// to the UI for "refuse proxy + empty auth on enforced backend"
+	// gating. This mirrors the logic applied to agentAuthCfg.Enforcement
+	// further down: env says X, but if app auth is disabled (no
+	// agentAuthBundle), the agent gRPC server forces "disabled" — the
+	// UI must reflect the EFFECTIVE mode, not the requested one.
+	resolvedEnforcement := string(agent.EnforcementDisabled)
+	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
+		if parsed, ok := agent.ParseEnforcement(v); ok {
+			resolvedEnforcement = string(parsed)
+		}
+	}
+	if agentAuthBundle == nil && resolvedEnforcement != string(agent.EnforcementDisabled) {
+		resolvedEnforcement = string(agent.EnforcementDisabled)
+	}
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, notifManager, integrationRegistry)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
@@ -371,10 +425,90 @@ func main() {
 	}
 
 	writer := agent.NewVMWriter(vmURL)
-	ingestSrv := agent.NewServer(writer)
+	// AgentRegistry indexes connected agents by (cluster_id, agent_id).
+	// The AgentProxyTransport (Sprint A.5 commit 5) consumes it via the
+	// cluster.Manager; admin handlers will too (commit 8). The manager
+	// also gets a reference so AddAgentProxyCluster can later resolve
+	// reachability via the live registry.
+	agentRegistry := channel.NewAgentRegistry()
+	manager.SetAgentRegistry(agentRegistry)
+
+	// Auto-register agent-proxy clusters: when an agent advertises the
+	// kube-proxy capability AND this flag is on, its cluster shows up
+	// in ListClusters automatically. Off by default — single-cluster
+	// self-hosted setups don't need it, and surprise discovery would
+	// be hard to undo. Multi-cluster SaaS / fleet operators flip it on.
+	autoRegisterClusters := parseAutoRegisterFlag(os.Getenv("KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS"))
+	if autoRegisterClusters {
+		slog.Info("agent-proxy cluster auto-register enabled")
+	}
+
+	ingestSrv := agent.NewServer(writer,
+		agent.WithRegistry(agentRegistry),
+		agent.WithClusterRegistrar(manager),
+		agent.WithAutoRegisterClusters(autoRegisterClusters),
+	)
+
+	// Sprint A migration window: enforcement defaults to "disabled" so
+	// existing fleets without auth credentials keep working. Operators
+	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials.
+	agentAuthCfg := agent.AuthConfig{
+		Enforcement: agent.EnforcementDisabled,
+	}
+	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
+		if parsed, ok := agent.ParseEnforcement(v); ok {
+			agentAuthCfg.Enforcement = parsed
+		} else {
+			slog.Warn("KUBEBOLT_AGENT_AUTH_MODE has unknown value, defaulting to disabled",
+				slog.String("requested", v),
+			)
+		}
+	}
+	// Plug the composite authenticator into the interceptor. Available
+	// only when auth is enabled at the application level — without it,
+	// there is no tenants store, so enforced/permissive cannot validate
+	// anything. In that combination main.go below logs a warning and
+	// the agent channel keeps running disabled.
+	if agentAuthBundle != nil {
+		agentAuthCfg.Authenticator = agentAuthBundle.Composite
+	} else if agentAuthCfg.Enforcement != agent.EnforcementDisabled {
+		slog.Warn("agent auth enforcement requested but app auth is disabled — falling back to disabled mode",
+			slog.String("requested", string(agentAuthCfg.Enforcement)),
+		)
+		agentAuthCfg.Enforcement = agent.EnforcementDisabled
+	}
+
+	// TLS (and optional mTLS) for the agent gRPC channel. Half-set env
+	// surfaces as an error here so misconfigurations fail loud at boot.
+	agentTLS, err := agent.LoadServerTLSFromEnv()
+	if err != nil {
+		fatal("agent TLS configuration invalid", slog.String("error", err.Error()))
+	}
+	if agentTLS != nil && agentTLS.RequireMTLS {
+		// Mirror to the auth interceptor so identity.TLSVerified is
+		// re-checked post-auth, even though tls.RequireAndVerifyClientCert
+		// already gates the handshake.
+		agentAuthCfg.RequireMTLS = true
+	}
+
+	// Per-tenant rate limiter (ENTERPRISE-CANDIDATE). Off by default;
+	// operator opts in via KUBEBOLT_AGENT_RATE_LIMIT_ENABLED=true. With
+	// the OSS edition every tenant gets the same global config; the
+	// SaaS edition will swap in plan-aware lookups.
+	rateLimitCfg := auth.LoadRateLimitConfigFromEnv()
+	if rateLimitCfg.Enabled {
+		agentAuthCfg.RateLimiter = auth.NewRateLimiter(rateLimitCfg)
+		slog.Info("agent ingest rate limit enabled",
+			slog.Float64("requests_per_sec", rateLimitCfg.RequestsPerSec),
+			slog.Float64("burst", rateLimitCfg.Burst),
+		)
+	}
 
 	go func() {
-		if err := agent.Listen(agentCtx, agentAddr, ingestSrv); err != nil {
+		if err := agent.Listen(agentCtx, agentAddr, ingestSrv, agent.ListenOptions{
+			Auth: agentAuthCfg,
+			TLS:  agentTLS,
+		}); err != nil {
 			slog.Error("agent gRPC server error", slog.String("error", err.Error()))
 		}
 	}()
@@ -401,6 +535,18 @@ func main() {
 		slog.Error("HTTP server shutdown error", slog.String("error", err.Error()))
 	}
 	slog.Info("kubebolt stopped")
+}
+
+// parseAutoRegisterFlag interprets KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS.
+// Empty string defaults to false. Accepts the same ergonomic spellings
+// the agent's bool env vars use (1/0, true/false, yes/no, on/off,
+// case-insensitive).
+func parseAutoRegisterFlag(s string) bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "t", "true", "yes", "y", "on":
+		return true
+	}
+	return false
 }
 
 // openURL opens the given URL in the default browser.

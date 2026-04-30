@@ -16,7 +16,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
-	agentv1 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v1"
+	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
 type StatsCollector struct {
@@ -51,7 +51,7 @@ func (c *StatsCollector) Name() string { return "kubelet_stats_summary" }
 // Collect returns all samples produced by a single /stats/summary poll.
 // The sample list is unenriched; the caller is expected to pass it through
 // the pods metadata cache before shipping.
-func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error) {
+func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 	body, err := c.client.Get(ctx, "/stats/summary")
 	if err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func (c *StatsCollector) Collect(ctx context.Context) ([]*agentv1.Sample, error)
 		"node":       c.nodeName,
 	})
 
-	var samples []*agentv1.Sample
+	var samples []*agentv2.Sample
 
 	// Node-level metrics.
 	if summary.Node.CPU != nil {
@@ -313,8 +313,8 @@ type pvcRef struct {
 
 // --- sample helpers ---------------------------------------------------------
 
-func gauge(name string, value float64, labels map[string]string, ts *timestamppb.Timestamp) *agentv1.Sample {
-	return &agentv1.Sample{
+func gauge(name string, value float64, labels map[string]string, ts *timestamppb.Timestamp) *agentv2.Sample {
+	return &agentv2.Sample{
 		Timestamp:  ts,
 		MetricName: name,
 		Value:      value,
@@ -322,10 +322,10 @@ func gauge(name string, value float64, labels map[string]string, ts *timestamppb
 	}
 }
 
-func counter(name string, value float64, labels map[string]string, ts *timestamppb.Timestamp) *agentv1.Sample {
+func counter(name string, value float64, labels map[string]string, ts *timestamppb.Timestamp) *agentv2.Sample {
 	// Counters and gauges share the same wire shape; type is known server-side
 	// by metric name. Kept as a separate helper for call-site clarity.
-	return &agentv1.Sample{
+	return &agentv2.Sample{
 		Timestamp:  ts,
 		MetricName: name,
 		Value:      value,

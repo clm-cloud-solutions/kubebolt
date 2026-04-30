@@ -1,14 +1,20 @@
 {{- if .Values.rbac.create -}}
-# ─── Cluster-wide reads ───────────────────────────────────
-# The agent pulls kubelet /stats/summary via the apiserver proxy, watches
-# Pods for metadata enrichment, and reads the kube-system namespace UID
-# at startup to use as its canonical cluster_id label.
+{{- $mode := default "reader" .Values.rbac.mode -}}
+{{- if not (or (eq $mode "metrics") (or (eq $mode "reader") (eq $mode "operator"))) -}}
+  {{- fail (printf "rbac.mode=%q is not recognized; expected one of: metrics, reader, operator" $mode) -}}
+{{- end }}
+# ─── Metrics tier (always installed) ─────────────────────────
+# Narrow rules the agent itself needs at runtime: kubelet /stats
+# proxy, pods for metric enrichment, namespaces for cluster_id
+# discovery. ALL modes start from this tier — reader and operator
+# layer their broader rules on top.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: {{ include "kubebolt-agent.fullname" . }}-reader
+  name: {{ include "kubebolt-agent.fullname" . }}-metrics
   labels:
     {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/rbac-tier: metrics
 rules:
   - apiGroups: [""]
     resources: ["nodes/stats", "nodes/proxy", "nodes/metrics"]
@@ -23,9 +29,53 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: {{ include "kubebolt-agent.fullname" . }}
+  name: {{ include "kubebolt-agent.fullname" . }}-metrics
   labels:
     {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/rbac-tier: metrics
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubebolt-agent.fullname" . }}-metrics
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubebolt-agent.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- if eq $mode "reader" }}
+---
+# ─── Reader tier (cluster-wide read) ─────────────────────────
+# Wildcard get/list/watch on `*/*`. Required when proxy is on so
+# the backend can render inventory through the agent's tunnel
+# without write privileges. Mutations via proxy come back 403 —
+# that's intentional; switch to mode=operator if you need them.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-reader
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/rbac-tier: reader
+rules:
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/proxy", "services/proxy", "nodes/proxy"]
+    verbs: ["get"]
+  # Discovery — client-go hits these on every connection.
+  - nonResourceURLs: ["*"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-reader
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/rbac-tier: reader
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
@@ -34,6 +84,58 @@ subjects:
   - kind: ServiceAccount
     name: {{ include "kubebolt-agent.serviceAccountName" . }}
     namespace: {{ .Release.Namespace }}
+{{- end }}
+{{- if eq $mode "operator" }}
+---
+# ─── Operator tier (cluster-wide read + write) ───────────────
+# WARNING: this is effectively cluster-admin scoped to the agent's
+# ServiceAccount token. Only enable when:
+#   1. The cluster's apiserver isn't reachable directly (so the
+#      agent's tunnel is the only path for the dashboard), AND
+#   2. Auth is configured (auth.mode != "disabled" in values) so
+#      the gRPC channel rejects unauthenticated connections, AND
+#   3. You explicitly want exec / scale / restart / delete / YAML
+#      edit to work through the dashboard.
+# Without auth, anyone who can dial the backend's gRPC port pivots
+# to cluster-admin in this cluster.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-operator
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/rbac-tier: operator
+rules:
+  # Wildcard read+write across every namespaced + cluster-scoped resource.
+  - apiGroups: ["*"]
+    resources: ["*"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection"]
+  # Subresources don't match the wildcard above — enumerated.
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/portforward", "pods/log", "pods/eviction", "pods/proxy", "services/proxy", "nodes/proxy"]
+    verbs: ["get", "create"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale", "replicasets/scale"]
+    verbs: ["get", "update", "patch"]
+  - nonResourceURLs: ["*"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-operator
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/rbac-tier: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "kubebolt-agent.fullname" . }}-operator
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "kubebolt-agent.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}
 ---
 # ─── Lease-based leader election (namespace-scoped) ───────
 # Only one agent pod streams from Hubble Relay at a time; the rest sit

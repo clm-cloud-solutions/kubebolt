@@ -384,7 +384,7 @@ export function MetricChart({
                 },
               }}
               variant="icon"
-              label="Interpret this chart with Copilot"
+              label="Interpret this chart with Kobi"
             />
           )}
         </div>

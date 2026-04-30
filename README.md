@@ -190,6 +190,44 @@ npm install && npm run dev
 
 Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on port 8080.
 
+## Do I need the agent?
+
+The default install (kubeconfig + KubeBolt running on your laptop, or
+in-cluster Helm install) needs **no agent**. KubeBolt reads the
+apiserver directly via the credentials it already has.
+
+You only need the agent (`kubebolt-agent`) when **the apiserver of the
+cluster you want to monitor is not reachable from KubeBolt's backend**
+— private network, on-prem behind NAT, SaaS-style topology where
+KubeBolt doesn't get to hold customer kubeconfigs. The agent runs as a
+DaemonSet inside that cluster, dials OUT to the backend's gRPC port,
+and exposes the apiserver through an SPDY tunnel.
+
+Three install tiers depending on what you want the dashboard to be
+able to do (full picker in
+[`deploy/agent/README.md`](deploy/agent/README.md)):
+
+| Tier | Read inventory | Mutate (exec / scale / delete) | Auth required |
+|---|---|---|---|
+| `metrics` | ❌ | ❌ | optional |
+| `reader` | ✅ | ❌ | recommended |
+| `operator` | ✅ | ✅ | **yes** |
+
+Install paths — pick whichever fits your shop:
+
+```bash
+# Helm (most flexible)
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt-system --create-namespace \
+  --set backendUrl=YOUR_BACKEND:9090 --set rbac.mode=reader
+
+# Raw manifest (simplest)
+kubectl apply -f https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/deploy/agent/kubebolt-agent-reader.yaml
+
+# UI wizard (only when KubeBolt's backend already has kubeconfig
+# access to the target cluster — Administration → Integrations)
+```
+
 ## Features
 
 ### Monitoring & Observability

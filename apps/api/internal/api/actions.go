@@ -7,10 +7,12 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -114,7 +116,7 @@ func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		auditMutation(r, "restart_workload", resourceType, namespace, name, nil, err)
 		log.Printf("Restart failed for %s/%s/%s: %v", resourceType, namespace, name, err)
-		respondError(w, http.StatusInternalServerError, err.Error())
+		respondMutationError(w, err)
 		return
 	}
 
@@ -176,7 +178,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		scale, err := clientset.AppsV1().Deployments(namespace).GetScale(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondError(w, http.StatusInternalServerError, err.Error())
+			respondMutationError(w, err)
 			return
 		}
 		currentReplicas = scale.Spec.Replicas
@@ -184,14 +186,14 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
 		if err != nil {
 			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondError(w, http.StatusInternalServerError, err.Error())
+			respondMutationError(w, err)
 			return
 		}
 	case "statefulsets":
 		scale, err := clientset.AppsV1().StatefulSets(namespace).GetScale(ctx, name, metav1.GetOptions{})
 		if err != nil {
 			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondError(w, http.StatusInternalServerError, err.Error())
+			respondMutationError(w, err)
 			return
 		}
 		currentReplicas = scale.Spec.Replicas
@@ -199,7 +201,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
 		if err != nil {
 			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondError(w, http.StatusInternalServerError, err.Error())
+			respondMutationError(w, err)
 			return
 		}
 	}
@@ -263,16 +265,15 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		auditMutation(r, "rollback_deployment", resourceType, namespace, name, params, err)
 		log.Printf("Rollback failed for %s/%s/%s: %v", resourceType, namespace, name, err)
-		// Distinguish "no history / no-op" (precondition failure → 400) from
-		// transport/permission errors so the client renders a sensible message.
+		// "no history / no-op" (precondition failure → 400) is the
+		// only path that doesn't fit the generic mutation-error
+		// helper. Forbidden + everything else delegate.
 		errMsg := err.Error()
-		if containsForbidden(errMsg) {
-			respondError(w, http.StatusForbidden, errMsg)
-		} else if strings.Contains(errMsg, "no rollback history") || strings.Contains(errMsg, "no-op") || strings.Contains(errMsg, "not found") {
+		if strings.Contains(errMsg, "no rollback history") || strings.Contains(errMsg, "no-op") || strings.Contains(errMsg, "not found") {
 			respondError(w, http.StatusBadRequest, errMsg)
-		} else {
-			respondError(w, http.StatusInternalServerError, errMsg)
+			return
 		}
+		respondMutationError(w, err)
 		return
 	}
 
@@ -317,14 +318,9 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 	params := map[string]any{"force": force, "orphan": orphan}
 
 	if err := conn.DeleteResource(resourceType, namespace, name, propagation, gracePeriod); err != nil {
-		errMsg := err.Error()
 		auditMutation(r, "delete", resourceType, namespace, name, params, err)
 		log.Printf("Delete failed for %s/%s/%s: %v", resourceType, namespace, name, err)
-		if containsForbidden(errMsg) {
-			respondError(w, http.StatusForbidden, errMsg)
-		} else {
-			respondError(w, http.StatusInternalServerError, errMsg)
-		}
+		respondMutationError(w, err)
 		return
 	}
 
@@ -343,4 +339,48 @@ func containsForbidden(s string) bool {
 		}
 	}
 	return false
+}
+
+// agentSAForbiddenRE picks out the verb + resource from a K8s
+// apiserver "User ... cannot <verb> resource <resource>" message
+// when the rejected SA is the kubebolt-agent's. We use this to tag
+// 403 responses with structured fields so the UI can render a
+// tier-aware hint ("agent is in reader mode — switch to operator").
+//
+// Example match:
+//   User "system:serviceaccount:kubebolt-system:kubebolt-agent"
+//   cannot patch resource "deployments" in API group "apps" in
+//   the namespace "demo"
+//
+// → verb="patch", resource="deployments"
+var agentSAForbiddenRE = regexp.MustCompile(
+	`User "system:serviceaccount:[^"]*:kubebolt-agent" cannot ([a-z]+) resource "([^"]+)"`,
+)
+
+// respondMutationError maps a cluster-mutation error (from any of
+// the action handlers) to the right HTTP status + payload. The
+// frontend's resource action UIs catch this shape to render
+// guidance instead of dumping the raw message in an alert().
+//
+// Status mapping:
+//   - K8s 403 / "forbidden" in message → 403, with optional
+//     `agentRbacForbidden:true` + verb + resource when the rejected
+//     SA matches our agent.
+//   - Anything else → 500.
+//
+// Audit logging is the caller's responsibility — same as before
+// (this function is purely about shaping the HTTP response).
+func respondMutationError(w http.ResponseWriter, err error) {
+	msg := err.Error()
+	if apierrors.IsForbidden(err) || containsForbidden(msg) {
+		payload := map[string]any{"error": msg}
+		if m := agentSAForbiddenRE.FindStringSubmatch(msg); len(m) == 3 {
+			payload["agentRbacForbidden"] = true
+			payload["verb"] = m[1]
+			payload["resource"] = m[2]
+		}
+		respondJSON(w, http.StatusForbidden, payload)
+		return
+	}
+	respondError(w, http.StatusInternalServerError, msg)
 }

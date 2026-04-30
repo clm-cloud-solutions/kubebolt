@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
-  Bot,
   X,
   Send,
   Trash2,
@@ -19,6 +18,7 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
 import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
+import { KobiSigil, type KobiSigilState } from '@/components/kobi'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { parseActionProposal, type CopilotMessage, type CopilotUsage } from '@/services/copilot/types'
@@ -188,6 +188,39 @@ export function CopilotPanel() {
     document.addEventListener('mouseup', onUp)
   }
 
+  // A "pending proposal" is one where Kobi has emitted an action_proposal
+  // tool result but the operator has not yet clicked Execute or Dismiss
+  // (executionStatus is undefined). When at least one such card is
+  // rendered, Kobi is effectively waiting for a decision — that's the
+  // semantic the awaiting Sigil state communicates.
+  const hasPendingProposal = useMemo(() => {
+    for (const m of messages) {
+      if (m.role !== 'user' || !m.toolResults) continue
+      for (const tr of m.toolResults) {
+        const proposal = parseActionProposal(tr.content)
+        if (proposal && proposal.executionStatus === undefined) {
+          return true
+        }
+      }
+    }
+    return false
+  }, [messages])
+
+  // Map runtime state to Kobi Sigil state, by precedence:
+  //   investigating — model is generating or tool calls are in flight
+  //   awaiting      — at least one proposal card is waiting for the
+  //                   operator's Execute / Dismiss decision
+  //   watching      — idle resting state
+  // Investigating wins over awaiting because active work is the more
+  // current signal (the operator may have just re-sent a follow-up
+  // before clicking on the prior card).
+  const kobiState: KobiSigilState =
+    isLoading || pendingToolCalls.length > 0
+      ? 'investigating'
+      : hasPendingProposal
+        ? 'awaiting'
+        : 'watching'
+
   if (!config?.enabled || !isOpen) return null
 
   function handleSend() {
@@ -268,12 +301,25 @@ export function CopilotPanel() {
       {/* Header */}
       <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center shrink-0">
-            <Bot className="w-4 h-4 text-kb-accent" />
+          {/* The avatar background tints with the state, in the same color
+              family as the Sigil inside. At small sizes (18px) the inner
+              SVG state changes alone are too subtle — tinting the whole
+              circle makes the transition unmistakable without abandoning
+              the calm-SRE register. */}
+          <div
+            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300 ${
+              kobiState === 'investigating'
+                ? 'bg-amber-100 dark:bg-amber-950/40'
+                : kobiState === 'awaiting'
+                  ? 'bg-sky-100 dark:bg-sky-950/40'
+                  : 'bg-kb-accent-light'
+            }`}
+          >
+            <KobiSigil state={kobiState} size={18} />
           </div>
           <div className="flex flex-col min-w-0">
             <span className="text-sm font-semibold text-kb-text-primary leading-tight truncate">
-              KubeBolt Copilot AI
+              Kobi
             </span>
             <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] truncate">
               {config.provider} · {config.model || 'default'}
@@ -485,51 +531,15 @@ function EmptyState() {
 
   return (
     <div className="flex flex-col items-center justify-center h-full text-center px-4 py-8">
-      {/* Hero icon — the empty state is a pause point, so the icon
-          gets the full ambient-AI treatment: float on the wrapper,
-          cycling glow on the body, two staggered halos pinging
-          outward, a subtle breath on the icon itself, and corner
-          sparkles twinkling on stagger. Each layer is reduced under
-          motion-reduce. */}
-      <div className="relative mb-4 animate-kb-ai-hero-float motion-reduce:animate-none">
-        <div className="relative w-16 h-16">
-          {/* Two staggered halos behind the body — bigger and slower
-              than the toggle's, so the empty state reads as a
-              presence, not a button. */}
-          <span
-            aria-hidden
-            className="absolute inset-0 rounded-2xl bg-kb-accent/35 animate-kb-ai-hero-halo motion-reduce:hidden"
-          />
-          <span
-            aria-hidden
-            className="absolute inset-0 rounded-2xl bg-violet-500/30 animate-kb-ai-hero-halo motion-reduce:hidden"
-            style={{ animationDelay: '1.6s' }}
-          />
-
-          {/* Gradient body carries the same green→violet identity as
-              the toggle and Ask Copilot button, plus the cycling
-              outer glow. */}
-          <div className="relative w-16 h-16 rounded-2xl bg-gradient-to-br from-kb-accent via-kb-accent to-violet-500 flex items-center justify-center shadow-lg shadow-kb-accent/40 overflow-hidden animate-kb-ai-glow">
-            <Bot className="relative w-8 h-8 text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.3)] animate-kb-ai-hero-breath motion-reduce:animate-none" />
-          </div>
-
-          {/* Sparkles at the corners twinkle on stagger so motion is
-              always somewhere on the surface without any single
-              point feeling busy. */}
-          <Sparkles
-            aria-hidden
-            className="absolute -top-1.5 -right-1.5 w-3.5 h-3.5 text-kb-accent animate-kb-ai-hero-sparkle motion-reduce:hidden"
-          />
-          <Sparkles
-            aria-hidden
-            className="absolute -bottom-1.5 -left-1.5 w-3 h-3 text-violet-400 animate-kb-ai-hero-sparkle motion-reduce:hidden"
-            style={{ animationDelay: '1.7s' }}
-          />
-        </div>
+      {/* Hero — Kobi Sigil in its watching state. The empty state is
+          a pause point; the gentle dot pulse communicates presence
+          without performing enthusiasm. */}
+      <div className="mb-4">
+        <KobiSigil state="watching" size={56} />
       </div>
-      <h3 className="text-sm font-semibold text-kb-text-primary mb-1">KubeBolt Copilot AI</h3>
+      <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Kobi</h3>
       <p className="text-xs text-kb-text-tertiary mb-4 max-w-xs">
-        Ask questions about your cluster, troubleshoot issues, or learn about Kubernetes concepts.
+        Ask about your cluster, troubleshoot an issue, or learn about Kubernetes.
       </p>
       <div className="space-y-1.5 w-full max-w-md">
         {suggestions.map((text) => (
@@ -579,7 +589,7 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
   return (
     <div className="flex justify-start gap-2 group max-w-[95%] min-w-0">
       <div className="w-6 h-6 rounded-full bg-kb-accent-light flex items-center justify-center shrink-0 mt-0.5">
-        <Bot className="w-3.5 h-3.5 text-kb-accent" />
+        <KobiSigil state="static" size={14} />
       </div>
       <div className="flex flex-col items-start min-w-0 flex-1">
         <div className="px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">

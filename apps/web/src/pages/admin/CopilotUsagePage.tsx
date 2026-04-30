@@ -104,7 +104,7 @@ export function CopilotUsagePage() {
             <BarChart3 className="w-5 h-5 text-kb-accent" />
           </div>
           <div>
-            <h1 className="text-lg font-semibold text-kb-text-primary">Copilot Usage</h1>
+            <h1 className="text-lg font-semibold text-kb-text-primary">Kobi Usage</h1>
             <p className="text-xs text-kb-text-tertiary">
               Session analytics, token spend, tool activity. Stored locally for 30 days.
             </p>
@@ -478,7 +478,7 @@ function SessionModal({
   const title = `${new Date(session.timestamp).toLocaleString()} · ${session.cluster}`
 
   return (
-    <Modal badge="Copilot session" title={title} onClose={onClose} size="lg">
+    <Modal badge="Kobi session" title={title} onClose={onClose} size="lg">
       <div className="flex-1 overflow-y-auto p-5 space-y-4">
           <div className="grid grid-cols-2 gap-3 text-xs">
             <KV label="Model" value={`${session.provider} · ${session.model || 'default'}`} />

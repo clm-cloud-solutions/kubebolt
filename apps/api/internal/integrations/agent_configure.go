@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,7 +35,31 @@ func (a *agentProvider) GetConfig(ctx context.Context, cs kubernetes.Interface) 
 	}
 
 	cfg := extractConfigFromDaemonSet(ds, ns)
+	// RBACMode isn't on the DaemonSet — it's encoded in WHICH
+	// ClusterRoles exist. Best-effort lookup; errors (RBAC denied)
+	// leave the field empty so the UI falls back to its default.
+	cfg.RBACMode = detectInstalledRBACMode(ctx, cs)
+	// Backwards-compat: keep emitting ProxyOperatorRBAC for clients
+	// that haven't been upgraded yet to read RBACMode.
+	if cfg.RBACMode == RBACModeOperator {
+		t := true
+		cfg.ProxyOperatorRBAC = &t
+	}
 	return json.Marshal(cfg)
+}
+
+// detectInstalledRBACMode reads ClusterRole presence to figure out
+// which mode the cluster is in. Operator wins over reader (operator
+// includes reader's permissions); fallback is metrics if neither
+// upper-tier CR is present (the metrics CR is always installed).
+func detectInstalledRBACMode(ctx context.Context, cs kubernetes.Interface) AgentRBACMode {
+	if hasOperatorClusterRole(ctx, cs) {
+		return RBACModeOperator
+	}
+	if _, err := cs.RbacV1().ClusterRoles().Get(ctx, agentReaderClusterRole, metav1.GetOptions{}); err == nil {
+		return RBACModeReader
+	}
+	return RBACModeMetrics
 }
 
 // Configure applies a new config to the existing managed install.
@@ -65,6 +90,24 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 	// different namespace they have to uninstall + reinstall.
 	cfg.Namespace = ns
 
+	// Surface what landed on the wire so operators can correlate
+	// a "values didn't persist" report with the actual payload — the
+	// most common culprit historically has been UI-side caching, not
+	// the apply path.
+	slog.Info("agent integration: Configure received",
+		slog.String("namespace", ns),
+		slog.String("backendUrl", cfg.BackendURL),
+		slog.String("clusterName", cfg.ClusterName),
+		slog.String("authMode", cfg.AuthMode),
+		slog.String("rbacMode", string(cfg.RBACMode)),
+		slog.Bool("proxyEnabledExplicit", cfg.ProxyEnabled != nil && *cfg.ProxyEnabled),
+		slog.Bool("proxyOperatorRbacLegacy", cfg.ProxyOperatorRBAC != nil && *cfg.ProxyOperatorRBAC),
+		slog.Bool("hubbleEnabled", cfg.HubbleEnabled == nil || *cfg.HubbleEnabled),
+		slog.String("imageTag", cfg.ImageTag),
+		slog.String("logLevel", cfg.LogLevel),
+		slog.Int("payloadBytes", len(configJSON)),
+	)
+
 	// Apply the same defaults and validation the Install path uses.
 	if strings.TrimSpace(cfg.BackendURL) == "" {
 		return fmt.Errorf("backendUrl is required")
@@ -82,6 +125,11 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 	if cfg.HubbleEnabled != nil {
 		hubbleEnabled = *cfg.HubbleEnabled
 	}
+
+	mode, proxyEnabled, err := resolveModeAndProxy(cfg)
+	if err != nil {
+		return err
+	}
 	if _, _, err := resolveResources(cfg.Resources); err != nil {
 		return err
 	}
@@ -93,16 +141,17 @@ func (a *agentProvider) Configure(ctx context.Context, cs kubernetes.Interface, 
 		}
 	}
 
-	// Re-apply every resource. The ensure* helpers detect existing
-	// managed resources and Update them; new fields (e.g. newly
-	// mounted TLS secret) propagate via rolling restart of the DS.
+	// Re-apply every resource. applyRBACForMode is the single entry
+	// point for the 3-tier RBAC machinery — switching modes
+	// (e.g. operator → reader) cleanly removes the previously-applied
+	// tier and applies the new one. The DS rollout picks up env var
+	// changes (proxy on/off, etc.) via the standard rolling update.
 	steps := []func() error{
 		func() error { return ensureServiceAccount(ctx, cs, ns) },
-		func() error { return ensureClusterRole(ctx, cs) },
-		func() error { return ensureClusterRoleBinding(ctx, cs, ns) },
+		func() error { return applyRBACForMode(ctx, cs, ns, mode) },
 		func() error { return ensureLeaderRole(ctx, cs, ns) },
 		func() error { return ensureLeaderRoleBinding(ctx, cs, ns) },
-		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled) },
+		func() error { return ensureDaemonSet(ctx, cs, ns, cfg, hubbleEnabled, proxyEnabled) },
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -159,6 +208,35 @@ func extractConfigFromDaemonSet(ds *appsv1.DaemonSet, ns string) AgentInstallCon
 		b := envBoolDefault(map[string]string{"K": v}, "K", true)
 		cfg.HubbleEnabled = &b
 	}
+	if v, ok := env["KUBEBOLT_AGENT_PROXY_ENABLED"]; ok {
+		b := envBoolDefault(map[string]string{"K": v}, "K", false)
+		cfg.ProxyEnabled = &b
+	}
+	// Auth mode + token Secret reconstruction. The mode comes from
+	// the env directly; the Secret name comes from the volume that
+	// backs /var/run/secrets/kubebolt (matching where Install
+	// mounts ingest-token). Missing volume → user installed
+	// without ingest auth (disabled or tokenreview).
+	if v, ok := env["KUBEBOLT_AGENT_AUTH_MODE"]; ok {
+		cfg.AuthMode = v
+	}
+	if cfg.AuthMode == "ingest-token" {
+		for _, vm := range container.VolumeMounts {
+			if vm.MountPath != "/var/run/secrets/kubebolt" {
+				continue
+			}
+			for _, v := range ds.Spec.Template.Spec.Volumes {
+				if v.Name == vm.Name && v.Secret != nil {
+					cfg.AuthTokenSecret = v.Secret.SecretName
+				}
+			}
+		}
+	}
+	// ProxyOperatorRBAC isn't in the DaemonSet — it's a separate
+	// ClusterRole. Detection is best-effort by ClusterRole presence;
+	// caller (Configure handler) populates this field after looking
+	// it up via the Kubernetes API. Leaving nil here means "unknown
+	// from DS alone".
 
 	// mTLS reconstruction: the agent always gets CA_FILE / CERT_FILE
 	// / KEY_FILE pointed at /etc/hubble-tls/*. If that volume is

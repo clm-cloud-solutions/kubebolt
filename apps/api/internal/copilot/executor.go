@@ -452,12 +452,13 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		switch t {
 		case "deployments", "statefulsets", "daemonsets",
 			"services", "configmaps", "secrets",
-			"jobs", "cronjobs", "pods", "ingresses":
+			"jobs", "cronjobs", "pods", "ingresses",
+			"hpas", "horizontalpodautoscalers":
 			// allowed
 		default:
 			res.Content = jsonString(map[string]interface{}{
 				"error": fmt.Sprintf("resource type %q cannot be deleted via Copilot proposal — recommend kubectl directly", t),
-				"hint":  "Allowed types: deployments, statefulsets, daemonsets, services, configmaps, secrets, jobs, cronjobs, pods, ingresses. Namespaces, nodes, PVs, PVCs, RBAC resources are blocked by design.",
+				"hint":  "Allowed types: deployments, statefulsets, daemonsets, services, configmaps, secrets, jobs, cronjobs, pods, ingresses, hpas. Namespaces, nodes, PVs, PVCs, RBAC resources are blocked by design.",
 			})
 			res.IsError = true
 			return res

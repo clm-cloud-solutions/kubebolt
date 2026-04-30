@@ -82,7 +82,7 @@ export function EventsPage() {
               {eventType === 'Warning' && (
                 <div className="shrink-0">
                   <AskCopilotButton
-                    label="Ask Copilot about this event"
+                    label="Ask Kobi about this event"
                     payload={{
                       type: 'warning_event',
                       event: {

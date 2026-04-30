@@ -15,6 +15,7 @@ import (
 	gorilla "github.com/gorilla/websocket"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -94,7 +95,11 @@ func detectShell(clientset kubernetes.Interface, restConfig *restclient.Config, 
 				Stderr:    true,
 			}, scheme.ParameterCodec)
 
-		exec, err := remotecommand.NewSPDYExecutor(restConfig, "POST", req.URL())
+		execTransport, execUpgrader, err := cluster.SPDYTransportsFor(restConfig)
+		if err != nil {
+			continue
+		}
+		exec, err := remotecommand.NewSPDYExecutorForTransports(execTransport, execUpgrader, "POST", req.URL())
 		if err != nil {
 			continue
 		}
@@ -182,7 +187,12 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 			TTY:       true,
 		}, scheme.ParameterCodec)
 
-	executor, err := remotecommand.NewSPDYExecutor(&restConfig, "POST", req.URL())
+	execTransport, execSpdyUpgrader, err := cluster.SPDYTransportsFor(&restConfig)
+	if err != nil {
+		http.Error(w, "failed to build SPDY transports: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	executor, err := remotecommand.NewSPDYExecutorForTransports(execTransport, execSpdyUpgrader, "POST", req.URL())
 	if err != nil {
 		http.Error(w, "failed to create executor: "+err.Error(), http.StatusInternalServerError)
 		return

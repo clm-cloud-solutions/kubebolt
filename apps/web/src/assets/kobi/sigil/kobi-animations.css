@@ -1,0 +1,130 @@
+/*
+ * Kobi Sigil Animation System
+ *
+ * Three states: watching, investigating, awaiting.
+ * Each state has its own keyframe set and timing.
+ *
+ * Usage:
+ *   Apply the appropriate class to the SVG element or its children.
+ *   Color is controlled by `currentColor` or explicit fill/stroke.
+ *
+ * Accessibility:
+ *   All animations honor `prefers-reduced-motion`.
+ */
+
+/* ==========================================================
+ * WATCHING — gentle dot pulse
+ * Communicates: Kobi is reading signals, nothing requires attention
+ * ========================================================== */
+@keyframes kobi-watching-pulse {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(0.82);
+  }
+}
+
+.kobi-dot-watching {
+  animation: kobi-watching-pulse 2400ms cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+/* ==========================================================
+ * INVESTIGATING — staggered ring expansion
+ * Communicates: Kobi is actively working
+ * ========================================================== */
+@keyframes kobi-investigating-ring {
+  0% {
+    opacity: 0.9;
+    transform: scale(0.5);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+@keyframes kobi-diagonals-emphasize {
+  0%, 100% { opacity: 0.7; }
+  50%      { opacity: 1; }
+}
+
+.kobi-ring-investigating {
+  animation: kobi-investigating-ring 1600ms cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+.kobi-ring-investigating-delayed {
+  animation: kobi-investigating-ring 1600ms cubic-bezier(0.16, 1, 0.3, 1) infinite;
+  animation-delay: 800ms;
+  transform-origin: center;
+  transform-box: fill-box;
+}
+
+.kobi-diagonals-investigating {
+  animation: kobi-diagonals-emphasize 1600ms ease-in-out infinite;
+}
+
+/* ==========================================================
+ * AWAITING — dashed circle march
+ * Communicates: Kobi has paused, waiting for input
+ * ========================================================== */
+@keyframes kobi-awaiting-march {
+  to { stroke-dashoffset: -12; }
+}
+
+.kobi-dot-awaiting {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1;
+  stroke-dasharray: 1.5 1.5;
+  animation: kobi-awaiting-march 2000ms linear infinite;
+}
+
+/* ==========================================================
+ * STATE TRANSITIONS
+ * Crossfading between states is done at the container level.
+ * Use these classes on the wrapper to transition smoothly.
+ * ========================================================== */
+
+.kobi-state-transition-watching {
+  transition: color 700ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.kobi-state-transition-investigating {
+  transition: color 300ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.kobi-state-transition-awaiting {
+  transition: color 500ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* ==========================================================
+ * REDUCED MOTION
+ * Animations stop, but state remains semantically expressive
+ * through color and form alone.
+ * ========================================================== */
+@media (prefers-reduced-motion: reduce) {
+  .kobi-dot-watching,
+  .kobi-ring-investigating,
+  .kobi-ring-investigating-delayed,
+  .kobi-diagonals-investigating,
+  .kobi-dot-awaiting {
+    animation: none;
+  }
+
+  .kobi-ring-investigating,
+  .kobi-ring-investigating-delayed {
+    opacity: 0.5;
+    transform: scale(1.5);
+  }
+
+  .kobi-diagonals-investigating {
+    opacity: 1;
+  }
+}
