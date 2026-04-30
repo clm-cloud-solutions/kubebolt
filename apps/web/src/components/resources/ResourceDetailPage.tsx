@@ -1803,7 +1803,7 @@ function MonitorDonuts({
       <div className="grid grid-cols-2 gap-4">
         <AgentLockedTile
           title="Network Usage"
-          description="The agent samples per-resource RX and TX bytes every 15s and renders them as a single chart with TX below the zero line — at a glance you see direction, peak, and ratio. Anomaly hooks (Ask Copilot) plug into it too."
+          description="The agent samples per-resource RX and TX bytes every 15s and renders them as a single chart with TX below the zero line — at a glance you see direction, peak, and ratio. Anomaly hooks (Ask Kobi) plug into it too."
         />
         <AgentLockedTile
           title="Disk I/O Usage"
@@ -2503,7 +2503,7 @@ export function ResourceDetailPage() {
               wonder whether this resource type is supported. */}
           <AskCopilotButton
             variant="text"
-            label="Ask Copilot"
+            label="Ask Kobi"
             payload={{
               type: 'resource_inquiry',
               resource: {

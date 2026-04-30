@@ -54,7 +54,7 @@ export function InsightCard({ insight }: InsightCardProps) {
                     lastSeen: insight.lastSeen,
                   },
                 }}
-                label="Ask Copilot about this insight"
+                label="Ask Kobi about this insight"
               />
               <span className={`px-2 py-0.5 rounded-full text-[9px] font-mono uppercase tracking-[0.06em] ${config.bg} ${config.text}`}>
                 {insight.severity}
