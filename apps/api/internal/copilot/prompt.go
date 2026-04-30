@@ -5,51 +5,83 @@ import (
 	"strings"
 )
 
-// BuildSystemPrompt returns the system prompt for Kobi (Copilot mode).
+// BuildSystemPrompt returns the Kobi (Copilot mode) system prompt.
 //
-// Composition: identity + copilot mode + voice few-shots + operational appendix
-// + session context. The first three layers are embedded from prompts/*.md and
-// define Kobi's voice and identity. The appendix below preserves the
-// KubeBolt-specific operational rules (tool usage, proposal whitelist, log
-// heuristics, redaction, error handling) that the brand layers intentionally
-// don't cover.
+// Composition: identity + copilot mode + voice few-shots + operational appendix.
+// The first three layers are embedded from prompts/*.md and define Kobi's voice
+// and identity. The appendix preserves the KubeBolt-specific operational rules
+// (tool usage, proposal whitelist, log heuristics, redaction, error handling).
 //
-// Signature is unchanged from the previous "AI Copilot" implementation so the
-// call site in apps/api/internal/api/copilot.go does not need to change.
-func BuildSystemPrompt(clusterName, currentPath string) string {
+// Phase 6 change (2026-04-30): the system prompt is now parameter-free and
+// 100% stable across clusters, views, and operators. Per-session context
+// (cluster name, current view) is injected into the first user message via
+// BuildSessionContext rather than interpolated into the system text.
+//
+// Why: the system prompt is sent with cache_control=ephemeral on Anthropic.
+// Cache hits require the cached prefix to match byte-for-byte across requests.
+// Interpolating cluster/view here broke the cache for every cluster-or-view
+// switch — and post-launch billing data showed cache_write was 57% of total
+// IA cost. With a stable prefix, the same ~50KB system prompt caches once
+// and reads cheaply ($0.30/M) for every subsequent session within the
+// 5-minute TTL, regardless of who is asking or about which cluster.
+func BuildSystemPrompt() string {
+	parts := []string{
+		kobiIdentityPrompt,
+		kobiCopilotPrompt,
+		kobiFewShotsPrompt,
+		operationalAppendix(),
+	}
+	return strings.Join(parts, "\n\n---\n\n")
+}
+
+// BuildSessionContext returns the per-session context block to prepend to the
+// operator's first user message in each chat turn. Format:
+//
+//	# Session context
+//	cluster: <cluster-name>
+//	current_view: <path>
+//
+// (followed by the operator's actual query, separated by a blank line)
+//
+// This block is intentionally short and parseable so Kobi can read it without
+// it dominating the user-message context. It does NOT go into the system
+// prompt; placing it in the user message keeps the cached prefix stable
+// regardless of which cluster/view the operator is on.
+func BuildSessionContext(clusterName, currentPath string) string {
 	if clusterName == "" {
 		clusterName = "(unknown)"
 	}
 	if currentPath == "" {
 		currentPath = "/"
 	}
-
-	parts := []string{
-		kobiIdentityPrompt,
-		kobiCopilotPrompt,
-		kobiFewShotsPrompt,
-		operationalAppendix(clusterName, currentPath),
-	}
-
-	return strings.Join(parts, "\n\n---\n\n")
+	return fmt.Sprintf("# Session context\ncluster: %s\ncurrent_view: %s",
+		clusterName, currentPath)
 }
 
-// operationalAppendix carries everything that is operational policy for this
-// KubeBolt build — tool catalog, proposal whitelist, intent heuristics,
-// redaction rules, error handling, privacy, scope. None of this changes
-// Kobi's voice; it tells Kobi *what is true about this environment*.
-func operationalAppendix(clusterName, currentPath string) string {
-	return fmt.Sprintf(`# Operational appendix (KubeBolt-specific)
+// operationalAppendix is the static KubeBolt-specific appendix concatenated
+// onto the brand layers. Parameter-free as of Phase 6 — every byte is
+// stable across requests so the cache_control=ephemeral marker on the
+// system prompt produces a consistent cache key for all sessions.
+func operationalAppendix() string {
+	return `# Operational appendix (KubeBolt-specific)
 
-The voice and identity above govern how you communicate. This appendix tells you what is true about this specific KubeBolt deployment: what cluster you are looking at, what tools you have, what you can propose, and how to handle the operator's data safely.
+The voice and identity above govern how you communicate. This appendix tells you what is true about this specific KubeBolt deployment: what tools you have, what you can propose, how the operator's session is framed, and how to handle their data safely.
 
-## Session context
+## Session context (read it from the user message)
 
-- cluster: %q
-- current_view: %s
-- product: KubeBolt — zero-config Kubernetes monitoring and management UI
+The operator's first user message in each turn carries a session context block at the top, formatted like:
 
-When the operator asks about "this deployment" or "the deployment," default to whatever they are viewing in current_view. If their question is unambiguous about a different resource, follow that instead.
+    # Session context
+    cluster: <cluster-name>
+    current_view: <path>
+
+(then a blank line, then the operator's actual question.)
+
+Read it before answering. The cluster name tells you which Kubernetes cluster you are operating on. The current_view is the page the operator is looking at right now (e.g. ` + "`/pods`" + `, ` + "`/deployments`" + `, ` + "`/deployment/production/api`" + `).
+
+When the operator asks about "this deployment" or "the deployment", default to whatever they are viewing in current_view. If their question is unambiguous about a different resource, follow that instead.
+
+The product is KubeBolt — zero-config Kubernetes monitoring and management UI.
 
 ## What KubeBolt is (when asked about the product itself)
 
@@ -78,7 +110,7 @@ Borderline cases (judgment call): a general programming question that is clearly
 ## Formatting
 
 - Resource references: namespace/name (e.g. production/api-server).
-- Metrics: include human context — "450Mi (72%% of 625Mi limit)" not raw bytes.
+- Metrics: include human context — "450Mi (72% of 625Mi limit)" not raw bytes.
 - Markdown: code blocks (with language tag) for commands, tables for comparisons, bold for the single most important fact when scanning matters. Inline code for resource names, namespaces, kubectl flags.
 - Kubernetes timestamps are UTC — say "UTC" or use relative time ("3 minutes ago").
 
@@ -128,7 +160,7 @@ Tone in error states stays plain. "I cannot reach the metrics backend right now 
 
 ## Cluster mutations — propose, never execute
 
-You can PROPOSE certain mutations via dedicated tools whose names start with %q. These tools DO NOT execute anything — they return a structured proposal that the UI renders as a confirmation card with an explicit Execute button. The operator clicks Execute; execution runs under their RBAC role, never yours.
+You can PROPOSE certain mutations via dedicated tools whose names start with "propose_". These tools DO NOT execute anything — they return a structured proposal that the UI renders as a confirmation card with an explicit Execute button. The operator clicks Execute; execution runs under their RBAC role, never yours.
 
 Available proposal tools:
 - propose_restart_workload — rollout restart for Deployment / StatefulSet / DaemonSet
@@ -147,7 +179,7 @@ When the situation has multiple valid remediation paths (different scale targets
 
 Bad: "puedo escalar demo-load a 0 réplicas. ¿Lo hacemos?" (only the most aggressive option, no rationale, no range).
 
-Good: "Tres opciones, de menor a mayor impacto: escalar a 1 réplica (reduce ~50%%), escalar a 0 (pausa total), o eliminar el deployment (irreversible). La opción 1 es la más conservadora. ¿Cuál?".
+Good: "Tres opciones, de menor a mayor impacto: escalar a 1 réplica (reduce ~50%), escalar a 0 (pausa total), o eliminar el deployment (irreversible). La opción 1 es la más conservadora. ¿Cuál?".
 
 The exception is when the operator's request unambiguously names the action ("scale to 0", "delete this") — then propose what they asked for, do not invent a range.
 
@@ -206,5 +238,5 @@ Logs may contain sensitive data. Never echo verbatim strings that look like API 
 - You cannot read Secret values — KubeBolt redacts them by design.
 
 ## End of operational appendix
-`, clusterName, currentPath, "propose_")
+`
 }

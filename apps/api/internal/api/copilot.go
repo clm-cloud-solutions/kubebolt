@@ -136,9 +136,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Build the system prompt with cluster context
+	// Build the system prompt — parameter-free as of Phase 6 so the cached
+	// prefix is byte-identical across clusters, views, and operators.
 	clusterName := h.manager.ActiveContext()
-	systemPrompt := copilot.BuildSystemPrompt(clusterName, req.CurrentPath)
+	systemPrompt := copilot.BuildSystemPrompt()
 
 	executor := copilot.NewExecutor(h.manager)
 	tools := copilot.ToolDefinitions()
@@ -160,6 +161,26 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// Multi-step tool calling loop
 	const maxRounds = 10
 	messages := req.Messages
+
+	// Phase 6: inject the per-session context as a prefix on the first user
+	// message. The system prompt no longer carries cluster/currentPath, so
+	// the operator's first message is where the model learns which cluster
+	// it is operating on. Done once per request (idempotent — the frontend's
+	// stored history doesn't carry this prefix; we re-add it server-side
+	// every turn so the system prompt cache stays warm regardless of which
+	// cluster/view the operator is on).
+	if len(messages) > 0 {
+		sessionCtx := copilot.BuildSessionContext(clusterName, req.CurrentPath)
+		for i := range messages {
+			if messages[i].Role == copilot.RoleUser {
+				if messages[i].Content != "" {
+					messages[i].Content = sessionCtx + "\n\n" + messages[i].Content
+				}
+				break
+			}
+		}
+	}
+
 	usedFallback := false
 
 	// Session-level accounting
