@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -40,14 +41,30 @@ func TestValidateAccessToken_RejectsTampered(t *testing.T) {
 	svc := testJWTService(time.Hour, 24*time.Hour)
 	tok, _ := svc.GenerateAccessToken(&User{ID: "u", Username: "x", Role: RoleViewer})
 
-	// Flip the last character to invalidate the signature. Pick a
-	// replacement that differs from the original — JWTs end in a random
-	// base64url char, so a fixed letter like "X" is a no-op ~1/64 of the time.
+	// JWT format is "header.payload.signature". The signature is
+	// base64url-encoded HMAC bytes (32 bytes → 43 chars). Flip a char
+	// in the MIDDLE of the signature, NOT the last char.
+	//
+	// Why not the last char: a base64url signature's last char carries
+	// only 4 meaningful bits + 2 filler bits (256 ÷ 6 = 42.67 → 43 chars,
+	// the last one only contributes 4 bits). Two distinct chars whose
+	// 4-bit prefixes match will decode to the same byte. The previous
+	// version of this test flipped the last char and fell into that
+	// equivalence class ~6% of runs — flaky CI failure surfaced 2026-04-30.
+	//
+	// A char in the middle of the signature has all 6 bits meaningful,
+	// so any flip to a different char changes the decoded byte sequence
+	// and the HMAC will not match.
+	lastDot := strings.LastIndex(tok, ".")
+	if lastDot == -1 || lastDot >= len(tok)-1 {
+		t.Fatalf("malformed token, no signature segment: %q", tok)
+	}
+	sigMid := lastDot + 1 + (len(tok)-lastDot-1)/2
 	replacement := byte('A')
-	if tok[len(tok)-1] == 'A' {
+	if tok[sigMid] == 'A' {
 		replacement = 'B'
 	}
-	tampered := tok[:len(tok)-1] + string(replacement)
+	tampered := tok[:sigMid] + string(replacement) + tok[sigMid+1:]
 	if _, err := svc.ValidateAccessToken(tampered); err == nil {
 		t.Error("tampered token must not validate")
 	}

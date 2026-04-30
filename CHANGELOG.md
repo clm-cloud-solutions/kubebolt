@@ -4,6 +4,65 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.1] — 2026-04-30
+
+Patch release with two changes: a relicense to Apache 2.0 (the standard
+for cloud-infrastructure projects in the CNCF / Hashicorp / Kubernetes
+ecosystem), and a `go vet` fix that was failing CI on `main` since
+Sprint A.5 introduced an if-true scope idiom the lostat checker cannot
+follow. v1.6.0 stays MIT — Apache 2.0 applies starting here.
+
+### Changed
+
+- **License: MIT → Apache 2.0.** Apache 2.0 brings explicit patent grant
+  and patent retaliation, explicit trademark protection (the license
+  does NOT grant rights to use the KubeBolt or Kobi names), and the
+  procurement-friendly profile that virtually every enterprise legal
+  team has pre-approved. The relicense covers files updated in this
+  commit: `LICENSE` (full Apache 2.0 standard text + project copyright),
+  new `NOTICE` file (per Apache 2.0 best practice), README badge and
+  License section, both helm charts' `artifacthub.io/license`, the
+  homebrew formula template, and the AboutModal UI. Prior commits
+  remain under MIT (which permits the relicense); v1.6.0 binaries
+  already in the wild stay MIT for their consumers.
+
+### Fixed
+
+- **`go vet` cancel-leak warning** in `apps/api/internal/cluster/connector.go`.
+  The kube-system UID lookup wrapped its context in an `if ...; true { }`
+  block intended to limit the variable scope, but `defer cancel()` runs
+  at function exit regardless of block scope, so the construct was a
+  no-op the lostat checker could not analyze. Replaced with a plain
+  `cancel`/`defer` pair. Behavior identical, CI green.
+- **Flaky `TestValidateAccessToken_RejectsTampered`** (~6% failure rate)
+  in `apps/api/internal/auth/jwt_test.go`. The test flipped the last
+  char of the JWT's base64url signature to invalidate it, but a base64url
+  signature's last char carries only 4 meaningful bits + 2 filler bits,
+  so distinct chars with the same 4-bit prefix decode to the same byte
+  — flipping the last char to 'A' or 'B' fell into that equivalence class
+  for 4 of 64 valid signatures. The test now flips a char in the middle
+  of the signature, where all 6 bits are meaningful and any flip
+  guarantees an invalid signature. Behavior of the validation code is
+  unchanged; the test just stopped lying.
+
+### Notes
+
+The release CI pipeline gained two improvements during the v1.6.0
+release attempt that landed in v1.6.0 itself but are worth flagging
+for operators tracking the release infrastructure:
+
+- `apps/api/Dockerfile` now expects the repo root as build context
+  (because `apps/api/go.mod` has a replace directive into
+  `../../packages/proto`). The release workflow uses `context: .` and
+  `file: apps/api/Dockerfile` to match.
+- `publish-chart` now gates on `build-api` and `build-web` succeeding
+  so a failed image build no longer leaves a broken chart pointing at
+  a non-existent image.
+
+Both fixes are present in v1.6.0 (commit `19dcba4`).
+
+---
+
 ## [1.6.0] — 2026-04-30
 
 Feature release with three large-scale streams:
