@@ -4,6 +4,220 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-04-30
+
+Feature release with three large-scale streams:
+
+- **Kobi** — the AI Copilot becomes a named agent with a senior-SRE
+  voice and a visual identity (Sigil + state-aware avatar).
+- **Cluster mutations via the AI Copilot** — propose / confirm /
+  execute pattern so the LLM can recommend state-changing actions
+  without ever holding the cluster credential. Operator clicks
+  Execute; mutation runs under the operator's RBAC role.
+- **Agent-as-K8s-API-proxy** — the agent can tunnel arbitrary
+  Kubernetes API requests (including SPDY upgrades for exec, files,
+  port-forward) so KubeBolt operates on clusters where it has no
+  direct control-plane access.
+
+Plus per-tenant agent-ingest auth, real-time UX hardening, Cluster Map
+flow-classification fixes, and prompt-cache cost optimizations.
+
+No API breakage for the API/web surface. The agent protocol changed
+(AgentChannel v2, KubeStreamData/Ack), so operators with deployed
+agents must upgrade to **agent-v0.2.0+** — released on its own track
+on 2026-04-29 and required for any A/B agent-channel functionality.
+
+### Added
+
+- **Cluster mutations via the AI Copilot** — propose / confirm / execute
+  pattern. The LLM emits a structured `ActionProposal` payload as a tool
+  result; the frontend renders it as an interactive card; the operator
+  clicks **Execute** (or **Dismiss**); the existing mutation endpoint
+  runs under the **operator's** RBAC role, never the LLM's. Closes the
+  prompt-injection vector for state-changing operations. Four actions
+  shipped:
+  - `propose_restart_workload` — rollout restart (Deployment / STS / DaemonSet)
+  - `propose_scale_workload` — scale to N replicas (0 to pause)
+  - `propose_rollback_deployment` — `kubectl rollout undo`, default to previous
+  - `propose_delete_resource` — destructive, irreversible, three stacked
+    safeguards: blast-radius preview computed server-side (owned pods,
+    services left without endpoints, orphaned HPAs, retained PVCs from
+    StatefulSets, pods that mount the ConfigMap/Secret), typing-to-confirm
+    for `risk=high`, RBAC Admin required at the endpoint. HPAs are part
+    of the whitelist as of this release.
+- **Real-time UX: WebSocket invalidates detail-page + topology queries**
+  (Phase 1.10 — Real-Time UX Hardening). The WS handler used to invalidate
+  only list views; now it also invalidates `['resource-detail', type, ns,
+  name]` so detail pages reflect Pending → ContainerCreating → Running
+  transitions instantly, plus topology graph invalidation debounced to
+  2s to match the backend's rebuild cadence. Cluster-scoped resources
+  match on `namespace='_'` (the placeholder the detail route uses for
+  Nodes etc.).
+- **Kobi — agent identity, voice, and visual mark** replaces "AI Copilot"
+  - **Sigil**: a deconstructed K with an intelligence dot, four states
+    (static / watching / investigating / awaiting). Color encodes state:
+    emerald for idle, amber for active tool calls, sky for proposal
+    pending operator decision. The avatar background tints in the same
+    colour family at small render sizes so transitions are perceptible.
+    Assets in `apps/web/src/assets/kobi/sigil/`.
+  - **Three-layer system prompt** (~50KB rendered) embedded into the
+    binary via `//go:embed`:
+    - `kobi-identity.md` — core identity, voice principles, language
+      mirroring, model-agnostic ("you are Kobi" — may acknowledge
+      Anthropic Claude or OpenAI GPT only when asked directly).
+    - `kobi-copilot.md` — Copilot-mode communication contract, with
+      explicit rules for quantification, scope discipline on resource
+      metrics, scannability, and the closing-investigation shape
+      (mechanism → impact → options → pick).
+    - `kobi-few-shots.md` — voice examples in canonical Kobi register
+      plus anti-patterns (no marketing language, no performative warmth,
+      no emoji warning markers, no vague impact claims).
+  - **Operational appendix** preserves every existing Copilot capability
+    (tool catalog, proposal whitelist, get_pod_logs intent heuristics,
+    redaction policy, error handling) but rephrased without `⚠️` markers
+    that conflict with Kobi's voice.
+  - **Awaiting state wired** to pending action proposals (the operator
+    has a card waiting for Execute / Dismiss). Sigil + avatar transition
+    to sky tones; back to emerald after Execute or Dismiss.
+  - **UI rebrand**: chat panel header, message avatars, toggle launcher,
+    Ask Kobi buttons (Insights, Events, Resource Detail, External
+    Endpoint, Cluster Map, Metric Charts), proposal card header, sidebar
+    admin entry, About modal. Internal identifiers (component names,
+    hooks, types, endpoint paths) unchanged — purely UX-visible.
+- **Agent-as-K8s-API-proxy** (Sprint A.5)
+  - The agent can now proxy arbitrary Kubernetes API requests back to
+    the apiserver, so KubeBolt can drive clusters it has no direct
+    access to. Backend wires this through `AgentProxyTransport` with a
+    watch adapter and a `ClusterAccess` factory selecting between
+    `local` and `agent-proxy` modes per cluster.
+  - **SPDY upgrade tunneling** on the channel so exec, file browsing
+    and port-forward all work end-to-end through the proxy. Connection /
+    Upgrade headers now preserved on upgrade requests; SPDY tunnel
+    plumbing in API exec/files/portforward; `CancelRequest` no-op
+    silences a noisy client-go warning.
+  - **Auto-registration** of agent-proxy clusters (opt-in via
+    `KUBEBOLT_AGENT_PROXY_ENABLED`). Agent forwards its cluster name in
+    `Hello.Labels`; backend suffixes display name with `(via agent)` so
+    operators can tell at a glance.
+  - **Multi-agent per cluster** support — the channel multiplexor now
+    serves N agents per cluster (DaemonSets ship one per node).
+  - **Operator-tier RBAC manifest** for agents that need full proxy
+    access.
+- **Agent ingest auth** (Sprint A)
+  - Bearer-token authentication on the agent ingest gRPC channel, with
+    optional mTLS and Kubernetes ServiceAccount projected-token review
+    via the apiserver TokenReview API.
+  - Per-tenant token storage in BoltDB with admin REST endpoints
+    (`/admin/tenants/...`) for token CRUD.
+  - **Admin UI** at `/admin/agent-tokens` for token issuance and
+    revocation (single-tenant in OSS; multi-tenant flagged
+    `ENTERPRISE-CANDIDATE`).
+  - Helm chart values for auth + TLS + projected SA token mount on the
+    agent side; tokenreviews RBAC + agent ingest service template on
+    the API side.
+  - End-to-end tests in `apps/api/internal/agent/e2e_*` that spin up a
+    kind cluster and exercise the auth flow.
+- **Per-tenant rate limiter** on agent ingest (token-bucket per tenant,
+  flagged `ENTERPRISE-CANDIDATE`).
+- **`propose_delete_resource`** now supports HPAs in addition to the
+  prior whitelist.
+- **Make targets** for agent deployment with auth (`agent-deploy-auth`)
+  and a manifest template with the ingest-token mount.
+
+### Changed
+
+- **Kobi system prompt is byte-stable across requests** (Phase 6). The
+  `clusterName` and `currentPath` are no longer interpolated into the
+  system text — they're prepended to the operator's first user message
+  via a new `BuildSessionContext` helper. Anthropic's prompt cache now
+  hits the same prefix regardless of cluster, view, or operator,
+  cutting `cache_creation` writes for warm sessions. Validated A/B on
+  the demo cluster: cross-restart cache survival, view-switch tolerance,
+  and reachable cache_write = 0 in optimal warm-cache conditions.
+- **Voice tuning** during Kobi rollout (two rounds, captured in
+  `kobi-few-shots.md` anti-patterns):
+  - Quantify whenever you have the number — no "varias peticiones por
+    segundo" when logs gave you "~15–20 req/s per pod".
+  - Completeness on overview-shape requests — list every namespace, not
+    a filtered "interesting" subset.
+  - Range of options when proposing actions — three options ordered by
+    impact including "do nothing", not a binary "yes/no".
+  - Be explicit about scope in resource metrics — per-pod vs aggregate
+    vs per-node, always labelled, and the math has to close.
+- **Admin "Copilot Usage"** renamed to **"Kobi Usage"**. Same analytics,
+  same per-session cost breakdown — just reflects the renamed agent.
+- **Cluster auto-registration** suffixes agent-proxy cluster display
+  names with `(via agent)` so operators can distinguish them from
+  locally-configured clusters.
+- **Topology query** consolidated into the standard `useResources` hook
+  shape, gaining a 60-second `refetchInterval` fallback (in case the WS
+  handler is disconnected) and `retry: 2` to survive transient backend
+  hiccups. Real-time freshness still driven by the WS handler; the
+  poll is the safety net.
+
+### Fixed
+
+- **Cluster Map: Hubble flow misclassification of pod IPs as external.**
+  When Hubble dropped the destination identity (resolver race against pod
+  restarts, identity propagation, or hostNetwork hops), pod-to-pod flows
+  ended up in the synthetic "external" region. Now the backend recovers
+  the mapping from cluster state already in memory (pod IPs from the
+  lister, PodCIDR ranges from nodes): IP-matches-pod → rewrite as
+  pod-to-pod; IP-in-PodCIDR-but-stale → drop; IP-outside-all-PodCIDRs
+  → keep external, attach hostname from recent DNS if available. New
+  `PodLister` / `NodeLister` accessors on the Connector for callers
+  that need informer state without re-querying the API server.
+- **Topbar z-index** raised so the cluster switcher and global search
+  stay above admin overlays (was at z-200, same as `IntegrationDetailPanel`;
+  now z-400).
+- **Copilot config fetch race**: `/copilot/config` now waits for
+  AuthProvider's silent-refresh init() before firing, so the chat
+  toggle no longer requires a manual page refresh on first load when
+  the auth token wasn't yet attached.
+- **Agent-proxy SPDY tunnel** previously dropped Connection / Upgrade
+  headers, breaking exec/files/portforward through the proxy. Headers
+  now preserved end-to-end.
+- **Agent integrations admin** pre-flights now check existing operator
+  RBAC before re-creating, preventing duplicate ClusterRoleBindings on
+  re-install.
+- **Release workflow**: pre-release tags (`-rc`, `-beta`, `-alpha`) and
+  agent-only releases no longer claim "Latest" on the repo's releases
+  page.
+- **`get_kubebolt_docs`** scope expanded to cover Kobi-rebranded surfaces
+  (panel toggle, sigil states, awaiting transitions).
+
+### Breaking — agent only
+
+These changes affect operators with deployed agents only. The API/web
+surface is unchanged for users without agents.
+
+- **Protocol bump: AgentChannel v2** replaces AgentIngest v1
+  (`feat(proto)!: AgentChannel v2`). A v0.1.x agent will not connect to
+  a 1.6.0 backend.
+- **`KubeStreamData` / `KubeStreamAck`** are new proto messages required
+  for the SPDY upgrade tunnels (`feat(proto)!: KubeStreamData + KubeStreamAck`).
+- **Agent v0.2.0** ships these protocol changes plus 3-tier RBAC
+  (metrics / reader / operator) and the OSS distribution shape (helm
+  chart + raw manifest). Released independently on the `agent-v*` tag
+  track on 2026-04-29.
+
+**Upgrade path:** bump backend to 1.6.0 + update agent images to
+`agent-v0.2.0` (or later). Helm chart bumps both in lock-step.
+
+### Known issues (carried forward)
+
+- `/cluster/overview` still returns zero for `health.insights.*` counters.
+- Tool-result JSON truncation is still byte-aligned.
+
+### What's next
+
+- Phase 4 of Kobi launch — inline 👍/👎 feedback per response — deferred
+  until production traffic is meaningful.
+- Multi-user / multi-cluster cache sharing benefit of Phase 6 not yet
+  measured (single-user A/B only); production usage will quantify.
+
+---
+
 ## [1.5.1] — 2026-04-22
 
 Patch release focused on making auto-compact reliable. The 1.5.0 trigger
