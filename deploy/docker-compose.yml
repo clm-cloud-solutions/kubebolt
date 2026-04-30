@@ -1,6 +1,11 @@
 services:
   api:
-    build: ../apps/api
+    # Build context is the repo root (one level up from deploy/) so the
+    # Dockerfile can pick up both apps/api and packages/proto — the
+    # api module uses a replace directive into ../../packages/proto.
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
     ports:
       - "8080:8080"   # HTTP/REST + WebSocket
       - "9090:9090"   # gRPC AgentIngest (Phase 2)

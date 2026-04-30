@@ -38,10 +38,16 @@ jobs:
             type=semver,pattern={{major}}.{{minor}}
             type=sha,prefix=
 
+      # Build context must be the repo root so the Dockerfile can pick up
+      # both apps/api and packages/proto (apps/api/go.mod has a replace
+      # directive into ../../packages/proto). Dockerfile is referenced
+      # explicitly via `file:` since the context is no longer the
+      # Dockerfile's directory.
       - uses: docker/build-push-action@v5
         id: build
         with:
-          context: apps/api
+          context: .
+          file: apps/api/Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
@@ -96,6 +102,12 @@ jobs:
         run: cosign sign --yes ${{ env.WEB_IMAGE }}@${{ steps.build.outputs.digest }}
 
   publish-chart:
+    # The Helm chart references the api + web images at the same
+    # version, so don't publish a chart pointing at an image that
+    # never built. Without this gate a failed build-api leaves a
+    # broken `helm install --version <X>` until the chart is manually
+    # cleaned up (chart 1.6.0 RC was the trigger that surfaced this).
+    needs: [build-api, build-web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
