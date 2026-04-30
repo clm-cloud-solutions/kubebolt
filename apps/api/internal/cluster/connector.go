@@ -180,13 +180,12 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	// is exec'd cold, and a too-short timeout here leaves the connector
 	// with an empty UID, which previously caused unscoped queries to
 	// leak data from other clusters in the same VM.
-	if uidCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second); true {
-		defer cancel()
-		if ns, err := clientset.CoreV1().Namespaces().Get(uidCtx, "kube-system", metav1.GetOptions{}); err == nil {
-			c.clusterUID = string(ns.UID)
-		} else {
-			log.Printf("Warning: failed to read kube-system UID for cluster %q: %v — VM queries for this cluster will return empty results until reconnect", clusterName, err)
-		}
+	uidCtx, uidCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer uidCancel()
+	if ns, err := clientset.CoreV1().Namespaces().Get(uidCtx, "kube-system", metav1.GetOptions{}); err == nil {
+		c.clusterUID = string(ns.UID)
+	} else {
+		log.Printf("Warning: failed to read kube-system UID for cluster %q: %v — VM queries for this cluster will return empty results until reconnect", clusterName, err)
 	}
 
 	c.permissions = probePermissions(clientset)
