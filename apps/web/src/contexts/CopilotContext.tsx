@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { compactCopilotSession, sendCopilotChat } from '@/services/copilot/chat'
 import { useCopilotLayout } from '@/hooks/useCopilotLayout'
+import { useAuth } from '@/contexts/AuthContext'
 import type { CopilotMessage, CopilotConfig, CopilotUsage } from '@/services/copilot/types'
 
 /** Inline compaction notice rendered in the chat transcript. */
@@ -73,6 +74,10 @@ function generateId(): string {
 
 export function CopilotProvider({ children }: { children: ReactNode }) {
   const location = useLocation()
+  // Auth state — used to gate the copilot config fetch until the auth
+  // context has settled, so the request always carries a token (or
+  // skips entirely when auth is still booting).
+  const auth = useAuth()
   // Single source of truth for panel layout — consumers read via
   // useCopilot().layout so panel + content-reservation stay in sync.
   const layout = useCopilotLayout()
@@ -93,11 +98,23 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   // cacheCreationTokens.
   const [lastRoundUsage, setLastRoundUsage] = useState<CopilotUsage | null>(null)
 
+  // Wait for auth init to settle before asking for the copilot config.
+  // Earlier this query had `retry: false` AND fired immediately on mount,
+  // so when CopilotProvider mounted before AuthProvider had finished its
+  // silent-refresh (race during page load), the request went out without
+  // a token, returned 401, and stayed in error state forever — the user
+  // had to refresh the page for the copilot toggle to appear.
+  //
+  // Now: gate on `!auth.isLoading` so the fetch waits until auth is
+  // settled (token attached if user is signed in, or auth confirmed
+  // disabled). Drop the explicit `retry: false` so we inherit the
+  // queryClient default (2 retries on transient network errors; auth
+  // and cluster errors are still not retried).
   const { data: config } = useQuery({
     queryKey: ['copilot-config'],
     queryFn: api.getCopilotConfig,
     staleTime: 60_000,
-    retry: false,
+    enabled: !auth.isLoading,
   })
 
   const sendMessage = useCallback(
