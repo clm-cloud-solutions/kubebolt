@@ -188,12 +188,38 @@ export function CopilotPanel() {
     document.addEventListener('mouseup', onUp)
   }
 
-  // Map runtime state to Kobi Sigil state. Investigating fires while
-  // a request is in flight or tool calls are pending. Watching is the
-  // resting state. (Awaiting — sky, used when a proposal card needs
-  // operator action — is wired in a follow-up; the Sigil supports it.)
+  // A "pending proposal" is one where Kobi has emitted an action_proposal
+  // tool result but the operator has not yet clicked Execute or Dismiss
+  // (executionStatus is undefined). When at least one such card is
+  // rendered, Kobi is effectively waiting for a decision — that's the
+  // semantic the awaiting Sigil state communicates.
+  const hasPendingProposal = useMemo(() => {
+    for (const m of messages) {
+      if (m.role !== 'user' || !m.toolResults) continue
+      for (const tr of m.toolResults) {
+        const proposal = parseActionProposal(tr.content)
+        if (proposal && proposal.executionStatus === undefined) {
+          return true
+        }
+      }
+    }
+    return false
+  }, [messages])
+
+  // Map runtime state to Kobi Sigil state, by precedence:
+  //   investigating — model is generating or tool calls are in flight
+  //   awaiting      — at least one proposal card is waiting for the
+  //                   operator's Execute / Dismiss decision
+  //   watching      — idle resting state
+  // Investigating wins over awaiting because active work is the more
+  // current signal (the operator may have just re-sent a follow-up
+  // before clicking on the prior card).
   const kobiState: KobiSigilState =
-    isLoading || pendingToolCalls.length > 0 ? 'investigating' : 'watching'
+    isLoading || pendingToolCalls.length > 0
+      ? 'investigating'
+      : hasPendingProposal
+        ? 'awaiting'
+        : 'watching'
 
   if (!config?.enabled || !isOpen) return null
 
@@ -275,7 +301,20 @@ export function CopilotPanel() {
       {/* Header */}
       <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <div className="w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center shrink-0">
+          {/* The avatar background tints with the state, in the same color
+              family as the Sigil inside. At small sizes (18px) the inner
+              SVG state changes alone are too subtle — tinting the whole
+              circle makes the transition unmistakable without abandoning
+              the calm-SRE register. */}
+          <div
+            className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300 ${
+              kobiState === 'investigating'
+                ? 'bg-amber-100 dark:bg-amber-950/40'
+                : kobiState === 'awaiting'
+                  ? 'bg-sky-100 dark:bg-sky-950/40'
+                  : 'bg-kb-accent-light'
+            }`}
+          >
             <KobiSigil state={kobiState} size={18} />
           </div>
           <div className="flex flex-col min-w-0">
