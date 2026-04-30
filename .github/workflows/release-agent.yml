@@ -188,6 +188,15 @@ jobs:
           # Pre-release marker matches the same semver-suffix convention
           # used for the main product — keeps the release list filterable.
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+          # Agent releases ride their own cadence (agent-vX.Y.Z) and
+          # carry only the agent + helm chart artifacts, not the main
+          # KubeBolt product. The "Latest release" badge on the repo
+          # should always point at a kubebolt main version (vX.Y.Z) so
+          # visitors landing on the releases page get the product
+          # bundle, not just the agent. Without this flag GitHub auto-
+          # promotes the most recent non-prerelease tag and an
+          # agent-* release ends up on the front page.
+          make_latest: "false"
           body: |
             KubeBolt node agent release ${{ github.ref_name }}.
 
