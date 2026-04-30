@@ -7,7 +7,7 @@ import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
+import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
@@ -231,6 +231,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
     case 'nodes':
       base.push(
         { id: 'yaml', label: 'YAML' },
+        { id: 'node-pods', label: 'Pods' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
       )
@@ -2278,6 +2279,63 @@ function JobLogsTab({ namespace, name }: { namespace: string; name: string }) {
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
+// ─── Node Pods Tab ────────────────────────────────────────────────
+// Lists every pod scheduled on this node. Reuses the generic
+// /resources/pods endpoint with the new ?node= filter, so we don't need
+// a dedicated handler. Limit bumped to 200 because nodes commonly carry
+// 30–110 pods and we don't want pagination chrome on a tab.
+
+function NodePodsTab({ nodeName }: { nodeName: string }) {
+  const { data, isLoading, error } = useResources('pods', { node: nodeName, limit: 200 })
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const pods = data?.items ?? []
+  if (pods.length === 0) {
+    return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found on this node</div>
+  }
+
+  return (
+    <Section title={`Pods on ${nodeName} (${pods.length})`}>
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Ready</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal pr-6">CPU</th>
+            <th className="pb-2 font-normal pl-2">Memory</th>
+            <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">IP</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {pods.map((pod: ResourceItem, i: number) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{String(pod.namespace ?? '—')}</td>
+              <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
+              <td className="py-2"><StatusBadge status={pod.status} /></td>
+              <td className="py-2 w-36 pr-6">
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+              </td>
+              <td className="py-2 w-36 pl-2">
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+              </td>
+              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 // ─── History Tab (Deployments) ───────────────────────────────────
 
 function CronJobJobsTab({ namespace, name }: { namespace: string; name: string }) {
@@ -2478,6 +2536,7 @@ export function ResourceDetailPage() {
       case 'ds-pods': return <DaemonSetPodsTab namespace={namespace} name={name} />
       case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
       case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
+      case 'node-pods': return <NodePodsTab nodeName={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history':
         if (type === 'deployments') return <HistoryTab namespace={namespace} name={name} />

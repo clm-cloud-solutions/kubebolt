@@ -1448,7 +1448,7 @@ func (c *Connector) GetHealth(metricsAvailable bool, insights []models.Insight) 
 }
 
 // GetResources returns a paginated, filtered, sorted list of resources.
-func (c *Connector) GetResources(resourceType, namespace, search, status, sortBy, order string, page, limit int) models.ResourceList {
+func (c *Connector) GetResources(resourceType, namespace, search, status, node, sortBy, order string, page, limit int) models.ResourceList {
 	// Check permission for this resource type (gateway types use dynamic client, skip check)
 	permKey := resourceType
 	if permKey == "persistentvolumeclaims" {
@@ -1551,17 +1551,37 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, sortBy
 		items = filtered
 	}
 
-	// Sort
-	if sortBy != "" {
-		sort.Slice(items, func(i, j int) bool {
-			vi := fmt.Sprintf("%v", items[i][sortBy])
-			vj := fmt.Sprintf("%v", items[j][sortBy])
-			if order == "desc" {
-				return vi > vj
+	// Filter by node — only meaningful for pods (the field is empty on
+	// every other resource type, so the filter just zero-matches them
+	// instead of erroring).
+	if node != "" {
+		filtered := items[:0]
+		for _, item := range items {
+			n, _ := item["nodeName"].(string)
+			if n == node {
+				filtered = append(filtered, item)
 			}
-			return vi < vj
-		})
+		}
+		items = filtered
 	}
+
+	// Sort. When the caller doesn't ask for a column, default to name
+	// asc so pagination is stable across requests. The informer cache
+	// is a Go map; iterating it returns items in random order, which
+	// without this default would let a single item drift between page 1
+	// and page 2 (or appear/disappear) on consecutive refreshes.
+	effectiveSortBy := sortBy
+	if effectiveSortBy == "" {
+		effectiveSortBy = "name"
+	}
+	sort.Slice(items, func(i, j int) bool {
+		vi := fmt.Sprintf("%v", items[i][effectiveSortBy])
+		vj := fmt.Sprintf("%v", items[j][effectiveSortBy])
+		if order == "desc" {
+			return vi > vj
+		}
+		return vi < vj
+	})
 
 	total := len(items)
 
@@ -1872,7 +1892,7 @@ func (c *Connector) GetEvents(eventType, namespace, involvedKind, involvedName s
 
 // GetNamespaces returns all namespaces.
 func (c *Connector) GetNamespaces() models.ResourceList {
-	return c.GetResources("namespaces", "", "", "", "name", "asc", 1, 1000)
+	return c.GetResources("namespaces", "", "", "", "", "name", "asc", 1, 1000)
 }
 
 

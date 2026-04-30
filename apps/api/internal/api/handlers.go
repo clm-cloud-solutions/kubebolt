@@ -109,6 +109,7 @@ func (h *handlers) getResources(w http.ResponseWriter, r *http.Request) {
 	namespace := r.URL.Query().Get("namespace")
 	search := r.URL.Query().Get("search")
 	status := r.URL.Query().Get("status")
+	node := r.URL.Query().Get("node")
 	sortBy := r.URL.Query().Get("sort")
 	order := r.URL.Query().Get("order")
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -126,7 +127,7 @@ func (h *handlers) getResources(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	result := conn.GetResources(resourceType, namespace, search, status, sortBy, order, page, limit)
+	result := conn.GetResources(resourceType, namespace, search, status, node, sortBy, order, page, limit)
 	if result.Forbidden {
 		respondError(w, http.StatusForbidden, "insufficient permissions to access "+resourceType)
 		return

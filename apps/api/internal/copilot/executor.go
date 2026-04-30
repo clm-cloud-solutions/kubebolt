@@ -74,7 +74,8 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		list := conn.GetResources(t, ns, search, status, sort, order, page, limit)
+		node := stringArg(args, "node")
+		list := conn.GetResources(t, ns, search, status, node, sort, order, page, limit)
 		if list.Forbidden {
 			res.Content = fmt.Sprintf(`{"error":"forbidden: insufficient permissions to access %s","forbidden":true}`, t)
 			res.IsError = true
@@ -678,7 +679,7 @@ func searchAllResources(conn *cluster.Connector, query string, limit int) []map[
 		if len(results) >= limit {
 			break
 		}
-		list := conn.GetResources(rt, "", query, "", "", "", 1, limit)
+		list := conn.GetResources(rt, "", query, "", "", "", "", 1, limit)
 		for _, item := range list.Items {
 			if len(results) >= limit {
 				break

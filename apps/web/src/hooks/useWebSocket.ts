@@ -31,9 +31,16 @@ export function useWebSocket(resources: string[]) {
       const ns = payload.data?.metadata?.namespace
       const name = payload.data?.metadata?.name
 
-      // List queries: prefix-invalidate everything under ['resources'].
-      // Inactive queries just go stale; only mounted list views refetch.
-      queryClient.invalidateQueries({ queryKey: ['resources'] })
+      // List queries are NOT invalidated here on purpose. Earlier we
+      // prefix-invalidated everything under ['resources'] so users saw
+      // Kobi/Action changes instantly, but the side effect was that
+      // any informer event in an active cluster (rolling updates,
+      // kubelet status churn) refetched the list dozens of times per
+      // second — list reorders, table flicker. Lists now refresh only
+      // via the user-configured refetchInterval (RefreshContext) or a
+      // manual refresh. Mutation handlers can opt in by calling
+      // queryClient.invalidateQueries(['resources', type]) themselves
+      // when post-action freshness matters.
 
       // Detail page queries: ['resource-detail', type, ns, name]. Match
       // by ns+name since the kind isn't on the wire. Only one detail
