@@ -924,6 +924,11 @@ function ClusterMapInner() {
       // select any destination Pod. Everything else is collapsed out,
       // which keeps the map readable and matches the user's mental
       // model of "show me what's actually talking".
+      //
+      // When there are 0 flows we deliberately return [] — the canvas
+      // stays blank and the CTA card overlay below explains why
+      // (no agent / no Cilium / no traffic). Showing a partial
+      // backdrop competes with the CTA visually.
       const effectiveHidden = new Set<string>([...hiddenKinds, ...TRAFFIC_HIDDEN_KINDS])
       const kindFiltered = filterNodes(topology.nodes, effectiveHidden, visibleNamespaces)
       const flows = flowData?.edges || []
@@ -1605,12 +1610,45 @@ function ClusterMapInner() {
         </div>
       </div>
 
-      {/* Traffic layout without a flow source — float a compact CTA
-          card on the canvas explaining the chrome they're seeing.
-          Static topology continues to render underneath, so the
-          layout is still useful for orientation. */}
+      {/* Traffic layout with the agent reachable but no flows arriving —
+          most likely the cluster doesn't run Cilium/Hubble, or the
+          agent runs in metrics-only mode, or simply no traffic in the
+          last minute. Canvas stays empty on purpose; this card carries
+          the entire signal. */}
+      {layoutMode === 'traffic' && trafficSourceAvailable && (flowData?.edges?.length ?? 0) === 0 && (
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
+          <div className="rounded-lg border border-kb-border bg-kb-card/95 backdrop-blur-sm border-l-4 border-l-status-warn shadow-xl">
+            <div className="flex items-start gap-3 p-3.5">
+              <div className="w-8 h-8 rounded-lg bg-status-warn-dim flex items-center justify-center shrink-0">
+                <Lock className="w-4 h-4 text-status-warn" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center justify-between gap-2 flex-wrap">
+                  <h4 className="text-[13px] font-semibold text-kb-text-primary">
+                    No traffic observed (last 1m)
+                  </h4>
+                  <Link
+                    to="/admin/integrations"
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md border border-kb-border text-kb-text-secondary text-[11px] font-medium hover:bg-kb-elevated hover:text-kb-text-primary transition-colors shrink-0"
+                  >
+                    Check agent setup
+                    <ArrowRight className="w-3 h-3" strokeWidth={2.5} />
+                  </Link>
+                </div>
+                <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">
+                  Pod-to-pod flows need Cilium / Hubble running in the cluster — if it isn't installed, this layout stays empty. The agent must also have Hubble flow collection enabled (off in metrics-only mode).
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Traffic layout without a flow source — agent isn't installed
+          (or isn't reachable). Canvas stays empty; the CTA carries the
+          entire signal centered, no static-topology backdrop. */}
       {layoutMode === 'traffic' && !trafficSourceAvailable && (
-        <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
           <div className="rounded-lg border border-kb-border bg-kb-card/95 backdrop-blur-sm border-l-4 border-l-kb-accent shadow-xl">
             <div className="flex items-start gap-3 p-3.5">
               <div className="w-8 h-8 rounded-lg bg-kb-accent-light flex items-center justify-center shrink-0">
@@ -1630,7 +1668,7 @@ function ClusterMapInner() {
                   </Link>
                 </div>
                 <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">
-                  Showing static topology only. Install the agent (or another flow-providing integration when available) to surface pod-to-pod traffic, HTTP latency, DNS resolutions, and external endpoint flows on this layout.
+                  Install the agent (or another flow-providing integration when available) to surface pod-to-pod traffic, HTTP latency, DNS resolutions, and external endpoint flows on this layout.
                 </p>
               </div>
             </div>
