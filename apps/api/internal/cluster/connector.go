@@ -1388,9 +1388,17 @@ func (c *Connector) buildNamespaceWorkloads(
 		nsWorkloads[ds.Namespace] = append(nsWorkloads[ds.Namespace], ws)
 	}
 
-	// Convert map to sorted slice
+	// Convert map to sorted slice. Both the outer namespaces and the
+	// inner workload lists need an explicit sort: nsWorkloads is a Go
+	// map (random iteration order) and each value was appended in the
+	// order the informer cache yielded the parents (also map-iterated),
+	// so without these sorts the Overview "Workloads by namespace"
+	// reorders on every refresh.
 	result := make([]models.NamespaceWorkload, 0, len(nsWorkloads))
 	for ns, workloads := range nsWorkloads {
+		sort.Slice(workloads, func(i, j int) bool {
+			return workloads[i].Name < workloads[j].Name
+		})
 		result = append(result, models.NamespaceWorkload{
 			Namespace: ns,
 			Workloads: workloads,
@@ -1654,7 +1662,16 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return nodeToMap(node), nil
+		m := nodeToMap(node)
+		// Allocation summary + top consumers — only computed for the
+		// detail endpoint, never the list, because it walks every pod
+		// in the cluster. Bounded cost per click is fine; per-list-page
+		// would be O(pods × nodes) for no reason.
+		if c.podLister != nil {
+			pods, _ := c.podLister.List(everythingSelector())
+			addNodeAllocation(m, node, pods)
+		}
+		return m, nil
 	case "namespaces":
 		ns, err := c.namespaceLister.Get(name)
 		if err != nil {
@@ -2064,6 +2081,96 @@ func serviceToMap(svc *corev1.Service) map[string]interface{} {
 		"age":             formatAge(svc.CreationTimestamp.Time),
 		"ownerReferences": ownerRefsToSlice(svc.OwnerReferences),
 	}
+}
+
+// addNodeAllocation augments a node detail map with computed
+// scheduling-load fields: sum of pod requests/limits, pod count vs
+// max pods, schedulable flag, and top-N consumers per resource. These
+// answer the operational question "is this node full, and if so, who's
+// eating it?" — the kubectl-describe view.
+//
+// Skips terminal pods (Succeeded/Failed) since they no longer reserve
+// resources from the scheduler's POV.
+func addNodeAllocation(m map[string]interface{}, node *corev1.Node, pods []*corev1.Pod) {
+	type podUsage struct {
+		Namespace  string
+		Name       string
+		CPURequest int64
+		MemRequest int64
+	}
+	var cpuReq, cpuLim, memReq, memLim int64
+	podCount := 0
+	usages := make([]podUsage, 0, 32)
+	for _, p := range pods {
+		if p.Spec.NodeName != node.Name {
+			continue
+		}
+		if p.Status.Phase == corev1.PodSucceeded || p.Status.Phase == corev1.PodFailed {
+			continue
+		}
+		podCount++
+		var pCPUReq, pCPULim, pMemReq, pMemLim int64
+		for _, c := range p.Spec.Containers {
+			if v, ok := c.Resources.Requests[corev1.ResourceCPU]; ok {
+				pCPUReq += v.MilliValue()
+			}
+			if v, ok := c.Resources.Limits[corev1.ResourceCPU]; ok {
+				pCPULim += v.MilliValue()
+			}
+			if v, ok := c.Resources.Requests[corev1.ResourceMemory]; ok {
+				pMemReq += v.Value()
+			}
+			if v, ok := c.Resources.Limits[corev1.ResourceMemory]; ok {
+				pMemLim += v.Value()
+			}
+		}
+		cpuReq += pCPUReq
+		cpuLim += pCPULim
+		memReq += pMemReq
+		memLim += pMemLim
+		usages = append(usages, podUsage{
+			Namespace:  p.Namespace,
+			Name:       p.Name,
+			CPURequest: pCPUReq,
+			MemRequest: pMemReq,
+		})
+	}
+	m["cpuRequested"] = cpuReq
+	m["cpuLimitSum"] = cpuLim
+	m["memoryRequested"] = memReq
+	m["memoryLimitSum"] = memLim
+	m["podCount"] = podCount
+	m["maxPods"] = node.Status.Allocatable.Pods().Value()
+	m["unschedulable"] = node.Spec.Unschedulable
+
+	const topN = 5
+	sort.Slice(usages, func(i, j int) bool { return usages[i].CPURequest > usages[j].CPURequest })
+	topCPU := make([]map[string]interface{}, 0, topN)
+	for i := 0; i < topN && i < len(usages); i++ {
+		if usages[i].CPURequest == 0 {
+			break
+		}
+		topCPU = append(topCPU, map[string]interface{}{
+			"namespace":  usages[i].Namespace,
+			"name":       usages[i].Name,
+			"cpuRequest": usages[i].CPURequest,
+		})
+	}
+	m["topCpuConsumers"] = topCPU
+
+	sort.Slice(usages, func(i, j int) bool { return usages[i].MemRequest > usages[j].MemRequest })
+	topMem := make([]map[string]interface{}, 0, topN)
+	for i := 0; i < topN && i < len(usages); i++ {
+		if usages[i].MemRequest == 0 {
+			break
+		}
+		topMem = append(topMem, map[string]interface{}{
+			"namespace":     usages[i].Namespace,
+			"name":          usages[i].Name,
+			"memoryRequest": usages[i].MemRequest,
+		})
+	}
+	m["topMemConsumers"] = topMem
 }
 
 func nodeToMap(node *corev1.Node) map[string]interface{} {

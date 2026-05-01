@@ -59,7 +59,7 @@ isFetching={isFetching}
       {overview.namespaceWorkloads && overview.namespaceWorkloads.length > 0 && (
         <div className="space-y-5 mt-2">
           <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-            Workloads por namespace
+            Workloads by namespace
           </div>
           {overview.namespaceWorkloads.map((nsw) => (
             <NamespaceSection key={nsw.namespace} namespaceWorkload={nsw} />
