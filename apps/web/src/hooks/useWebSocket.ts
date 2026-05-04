@@ -28,6 +28,18 @@ export function useWebSocket(resources: string[]) {
 
     const unsubscribe = wsManager.onMessage((event) => {
       const payload = event as unknown as WSPayload
+
+      // Connector recovery — agent-proxy cluster came back up after
+      // the boot-restore + reconnect race. Invalidate immediately so
+      // the user doesn't sit on a stale "Cluster unreachable" page
+      // until the next 30s refetch tick. Bail before the
+      // resource-detail path since this message has no metadata.
+      if (payload.type === 'cluster:connected') {
+        queryClient.invalidateQueries({ queryKey: ['clusters'] })
+        queryClient.invalidateQueries({ queryKey: ['cluster-overview'] })
+        return
+      }
+
       const ns = payload.data?.metadata?.namespace
       const name = payload.data?.metadata?.name
 
