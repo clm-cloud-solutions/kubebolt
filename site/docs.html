@@ -833,17 +833,40 @@ kubectl -n $NS scale deploy/kubebolt-api --replicas=1</span></pre>
 <!-- ═══ Multi-Cluster ═══ -->
 <div class="doc-page" id="pg-multicluster"><div class="md">
 <h1>Multi-Cluster</h1>
-<p class="page-desc">All kubeconfig contexts auto-discovered. Switch clusters in one click.</p>
+<p class="page-desc">Two paths: kubeconfig contexts (when KubeBolt can reach the apiservers) or kubebolt-agent (when it can't).</p>
 
-<h2>How it Works</h2>
-<p>The Cluster Manager reads all contexts from the kubeconfig file at startup. The initial connection targets the current-context. You can switch clusters at runtime via the API or the cluster selector in the UI.</p>
+<h2>Path A: kubeconfig contexts</h2>
+<p>The Cluster Manager reads all contexts from the kubeconfig file at startup, plus any kubeconfig YAML uploaded later via the <strong>"Manage clusters → Import kubeconfig"</strong> flow. The initial connection targets the current-context; you can switch at runtime via the API or the cluster selector. Works in every deployment mode (binary, Homebrew, Compose, in-cluster Helm) — the only requirement is that the backend can reach the apiserver.</p>
 
-<h2>Switching</h2>
+<h3>Switching</h3>
 <p>When switching clusters, the manager tears down the old connector (informers, metrics collector, insights engine) and creates a new one for the target context. The permission probe runs again for the new cluster. The frontend shows a "Connecting to cluster" overlay during the switch.</p>
 
-<h2>API</h2>
+<h3>API</h3>
 <pre>GET  /api/v1/clusters              → list all contexts
 POST /api/v1/clusters/switch       → { "context": "production-eks" }</pre>
+
+<h2>Path B: kubebolt-agent</h2>
+<p>When KubeBolt can't reach the remote cluster's apiserver (private network, SaaS-style multi-cluster, no kubeconfig credentials), install <strong>kubebolt-agent</strong> in each remote cluster. Each agent dials <em>outbound</em> to KubeBolt's <code>agent-ingest</code> port (9090, gRPC) and auto-registers — the cluster appears in the switcher within ~30 seconds.</p>
+<p>This path is independent of how KubeBolt itself is deployed: in-cluster Helm, desktop binary, single container, or Compose all accept agent registrations as long as port 9090 is reachable from the remote cluster.</p>
+
+<h3>Add cluster — two onboarding paths, both always available</h3>
+<p>The cluster switcher dropdown shows a <strong>"Manage clusters →"</strong> link (admin only) that takes you to the Clusters page. From there an <strong>"+ Add cluster"</strong> menu offers two options regardless of deployment mode:</p>
+<table>
+<tr><th>Option</th><th>Best when</th><th>What happens</th></tr>
+<tr><td><code>Import kubeconfig</code></td><td>You have a SA token and the cluster is reachable from this backend</td><td>Paste / upload a kubeconfig; KubeBolt persists every context inside it and dials the apiserver directly. Works in every deployment mode.</td></tr>
+<tr><td><code>Install agent</code></td><td>The apiserver isn't reachable from this backend</td><td>Wizard issues an ingest token, materializes it as a Secret, and generates a copy-paste <code>helm install kubebolt-agent</code> for the remote cluster.</td></tr>
+</table>
+<p>The agent wizard adapts to the backend's deployment mode: in-cluster, it inspects the <code>agent-ingest</code> Service and points to <code>kubectl patch svc … LoadBalancer</code> if it's still ClusterIP-only; external, it explains how to expose the host's port 9090 (publish via <code>docker run -p</code>, Compose, or firewall rules).</p>
+
+<h3>Permission tier of the agent</h3>
+<p>The agent's <code>rbac.mode</code> determines what KubeBolt can do <em>on the remote cluster</em>:</p>
+<table>
+<tr><th>Mode</th><th>What you get</th></tr>
+<tr><td><code>metrics</code></td><td>Kubelet stats + Hubble flows only. No resource browsing, no commands.</td></tr>
+<tr><td><code>reader</code></td><td>Cluster-wide read access via the agent's kube-request proxy. List / view all resources, no mutations.</td></tr>
+<tr><td><code>operator</code></td><td>Read + write. Scale, restart, delete, exec — full management. Recommended for primary use.</td></tr>
+</table>
+<div class="callout-blue callout"><strong>Important:</strong> the agent's mode applies to its own cluster, not to KubeBolt's local permissions. Even if KubeBolt is in-cluster with cluster-admin, you still need <code>operator</code> mode on the agent to manage the remote cluster.</div>
 </div></div>
 
 <!-- ═══ Notifications ═══ -->

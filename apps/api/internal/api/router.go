@@ -188,6 +188,7 @@ func NewRouter(
 					// other integrations don't accidentally inherit
 					// the tenants-store-backed flow.
 					r.Get("/integrations/agent/auth-info", h.handleAgentAuthInfo)
+					r.Get("/integrations/agent/install-defaults", h.handleAgentInstallDefaults)
 					r.Post("/integrations/agent/issue-token", h.handleAgentIssueToken)
 				})
 

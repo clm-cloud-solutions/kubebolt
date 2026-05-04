@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate } from 'react-router-dom'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
@@ -20,6 +20,14 @@ export function Topbar({ overview }: TopbarProps) {
   const [searchOpen, setSearchOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+  const { hasRole } = useAuth()
+  const isAdmin = hasRole('admin')
+
+  // Cluster management (add / rename / delete) lives on /clusters —
+  // the dropdown only routes there. Keeps the switcher focused on its
+  // primary job (switching) and avoids duplicating the wizard wiring
+  // in two places. Visible to admins regardless of deployment mode
+  // since both kubeconfig and agent paths work in either.
 
   // Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -83,7 +91,10 @@ export function Topbar({ overview }: TopbarProps) {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [open])
 
+  // The dropdown is interactive when there's more than one cluster to
+  // pick from OR when the admin has access to the manage link.
   const hasMultipleClusters = clusters && clusters.length > 1
+  const dropdownInteractive = hasMultipleClusters || isAdmin
 
   return (
     <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]">
@@ -92,15 +103,15 @@ export function Topbar({ overview }: TopbarProps) {
         {/* Cluster selector */}
         <div className="relative" ref={dropdownRef}>
           <button
-            onClick={() => hasMultipleClusters && setOpen(!open)}
+            onClick={() => dropdownInteractive && setOpen(!open)}
             title={activeCluster?.context || clusterName}
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md bg-kb-card border border-kb-border transition-colors ${
-              hasMultipleClusters ? 'cursor-pointer hover:border-kb-border-active' : 'cursor-default'
+              dropdownInteractive ? 'cursor-pointer hover:border-kb-border-active' : 'cursor-default'
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${dotColor} animate-pulse-live`} />
             <span className="text-xs font-mono text-kb-text-primary">{clusterName}</span>
-            {hasMultipleClusters && (
+            {dropdownInteractive && (
               <ChevronDown className={`w-3 h-3 text-kb-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
             )}
           </button>
@@ -131,6 +142,21 @@ export function Topbar({ overview }: TopbarProps) {
                   {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}
                 </button>
               ))}
+
+              {isAdmin && (
+                <>
+                  <div className="border-t border-kb-border my-1" />
+                  <button
+                    type="button"
+                    onClick={() => { setOpen(false); navigate('/clusters') }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 text-kb-text-secondary hover:bg-kb-card-hover hover:text-kb-text-primary transition-colors"
+                  >
+                    <Settings className="w-3.5 h-3.5 shrink-0" />
+                    <span className="text-xs">Manage clusters</span>
+                    <span className="ml-auto text-[10px] text-kb-text-tertiary">add / rename / delete</span>
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
