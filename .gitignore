@@ -50,3 +50,7 @@ Thumbs.db
 
 # Claude Code harness (hooks, settings, worktrees) — local agent state
 .claude/
+
+# Local TLS material for dev / agent tunnel testing — private keys
+# never belong in git, even for self-signed certs.
+/local-tls/
