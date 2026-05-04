@@ -1560,6 +1560,67 @@ func (c *Connector) GetHealth(metricsAvailable bool, insights []models.Insight) 
 	return health
 }
 
+// GetDeploys returns rollout events cluster-wide since the given
+// timestamp. Used by the Capacity dashboard to overlay markers on
+// the time-series charts.
+//
+// Approach: every new ReplicaSet a Deployment owns is, by definition,
+// a rollout. Iterate ReplicaSets, keep the ones (a) created after
+// `since` and (b) owned by a Deployment controller. Each one becomes
+// one DeployEvent. The Deployment's own rollout history is implicit
+// in the ReplicaSet population — older RSs that the controller has
+// scaled to 0 are still kept by Kubernetes (revision history) so a
+// 24h window correctly surfaces every rollout in that window.
+//
+// StatefulSet / DaemonSet rollouts are not surfaced yet — they need
+// a ControllerRevision informer which isn't wired today. When that
+// lands, append to the same return slice; the JSON shape (kind +
+// name + deployedAt + image) is intentionally generic so callers
+// don't need to special-case.
+func (c *Connector) GetDeploys(since time.Time) []models.DeployEvent {
+	if c.replicaSetLister == nil {
+		return nil
+	}
+	rsList, err := c.replicaSetLister.List(everythingSelector())
+	if err != nil {
+		return nil
+	}
+	deploys := make([]models.DeployEvent, 0, 8)
+	for _, rs := range rsList {
+		if rs.CreationTimestamp.Time.Before(since) {
+			continue
+		}
+		var deploymentName string
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Deployment" {
+				deploymentName = ref.Name
+				break
+			}
+		}
+		if deploymentName == "" {
+			// Bare ReplicaSet (no Deployment owner) — rare, surfaced
+			// from custom controllers. Skip; treating it as a Deployment
+			// rollout would lie about the workload model.
+			continue
+		}
+		var image string
+		if len(rs.Spec.Template.Spec.Containers) > 0 {
+			image = rs.Spec.Template.Spec.Containers[0].Image
+		}
+		deploys = append(deploys, models.DeployEvent{
+			Namespace:  rs.Namespace,
+			Kind:       "Deployment",
+			Name:       deploymentName,
+			DeployedAt: rs.CreationTimestamp.Time,
+			Image:      image,
+		})
+	}
+	sort.Slice(deploys, func(i, j int) bool {
+		return deploys[i].DeployedAt.After(deploys[j].DeployedAt)
+	})
+	return deploys
+}
+
 // GetResources returns a paginated, filtered, sorted list of resources.
 func (c *Connector) GetResources(resourceType, namespace, search, status, node, sortBy, order string, page, limit int) models.ResourceList {
 	// Check permission for this resource type (gateway types use dynamic client, skip check)

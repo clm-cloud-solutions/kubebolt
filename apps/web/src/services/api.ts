@@ -463,6 +463,16 @@ export const api = {
       })}`
     ),
 
+  // Cluster-wide rollout events. The Capacity dashboard uses this
+  // to overlay deploy markers on the trends charts so metric shifts
+  // can be correlated with "what changed". Window matches the chart
+  // range — fetching 15m of deploys for a 15m chart, 7d for a 7d
+  // chart — so the response stays small.
+  getDeploys: (params: { windowMinutes: number }) =>
+    fetchJSON<DeployEvent[]>(
+      `${API_BASE}/deploys${buildQuery({ windowMinutes: params.windowMinutes })}`,
+    ),
+
   // Flow edges (Phase 2.1, from pod_flow_events_total)
   getFlowEdges: (params?: { namespace?: string; windowMinutes?: number }) =>
     fetchJSON<FlowEdgesResponse>(
@@ -803,6 +813,19 @@ export interface PromRangeResponse {
   }
   error?: string
   errorType?: string
+}
+
+// Cluster-wide rollout event. Mirrors apps/api/internal/models/types.go
+// DeployEvent. `deployedAt` is RFC3339 (Go's default time.Time JSON
+// encoding); the client converts to unix ms / s as needed at the
+// chart layer.
+export interface DeployEvent {
+  namespace: string
+  kind: string // "Deployment" today; "StatefulSet" / "DaemonSet" once
+  // a ControllerRevision lister lands on the connector
+  name: string
+  deployedAt: string
+  image?: string
 }
 
 // Instant query response — `value` is singular for vector results.

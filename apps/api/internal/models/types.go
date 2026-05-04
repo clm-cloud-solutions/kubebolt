@@ -108,6 +108,25 @@ type PodSummary struct {
 	Ready  bool   `json:"ready"`
 }
 
+// DeployEvent represents a single rollout: a Deployment / StatefulSet
+// / DaemonSet got a new pod template and the controller spun up a new
+// revision. Used by the Capacity dashboard to overlay markers on the
+// time-series charts so the user can correlate metric shifts with
+// "what changed in the cluster" at a glance.
+//
+// Today the connector derives these from ReplicaSet creation
+// timestamps (every new ReplicaSet a Deployment owns is, by
+// definition, a rollout). StatefulSet / DaemonSet rollouts are
+// surfaced as soon as a ControllerRevision lister is wired in;
+// the JSON shape stays the same.
+type DeployEvent struct {
+	Namespace  string    `json:"namespace"`
+	Kind       string    `json:"kind"` // "Deployment" | "StatefulSet" | "DaemonSet"
+	Name       string    `json:"name"`
+	DeployedAt time.Time `json:"deployedAt"`
+	Image      string    `json:"image,omitempty"` // first container's image, for the marker tooltip
+}
+
 // MetricPoint represents a single metrics sample for a resource.
 type MetricPoint struct {
 	Timestamp time.Time `json:"timestamp"`

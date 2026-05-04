@@ -15,6 +15,7 @@ export type CopilotTriggerType =
   | 'flow_edge'
   | 'metric_anomaly'
   | 'resource_inquiry'
+  | 'panel_inquiry'
 
 export interface InsightTriggerPayload {
   type: 'insight'
@@ -129,6 +130,34 @@ export interface ResourceInquiryTriggerPayload {
   }
 }
 
+// PanelInquiryTriggerPayload — Capacity tab panels (Top Consumers,
+// Right-sizing, Recent Deploys). The list-shaped panels don't fit
+// metric_anomaly (they're not curves) or resource_inquiry (they're
+// not a single resource). Each variant carries the rows visible to
+// the user at click-time so the LLM can speak about exactly what's
+// on screen instead of re-querying.
+export type PanelInquiryKind =
+  | 'top_consumers_cpu'
+  | 'right_sizing'
+  | 'recent_deploys'
+
+export interface PanelInquiryTriggerPayload {
+  type: 'panel_inquiry'
+  panel: PanelInquiryKind
+  // Optional human-readable range / window label. Top Consumers
+  // doesn't have one; Right-sizing carries "P95 over 7d"; Recent
+  // Deploys carries the active range like "15m" or "1h".
+  rangeLabel?: string
+  // Each row is a free-form blob — keys are preserved verbatim in
+  // the prompt. Cap at ~10 rows from the call site; the panel
+  // already truncates its visible list and the LLM can tool-call
+  // for more if it needs.
+  rows: Array<Record<string, string | number>>
+  // When the visible list is truncated from a larger total, this
+  // tells the LLM there's more it can pull via tools.
+  truncatedFromTotal?: number
+}
+
 export type CopilotTriggerPayload =
   | InsightTriggerPayload
   | NotReadyResourceTriggerPayload
@@ -136,6 +165,7 @@ export type CopilotTriggerPayload =
   | FlowEdgeTriggerPayload
   | MetricAnomalyTriggerPayload
   | ResourceInquiryTriggerPayload
+  | PanelInquiryTriggerPayload
 
 export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
   switch (payload.type) {
@@ -301,6 +331,62 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
         ``,
         `What story does this chart tell? Any anomalies, spikes, sustained pressure, or trends I should act on?`,
       )
+      return lines.join('\n')
+    }
+    case 'panel_inquiry': {
+      const p = payload
+      // Question is panel-specific so the LLM knows which lens to
+      // read the rows through. The rows themselves are dumb blobs —
+      // the panel knows what it shows; we just preserve the keys
+      // verbatim and let the LLM map them. Single-row clicks
+      // (per-row Kobi) get a singular phrasing so the LLM knows to
+      // focus on one workload instead of summarizing a list.
+      const isSingle = p.rows.length === 1
+      const questions: Record<
+        PanelInquiryKind,
+        { lead: string; close: string; singleLead?: string; singleClose?: string }
+      > = {
+        top_consumers_cpu: {
+          lead: `Look at the top CPU consumers in my cluster and tell me what's running hot.`,
+          close: `Anything here look anomalous, or is this just baseline load? Flag the workloads worth investigating.`,
+          singleLead: `This workload is one of the heaviest CPU consumers in the cluster — explain what's going on.`,
+          singleClose: `Is this load expected for what this workload does, and what should I check or change?`,
+        },
+        right_sizing: {
+          lead: `Walk me through these right-sizing recommendations.`,
+          close: `Prioritize by risk and tell me what to change. Which should I apply first, and where could a change cause an OOM or throttling?`,
+          singleLead: `Explain this right-sizing recommendation in detail.`,
+          singleClose: `What should I change, and what's the risk if I apply the suggestion? Walk me through how to roll it out safely.`,
+        },
+        recent_deploys: {
+          lead: `Summarize the recent rollout activity in my cluster.`,
+          close: `Was anything risky or unusual? Should I correlate with errors / anomalies in the same window?`,
+          singleLead: `Tell me about this rollout.`,
+          singleClose: `Was it routine, or worth investigating? Check whether it correlates with any errors, restarts, or metric anomalies in the same window.`,
+        },
+      }
+      const q = questions[p.panel]
+      const lead = isSingle ? q.singleLead ?? q.lead : q.lead
+      const close = isSingle ? q.singleClose ?? q.close : q.close
+      const lines: string[] = [lead, ``]
+      if (p.rangeLabel) lines.push(`Range: ${p.rangeLabel}`)
+      if (typeof p.truncatedFromTotal === 'number' && p.truncatedFromTotal > p.rows.length) {
+        lines.push(
+          `Showing ${p.rows.length} of ${p.truncatedFromTotal} rows (the rest are available via tools).`,
+        )
+      }
+      if (p.rows.length > 0) {
+        lines.push(``, `Rows:`)
+        for (const row of p.rows) {
+          const parts: string[] = []
+          for (const [k, v] of Object.entries(row)) {
+            if (v === undefined || v === null || v === '') continue
+            parts.push(`${k}=${v}`)
+          }
+          if (parts.length > 0) lines.push(`  - ${parts.join(' · ')}`)
+        }
+      }
+      lines.push(``, close)
       return lines.join('\n')
     }
     case 'resource_inquiry': {

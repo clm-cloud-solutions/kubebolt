@@ -5,6 +5,7 @@ import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
+import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { formatCPU } from '@/utils/formatters'
 import type { ClusterOverview, WorkloadSummary } from '@/types/kubernetes'
 
@@ -113,6 +114,26 @@ export function TopWorkloadsCpu({ installed, overview, refetchMs = 30_000, topN 
     .filter((r) => r.name && !Number.isNaN(r.cores))
     .sort((a, b) => b.cores - a.cores)
 
+  // Build the Kobi payload from the same rows the user is seeing —
+  // namespace/kind/name + usage in millicores + matched
+  // request/limit when specs exist. The "no specs" rows are
+  // explicitly flagged so the LLM can call them out as
+  // misconfigured rather than guessing what the empty fields mean.
+  const kobiRows = rows.map((r) => {
+    const matched = workloadIndex.get(`${r.namespace}/${r.kind}/${r.name}`)
+    const requestMilli = matched?.cpu?.requested ?? 0
+    const limitMilli = matched?.cpu?.limit ?? 0
+    const blob: Record<string, string | number> = {
+      workload: `${r.namespace}/${r.name}`,
+      kind: r.kind,
+      cpu_used_milli: Math.round(r.cores * 1000),
+    }
+    if (requestMilli > 0) blob.cpu_request_milli = requestMilli
+    if (limitMilli > 0) blob.cpu_limit_milli = limitMilli
+    if (requestMilli === 0 && limitMilli === 0) blob.specs = 'none'
+    return blob
+  })
+
   return (
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between mb-3 gap-3">
@@ -123,6 +144,17 @@ export function TopWorkloadsCpu({ installed, overview, refetchMs = 30_000, topN 
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             Top Workloads · CPU
           </h4>
+          {rows.length > 0 && (
+            <AskCopilotButton
+              payload={{
+                type: 'panel_inquiry',
+                panel: 'top_consumers_cpu',
+                rows: kobiRows,
+              }}
+              variant="icon"
+              label="Ask Kobi about top CPU consumers"
+            />
+          )}
         </div>
         <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
           cluster-wide · top {topN}

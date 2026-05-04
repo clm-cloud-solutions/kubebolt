@@ -175,6 +175,7 @@ func NewRouter(
 				r.Get("/topology", h.getTopology)
 				r.Get("/insights", h.getInsights)
 				r.Get("/events", h.getEvents)
+				r.Get("/deploys", h.handleDeploys)
 				r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
 
 				// Integrations — install / configure / uninstall mutate

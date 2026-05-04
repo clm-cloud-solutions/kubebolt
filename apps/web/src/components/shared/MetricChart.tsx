@@ -41,6 +41,25 @@ interface ReferenceLineSpec {
   shortLabel?: string
 }
 
+// Vertical event markers — used for "something happened at this
+// timestamp" overlays (rollouts on the Capacity dashboard, future:
+// alerts firing, scale-ups, config changes). Distinct from the
+// horizontal threshold ReferenceLines above so consumers don't
+// have to reason about "y vs x" with the same shape.
+export interface EventMarker {
+  // Unix seconds. Matches the chart's X-axis dataKey (`t`) so the
+  // marker lands at the right pixel position automatically.
+  timestamp: number
+  // Tooltip / accessibility label, plus the small inline tag at the
+  // top of the line.
+  label: string
+  // CSS color string. Defaults to a neutral slate so markers read
+  // as "annotation" rather than "another series" — and so they
+  // don't collide with the Filesystem chart's violet (#a855f7),
+  // which an earlier violet marker color did.
+  color?: string
+}
+
 interface RangeOption {
   label: string
   minutes: number
@@ -69,6 +88,12 @@ interface MetricChartProps {
   seriesLabel?: (labels: Record<string, string>, prefix?: string) => string
 
   referenceLines?: ReferenceLineSpec[]
+
+  // Vertical "event happened here" markers. Filtered to the chart's
+  // visible X domain via Recharts' `ifOverflow="discard"` so callers
+  // can pass a wider list (e.g. all deploys in the last 24h) without
+  // worrying about pre-trimming.
+  eventMarkers?: EventMarker[]
 
   defaultRangeMinutes?: number
   rangeOptions?: RangeOption[]
@@ -250,6 +275,7 @@ export function MetricChart({
   defaultRangeMinutes = 15,
   rangeOptions = DEFAULT_RANGE_OPTIONS,
   controlledRangeMinutes,
+  eventMarkers,
   refetchMs = 15_000,
   height = 220,
   showStats = true,
@@ -587,6 +613,16 @@ export function MetricChart({
                   cursor={{ stroke: 'var(--kb-border-active)', strokeWidth: 1 }}
                   content={({ active, payload, label }) => {
                     if (!active || !payload?.length) return null
+                    // Effective step from the actual data spacing —
+                    // robust against range option string parsing. We
+                    // claim a marker as "at this hovered timestamp"
+                    // when it sits within ±step/2 of the cursor's X.
+                    const stepSec =
+                      points.length >= 2 ? points[1].t - points[0].t : 60
+                    const tolerance = stepSec / 2
+                    const nearbyMarkers = (eventMarkers ?? []).filter(
+                      (m) => Math.abs(m.timestamp - (label as number)) <= tolerance,
+                    )
                     return (
                       <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
                         <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
@@ -608,6 +644,21 @@ export function MetricChart({
                             </div>
                           ))}
                         </div>
+                        {nearbyMarkers.length > 0 && (
+                          <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                            {nearbyMarkers.map((m, idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <span
+                                  className="w-2 h-2 rounded-full flex-shrink-0"
+                                  style={{ background: m.color ?? '#94a3b8' }}
+                                />
+                                <span className="text-kb-text-secondary truncate max-w-[200px]">
+                                  {m.label}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
                       </div>
                     )
                   }}
@@ -640,6 +691,35 @@ export function MetricChart({
                     }}
                   />
                 ))}
+                {eventMarkers?.map((m, i) => {
+                  const color = m.color ?? '#94a3b8'
+                  return (
+                    <ReferenceLine
+                      key={`event-${i}`}
+                      x={m.timestamp}
+                      stroke={color}
+                      strokeDasharray="3 3"
+                      strokeWidth={1}
+                      ifOverflow="discard"
+                      // Tiny downward triangle at the top of the
+                      // line — clean signal that "an event happened
+                      // here" without text labels that pile up when
+                      // multiple deploys land close together. The
+                      // event's name lives in the chart tooltip
+                      // (filtered by ±step/2 around the cursor).
+                      label={(props: { viewBox?: { x?: number; y?: number } }) => {
+                        const x = props.viewBox?.x ?? 0
+                        const y = props.viewBox?.y ?? 0
+                        return (
+                          <polygon
+                            points={`${x - 6},${y} ${x + 6},${y} ${x},${y + 9}`}
+                            fill={color}
+                          />
+                        )
+                      }}
+                    />
+                  )
+                })}
                 {series.map((s, i) =>
                   chartType === 'area' ? (
                     <Area
