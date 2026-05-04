@@ -452,6 +452,17 @@ export const api = {
       })}`
     ),
 
+  // Instant PromQL query — single-point lookup. Used by panels that need
+  // "current value" or topN snapshots, where running a range query and
+  // picking the last point would be wasteful.
+  queryMetrics: (params: { query: string; time?: number }) =>
+    fetchJSON<PromVectorResponse>(
+      `${API_BASE}/metrics/query${buildQuery({
+        query: params.query,
+        time: params.time,
+      })}`
+    ),
+
   // Flow edges (Phase 2.1, from pod_flow_events_total)
   getFlowEdges: (params?: { namespace?: string; windowMinutes?: number }) =>
     fetchJSON<FlowEdgesResponse>(
@@ -754,6 +765,20 @@ export interface PromRangeResponse {
     result: Array<{
       metric: Record<string, string>
       values: Array<[number, string]> // [unix_seconds, value_as_string]
+    }>
+  }
+  error?: string
+  errorType?: string
+}
+
+// Instant query response — `value` is singular for vector results.
+export interface PromVectorResponse {
+  status: 'success' | 'error'
+  data?: {
+    resultType: 'matrix' | 'vector' | 'scalar' | 'string'
+    result: Array<{
+      metric: Record<string, string>
+      value: [number, string] // [unix_seconds, value_as_string]
     }>
   }
   error?: string

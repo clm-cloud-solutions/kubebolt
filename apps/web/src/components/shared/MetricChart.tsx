@@ -65,6 +65,13 @@ interface MetricChartProps {
   defaultRangeMinutes?: number
   rangeOptions?: RangeOption[]
 
+  // Externally-driven range. When set, the chart uses this value instead
+  // of its internal state and hides the per-chart range selector — the
+  // assumption is that an outer page (e.g. OverviewPage) is providing a
+  // single selector that drives multiple charts at once. Resolving the
+  // step from this number uses the same lookup as the internal state.
+  controlledRangeMinutes?: number
+
   refetchMs?: number
 
   height?: number
@@ -90,6 +97,13 @@ const DEFAULT_RANGE_OPTIONS: RangeOption[] = [
   { label: '1h', minutes: 60, step: '30s' },
   { label: '6h', minutes: 360, step: '2m' },
   { label: '24h', minutes: 1440, step: '10m' },
+  // 7d uses a 1h step: at finer resolutions VictoriaMetrics rejects
+  // the query for exceeding -search.maxPointsPerTimeseries (default
+  // 30000). 7d × 1h = 168 points; comfortable margin. Must stay in
+  // sync with RangeSelector's OVERVIEW_RANGE_OPTIONS — when the page
+  // selector drives this chart in controlled mode, the lookup here
+  // is what resolves the step.
+  { label: '7d', minutes: 10080, step: '1h' },
 ]
 
 const DEFAULT_COLORS = [
@@ -226,6 +240,7 @@ export function MetricChart({
   referenceLines,
   defaultRangeMinutes = 15,
   rangeOptions = DEFAULT_RANGE_OPTIONS,
+  controlledRangeMinutes,
   refetchMs = 15_000,
   height = 220,
   showStats = true,
@@ -235,7 +250,10 @@ export function MetricChart({
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
     : DEFAULT_COLORS
-  const [rangeMinutes, setRangeMinutes] = useState(defaultRangeMinutes)
+  const [internalRangeMinutes, setInternalRangeMinutes] = useState(defaultRangeMinutes)
+  // Controlled mode: outside selector wins, internal state is ignored.
+  const rangeMinutes = controlledRangeMinutes ?? internalRangeMinutes
+  const setRangeMinutes = setInternalRangeMinutes
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const [hiddenRefs, setHiddenRefs] = useState<Set<string>>(new Set())
   const gradPrefix = useId().replace(/:/g, '') // unique prefix per chart instance
@@ -422,27 +440,31 @@ export function MetricChart({
               })}
             </div>
           )}
-          {/* Range selector is always visible — otherwise a wide-range
-              query that returns no data traps the user with no way back
-              to a working window. */}
-          <div className="flex items-center gap-1">
-            {rangeOptions.map(opt => {
-              const selected = opt.minutes === rangeMinutes
-              return (
-                <button
-                  key={opt.minutes}
-                  onClick={() => setRangeMinutes(opt.minutes)}
-                  className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
-                    selected
-                      ? 'bg-kb-accent/20 border-kb-accent text-kb-accent font-semibold'
-                      : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              )
-            })}
-          </div>
+          {/* Range selector — hidden in controlled mode, since the
+              outer page is providing a single shared selector. In
+              uncontrolled mode it stays always visible: a wide-range
+              query that returns no data would otherwise trap the user
+              with no way back to a working window. */}
+          {controlledRangeMinutes == null && (
+            <div className="flex items-center gap-1">
+              {rangeOptions.map(opt => {
+                const selected = opt.minutes === rangeMinutes
+                return (
+                  <button
+                    key={opt.minutes}
+                    onClick={() => setRangeMinutes(opt.minutes)}
+                    className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
+                      selected
+                        ? 'bg-kb-accent/20 border-kb-accent text-kb-accent font-semibold'
+                        : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
 

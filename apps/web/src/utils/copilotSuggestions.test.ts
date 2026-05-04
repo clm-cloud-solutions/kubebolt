@@ -45,7 +45,7 @@ describe('generateCopilotSuggestions', () => {
 
   it('mixes in overview-derived prompts when insights are light', () => {
     const overview = {
-      health: { status: 'degraded' },
+      health: { status: 'warning' },
       nodes: { total: 5, ready: 4 },
       pods: { total: 100, running: 90, failed: 5, pending: 5 },
     } as unknown as ClusterOverview

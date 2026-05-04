@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { getUsageBarColor } from '@/utils/colors'
 import { formatCPU, formatMemory } from '@/utils/formatters'
+import { TooltipPanel, TooltipRow } from './Tooltip'
 
 interface ResourceUsageCellProps {
   usage: number
@@ -75,7 +76,11 @@ export function ResourceUsageCell({ usage, request, limit, percent, type, size =
         {usage > 0 ? formatFn(usage) : formatFn(request)}
       </span>
 
-      {/* Tooltip rendered via portal to escape overflow:hidden containers */}
+      {/* Tooltip via portal to escape overflow:hidden parents.
+          Visual matches the Cluster Map and MetricChart tooltips —
+          shared TooltipPanel + TooltipRow so the whole dashboard
+          reads as one design instead of three near-identical
+          inlined copies. */}
       {tooltip && hasTooltipContent && createPortal(
         <div
           className="fixed z-[9999] pointer-events-none"
@@ -85,32 +90,27 @@ export function ResourceUsageCell({ usage, request, limit, percent, type, size =
             bottom: tooltip.above ? `calc(100vh - ${tooltip.y}px)` : undefined,
           }}
         >
-          <div className="bg-kb-card border border-kb-border rounded-md shadow-lg px-3 py-2 whitespace-nowrap">
-            <div className="space-y-1 text-[10px] font-mono">
+          <TooltipPanel className="whitespace-nowrap">
+            <div className="space-y-1">
               {usage > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full" style={{ background: getUsageBarColor(usagePercent) }} />
-                  <span className="text-kb-text-tertiary w-12">Used</span>
-                  <span className="text-kb-text-primary">{formatFn(usage)}</span>
-                  {denom > 0 && <span className="text-kb-text-tertiary">({Math.round(usagePercent)}%)</span>}
-                </div>
+                <TooltipRow
+                  color={getUsageBarColor(usagePercent)}
+                  label="Used"
+                  value={
+                    denom > 0
+                      ? `${formatFn(usage)} (${Math.round(usagePercent)}%)`
+                      : formatFn(usage)
+                  }
+                />
               )}
               {request > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-status-info" />
-                  <span className="text-kb-text-tertiary w-12">Request</span>
-                  <span className="text-kb-text-primary">{formatFn(request)}</span>
-                </div>
+                <TooltipRow color="#4c9aff" label="Request" value={formatFn(request)} />
               )}
               {limit > 0 && (
-                <div className="flex items-center gap-2">
-                  <span className="w-1.5 h-1.5 rounded-full bg-status-error" />
-                  <span className="text-kb-text-tertiary w-12">Limit</span>
-                  <span className="text-kb-text-primary">{formatFn(limit)}</span>
-                </div>
+                <TooltipRow color="#ef4056" label="Limit" value={formatFn(limit)} />
               )}
             </div>
-          </div>
+          </TooltipPanel>
         </div>,
         document.body
       )}

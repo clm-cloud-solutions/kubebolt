@@ -46,7 +46,7 @@ export function Topbar({ overview }: TopbarProps) {
   const clusterName = activeCluster ? parseClusterDisplayName(activeCluster) : (overview?.clusterName || 'loading...')
   const nodeCount = overview?.nodes?.total ?? '-'
   const healthStatus = overview?.health?.status || 'unknown'
-  const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'degraded' ? 'bg-status-warn' : 'bg-status-error'
+  const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'warning' ? 'bg-status-warn' : 'bg-status-error'
 
   const switchMutation = useMutation({
     mutationKey: ['switch-cluster'],

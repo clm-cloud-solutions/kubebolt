@@ -86,6 +86,47 @@ func TestScopeQueryByCluster(t *testing.T) {
 			want: `sum by (node, container, interface) (pod_network_receive_bytes_total{` + inj + `})`,
 		},
 
+		// --- safety: pod_/container_/etc identifiers in `by(...)` ------
+		// Regression: TopWorkloadsCpu uses `by(workload_kind, workload_name,
+		// pod_namespace)`. Before this fix, pass 2 mistakenly injected a
+		// selector onto `pod_namespace` inside the by-clause, producing
+		// `by (workload_kind, workload_name, pod_namespace{cluster_id="…"})`,
+		// which VictoriaMetrics rejects as a parse error. The grouping-clause
+		// detector now skips identifiers inside by(...) regardless of prefix.
+		{
+			name: "by clause with pod_ label is untouched",
+			in:   `topk(6, sum by (workload_kind, workload_name, pod_namespace) (container_cpu_usage_cores{workload_name!=""}))`,
+			want: `topk(6, sum by (workload_kind, workload_name, pod_namespace) (container_cpu_usage_cores{` + inj + `,workload_name!=""}))`,
+		},
+		{
+			name: "without clause with pod_ label is untouched",
+			in:   `sum without (pod_name, pod_uid) (container_memory_working_set_bytes)`,
+			want: `sum without (pod_name, pod_uid) (container_memory_working_set_bytes{` + inj + `})`,
+		},
+		{
+			name: "by clause with extra whitespace before paren",
+			in:   `sum by  (pod_namespace) (container_cpu_usage_cores)`,
+			want: `sum by  (pod_namespace) (container_cpu_usage_cores{` + inj + `})`,
+		},
+
+		// --- safety: regex literals with `{N,M}` quantifiers ---------
+		// Regression: TopWorkloadsCpu uses label_replace with a regex
+		// like "^(.+)-[a-z0-9]{6,12}$". The {6,12} quantifier inside
+		// the quoted string was being treated as a label selector by
+		// the brace-aware walker, producing nonsense like
+		// `cluster_id="…",6,12` and breaking the query at VM. Pass 0
+		// now masks quoted strings before the walker sees them.
+		{
+			name: "regex with brace quantifier inside string literal is preserved",
+			in:   `label_replace(container_cpu_usage_cores{workload_kind="ReplicaSet"}, "workload_name", "$1", "workload_name", "^(.+)-[a-z0-9]{6,12}$")`,
+			want: `label_replace(container_cpu_usage_cores{` + inj + `,workload_kind="ReplicaSet"}, "workload_name", "$1", "workload_name", "^(.+)-[a-z0-9]{6,12}$")`,
+		},
+		{
+			name: "escaped quote inside string is honored",
+			in:   `label_replace(container_cpu_usage_cores, "label", "with \" quote", "src", "{ignored}")`,
+			want: `label_replace(container_cpu_usage_cores{` + inj + `}, "label", "with \" quote", "src", "{ignored}")`,
+		},
+
 		// --- empty uid fails closed ----------------------------------
 		// When the backend can't discover the kube-system UID (e.g. EKS
 		// auth was slow at startup), unscoped queries used to leak data

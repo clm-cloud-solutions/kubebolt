@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -53,22 +54,25 @@ const noClusterUIDSentinel = "__kubebolt_no_uid__"
 var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 
 // bareMetricRE matches metric references that follow our agent's
-// naming convention (one of these prefixes + `_` + body). We use an
-// explicit prefix list rather than a generic identifier match so we
-// don't accidentally inject selectors into PromQL keywords (sum, rate,
-// by, …) or into labels passed to clauses like `by(...)`. Extend the
+// naming convention (one of these prefixes + `_` + body). Extend the
 // list when a new metric family ships from the agent.
 //
 // Identifiers used as label names elsewhere — `cluster_id`, `pod_name`,
-// `pod_namespace`, `pod_uid` — would also match this regex, but step 2
-// of scopeQueryByCluster skips text inside `{...}` braces so labels in
-// existing selectors are left alone. Labels passed to `by(...)` /
-// `without(...)` clauses are NOT inside braces; today none of those
-// labels in our queries match this pattern, but new code must keep
-// that invariant or scope its query manually.
+// `pod_namespace`, `pod_uid` — would also match this regex. Two
+// guards keep them from being misidentified as metric references:
+// step 2 of scopeQueryByCluster skips text inside `{...}` selectors,
+// AND skips text inside `by(...)` / `without(...)` aggregation clauses
+// (see groupingClauseRE). Anything outside both is a real metric ref.
 var bareMetricRE = regexp.MustCompile(
 	`\b(?:node|pod|container|kubebolt|hubble)_[a-zA-Z0-9_]+\b`,
 )
+
+// groupingClauseRE matches the start of a PromQL aggregation grouping
+// clause: `by(`, `by (`, `without(`, `without (`. The position right
+// after the opening `(` is used to walk to the matching `)` so the
+// inner identifiers — which are label names, not metric refs — can be
+// excluded from pass 2 injection.
+var groupingClauseRE = regexp.MustCompile(`\b(?:by|without)\s*\(`)
 
 // scopeQueryByCluster injects `cluster_id="<uid>"` into every metric
 // reference in a PromQL expression so a query can't accidentally sum
@@ -77,8 +81,13 @@ var bareMetricRE = regexp.MustCompile(
 // e.g. dev-mode without in-cluster creds). Idempotent: existing
 // `cluster_id` matchers are left alone.
 //
-// Two passes:
+// Three passes:
 //
+//  0. Mask "..." quoted string literals with placeholders. Without this
+//     step a regex-quantifier substring inside an argument to
+//     label_replace (e.g. `"^(.+)-[a-z0-9]{6,12}$"`) is mistaken for
+//     a label selector `{6,12}` by the brace-aware walker, ending up
+//     with `cluster_id` injected into a regex literal — VM rejects.
 //  1. Existing `{...}` selectors get `cluster_id` prepended (or are
 //     skipped if they already have one). Handles `metric{a="b"}` and
 //     bare label sets like `{source="hubble"}`.
@@ -103,8 +112,12 @@ func scopeQueryByCluster(promQL, uid string) string {
 	}
 	injected := fmt.Sprintf(`cluster_id=%q`, uid)
 
+	// Pass 0: mask quoted string literals so their content can't be
+	// misread as braces or metric refs by the later passes.
+	masked, saved := maskQuotedStrings(promQL)
+
 	// Pass 1: existing `{...}` selectors.
-	promQL = metricSelectorRE.ReplaceAllStringFunc(promQL, func(sel string) string {
+	masked = metricSelectorRE.ReplaceAllStringFunc(masked, func(sel string) string {
 		inner := sel[1 : len(sel)-1]
 		if strings.Contains(inner, "cluster_id") {
 			return sel
@@ -122,14 +135,14 @@ func scopeQueryByCluster(promQL, uid string) string {
 	// (i.e. pass 1 just rewrote its selector) doesn't get a duplicate
 	// selector appended.
 	var out strings.Builder
-	out.Grow(len(promQL) + 32)
+	out.Grow(len(masked) + 32)
 	depth := 0
 	chunkStart := 0
-	for i := 0; i < len(promQL); i++ {
-		c := promQL[i]
+	for i := 0; i < len(masked); i++ {
+		c := masked[i]
 		if c == '{' {
 			if depth == 0 {
-				out.WriteString(injectBareMetrics(promQL[chunkStart:i], injected, '{'))
+				out.WriteString(injectBareMetrics(masked[chunkStart:i], injected, '{'))
 				chunkStart = i
 			}
 			depth++
@@ -137,32 +150,113 @@ func scopeQueryByCluster(promQL, uid string) string {
 			if depth > 0 {
 				depth--
 				if depth == 0 {
-					out.WriteString(promQL[chunkStart : i+1])
+					out.WriteString(masked[chunkStart : i+1])
 					chunkStart = i + 1
 				}
 			}
 		}
 	}
 	if depth == 0 {
-		out.WriteString(injectBareMetrics(promQL[chunkStart:], injected, 0))
+		out.WriteString(injectBareMetrics(masked[chunkStart:], injected, 0))
 	} else {
 		// Unbalanced braces — shouldn't happen for valid PromQL; emit
 		// the trailing chunk verbatim and let VM surface the parse
 		// error.
-		out.WriteString(promQL[chunkStart:])
+		out.WriteString(masked[chunkStart:])
 	}
-	return out.String()
+
+	// Pass 3: restore original string literals.
+	return unmaskQuotedStrings(out.String(), saved)
+}
+
+// stringPlaceholderRE matches the synthetic placeholder that
+// maskQuotedStrings emits for each "..." literal. The underscored
+// shape doesn't match any keyword or metric prefix in bareMetricRE,
+// so the walker treats it as inert text.
+var stringPlaceholderRE = regexp.MustCompile(`__KB_STR_(\d+)__`)
+
+// maskQuotedStrings replaces every "..." region in s with a stable
+// placeholder. Backslash-escaped quotes inside strings are honored.
+// Returns the masked text + the original literals indexed by
+// placeholder number.
+func maskQuotedStrings(s string) (string, []string) {
+	var out strings.Builder
+	out.Grow(len(s))
+	saved := make([]string, 0, 4)
+	i := 0
+	for i < len(s) {
+		c := s[i]
+		if c != '"' {
+			out.WriteByte(c)
+			i++
+			continue
+		}
+		// Scan to the closing quote, respecting `\"` escapes.
+		j := i + 1
+		for j < len(s) {
+			if s[j] == '\\' && j+1 < len(s) {
+				j += 2
+				continue
+			}
+			if s[j] == '"' {
+				break
+			}
+			j++
+		}
+		if j >= len(s) {
+			// Unterminated quote — emit the rest verbatim and let VM
+			// surface the parse error. No mask saved.
+			out.WriteString(s[i:])
+			return out.String(), saved
+		}
+		fmt.Fprintf(&out, "__KB_STR_%d__", len(saved))
+		saved = append(saved, s[i:j+1])
+		i = j + 1
+	}
+	return out.String(), saved
+}
+
+// unmaskQuotedStrings is the inverse of maskQuotedStrings.
+func unmaskQuotedStrings(s string, saved []string) string {
+	if len(saved) == 0 {
+		return s
+	}
+	return stringPlaceholderRE.ReplaceAllStringFunc(s, func(m string) string {
+		matches := stringPlaceholderRE.FindStringSubmatch(m)
+		if len(matches) != 2 {
+			return m
+		}
+		n, err := strconv.Atoi(matches[1])
+		if err != nil || n < 0 || n >= len(saved) {
+			return m
+		}
+		return saved[n]
+	})
 }
 
 // injectBareMetrics finds bare metric references in s and appends a
 // `{cluster_id="..."}` selector to each. A reference that's already
 // followed by `{` (either inside s or at the chunk boundary via
 // nextChar) is left as-is — pass 1 already handled the selector in
-// that case.
+// that case. References sitting inside a `by(...)` or `without(...)`
+// aggregation clause are also left alone — those are label names,
+// not metric refs, even when they happen to share the same prefix
+// (e.g. `pod_namespace`, `pod_name`). Without this guard, queries
+// like `sum by (pod_namespace) (...)` get rewritten to invalid PromQL
+// (`sum by (pod_namespace{cluster_id="..."}) (...)`).
 func injectBareMetrics(s, injected string, nextChar byte) string {
 	matches := bareMetricRE.FindAllStringIndex(s, -1)
 	if len(matches) == 0 {
 		return s
+	}
+	skipRegions := findGroupingRegions(s)
+	inSkip := func(start int) bool {
+		for _, r := range skipRegions {
+			if start >= r[0] && start < r[1] {
+				return true
+			}
+		}
+		return false
 	}
 	var sb strings.Builder
 	sb.Grow(len(s) + len(matches)*(len(injected)+2))
@@ -171,6 +265,10 @@ func injectBareMetrics(s, injected string, nextChar byte) string {
 		start, end := m[0], m[1]
 		sb.WriteString(s[last:start])
 		sb.WriteString(s[start:end])
+		last = end
+		if inSkip(start) {
+			continue
+		}
 		var follow byte
 		if end < len(s) {
 			follow = s[end]
@@ -180,10 +278,46 @@ func injectBareMetrics(s, injected string, nextChar byte) string {
 		if follow != '{' {
 			sb.WriteString("{" + injected + "}")
 		}
-		last = end
 	}
 	sb.WriteString(s[last:])
 	return sb.String()
+}
+
+// findGroupingRegions returns half-open spans [start, end) of the
+// inner content of every `by(...)` / `without(...)` clause in s.
+// `start` is the index of the first char after the opening `(`;
+// `end` is the index of the matching `)`. Nested parentheses
+// (rare in our queries but legal in PromQL) are tracked so an
+// expression like `by(pod_name) (sum(...))` doesn't accidentally
+// extend the skip region into the metric body.
+func findGroupingRegions(s string) [][2]int {
+	locs := groupingClauseRE.FindAllStringIndex(s, -1)
+	if len(locs) == 0 {
+		return nil
+	}
+	regions := make([][2]int, 0, len(locs))
+	for _, loc := range locs {
+		innerStart := loc[1] // position after the opening '('
+		depth := 1
+		j := innerStart
+		for ; j < len(s) && depth > 0; j++ {
+			switch s[j] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+		}
+		if depth == 0 {
+			// j-1 indexes the matching ')'. The skip region excludes
+			// the ')' itself so the closing paren remains structurally
+			// valid in any subsequent rewriting.
+			regions = append(regions, [2]int{innerStart, j - 1})
+		}
+		// Unbalanced parentheses fall through with no region recorded;
+		// VM will surface the parse error if this query reaches it.
+	}
+	return regions
 }
 
 // handleMetricsQueryRange proxies a PromQL range query to the TSDB.

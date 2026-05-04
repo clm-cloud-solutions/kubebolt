@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
@@ -333,7 +333,23 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   const params = useParams<{ type: string }>()
   const resourceType = propType || params.type || 'pods'
 
-  const [namespace, setNamespace] = useState('')
+  // URL drives the filter state for `namespace` so deep links from
+  // the dashboard (e.g. NamespaceTiles → /deployments?namespace=foo)
+  // land on a pre-filtered list. Search and page intentionally stay
+  // local — they're transient interactions, not shareable views.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const namespace = searchParams.get('namespace') ?? ''
+  const setNamespace = (v: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (v) next.set('namespace', v)
+        else next.delete('namespace')
+        return next
+      },
+      { replace: true },
+    )
+  }
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [page, setPage] = useState(1)

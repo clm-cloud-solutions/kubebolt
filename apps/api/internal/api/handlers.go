@@ -89,7 +89,19 @@ func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	respondJSON(w, http.StatusOK, conn.GetOverview())
+	overview := conn.GetOverview()
+	// GetOverview()'s internal buildHealth() omits the insights count
+	// (the connector doesn't have a reference to the engine), so the
+	// overview's Health.Insights stays at zero even when /insights has
+	// data — visible in the dashboard's Insights KPI showing "0" while
+	// the page shows real items. Recompute with the engine here so the
+	// overview payload matches what /cluster/health and /insights see.
+	if eng := h.manager.Engine(); eng != nil {
+		col := h.manager.Collector()
+		metricsAvailable := col != nil && col.IsAvailable()
+		overview.Health = conn.GetHealth(metricsAvailable, eng.GetAllInsights())
+	}
+	respondJSON(w, http.StatusOK, overview)
 }
 
 func (h *handlers) getClusterHealth(w http.ResponseWriter, r *http.Request) {

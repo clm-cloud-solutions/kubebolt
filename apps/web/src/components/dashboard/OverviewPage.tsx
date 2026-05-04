@@ -1,37 +1,54 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
+import type { ClusterOverview } from '@/types/kubernetes'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
+import { RangeSelector } from '@/components/shared/RangeSelector'
 import { api } from '@/services/api'
-import { SummaryCards } from './SummaryCards'
+import { KpiCards } from './KpiCards'
+import { OverviewHeader } from './OverviewHeader'
 import { ResourceUsagePanel } from './ResourceUsage'
 import { WorkloadHealth } from './WorkloadHealth'
 import { EventsFeed } from './EventsFeed'
-import { NamespaceSection } from './NamespaceSection'
+import { NamespaceTiles } from './NamespaceTiles'
+import { TopWorkloadsCpu } from './TopWorkloadsCpu'
 
 export function OverviewPage() {
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
+
+  // Single time-range state shared by every chart on the page. The
+  // option set and 15m default match the per-resource Monitor tabs
+  // elsewhere in the app — one mental model across views.
+  const [rangeMinutes, setRangeMinutes] = useState(15)
 
   if (isLoading) return <LoadingSpinner />
   if (error || !overview) return <ErrorState message={error?.message} onRetry={() => refetch()} />
 
   return (
-    <div className="space-y-4">
-      {/* Freshness indicator */}
-      <div className="flex justify-end">
-        <DataFreshnessIndicator
-          dataUpdatedAt={dataUpdatedAt}
-isFetching={isFetching}
-        />
+    <div className="space-y-5">
+      {/* Title + range/freshness sit on a single row: title left,
+          controls right. The title block grounds the page (says "you
+          are on Overview, looking at <cluster>") and the controls stay
+          visually paired with their related sections by being on the
+          same baseline. */}
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <OverviewHeader overview={overview} />
+        <div className="flex items-center gap-3 mt-1">
+          <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} />
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+        </div>
       </div>
 
-      {/* Summary cards */}
-      <SummaryCards overview={overview} />
+      {/* Headline KPIs */}
+      <KpiCards overview={overview} />
 
-      {/* CPU + Memory Usage */}
+      {/* CPU + Memory commitment bars — sourced from Metrics Server, so
+          they keep working without the agent. Distinct from the trends
+          below: this is what's reserved/used right now. */}
       <ResourceUsagePanel
         cpu={overview.cpu}
         memory={overview.memory}
@@ -39,40 +56,36 @@ isFetching={isFetching}
         nodesRestricted={overview.permissions?.nodes === false}
       />
 
+      {/* Time-series trends + cluster-wide top workloads. Both ride on
+          the agent's VictoriaMetrics samples; gated together so the
+          empty state explains the trade-off once instead of twice. */}
+      <AgentTrendsBlock rangeMinutes={rangeMinutes} overview={overview} />
+
       {/* Events + Workload Health */}
       <div className="grid grid-cols-2 gap-3">
         <EventsFeed events={overview.events?.slice(0, 15) || []} />
         <WorkloadHealth overview={overview} />
       </div>
 
-      {/* Time-series view of cluster resources from the agent.
-          Distinguished from the CPU/Memory commitment bars above:
-          those show what's reserved and used *right now* (works
-          without the agent, via Metrics Server); these show how it
-          *moved* over the selected window. The whole panel hides
-          itself when the agent isn't installed — current values are
-          already covered above, and rendering empty charts here
-          would be misleading. */}
-      <ClusterTrendsPanel />
-
-      {/* Namespace Workload Sections */}
+      {/* Namespace tile grid — replaces the older per-namespace
+          expandable sections. Compact summary by design: pods count
+          + health pattern, click drills into /namespaces. */}
       {overview.namespaceWorkloads && overview.namespaceWorkloads.length > 0 && (
-        <div className="space-y-5 mt-2">
-          <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-            Workloads por namespace
-          </div>
-          {overview.namespaceWorkloads.map((nsw) => (
-            <NamespaceSection key={nsw.namespace} namespaceWorkload={nsw} />
-          ))}
-        </div>
+        <NamespaceTiles namespaceWorkloads={overview.namespaceWorkloads} />
       )}
     </div>
   )
 }
 
-// ─── Cluster trends ─────────────────────────────────────────────
+// ─── Agent-dependent block ──────────────────────────────────────
 
-function ClusterTrendsPanel() {
+function AgentTrendsBlock({
+  rangeMinutes,
+  overview,
+}: {
+  rangeMinutes: number
+  overview: ClusterOverview
+}) {
   const { data: agent, isLoading } = useQuery({
     queryKey: ['integration', 'agent'],
     queryFn: () => api.getIntegration('agent'),
@@ -82,26 +95,26 @@ function ClusterTrendsPanel() {
 
   if (isLoading) return null
 
-  const installed = agent && (agent.status === 'installed' || agent.status === 'degraded')
+  const installed = !!agent && (agent.status === 'installed' || agent.status === 'degraded')
 
   if (!installed) {
     // Current CPU and memory are already covered by the bars above
     // (ResourceUsagePanel, sourced from Metrics Server), so we don't
-    // duplicate them here — just leave a clear "trends need the
-    // agent" notice in place of the chart grid.
+    // duplicate them here — just leave a clear "trends + top workloads
+    // need the agent" notice in place of both panels.
     return (
       <div className="space-y-2 pt-2">
         <div className="flex items-baseline justify-between">
           <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-            Cluster trends
+            Cluster trends · top consumers
           </div>
           <div className="text-[10px] text-kb-text-tertiary">
             current totals shown above · agent unlocks history
           </div>
         </div>
         <AgentRequiredPlaceholder
-          title="Time-series trends require the KubeBolt Agent"
-          description="Current CPU and memory totals are already shown above, sourced from the Kubernetes Metrics Server. Install the agent to unlock historical CPU, memory, network, and filesystem trends with a selectable range."
+          title="Time-series trends and cluster-wide top consumers require the KubeBolt Agent"
+          description="Current CPU and memory totals are already shown above, sourced from the Kubernetes Metrics Server. Install the agent to unlock historical CPU, memory, network, and filesystem trends, plus a cluster-wide top-workloads view."
           hideWhileLoading
         />
       </div>
@@ -109,14 +122,12 @@ function ClusterTrendsPanel() {
   }
 
   return (
-    <div className="space-y-2 pt-2">
+    <div className="space-y-3 pt-2">
       <div className="flex items-baseline justify-between">
         <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
           Cluster trends
         </div>
-        <div className="text-[10px] text-kb-text-tertiary">
-          actual usage over time · range selectable per chart
-        </div>
+        <div className="text-[10px] text-kb-text-tertiary">actual usage over selected range</div>
       </div>
       <div className="grid grid-cols-2 gap-3">
         <MetricChart
@@ -128,6 +139,7 @@ function ClusterTrendsPanel() {
           chartType="area"
           showStats={false}
           height={180}
+          controlledRangeMinutes={rangeMinutes}
         />
         <MetricChart
           title="Memory working set"
@@ -138,6 +150,7 @@ function ClusterTrendsPanel() {
           chartType="area"
           showStats={false}
           height={180}
+          controlledRangeMinutes={rangeMinutes}
         />
         <MetricChart
           title="Network activity (RX up / TX down)"
@@ -151,6 +164,7 @@ function ClusterTrendsPanel() {
           chartType="area"
           showStats={false}
           height={180}
+          controlledRangeMinutes={rangeMinutes}
         />
         <MetricChart
           title="Filesystem used"
@@ -161,8 +175,15 @@ function ClusterTrendsPanel() {
           chartType="area"
           showStats={false}
           height={180}
+          controlledRangeMinutes={rangeMinutes}
         />
       </div>
+
+      {/* Cluster-wide top consumers — instant query, no range needed.
+          Sits next to trends because operators usually go from "is
+          something climbing?" (trends) to "who's the biggest" (this) in
+          one mental beat. */}
+      <TopWorkloadsCpu installed={installed} overview={overview} />
     </div>
   )
 }
