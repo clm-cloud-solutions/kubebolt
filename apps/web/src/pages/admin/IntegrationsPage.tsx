@@ -41,11 +41,13 @@ export function StatusBadge({ status }: { status: IntegrationStatus }) {
 function IntegrationCard({
   integration,
   isAdmin,
+  canInstall,
   onInstall,
   onOpen,
 }: {
   integration: Integration
   isAdmin: boolean
+  canInstall: boolean
   onInstall: (i: Integration) => void
   onOpen: (i: Integration) => void
 }) {
@@ -113,16 +115,20 @@ function IntegrationCard({
         <div className="flex items-center gap-2">
           {!isInstalled && isAdmin && (
             <button
-              onClick={() => onInstall(integration)}
-              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all"
+              onClick={() => canInstall && onInstall(integration)}
+              disabled={!canInstall}
+              title={canInstall ? undefined : 'Connect a cluster before installing integrations'}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:opacity-50 disabled:hover:shadow-sm disabled:active:scale-100"
             >
               <Download className="w-3.5 h-3.5" strokeWidth={2.5} />
               Install
             </button>
           )}
           <button
-            onClick={() => onOpen(integration)}
-            className="px-3 py-1.5 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-primary text-xs border border-kb-border transition-colors"
+            onClick={() => canInstall && onOpen(integration)}
+            disabled={!canInstall}
+            title={canInstall ? undefined : 'Connect a cluster to manage installed integrations'}
+            className="px-3 py-1.5 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-primary text-xs border border-kb-border transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-kb-elevated"
           >
             Manage
           </button>
@@ -143,6 +149,16 @@ export function IntegrationsPage() {
     // show up without the user having to reload.
     refetchInterval: 15_000,
   })
+
+  // Install actions need a target cluster. Without one the catalog
+  // is still informative (this is what's available) but Install must
+  // be inert — the backend would 503 the install POST anyway.
+  const { data: clusters } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: api.listClusters,
+  })
+  const noClusters = clusters !== undefined && (clusters === null || clusters.length === 0)
+  const canInstall = !noClusters
 
   const [installing, setInstalling] = useState<Integration | null>(null)
   const [managing, setManaging] = useState<Integration | null>(null)
@@ -180,6 +196,15 @@ export function IntegrationsPage() {
         </div>
       )}
 
+      {noClusters && !error && (
+        <div className="mb-6 flex items-start gap-2 px-4 py-3 rounded-lg bg-status-info-dim">
+          <HelpCircle className="w-4 h-4 text-status-info shrink-0 mt-0.5" />
+          <span className="text-xs text-status-info leading-relaxed">
+            No clusters connected — showing the integrations catalog. Install and manage actions stay disabled until you connect a cluster.
+          </span>
+        </div>
+      )}
+
       {data && data.length === 0 && (
         <div className="px-4 py-8 rounded-lg bg-kb-card border border-kb-border text-center">
           <Puzzle className="w-8 h-8 text-kb-text-tertiary mx-auto mb-2" />
@@ -194,6 +219,7 @@ export function IntegrationsPage() {
               key={i.id}
               integration={i}
               isAdmin={isAdmin}
+              canInstall={canInstall}
               onInstall={setInstalling}
               onOpen={setManaging}
             />
