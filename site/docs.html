@@ -637,6 +637,17 @@ KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
 
 <h2>API Endpoint</h2>
 <p><code>GET /api/v1/cluster/permissions</code> returns the full permission map per resource type with <code>canList</code>, <code>canWatch</code>, <code>canGet</code>, <code>namespaceScoped</code>, and <code>namespaces</code> fields.</p>
+
+<h2>Backend ServiceAccount permissions (in-cluster install)</h2>
+<p>The Helm chart's bundled ClusterRole grants what the KubeBolt API itself needs to read your cluster <strong>and</strong> manage things on the operator's behalf — most notably installing <code>kubebolt-agent</code> from the Integrations admin and persisting its own admin password Secret on first boot. Beyond the obvious read access, the chart includes:</p>
+<table>
+<tr><th>Resource</th><th>Verbs</th><th>Why</th></tr>
+<tr><td><code>secrets</code></td><td>create, update, delete</td><td>Persist the auto-generated admin password Secret on first boot; materialize agent ingest-token Secrets from the wizard's "Generate token" flow.</td></tr>
+<tr><td><code>namespaces</code></td><td>create</td><td>Create <code>kubebolt-system</code> when the agent install wizard runs against a cluster that doesn't have it yet.</td></tr>
+<tr><td><code>configmaps</code>, <code>serviceaccounts</code>, <code>daemonsets</code></td><td>create, update, delete</td><td>Roll out the agent's ConfigMap, ServiceAccount, and DaemonSet from the wizard.</td></tr>
+<tr><td><code>roles</code>, <code>clusterroles</code>, <code>rolebindings</code>, <code>clusterrolebindings</code></td><td>create, update, delete, <strong>escalate</strong>, <strong>bind</strong></td><td>Create the agent's own ClusterRole/Binding. <code>escalate</code>+<code>bind</code> let the API author Roles whose verbs the API itself doesn't hold (the standard pattern Helm/ArgoCD use to install workloads with their own RBAC).</td></tr>
+</table>
+<p>Operators who want a stricter posture can disable the chart's bundled RBAC (<code>--set rbac.create=false</code>) and supply a hand-rolled ClusterRole instead. The agent-install wizard surfaces a "permission denied" error pointing at the missing verb when something is dropped.</p>
 </div></div>
 
 <!-- ═══ Authentication ═══ -->
