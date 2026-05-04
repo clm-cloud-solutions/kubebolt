@@ -1,0 +1,39 @@
+{{- /*
+  Chart-managed PriorityClass — only rendered when:
+    1. priority.enabled is true, AND
+    2. priority.className is empty (the operator is delegating naming
+       to the chart instead of pointing at an existing class), AND
+    3. priorityClassName (legacy single-string knob) is NOT set
+       (legacy mode bypasses priority.* entirely).
+
+  The class lives at value 999999000 — high enough to preempt user
+  workloads without an explicit PriorityClass (which carry priority=0
+  by default), but deliberately NOT in the `system-*` 1B+ range that
+  some OPA/Kyverno/Validating Admission policies flag when used outside
+  `kube-system`. Operators who want the system-cluster-critical
+  semantics (and whose cluster permits it) should set
+  `priority.className=system-cluster-critical` and skip the chart-
+  managed class.
+
+  PriorityClass is cluster-scoped, so two installs in the same cluster
+  with the same release name would collide — the name uses the helm
+  fullname template, which incorporates the release, so distinct
+  releases create distinct classes.
+*/}}
+{{- if and .Values.priority.enabled (not .Values.priority.className) (not .Values.priorityClassName) }}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-priority
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/managed-priority: "true"
+value: {{ .Values.priority.value }}
+globalDefault: false
+description: |
+  Created by the kubebolt-agent helm chart so the agent DaemonSet can be
+  scheduled on saturated nodes. Preempts pods without an explicit
+  PriorityClass (priority=0). Outside the system-* range to avoid
+  conflicts with cluster admission policies.
+preemptionPolicy: PreemptLowerPriority
+{{- end }}

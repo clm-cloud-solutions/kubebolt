@@ -62,6 +62,52 @@ tolerations:
   - operator: Exists
 nodeSelector: {}
 affinity: {}
+
+# ─── Priority class ─────────────────────────────────────────
+#
+# When the agent's pod can't be scheduled on a node (CPU/memory
+# pressure pushes it Pending), KubeBolt's Monitor view loses
+# visibility for the workloads on that node and the chart-level
+# sums understate per-pod usage. The Monitor UI shows a coverage-
+# gap banner when this happens, but the cleanest fix is to give
+# the agent a PriorityClass so the kube-scheduler can preempt
+# lower-priority pods to make room.
+#
+# Three install modes:
+#
+#   1. priority.enabled: false (DEFAULT — no preemption)
+#      Safest for security-conscious shops. Agent runs only when
+#      a node has spare resources at scheduling time. The Monitor
+#      banner alerts the operator when coverage gaps appear.
+#
+#   2. priority.enabled: true with empty className (chart-managed)
+#      The chart creates a PriorityClass `<release>-priority` at
+#      value 999999000 — high enough to preempt user workloads
+#      without explicit PriorityClass (priority=0), but NOT in the
+#      `system-*` namespace that some OPA/Kyverno policies flag.
+#      Recommended for shops that want full coverage but have
+#      strict policy on system-* classes.
+#
+#   3. priority.enabled: true with className="system-cluster-critical"
+#      (or any other pre-existing class). Skips chart-managed
+#      class; uses what you point at. `system-cluster-critical`
+#      gives the highest practical priority but some auditors
+#      flag it outside `kube-system`.
+#
+# Mode 1 is the safest default. When you see coverage banners
+# in Monitor consistently, switch to mode 2.
+priority:
+  enabled: false
+  # When enabled and className is empty, the chart creates a
+  # PriorityClass with the value below.
+  className: ""
+  value: 999999000
+
+# Legacy single-string knob, kept for backwards compatibility with
+# pre-0.3.0 installs. If set, takes precedence over `priority.*`
+# block above (the chart writes this string verbatim into the
+# pod spec). For new installs, prefer `priority.enabled` +
+# `priority.className`.
 priorityClassName: ""
 
 # ─── Resources ─────────────────────────────────────────────
