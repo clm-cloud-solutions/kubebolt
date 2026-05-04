@@ -257,18 +257,33 @@ func (a *Aggregator) Record(f *flowpb.Flow) {
 		return
 	}
 
-	if f.GetIsReply() != nil && f.GetIsReply().GetValue() {
-		return
-	}
-	if f.GetTrafficDirection() != flowpb.TrafficDirection_EGRESS {
-		return
+	// is_reply / EGRESS filtering is for forwarded flows only —
+	// each forwarded packet is observed twice (egress on source
+	// node, ingress on destination node), so we keep just the
+	// EGRESS observation to avoid double-counting.
+	//
+	// Dropped flows are different: Cilium emits exactly one event
+	// at the point of denial, with TrafficDirection_UNKNOWN (the
+	// SYN was rejected before direction classification kicked in),
+	// and there's no reply because the connection never opened.
+	// Applying the same filters silently swallows every drop —
+	// which is exactly the bug we're fixing here. The Reliability
+	// tab's Network Drops panel was perma-empty because of this.
+	verdict := strings.ToLower(f.GetVerdict().String())
+	if verdict != "dropped" {
+		if f.GetIsReply() != nil && f.GetIsReply().GetValue() {
+			return
+		}
+		if f.GetTrafficDirection() != flowpb.TrafficDirection_EGRESS {
+			return
+		}
 	}
 	key := flowKey{
 		srcNs:   src.GetNamespace(),
 		srcPod:  src.GetPodName(),
 		dstNs:   dst.GetNamespace(),
 		dstPod:  dst.GetPodName(),
-		verdict: strings.ToLower(f.GetVerdict().String()),
+		verdict: verdict,
 	}
 	a.mu.Lock()
 	a.totals[key]++

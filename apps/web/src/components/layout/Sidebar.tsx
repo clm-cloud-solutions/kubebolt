@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
-import { NavLink } from 'react-router-dom'
+import { NavLink, useLocation } from 'react-router-dom'
+import { isDashboardPath } from '@/utils/routes'
 import {
   Zap,
   LayoutDashboard,
@@ -138,6 +139,14 @@ export function Sidebar({ overview }: SidebarProps) {
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const { hasRole, isAuthEnabled } = useAuth()
+  const location = useLocation()
+  // Overview is the entry point for the whole dashboard surface
+  // (Overview / Capacity / Reliability sub-tabs). All three should
+  // light up this nav item — the user is "on the dashboard"
+  // regardless of which sub-tab they picked. NavLink's `end` prop
+  // would only match `/` exact, which is why we drive active state
+  // from the central path list instead.
+  const dashboardActive = isDashboardPath(location.pathname)
 
   const handleLogoClick = useCallback(() => {
     const next = clickCount + 1
@@ -195,24 +204,17 @@ export function Sidebar({ overview }: SidebarProps) {
         <div>
           <NavLink
             to="/"
-            end
-            className={({ isActive }) =>
-              `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors relative ${
-                isActive
-                  ? 'bg-status-info-dim text-status-info'
-                  : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
-              }`
-            }
+            className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors relative ${
+              dashboardActive
+                ? 'bg-status-info-dim text-status-info'
+                : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
+            }`}
           >
-            {({ isActive }) => (
-              <>
-                {isActive && (
-                  <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
-                )}
-                <span className="shrink-0"><LayoutDashboard className="w-4 h-4" /></span>
-                <span className="flex-1 truncate">Overview</span>
-              </>
+            {dashboardActive && (
+              <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
             )}
+            <span className="shrink-0"><LayoutDashboard className="w-4 h-4" /></span>
+            <span className="flex-1 truncate">Overview</span>
           </NavLink>
         </div>
 

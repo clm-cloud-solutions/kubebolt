@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { isDashboardPath } from '@/utils/routes'
 import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
@@ -22,6 +23,12 @@ export function Topbar({ overview }: TopbarProps) {
   const queryClient = useQueryClient()
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
+  const location = useLocation()
+  // The Dashboard pill represents the dashboard surface as a whole,
+  // not the / route specifically — it should stay active across
+  // every sub-tab (Overview / Capacity / Reliability) so the user
+  // always knows which mode they're in.
+  const dashboardActive = isDashboardPath(location.pathname)
 
   // Cluster management (add / rename / delete) lives on /clusters —
   // the dropdown only routes there. Keeps the switcher focused on its
@@ -188,12 +195,11 @@ export function Topbar({ overview }: TopbarProps) {
         <div className="flex rounded-md border border-kb-border overflow-hidden">
           <NavLink
             to="/"
-            end
-            className={({ isActive }) =>
-              `px-3 py-1 text-[10px] font-mono uppercase tracking-[0.08em] transition-colors ${
-                isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-tertiary hover:text-kb-text-secondary'
-              }`
-            }
+            className={`px-3 py-1 text-[10px] font-mono uppercase tracking-[0.08em] transition-colors ${
+              dashboardActive
+                ? 'bg-kb-elevated text-kb-text-primary'
+                : 'bg-kb-card text-kb-text-tertiary hover:text-kb-text-secondary'
+            }`}
           >
             Dashboard
           </NavLink>

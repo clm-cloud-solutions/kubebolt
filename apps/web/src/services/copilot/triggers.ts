@@ -140,6 +140,10 @@ export type PanelInquiryKind =
   | 'top_consumers_cpu'
   | 'right_sizing'
   | 'recent_deploys'
+  | 'top_workloads_traffic'
+  | 'error_hotspots'
+  | 'top_latency'
+  | 'network_drops'
 
 export interface PanelInquiryTriggerPayload {
   type: 'panel_inquiry'
@@ -363,6 +367,31 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
           close: `Was anything risky or unusual? Should I correlate with errors / anomalies in the same window?`,
           singleLead: `Tell me about this rollout.`,
           singleClose: `Was it routine, or worth investigating? Check whether it correlates with any errors, restarts, or metric anomalies in the same window.`,
+        },
+        top_workloads_traffic: {
+          lead: `Walk me through the cluster's top HTTP workloads and flag anything that looks off.`,
+          close: `Look at the request rates, error rates, and latency together — flag services with suspicious error patterns, latency outliers, or load shapes that don't fit what I'd expect for them.`,
+          // Per-row variant intentionally absent: this panel doesn't
+          // ship a per-row Kobi (the bar + chips + sparkline already
+          // tell each row's story). Falls back to the multi-row lead.
+        },
+        error_hotspots: {
+          lead: `Walk me through these HTTP error hot-spots.`,
+          close: `Prioritize by risk — which one would wake me up at 3am, and what's the likely root cause? Remember: 4xx points at the caller, 5xx points at the receiver.`,
+          singleLead: `Investigate this HTTP error hot-spot.`,
+          singleClose: `What's the most likely root cause given the source, destination, and status class breakdown? Walk me through how to confirm and how to fix it.`,
+        },
+        top_latency: {
+          lead: `Walk me through the cluster's slowest HTTP workloads.`,
+          close: `Which of these latencies are concerning vs expected for their workload type, and what's most likely causing the slow ones (downstream dependency, GC, lock contention, cold starts)? Note: these are average latencies — outliers can pull the avg, but consistent high avg points at a real problem.`,
+          // No per-row variant — TopLatencyWorkloads uses
+          // panel-level Kobi only.
+        },
+        network_drops: {
+          lead: `Walk me through these dropped network flows.`,
+          close: `Most dropped flows in a Cilium cluster come from NetworkPolicies blocking traffic — but they can also be connection refused, host firewall, or pod restarting. Tell me which of these look like NetworkPolicy issues vs other causes, and how to confirm.`,
+          singleLead: `Investigate this dropped network flow.`,
+          singleClose: `What's most likely blocking this traffic — a NetworkPolicy, a CiliumNetworkPolicy, the destination pod being down, or something else? Walk me through how to confirm and remediate.`,
         },
       }
       const q = questions[p.panel]

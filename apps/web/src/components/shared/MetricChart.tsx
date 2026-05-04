@@ -19,7 +19,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count'
+type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
 
 interface QuerySpec {
   query: string
@@ -120,6 +120,16 @@ interface MetricChartProps {
   // "area" draws stroke + gradient fill (used for volume-like metrics like
   // Filesystem). Defaults to "area" for backward compatibility.
   chartType?: 'line' | 'area'
+
+  // Optional extra rows appended to the bottom of the tooltip,
+  // separated by a divider. Receives the hovered timestamp (unix
+  // seconds) so the caller can look up its own out-of-band data
+  // (separate range query, joined map, etc.) and render context
+  // that the chart's series alone don't carry — typical use is
+  // showing absolute volume next to a percentage curve. Returning
+  // null is fine when no data exists for that timestamp; the
+  // divider only renders when the callback returns truthy JSX.
+  tooltipExtra?: (timestampSec: number) => React.ReactNode
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -159,6 +169,7 @@ export const METRIC_ACCENTS = {
   memory: ['#3b82f6'],                    // blue
   filesystem: ['#a855f7'],                // violet
   networkRxTx: ['#eab308', '#f97316'],   // yellow (RX), orange (TX) — warm family, visibly distinct
+  errorRate: ['#ef4056'],                 // red — reserved for "things that look bad"
 } as const
 
 // ─── Formatting helpers ─────────────────────────────────────────────────────
@@ -180,6 +191,12 @@ function pickScale(absMax: number, unit?: UnitKind): UnitScale {
     // Use millicores when every interesting value is below 100m.
     if (absMax > 0 && absMax < 0.1) return { divisor: 0.001, label: 'm' }
     return { divisor: 1, label: 'cores' }
+  }
+  if (unit === 'percent') {
+    // Caller is expected to pre-scale to 0–100 (or 0–1; we don't
+    // assume one). divisor=1 keeps values intact and the '%' suffix
+    // tells the user how to read the axis.
+    return { divisor: 1, label: '%' }
   }
   return { divisor: 1, label: '' }
 }
@@ -281,6 +298,7 @@ export function MetricChart({
   showStats = true,
   accents,
   chartType = 'area',
+  tooltipExtra,
 }: MetricChartProps) {
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
@@ -659,6 +677,15 @@ export function MetricChart({
                             ))}
                           </div>
                         )}
+                        {tooltipExtra && (() => {
+                          const extra = tooltipExtra(label as number)
+                          if (!extra) return null
+                          return (
+                            <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                              {extra}
+                            </div>
+                          )
+                        })()}
                       </div>
                     )
                   }}
