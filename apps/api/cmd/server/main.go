@@ -498,6 +498,24 @@ func main() {
 	agentRegistry := channel.NewAgentRegistry()
 	manager.SetAgentRegistry(agentRegistry)
 
+	// Tunnel idle timeout — set the package-level default so every
+	// AgentProxyTransport spawned later (per-cluster, on connect)
+	// inherits the operator-chosen value. Default 5m; 0 disables the
+	// watchdog.
+	if v := os.Getenv("KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			channel.DefaultTunnelIdleTimeout = d
+			slog.Info("agent-proxy tunnel idle timeout configured",
+				slog.Duration("timeout", d),
+			)
+		} else {
+			slog.Warn("invalid KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT, using default",
+				slog.String("requested", v),
+				slog.Duration("default", channel.DefaultTunnelIdleTimeout),
+			)
+		}
+	}
+
 	// Persistence wiring + boot-time restore. When auth is disabled
 	// (agentStore == nil) all of this is skipped and the registry
 	// stays in-memory — same as pre-Sprint-A.5 behavior.
