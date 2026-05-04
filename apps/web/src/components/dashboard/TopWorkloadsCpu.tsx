@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
+import { BarChart3 } from 'lucide-react'
 import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
@@ -114,11 +115,16 @@ export function TopWorkloadsCpu({ installed, overview, refetchMs = 30_000, topN 
 
   return (
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
-      <div className="flex items-baseline justify-between mb-3">
-        <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary">
-          Top workloads · CPU
-        </h4>
-        <span className="text-[10px] font-mono text-kb-text-tertiary">
+      <div className="flex items-center justify-between mb-3 gap-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-kb-text-secondary shrink-0">
+            <BarChart3 className="w-4 h-4" />
+          </span>
+          <h4 className="text-sm font-semibold text-kb-text-primary truncate">
+            Top Workloads · CPU
+          </h4>
+        </div>
+        <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
           cluster-wide · top {topN}
         </span>
       </div>

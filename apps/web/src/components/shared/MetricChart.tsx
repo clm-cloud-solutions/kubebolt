@@ -50,6 +50,14 @@ interface RangeOption {
 interface MetricChartProps {
   title: string
 
+  // Optional icon rendered alongside the title. When provided, the
+  // header switches from the compact uppercase-mono format used in
+  // resource detail pages to the larger sentence-case + icon format
+  // used by the dashboard's overview cards (CPU Usage / Memory
+  // Usage). Pass a 16×16 lucide icon to keep it visually balanced
+  // with the title text.
+  icon?: React.ReactNode
+
   // One of these two must be provided.
   query?: string
   queries?: QuerySpec[]
@@ -232,6 +240,7 @@ interface SeriesInfo {
 
 export function MetricChart({
   title,
+  icon,
   query,
   queries,
   unit,
@@ -370,9 +379,18 @@ export function MetricChart({
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
-          <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary truncate">
-            {title}
-          </h4>
+          {icon ? (
+            <>
+              <span className="text-kb-text-secondary shrink-0">{icon}</span>
+              <h4 className="text-sm font-semibold text-kb-text-primary truncate">
+                {title}
+              </h4>
+            </>
+          ) : (
+            <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary truncate">
+              {title}
+            </h4>
+          )}
           {hasData && (
             <AskCopilotButton
               payload={{

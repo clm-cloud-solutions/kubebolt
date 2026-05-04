@@ -4,6 +4,7 @@ import { useClusterOverview } from '@/hooks/useClusterOverview'
 import type { ClusterOverview } from '@/types/kubernetes'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { Cpu, MemoryStick, Network, HardDrive } from 'lucide-react'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
@@ -131,7 +132,8 @@ function AgentTrendsBlock({
       </div>
       <div className="grid grid-cols-2 gap-3">
         <MetricChart
-          title="CPU usage"
+          title="CPU Usage"
+          icon={<Cpu className="w-4 h-4" />}
           unit="cores"
           query={`sum(node_cpu_usage_cores)`}
           seriesLabel={() => 'cluster total'}
@@ -142,7 +144,8 @@ function AgentTrendsBlock({
           controlledRangeMinutes={rangeMinutes}
         />
         <MetricChart
-          title="Memory working set"
+          title="Memory Working Set"
+          icon={<MemoryStick className="w-4 h-4" />}
           unit="bytes"
           query={`sum(node_memory_working_set_bytes)`}
           seriesLabel={() => 'cluster total'}
@@ -153,7 +156,8 @@ function AgentTrendsBlock({
           controlledRangeMinutes={rangeMinutes}
         />
         <MetricChart
-          title="Network activity (RX up / TX down)"
+          title="Network Activity"
+          icon={<Network className="w-4 h-4" />}
           unit="bytes/s"
           queries={[
             { query: `sum(rate(node_network_receive_bytes_total[1m]))`, prefix: 'RX' },
@@ -167,7 +171,8 @@ function AgentTrendsBlock({
           controlledRangeMinutes={rangeMinutes}
         />
         <MetricChart
-          title="Filesystem used"
+          title="Filesystem Used"
+          icon={<HardDrive className="w-4 h-4" />}
           unit="bytes"
           query={`sum(node_fs_used_bytes)`}
           seriesLabel={() => 'cluster total'}

@@ -1,3 +1,4 @@
+import { History } from 'lucide-react'
 import type { KubeEvent } from '@/types/kubernetes'
 import { formatAge } from '@/utils/formatters'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
@@ -9,8 +10,11 @@ interface EventsFeedProps {
 export function EventsFeed({ events }: EventsFeedProps) {
   return (
     <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
-      <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary mb-3">
-        Recent Events
+      <div className="flex items-center gap-2 mb-3">
+        <span className="text-kb-text-secondary shrink-0">
+          <History className="w-4 h-4" />
+        </span>
+        <h4 className="text-sm font-semibold text-kb-text-primary">Recent Events</h4>
       </div>
       <div className="space-y-2 max-h-[280px] overflow-y-auto">
         {events.length === 0 && (

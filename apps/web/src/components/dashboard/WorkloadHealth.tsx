@@ -1,3 +1,4 @@
+import { Layers } from 'lucide-react'
 import type { ClusterOverview, WorkloadSummary } from '@/types/kubernetes'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
@@ -104,8 +105,11 @@ export function WorkloadHealth({ overview }: WorkloadHealthProps) {
 
   return (
     <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
-      <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary mb-4">
-        Workload Health
+      <div className="flex items-center gap-2 mb-4">
+        <span className="text-kb-text-secondary shrink-0">
+          <Layers className="w-4 h-4" />
+        </span>
+        <h4 className="text-sm font-semibold text-kb-text-primary">Workload Health</h4>
       </div>
       <div className="space-y-3">
         <HealthRow
