@@ -21,4 +21,11 @@ To verify the installation:
 
   kubectl get pods -l app.kubernetes.io/name={{ include "kubebolt.name" . }}
 
+To surface historical metrics on the Monitor tab and Node Top
+Consumers, install the optional kubebolt-agent DaemonSet — it ships
+kubelet samples to the bundled VictoriaMetrics. Without it, list pages
+still show live metrics from metrics-server, but historical charts and
+top-consumers stay empty. See:
+https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md
+
 For more information, visit: https://github.com/clm-cloud-solutions/kubebolt

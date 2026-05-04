@@ -49,3 +49,27 @@ Service account name
 {{- default "default" .Values.serviceAccount.name }}
 {{- end }}
 {{- end }}
+
+{{/*
+Embedded VictoriaMetrics workload name (StatefulSet + Service share it).
+*/}}
+{{- define "kubebolt.victoriametrics.fullname" -}}
+{{- printf "%s-victoriametrics" (include "kubebolt.fullname" .) | trunc 63 | trimSuffix "-" }}
+{{- end }}
+
+{{/*
+URL the API uses to write samples and run PromQL. Resolves to the
+in-cluster embedded VictoriaMetrics Service when embedded.enabled is
+true; otherwise to the user-provided externalUrl. Fails template
+rendering if neither is set so misconfigurations surface at install
+time, not at first sample write.
+*/}}
+{{- define "kubebolt.metricsStorageUrl" -}}
+{{- if .Values.metrics.storage.embedded.enabled -}}
+http://{{ include "kubebolt.victoriametrics.fullname" . }}:8428
+{{- else if .Values.metrics.storage.externalUrl -}}
+{{ .Values.metrics.storage.externalUrl }}
+{{- else -}}
+{{- fail "metrics.storage.embedded.enabled is false but metrics.storage.externalUrl is empty — set one of them" -}}
+{{- end -}}
+{{- end }}

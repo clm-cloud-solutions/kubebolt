@@ -37,6 +37,12 @@ Open http://localhost:3000
 | `serviceAccount.create` | Create ServiceAccount | `true` |
 | `rbac.create` | Create ClusterRole/Binding | `true` |
 | `replicaCount` | Number of replicas | `1` |
+| `metrics.storage.embedded.enabled` | Deploy bundled VictoriaMetrics | `true` |
+| `metrics.storage.embedded.retention` | TSDB retention window | `30d` |
+| `metrics.storage.embedded.persistence.size` | PVC size for VM data | `10Gi` |
+| `metrics.storage.embedded.persistence.storageClass` | Storage class (cluster default if empty) | `""` |
+| `metrics.storage.embedded.resources` | VM resource requests/limits | 100m/256Mi - 1000m/2Gi |
+| `metrics.storage.externalUrl` | URL of an external VictoriaMetrics (used when embedded is disabled) | `""` |
 | `auth.enabled` | Enable built-in authentication | `true` |
 | `auth.adminPassword` | Initial admin password (generated if empty) | `""` |
 | `auth.jwtSecret` | JWT signing secret (generated if empty, won't survive restarts) | `""` |
@@ -128,12 +134,48 @@ DeepSeek, Mistral, self-hosted Ollama/vLLM, and more).
 - [AI Copilot configuration](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot.md)
 - [AI Copilot providers reference](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot-providers.md)
 
+## Metrics Storage
+
+Time-series data (CPU, memory, network samples shipped by `kubebolt-agent`,
+plus Hubble flow events) lives in a Prometheus-compatible TSDB.
+
+**Default — embedded VictoriaMetrics.** The chart deploys a single-node
+VictoriaMetrics StatefulSet alongside the API, with a 10 GiB PVC and 30-day
+retention. Nothing else to configure for it to work.
+
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
+# bundles VictoriaMetrics automatically
+```
+
+**Bring your own.** If you already run VictoriaMetrics, vmselect, or any
+endpoint compatible with the VM ingestion + query API, point KubeBolt at
+it instead:
+
+```bash
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set metrics.storage.embedded.enabled=false \
+  --set metrics.storage.externalUrl=http://vmselect.observability.svc.cluster.local:8481
+```
+
+Plain Prometheus remote-write isn't enough — KubeBolt also queries the
+endpoint back, so it must accept VM-style reads. vmagent + vmselect
+behind a single URL is the typical setup.
+
+**Sizing.** Rule of thumb: ~1 GiB of PVC per 100 pods at 30-day retention
+with default scrape cadence. Bump `metrics.storage.embedded.persistence.size`
+and `retention` together if you need longer history. High-cardinality
+workloads (lots of label dimensions) can consume noticeably more — the
+embedded instance is fine for clusters up to a few hundred nodes; beyond
+that, run a dedicated VictoriaMetrics cluster.
+
 ## Architecture
 
-KubeBolt deploys two containers:
+KubeBolt deploys three workloads:
 
-- **API** (Go) — Connects to the Kubernetes API using in-cluster ServiceAccount credentials. Runs shared informers, metrics collector, insights engine, and exec/port-forward bridges.
-- **Web** (nginx) — Serves the React frontend and proxies API/WebSocket requests to the API service.
+- **API** (Go, Deployment) — Connects to the Kubernetes API using in-cluster ServiceAccount credentials. Runs shared informers, metrics collector, insights engine, and exec/port-forward bridges. Writes samples to and queries from VictoriaMetrics.
+- **Web** (nginx, Deployment) — Serves the React frontend and proxies API/WebSocket requests to the API service.
+- **VictoriaMetrics** (StatefulSet, optional) — Time-series database for metrics and flow events. Deployed by default; can be replaced with an external instance via `metrics.storage.externalUrl`.
 
 The Helm chart creates a ServiceAccount with a ClusterRole granting read access to all cluster resources, plus exec and port-forward permissions for pod management.
 
