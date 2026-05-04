@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   Play,
   X as XIcon,
@@ -41,6 +41,7 @@ interface Props {
  */
 export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const { recordProposalOutcome } = useCopilot()
   // Seed the local status from any persisted execution metadata. If the
   // chat re-renders this card after the user already acted (or after a
@@ -72,6 +73,15 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
       setResultMsg(result)
       setStatus('success')
       recordProposalOutcome(toolCallId, 'executed', result)
+      // Refresh any visible list/detail of this resource so the user
+      // sees the post-mutation state without having to hit Refresh.
+      // The WS-driven broad invalidation was removed (was causing
+      // mid-second list reorders); explicit post-action invalidation
+      // is the targeted replacement for that immediate-feedback UX.
+      queryClient.invalidateQueries({ queryKey: ['resources'] })
+      queryClient.invalidateQueries({
+        queryKey: ['resource-detail', target.type, target.namespace || '_', target.name],
+      })
       // Take the user to the place where they can watch the action land.
       // Workload actions go to the "Pods" tab so they see pods cycling;
       // rollbacks go there too (the new=old RS spawns fresh pods); deletes

@@ -217,7 +217,7 @@ cd deploy && docker compose up -d</span>
 <span class="d"># Docker Desktop K8s (needs kubeconfig rewrite)</span>
 <span class="g">./deploy/docker-kubeconfig.sh
 cd deploy && docker compose up -d</span></pre>
-<p>Frontend at <code>http://localhost:3000</code>. Nginx proxies <code>/api</code> and <code>/ws</code> to the Go backend.</p>
+<p>Frontend at <code>http://localhost:3000</code>. Nginx proxies <code>/api</code> and <code>/ws</code> to the Go backend. Compose also starts a bundled <strong>VictoriaMetrics</strong> for historical metrics (Monitor tab, Top Consumers).</p>
 
 <h2>Helm (in-cluster)</h2>
 <pre><span class="g">helm install kubebolt \
@@ -243,7 +243,7 @@ cd deploy && docker compose up -d</span></pre>
 <p>Production deployment inside your cluster. OCI-based chart on GitHub Container Registry. Also listed on Artifact Hub.</p>
 <pre><span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
 
-<span class="g">kubectl port-forward svc/kubebolt 3000:80</span>
+<span class="g">kubectl -n default port-forward svc/kubebolt 3000:80</span>
 
 <span class="d"># With Ingress and custom admin password</span>
 <span class="g">helm install kubebolt \
@@ -251,7 +251,18 @@ cd deploy && docker compose up -d</span></pre>
   --set auth.adminPassword=YourSecurePassword \
   --set ingress.enabled=true \
   --set ingress.host=kubebolt.example.com</span></pre>
-<p>The chart creates a ClusterRole with full read permissions, a ServiceAccount, and the KubeBolt deployment. Configurable values include image tags, resource limits, Ingress, auth, and RBAC settings.</p>
+<p>The chart deploys three workloads: the API, the web frontend, and a single-node <strong>VictoriaMetrics</strong> StatefulSet (10 GiB PVC, 30-day retention) for time-series storage. It also creates a ClusterRole with full read permissions, a ServiceAccount, and a Service for agent ingest.</p>
+
+<h3>Bring your own VictoriaMetrics</h3>
+<p>Disable the embedded instance and point KubeBolt at an existing endpoint compatible with the VM ingestion + query API:</p>
+<pre><span class="g">helm install kubebolt \
+  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set metrics.storage.embedded.enabled=false \
+  --set metrics.storage.externalUrl=http://vmselect.observability.svc.cluster.local:8481</span></pre>
+<p>Plain Prometheus remote-write isn't enough — KubeBolt also queries the endpoint back, so it must accept VM-style reads. vmagent + vmselect behind a single URL is the typical setup.</p>
+
+<h3>Sizing the embedded VictoriaMetrics</h3>
+<p>Rule of thumb: ~1 GiB of PVC per 100 pods at 30-day retention with default scrape cadence. Bump <code>metrics.storage.embedded.persistence.size</code> and <code>retention</code> together if you need longer history. For clusters with hundreds of nodes or high-cardinality labels, run a dedicated VictoriaMetrics instance instead.</p>
 
 <h2>Docker Compose</h2>
 <p>Full stack with separate API and web containers. Multi-arch images (amd64/arm64).</p>
@@ -264,6 +275,7 @@ cd deploy && docker compose up -d</span>
 cd deploy && docker compose up -d</span></pre>
 <p>Frontend at <code>http://localhost:3000</code>. Admin password printed to logs (<code>docker compose logs api</code>).</p>
 <div class="callout-blue callout"><strong>EKS note:</strong> The compose file mounts <code>~/.aws</code> for AWS credential access. Ensure your AWS session is active.</div>
+<p>The compose stack also brings up a <strong>VictoriaMetrics</strong> container (30-day retention, named volume <code>kubebolt-vm-data</code>) so historical metrics and the Monitor tab work end-to-end. Tune retention with <code>KUBEBOLT_METRICS_RETENTION</code> in <code>deploy/.env</code>, or point at an existing TSDB by setting <code>KUBEBOLT_METRICS_STORAGE_URL</code> there. See <a href="#pg-metrics">Metrics &amp; Storage</a>.</p>
 
 <h2>Single Binary (macOS, Linux, Windows)</h2>
 <p>One executable with embedded frontend. API + UI in a single process on one port. Download from <a href="https://github.com/clm-cloud-solutions/kubebolt/releases/latest">GitHub Releases</a>.</p>
@@ -279,6 +291,7 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
 <span class="g">kubebolt --kubeconfig ~/.kube/config</span></pre>
 <p>Available for <code>darwin-arm64</code>, <code>darwin-amd64</code>, <code>linux-arm64</code>, <code>linux-amd64</code>, and <code>windows-amd64</code>. Verify with <code>sha256sum -c CHECKSUMS.txt</code>.</p>
 <div class="callout"><strong>.env support:</strong> The binary auto-loads a <code>.env</code> file from the current directory. Put <code>KUBEBOLT_ADMIN_PASSWORD</code>, <code>KUBEBOLT_AI_API_KEY</code>, etc. in a <code>.env</code> file next to the binary. System env vars and CLI flags take precedence.</div>
+<div class="callout-blue callout"><strong>Historical metrics:</strong> the binary doesn't bundle a TSDB. Live CPU/Memory bars work from <code>metrics-server</code>; for the Monitor tab, Node Top Consumers, and agent-driven charts run a local VictoriaMetrics (<code>docker run -d -p 8428:8428 victoriametrics/victoria-metrics</code>) and set <code>KUBEBOLT_METRICS_STORAGE_URL=http://localhost:8428</code>. See <a href="#pg-metrics">Metrics &amp; Storage</a> for the full per-mode matrix.</div>
 
 <h2>Local Development</h2>
 <p>Requires Go 1.25+ and Node 20+.</p>
@@ -291,6 +304,7 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
 <p>To build your own single binary:</p>
 <pre><span class="g">make build-binary</span>
 <span class="d"># Produces apps/api/kubebolt (embedded frontend)</span></pre>
+<div class="callout-blue callout"><strong>Historical metrics in dev:</strong> the dev binary doesn't bundle a TSDB. Fastest path is to start just the VictoriaMetrics service from <code>deploy/docker-compose.yml</code>: <code>cd deploy && docker compose up -d victoriametrics</code>, then export <code>KUBEBOLT_METRICS_STORAGE_URL=http://localhost:8428</code> before <code>make dev</code>. See <a href="#pg-metrics">Metrics &amp; Storage</a> for the per-mode matrix.</div>
 
 <h2>Homebrew (macOS, Linux)</h2>
 <p>Install and update via Homebrew. Automatic version management via <code>brew upgrade</code>. Available for macOS and Linux (amd64 + arm64).</p>
@@ -305,6 +319,7 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
 
 <span class="d"># Update to the latest version</span>
 <span class="g">brew upgrade kubebolt</span></pre>
+<div class="callout-blue callout"><strong>Historical metrics:</strong> Homebrew installs the same single-process binary, so it doesn't bundle a TSDB either. To enable the Monitor tab and Node Top Consumers, run VictoriaMetrics alongside (e.g. <code>brew services start victoria-metrics</code> if you have the formula, or <code>docker run -d -p 8428:8428 victoriametrics/victoria-metrics</code>) and export <code>KUBEBOLT_METRICS_STORAGE_URL=http://localhost:8428</code>. See <a href="#pg-metrics">Metrics &amp; Storage</a>.</div>
 
 <h2>Docker (single container)</h2>
 <p>Single image with embedded frontend. No nginx, no compose. Multi-arch (amd64/arm64). Runs as non-root.</p>
@@ -316,6 +331,15 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
   --certificate-identity-regexp 'https://github.com/clm-cloud-solutions/kubebolt/.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com</span></pre>
 <div class="callout-blue callout"><strong>EKS note:</strong> For EKS clusters, mount <code>~/.aws</code> and set <code>AWS_PROFILE</code> so the binary can obtain tokens. The image includes <code>aws-cli</code>.</div>
+<p>For historical metrics, run a sibling VictoriaMetrics container and link the two:</p>
+<pre><span class="g">docker network create kubebolt-net
+docker run -d --name vm --network kubebolt-net -p 8428:8428 \
+  victoriametrics/victoria-metrics
+docker run -p 3000:3000 --network kubebolt-net \
+  -e KUBEBOLT_METRICS_STORAGE_URL=http://vm:8428 \
+  -v ~/.kube:/root/.kube:ro \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest</span></pre>
+<p>If you'd rather not orchestrate two containers by hand, use <a href="#pg-installation">Docker Compose</a> — it bundles VictoriaMetrics already. See <a href="#pg-metrics">Metrics &amp; Storage</a> for the full picture.</p>
 
 <h2>kubectl Plugin (krew)</h2>
 <p>Run KubeBolt as a kubectl subcommand. Available via CLM's custom krew index.</p>
@@ -333,11 +357,12 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
 
 <span class="d"># Update</span>
 <span class="g">kubectl krew upgrade clm/kubebolt</span></pre>
+<div class="callout-blue callout"><strong>Historical metrics:</strong> the krew plugin runs the same single-process binary, so it doesn't bundle a TSDB. Run VictoriaMetrics next to it (<code>docker run -d -p 8428:8428 victoriametrics/victoria-metrics</code>) and export <code>KUBEBOLT_METRICS_STORAGE_URL=http://localhost:8428</code> before <code>kubectl kubebolt</code>. See <a href="#pg-metrics">Metrics &amp; Storage</a>.</div>
 
 <hr>
 
 <h2>Coming Soon</h2>
-<p>The following distribution methods are planned but require additional infrastructure.</p>
+<p>The following distribution methods are planned but require additional infrastructure. They all wrap the same single-process binary, so the same TSDB rules apply: bring your own VictoriaMetrics via <code>KUBEBOLT_METRICS_STORAGE_URL</code> if you want historical metrics. See <a href="#pg-metrics">Metrics &amp; Storage</a>.</p>
 
 <h3>Install Script</h3>
 <p>One-command install that auto-detects OS and architecture. Requires a custom domain (<code>kubebolt.io</code>) to host the script.</p>
@@ -362,26 +387,33 @@ chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kub
 <p class="page-desc">Go backend with in-memory caches and BoltDB for auth. React frontend with live WebSocket updates.</p>
 
 <h2>System Diagram</h2>
-<pre>Kubernetes Cluster(s)
-  │ API Server + Metrics Server
-  ▼ kubeconfig (all contexts)
-KubeBolt Backend (Go)
+<pre>Kubernetes Cluster(s)            kubebolt-agent (DaemonSet, optional)
+  │ API Server                     │ kubelet stats, Hubble flows,
+  │ Metrics Server                 │ kube_request proxy
+  ▼ kubeconfig (all contexts)      ▼ outbound gRPC bidi
+KubeBolt Backend (Go)  ◄───────────┘
   ├─ Cluster Manager     → multi-cluster lifecycle, async connection
   ├─ Shared Informers    → typed resources (client-go)
   ├─ Dynamic Client      → Gateway API CRDs (unstructured)
   ├─ Permission Probe    → 22 SelfSubjectAccessReview calls
   ├─ Metrics Collector   → 30s poll, in-memory cache
+  ├─ Agent Channel       → gRPC bidi, agent registry, kube_request proxy
   ├─ Insights Engine     → 12 rules
   ├─ Auth Service        → JWT sessions, BoltDB user store, role enforcement
   ├─ REST API (Chi v5)   → resource lists, details, YAML, logs
   ├─ WebSocket Hub       → real-time broadcasts
-  └─ Copilot Proxy       → LLM tool-calling bridge
+  └─ Copilot Proxy       → LLM tool-calling bridge (Kobi)
+  │ writes + queries
+  ▼
+VictoriaMetrics (StatefulSet, optional — bundled in helm chart)
+  TSDB for metrics + Hubble flows. Replaceable via metrics.storage.externalUrl.
   │
-  ▼ REST + WebSocket
+  ▼ REST + WebSocket (KubeBolt Backend → Frontend)
 KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
   ├─ 23 Resource Views   → TanStack Table + Query
-  ├─ Cluster Map         → React Flow 11
-  ├─ AI Copilot          → multi-provider, 16 tools
+  ├─ Cluster Map         → React Flow 11 (Grid / Flow / Traffic)
+  ├─ Node Allocation     → request/limit sums + top consumers per node
+  ├─ Kobi (AI Copilot)   → multi-provider, 17 tools
   └─ Theme               → dark/light via CSS custom properties (--kb-*)</pre>
 
 <h2>Go Workspace</h2>
@@ -605,6 +637,17 @@ KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
 
 <h2>API Endpoint</h2>
 <p><code>GET /api/v1/cluster/permissions</code> returns the full permission map per resource type with <code>canList</code>, <code>canWatch</code>, <code>canGet</code>, <code>namespaceScoped</code>, and <code>namespaces</code> fields.</p>
+
+<h2>Backend ServiceAccount permissions (in-cluster install)</h2>
+<p>The Helm chart's bundled ClusterRole grants what the KubeBolt API itself needs to read your cluster <strong>and</strong> manage things on the operator's behalf — most notably installing <code>kubebolt-agent</code> from the Integrations admin and persisting its own admin password Secret on first boot. Beyond the obvious read access, the chart includes:</p>
+<table>
+<tr><th>Resource</th><th>Verbs</th><th>Why</th></tr>
+<tr><td><code>secrets</code></td><td>create, update, delete</td><td>Persist the auto-generated admin password Secret on first boot; materialize agent ingest-token Secrets from the wizard's "Generate token" flow.</td></tr>
+<tr><td><code>namespaces</code></td><td>create</td><td>Create <code>kubebolt-system</code> when the agent install wizard runs against a cluster that doesn't have it yet.</td></tr>
+<tr><td><code>configmaps</code>, <code>serviceaccounts</code>, <code>daemonsets</code></td><td>create, update, delete</td><td>Roll out the agent's ConfigMap, ServiceAccount, and DaemonSet from the wizard.</td></tr>
+<tr><td><code>roles</code>, <code>clusterroles</code>, <code>rolebindings</code>, <code>clusterrolebindings</code></td><td>create, update, delete, <strong>escalate</strong>, <strong>bind</strong></td><td>Create the agent's own ClusterRole/Binding. <code>escalate</code>+<code>bind</code> let the API author Roles whose verbs the API itself doesn't hold (the standard pattern Helm/ArgoCD use to install workloads with their own RBAC).</td></tr>
+</table>
+<p>Operators who want a stricter posture can disable the chart's bundled RBAC (<code>--set rbac.create=false</code>) and supply a hand-rolled ClusterRole instead. The agent-install wizard surfaces a "permission denied" error pointing at the missing verb when something is dropped.</p>
 </div></div>
 
 <!-- ═══ Authentication ═══ -->
@@ -615,7 +658,53 @@ KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
 <h2>Overview</h2>
 <p>KubeBolt ships with a built-in auth system that supports three roles: <strong>Admin</strong>, <strong>Editor</strong>, and <strong>Viewer</strong>. Auth is enabled by default and uses BoltDB for user storage — no external database needed. Sessions are managed via JWT tokens stored in httpOnly cookies.</p>
 
-<div class="callout"><strong>First boot:</strong> A default <code>admin</code> user is seeded automatically on first startup. The generated password is printed to the server logs. Change it immediately after first login.</div>
+<div class="callout"><strong>First boot:</strong> A default <code>admin</code> user is seeded automatically. When neither <code>auth.adminPassword</code> nor <code>auth.existingSecret</code> is set, the API generates a random password, prints it once to the log, and (in helm installs) persists it to a Secret named <code>kubebolt-admin-password</code> in the release's namespace. The banner only fires on first boot — subsequent restarts stay quiet.</div>
+
+<h2>Retrieving the auto-generated admin password</h2>
+<p>For a helm install with no explicit password configured:</p>
+<pre><span class="g">kubectl -n NS get secret kubebolt-admin-password \
+  -o jsonpath='{.data.password}' | base64 -d ; echo</span></pre>
+<p>If you've supplied <code>auth.existingSecret</code> on the chart, KubeBolt skips the auto-Secret entirely — your supplied Secret is the source of truth.</p>
+
+<h2>Forgot-password recovery</h2>
+<p>Two paths, pick whichever fits the situation. Both reset the admin password in BoltDB and log the operation for audit.</p>
+
+<h3>Path A — <code>helm upgrade</code> (recommended)</h3>
+<p>Sets the <code>KUBEBOLT_RESET_ADMIN_PASSWORD</code> env on the deployment; the API resets the password on next start, then continues normal boot. With <code>strategy: Recreate</code> on the API deployment (chart default) the BoltDB lock is released cleanly during rollover.</p>
+<pre><span class="g">helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set auth.resetAdminPassword=NEWPASS</span>
+
+<span class="d"># log in with NEWPASS, change to your real password, then clear:</span>
+<span class="g">helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set auth.resetAdminPassword=</span></pre>
+
+<h3>Path B — one-shot Job (no helm needed)</h3>
+<p>Useful in runbooks or when helm isn't available. Scale the API to 0 (BoltDB is single-writer), run the reset Job with the same image and PVC, scale back up.</p>
+<pre><span class="g">NS=kubebolt
+IMAGE=$(kubectl -n $NS get deploy/kubebolt-api -o jsonpath='{.spec.template.spec.containers[0].image}')
+kubectl -n $NS scale deploy/kubebolt-api --replicas=0
+kubectl -n $NS apply -f - &lt;&lt;EOF
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kubebolt-pw-reset }
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: reset
+        image: $IMAGE
+        command: ["kubebolt-api", "--reset-admin-password=NEWPASS"]
+        env: [{ name: KUBEBOLT_DATA_DIR, value: /data }]
+        volumeMounts: [{ name: data, mountPath: /data }]
+      volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: kubebolt-data }
+EOF
+kubectl -n $NS wait --for=condition=Complete job/kubebolt-pw-reset --timeout=60s
+kubectl -n $NS scale deploy/kubebolt-api --replicas=1</span></pre>
+<p>Min password length: 8 chars.</p>
 
 <h2>Roles</h2>
 <p>KubeBolt enforces three roles with increasing levels of access:</p>
@@ -693,33 +782,91 @@ KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
 
 <!-- ═══ Metrics ═══ -->
 <div class="doc-page" id="pg-metrics"><div class="md">
-<h1>Metrics Server</h1>
-<p class="page-desc">KubeBolt uses the Kubernetes Metrics Server for CPU/memory data.</p>
+<h1>Metrics &amp; Storage</h1>
+<p class="page-desc">Two metrics paths: live (Metrics Server, in-memory) and historical (VictoriaMetrics, persistent).</p>
 
-<h2>How it Works</h2>
-<p>The Metrics Collector polls <code>metrics.k8s.io/v1beta1</code> (PodMetrics and NodeMetrics) every 30 seconds. Results are stored in an in-memory cache — no database required.</p>
+<h2>Live: Metrics Server</h2>
+<p>The Metrics Collector polls <code>metrics.k8s.io/v1beta1</code> (PodMetrics and NodeMetrics) every 30 seconds. Results are stored in an in-memory cache and surfaced as the CPU/Memory bars on every resource list. No database required for this path.</p>
 
-<h2>Graceful Degradation</h2>
+<h3>Graceful Degradation</h3>
 <p>If Metrics Server is not installed, KubeBolt shows all resource state and events normally. CPU/memory bars display a message with a one-click install command. The Collector distinguishes between "not installed" and "403 Forbidden" via <code>apierrors.IsForbidden()</code>.</p>
 
-<h2>Namespace-scoped Metrics</h2>
+<h3>Namespace-scoped Metrics</h3>
 <p>When cluster-wide metrics access is denied (namespace-scoped ServiceAccounts), the Collector falls back to per-namespace polling: <code>PodMetricses(ns).List()</code> for each accessible namespace.</p>
+
+<h2>Historical: VictoriaMetrics</h2>
+<p>For Monitor tab charts, Top Consumers panels, and any view that needs time-series data, KubeBolt uses VictoriaMetrics as a Prometheus-compatible TSDB. The helm chart deploys an embedded single-node VictoriaMetrics StatefulSet by default (10 GiB PVC, 30-day retention).</p>
+
+<h3>Embedded vs External</h3>
+<table>
+<tr><th>Mode</th><th>When to use</th></tr>
+<tr><td>Embedded (default)</td><td>Development, single-cluster installs, clusters up to a few hundred nodes</td></tr>
+<tr><td>External</td><td>Multi-cluster observability stacks, existing VictoriaMetrics, high-cardinality workloads</td></tr>
+</table>
+<pre><span class="d"># Embedded (default)</span>
+<span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
+
+<span class="d"># External — point at your existing VM/vmselect</span>
+<span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set metrics.storage.embedded.enabled=false \
+  --set metrics.storage.externalUrl=http://vmselect.observability:8481</span></pre>
+<div class="callout-blue callout"><strong>Endpoint compatibility:</strong> the external URL must support both VM ingestion (<code>/api/v1/import</code>) and PromQL query (<code>/api/v1/query</code>). vmselect or a full single-node VictoriaMetrics work; plain Prometheus remote-write does not.</div>
+
+<h3>Who writes the samples</h3>
+<p>The KubeBolt API itself doesn't scrape the kubelet — it depends on <strong>kubebolt-agent</strong> for kubelet stats and Hubble flow events. Without the agent, VictoriaMetrics stays empty and the Monitor tab / Top Consumers panels are blank. Live metrics on resource lists keep working from Metrics Server.</p>
+
+<h3>VictoriaMetrics by install mode</h3>
+<p>Only Helm and Docker Compose bundle a TSDB out of the box. Single-process installs leave it to you — point <code>KUBEBOLT_METRICS_STORAGE_URL</code> at any VM-compatible endpoint, or run a local VM container alongside the binary. Without one, live CPU/Memory bars still work; only the historical views go blank.</p>
+<table>
+<tr><th>Install mode</th><th>VictoriaMetrics</th><th>How to configure</th></tr>
+<tr><td>Helm chart</td><td>Bundled (StatefulSet, embedded)</td><td>On by default. Disable with <code>--set metrics.storage.embedded.enabled=false --set metrics.storage.externalUrl=...</code></td></tr>
+<tr><td>Docker Compose</td><td>Bundled (<code>victoriametrics</code> service)</td><td>On by default. Override with <code>KUBEBOLT_METRICS_STORAGE_URL</code> in <code>deploy/.env</code> and remove the service.</td></tr>
+<tr><td>Single binary</td><td>BYO (default falls back to <code>http://localhost:8428</code> — silently no-ops if nothing is listening)</td><td>Run VM locally: <code>docker run -d -p 8428:8428 victoriametrics/victoria-metrics</code>, then export <code>KUBEBOLT_METRICS_STORAGE_URL</code> in shell or <code>.env</code>.</td></tr>
+<tr><td>Homebrew</td><td>BYO (same as single binary)</td><td>Same as single binary — point <code>KUBEBOLT_METRICS_STORAGE_URL</code> at a reachable VM.</td></tr>
+<tr><td>Docker (single container)</td><td>BYO</td><td><code>docker run -e KUBEBOLT_METRICS_STORAGE_URL=http://host.docker.internal:8428 ... ghcr.io/clm-cloud-solutions/kubebolt:latest</code></td></tr>
+<tr><td>kubectl plugin (krew)</td><td>BYO</td><td>Same as single binary.</td></tr>
+<tr><td>Local development (<code>make dev</code>)</td><td>BYO</td><td>Run a local VM container or hit Compose: <code>cd deploy && docker compose up -d victoriametrics</code>, then export the URL.</td></tr>
+</table>
+<div class="callout-blue callout"><strong>Without a TSDB</strong> the agent's gRPC ingest still listens, but every sample fails to land. The backend doesn't crash — historical views just stay blank. Live metrics-server bars on every list keep working regardless.</div>
 </div></div>
 
 <!-- ═══ Multi-Cluster ═══ -->
 <div class="doc-page" id="pg-multicluster"><div class="md">
 <h1>Multi-Cluster</h1>
-<p class="page-desc">All kubeconfig contexts auto-discovered. Switch clusters in one click.</p>
+<p class="page-desc">Two paths: kubeconfig contexts (when KubeBolt can reach the apiservers) or kubebolt-agent (when it can't).</p>
 
-<h2>How it Works</h2>
-<p>The Cluster Manager reads all contexts from the kubeconfig file at startup. The initial connection targets the current-context. You can switch clusters at runtime via the API or the cluster selector in the UI.</p>
+<h2>Path A: kubeconfig contexts</h2>
+<p>The Cluster Manager reads all contexts from the kubeconfig file at startup, plus any kubeconfig YAML uploaded later via the <strong>"Manage clusters → Import kubeconfig"</strong> flow. The initial connection targets the current-context; you can switch at runtime via the API or the cluster selector. Works in every deployment mode (binary, Homebrew, Compose, in-cluster Helm) — the only requirement is that the backend can reach the apiserver.</p>
 
-<h2>Switching</h2>
+<h3>Switching</h3>
 <p>When switching clusters, the manager tears down the old connector (informers, metrics collector, insights engine) and creates a new one for the target context. The permission probe runs again for the new cluster. The frontend shows a "Connecting to cluster" overlay during the switch.</p>
 
-<h2>API</h2>
+<h3>API</h3>
 <pre>GET  /api/v1/clusters              → list all contexts
 POST /api/v1/clusters/switch       → { "context": "production-eks" }</pre>
+
+<h2>Path B: kubebolt-agent</h2>
+<p>When KubeBolt can't reach the remote cluster's apiserver (private network, SaaS-style multi-cluster, no kubeconfig credentials), install <strong>kubebolt-agent</strong> in each remote cluster. Each agent dials <em>outbound</em> to KubeBolt's <code>agent-ingest</code> port (9090, gRPC) and auto-registers — the cluster appears in the switcher within ~30 seconds.</p>
+<p>This path is independent of how KubeBolt itself is deployed: in-cluster Helm, desktop binary, single container, or Compose all accept agent registrations as long as port 9090 is reachable from the remote cluster.</p>
+
+<h3>Add cluster — two onboarding paths, both always available</h3>
+<p>The cluster switcher dropdown shows a <strong>"Manage clusters →"</strong> link (admin only) that takes you to the Clusters page. From there an <strong>"+ Add cluster"</strong> menu offers two options regardless of deployment mode:</p>
+<table>
+<tr><th>Option</th><th>Best when</th><th>What happens</th></tr>
+<tr><td><code>Import kubeconfig</code></td><td>You have a SA token and the cluster is reachable from this backend</td><td>Paste / upload a kubeconfig; KubeBolt persists every context inside it and dials the apiserver directly. Works in every deployment mode.</td></tr>
+<tr><td><code>Install agent</code></td><td>The apiserver isn't reachable from this backend</td><td>Wizard issues an ingest token, materializes it as a Secret, and generates a copy-paste <code>helm install kubebolt-agent</code> for the remote cluster.</td></tr>
+</table>
+<p>The agent wizard adapts to the backend's deployment mode: in-cluster, it inspects the <code>agent-ingest</code> Service and points to <code>kubectl patch svc … LoadBalancer</code> if it's still ClusterIP-only; external, it explains how to expose the host's port 9090 (publish via <code>docker run -p</code>, Compose, or firewall rules).</p>
+
+<h3>Permission tier of the agent</h3>
+<p>The agent's <code>rbac.mode</code> determines what KubeBolt can do <em>on the remote cluster</em>:</p>
+<table>
+<tr><th>Mode</th><th>What you get</th></tr>
+<tr><td><code>metrics</code></td><td>Kubelet stats + Hubble flows only. No resource browsing, no commands.</td></tr>
+<tr><td><code>reader</code></td><td>Cluster-wide read access via the agent's kube-request proxy. List / view all resources, no mutations.</td></tr>
+<tr><td><code>operator</code></td><td>Read + write. Scale, restart, delete, exec — full management. Recommended for primary use.</td></tr>
+</table>
+<div class="callout-blue callout"><strong>Important:</strong> the agent's mode applies to its own cluster, not to KubeBolt's local permissions. Even if KubeBolt is in-cluster with cluster-admin, you still need <code>operator</code> mode on the agent to manage the remote cluster.</div>
 </div></div>
 
 <!-- ═══ Notifications ═══ -->

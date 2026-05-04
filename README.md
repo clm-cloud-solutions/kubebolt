@@ -54,7 +54,10 @@ brew install clm-cloud-solutions/tap/kubebolt
 kubebolt --kubeconfig ~/.kube/config
 ```
 
-Automatic updates via `brew upgrade kubebolt`.
+Automatic updates via `brew upgrade kubebolt`. Single-process — no TSDB
+bundled. For historical metrics (Monitor tab, Top Consumers) run a
+sibling VictoriaMetrics and set `KUBEBOLT_METRICS_STORAGE_URL`; see the
+[historical-metrics note below](#historical-metrics-single-process-installs).
 
 ### Option 2: Docker (single container)
 
@@ -63,7 +66,11 @@ docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \
   ghcr.io/clm-cloud-solutions/kubebolt:latest
 ```
 
-Single multi-arch image (amd64/arm64) with embedded frontend. Signed with Cosign.
+Single multi-arch image (amd64/arm64) with embedded frontend. Signed
+with Cosign. No TSDB bundled — for historical metrics, run a sibling
+VictoriaMetrics container and pass `-e KUBEBOLT_METRICS_STORAGE_URL=...`
+(see the [historical-metrics note below](#historical-metrics-single-process-installs)),
+or use Option 6 (Compose) which bundles VM.
 
 ### Option 3: kubectl Plugin (krew)
 
@@ -73,7 +80,9 @@ kubectl krew install clm/kubebolt
 kubectl kubebolt
 ```
 
-Uses your current kubectl context.
+Uses your current kubectl context. Same single-process binary as the
+Homebrew install — no TSDB bundled. For historical metrics see the
+[note below](#historical-metrics-single-process-installs).
 
 ### Option 4: Single Binary (manual download)
 
@@ -94,13 +103,32 @@ kubebolt --kubeconfig ~/.kube/config
 
 Available for `darwin-arm64`, `darwin-amd64`, `linux-arm64`, `linux-amd64`, and `windows-amd64`. The binary includes the React frontend embedded — API + UI on a single port. A `.env` file in the current directory is auto-loaded for configuration.
 
+#### Historical metrics — single-process installs
+
+Options 1–4 (Homebrew, Docker single container, krew, raw binary) don't
+bundle a TSDB. Live CPU/memory bars on resource lists work out of the
+box from `metrics-server`, but the Monitor tab, Node Top Consumers, and
+any agent-driven historical charts need a Prometheus-compatible
+endpoint. Either run VictoriaMetrics next to the binary
+(`docker run -d -p 8428:8428 victoriametrics/victoria-metrics`), point
+an existing one via `KUBEBOLT_METRICS_STORAGE_URL=http://host:8428`, or
+use the Helm chart / Docker Compose options below — both bundle
+VictoriaMetrics. Without it, the Monitor tab simply stays empty;
+nothing else degrades.
+
 ### Option 5: Helm Chart (recommended for Kubernetes)
 
 ```bash
 helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
 ```
 
-KubeBolt will be deployed with a ServiceAccount that has read access to your cluster. Access via `kubectl port-forward svc/kubebolt 3000:80` or configure an Ingress.
+The chart deploys three workloads: the API, the web frontend, and a
+single-node **VictoriaMetrics** StatefulSet (10 GiB PVC, 30-day retention)
+that stores metrics and Hubble flow events shipped by the agent. Bundled
+by default so the install works out of the box; if your cluster already
+runs VictoriaMetrics or a compatible TSDB, see the chart README for how
+to disable the embedded instance and point at your own. Access via
+`kubectl port-forward svc/kubebolt 3000:80` or configure an Ingress.
 
 For custom configuration:
 
@@ -150,6 +178,14 @@ docker compose up -d
 
 Open http://localhost:3000 — the nginx frontend proxies API and WebSocket requests to the backend.
 
+The compose stack also brings up a **VictoriaMetrics** container (30-day
+retention, named volume `kubebolt-vm-data`) so historical metrics, Monitor
+tab, and Node Top Consumers work end-to-end. To point at an existing
+VictoriaMetrics / vmselect instead, set
+`KUBEBOLT_METRICS_STORAGE_URL=http://host:8428` in `deploy/.env` and
+remove (or stop) the bundled `victoriametrics` service. Retention can be
+tuned via `KUBEBOLT_METRICS_RETENTION` (default `30d`).
+
 To stop: `docker compose down`
 
 To rebuild after code changes: `docker compose up -d --build`
@@ -163,7 +199,11 @@ Requires Go 1.25+ and Node 20+.
 make dev
 ```
 
-API on http://localhost:8080, Web on http://localhost:5173. Press `Ctrl+C` to stop both.
+API on http://localhost:8080, Web on http://localhost:5173. Press
+`Ctrl+C` to stop both. For historical metrics during local dev, the
+fastest path is `cd deploy && docker compose up -d victoriametrics` and
+exporting `KUBEBOLT_METRICS_STORAGE_URL=http://localhost:8428` before
+`make dev` — see the [single-process note above](#historical-metrics-single-process-installs).
 
 Other useful commands:
 
@@ -188,7 +228,10 @@ cd apps/web
 npm install && npm run dev
 ```
 
-Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the backend on port 8080.
+Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the
+backend on port 8080. Same TSDB requirement as Option 7 — see the
+[single-process note above](#historical-metrics-single-process-installs)
+if you need historical metrics in dev.
 
 ## Do I need the agent?
 
@@ -324,33 +367,44 @@ KUBEBOLT_AUTH_ENABLED=false go run cmd/server/main.go --kubeconfig ~/.kube/confi
 ## Architecture
 
 ```
-┌─────────────────────────────────┐
-│      Kubernetes Cluster(s)      │
-│   API Server + Metrics Server   │
-└───────────────┬─────────────────┘
-                │ kubeconfig (all contexts)
-┌───────────────▼─────────────────┐
-│   KubeBolt Backend (Go)         │
-│   ├─ Auth (BoltDB + JWT)        │
-│   ├─ Permission Probe (SSAR)    │
-│   ├─ Shared Informers (gated)   │
-│   ├─ Dynamic Client (GW API)    │
-│   ├─ Metrics Collector          │
-│   ├─ Insights Engine (12 rules) │
-│   ├─ SPDY Exec Bridge           │
-│   └─ Port Forward Manager       │
-└───────────────┬─────────────────┘
+┌─────────────────────────────────┐         ┌────────────────────────┐
+│      Kubernetes Cluster(s)      │ ◄─ ──── │  kubebolt-agent        │
+│   API Server + Metrics Server   │  gRPC   │  (DaemonSet, optional) │
+└───────────────┬─────────────────┘         │   metrics + flows      │
+                │ kubeconfig (all contexts) └────────────┬───────────┘
+                │                                        │ samples
+┌───────────────▼─────────────────┐                      │
+│   KubeBolt Backend (Go)         │ ◄────────────────────┘
+│   ├─ Auth (BoltDB + JWT)        │ ──┐
+│   ├─ Permission Probe (SSAR)    │   │ writes + queries
+│   ├─ Shared Informers (gated)   │   │
+│   ├─ Dynamic Client (GW API)    │   ▼
+│   ├─ Metrics Collector          │ ┌──────────────────────┐
+│   ├─ Insights Engine (12 rules) │ │  VictoriaMetrics     │
+│   ├─ Agent Channel (gRPC bidi)  │ │  (StatefulSet)       │
+│   ├─ SPDY Exec Bridge           │ │  TSDB for metrics    │
+│   └─ Port Forward Manager       │ │  + Hubble flows      │
+└───────────────┬─────────────────┘ └──────────────────────┘
                 │ REST API + WebSocket
 ┌───────────────▼─────────────────┐
 │   KubeBolt Frontend (React)     │
 │   ├─ Dashboard Overview         │
-│   ├─ Cluster Map (Grid/Flow)    │
+│   ├─ Cluster Map (Grid/Flow/    │
+│   │    Traffic)                 │
 │   ├─ 23 Resource Views          │
 │   ├─ Pod Terminal (xterm.js)    │
 │   ├─ Pod File Browser           │
-│   └─ Port Forward UI            │
+│   ├─ Port Forward UI            │
+│   └─ Kobi (AI Copilot)          │
 └─────────────────────────────────┘
 ```
+
+The bundled VictoriaMetrics is optional — for clusters that already run
+a TSDB it can be replaced via `metrics.storage.externalUrl`. The agent
+is also optional — KubeBolt reads the apiserver directly via kubeconfig
+when the backend can reach it; the agent is for clusters where the
+apiserver isn't reachable from the backend (private network, SaaS-style
+multi-cluster) or when you want kubelet-level metrics without metrics-server.
 
 ## RBAC & Permissions
 
@@ -385,9 +439,11 @@ At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` an
 | Metric | Value |
 |--------|-------|
 | Backend RAM | ~70 MB (production cluster) |
-| Frontend bundle | ~1.2 MB JS + 40 KB CSS (~347 KB gzipped) |
+| Frontend bundle | ~2.1 MB JS + 64 KB CSS (~605 KB gzipped) |
 | API response time | < 5ms (from informer cache) |
 | Startup time | < 5s (permission probe + informer sync) |
+| VictoriaMetrics RAM | ~256 MB request, scales with cardinality |
+| TSDB disk | ~1 GiB / 100 pods at 30-day retention (default) |
 
 ## Roadmap
 
@@ -397,10 +453,9 @@ See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and ro
 - Install script (`curl get.kubebolt.dev | sh`) and Kubernetes Operator (pending custom domain setup)
 - OAuth2/OIDC authentication (GitHub, Google, Azure AD)
 - Teams and organizations
-- OTel-native lightweight node agent (<1% CPU, <50MB RAM) — fork of the OpenTelemetry Collector with KubeBolt analyzers. Exports in parallel to the customer's OTel backend.
 - Hierarchical AI agents (detectors → router → investigator → planner → executor → postmortem) with per-incident economy via tiered model selection
 - JSON-aware truncation in tool results (structure-aware rather than byte-aligned)
-- Live traffic visualization on cluster map (via the agent's connection tracking)
+- Coverage-gap banner on workload Monitor charts when the agent doesn't reach every node carrying a replica
 
 ## License
 

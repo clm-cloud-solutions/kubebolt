@@ -521,6 +521,14 @@ export const api = {
   getAgentAuthInfo: () =>
     fetchJSON<AgentAuthInfo>(`${API_BASE}/integrations/agent/auth-info`),
 
+  // Topology-aware defaults for the agent install / add-cluster wizards.
+  // When KubeBolt is running in-cluster, surfaces the internal Service
+  // DNS for same-cluster installs and the externally-reachable endpoint
+  // (LoadBalancer IP / NodePort) for remote-cluster registration. Empty
+  // externalEndpoint signals the caller must expose agent-ingest first.
+  getAgentInstallDefaults: () =>
+    fetchJSON<AgentInstallDefaults>(`${API_BASE}/integrations/agent/install-defaults`),
+
   // Issues a token AND materializes a K8s Secret in one round-trip.
   // Distinct from the existing `issueAgentToken` (which only issues
   // and returns plaintext for the operator to copy/paste) — this
@@ -565,6 +573,32 @@ export interface AgentIssueTokenResponse {
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
+}
+
+// Backend topology hints for the agent install / add-cluster wizards.
+// `deploymentMode` is "in-cluster" when KubeBolt is running with a SA
+// token (Helm install) and "external" when it's the desktop binary or
+// docker-compose. The two backendUrl variants distinguish "install
+// agent in this same cluster" (internal DNS) from "register a remote
+// cluster" (must use externalEndpoint, empty when agent-ingest is only
+// ClusterIP-reachable).
+export interface AgentInstallDefaults {
+  deploymentMode: 'in-cluster' | 'external'
+  selfNamespace?: string
+  internalBackendUrl?: string
+  externalEndpoint?: string
+  agentNamespace: string
+  agentIngestService?: AgentIngestServiceInfo
+}
+
+export interface AgentIngestServiceInfo {
+  namespace: string
+  name: string
+  type: string // ClusterIP | LoadBalancer | NodePort
+  port: number
+  nodePort?: number
+  externalIp?: string
+  hostname?: string
 }
 
 // ─── Integration types ───

@@ -40,7 +40,7 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 		if len(results) >= limit {
 			break
 		}
-		list := conn.GetResources(rt, "", query, "", "", "", 1, limit)
+		list := conn.GetResources(rt, "", query, "", "", "", "", 1, limit)
 		for _, item := range list.Items {
 			if len(results) >= limit {
 				break

@@ -1,10 +1,11 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText } from 'lucide-react'
+import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText, ChevronDown, Cable } from 'lucide-react'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { Modal } from '@/components/shared/Modal'
+import { AddClusterWizard } from '@/components/admin/AddClusterWizard'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterInfo, ClusterOverview, ClusterHealth } from '@/types/kubernetes'
 
@@ -469,9 +470,26 @@ export function ClustersPage() {
   const { hasRole } = useAuth()
   const canManage = hasRole('admin')
 
-  const [showAddModal, setShowAddModal] = useState(false)
+  // Add-cluster has two paths and they're not mutually exclusive: either
+  // KubeBolt dials the apiserver via uploaded kubeconfig, or the remote
+  // cluster's agent dials back via gRPC. Both are valid in any
+  // deployment mode (in-cluster Helm, desktop binary, Compose), so we
+  // always offer both and let the operator pick.
+  const [addModalType, setAddModalType] = useState<'kubeconfig' | 'agent' | null>(null)
+  const [addMenuOpen, setAddMenuOpen] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
   const [renaming, setRenaming] = useState<ClusterInfo | null>(null)
   const [deleting, setDeleting] = useState<ClusterInfo | null>(null)
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setAddMenuOpen(false)
+      }
+    }
+    if (addMenuOpen) document.addEventListener('mousedown', handleClick)
+    return () => document.removeEventListener('mousedown', handleClick)
+  }, [addMenuOpen])
 
   const { data: clusters } = useQuery({
     queryKey: ['clusters'],
@@ -515,7 +533,6 @@ export function ClustersPage() {
 
   const connectedCount = clusters?.filter(c => c.status === 'connected').length || 0
   const uploadedCount = clusters?.filter(c => c.source === 'uploaded').length || 0
-  const isInCluster = clusters?.some(c => c.source === 'in-cluster') || false
 
   return (
     <div>
@@ -527,14 +544,48 @@ export function ClustersPage() {
             {uploadedCount > 0 && ` · ${uploadedCount} uploaded`}
           </p>
         </div>
-        {canManage && !isInCluster && (
-          <button
-            onClick={() => setShowAddModal(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            Add Cluster
-          </button>
+        {canManage && (
+          <div className="relative" ref={addMenuRef}>
+            <button
+              onClick={() => setAddMenuOpen(o => !o)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              Add cluster
+              <ChevronDown className={`w-3 h-3 transition-transform ${addMenuOpen ? 'rotate-180' : ''}`} />
+            </button>
+            {addMenuOpen && (
+              <div className="absolute top-full right-0 mt-1 w-72 bg-kb-card border border-kb-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
+                <button
+                  type="button"
+                  onClick={() => { setAddMenuOpen(false); setAddModalType('kubeconfig') }}
+                  className="w-full text-left px-3 py-2.5 hover:bg-kb-card-hover transition-colors"
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <FileText className="w-3.5 h-3.5 text-kb-text-secondary" />
+                    <span className="text-xs font-medium text-kb-text-primary">Import kubeconfig</span>
+                  </div>
+                  <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
+                    KubeBolt dials the apiserver directly. Best when you have a SA token and the cluster is reachable from this backend.
+                  </div>
+                </button>
+                <div className="border-t border-kb-border" />
+                <button
+                  type="button"
+                  onClick={() => { setAddMenuOpen(false); setAddModalType('agent') }}
+                  className="w-full text-left px-3 py-2.5 hover:bg-kb-card-hover transition-colors"
+                >
+                  <div className="flex items-center gap-2 mb-0.5">
+                    <Cable className="w-3.5 h-3.5 text-kb-text-secondary" />
+                    <span className="text-xs font-medium text-kb-text-primary">Install agent</span>
+                  </div>
+                  <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
+                    Remote agent dials back over gRPC. Best when the cluster's apiserver isn't reachable from this backend.
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
         )}
       </div>
 
@@ -554,7 +605,8 @@ export function ClustersPage() {
         ))}
       </div>
 
-      {showAddModal && <AddClusterModal onClose={() => setShowAddModal(false)} />}
+      {addModalType === 'kubeconfig' && <AddClusterModal onClose={() => setAddModalType(null)} />}
+      {addModalType === 'agent' && <AddClusterWizard onClose={() => setAddModalType(null)} />}
       {renaming && <RenameClusterModal cluster={renaming} onClose={() => setRenaming(null)} />}
       {deleting && <DeleteClusterModal cluster={deleting} onClose={() => setDeleting(null)} />}
     </div>

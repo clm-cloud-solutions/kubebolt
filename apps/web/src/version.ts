@@ -7,4 +7,4 @@
 //
 // Single source of truth so refactoring the display doesn't require
 // touching every component that renders the version.
-export const VERSION = '1.6.1'
+export const VERSION = '1.7.0'

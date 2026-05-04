@@ -4,6 +4,76 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-05-01
+
+Quality-of-life release focused on the day-to-day operator views: list
+pages stop reordering on you, Node detail finally shows what's
+allocated and who's eating it, and Cluster Map's Traffic layout
+explains itself instead of going blank when there's nothing to draw.
+
+### Added
+
+- **Node detail: Allocation panel + Top consumers + schedulable
+  indicator.** New section on the Node Overview tab shows the sum of
+  pod requests and limits across allocatable for both CPU and memory,
+  with bars colored by saturation (green < 75%, amber 75–90%, red ≥ 90%)
+  and an overcommit overlay when limits exceed allocatable. Below it,
+  a Top Consumers panel lists the 5 pods with the highest CPU and
+  memory requests on the node. Plus a Pods count vs max-pods readout
+  and Schedulable indicator (cordoned shows in amber). Answers the
+  triage question "is this node full and who's behind it?" without
+  shelling out to `kubectl describe node`.
+- **Node detail: Pods tab.** Lists every pod scheduled on the node
+  with the same CPU/Memory cells used elsewhere. Powered by a new
+  `?node=` filter on `/resources/pods` that the agent-proxy and direct
+  paths both support.
+- **Click-to-filter on the Node column** in the Pods list. Hover any
+  Node cell to reveal a filter icon; clicking scopes the list to that
+  node via a `?node=` URL param. A chip below the filter bar shows the
+  active filter and clears it. URL-shareable so a triage link to "pods
+  on node X" can be sent over Slack without recreating the filter.
+- **Sortable CPU and Memory columns** on Pods, Deployments,
+  StatefulSets, DaemonSets, Jobs lists. Click the header to sort by
+  absolute usage in millicores or bytes. The accessor matches what's
+  rendered in the cell so the order doesn't lie.
+
+### Changed
+
+- **WebSocket informer events no longer broad-invalidate `['resources']`**
+  on every change. On active clusters that was firing dozens of
+  invalidations per second, drowning the user-configured refresh
+  interval and causing visible mid-second list reorders. Lists now
+  refresh on the configured cadence; targeted invalidation after
+  explicit mutations (Kobi Execute, Scale / Restart / Delete) keeps the
+  post-action freshness UX. Detail pages, cluster overview, and
+  topology still WS-invalidate (the latter two debounced 2s).
+- **Resource list sort defaults to name asc and persists per resource
+  type** in localStorage. The backend also pre-sorts by name when no
+  `?sort=` is given so paginated lists are stable across consecutive
+  requests — without this, a single item could drift between page 1
+  and page 2 because the informer cache is map-iterated.
+- **Pagination control centered** below resource lists so the floating
+  Kobi sigil no longer covers the Next-page button on small viewports.
+- **Cluster Map Traffic layout** now distinguishes "agent missing" from
+  "agent connected but no flows arriving" with two distinct CTAs, both
+  centered on an empty canvas. Previously the second case rendered as
+  a totally blank page with no explanation.
+- **Workloads-by-namespace section** on the Overview dashboard sorts
+  workloads alphabetically inside each namespace; without this they
+  came out in random informer-cache order on every refresh. The header
+  also now reads "Workloads by namespace" (was the half-Spanish
+  "Workloads por namespace").
+
+### Notes
+
+A bug to be aware of (not fixed in this release): the workload Monitor
+charts on Deployment / StatefulSet / DaemonSet detail pages multiply
+limit / request reference lines by replica count but the data series
+sums whatever VictoriaMetrics has — when the agent doesn't cover every
+node carrying a replica (saturated node, NoSchedule taint, etc.), the
+chart shows ample headroom while individual pods are at limit. Issue
+tracked; defensive coverage-gap banner planned for the next release.
+
 ## [1.6.1] — 2026-04-30
 
 Patch release with two changes: a relicense to Apache 2.0 (the standard

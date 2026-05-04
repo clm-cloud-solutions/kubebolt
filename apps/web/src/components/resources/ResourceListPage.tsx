@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
-import { ChevronLeft, ChevronRight } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Filter, X } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
 import { FilterBar } from './FilterBar'
@@ -49,6 +49,54 @@ const resourceLabels: Record<string, string> = {
   configmaps: 'ConfigMaps',
   secrets: 'Secrets',
   hpas: 'Horizontal Pod Autoscalers',
+}
+
+// Sort key for CPU/Memory columns: absolute usage (millicores / bytes).
+// We initially used cpuPercent/memoryPercent to surface "who's closest to
+// limit", but it diverged from what the cell actually shows (bytes), so
+// a 7.8 GiB pod with a generous limit ranked below a 358 MiB pod with a
+// tight limit when sorting desc — confusing. Match the visible value.
+function cpuSortValue(item: ResourceItem): number {
+  return Number(item.cpuUsage ?? 0)
+}
+function memSortValue(item: ResourceItem): number {
+  return Number(item.memoryUsage ?? 0)
+}
+
+// NodeCell: shows the node name as a link to the node detail (primary
+// click) plus a filter affordance (secondary click) that scopes the
+// current list to pods on that node via the ?node= query param. Hovering
+// any pod row reveals the icon — discoverable but unobtrusive. Reusable
+// for any future "filter by this column value" interaction.
+function NodeCell({ node }: { node: string }) {
+  const [searchParams, setSearchParams] = useSearchParams()
+  if (!node) return <span className="text-[11px] font-mono text-kb-text-tertiary">—</span>
+  const active = searchParams.get('node') === node
+  return (
+    <span className="inline-flex items-center gap-1 group">
+      <Link to={`/nodes/_/${node}`} className="text-[11px] font-mono text-status-info hover:underline">
+        {node}
+      </Link>
+      <button
+        type="button"
+        title={active ? 'Already filtering by this node' : `Filter pods on ${node}`}
+        disabled={active}
+        onClick={(e) => {
+          e.preventDefault()
+          const next = new URLSearchParams(searchParams)
+          next.set('node', node)
+          setSearchParams(next)
+        }}
+        className={`p-0.5 rounded transition-opacity ${
+          active
+            ? 'opacity-40 cursor-default'
+            : 'opacity-0 group-hover:opacity-100 text-kb-text-tertiary hover:text-status-info hover:bg-kb-elevated'
+        }`}
+      >
+        <Filter className="w-3 h-3" />
+      </button>
+    </span>
+  )
 }
 
 function CpuCell({ item }: { item: ResourceItem }) {
@@ -123,11 +171,15 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
       {
         id: 'cpu',
         header: 'CPU',
+        accessorFn: cpuSortValue,
+        sortingFn: 'basic',
         cell: (info) => <CpuCell item={info.row.original} />,
       },
       {
         id: 'memory',
         header: 'Memory',
+        accessorFn: memSortValue,
+        sortingFn: 'basic',
         cell: (info) => <MemCell item={info.row.original} />,
       },
       {
@@ -150,15 +202,7 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
       {
         accessorKey: 'nodeName',
         header: 'Node',
-        cell: (info) => {
-          const node = info.getValue() as string
-          if (!node) return <span className="text-[11px] font-mono text-kb-text-tertiary">—</span>
-          return (
-            <Link to={`/nodes/_/${node}`} className="text-[11px] font-mono text-status-info hover:underline">
-              {node}
-            </Link>
-          )
-        },
+        cell: (info) => <NodeCell node={(info.getValue() as string) || ''} />,
       }
     )
   }
@@ -194,11 +238,15 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
       {
         id: 'cpu',
         header: 'CPU',
+        accessorFn: cpuSortValue,
+        sortingFn: 'basic',
         cell: (info) => <CpuCell item={info.row.original} />,
       },
       {
         id: 'memory',
         header: 'Memory',
+        accessorFn: memSortValue,
+        sortingFn: 'basic',
         cell: (info) => <MemCell item={info.row.original} />,
       }
     )
@@ -261,8 +309,8 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     base.push(
       { accessorKey: 'completions', header: 'Completions', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
       { accessorKey: 'duration', header: 'Duration', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
-      { id: 'cpu', header: 'CPU', cell: (info) => <CpuCell item={info.row.original} /> },
-      { id: 'memory', header: 'Memory', cell: (info) => <MemCell item={info.row.original} /> }
+      { id: 'cpu', header: 'CPU', accessorFn: cpuSortValue, sortingFn: 'basic', cell: (info) => <CpuCell item={info.row.original} /> },
+      { id: 'memory', header: 'Memory', accessorFn: memSortValue, sortingFn: 'basic', cell: (info) => <MemCell item={info.row.original} /> }
     )
   }
 
@@ -333,12 +381,15 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   const params = useParams<{ type: string }>()
   const resourceType = propType || params.type || 'pods'
 
-  // URL drives the filter state for `namespace` so deep links from
-  // the dashboard (e.g. NamespaceTiles → /deployments?namespace=foo)
-  // land on a pre-filtered list. Search and page intentionally stay
+  // URL drives the filter state for both `namespace` and `node` so
+  // deep links land on a pre-filtered list and bookmarks are
+  // shareable. `namespace` is set from NamespaceTiles on the
+  // dashboard; `node` is set by NodeCell's filter button below and
+  // cleared via the chip under the FilterBar. Search and page stay
   // local — they're transient interactions, not shareable views.
   const [searchParams, setSearchParams] = useSearchParams()
   const namespace = searchParams.get('namespace') ?? ''
+  const node = searchParams.get('node') || ''
   const setNamespace = (v: string) => {
     setSearchParams(
       (prev) => {
@@ -365,9 +416,14 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
     return () => clearTimeout(timer)
   }, [search])
 
+  // Reset to page 1 whenever the node filter changes — otherwise we'd
+  // request "page 5 of an empty filtered list" and show nothing.
+  useEffect(() => { resetPage() }, [node])
+
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources(resourceType, {
     namespace: namespace || undefined,
     search: debouncedSearch || undefined,
+    node: node || undefined,
     page,
     limit: PAGE_SIZE,
   })
@@ -416,11 +472,32 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
         total={items.length}
         resourceName={label.toLowerCase()}
       />
+      {node && (
+        <div className="flex items-center gap-2 mb-2 px-1">
+          <span className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Filter:</span>
+          <button
+            type="button"
+            onClick={() => {
+              const next = new URLSearchParams(searchParams)
+              next.delete('node')
+              setSearchParams(next)
+            }}
+            title="Clear node filter"
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-status-info/40 bg-status-info-dim/30 text-[11px] font-mono text-status-info hover:bg-status-info-dim/50 transition-colors"
+          >
+            node: {node}
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
       <div className="bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
-        <ResourceTable data={items} columns={columns} />
+        <ResourceTable data={items} columns={columns} resourceType={resourceType} />
       </div>
       {totalPages > 1 && (
-        <div className="flex items-center justify-between mt-3 px-1">
+        // Centered so the floating Kobi button (bottom-right) doesn't
+        // overlap the Next-page control. Counter + controls share the
+        // center row; right side stays clear for the Kobi sigil.
+        <div className="flex items-center justify-center gap-4 mt-3 px-1">
           <span className="text-[11px] font-mono text-kb-text-tertiary">
             {(page - 1) * PAGE_SIZE + 1}–{Math.min(page * PAGE_SIZE, total)} of {total}
           </span>

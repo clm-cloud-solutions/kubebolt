@@ -7,7 +7,7 @@ import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
+import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
@@ -231,6 +231,7 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
     case 'nodes':
       base.push(
         { id: 'yaml', label: 'YAML' },
+        { id: 'node-pods', label: 'Pods' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
       )
@@ -404,12 +405,163 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
         </div>
       </Section>
 
-      {/* Metrics */}
+      {/* Node load — the two views of the same node belong together:
+          (1) Allocation: what the scheduler reserved (sum of pod
+              requests / limits vs allocatable). Answers "can a new pod
+              fit?" and "is this node oversubscribed?".
+          (2) Resource Usage: what's actually being consumed right now
+              from metrics-server / kubelet. Answers "is the node hot?".
+          Top consumers comes after because it's the drill-down: "who's
+          behind those numbers?". */}
+      {type === 'nodes' && <NodeAllocationSection item={item} />}
       <MetricsBar item={item} />
+      {type === 'nodes' && <NodeTopConsumersSection item={item} />}
 
       {/* Conditions */}
       <ConditionsSection conditions={item.conditions} />
     </div>
+  )
+}
+
+function NodeAllocationSection({ item }: { item: ResourceItem }) {
+  const cpuReq = Number(item.cpuRequested ?? 0)
+  const cpuAlloc = Number(item.cpuAllocatable ?? 0)
+  const cpuLim = Number(item.cpuLimitSum ?? 0)
+  const memReq = Number(item.memoryRequested ?? 0)
+  const memAlloc = Number(item.memoryAllocatable ?? 0)
+  const memLim = Number(item.memoryLimitSum ?? 0)
+  const podCount = Number(item.podCount ?? 0)
+  const maxPods = Number(item.maxPods ?? 110)
+  const unschedulable = Boolean(item.unschedulable)
+  if (cpuAlloc === 0 && memAlloc === 0) return null
+
+  const cpuReqPct = cpuAlloc > 0 ? (cpuReq / cpuAlloc) * 100 : 0
+  const cpuLimPct = cpuAlloc > 0 ? (cpuLim / cpuAlloc) * 100 : 0
+  const memReqPct = memAlloc > 0 ? (memReq / memAlloc) * 100 : 0
+  const memLimPct = memAlloc > 0 ? (memLim / memAlloc) * 100 : 0
+  const podPct = maxPods > 0 ? (podCount / maxPods) * 100 : 0
+
+  return (
+    <Section title="Allocation">
+      <div className="space-y-4">
+        <AllocationBar
+          label="CPU"
+          reqLabel={`${cpuReq}m`}
+          allocLabel={`${cpuAlloc}m`}
+          limLabel={cpuLim > 0 ? `${cpuLim}m` : ''}
+          reqPct={cpuReqPct}
+          limPct={cpuLimPct}
+        />
+        <AllocationBar
+          label="Memory"
+          reqLabel={formatMemory(memReq)}
+          allocLabel={formatMemory(memAlloc)}
+          limLabel={memLim > 0 ? formatMemory(memLim) : ''}
+          reqPct={memReqPct}
+          limPct={memLimPct}
+        />
+        <div className="flex items-center gap-3 text-[11px] pt-2 border-t border-kb-border">
+          <span className="text-kb-text-tertiary uppercase tracking-wider text-[10px]">Pods</span>
+          <span className={`font-mono ${podPct > 90 ? 'text-status-warn' : 'text-kb-text-primary'}`}>
+            {podCount} / {maxPods} <span className="text-kb-text-tertiary">({podPct.toFixed(0)}%)</span>
+          </span>
+          <span className="ml-auto text-kb-text-tertiary uppercase tracking-wider text-[10px]">Schedulable</span>
+          {unschedulable
+            ? <span className="font-mono text-status-warn">cordoned</span>
+            : <span className="font-mono text-status-ok">yes</span>
+          }
+        </div>
+      </div>
+    </Section>
+  )
+}
+
+function AllocationBar({
+  label, reqLabel, allocLabel, limLabel, reqPct, limPct,
+}: {
+  label: string
+  reqLabel: string
+  allocLabel: string
+  limLabel: string
+  reqPct: number
+  limPct: number
+}) {
+  // Color the request bar by % of allocatable: green<75, amber 75–90, red >90.
+  // A node at 100% requests can't accept new schedulable pods regardless of
+  // actual usage, so the threshold is on requests, not measured load.
+  const reqColor = reqPct >= 90 ? 'bg-status-error' : reqPct >= 75 ? 'bg-status-warn' : 'bg-status-info'
+  // Limits over 100% indicate overcommit — render the overage as a faded
+  // red overlay extending past the bar end.
+  const overcommit = Math.max(0, limPct - 100)
+  return (
+    <div>
+      <div className="flex justify-between items-baseline text-[11px] mb-1.5">
+        <span className="text-kb-text-tertiary uppercase tracking-wider text-[10px]">{label}</span>
+        <span className="font-mono text-kb-text-secondary">
+          {reqLabel} / {allocLabel} requested
+          <span className={reqPct >= 90 ? 'text-status-error font-semibold ml-1' : 'text-kb-text-tertiary ml-1'}>
+            ({reqPct.toFixed(0)}%)
+          </span>
+          {limLabel && (
+            <>
+              <span className="text-kb-text-tertiary mx-2">·</span>
+              limits {limLabel}
+              <span className={limPct > 100 ? 'text-status-error font-semibold ml-1' : 'text-kb-text-tertiary ml-1'}>
+                ({limPct.toFixed(0)}%)
+              </span>
+            </>
+          )}
+        </span>
+      </div>
+      <div className="relative h-2 rounded-full bg-kb-elevated overflow-hidden">
+        <div
+          className={`absolute left-0 top-0 h-full ${reqColor} transition-all`}
+          style={{ width: `${Math.min(100, reqPct)}%` }}
+        />
+        {overcommit > 0 && (
+          <div className="absolute inset-y-0 right-0 left-0 pointer-events-none">
+            <div className="absolute right-0 top-0 h-full bg-status-error/25" style={{ width: `${Math.min(40, overcommit / 5)}%` }} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function NodeTopConsumersSection({ item }: { item: ResourceItem }) {
+  const topCpu = Array.isArray(item.topCpuConsumers) ? item.topCpuConsumers as Array<Record<string, unknown>> : []
+  const topMem = Array.isArray(item.topMemConsumers) ? item.topMemConsumers as Array<Record<string, unknown>> : []
+  if (topCpu.length === 0 && topMem.length === 0) return null
+
+  return (
+    <Section title="Top consumers (by request)">
+      <div className="grid grid-cols-2 gap-8">
+        <div>
+          <div className="text-[10px] text-kb-text-tertiary uppercase tracking-wider mb-2">CPU</div>
+          {topCpu.length === 0
+            ? <div className="text-[11px] text-kb-text-tertiary italic">— no requests set</div>
+            : topCpu.map((p, i) => (
+              <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-kb-border last:border-b-0">
+                <ResourceLink name={String(p.name)} namespace={String(p.namespace)} resourceType="pods" />
+                <span className="font-mono text-kb-text-secondary">{Number(p.cpuRequest)}m</span>
+              </div>
+            ))
+          }
+        </div>
+        <div>
+          <div className="text-[10px] text-kb-text-tertiary uppercase tracking-wider mb-2">Memory</div>
+          {topMem.length === 0
+            ? <div className="text-[11px] text-kb-text-tertiary italic">— no requests set</div>
+            : topMem.map((p, i) => (
+              <div key={i} className="flex items-center justify-between text-[11px] py-1 border-b border-kb-border last:border-b-0">
+                <ResourceLink name={String(p.name)} namespace={String(p.namespace)} resourceType="pods" />
+                <span className="font-mono text-kb-text-secondary">{formatMemory(Number(p.memoryRequest))}</span>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </Section>
   )
 }
 
@@ -2278,6 +2430,63 @@ function JobLogsTab({ namespace, name }: { namespace: string; name: string }) {
   return <WorkloadLogsTab pods={data?.items ?? []} isLoading={isLoading} error={error} />
 }
 
+// ─── Node Pods Tab ────────────────────────────────────────────────
+// Lists every pod scheduled on this node. Reuses the generic
+// /resources/pods endpoint with the new ?node= filter, so we don't need
+// a dedicated handler. Limit bumped to 200 because nodes commonly carry
+// 30–110 pods and we don't want pagination chrome on a tab.
+
+function NodePodsTab({ nodeName }: { nodeName: string }) {
+  const { data, isLoading, error } = useResources('pods', { node: nodeName, limit: 200 })
+
+  if (isLoading) return <LoadingSpinner />
+  if (error) return <ErrorState message={error.message} />
+
+  const pods = data?.items ?? []
+  if (pods.length === 0) {
+    return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found on this node</div>
+  }
+
+  return (
+    <Section title={`Pods on ${nodeName} (${pods.length})`}>
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Namespace</th>
+            <th className="pb-2 font-normal">Ready</th>
+            <th className="pb-2 font-normal">Status</th>
+            <th className="pb-2 font-normal pr-6">CPU</th>
+            <th className="pb-2 font-normal pl-2">Memory</th>
+            <th className="pb-2 font-normal">Restarts</th>
+            <th className="pb-2 font-normal">IP</th>
+            <th className="pb-2 font-normal">Age</th>
+          </tr>
+        </thead>
+        <tbody className="text-kb-text-secondary">
+          {pods.map((pod: ResourceItem, i: number) => (
+            <tr key={i} className="border-t border-kb-border">
+              <td className="py-2"><ResourceLink name={pod.name} namespace={pod.namespace} resourceType="pods" /></td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{String(pod.namespace ?? '—')}</td>
+              <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
+              <td className="py-2"><StatusBadge status={pod.status} /></td>
+              <td className="py-2 w-36 pr-6">
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+              </td>
+              <td className="py-2 w-36 pl-2">
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+              </td>
+              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
+              <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 // ─── History Tab (Deployments) ───────────────────────────────────
 
 function CronJobJobsTab({ namespace, name }: { namespace: string; name: string }) {
@@ -2478,6 +2687,7 @@ export function ResourceDetailPage() {
       case 'ds-pods': return <DaemonSetPodsTab namespace={namespace} name={name} />
       case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
       case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
+      case 'node-pods': return <NodePodsTab nodeName={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history':
         if (type === 'deployments') return <HistoryTab namespace={namespace} name={name} />

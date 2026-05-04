@@ -1,0 +1,98 @@
+{{- if .Values.metrics.storage.embedded.enabled -}}
+# Embedded single-node VictoriaMetrics for time-series storage. Stays
+# minimal on purpose — for high-cardinality workloads or multi-cluster
+# observability stacks, set metrics.storage.embedded.enabled=false and
+# point metrics.storage.externalUrl at a dedicated VM/vmselect.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kubebolt.victoriametrics.fullname" . }}
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: victoriametrics
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8428
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "kubebolt.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: victoriametrics
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "kubebolt.victoriametrics.fullname" . }}
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+    app.kubernetes.io/component: victoriametrics
+spec:
+  replicas: 1
+  serviceName: {{ include "kubebolt.victoriametrics.fullname" . }}
+  selector:
+    matchLabels:
+      {{- include "kubebolt.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: victoriametrics
+  template:
+    metadata:
+      labels:
+        {{- include "kubebolt.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: victoriametrics
+    spec:
+      containers:
+        - name: victoriametrics
+          image: "{{ .Values.metrics.storage.embedded.image.repository }}:{{ .Values.metrics.storage.embedded.image.tag }}"
+          imagePullPolicy: {{ .Values.metrics.storage.embedded.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8428
+              protocol: TCP
+          args:
+            - "--storageDataPath=/victoria-metrics-data"
+            - "--retentionPeriod={{ .Values.metrics.storage.embedded.retention }}"
+            - "--httpListenAddr=:8428"
+            {{- with .Values.metrics.storage.embedded.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          # Liveness checks /health which VM exposes; readiness is the
+          # same endpoint. VM startup is fast so a generous initialDelay
+          # isn't needed, but we leave a small buffer for slow PVCs.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+          resources:
+            {{- toYaml .Values.metrics.storage.embedded.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /victoria-metrics-data
+      {{- if not .Values.metrics.storage.embedded.persistence.enabled }}
+      volumes:
+        - name: data
+          emptyDir: {}
+      {{- end }}
+  {{- if .Values.metrics.storage.embedded.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes:
+          {{- toYaml .Values.metrics.storage.embedded.persistence.accessModes | nindent 10 }}
+        {{- if .Values.metrics.storage.embedded.persistence.storageClass }}
+        storageClassName: {{ .Values.metrics.storage.embedded.persistence.storageClass | quote }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.metrics.storage.embedded.persistence.size }}
+  {{- end }}
+{{- end }}

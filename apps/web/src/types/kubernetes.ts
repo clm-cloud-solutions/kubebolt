@@ -206,6 +206,11 @@ export interface ClusterInfo {
 export interface ResourceParams {
   namespace?: string
   search?: string
+  status?: string
+  // Filter by node — currently only meaningful for pods (the field is
+  // empty on every other resource type). Used by the Node detail page's
+  // Pods tab and reusable for click-to-filter on the Node column.
+  node?: string
   sort?: string
   order?: 'asc' | 'desc'
   page?: number

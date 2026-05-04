@@ -6,16 +6,45 @@ import {
   type ColumnDef,
   type SortingState,
 } from '@tanstack/react-table'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { ChevronUp, ChevronDown } from 'lucide-react'
 
 interface ResourceTableProps<T> {
   data: T[]
   columns: ColumnDef<T, unknown>[]
+  // Resource type (e.g. 'pods', 'deployments'). Scopes the persisted sort
+  // so each list remembers its own user-chosen ordering. When omitted, sort
+  // still defaults to name-asc but is not persisted across remounts.
+  resourceType?: string
 }
 
-export function ResourceTable<T>({ data, columns }: ResourceTableProps<T>) {
-  const [sorting, setSorting] = useState<SortingState>([])
+const DEFAULT_SORT: SortingState = [{ id: 'name', desc: false }]
+
+function loadSort(resourceType?: string): SortingState {
+  if (!resourceType) return DEFAULT_SORT
+  try {
+    const raw = localStorage.getItem(`kb-sort-${resourceType}`)
+    if (!raw) return DEFAULT_SORT
+    const parsed = JSON.parse(raw)
+    if (Array.isArray(parsed)) return parsed as SortingState
+  } catch {}
+  return DEFAULT_SORT
+}
+
+export function ResourceTable<T>({ data, columns, resourceType }: ResourceTableProps<T>) {
+  const [sorting, setSorting] = useState<SortingState>(() => loadSort(resourceType))
+
+  // Reload persisted sort when navigating between resource types — the
+  // component is reused across pages, so a fresh useState() default would
+  // otherwise carry the previous list's sort into the new one.
+  useEffect(() => {
+    setSorting(loadSort(resourceType))
+  }, [resourceType])
+
+  useEffect(() => {
+    if (!resourceType) return
+    try { localStorage.setItem(`kb-sort-${resourceType}`, JSON.stringify(sorting)) } catch {}
+  }, [resourceType, sorting])
 
   const table = useReactTable({
     data,
