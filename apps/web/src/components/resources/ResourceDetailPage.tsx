@@ -1659,7 +1659,12 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
     queryKey: ['workload-coverage', selector],
     queryFn: () =>
       api.queryMetrics({
-        query: `count(group(container_cpu_usage_cores{${selector}}) by (pod))`,
+        // Group by pod_name (the label the agent actually emits — `pod`
+        // is the Prom convention but our shipper uses `pod_name`).
+        // Grouping by a non-existent label collapses every matching
+        // series into one bucket, returning count=1 regardless of how
+        // many replicas are observed — false-positive coverage banner.
+        query: `count(group(container_cpu_usage_cores{${selector}}) by (pod_name))`,
       }),
     enabled: coverageEnabled,
     staleTime: 30_000,
