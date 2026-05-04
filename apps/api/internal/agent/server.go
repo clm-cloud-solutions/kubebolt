@@ -180,17 +180,21 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		defer maybeAutoUnregisterCluster(s.clusterRegistrar, s.registry, clusterID)
 	}
 	defer registeredAgent.Close()
-	if s.registry != nil {
-		if evicted := s.registry.Register(registeredAgent); evicted != nil {
-			slog.Info("evicting prior agent for cluster",
-				slog.String("cluster_id", clusterID),
-				slog.String("evicted_agent_id", evicted.AgentID),
-			)
-			evicted.Close()
-		}
-		defer s.registry.Unregister(registeredAgent)
-	}
 
+	// Send Welcome FIRST, before registering the agent in the registry.
+	// Protocol contract: the agent's reader expects Welcome as the very
+	// first BackendMessage and bails with a 1-minute backoff if anything
+	// else (e.g. KubeRequest) arrives first. Once the agent is in the
+	// registry it becomes visible to the kube_request multiplexor and
+	// any in-flight backend request can be routed to it — if that
+	// happens during the brief window before Welcome is sent, we lose
+	// the channel. Sending Welcome before Register closes that window.
+	// Visible symptom of the original ordering: a manager-triggered
+	// connector retry firing on the FIRST agent's register sends
+	// kube_requests through the multiplexor while the SECOND DaemonSet
+	// pod is mid-handshake → its Recv loop sees KubeRequest before
+	// Welcome → drops the channel for 60s. Reordering eliminates the
+	// race entirely; defers below stay in their LIFO teardown order.
 	if err := registeredAgent.Send(&agentv2.BackendMessage{
 		Kind: &agentv2.BackendMessage_Welcome{
 			Welcome: &agentv2.Welcome{
@@ -205,6 +209,25 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		},
 	}); err != nil {
 		return err
+	}
+
+	if s.registry != nil {
+		// Stash the Hello metadata so the registry can include it in
+		// the persisted record. Has to happen BEFORE Register so the
+		// upsert sees it. The registry clears it on Unregister.
+		s.registry.SetHelloMeta(clusterID, agentID, channel.HelloMeta{
+			Capabilities: hello.GetCapabilities(),
+			DisplayName:  autoRegisterDisplayName(hello, clusterID),
+			AgentVersion: hello.GetAgentVersion(),
+		})
+		if evicted := s.registry.Register(registeredAgent); evicted != nil {
+			slog.Info("evicting prior agent for cluster",
+				slog.String("cluster_id", clusterID),
+				slog.String("evicted_agent_id", evicted.AgentID),
+			)
+			evicted.Close()
+		}
+		defer s.registry.Unregister(registeredAgent)
 	}
 
 	for {

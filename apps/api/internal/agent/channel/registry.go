@@ -132,10 +132,61 @@ type AgentSummary struct {
 type AgentRegistry struct {
 	mu     sync.RWMutex
 	agents map[string]map[string]*Agent // cluster_id → agent_id → Agent
+
+	// store is the persistent backing for restart-survival. Optional —
+	// when nil, the registry is purely in-memory (the legacy
+	// behavior). main.go wires a BoltAgentStore when auth is enabled,
+	// since that's the only mode where the BoltDB file exists.
+	store AgentStore
+
+	// helloMeta carries the extra context (capabilities, display
+	// name, agent version) that the server's handler captured at
+	// Hello time but didn't fit into the Agent struct. The registry
+	// reads it on Register so the persisted record is complete.
+	// Populated via SetHelloMeta before Register; cleared on
+	// Unregister.
+	helloMeta map[string]map[string]HelloMeta // cluster_id → agent_id → meta
+}
+
+// HelloMeta is the subset of the Hello envelope the registry persists
+// alongside the Agent record. The handler in agent/server.go captures
+// these from the Hello message at registration time.
+type HelloMeta struct {
+	Capabilities []string
+	DisplayName  string // from Hello.Labels["kubebolt.io/cluster-name"]
+	AgentVersion string
 }
 
 func NewAgentRegistry() *AgentRegistry {
-	return &AgentRegistry{agents: make(map[string]map[string]*Agent)}
+	return &AgentRegistry{
+		agents:    make(map[string]map[string]*Agent),
+		helloMeta: make(map[string]map[string]HelloMeta),
+	}
+}
+
+// SetStore enables persistence. Calling with nil disables it. Idempotent;
+// safe to call after construction (typical: main.go wires it post-auth-
+// store-init). Existing records in the store are NOT auto-loaded — the
+// caller drives boot-time restoration via store.List() so the cluster.
+// Manager can stage AddAgentProxyCluster calls in the right phase.
+func (r *AgentRegistry) SetStore(s AgentStore) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.store = s
+}
+
+// SetHelloMeta records the per-agent metadata captured from Hello so
+// it can flow into the persisted AgentRecord on the upcoming Register.
+// Cleared on Unregister. No-op when the registry has no store.
+func (r *AgentRegistry) SetHelloMeta(clusterID, agentID string, meta HelloMeta) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	bucket, ok := r.helloMeta[clusterID]
+	if !ok {
+		bucket = make(map[string]HelloMeta)
+		r.helloMeta[clusterID] = bucket
+	}
+	bucket[agentID] = meta
 }
 
 // Register inserts a, replacing any existing entry for the same
@@ -158,7 +209,38 @@ func (r *AgentRegistry) Register(a *Agent) (evicted *Agent) {
 	}
 	evicted = bucket[a.AgentID]
 	bucket[a.AgentID] = a
+	store := r.store
+	var meta HelloMeta
+	if mb, ok := r.helloMeta[a.ClusterID]; ok {
+		meta = mb[a.AgentID]
+	}
 	r.mu.Unlock()
+
+	// Persist OUTSIDE the mutex — BoltDB writes are slow (~ms) and we
+	// don't want them blocking concurrent Get/Unregister. The store
+	// is internally synchronized.
+	if store != nil {
+		now := time.Now().UTC()
+		rec := &AgentRecord{
+			ClusterID:    a.ClusterID,
+			AgentID:      a.AgentID,
+			NodeName:     a.NodeName,
+			FirstSeen:    a.Connected,
+			LastSeen:     now,
+			Capabilities: meta.Capabilities,
+			DisplayName:  meta.DisplayName,
+			AgentVersion: meta.AgentVersion,
+		}
+		if a.Identity != nil {
+			rec.TenantID = a.Identity.TenantID
+			rec.AuthMode = string(a.Identity.Mode)
+		}
+		// Errors are non-fatal — persistence is "nice to have"; the
+		// in-memory registry already holds the live state. Logging is
+		// the responsibility of the caller (server.go) which has the
+		// slog context for the registration.
+		_ = store.Upsert(rec)
+	}
 	return evicted
 }
 
@@ -205,16 +287,37 @@ func (r *AgentRegistry) Unregister(a *Agent) {
 		return
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	bucket, ok := r.agents[a.ClusterID]
 	if !ok {
+		r.mu.Unlock()
 		return
 	}
+	var removed bool
 	if cur, ok := bucket[a.AgentID]; ok && cur == a {
 		delete(bucket, a.AgentID)
 		if len(bucket) == 0 {
 			delete(r.agents, a.ClusterID)
 		}
+		// Also clear the helloMeta cache for this slot — the
+		// next Register from a brand-new connection will refresh.
+		if mb, ok := r.helloMeta[a.ClusterID]; ok {
+			delete(mb, a.AgentID)
+			if len(mb) == 0 {
+				delete(r.helloMeta, a.ClusterID)
+			}
+		}
+		removed = true
+	}
+	store := r.store
+	r.mu.Unlock()
+
+	// Mark the persisted record as disconnected (don't delete — keep
+	// it for forensics + cluster.Manager boot restore). Only fires
+	// when we actually removed our entry from the live map; if the
+	// pointer-equality check failed (stale Unregister from a previous
+	// session — see comment above) we don't touch the store.
+	if removed && store != nil {
+		_ = store.MarkDisconnected(a.ClusterID, a.AgentID, time.Now().UTC())
 	}
 }
 

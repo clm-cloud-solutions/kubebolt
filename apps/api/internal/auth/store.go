@@ -22,6 +22,7 @@ var (
 	clustersBucket         = []byte("clusters")         // uploaded kubeconfigs
 	clusterDisplayBucket   = []byte("cluster_display")  // display name overrides
 	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
+	agentsBucket           = []byte("agents")           // persistent agent registry records
 )
 
 // Role represents a KubeBolt application-level role.
@@ -118,7 +119,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, copilotSessionsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, copilotSessionsBucket, agentsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -153,6 +154,14 @@ func CopilotSessionsBucket() []byte {
 // ClusterBuckets returns the bucket names used for cluster management state.
 func ClusterBuckets() (configs, displayNames []byte) {
 	return clustersBucket, clusterDisplayBucket
+}
+
+// AgentsBucket returns the bucket name used by the persistent agent
+// registry store (apps/api/internal/agent/channel/registry_store.go).
+// Survives backend restarts so the cluster selector keeps showing
+// agent-proxy clusters before live reconnects come back in.
+func AgentsBucket() []byte {
+	return agentsBucket
 }
 
 // CreateUser creates a new user with a bcrypt-hashed password.

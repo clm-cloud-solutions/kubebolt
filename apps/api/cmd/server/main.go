@@ -246,6 +246,11 @@ func main() {
 	// flow (router-level handler talks to the same store the agent
 	// gRPC interceptor validates against).
 	var tenantsStore *auth.TenantsStore
+	// Persistent agent registry — only enabled when auth is on (the
+	// BoltDB file only exists in that path). When nil, the in-memory
+	// registry survives a backend restart by losing all state, same
+	// as pre-Sprint-A.5 behavior.
+	var agentStore channel.AgentStore
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -324,6 +329,14 @@ func main() {
 			fatal("failed to open tenants store", slog.String("error", err.Error()))
 		}
 		tenantsStore = ts
+
+		// Persistent agent registry. Restart-survival for the
+		// agent-proxy cluster list — operators expect their dashboard
+		// to keep showing connected clusters across `helm upgrade` of
+		// the backend, not to "blank" until each agent reconnects.
+		// Bucket already created in auth.NewStore; we just wire the
+		// store + registry binding here.
+		agentStore = channel.NewBoltAgentStore(store.DB(), auth.AgentsBucket())
 
 		// Build the agent authenticator. TokenReview mode is best-effort:
 		// if there is no in-cluster client (KubeBolt running outside K8s,
@@ -484,6 +497,99 @@ func main() {
 	// reachability via the live registry.
 	agentRegistry := channel.NewAgentRegistry()
 	manager.SetAgentRegistry(agentRegistry)
+
+	// Persistence wiring + boot-time restore. When auth is disabled
+	// (agentStore == nil) all of this is skipped and the registry
+	// stays in-memory — same as pre-Sprint-A.5 behavior.
+	if agentStore != nil {
+		agentRegistry.SetStore(agentStore)
+
+		// Replay persisted records so cluster.Manager's
+		// agentProxyContexts is populated BEFORE the agent gRPC
+		// server accepts traffic. Result: the cluster selector keeps
+		// showing every previously-connected agent-proxy cluster from
+		// the moment the backend boots, instead of "no clusters" for
+		// the ~30s window each agent takes to reconnect.
+		//
+		// We only restore clusters whose agents advertised the
+		// `kube-proxy` capability — a metrics-only agent (rbac.mode=
+		// metrics) doesn't need an agent-proxy entry in the selector,
+		// since it doesn't surface inventory through the tunnel.
+		//
+		// The display name uses the most-recent record per cluster
+		// (sort by LastSeen descending). Multi-agent DaemonSets
+		// converge on the same cluster name from KUBEBOLT_AGENT_
+		// CLUSTER_NAME, so this picks any of them.
+		records, err := agentStore.List()
+		if err != nil {
+			slog.Warn("failed to list persisted agent records on boot", slog.String("error", err.Error()))
+		} else {
+			seen := make(map[string]string) // cluster_id → display name
+			for i := range records {
+				rec := &records[i]
+				if !rec.HasKubeProxy() {
+					continue
+				}
+				// Last-write-wins on display name — records are
+				// sorted (cluster_id, agent_id) so any of the
+				// equivalent values land here. Good enough.
+				if rec.DisplayName != "" {
+					seen[rec.ClusterID] = rec.DisplayName
+				} else if _, ok := seen[rec.ClusterID]; !ok {
+					seen[rec.ClusterID] = ""
+				}
+			}
+			for clusterID, displayName := range seen {
+				if _, err := manager.AddAgentProxyCluster(clusterID, displayName); err != nil {
+					slog.Warn("failed to restore agent-proxy cluster",
+						slog.String("cluster_id", clusterID),
+						slog.String("display_name", displayName),
+						slog.String("error", err.Error()),
+					)
+				}
+			}
+			if len(seen) > 0 {
+				slog.Info("restored agent-proxy clusters from persistent registry",
+					slog.Int("count", len(seen)),
+				)
+			}
+		}
+
+		// Prune disconnected records older than the horizon. Records
+		// for agents currently connected (DisconnectedAt zero) never
+		// expire. The horizon is configurable so SaaS operators can
+		// shorten it if they don't want stale orgs in their data set.
+		pruneHorizon := 24 * time.Hour
+		if v := os.Getenv("KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON"); v != "" {
+			if d, err := time.ParseDuration(v); err == nil && d > 0 {
+				pruneHorizon = d
+			} else {
+				slog.Warn("invalid KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON, using default",
+					slog.String("requested", v),
+					slog.Duration("default", pruneHorizon),
+				)
+			}
+		}
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-agentCtx.Done():
+					return
+				case <-ticker.C:
+					removed, err := agentStore.Prune(time.Now().UTC().Add(-pruneHorizon))
+					if err != nil {
+						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
+						continue
+					}
+					if removed > 0 {
+						slog.Info("agent registry pruned", slog.Int("removed", removed))
+					}
+				}
+			}
+		}()
+	}
 
 	// Auto-register agent-proxy clusters: when an agent advertises the
 	// kube-proxy capability AND this flag is on, its cluster shows up
