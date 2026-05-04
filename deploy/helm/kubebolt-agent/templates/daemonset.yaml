@@ -33,8 +33,16 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.priorityClassName }}
-      priorityClassName: {{ . }}
+      {{- /* PriorityClass selection (precedence top-down):
+             1. Legacy `priorityClassName` (string) — wins if set.
+             2. priority.enabled=true + non-empty priority.className → use it.
+             3. priority.enabled=true + empty priority.className → chart-managed
+                `<release>-priority`, rendered by templates/priorityclass.yaml.
+             4. Otherwise no priorityClassName (default scheduling). */ -}}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName }}
+      {{- else if .Values.priority.enabled }}
+      priorityClassName: {{ default (printf "%s-priority" (include "kubebolt-agent.fullname" .)) .Values.priority.className }}
       {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

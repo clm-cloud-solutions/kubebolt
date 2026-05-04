@@ -1642,6 +1642,36 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
   const cpuRefs = buildCpuRefs(mul(perPod.cpuRequest), mul(perPod.cpuLimit))
   const memRefs = buildMemRefs(mul(perPod.memoryRequest), mul(perPod.memoryLimit))
 
+  // Coverage-gap detection — count pods that have data in VM and compare
+  // to declared replicas. The chart sums whatever VM has; the reference
+  // lines multiply per-pod budget × declared replicas. If the agent isn't
+  // on every node hosting a replica (Pending pod due to node pressure,
+  // NoSchedule taint, namespace-scoped agent), the chart shows healthy
+  // headroom while individual pods may be at limit. The banner makes
+  // that gap visible.
+  //
+  // DaemonSet skipped: `replicas` for DS comes from specReplicas which
+  // doesn't reflect the cluster's actual node count, so the comparison
+  // wouldn't be meaningful. A future iteration could query the node
+  // count separately for DS coverage.
+  const coverageEnabled = kindLabel !== 'DaemonSet' && replicas > 1
+  const { data: coverageResp } = useQuery({
+    queryKey: ['workload-coverage', selector],
+    queryFn: () =>
+      api.queryMetrics({
+        query: `count(group(container_cpu_usage_cores{${selector}}) by (pod))`,
+      }),
+    enabled: coverageEnabled,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+  })
+  const observedPods = (() => {
+    if (!coverageResp?.data?.result?.length) return null
+    const v = Number(coverageResp.data.result[0].value[1])
+    return Number.isFinite(v) ? v : null
+  })()
+  const coverageGap = coverageEnabled && observedPods != null && observedPods < replicas
+
   const [bannerDismissed, setBannerDismissed] = useState(
     () => typeof window !== 'undefined' && window.localStorage.getItem(MONITOR_BANNER_DISMISSED_KEY) === 'true',
   )
@@ -1671,6 +1701,25 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
               <line x1="6" y1="6" x2="18" y2="18" />
             </svg>
           </button>
+        </div>
+      )}
+
+      {coverageGap && (
+        <div className="bg-status-warn-dim border border-status-warn/30 rounded-lg px-4 py-2.5 text-[11px] text-kb-text-primary flex items-start gap-3">
+          <svg className="w-4 h-4 text-status-warn shrink-0 mt-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
+            <line x1="12" y1="9" x2="12" y2="13" />
+            <line x1="12" y1="17" x2="12.01" y2="17" />
+          </svg>
+          <div className="flex-1">
+            <div className="font-semibold text-status-warn mb-0.5">Partial coverage — KubeBolt Agent has data for {observedPods} of {replicas} {replicaWord}s</div>
+            <div className="text-kb-text-secondary leading-relaxed">
+              The chart sums what the agent observes; the reference lines multiply per-pod budget × declared {replicaWord}s. With {(replicas ?? 0) - (observedPods ?? 0)} {replicaWord}{(replicas ?? 0) - (observedPods ?? 0) === 1 ? '' : 's'} unobserved, an individual pod can be near limit while the workload-level sum looks healthy.
+            </div>
+            <div className="text-kb-text-tertiary mt-1">
+              Common causes: agent pod Pending due to node resource pressure, taint without matching toleration, namespace-scoped agent, or agent not yet rolled to a new node. See the <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">priority</code> + <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">tolerations</code> values in the agent helm chart for full-coverage installs.
+            </div>
+          </div>
         </div>
       )}
 
