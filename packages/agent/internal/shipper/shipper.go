@@ -108,17 +108,37 @@ func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Op
 func (s *Shipper) AgentID() string { return s.agentID }
 
 // Run owns the reconnect loop and returns only when ctx is cancelled.
+//
+// Backoff strategy: exponential growth (1s → 2s → 4s ... up to 60s)
+// while the dial keeps failing — appropriate for a backend that's
+// genuinely down or unreachable. But sessions that ran cleanly for a
+// while and THEN dropped (typical of a graceful backend restart) reset
+// the backoff to 1s, so a deploy-induced reconnect doesn't make the
+// agent sit out the full 60s cap. Without this reset, repeated dev
+// restarts of the backend pin the backoff at 60s and the cluster stays
+// blank in the UI for a full minute every iteration.
 func (s *Shipper) Run(ctx context.Context) {
 	backoff := time.Second
-	const backoffMax = 60 * time.Second
+	const (
+		backoffMax           = 60 * time.Second
+		healthySessionMinAge = 10 * time.Second
+	)
 
 	for {
 		if ctx.Err() != nil {
 			return
 		}
+		sessionStart := time.Now()
 		err := s.runSession(ctx)
 		if err == nil || ctx.Err() != nil {
 			return
+		}
+		// A session that survived >= healthySessionMinAge means we did
+		// reach the backend, completed handshake, and shipped at least
+		// some traffic. Treat the next failure as fresh — don't carry
+		// any prior backoff state into the reconnect.
+		if time.Since(sessionStart) >= healthySessionMinAge {
+			backoff = time.Second
 		}
 		slog.Warn("shipper session ended, will reconnect",
 			slog.String("error", err.Error()),
