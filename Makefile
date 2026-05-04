@@ -1,4 +1,4 @@
-.PHONY: dev dev-api dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
+.PHONY: dev dev-clean dev-api dev-api-clean dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -30,6 +30,41 @@ dev-api:
 		[ -f .env ] && . ./.env; \
 		set +a; \
 		cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config \
+	)
+
+# Path of the synthetic empty kubeconfig used by dev-clean / dev-api-clean.
+# Rewritten on every invocation so partial edits never leak across runs.
+EMPTY_KUBECONFIG := /tmp/kb-empty-kubeconfig.yaml
+
+## Run both API and Web with an EMPTY kubeconfig (no clusters at boot).
+## Use this to test agent auto-registration / persistent registry restore
+## without your local ~/.kube/config polluting the cluster list.
+dev-clean: install
+	@printf 'apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\nusers: []\ncurrent-context: ""\n' > $(EMPTY_KUBECONFIG)
+	@echo "Starting KubeBolt with empty kubeconfig ($(EMPTY_KUBECONFIG))..."
+	@echo "  API  → http://localhost:8080"
+	@echo "  Web  → http://localhost:5173"
+	@if [ -f .env ]; then echo "  Loading .env..."; fi
+	@echo ""
+	@trap 'kill 0' EXIT; \
+		( \
+			set -a; \
+			[ -f .env ] && . ./.env; \
+			set +a; \
+			cd apps/api && go run cmd/server/main.go --kubeconfig $(EMPTY_KUBECONFIG) \
+		) & \
+		cd apps/web && npx vite --host & \
+		wait
+
+## Run only the API with an EMPTY kubeconfig.
+dev-api-clean:
+	@printf 'apiVersion: v1\nkind: Config\nclusters: []\ncontexts: []\nusers: []\ncurrent-context: ""\n' > $(EMPTY_KUBECONFIG)
+	@echo "API booting with empty kubeconfig ($(EMPTY_KUBECONFIG))"
+	@( \
+		set -a; \
+		[ -f .env ] && . ./.env; \
+		set +a; \
+		cd apps/api && go run cmd/server/main.go --kubeconfig $(EMPTY_KUBECONFIG) \
 	)
 
 ## Run only the Web
