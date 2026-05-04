@@ -17,6 +17,12 @@ import (
 	"syscall"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
@@ -111,6 +117,7 @@ func main() {
 	var host string
 	var showVersion bool
 	var openBrowser bool
+	var resetAdminPassword string
 
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, helpText, version)
@@ -123,11 +130,37 @@ func main() {
 	flag.IntVar(&cfg.InsightInterval, "insight-interval", cfg.InsightInterval, "Insight evaluation interval in seconds")
 	flag.BoolVar(&openBrowser, "open", false, "Auto-open browser on start")
 	flag.BoolVar(&showVersion, "version", false, "Print version and exit")
+	flag.StringVar(&resetAdminPassword, "reset-admin-password", "", "Reset the admin user's password to the given value, then exit. For helm: kubectl exec deploy/kubebolt-api -- kubebolt --reset-admin-password=NEW")
 	flag.Parse()
 
 	if showVersion {
 		fmt.Printf("KubeBolt %s\n", version)
 		os.Exit(0)
+	}
+
+	// Reset-admin-password mode: open the auth DB, change the admin
+	// user's password hash, exit. Bypasses the rest of the boot path
+	// because we don't want to spin up a server while we're rotating
+	// credentials. Mirrors `grafana-cli admin reset-admin-password`.
+	if resetAdminPassword != "" {
+		if err := runResetAdminPassword(resetAdminPassword); err != nil {
+			fmt.Fprintf(os.Stderr, "reset-admin-password: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Fprintln(os.Stderr, "admin password reset OK")
+		os.Exit(0)
+	}
+	// Env-var path for the helm upgrade flow: helm sets
+	// KUBEBOLT_RESET_ADMIN_PASSWORD on the deployment, the new pod
+	// (with strategy=Recreate the old one is already gone, so the
+	// BoltDB lock is free) runs the reset and CONTINUES normal boot
+	// — server starts as usual with the new password active. The
+	// operator removes the value on the next helm upgrade.
+	if v := strings.TrimSpace(os.Getenv("KUBEBOLT_RESET_ADMIN_PASSWORD")); v != "" {
+		if err := runResetAdminPassword(v); err != nil {
+			fatal("reset-admin-password env failed", slog.String("error", err.Error()))
+		}
+		slog.Info("admin password reset via KUBEBOLT_RESET_ADMIN_PASSWORD; remove this env var on the next upgrade")
 	}
 
 	// Load .env file (if present) before reading any config.
@@ -244,8 +277,27 @@ func main() {
 		if err != nil {
 			fatal("failed to seed admin user", slog.String("error", err.Error()))
 		}
+		// Print the admin password banner ONLY when we actually created
+		// the admin user AND it was a generated password (env-supplied
+		// passwords are already known to the operator). On subsequent
+		// restarts this branch is skipped — the password printed at first
+		// boot is the only one that's valid.
+		//
+		// In-cluster (helm install) we ALSO persist the generated password
+		// to a Secret in the backend's own namespace so operators can
+		// recover it even after rotating logs. Only on first boot, only
+		// when not env-supplied — env-supplied passwords are the operator's
+		// responsibility to track.
 		if seeded {
 			slog.Info("default admin user created", slog.String("username", "admin"))
+			if !authCfg.AdminPasswordFromEnv {
+				config.PrintAdminPasswordBanner(authCfg.InitialAdminPassword)
+				if err := persistAdminPasswordSecret(authCfg.InitialAdminPassword); err != nil {
+					slog.Warn("could not persist admin password to a Secret (the printed banner is the only copy)",
+						slog.String("error", err.Error()),
+					)
+				}
+			}
 		}
 
 		jwtSvc := auth.NewJWTService(authCfg)
@@ -547,6 +599,106 @@ func parseAutoRegisterFlag(s string) bool {
 		return true
 	}
 	return false
+}
+
+// persistAdminPasswordSecret writes the auto-generated admin password to
+// a Kubernetes Secret in the backend's own namespace, on first boot only.
+// Only meaningful in-cluster — outside (desktop binary, docker-compose),
+// rest.InClusterConfig() fails and we silently skip.
+//
+// The Secret name is hardcoded "kubebolt-admin-password". We never
+// overwrite an existing one — if it's already there, the operator
+// already managed the password explicitly via auth.existingSecret on
+// the chart and we shouldn't fight that.
+func persistAdminPasswordSecret(password string) error {
+	cfg, err := rest.InClusterConfig()
+	if err != nil {
+		// Not in-cluster — nothing to persist to.
+		return nil
+	}
+	nsBytes, _ := os.ReadFile("/var/run/secrets/kubernetes.io/serviceaccount/namespace")
+	ns := strings.TrimSpace(string(nsBytes))
+	if ns == "" {
+		return fmt.Errorf("could not determine self namespace")
+	}
+	client, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		return fmt.Errorf("kubernetes client: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	const secretName = "kubebolt-admin-password"
+	_, err = client.CoreV1().Secrets(ns).Get(ctx, secretName, metav1.GetOptions{})
+	if err == nil {
+		// Already exists — operator manages it themselves, leave alone.
+		slog.Info("admin password Secret already exists, leaving untouched",
+			slog.String("secret", secretName),
+			slog.String("namespace", ns),
+		)
+		return nil
+	}
+	if !apierrors.IsNotFound(err) {
+		return fmt.Errorf("check existing Secret: %w", err)
+	}
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: ns,
+			Labels: map[string]string{
+				"app.kubernetes.io/name":      "kubebolt",
+				"app.kubernetes.io/component": "auth",
+				"app.kubernetes.io/managed-by": "kubebolt-api",
+			},
+			Annotations: map[string]string{
+				"kubebolt.io/generated-at": time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+		Type: corev1.SecretTypeOpaque,
+		StringData: map[string]string{
+			"password": password,
+			"username": "admin",
+		},
+	}
+	if _, err := client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+		return fmt.Errorf("create Secret %s/%s: %w", ns, secretName, err)
+	}
+	slog.Info("admin password persisted to Kubernetes Secret",
+		slog.String("secret", secretName),
+		slog.String("namespace", ns),
+		slog.String("retrieve_with", fmt.Sprintf("kubectl -n %s get secret %s -o jsonpath='{.data.password}' | base64 -d", ns, secretName)),
+	)
+	return nil
+}
+
+// runResetAdminPassword opens the auth BoltDB at the configured
+// DataDir, looks up the admin user, and replaces the password hash
+// with bcrypt(newPassword). Exits non-zero on any failure (db locked
+// by a running api, admin user missing, etc.). Server intentionally
+// not started — this is a one-shot maintenance command meant to run
+// via `kubectl exec` against a temporarily-stopped pod (or a Job).
+func runResetAdminPassword(newPassword string) error {
+	if len(newPassword) < 8 {
+		return fmt.Errorf("password too short (min 8 chars)")
+	}
+	authCfg := config.LoadAuthConfig()
+	if authCfg.DataDir == "" {
+		authCfg.DataDir = "./data"
+	}
+	store, err := auth.NewStore(authCfg.DataDir)
+	if err != nil {
+		return fmt.Errorf("open auth store: %w (is another kubebolt-api process holding the DB? scale the deployment to 0 or run this from a Job)", err)
+	}
+	defer store.Close()
+	user, err := store.GetUserByUsername("admin")
+	if err != nil {
+		return fmt.Errorf("admin user not found: %w (was the database ever seeded?)", err)
+	}
+	if err := store.UpdatePassword(user.ID, newPassword); err != nil {
+		return fmt.Errorf("update password: %w", err)
+	}
+	return nil
 }
 
 // openURL opens the given URL in the default browser.

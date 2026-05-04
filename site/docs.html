@@ -243,7 +243,7 @@ cd deploy && docker compose up -d</span></pre>
 <p>Production deployment inside your cluster. OCI-based chart on GitHub Container Registry. Also listed on Artifact Hub.</p>
 <pre><span class="g">helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt</span>
 
-<span class="g">kubectl port-forward svc/kubebolt 3000:80</span>
+<span class="g">kubectl -n default port-forward svc/kubebolt 3000:80</span>
 
 <span class="d"># With Ingress and custom admin password</span>
 <span class="g">helm install kubebolt \
@@ -647,7 +647,53 @@ KubeBolt Frontend (React 18 + TypeScript + Vite 5 + Tailwind)
 <h2>Overview</h2>
 <p>KubeBolt ships with a built-in auth system that supports three roles: <strong>Admin</strong>, <strong>Editor</strong>, and <strong>Viewer</strong>. Auth is enabled by default and uses BoltDB for user storage — no external database needed. Sessions are managed via JWT tokens stored in httpOnly cookies.</p>
 
-<div class="callout"><strong>First boot:</strong> A default <code>admin</code> user is seeded automatically on first startup. The generated password is printed to the server logs. Change it immediately after first login.</div>
+<div class="callout"><strong>First boot:</strong> A default <code>admin</code> user is seeded automatically. When neither <code>auth.adminPassword</code> nor <code>auth.existingSecret</code> is set, the API generates a random password, prints it once to the log, and (in helm installs) persists it to a Secret named <code>kubebolt-admin-password</code> in the release's namespace. The banner only fires on first boot — subsequent restarts stay quiet.</div>
+
+<h2>Retrieving the auto-generated admin password</h2>
+<p>For a helm install with no explicit password configured:</p>
+<pre><span class="g">kubectl -n NS get secret kubebolt-admin-password \
+  -o jsonpath='{.data.password}' | base64 -d ; echo</span></pre>
+<p>If you've supplied <code>auth.existingSecret</code> on the chart, KubeBolt skips the auto-Secret entirely — your supplied Secret is the source of truth.</p>
+
+<h2>Forgot-password recovery</h2>
+<p>Two paths, pick whichever fits the situation. Both reset the admin password in BoltDB and log the operation for audit.</p>
+
+<h3>Path A — <code>helm upgrade</code> (recommended)</h3>
+<p>Sets the <code>KUBEBOLT_RESET_ADMIN_PASSWORD</code> env on the deployment; the API resets the password on next start, then continues normal boot. With <code>strategy: Recreate</code> on the API deployment (chart default) the BoltDB lock is released cleanly during rollover.</p>
+<pre><span class="g">helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set auth.resetAdminPassword=NEWPASS</span>
+
+<span class="d"># log in with NEWPASS, change to your real password, then clear:</span>
+<span class="g">helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set auth.resetAdminPassword=</span></pre>
+
+<h3>Path B — one-shot Job (no helm needed)</h3>
+<p>Useful in runbooks or when helm isn't available. Scale the API to 0 (BoltDB is single-writer), run the reset Job with the same image and PVC, scale back up.</p>
+<pre><span class="g">NS=kubebolt
+IMAGE=$(kubectl -n $NS get deploy/kubebolt-api -o jsonpath='{.spec.template.spec.containers[0].image}')
+kubectl -n $NS scale deploy/kubebolt-api --replicas=0
+kubectl -n $NS apply -f - &lt;&lt;EOF
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kubebolt-pw-reset }
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: reset
+        image: $IMAGE
+        command: ["kubebolt-api", "--reset-admin-password=NEWPASS"]
+        env: [{ name: KUBEBOLT_DATA_DIR, value: /data }]
+        volumeMounts: [{ name: data, mountPath: /data }]
+      volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: kubebolt-data }
+EOF
+kubectl -n $NS wait --for=condition=Complete job/kubebolt-pw-reset --timeout=60s
+kubectl -n $NS scale deploy/kubebolt-api --replicas=1</span></pre>
+<p>Min password length: 8 chars.</p>
 
 <h2>Roles</h2>
 <p>KubeBolt enforces three roles with increasing levels of access:</p>

@@ -7,6 +7,13 @@ metadata:
     app.kubernetes.io/component: api
 spec:
   replicas: {{ .Values.replicaCount }}
+  # Recreate (vs RollingUpdate) because the auth BoltDB is single-writer
+  # — a surge during rollout has the new pod failing to acquire the lock
+  # while the old one still holds it, ending in CrashLoopBackOff. With a
+  # single replica there's nothing to roll anyway; this just makes
+  # upgrades deterministic.
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       {{- include "kubebolt.selectorLabels" . | nindent 6 }}
@@ -80,6 +87,14 @@ spec:
               value: {{ .Values.auth.enabled | quote }}
             - name: KUBEBOLT_DATA_DIR
               value: "/data"
+            {{- if and .Values.auth.enabled .Values.auth.resetAdminPassword }}
+            # Forgot-password recovery: when set, the API resets the admin
+            # password to this value on startup, then continues normal
+            # boot. Recommended to clear on the next helm upgrade so the
+            # value doesn't sit in the deployment indefinitely.
+            - name: KUBEBOLT_RESET_ADMIN_PASSWORD
+              value: {{ .Values.auth.resetAdminPassword | quote }}
+            {{- end }}
             {{- if .Values.auth.enabled }}
             {{- if .Values.auth.existingSecret }}
             - name: KUBEBOLT_ADMIN_PASSWORD

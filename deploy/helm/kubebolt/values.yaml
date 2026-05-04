@@ -175,9 +175,21 @@ replicaCount: 1
 # Enabled by default. Set enabled: false for open access (no login required).
 auth:
   enabled: true
-  adminPassword: ""       # initial admin password — generated if empty (printed to logs)
+  adminPassword: ""       # initial admin password — generated if empty (printed to logs + persisted to a Secret on first boot)
   jwtSecret: ""           # JWT signing secret — generated if empty (tokens won't survive restarts)
   existingSecret: ""      # name of an existing Secret containing 'admin-password' and/or 'jwt-secret'
+
+  # Forgot-password recovery: set this on a `helm upgrade` to reset the
+  # admin user's password to the given value at next pod start. With
+  # strategy=Recreate, the old pod terminates first (releasing the
+  # BoltDB lock), the new pod runs the reset, then continues normal
+  # boot. Remove this value on the next upgrade so it doesn't persist
+  # in your release values.
+  #
+  #   helm upgrade kubebolt ... --reuse-values --set auth.resetAdminPassword=NEWPASS
+  #   # log in, change to your real password from the Account menu
+  #   helm upgrade kubebolt ... --reuse-values --set auth.resetAdminPassword=
+  resetAdminPassword: ""
   persistence:
     enabled: true
     size: 1Gi

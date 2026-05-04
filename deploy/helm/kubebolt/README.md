@@ -73,13 +73,21 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
 
 KubeBolt includes built-in authentication with three roles: **Admin** (full access + user management), **Editor** (edit YAML, scale, restart), and **Viewer** (read-only). Enabled by default.
 
-On first boot, a default `admin` user is created. If no password is set, a random one is generated and printed to logs:
+### Initial admin password
+
+On first boot a `admin` user is seeded. If neither `auth.adminPassword` nor `auth.existingSecret` is set, the API:
+
+1. Generates a random password,
+2. Prints it once to the API log (banner only fires when seeding actually happens — restarts on an existing DB stay quiet),
+3. Persists it to a Secret named `kubebolt-admin-password` in this release's namespace.
+
+Retrieve it any time with:
 
 ```bash
-kubectl logs deployment/kubebolt-api | grep "Generated admin password"
+kubectl -n NS get secret kubebolt-admin-password -o jsonpath='{.data.password}' | base64 -d ; echo
 ```
 
-For production, use an existing Kubernetes Secret:
+For production, supply your own Secret instead:
 
 ```bash
 kubectl create secret generic kubebolt-auth \
@@ -96,6 +104,53 @@ To disable auth (open access, no login):
 helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set auth.enabled=false
 ```
+
+### Forgot-password recovery
+
+Two paths, pick whichever fits your workflow.
+
+**Path A — `helm upgrade` (recommended for helm-managed installs).** Sets `KUBEBOLT_RESET_ADMIN_PASSWORD` on the deployment; the API resets the admin password on next start, then continues normal boot. With `strategy: Recreate` the BoltDB lock is released cleanly during rollover.
+
+```bash
+helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set auth.resetAdminPassword=NEWPASS
+
+# log in with NEWPASS, change to your real password from the Account menu, then:
+helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set auth.resetAdminPassword=
+```
+
+**Path B — one-shot `Job` (when helm isn't available, or for a runbook).** Scale the API to zero (BoltDB is single-writer), run a Job with the same image and PVC, scale back up:
+
+```bash
+NS=kubebolt   # your release namespace
+IMAGE=$(kubectl -n $NS get deploy/kubebolt-api -o jsonpath='{.spec.template.spec.containers[0].image}')
+
+kubectl -n $NS scale deploy/kubebolt-api --replicas=0
+kubectl -n $NS apply -f - <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata: { name: kubebolt-pw-reset }
+spec:
+  ttlSecondsAfterFinished: 60
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: reset
+        image: $IMAGE
+        command: ["kubebolt-api", "--reset-admin-password=NEWPASS"]
+        env: [{ name: KUBEBOLT_DATA_DIR, value: /data }]
+        volumeMounts: [{ name: data, mountPath: /data }]
+      volumes:
+      - name: data
+        persistentVolumeClaim: { claimName: kubebolt-data }
+EOF
+kubectl -n $NS wait --for=condition=Complete job/kubebolt-pw-reset --timeout=60s
+kubectl -n $NS scale deploy/kubebolt-api --replicas=1
+```
+
+Min password length: 8 chars. Both paths log the reset to the API log so it's auditable.
 
 ## AI Copilot
 
