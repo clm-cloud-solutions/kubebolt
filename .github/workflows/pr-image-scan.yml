@@ -1,0 +1,82 @@
+name: PR — third-party image scan
+
+# Mirrors the preflight gate in release.yml so Trivy fails LOUDLY at
+# PR time, not 20 minutes after someone pushed a release tag. Triggers:
+#   - Pull requests touching any pin site or this workflow itself.
+#   - workflow_dispatch for ad-hoc verification (e.g. confirming a base
+#     image bump cleared all CVEs before tagging the release).
+#
+# This workflow is a strict subset of release.yml's
+# preflight-third-party-scan job — keep them in sync. The release
+# pipeline is still authoritative; this is the early-warning copy.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/helm/kubebolt/values.yaml'
+      - 'deploy/docker-compose.yml'
+      - '.trivyignore'
+      - '.github/workflows/pr-image-scan.yml'
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write   # SARIF upload
+
+jobs:
+  third-party-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract pinned VictoriaMetrics tag from values.yaml
+        id: vm
+        run: |
+          TAG=$(awk '/repository: victoriametrics\/victoria-metrics/{getline; print $2}' deploy/helm/kubebolt/values.yaml)
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not parse VictoriaMetrics tag from values.yaml"
+            exit 1
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Pinned VictoriaMetrics tag: $TAG"
+
+      - name: Verify compose pin matches helm values pin
+        run: |
+          HELM_TAG="${{ steps.vm.outputs.tag }}"
+          COMPOSE_TAG=$(grep -oP 'victoriametrics/victoria-metrics:\K[^ ]+' deploy/docker-compose.yml | head -1)
+          if [ "$HELM_TAG" != "$COMPOSE_TAG" ]; then
+            echo "::error::VictoriaMetrics tag drift — helm=$HELM_TAG compose=$COMPOSE_TAG. Bump both."
+            exit 1
+          fi
+
+      - name: Trivy scan VictoriaMetrics image
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan VictoriaMetrics image (SARIF)
+        if: always()
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
+          format: sarif
+          output: trivy-vm.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-vm.sarif
+          category: trivy-victoriametrics-pr
