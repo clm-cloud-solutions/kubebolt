@@ -274,6 +274,27 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 - Backend: `go build ./...` (Go 1.22, ubuntu-latest)
 - Frontend: `npm ci && npm run build` (Node 20, ubuntu-latest)
 
+## Release security gates
+
+`.github/workflows/release.yml` (triggered on `v*` tag push) has two Trivy gates that **must pass** before the GitHub Release is created:
+
+1. **`preflight-third-party-scan`** runs FIRST, before any image build. Parses the VictoriaMetrics tag out of `deploy/helm/kubebolt/values.yaml`, verifies it matches the pin in `deploy/docker-compose.yml` (drift = hard fail), and Trivy-scans `docker.io/victoriametrics/victoria-metrics:<tag>`. Fails on `CRITICAL,HIGH` with `--ignore-unfixed`. Catches the v1.8.0 class of bug where a stale third-party pin shipped vulnerable.
+2. **`image-scan`** runs after `build-api` / `build-web` / `build-single-container` and scans the just-pushed images **by `@sha256` digest** (immutable, guarantees we audit the exact bits). Same severity policy. Also emits CycloneDX SBOMs that are attached to the GitHub Release as `sbom-{api,web,single}.cdx.json`. SARIF reports for both gates upload to the GitHub Security tab under categories `trivy-victoriametrics` and `trivy-release-images`.
+
+`release` and `publish-chart` both have `image-scan` in `needs:` — a failed scan blocks chart publication and the GitHub Release. Note that the images themselves are already on GHCR by the time `image-scan` runs (push happens during build); a failure means **no Release is cut, but you must manually delete the orphaned image tags from GHCR Packages**, then bump the dependency and retag.
+
+**Suppressions** live in `.trivyignore` at the repo root — every entry needs an owner, a justification, and a remove-by date. Don't grow that file to push a release out the door; bump the dependency instead.
+
+**Renovate** (`renovate.json`) groups VictoriaMetrics bumps across `docker-compose.yml` and `values.yaml` into a single PR via a regex custom manager, since the helm values file isn't a stock Renovate manager target. The two pin sites are coupled — drift trips the preflight gate.
+
+### Third-party image pins (single-source-of-truth map)
+
+| Image | Authoritative pin | Mirror (must match) |
+|-------|-------------------|----------------------|
+| `victoriametrics/victoria-metrics` | `deploy/helm/kubebolt/values.yaml` (`metrics.storage.embedded.image.tag`) | `deploy/docker-compose.yml` (`victoriametrics:` service) |
+
+When adding a new third-party image, add it to this table, add a Trivy scan step in `preflight-third-party-scan`, and extend the drift check.
+
 ## Key Reference
 
 `docs/SPEC.md` contains the detailed technical specification including API endpoints, insights rules, data models, and Phase 2 roadmap. Consult it for feature work.

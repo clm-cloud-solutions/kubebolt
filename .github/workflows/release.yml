@@ -7,7 +7,8 @@ on:
 permissions:
   contents: write
   packages: write
-  id-token: write  # Required for Cosign keyless signing
+  id-token: write          # Required for Cosign keyless signing
+  security-events: write   # Required to upload Trivy SARIF to code scanning
 
 env:
   REGISTRY: ghcr.io
@@ -15,8 +16,74 @@ env:
   WEB_IMAGE: ghcr.io/${{ github.repository }}/web
 
 jobs:
-  build-api:
+  # Pre-flight gate: scan every third-party image the release ships
+  # (today: VictoriaMetrics) BEFORE wasting 20+ minutes building our
+  # own. Fails on HIGH/CRITICAL with --ignore-unfixed so we don't
+  # block on CVEs without an upstream fix. v1.8.0 went out with a
+  # vulnerable VM pin — this gate exists so that never repeats.
+  preflight-third-party-scan:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Single source of truth for VM tag is deploy/helm/kubebolt/values.yaml.
+      # docker-compose.yml MUST stay aligned (renovate.json groups them).
+      - name: Extract pinned VictoriaMetrics tag from values.yaml
+        id: vm
+        run: |
+          TAG=$(awk '/repository: victoriametrics\/victoria-metrics/{getline; print $2}' deploy/helm/kubebolt/values.yaml)
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not parse VictoriaMetrics tag from values.yaml"
+            exit 1
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Pinned VictoriaMetrics tag: $TAG"
+
+      - name: Verify compose pin matches helm values pin
+        run: |
+          HELM_TAG="${{ steps.vm.outputs.tag }}"
+          COMPOSE_TAG=$(grep -oP 'victoriametrics/victoria-metrics:\K[^ ]+' deploy/docker-compose.yml | head -1)
+          if [ "$HELM_TAG" != "$COMPOSE_TAG" ]; then
+            echo "::error::VictoriaMetrics tag drift — helm=$HELM_TAG compose=$COMPOSE_TAG. Bump both."
+            exit 1
+          fi
+
+      - name: Trivy scan VictoriaMetrics image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan VictoriaMetrics image (SARIF for code scanning)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
+          format: sarif
+          output: trivy-vm.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Upload SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-vm.sarif
+          category: trivy-victoriametrics
+
+  build-api:
+    needs: preflight-third-party-scan
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -62,7 +129,10 @@ jobs:
         run: cosign sign --yes ${{ env.API_IMAGE }}@${{ steps.build.outputs.digest }}
 
   build-web:
+    needs: preflight-third-party-scan
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -101,13 +171,156 @@ jobs:
       - name: Sign image with Cosign
         run: cosign sign --yes ${{ env.WEB_IMAGE }}@${{ steps.build.outputs.digest }}
 
+  # Post-build gate: scan the immutable digests of the images we just
+  # pushed. Failure here prevents publish-chart and the GitHub Release
+  # from being created. The images themselves remain on GHCR (the push
+  # already happened) — see docs/RELEASE.md for the cleanup procedure
+  # if you need to retract a tag. Scanning by @sha256 digest (not by
+  # tag) guarantees we audit the exact bits that would ship.
+  image-scan:
+    needs: [build-api, build-web, build-single-container]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy scan API image (by digest)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.API_IMAGE }}@${{ needs.build-api.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan Web image (by digest)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.WEB_IMAGE }}@${{ needs.build-web.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan single-container image (by digest)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}@${{ needs.build-single-container.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      # SARIF outputs run with continue-on-error so a HIGH/CRITICAL
+      # in the previous gating steps still fails the job, but we
+      # always upload the report to code scanning for visibility.
+      - name: Trivy SARIF — API
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.API_IMAGE }}@${{ needs.build-api.outputs.digest }}
+          format: sarif
+          output: trivy-api.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy SARIF — Web
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.WEB_IMAGE }}@${{ needs.build-web.outputs.digest }}
+          format: sarif
+          output: trivy-web.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy SARIF — single-container
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}@${{ needs.build-single-container.outputs.digest }}
+          format: sarif
+          output: trivy-single.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Upload Trivy SARIF reports
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: '.'
+          category: trivy-release-images
+
+      # CycloneDX SBOM per image — attached to the GitHub Release so
+      # downstream consumers and SBOM-driven scanners (e.g. Dependency
+      # Track) can ingest the exact composition we shipped.
+      - name: Trivy SBOM — API
+        if: success()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.API_IMAGE }}@${{ needs.build-api.outputs.digest }}
+          format: cyclonedx
+          output: sbom-api.cdx.json
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy SBOM — Web
+        if: success()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.WEB_IMAGE }}@${{ needs.build-web.outputs.digest }}
+          format: cyclonedx
+          output: sbom-web.cdx.json
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy SBOM — single-container
+        if: success()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ghcr.io/${{ github.repository }}@${{ needs.build-single-container.outputs.digest }}
+          format: cyclonedx
+          output: sbom-single.cdx.json
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Upload SBOM artifacts
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sboms
+          path: sbom-*.cdx.json
+          retention-days: 30
+
   publish-chart:
     # The Helm chart references the api + web images at the same
     # version, so don't publish a chart pointing at an image that
     # never built. Without this gate a failed build-api leaves a
     # broken `helm install --version <X>` until the chart is manually
     # cleaned up (chart 1.6.0 RC was the trigger that surfaced this).
-    needs: [build-api, build-web]
+    # image-scan also gates here so we never publish a chart that
+    # pulls a vulnerable image at install time.
+    needs: [build-api, build-web, image-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -153,6 +366,7 @@ jobs:
         run: cosign sign --yes ghcr.io/${{ github.repository }}/helm/kubebolt:${{ steps.chart.outputs.version }}
 
   build-binaries:
+    needs: preflight-third-party-scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -235,6 +449,8 @@ jobs:
   build-single-container:
     needs: build-binaries
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -401,7 +617,7 @@ jobs:
           fi
 
   release:
-    needs: [build-api, build-web, publish-chart, build-binaries, build-single-container]
+    needs: [build-api, build-web, publish-chart, build-binaries, build-single-container, image-scan]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -412,6 +628,12 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: binaries
+          path: dist/
+
+      - name: Download SBOM artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: sboms
           path: dist/
 
       - name: Generate changelog
@@ -495,6 +717,9 @@ jobs:
             dist/kubebolt-darwin-arm64.tar.gz
             dist/kubebolt-windows-amd64.zip
             dist/CHECKSUMS.txt
+            dist/sbom-api.cdx.json
+            dist/sbom-web.cdx.json
+            dist/sbom-single.cdx.json
           body: |
             ## Install
 

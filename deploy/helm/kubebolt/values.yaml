@@ -132,7 +132,7 @@ metrics:
       enabled: true
       image:
         repository: victoriametrics/victoria-metrics
-        tag: v1.101.0
+        tag: v1.142.0
         pullPolicy: IfNotPresent
       # Data retention. Anything older than this is dropped to keep the
       # PVC bounded. Increase if you need historical analysis windows
