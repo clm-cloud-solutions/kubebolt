@@ -1,0 +1,48 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":dependencyDashboard"
+  ],
+  "timezone": "Europe/Madrid",
+  "schedule": ["before 6am on Monday"],
+  "labels": ["dependencies"],
+  "prConcurrentLimit": 5,
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "labels": ["dependencies", "security"],
+    "schedule": ["at any time"]
+  },
+  "packageRules": [
+    {
+      "description": "Group VictoriaMetrics image bumps across docker-compose and helm values so we never ship drift between the two pin sites.",
+      "matchPackageNames": ["victoriametrics/victoria-metrics", "docker.io/victoriametrics/victoria-metrics"],
+      "groupName": "victoriametrics image",
+      "labels": ["dependencies", "image-bump"]
+    },
+    {
+      "description": "Hold patch-only Go module bumps weekly to avoid PR noise.",
+      "matchManagers": ["gomod"],
+      "matchUpdateTypes": ["patch"],
+      "groupName": "go modules (patch)"
+    },
+    {
+      "description": "Auto-merge non-major GitHub Action bumps after CI is green.",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["minor", "patch", "digest"],
+      "automerge": true
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Pick up the VictoriaMetrics tag in helm values.yaml (the file isn't a recognised Renovate manager template).",
+      "fileMatch": ["^deploy/helm/kubebolt/values\\.yaml$"],
+      "matchStrings": [
+        "repository:\\s*(?<depName>victoriametrics/victoria-metrics)\\s*\\n\\s*tag:\\s*(?<currentValue>v[0-9.]+)"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}

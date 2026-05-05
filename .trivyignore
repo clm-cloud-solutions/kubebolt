@@ -1,0 +1,22 @@
+# Trivy ignore list for KubeBolt release scans.
+#
+# Policy: the release pipeline (.github/workflows/release.yml) fails on
+# CRITICAL and HIGH severities. We pass --ignore-unfixed to Trivy so
+# CVEs without an upstream patch never block a release. Anything that
+# reaches this file is a deliberate, time-boxed exception.
+#
+# Format (one per line):
+#   CVE-YYYY-NNNNN  # YYYY-MM-DD <owner> — why this is acceptable + remove-by date
+#
+# Required for every entry:
+#   1. Owner (who decided to suppress).
+#   2. Justification — why this CVE does not affect KubeBolt's runtime
+#      (e.g. vulnerable package present but unreachable code path,
+#      mitigated by network policy, etc.).
+#   3. A remove-by date. Suppressions older than 90 days should be
+#      reviewed; either the upstream fix has shipped (delete the line
+#      and bump the image), or the justification needs renewal.
+#
+# Do NOT use this file to bypass scans because "the release is urgent".
+# That defeats the entire purpose of the gate. Bump the vulnerable
+# dependency or postpone the release.
