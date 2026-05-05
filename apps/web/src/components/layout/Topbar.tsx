@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
-import { NavLink, useNavigate } from 'react-router-dom'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound } from 'lucide-react'
+import { NavLink, useNavigate, useLocation } from 'react-router-dom'
+import { isDashboardPath } from '@/utils/routes'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
@@ -20,6 +21,20 @@ export function Topbar({ overview }: TopbarProps) {
   const [searchOpen, setSearchOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
+  const { hasRole } = useAuth()
+  const isAdmin = hasRole('admin')
+  const location = useLocation()
+  // The Dashboard pill represents the dashboard surface as a whole,
+  // not the / route specifically — it should stay active across
+  // every sub-tab (Overview / Capacity / Reliability) so the user
+  // always knows which mode they're in.
+  const dashboardActive = isDashboardPath(location.pathname)
+
+  // Cluster management (add / rename / delete) lives on /clusters —
+  // the dropdown only routes there. Keeps the switcher focused on its
+  // primary job (switching) and avoids duplicating the wizard wiring
+  // in two places. Visible to admins regardless of deployment mode
+  // since both kubeconfig and agent paths work in either.
 
   // Cmd+K / Ctrl+K global shortcut
   useEffect(() => {
@@ -43,10 +58,22 @@ export function Topbar({ overview }: TopbarProps) {
   })
 
   const activeCluster = clusters?.find(c => c.active)
-  const clusterName = activeCluster ? parseClusterDisplayName(activeCluster) : (overview?.clusterName || 'loading...')
+  // /clusters returns `null` (not `[]`) when there are zero contexts —
+  // Go's nil-slice JSON shape. Treat null and [] identically.
+  const noClusters = clusters !== undefined && (clusters === null || clusters.length === 0)
+  // 3-way state: known-empty, known-active, still-loading. Conflating
+  // empty with "loading..." (the prior bug) misled users into thinking
+  // the API was hung when in fact there was simply nothing to load.
+  const clusterName = activeCluster
+    ? parseClusterDisplayName(activeCluster)
+    : noClusters
+      ? 'No clusters'
+      : (overview?.clusterName || 'loading...')
   const nodeCount = overview?.nodes?.total ?? '-'
   const healthStatus = overview?.health?.status || 'unknown'
-  const dotColor = healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'degraded' ? 'bg-status-warn' : 'bg-status-error'
+  const dotColor = noClusters
+    ? 'bg-kb-text-tertiary'
+    : healthStatus === 'healthy' ? 'bg-status-ok' : healthStatus === 'warning' ? 'bg-status-warn' : 'bg-status-error'
 
   const switchMutation = useMutation({
     mutationKey: ['switch-cluster'],
@@ -83,7 +110,10 @@ export function Topbar({ overview }: TopbarProps) {
     return () => document.removeEventListener('mousedown', handleClick)
   }, [open])
 
+  // The dropdown is interactive when there's more than one cluster to
+  // pick from OR when the admin has access to the manage link.
   const hasMultipleClusters = clusters && clusters.length > 1
+  const dropdownInteractive = hasMultipleClusters || isAdmin
 
   return (
     <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]">
@@ -92,45 +122,71 @@ export function Topbar({ overview }: TopbarProps) {
         {/* Cluster selector */}
         <div className="relative" ref={dropdownRef}>
           <button
-            onClick={() => hasMultipleClusters && setOpen(!open)}
+            onClick={() => dropdownInteractive && setOpen(!open)}
             title={activeCluster?.context || clusterName}
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md bg-kb-card border border-kb-border transition-colors ${
-              hasMultipleClusters ? 'cursor-pointer hover:border-kb-border-active' : 'cursor-default'
+              dropdownInteractive ? 'cursor-pointer hover:border-kb-border-active' : 'cursor-default'
             }`}
           >
-            <span className={`w-2 h-2 rounded-full ${dotColor} animate-pulse-live`} />
+            <span className={`w-2 h-2 rounded-full ${dotColor} ${noClusters ? '' : 'animate-pulse-live'}`} />
             <span className="text-xs font-mono text-kb-text-primary">{clusterName}</span>
-            {hasMultipleClusters && (
+            {dropdownInteractive && (
               <ChevronDown className={`w-3 h-3 text-kb-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
             )}
           </button>
 
-          {/* Dropdown */}
-          {open && clusters && (
+          {/* Dropdown — also renders when the cluster list is empty so
+              admins still reach the "Manage clusters" entry; the prior
+              `&& clusters` guard treated null/[] as "don't render" and
+              left the chevron flipping with no popup behind it. */}
+          {open && (
             <div className="absolute top-full left-0 mt-1 w-72 bg-kb-card border border-kb-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
-              <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-[0.1em] text-kb-text-tertiary">
-                Clusters ({clusters.length})
-              </div>
-              {clusters.map((cl) => (
-                <button
-                  key={cl.context}
-                  onClick={() => !cl.active && switchMutation.mutate(cl.context)}
-                  disabled={switchMutation.isPending}
-                  title={cl.context}
-                  className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
-                    cl.active
-                      ? 'bg-status-info-dim'
-                      : 'hover:bg-kb-card-hover'
-                  } ${switchMutation.isPending ? 'opacity-50' : ''}`}
-                >
-                  <span className={`w-2 h-2 rounded-full shrink-0 ${cl.active ? 'bg-status-ok' : 'bg-kb-text-tertiary'}`} />
-                  <div className="flex-1 min-w-0">
-                    <div className="text-xs text-kb-text-primary truncate">{parseClusterDisplayName(cl)}</div>
-                    <div className="text-[10px] font-mono text-kb-text-tertiary truncate">{cl.server}</div>
+              {clusters && clusters.length > 0 ? (
+                <>
+                  <div className="px-3 py-1.5 text-[9px] font-mono uppercase tracking-[0.1em] text-kb-text-tertiary">
+                    Clusters ({clusters.length})
                   </div>
-                  {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}
-                </button>
-              ))}
+                  {clusters.map((cl) => (
+                    <button
+                      key={cl.context}
+                      onClick={() => !cl.active && switchMutation.mutate(cl.context)}
+                      disabled={switchMutation.isPending}
+                      title={cl.context}
+                      className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
+                        cl.active
+                          ? 'bg-status-info-dim'
+                          : 'hover:bg-kb-card-hover'
+                      } ${switchMutation.isPending ? 'opacity-50' : ''}`}
+                    >
+                      <span className={`w-2 h-2 rounded-full shrink-0 ${cl.active ? 'bg-status-ok' : 'bg-kb-text-tertiary'}`} />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs text-kb-text-primary truncate">{parseClusterDisplayName(cl)}</div>
+                        <div className="text-[10px] font-mono text-kb-text-tertiary truncate">{cl.server}</div>
+                      </div>
+                      {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}
+                    </button>
+                  ))}
+                </>
+              ) : (
+                <div className="px-3 py-2 text-[10px] font-mono uppercase tracking-[0.1em] text-kb-text-tertiary">
+                  No clusters configured
+                </div>
+              )}
+
+              {isAdmin && (
+                <>
+                  <div className="border-t border-kb-border my-1" />
+                  <button
+                    type="button"
+                    onClick={() => { setOpen(false); navigate('/clusters') }}
+                    className="w-full text-left px-3 py-2 flex items-center gap-2 text-kb-text-secondary hover:bg-kb-card-hover hover:text-kb-text-primary transition-colors"
+                  >
+                    <Settings className="w-3.5 h-3.5 shrink-0" />
+                    <span className="text-xs">Manage clusters</span>
+                    <span className="ml-auto text-[10px] text-kb-text-tertiary">add / rename / delete</span>
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -139,12 +195,11 @@ export function Topbar({ overview }: TopbarProps) {
         <div className="flex rounded-md border border-kb-border overflow-hidden">
           <NavLink
             to="/"
-            end
-            className={({ isActive }) =>
-              `px-3 py-1 text-[10px] font-mono uppercase tracking-[0.08em] transition-colors ${
-                isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-tertiary hover:text-kb-text-secondary'
-              }`
-            }
+            className={`px-3 py-1 text-[10px] font-mono uppercase tracking-[0.08em] transition-colors ${
+              dashboardActive
+                ? 'bg-kb-elevated text-kb-text-primary'
+                : 'bg-kb-card text-kb-text-tertiary hover:text-kb-text-secondary'
+            }`}
           >
             Dashboard
           </NavLink>

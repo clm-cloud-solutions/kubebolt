@@ -19,6 +19,11 @@ type AuthConfig struct {
 	RefreshTokenExpiry   time.Duration
 	DataDir              string
 	InitialAdminPassword string
+	// AdminPasswordFromEnv is true when KUBEBOLT_ADMIN_PASSWORD was set
+	// explicitly. main.go uses it to suppress the "Generated admin
+	// password" banner: when the operator already knows the password,
+	// we don't need to broadcast it to every log aggregator.
+	AdminPasswordFromEnv bool
 }
 
 // LoadAuthConfig reads authentication configuration from environment variables.
@@ -62,20 +67,32 @@ func LoadAuthConfig() AuthConfig {
 		cfg.DataDir = v
 	}
 
-	// Admin password
+	// Admin password — only used when seeding a fresh admin user on first
+	// boot. We deliberately do NOT print anything here: until SeedAdmin
+	// confirms it actually wrote a new admin row to BoltDB, this random
+	// value is meaningless. The caller (main.go) prints the banner only
+	// when seeding succeeds, so restarts on an existing DB stay quiet
+	// and don't trick operators into trying a password that won't work.
+	cfg.AdminPasswordFromEnv = false
 	if v := os.Getenv("KUBEBOLT_ADMIN_PASSWORD"); v != "" {
 		cfg.InitialAdminPassword = v
+		cfg.AdminPasswordFromEnv = true
 	} else {
-		pw := generateRandomPassword(16)
-		cfg.InitialAdminPassword = pw
-		fmt.Fprintf(os.Stderr, "\n"+
-			"========================================\n"+
-			"  Generated admin password: %s\n"+
-			"  (set KUBEBOLT_ADMIN_PASSWORD to override)\n"+
-			"========================================\n\n", pw)
+		cfg.InitialAdminPassword = generateRandomPassword(16)
 	}
 
 	return cfg
+}
+
+// PrintAdminPasswordBanner emits the "here's the admin password" banner
+// to stderr. Call this ONLY when the admin user was actually seeded —
+// on subsequent restarts the value is stale and printing it is a lie.
+func PrintAdminPasswordBanner(password string) {
+	fmt.Fprintf(os.Stderr, "\n"+
+		"========================================\n"+
+		"  Generated admin password: %s\n"+
+		"  (set KUBEBOLT_ADMIN_PASSWORD to override)\n"+
+		"========================================\n\n", password)
 }
 
 func generateRandomPassword(length int) string {

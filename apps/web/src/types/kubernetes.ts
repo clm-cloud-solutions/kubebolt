@@ -43,8 +43,13 @@ export interface InsightCount {
 }
 
 // Cluster health
+// Status mirrors what the connector emits (apps/api/internal/cluster/connector.go:GetHealth):
+// "healthy", "warning", "critical". An earlier version of this type used
+// "degraded" — that was wrong; the backend never produced it, so callers
+// matching `=== 'degraded'` silently fell through to the default branch
+// (typically the error/red treatment).
 export interface ClusterHealth {
-  status: 'healthy' | 'degraded' | 'critical'
+  status: 'healthy' | 'warning' | 'critical'
   score: number
   insights: InsightCount
   checks: HealthCheck[]

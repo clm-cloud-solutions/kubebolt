@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Check, Loader2, Zap, KeyRound } from 'lucide-react'
+import { AlertTriangle, Check, Loader2, KeyRound } from 'lucide-react'
+import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { api, type AgentInstallConfig, type Integration, type AgentIssueTokenResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { Modal } from '@/components/shared/Modal'
@@ -274,7 +275,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
               <>
                 {selfTargetedProxyClusterId && (
                   <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-status-warning/10 border border-status-warning/30">
-                    <Zap className="w-4 h-4 text-status-warning shrink-0 mt-0.5" />
+                    <KubeBoltLogo className="w-4 h-4 text-status-warning shrink-0 mt-0.5" />
                     <div className="text-[11px] text-kb-text-primary">
                       <div className="font-semibold mb-0.5">This agent backs your active session</div>
                       <div className="text-kb-text-secondary">

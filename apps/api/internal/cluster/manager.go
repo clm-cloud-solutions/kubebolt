@@ -161,7 +161,68 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 		slog.String("context", contextName),
 		slog.String("display_name", displayName),
 	)
+
+	// Auto-retry on register: boot-restore + agent-reconnect race.
+	// When the API boots before the agent reconnects, the user's UI may
+	// auto-switch to this cluster and Connector.Start() times out on
+	// cache sync because no agent is listening yet. Once an agent
+	// finally registers (this very call site, via auto_register.go),
+	// we have a live channel — re-attempt the connector so the cluster
+	// recovers without forcing the user to manually re-switch (which
+	// isn't even reachable when this is the only cluster in the
+	// dropdown). Skipped at boot-restore time because m.activeContext
+	// is empty there. Skipped on subsequent Hellos when the connector
+	// is already healthy. The retry runs in a goroutine so we don't
+	// hold mu across ~5-20s of cache-sync I/O while every other agent
+	// register and ListClusters call piles up behind it.
+	if contextName == m.activeContext && m.connector == nil {
+		go m.retryAgentProxyConnect(contextName, clusterID)
+	}
 	return contextName, nil
+}
+
+// retryAgentProxyConnect re-runs connectToContextLocked for an agent-
+// proxy context whose first connect failed (typically with cache-sync
+// timeout) before any agent had registered. Called from
+// AddAgentProxyCluster's goroutine after a fresh agent registration.
+//
+// Re-checks state under the lock because by the time the goroutine
+// runs, the user could have switched away or another concurrent
+// register-triggered retry could have already recovered the connector.
+func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if contextName != m.activeContext || m.connector != nil {
+		return
+	}
+	slog.Info("retrying connector after agent registered",
+		slog.String("cluster_id", clusterID),
+		slog.String("context", contextName),
+	)
+	if err := m.connectToContextLocked(contextName); err != nil {
+		m.connErr = err
+		slog.Warn("connector retry still failed",
+			slog.String("context", contextName),
+			slog.String("error", err.Error()),
+		)
+		return
+	}
+	m.connErr = nil
+	slog.Info("connector recovered for agent-proxy cluster",
+		slog.String("context", contextName),
+	)
+	// Push the recovery to connected UIs so they invalidate
+	// `['clusters']` + `['cluster-overview']` immediately, instead of
+	// waiting up to 30s for TanStack Query's refetch tick. Without
+	// this nudge a user who saw the "Cluster unreachable" page right
+	// after boot keeps seeing it long after the backend recovered,
+	// and concludes the fix didn't work.
+	if m.wsHub != nil {
+		m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
+			"context":   contextName,
+			"clusterId": clusterID,
+		})
+	}
 }
 
 // RemoveAgentProxyCluster removes the agent-proxy registration for
@@ -636,6 +697,16 @@ func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 }
 
 func (m *Manager) connectToContextLocked(contextName string) error {
+	// Fast-fail for agent-proxy contexts when no agent is connected.
+	// Without this short-circuit, Connector.Start() spends the full
+	// WaitForCacheSync(20s) timeout listing resources that all return
+	// "channel: no agent connected" — burning 20s of UI lag on a
+	// switch attempt that was always going to fail. The auto-retry
+	// hook in AddAgentProxyCluster brings the connector up as soon as
+	// an agent dials in (typically <5s after the first failure here).
+	if cid, ok := m.agentProxyContexts[contextName]; ok && m.agentRegistry != nil && m.agentRegistry.CountByCluster(cid) == 0 {
+		return fmt.Errorf("no agent connected yet for cluster %q — waiting for agent to register", cid)
+	}
 	access := m.accessForContextLocked(contextName)
 	if access == nil {
 		return fmt.Errorf("context %q is not registered", contextName)

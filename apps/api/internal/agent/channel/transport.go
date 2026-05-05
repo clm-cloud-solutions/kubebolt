@@ -57,6 +57,15 @@ type AgentProxyTransport struct {
 	// clusters can run different windows when one of them is on a
 	// fat pipe and another on a constrained one.
 	TunnelWindowBytes uint64
+
+	// TunnelIdleTimeout passes through to TunnelConn's watchdog so
+	// orphan tunnels left behind when the agent crashes mid-session
+	// (or when the apiserver-side HTTP client doesn't notice the
+	// upstream EOF) self-heal in O(timeout). 0 disables the watchdog
+	// — useful for tests that hold a tunnel open without I/O.
+	// NewAgentProxyTransport reads DefaultTunnelIdleTimeout (a package
+	// var that main.go sets from KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT).
+	TunnelIdleTimeout time.Duration
 }
 
 // DefaultProxyTimeout is the unary fall-back used when neither the
@@ -70,9 +79,10 @@ const DefaultProxyTimeout = 30 * time.Second
 // unbounded for tests; production callers should rely on the default.
 func NewAgentProxyTransport(clusterID string, registry *AgentRegistry) *AgentProxyTransport {
 	return &AgentProxyTransport{
-		ClusterID:      clusterID,
-		Registry:       registry,
-		DefaultTimeout: DefaultProxyTimeout,
+		ClusterID:         clusterID,
+		Registry:          registry,
+		DefaultTimeout:    DefaultProxyTimeout,
+		TunnelIdleTimeout: DefaultTunnelIdleTimeout,
 	}
 }
 
@@ -430,7 +440,7 @@ func (t *AgentProxyTransport) awaitTunnelHandshake(req *http.Request, requestID 
 		// Body is wrapped in TunnelHandshakeBody so K8s' spdy.Negotiate
 		// `defer resp.Body.Close()` doesn't tear down the tunnel
 		// before the SPDY layer's handshake — see the type's doc.
-		conn := newTunnelConn(requestID, t.ClusterID, agent, replies, cancel, t.TunnelWindowBytes)
+		conn := newTunnelConn(requestID, t.ClusterID, req.URL.Path, agent, replies, cancel, t.TunnelWindowBytes, t.TunnelIdleTimeout)
 		return &http.Response{
 			Status:     "101 Switching Protocols",
 			StatusCode: 101,

@@ -1123,82 +1123,147 @@ func (c *Connector) getRecentEvents(limit int) []models.KubeEvent {
 	return result
 }
 
+// buildHealth computes the score as a sum of weighted components,
+// each contributing up to its assigned point ceiling. Total caps at
+// 100. Components and weights:
+//
+//	nodes ready ratio    : up to 25 pts
+//	api-server reachable : 25 pts (binary)
+//	metrics available    : 10 pts (binary)
+//	healthy pods ratio   : up to 40 pts
+//
+// The previous algorithm started at 100 and subtracted fixed amounts
+// per failure type, plus a hard cap at 50 in GetHealth when any
+// critical insight existed. That meant 1 crash-looping pod in a
+// 30-pod cluster scored the same as a global outage (both at 50),
+// and the dashboard showed "50/100 critical" for a tiny fault. The
+// proportional model below scales naturally with cluster size and
+// fault scope: 1 failing pod out of 30 ≈ -1.3 pts on the pods axis,
+// so the score lands at ~99 with status raised to "critical" by the
+// presence of the critical insight (urgency conveyed without lying
+// about magnitude). Status / score are now decoupled — see GetHealth.
 func (c *Connector) buildHealth() models.ClusterHealth {
 	health := models.ClusterHealth{
 		Status: "healthy",
-		Score:  100,
+		Score:  0,
 		Checks: []models.HealthCheck{},
 	}
 
-	// Check nodes
+	// Nodes — up to 25 pts proportional to readiness ratio.
 	var nodes []*corev1.Node
 	if c.nodeLister != nil {
 		nodes, _ = c.nodeLister.List(everythingSelector())
 	}
-	allNodesReady := true
-	for _, node := range nodes {
-		ready := false
-		for _, cond := range node.Status.Conditions {
-			if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
-				ready = true
-				break
+	if len(nodes) == 0 {
+		// Can't read nodes (RBAC restricted, partial connection).
+		// Don't penalize — assume OK; the missing data isn't the
+		// cluster's fault. Award full points so an RBAC-limited
+		// install isn't perpetually "warning" for unrelated reasons.
+		health.Score += 25
+	} else {
+		ready := 0
+		for _, node := range nodes {
+			for _, cond := range node.Status.Conditions {
+				if cond.Type == corev1.NodeReady && cond.Status == corev1.ConditionTrue {
+					ready++
+					break
+				}
 			}
 		}
-		if !ready {
-			allNodesReady = false
+		health.Score += int(float64(ready) / float64(len(nodes)) * 25)
+		if ready == len(nodes) {
+			health.Checks = append(health.Checks, models.HealthCheck{
+				Name: "nodes", Status: "pass",
+				Message: fmt.Sprintf("All %d nodes are ready", len(nodes)),
+			})
+		} else {
+			health.Checks = append(health.Checks, models.HealthCheck{
+				Name: "nodes", Status: "fail",
+				Message: fmt.Sprintf("%d of %d nodes not ready", len(nodes)-ready, len(nodes)),
+			})
 		}
 	}
-	if allNodesReady {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "nodes", Status: "pass", Message: "All nodes are ready"})
+
+	// API server — 25 pts binary.
+	if _, err := c.clientset.Discovery().ServerVersion(); err == nil {
+		health.Score += 25
+		health.Checks = append(health.Checks, models.HealthCheck{
+			Name: "api-server", Status: "pass", Message: "API server is responsive",
+		})
 	} else {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "nodes", Status: "fail", Message: "One or more nodes are not ready"})
-		health.Score -= 30
+		health.Checks = append(health.Checks, models.HealthCheck{
+			Name: "api-server", Status: "fail", Message: "API server unreachable",
+		})
 	}
 
-	// Check control plane
-	_, err := c.clientset.Discovery().ServerVersion()
-	if err == nil {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "api-server", Status: "pass", Message: "API server is responsive"})
-	} else {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "api-server", Status: "fail", Message: "API server unreachable"})
-		health.Score -= 40
-	}
-
-	// Check metrics
+	// Metrics — 10 pts binary. Lower weight than nodes/api because
+	// missing metrics-server degrades observability but doesn't make
+	// the cluster less functional.
 	metricsAvailable := c.collector != nil && c.collector.IsAvailable()
 	if metricsAvailable {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "metrics", Status: "pass", Message: "Metrics server is available"})
+		health.Score += 10
+		health.Checks = append(health.Checks, models.HealthCheck{
+			Name: "metrics", Status: "pass", Message: "Metrics server is available",
+		})
 	} else {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "metrics", Status: "warn", Message: "Metrics server not available"})
-		health.Score -= 10
+		health.Checks = append(health.Checks, models.HealthCheck{
+			Name: "metrics", Status: "warn", Message: "Metrics server not available",
+		})
 	}
 
-	// Check for failing pods
+	// Pods — up to 40 pts proportional to (healthy / total). Failing
+	// = pod phase Failed OR any container in CrashLoopBackOff.
 	var pods []*corev1.Pod
 	if c.podLister != nil {
 		pods, _ = c.podLister.List(everythingSelector())
 	}
-	failingPods := 0
-	for _, pod := range pods {
-		if pod.Status.Phase == corev1.PodFailed {
-			failingPods++
-		}
-		for _, cs := range pod.Status.ContainerStatuses {
-			if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
-				failingPods++
+	if len(pods) == 0 {
+		// Empty cluster (or RBAC restricted): full points, same
+		// rationale as the nodes branch above.
+		health.Score += 40
+		health.Checks = append(health.Checks, models.HealthCheck{
+			Name: "pods", Status: "pass", Message: "No pods to evaluate",
+		})
+	} else {
+		failing := 0
+		for _, pod := range pods {
+			if pod.Status.Phase == corev1.PodFailed {
+				failing++
+				continue
+			}
+			for _, cs := range pod.Status.ContainerStatuses {
+				if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" {
+					failing++
+					break
+				}
 			}
 		}
-	}
-	if failingPods == 0 {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "pods", Status: "pass", Message: "No failing pods detected"})
-	} else {
-		health.Checks = append(health.Checks, models.HealthCheck{Name: "pods", Status: "warn", Message: fmt.Sprintf("%d failing or crash-looping pods", failingPods)})
-		health.Score -= min(20, failingPods*5)
+		ratio := float64(len(pods)-failing) / float64(len(pods))
+		health.Score += int(ratio * 40)
+		if failing == 0 {
+			health.Checks = append(health.Checks, models.HealthCheck{
+				Name: "pods", Status: "pass",
+				Message: fmt.Sprintf("All %d pods are healthy", len(pods)),
+			})
+		} else {
+			health.Checks = append(health.Checks, models.HealthCheck{
+				Name: "pods", Status: "warn",
+				Message: fmt.Sprintf("%d of %d pods failing or crash-looping", failing, len(pods)),
+			})
+		}
 	}
 
+	// Floor the score at 0 just in case rounding goes weird; ceiling
+	// is enforced by the per-component caps above.
 	if health.Score < 0 {
 		health.Score = 0
 	}
+	if health.Score > 100 {
+		health.Score = 100
+	}
+
+	// Default status from score thresholds. GetHealth() may upgrade
+	// the urgency when active insights exist.
 	if health.Score < 50 {
 		health.Status = "critical"
 	} else if health.Score < 80 {
@@ -1423,6 +1488,26 @@ func isPodReady(pod *corev1.Pod) bool {
 }
 
 // GetHealth returns the cluster health status.
+// GetHealth composes buildHealth's cluster-component score with the
+// insight engine's findings. The relationship between the two:
+//
+//   - score = how broken is the cluster overall (0-100). Includes
+//     buildHealth's component checks PLUS a gentle deduction per
+//     active insight, so a passing-checks cluster with 1 OOM-killed
+//     pod doesn't read as 100 + critical (which the user couldn't
+//     reconcile — "100 healthy + critical?"). Insights signal real
+//     issues even when basic checks pass; the score should reflect
+//     that without exaggerating.
+//   - status = the answer to "does the user need to act?". Driven
+//     primarily by score thresholds, then escalated by insight
+//     presence so a tiny score dip + critical insight surfaces as
+//     status="critical" (urgency conveyed regardless of magnitude).
+//
+// Per-insight deduction is intentionally small: -5 per critical
+// (capped at -25) and -2 per warning (capped at -10). A 5-pod
+// cluster with 1 crash-loop scores ~95 — clearly degraded but not
+// catastrophic — instead of the previous 50/100 cliff edge OR the
+// later 100/100-but-critical contradiction.
 func (c *Connector) GetHealth(metricsAvailable bool, insights []models.Insight) models.ClusterHealth {
 	health := c.buildHealth()
 
@@ -1440,19 +1525,100 @@ func (c *Connector) GetHealth(metricsAvailable bool, insights []models.Insight) 
 		}
 	}
 
+	// Insight-driven score deduction, capped per severity so a noisy
+	// cluster doesn't bottom-out the score on volume alone.
+	criticalDed := health.Insights.Critical * 5
+	if criticalDed > 25 {
+		criticalDed = 25
+	}
+	warningDed := health.Insights.Warning * 2
+	if warningDed > 10 {
+		warningDed = 10
+	}
+	health.Score -= criticalDed + warningDed
+	if health.Score < 0 {
+		health.Score = 0
+	}
+
+	// Status: derive from final score, then upgrade on insight
+	// presence. The escalation guarantees that any active critical
+	// keeps status="critical" even when the score happens to land
+	// above 50.
+	if health.Score < 50 {
+		health.Status = "critical"
+	} else if health.Score < 80 {
+		health.Status = "warning"
+	} else {
+		health.Status = "healthy"
+	}
 	if health.Insights.Critical > 0 {
 		health.Status = "critical"
-		if health.Score > 50 {
-			health.Score = 50
-		}
 	} else if health.Insights.Warning > 0 && health.Status == "healthy" {
 		health.Status = "warning"
-		if health.Score > 80 {
-			health.Score = 80
-		}
 	}
 
 	return health
+}
+
+// GetDeploys returns rollout events cluster-wide since the given
+// timestamp. Used by the Capacity dashboard to overlay markers on
+// the time-series charts.
+//
+// Approach: every new ReplicaSet a Deployment owns is, by definition,
+// a rollout. Iterate ReplicaSets, keep the ones (a) created after
+// `since` and (b) owned by a Deployment controller. Each one becomes
+// one DeployEvent. The Deployment's own rollout history is implicit
+// in the ReplicaSet population — older RSs that the controller has
+// scaled to 0 are still kept by Kubernetes (revision history) so a
+// 24h window correctly surfaces every rollout in that window.
+//
+// StatefulSet / DaemonSet rollouts are not surfaced yet — they need
+// a ControllerRevision informer which isn't wired today. When that
+// lands, append to the same return slice; the JSON shape (kind +
+// name + deployedAt + image) is intentionally generic so callers
+// don't need to special-case.
+func (c *Connector) GetDeploys(since time.Time) []models.DeployEvent {
+	if c.replicaSetLister == nil {
+		return nil
+	}
+	rsList, err := c.replicaSetLister.List(everythingSelector())
+	if err != nil {
+		return nil
+	}
+	deploys := make([]models.DeployEvent, 0, 8)
+	for _, rs := range rsList {
+		if rs.CreationTimestamp.Time.Before(since) {
+			continue
+		}
+		var deploymentName string
+		for _, ref := range rs.OwnerReferences {
+			if ref.Kind == "Deployment" {
+				deploymentName = ref.Name
+				break
+			}
+		}
+		if deploymentName == "" {
+			// Bare ReplicaSet (no Deployment owner) — rare, surfaced
+			// from custom controllers. Skip; treating it as a Deployment
+			// rollout would lie about the workload model.
+			continue
+		}
+		var image string
+		if len(rs.Spec.Template.Spec.Containers) > 0 {
+			image = rs.Spec.Template.Spec.Containers[0].Image
+		}
+		deploys = append(deploys, models.DeployEvent{
+			Namespace:  rs.Namespace,
+			Kind:       "Deployment",
+			Name:       deploymentName,
+			DeployedAt: rs.CreationTimestamp.Time,
+			Image:      image,
+		})
+	}
+	sort.Slice(deploys, func(i, j int) bool {
+		return deploys[i].DeployedAt.After(deploys[j].DeployedAt)
+	})
+	return deploys
 }
 
 // GetResources returns a paginated, filtered, sorted list of resources.

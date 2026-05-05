@@ -9,6 +9,8 @@ import { Layout } from '@/components/layout/Layout'
 import { RequireAuth } from '@/components/auth/RequireAuth'
 import { RequireRole } from '@/components/auth/RequireRole'
 import { OverviewPage } from '@/components/dashboard/OverviewPage'
+import { CapacityPage } from '@/components/dashboard/CapacityPage'
+import { ReliabilityPage } from '@/components/dashboard/ReliabilityPage'
 import { ResourceListPage } from '@/components/resources/ResourceListPage'
 import { NodesPage } from '@/components/resources/NodesPage'
 import { EventsPage } from '@/components/resources/EventsPage'
@@ -91,6 +93,8 @@ export default function App() {
             {/* All app routes — require auth when enabled */}
             <Route element={<RequireAuth><Layout /></RequireAuth>}>
               <Route path="/" element={<OverviewPage />} />
+              <Route path="/capacity" element={<CapacityPage />} />
+              <Route path="/reliability" element={<ReliabilityPage />} />
               <Route path="/insights" element={<InsightsList />} />
               <Route path="/map" element={<ClusterMap />} />
               <Route path="/pods" element={<ResourceListPage resourceType="pods" />} />

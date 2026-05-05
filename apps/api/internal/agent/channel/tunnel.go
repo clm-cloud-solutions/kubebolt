@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -11,6 +12,17 @@ import (
 
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
+
+// DefaultTunnelIdleTimeout is the inactivity window after which an
+// open tunnel is force-closed by the backend's watchdog. Catches
+// orphan tunnels left behind when the agent crashes mid-tunnel and
+// the apiserver-side HTTP client doesn't notice the upstream EOF
+// quickly enough. 5 minutes is generous enough that a paused exec
+// session (operator typing slowly, kubectl logs --follow with no
+// output) doesn't get killed, but tight enough that leaks self-heal
+// in well under the prune horizon. Set to 0 to disable (default off
+// in tests). Operators override via `KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT`.
+var DefaultTunnelIdleTimeout = 5 * time.Minute
 
 // DefaultTunnelWindowBytes is the credit window for one tunnel
 // session. It bounds how many bytes the local sender may have
@@ -106,29 +118,93 @@ type TunnelConn struct {
 	// Synthetic addresses for net.Conn — never inspected by SPDY but
 	// must be non-nil to satisfy the interface.
 	clusterID string
+
+	// Audit + idle-timeout instrumentation. `path` is the apiserver
+	// path being tunneled (e.g. /api/v1/namespaces/X/pods/Y/exec) —
+	// captured at open for the audit log so operators can correlate
+	// a tunnel with the user-facing action that opened it.
+	// `lastActivity` is the unix-nano of the most recent successful
+	// Read or Write; the watchdog goroutine compares it against
+	// idleTimeout. `closeReason` is set before closing so the audit
+	// log distinguishes peer-EOF from idle-timeout from local-Close.
+	path         string
+	openedAt     time.Time
+	lastActivity atomic.Int64
+	bytesIn      atomic.Uint64
+	bytesOut     atomic.Uint64
+	idleTimeout  time.Duration
+	closeReason  atomic.Value // string
 }
 
 // newTunnelConn wires up the conn and spawns the demux goroutine.
 // Caller is responsible for ensuring `incoming` is the channel
 // returned by Multiplexor.Register with mode=SlotTunnel.
-func newTunnelConn(requestID, clusterID string, agent *Agent, incoming <-chan *agentv2.AgentMessage, cancel func(), window uint64) *TunnelConn {
+//
+// `path` is the apiserver path being tunneled (used for audit logs
+// only — never inspected as a routing key). `idleTimeout` of 0
+// disables the watchdog; production callers should pass a non-zero
+// value (DefaultTunnelIdleTimeout) so orphan tunnels don't leak when
+// the agent crashes mid-session.
+func newTunnelConn(requestID, clusterID, path string, agent *Agent, incoming <-chan *agentv2.AgentMessage, cancel func(), window uint64, idleTimeout time.Duration) *TunnelConn {
 	if window == 0 {
 		window = DefaultTunnelWindowBytes
 	}
 	t := &TunnelConn{
-		requestID: requestID,
-		clusterID: clusterID,
-		agent:     agent,
-		incoming:  incoming,
-		cancel:    cancel,
-		readBytes: make(chan []byte, 32),
-		creditCh:  make(chan uint64, 32),
-		closed:    make(chan struct{}),
-		window:    window,
-		credit:    window, // start with full send capacity
+		requestID:   requestID,
+		clusterID:   clusterID,
+		agent:       agent,
+		incoming:    incoming,
+		cancel:      cancel,
+		readBytes:   make(chan []byte, 32),
+		creditCh:    make(chan uint64, 32),
+		closed:      make(chan struct{}),
+		window:      window,
+		credit:      window, // start with full send capacity
+		path:        path,
+		openedAt:    time.Now(),
+		idleTimeout: idleTimeout,
 	}
+	t.lastActivity.Store(t.openedAt.UnixNano())
+	slog.Info("agent-proxy tunnel opened",
+		slog.String("cluster_id", clusterID),
+		slog.String("agent_id", agent.AgentID),
+		slog.String("request_id", requestID),
+		slog.String("path", path),
+	)
 	go t.demuxLoop()
+	if idleTimeout > 0 {
+		go t.idleWatchdog(idleTimeout)
+	}
 	return t
+}
+
+// idleWatchdog closes the tunnel when no Read/Write has happened
+// inside `idleTimeout`. Ticks every quarter of the timeout, floored
+// at 100ms (so unit tests with sub-second timeouts work) and capped
+// implicitly via the timeout itself. Production runs with timeout=5m
+// → tick=75s, which is plenty fine-grained: orphan detection is
+// bounded at timeout + tick. Exits when the tunnel closes by any
+// other path.
+func (t *TunnelConn) idleWatchdog(timeout time.Duration) {
+	tick := timeout / 4
+	if tick < 100*time.Millisecond {
+		tick = 100 * time.Millisecond
+	}
+	ticker := time.NewTicker(tick)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-t.closed:
+			return
+		case now := <-ticker.C:
+			last := time.Unix(0, t.lastActivity.Load())
+			if now.Sub(last) >= timeout {
+				t.closeReason.Store("idle timeout")
+				_ = t.Close()
+				return
+			}
+		}
+	}
 }
 
 // demuxLoop drains the multiplexor chan and routes each message to
@@ -145,6 +221,9 @@ func (t *TunnelConn) demuxLoop() {
 				if t.readErr.Load() == nil {
 					t.readErr.Store(io.EOF)
 				}
+				if _, ok := t.closeReason.Load().(string); !ok {
+					t.closeReason.Store("multiplexor slot closed")
+				}
 				return
 			}
 			switch m := msg.GetKind().(type) {
@@ -159,6 +238,9 @@ func (t *TunnelConn) demuxLoop() {
 				}
 				if m.KubeStreamData.GetEof() {
 					t.readErr.Store(io.EOF)
+					if _, ok := t.closeReason.Load().(string); !ok {
+						t.closeReason.Store("peer EOF")
+					}
 					return
 				}
 			case *agentv2.AgentMessage_KubeStreamAck:
@@ -170,7 +252,11 @@ func (t *TunnelConn) demuxLoop() {
 					// outstanding will be released on the next ACK.
 				}
 			case *agentv2.AgentMessage_StreamClosed:
-				t.readErr.Store(fmt.Errorf("%w: peer closed (%s)", ErrTunnelClosed, m.StreamClosed.GetReason()))
+				reason := m.StreamClosed.GetReason()
+				t.readErr.Store(fmt.Errorf("%w: peer closed (%s)", ErrTunnelClosed, reason))
+				if _, ok := t.closeReason.Load().(string); !ok {
+					t.closeReason.Store("peer stream_closed: " + reason)
+				}
 				return
 			case *agentv2.AgentMessage_KubeResponse:
 				// 101 handshake already consumed by RoundTrip before
@@ -220,6 +306,11 @@ func (t *TunnelConn) Read(p []byte) (int, error) {
 		if n < len(chunk) {
 			t.readBuf = chunk[n:]
 		}
+		// Bump activity + counters AFTER the copy so a partial chunk
+		// still counts as live traffic and the watchdog won't fire on
+		// a slow consumer.
+		t.lastActivity.Store(time.Now().UnixNano())
+		t.bytesIn.Add(uint64(len(chunk)))
 		return n, nil
 	case <-t.closed:
 		return 0, ErrTunnelClosed
@@ -270,6 +361,8 @@ func (t *TunnelConn) Write(p []byte) (int, error) {
 			return written, err
 		}
 		written += chunkLen
+		t.lastActivity.Store(time.Now().UnixNano())
+		t.bytesOut.Add(uint64(chunkLen))
 	}
 	return written, nil
 }
@@ -321,6 +414,27 @@ func (t *TunnelConn) Close() error {
 		})
 		close(t.closed)
 		t.cancel() // releases the multiplexor slot
+
+		// Audit log on close — single line per tunnel lifecycle so
+		// operators can grep "agent-proxy tunnel closed" and see
+		// who/where/how-much/why for every session. Reason defaults
+		// to "local close" when no other path set it (idle watchdog,
+		// peer EOF in demuxLoop) — captures the intentional local
+		// teardown path.
+		reason, _ := t.closeReason.Load().(string)
+		if reason == "" {
+			reason = "local close"
+		}
+		slog.Info("agent-proxy tunnel closed",
+			slog.String("cluster_id", t.clusterID),
+			slog.String("agent_id", t.agent.AgentID),
+			slog.String("request_id", t.requestID),
+			slog.String("path", t.path),
+			slog.String("reason", reason),
+			slog.Duration("duration", time.Since(t.openedAt)),
+			slog.Uint64("bytes_in", t.bytesIn.Load()),
+			slog.Uint64("bytes_out", t.bytesOut.Load()),
+		)
 	})
 	return sendErr
 }

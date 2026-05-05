@@ -449,6 +449,101 @@ func TestTunnelConn_CloseSendsEofAndUnregisters(t *testing.T) {
 	}
 }
 
+func TestTunnelConn_IdleTimeoutClosesAfterInactivity(t *testing.T) {
+	tr, agent, sender := upgradeRig(t)
+	tr.TunnelIdleTimeout = 200 * time.Millisecond // tick = 100ms (floored)
+
+	out := make(chan *http.Response, 1)
+	go func() {
+		req := httptest.NewRequest("POST", "https://kube/exec", nil)
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "SPDY/3.1")
+		resp, _ := tr.RoundTrip(req)
+		out <- resp
+	}()
+	sent := sender.lastRequest(t)
+	rid := sent.GetRequestId()
+	agent.Pending.Deliver(&agentv2.AgentMessage{
+		RequestId: rid,
+		Kind: &agentv2.AgentMessage_KubeResponse{
+			KubeResponse: &agentv2.KubeProxyResponse{StatusCode: 101},
+		},
+	})
+	conn := (<-out).Body.(*TunnelHandshakeBody).Extract()
+
+	// No I/O for ~3× the timeout — watchdog must fire and close the
+	// tunnel. Drain whatever the watchdog's Close emits (Eof marker).
+	go func() {
+		for {
+			select {
+			case <-sender.sent:
+			case <-time.After(50 * time.Millisecond):
+				return
+			}
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := conn.Read(make([]byte, 1)); err != nil {
+			// Read woke because the watchdog closed the tunnel.
+			break
+		}
+	}
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Errorf("Read returned nil after idle timeout — watchdog never fired")
+	}
+}
+
+func TestTunnelConn_IdleTimeoutDoesNotFireDuringWrites(t *testing.T) {
+	tr, agent, sender := upgradeRig(t)
+	tr.TunnelIdleTimeout = 300 * time.Millisecond
+
+	out := make(chan *http.Response, 1)
+	go func() {
+		req := httptest.NewRequest("POST", "https://kube/exec", nil)
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "SPDY/3.1")
+		resp, _ := tr.RoundTrip(req)
+		out <- resp
+	}()
+	sent := sender.lastRequest(t)
+	rid := sent.GetRequestId()
+	agent.Pending.Deliver(&agentv2.AgentMessage{
+		RequestId: rid,
+		Kind: &agentv2.AgentMessage_KubeResponse{
+			KubeResponse: &agentv2.KubeProxyResponse{StatusCode: 101},
+		},
+	})
+	conn := (<-out).Body.(*TunnelHandshakeBody).Extract()
+
+	// Drain sender so Write doesn't block on a full sender chan.
+	go func() {
+		for {
+			select {
+			case <-sender.sent:
+			case <-time.After(time.Second):
+				return
+			}
+		}
+	}()
+
+	// Write every 100ms for ~600ms (= 2× the idleTimeout). The
+	// watchdog must NOT fire because lastActivity bumps on every
+	// successful Write.
+	for i := 0; i < 6; i++ {
+		if _, err := conn.Write([]byte("x")); err != nil {
+			t.Fatalf("Write %d failed: %v", i, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Tunnel should still be alive.
+	if reason, _ := conn.closeReason.Load().(string); reason != "" {
+		t.Errorf("idle watchdog fired during active writes; closeReason = %q", reason)
+	}
+	_ = conn.Close()
+}
+
 func TestTunnelConn_ReadDeadline(t *testing.T) {
 	tr, agent, sender := upgradeRig(t)
 	go func() {

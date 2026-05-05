@@ -452,6 +452,27 @@ export const api = {
       })}`
     ),
 
+  // Instant PromQL query — single-point lookup. Used by panels that need
+  // "current value" or topN snapshots, where running a range query and
+  // picking the last point would be wasteful.
+  queryMetrics: (params: { query: string; time?: number }) =>
+    fetchJSON<PromVectorResponse>(
+      `${API_BASE}/metrics/query${buildQuery({
+        query: params.query,
+        time: params.time,
+      })}`
+    ),
+
+  // Cluster-wide rollout events. The Capacity dashboard uses this
+  // to overlay deploy markers on the trends charts so metric shifts
+  // can be correlated with "what changed". Window matches the chart
+  // range — fetching 15m of deploys for a 15m chart, 7d for a 7d
+  // chart — so the response stays small.
+  getDeploys: (params: { windowMinutes: number }) =>
+    fetchJSON<DeployEvent[]>(
+      `${API_BASE}/deploys${buildQuery({ windowMinutes: params.windowMinutes })}`,
+    ),
+
   // Flow edges (Phase 2.1, from pod_flow_events_total)
   getFlowEdges: (params?: { namespace?: string; windowMinutes?: number }) =>
     fetchJSON<FlowEdgesResponse>(
@@ -510,6 +531,14 @@ export const api = {
   getAgentAuthInfo: () =>
     fetchJSON<AgentAuthInfo>(`${API_BASE}/integrations/agent/auth-info`),
 
+  // Topology-aware defaults for the agent install / add-cluster wizards.
+  // When KubeBolt is running in-cluster, surfaces the internal Service
+  // DNS for same-cluster installs and the externally-reachable endpoint
+  // (LoadBalancer IP / NodePort) for remote-cluster registration. Empty
+  // externalEndpoint signals the caller must expose agent-ingest first.
+  getAgentInstallDefaults: () =>
+    fetchJSON<AgentInstallDefaults>(`${API_BASE}/integrations/agent/install-defaults`),
+
   // Issues a token AND materializes a K8s Secret in one round-trip.
   // Distinct from the existing `issueAgentToken` (which only issues
   // and returns plaintext for the operator to copy/paste) — this
@@ -554,6 +583,32 @@ export interface AgentIssueTokenResponse {
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
+}
+
+// Backend topology hints for the agent install / add-cluster wizards.
+// `deploymentMode` is "in-cluster" when KubeBolt is running with a SA
+// token (Helm install) and "external" when it's the desktop binary or
+// docker-compose. The two backendUrl variants distinguish "install
+// agent in this same cluster" (internal DNS) from "register a remote
+// cluster" (must use externalEndpoint, empty when agent-ingest is only
+// ClusterIP-reachable).
+export interface AgentInstallDefaults {
+  deploymentMode: 'in-cluster' | 'external'
+  selfNamespace?: string
+  internalBackendUrl?: string
+  externalEndpoint?: string
+  agentNamespace: string
+  agentIngestService?: AgentIngestServiceInfo
+}
+
+export interface AgentIngestServiceInfo {
+  namespace: string
+  name: string
+  type: string // ClusterIP | LoadBalancer | NodePort
+  port: number
+  nodePort?: number
+  externalIp?: string
+  hostname?: string
 }
 
 // ─── Integration types ───
@@ -754,6 +809,33 @@ export interface PromRangeResponse {
     result: Array<{
       metric: Record<string, string>
       values: Array<[number, string]> // [unix_seconds, value_as_string]
+    }>
+  }
+  error?: string
+  errorType?: string
+}
+
+// Cluster-wide rollout event. Mirrors apps/api/internal/models/types.go
+// DeployEvent. `deployedAt` is RFC3339 (Go's default time.Time JSON
+// encoding); the client converts to unix ms / s as needed at the
+// chart layer.
+export interface DeployEvent {
+  namespace: string
+  kind: string // "Deployment" today; "StatefulSet" / "DaemonSet" once
+  // a ControllerRevision lister lands on the connector
+  name: string
+  deployedAt: string
+  image?: string
+}
+
+// Instant query response — `value` is singular for vector results.
+export interface PromVectorResponse {
+  status: 'success' | 'error'
+  data?: {
+    resultType: 'matrix' | 'vector' | 'scalar' | 'string'
+    result: Array<{
+      metric: Record<string, string>
+      value: [number, string] // [unix_seconds, value_as_string]
     }>
   }
   error?: string

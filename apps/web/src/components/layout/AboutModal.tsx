@@ -1,4 +1,5 @@
-import { Zap, Github, Globe, Linkedin, Heart, ExternalLink } from 'lucide-react'
+import { Github, Globe, Linkedin, Heart, ExternalLink } from 'lucide-react'
+import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { Modal } from '@/components/shared/Modal'
 import { VERSION } from '@/version'
 
@@ -17,7 +18,7 @@ export function AboutModal({ onClose }: Props) {
         {/* Hero */}
         <div className="flex items-start gap-3">
           <div className="w-12 h-12 rounded-xl bg-kb-accent-light flex items-center justify-center shrink-0">
-            <Zap className="w-6 h-6 text-kb-accent" />
+            <KubeBoltLogo className="w-6 h-6 text-kb-accent" />
           </div>
           <div className="min-w-0">
             <div className="text-base font-semibold text-kb-text-primary">KubeBolt</div>

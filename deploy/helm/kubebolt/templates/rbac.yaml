@@ -8,7 +8,7 @@ metadata:
 rules:
   # Read access to all standard resources
   - apiGroups: [""]
-    resources: ["pods", "pods/log", "nodes", "namespaces", "services", "endpoints", "configmaps", "secrets", "persistentvolumeclaims", "persistentvolumes", "events"]
+    resources: ["pods", "pods/log", "nodes", "namespaces", "services", "endpoints", "configmaps", "secrets", "persistentvolumeclaims", "persistentvolumes", "events", "serviceaccounts"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["apps"]
     resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
@@ -53,8 +53,50 @@ rules:
     resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "update"]
   - apiGroups: [""]
-    resources: ["pods", "services", "configmaps", "secrets", "persistentvolumeclaims"]
+    resources: ["pods", "services", "persistentvolumeclaims"]
     verbs: ["delete", "update"]
+  # ConfigMaps: agent install creates kubebolt-agent-config alongside the
+  # DaemonSet; without create the wizard fails after the SA step.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "update", "delete"]
+  # Secrets: create/update for the admin-password Secret persisted on
+  # first boot AND for agent ingest-token Secrets created via the
+  # AgentInstallWizard / AddClusterWizard "Generate token" flow.
+  # Read access is already granted in the read-all rule above.
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "update", "delete"]
+  # Namespaces: create for the AgentInstallWizard "Install agent" flow,
+  # which creates kubebolt-system if it doesn't already exist before
+  # rolling out the DaemonSet. Read is already granted above.
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["create"]
+  # Apps + RBAC + ServiceAccounts: the AgentInstallWizard creates the
+  # agent's own DaemonSet, ServiceAccount, ClusterRole, ClusterRoleBinding
+  # in kubebolt-system. Without these the install button errors out
+  # right after the namespace step.
+  - apiGroups: ["apps"]
+    resources: ["daemonsets"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    verbs: ["create", "update", "delete"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings", "roles", "rolebindings"]
+    verbs: ["create", "update", "delete"]
+  # Privilege-escalation guard bypass: K8s rejects creating a Role with
+  # permissions the creator doesn't hold ("attempting to grant RBAC
+  # permissions not currently held"). The agent's metrics ClusterRole
+  # needs nodes/metrics, nodes/proxy, nodes/stats which the kubebolt
+  # backend itself doesn't use; rather than mirror them, grant the
+  # standard `escalate` + `bind` verbs that say "this SA is an admin
+  # tool that creates Roles for other workloads". Same pattern Helm,
+  # ArgoCD, and operator-style tools use.
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "roles"]
+    verbs: ["escalate", "bind"]
   {{- if and .Values.agentIngest.enabled .Values.agentIngest.rbac.enableTokenReview }}
   # Agent ingest auth (Sprint A): the BearerIngest path needs no RBAC,
   # but TokenReview validation requires create on tokenreviews. Toggle

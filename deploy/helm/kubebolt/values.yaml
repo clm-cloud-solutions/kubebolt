@@ -115,6 +115,58 @@ agentIngest:
     # When true, the server rejects clients without a verified cert.
     requireClientCert: false
 
+# ─── Metrics storage (VictoriaMetrics) ────────────────────────────
+# KubeBolt persists time-series data (CPU / memory / network samples
+# from the agent, Hubble flow events) in a Prometheus-compatible TSDB.
+# By default the chart deploys an embedded single-node VictoriaMetrics
+# StatefulSet so installs work out of the box. For larger clusters or
+# clusters that already run a metrics backend, disable the embedded
+# instance and point externalUrl at your existing endpoint.
+metrics:
+  storage:
+    embedded:
+      # Deploy a bundled single-node VictoriaMetrics StatefulSet. Set
+      # to false when you already run VictoriaMetrics, Prometheus
+      # remote-write target, vmagent, or any compatible TSDB and want
+      # KubeBolt to write there instead.
+      enabled: true
+      image:
+        repository: victoriametrics/victoria-metrics
+        tag: v1.101.0
+        pullPolicy: IfNotPresent
+      # Data retention. Anything older than this is dropped to keep the
+      # PVC bounded. Increase if you need historical analysis windows
+      # longer than 30 days; remember to scale `persistence.size` too.
+      retention: 30d
+      # Persistent volume for /victoria-metrics-data. Sizing rule of
+      # thumb: ~1 GB per 100 pods at 30-day retention with default
+      # KubeBolt scrape cadence. Adjust upward for high-cardinality
+      # workloads (lots of label dimensions).
+      persistence:
+        enabled: true
+        size: 10Gi
+        storageClass: ""      # uses cluster default if empty
+        accessModes:
+          - ReadWriteOnce
+      resources:
+        requests:
+          cpu: 100m
+          memory: 256Mi
+        limits:
+          cpu: 1000m
+          memory: 2Gi
+      # Extra args passed to the VictoriaMetrics binary. The chart
+      # already provides --storageDataPath, --retentionPeriod, and
+      # --httpListenAddr — anything you add here is appended.
+      extraArgs: []
+    # External TSDB URL — used when embedded.enabled is false. Must
+    # support the VictoriaMetrics ingestion API ("/api/v1/import" and
+    # "/api/v1/query"); plain Prometheus remote-write is not enough,
+    # since KubeBolt also queries it back. Examples:
+    #   http://victoria-metrics.observability.svc.cluster.local:8428
+    #   https://vmselect.example.com
+    externalUrl: ""
+
 # Number of replicas
 replicaCount: 1
 
@@ -123,9 +175,21 @@ replicaCount: 1
 # Enabled by default. Set enabled: false for open access (no login required).
 auth:
   enabled: true
-  adminPassword: ""       # initial admin password — generated if empty (printed to logs)
+  adminPassword: ""       # initial admin password — generated if empty (printed to logs + persisted to a Secret on first boot)
   jwtSecret: ""           # JWT signing secret — generated if empty (tokens won't survive restarts)
   existingSecret: ""      # name of an existing Secret containing 'admin-password' and/or 'jwt-secret'
+
+  # Forgot-password recovery: set this on a `helm upgrade` to reset the
+  # admin user's password to the given value at next pod start. With
+  # strategy=Recreate, the old pod terminates first (releasing the
+  # BoltDB lock), the new pod runs the reset, then continues normal
+  # boot. Remove this value on the next upgrade so it doesn't persist
+  # in your release values.
+  #
+  #   helm upgrade kubebolt ... --reuse-values --set auth.resetAdminPassword=NEWPASS
+  #   # log in, change to your real password from the Account menu
+  #   helm upgrade kubebolt ... --reuse-values --set auth.resetAdminPassword=
+  resetAdminPassword: ""
   persistence:
     enabled: true
     size: 1Gi

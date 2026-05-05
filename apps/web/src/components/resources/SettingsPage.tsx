@@ -1,7 +1,8 @@
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { useTheme } from '@/contexts/ThemeContext'
-import { Server, Zap, Sun, Moon } from 'lucide-react'
+import { Server, Sun, Moon } from 'lucide-react'
+import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 
 export function SettingsPage() {
   const { data: overview, isLoading } = useClusterOverview()
@@ -78,7 +79,7 @@ export function SettingsPage() {
         {/* KubeBolt Agent */}
         <div className="bg-kb-card border border-kb-border rounded-[10px] p-5">
           <div className="flex items-center gap-2 mb-4">
-            <Zap className="w-4 h-4 text-status-warn" />
+            <KubeBoltLogo className="w-4 h-4 text-status-warn" />
             <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
               KubeBolt Agent
             </span>
@@ -86,7 +87,7 @@ export function SettingsPage() {
 
           <div className="border-2 border-dashed border-kb-border rounded-lg p-6 flex flex-col items-center text-center">
             <div className="w-10 h-10 rounded-xl bg-status-warn-dim flex items-center justify-center mb-3">
-              <Zap className="w-5 h-5 text-status-warn" />
+              <KubeBoltLogo className="w-5 h-5 text-status-warn" />
             </div>
             <h3 className="text-sm font-medium text-kb-text-primary mb-1">Install KubeBolt Agent</h3>
             <p className="text-xs text-kb-text-secondary mb-4 max-w-sm">

@@ -63,7 +63,20 @@ func (h *handlers) refuseProxyWithoutAuth(id string, raw json.RawMessage) (strin
 func (h *handlers) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
 	conn := h.manager.Connector()
 	if conn == nil {
-		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		// No cluster connected — surface the catalog with metadata
+		// only so the user sees what's available. Status is the
+		// neutral "not installed" rather than "unknown" because the
+		// answer is definitive: there's nowhere to detect into.
+		// The UI gates Install on cluster presence separately.
+		out := make([]integrations.Integration, 0, len(h.integrations.IDs()))
+		for _, id := range h.integrations.IDs() {
+			p, _ := h.integrations.Get(id)
+			meta := p.Meta()
+			meta.Status = integrations.StatusNotInstalled
+			meta.Health = &integrations.Health{Message: "No cluster connected"}
+			out = append(out, meta)
+		}
+		respondJSON(w, http.StatusOK, out)
 		return
 	}
 	out := h.integrations.List(r.Context(), conn.Clientset())
@@ -82,7 +95,13 @@ func (h *handlers) handleGetIntegration(w http.ResponseWriter, r *http.Request) 
 	}
 	conn := h.manager.Connector()
 	if conn == nil {
-		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		// Mirror the list endpoint — surface metadata-only so the UI
+		// can render the detail panel. Install actions stay gated by
+		// the requireConnector group on the install routes.
+		meta := provider.Meta()
+		meta.Status = integrations.StatusNotInstalled
+		meta.Health = &integrations.Health{Message: "No cluster connected"}
+		respondJSON(w, http.StatusOK, meta)
 		return
 	}
 	snap, err := provider.Detect(r.Context(), conn.Clientset())

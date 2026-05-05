@@ -9,6 +9,53 @@ each tag.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] — 2026-05-05
+
+Patch release. Two fixes — one in the shipper (faster reconnect after
+backend restarts), one in the flow aggregator (without it, the new
+dashboard Network Drops panel was perma-empty in any cluster with
+active NetworkPolicies).
+
+### Fixed
+
+- **Aggregator was silently dropping every `verdict=dropped` flow.**
+  The pod-to-pod path in `Aggregator.Record` filtered out flows
+  whose `TrafficDirection` wasn't `EGRESS`, with the legitimate
+  intent of avoiding double-counting forwarded traffic (a forwarded
+  packet appears twice — egress on the source node, ingress on the
+  destination — and we keep just the egress observation). But
+  Cilium emits **dropped** flows with `TRAFFIC_DIRECTION_UNKNOWN`:
+  the SYN is rejected before Cilium classifies direction, and the
+  drop is observed exactly once at the denial point. The EGRESS
+  filter was therefore swallowing every drop in any cluster with a
+  Cilium-enforced NetworkPolicy.
+  `pod_flow_events_total{verdict="dropped"}` never reached
+  VictoriaMetrics, and the dashboard's new Reliability → Network
+  Drops panel was perma-empty — "NetworkPolicies are passing"
+  looked reassuring but bore no relation to reality. Fix: bypass
+  the `is_reply` / EGRESS-only guards when verdict is `dropped`
+  (those checks exist to dedupe forwarded flows; dropped flows
+  have no reply and are observed once, so neither applies).
+  Caught while wiring up the Network Drops panel against a
+  temporary `CiliumNetworkPolicy` with `ingressDeny` — `cilium
+  hubble observe --verdict DROPPED` showed drops, VM showed none.
+  Without this fix the panel would look broken to anyone running
+  real network policies.
+- **Shipper reconnect backoff now resets after a healthy session.**
+  `Shipper.Run` previously grew the reconnect backoff exponentially
+  (1s → 2s → 4s → … → 60s cap) with no reset path. Once at the cap
+  — easy to hit during a development session with several backend
+  restarts — it stayed there indefinitely, even after the agent had
+  been running cleanly for hours. So a planned backend deploy made
+  every agent sit out a full minute before reconnecting and the
+  cluster selector stayed blank in every UI for that whole window.
+  Fix: track session start time; if `runSession` returned an error
+  after running ≥10s, treat it as a healthy session that dropped
+  (typical of a graceful restart) and reset the next backoff to 1s.
+  Exponential growth still kicks in for genuinely stuck dial loops.
+  Measured impact during dev: post-restart reconnect went from 60s
+  (stuck at cap) to ~3s.
+
 ## [0.2.0] — 2026-04-29
 
 First public OSS release. Sprint A.5 closes the SPDY tunnel work

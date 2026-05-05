@@ -1,11 +1,12 @@
-import { Outlet } from 'react-router-dom'
-import { useIsMutating } from '@tanstack/react-query'
-import { Unplug, ShieldAlert, Loader2 } from 'lucide-react'
+import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { useIsMutating, useQuery } from '@tanstack/react-query'
+import { Unplug, ShieldAlert, Loader2, Cable } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { Topbar } from './Topbar'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useWebSocket } from '@/hooks/useWebSocket'
-import { ApiError } from '@/services/api'
+import { api, ApiError } from '@/services/api'
+import { useAuth } from '@/contexts/AuthContext'
 import { CopilotPanel } from '@/components/copilot/CopilotPanel'
 import { CopilotToggle } from '@/components/copilot/CopilotToggle'
 import { useCopilot } from '@/contexts/CopilotContext'
@@ -15,9 +16,44 @@ const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
 export function Layout() {
   const { data: rawOverview, error, refetch } = useClusterOverview()
   const isSwitching = useIsMutating({ mutationKey: ['switch-cluster'] }) > 0
+  const location = useLocation()
+  const navigate = useNavigate()
+  const { hasRole } = useAuth()
+  const isAdmin = hasRole('admin')
   useWebSocket(WS_RESOURCES)
 
+  // First-use detection: zero clusters configured. Distinct from
+  // "Cluster unreachable" (a selected cluster failed to connect) — here
+  // there is nothing TO connect to, so retrying is pointless and the
+  // user should be sent to the add-cluster flow.
+  const { data: clusters } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: api.listClusters,
+    refetchInterval: 30_000,
+  })
+  // Go's encoding/json renders nil slices as `null`, not `[]`, so the
+  // "no clusters" state surfaces as null here. Treat both as empty;
+  // only `undefined` means "still loading first fetch".
+  const noClusters = clusters !== undefined && (clusters === null || clusters.length === 0)
+  // Routes that don't depend on a connected cluster. /clusters owns the
+  // add-cluster wizard (must render so the user has a way out of the
+  // empty state), and /admin /settings are platform-level pages whose
+  // backend endpoints are cluster-agnostic. For these we bypass BOTH
+  // the no-clusters CTA and the cluster-unreachable error page.
+  const PLATFORM_ROUTE_PREFIXES = ['/clusters', '/admin', '/settings']
+  const isPlatformRoute = PLATFORM_ROUTE_PREFIXES.some(p =>
+    location.pathname === p || location.pathname.startsWith(p + '/')
+  )
+
   const isUnavailable = error instanceof ApiError && error.status === 503
+  // "Waiting for agent" is the transient post-restart state where the
+  // backend's agent-proxy connector fast-fails because no agent has
+  // dialed in yet. Distinct from a real "cluster unreachable" because
+  // the cluster IS up — the agent's gRPC backoff is what we're waiting
+  // for. The backend pushes a `cluster:connected` WS event the moment
+  // an agent registers and the connector recovers, so the UI doesn't
+  // need a manual Retry button — the empty state auto-heals.
+  const isAwaitingAgent = isUnavailable && /no agent connected yet|waiting for agent to register/i.test(error.message || '')
   // When cluster is unreachable, don't pass stale data from the previous cluster
   const overview = isUnavailable ? undefined : rawOverview
 
@@ -67,6 +103,37 @@ export function Layout() {
               <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Connecting to cluster</h3>
               <p className="text-xs text-kb-text-tertiary max-w-xs">
                 Probing permissions and syncing resources...
+              </p>
+            </div>
+          ) : isPlatformRoute ? (
+            <Outlet />
+          ) : noClusters ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <div className="w-12 h-12 rounded-2xl bg-status-info-dim flex items-center justify-center mb-4">
+                <Cable className="w-6 h-6 text-status-info" />
+              </div>
+              <h3 className="text-sm font-semibold text-kb-text-primary mb-1">No clusters configured</h3>
+              <p className="text-xs text-kb-text-tertiary mb-5 max-w-sm">
+                {isAdmin
+                  ? 'Connect your first cluster to start monitoring. Install the KubeBolt agent inside the cluster, or import a kubeconfig.'
+                  : 'No clusters have been added to KubeBolt yet. Ask an administrator to connect a cluster.'}
+              </p>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => navigate('/clusters')}
+                  className="px-3 py-1.5 text-xs font-medium bg-kb-accent text-white rounded-md hover:bg-kb-accent-bright transition-colors"
+                >
+                  Add cluster
+                </button>
+              )}
+            </div>
+          ) : isAwaitingAgent ? (
+            <div className="flex flex-col items-center justify-center h-full text-center">
+              <Loader2 className="w-8 h-8 text-status-info animate-spin mb-4" />
+              <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Waiting for agent to register</h3>
+              <p className="text-xs text-kb-text-tertiary max-w-sm">
+                The cluster is reachable through the KubeBolt agent. The agent's gRPC channel is reconnecting after the last backend restart — this view will refresh automatically as soon as it dials in (typically within a minute).
               </p>
             </div>
           ) : isUnavailable ? (

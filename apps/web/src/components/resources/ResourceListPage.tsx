@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { useParams, Link, useSearchParams } from 'react-router-dom'
+import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight, Filter, X } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
@@ -381,15 +381,29 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   const params = useParams<{ type: string }>()
   const resourceType = propType || params.type || 'pods'
 
-  const [namespace, setNamespace] = useState('')
+  // URL drives the filter state for both `namespace` and `node` so
+  // deep links land on a pre-filtered list and bookmarks are
+  // shareable. `namespace` is set from NamespaceTiles on the
+  // dashboard; `node` is set by NodeCell's filter button below and
+  // cleared via the chip under the FilterBar. Search and page stay
+  // local — they're transient interactions, not shareable views.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const namespace = searchParams.get('namespace') ?? ''
+  const node = searchParams.get('node') || ''
+  const setNamespace = (v: string) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (v) next.set('namespace', v)
+        else next.delete('namespace')
+        return next
+      },
+      { replace: true },
+    )
+  }
   const [search, setSearch] = useState('')
   const [debouncedSearch, setDebouncedSearch] = useState('')
   const [page, setPage] = useState(1)
-  // node filter lives in the URL (?node=) instead of local state so it
-  // survives navigation and is shareable. Set by NodeCell's filter
-  // button; cleared via the chip below the FilterBar.
-  const [searchParams, setSearchParams] = useSearchParams()
-  const node = searchParams.get('node') || ''
 
   function resetPage() { setPage(1) }
 

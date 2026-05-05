@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { useNavigate, useLocation } from 'react-router-dom'
-import { Zap, Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff } from 'lucide-react'
+import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { useAuth } from '@/contexts/AuthContext'
 import { VERSION } from '@/version'
 
@@ -43,7 +44,7 @@ export function LoginPage() {
         {/* Logo */}
         <div className="flex flex-col items-center mb-8">
           <div className="w-12 h-12 rounded-xl bg-kb-accent-light flex items-center justify-center mb-3">
-            <Zap className="w-7 h-7 text-kb-accent" />
+            <KubeBoltLogo className="w-7 h-7 text-kb-accent" />
           </div>
           <h1 className="text-xl font-semibold text-kb-text-primary">KubeBolt</h1>
           <p className="text-xs text-kb-text-tertiary mt-1">Sign in to your account</p>

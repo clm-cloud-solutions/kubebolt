@@ -139,6 +139,14 @@ func NewRouter(
 				})
 			}
 
+			// Integrations catalog — list + read are deliberately OUTSIDE
+			// requireConnector so the page works on a fresh install with
+			// no clusters yet. The handlers degrade to metadata-only
+			// (StatusNotInstalled) when conn==nil; install/configure
+			// stay inside the cluster-required group below.
+			r.Get("/integrations", h.handleListIntegrations)
+			r.Get("/integrations/{id}", h.handleGetIntegration)
+
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
 				r.Use(h.requireConnector)
@@ -167,14 +175,13 @@ func NewRouter(
 				r.Get("/topology", h.getTopology)
 				r.Get("/insights", h.getInsights)
 				r.Get("/events", h.getEvents)
+				r.Get("/deploys", h.handleDeploys)
 				r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
 
-				// Integrations — detection / status of pluggable adapters
-				// (starting with kubebolt-agent). List + get are
-				// read-only, any role can see them. Install /
-				// uninstall mutate the cluster and require Admin.
-				r.Get("/integrations", h.handleListIntegrations)
-				r.Get("/integrations/{id}", h.handleGetIntegration)
+				// Integrations — install / configure / uninstall mutate
+				// the cluster and require Admin. List + get live
+				// outside this group (above) so the catalog renders
+				// even with no cluster connected.
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
 					r.Post("/integrations/{id}/install", h.handleInstallIntegration)
@@ -188,6 +195,7 @@ func NewRouter(
 					// other integrations don't accidentally inherit
 					// the tenants-store-backed flow.
 					r.Get("/integrations/agent/auth-info", h.handleAgentAuthInfo)
+					r.Get("/integrations/agent/install-defaults", h.handleAgentInstallDefaults)
 					r.Post("/integrations/agent/issue-token", h.handleAgentIssueToken)
 				})
 

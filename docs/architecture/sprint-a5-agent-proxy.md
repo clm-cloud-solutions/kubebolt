@@ -204,6 +204,77 @@ políticas SaaS.
 
 ---
 
+### 0.10 — Transport del AgentChannel: **gRPC bidi** (revisitable)
+
+> **Decisión** (2026-05-04): seguimos con gRPC bidi como único transport.
+> WebSocket queda como migración futura, NO se construye dual-transport
+> ahora. La decisión apuesta a un mercado target dominado por clusters
+> cloud-native (EKS/GKE/AKS) con egress directo, no enterprise/regulated
+> con proxies de inspección HTTP/2.
+
+**Contexto del bloqueante** (verificado in-vivo el 2026-04-30 con EKS prod
+`yagan-eks-prod-v2` → Cloudflare Tunnel → backend local):
+
+- Channel registra ✅, ingest de métricas funciona ✅, probes unarios
+  (SelfSubjectAccessReview) funcionan ✅.
+- Cache sync con 22 watches concurrentes **rompe a los ~2s** con
+  `channel: agent closed` cuando hay un proxy HTTP/2 en el medio.
+- Causas: HTTP/2 idle timeouts en CDN edges (~100s), reset cycles
+  (~10 min), flow control saturado en cache sync, y inspección DPI en
+  proxies enterprise (Zscaler / Netskope / Forcepoint / PaloAlto)
+  matando streams long-lived sistemáticamente.
+
+**Por qué gRPC bidi solo, ahora:**
+
+| Razón | Detalle |
+|---|---|
+| Mercado target del MVP | Clusters cloud-native con egress directo — gRPC bidi funciona limpio acá. |
+| Premature optimization evitable | Construir dual-transport para enterprise sin cliente enterprise paying es trabajo sin payoff. |
+| Costo real de coexistencia | 2x test matrix, 2x debug surface, drift de bugs en la rama under-tested, auto-fallback es difícil de hacer correctamente. |
+| Ningún competidor ship dual | Robusta + Komodor + Devtron son WS-only; Pixie + NewRelic + ArgoCD-agent son gRPC-only. Cada uno picó uno. |
+
+**Por qué NO WebSocket todavía:**
+
+- ~3-4 días de refactor del transport en server + agent. El wire protocol
+  queda igual (los mensajes no cambian); cambia el carrier.
+- Sin demanda concreta de cliente — el primer trigger sería un cliente
+  paying bloqueado por su Zscaler.
+
+**Triggers para revisitar (= migrar a WS-only, no dual):**
+
+1. ≥1 cliente paying bloqueado por proxy corporativo de inspección.
+2. Pivot estratégico hacia regulated industries (banca, salud, gobierno).
+3. Feedback consistente de evaluación perdida por incompatibilidad de red.
+
+**Lo que documentamos al usuario:**
+
+- Compatible con clusters en cloud (AWS/GCP/Azure) con egress directo.
+- Para clusters detrás de proxy corporativo con DPI o on-prem con
+  inspección HTTP/2 → contactar / use OSS self-hosted (backend en la
+  misma red que los clusters).
+- Tailscale (P2P WireGuard) sirve para tests puntuales, sidesteps el
+  proxy entero.
+
+**Futureproofing barato (lo hacemos ahora):**
+
+- En el `Hello` del proto agregar campo `transport_version` (u opcional
+  `negotiated_features` map) así cuando WS llegue, no es breaking change
+  agregar handshake nuevo. ~5 min de trabajo, paga si en algún momento
+  se necesita.
+
+**Lo que NO hacemos:**
+
+- Auto-fallback gRPC→WS por detección de patrones de falla. Difícil de
+  hacer correctamente, oscurece la causa real cuando falla, y cuando lo
+  vayamos a necesitar de verdad va a ser un switch consciente de toda la
+  flota, no per-conexión.
+
+> *Memoria de contexto*: ver `~/.claude/.../memory/project_cf_tunnel_ruled_out.md`
+> y `project_agent_transport_market_pattern.md` para los detalles del análisis
+> y los patrones de mercado.
+
+---
+
 ## 1. Wire protocol — `AgentChannel` proto
 
 ### 1.1 Service definition

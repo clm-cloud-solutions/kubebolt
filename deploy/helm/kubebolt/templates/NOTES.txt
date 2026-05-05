@@ -1,24 +1,76 @@
-KubeBolt has been installed successfully!
+KubeBolt has been installed in namespace "{{ .Release.Namespace }}".
 
 {{- if .Values.ingress.enabled }}
 
-Access KubeBolt via your Ingress:
+Access via your Ingress:
 {{- range .Values.ingress.hosts }}
   http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
 {{- end }}
 
 {{- else }}
 
-Access KubeBolt via port-forward:
+Access via port-forward:
 
-  kubectl port-forward svc/{{ include "kubebolt.fullname" . }} 3000:{{ .Values.service.port }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kubebolt.fullname" . }} 3000:{{ .Values.service.port }}
 
 Then open http://localhost:3000
 
 {{- end }}
 
+{{- if .Values.auth.enabled }}
+
+{{- if .Values.auth.existingSecret }}
+
+Authentication: enabled. Sign in as "admin" with the password from
+Secret "{{ .Values.auth.existingSecret }}" (key: admin-password).
+
+{{- else if .Values.auth.adminPassword }}
+
+Authentication: enabled. Sign in as "admin" with the password you set
+in `auth.adminPassword`.
+
+{{- else }}
+
+Authentication: enabled. Sign in as "admin". On first boot the API
+generated a random password and persisted it to a Secret in this
+namespace — retrieve it with:
+
+  kubectl -n {{ .Release.Namespace }} get secret kubebolt-admin-password -o jsonpath='{.data.password}' | base64 -d ; echo
+
+(The same password is also printed once in the API logs at first
+startup. The Secret is only created on first boot — change the password
+from the Account menu after first login, or rotate later via the reset
+path below.)
+
+If you've forgotten the admin password, reset it via helm:
+
+  helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+    --reuse-values --set auth.resetAdminPassword=NEWPASS
+
+  # log in with NEWPASS, change to your real password in the Account menu, then:
+  helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+    --reuse-values --set auth.resetAdminPassword=
+
+(Min 8 chars. The reset runs on next pod start and clears the in-memory
+password — leaving the value in your release values is safe but not
+recommended for tidy upgrades. For a non-helm path see "Forgot-password
+recovery → Path B" in the chart README on Artifact Hub / GitHub.)
+
+{{- end }}
+{{- else }}
+
+Authentication: disabled (open access — no login required).
+{{- end }}
+
 To verify the installation:
 
-  kubectl get pods -l app.kubernetes.io/name={{ include "kubebolt.name" . }}
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "kubebolt.name" . }}
+
+To surface historical metrics on the Monitor tab and Node Top
+Consumers, install the optional kubebolt-agent DaemonSet — it ships
+kubelet samples to the bundled VictoriaMetrics. Without it, list pages
+still show live metrics from metrics-server, but historical charts and
+top-consumers stay empty. See:
+https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md
 
 For more information, visit: https://github.com/clm-cloud-solutions/kubebolt

@@ -1,17 +1,26 @@
-import { useQuery } from '@tanstack/react-query'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
-import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
-import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
-import { api } from '@/services/api'
-import { SummaryCards } from './SummaryCards'
+import { KpiCards } from './KpiCards'
+import { OverviewHeader } from './OverviewHeader'
 import { ResourceUsagePanel } from './ResourceUsage'
 import { WorkloadHealth } from './WorkloadHealth'
 import { EventsFeed } from './EventsFeed'
-import { NamespaceSection } from './NamespaceSection'
+import { NamespaceTiles } from './NamespaceTiles'
+import { DashboardSubTabs } from './DashboardSubTabs'
 
+// OverviewPage is the "abro el dashboard en la mañana" scan: 4 KPIs,
+// commitment bars, the events + workload-health pair, and namespace
+// tiles. No time-series trends, no cluster-wide top consumers — those
+// belong to the Capacity tab where the user is in investigation mode
+// (own range selector, deeper instrumentation) rather than scanning.
+//
+// The page intentionally has no RangeSelector: every panel here is
+// instantaneous (current state from the overview payload). When the
+// user wants "how has this moved?" they pivot to Capacity. Keeps
+// Overview fast to read and free of interactive sliders that would
+// distract from the scan.
 export function OverviewPage() {
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
 
@@ -19,19 +28,18 @@ export function OverviewPage() {
   if (error || !overview) return <ErrorState message={error?.message} onRetry={() => refetch()} />
 
   return (
-    <div className="space-y-4">
-      {/* Freshness indicator */}
-      <div className="flex justify-end">
-        <DataFreshnessIndicator
-          dataUpdatedAt={dataUpdatedAt}
-isFetching={isFetching}
-        />
+    <div className="space-y-5">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <OverviewHeader overview={overview} />
+        <div className="flex items-center gap-3 mt-1">
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+        </div>
       </div>
 
-      {/* Summary cards */}
-      <SummaryCards overview={overview} />
+      <DashboardSubTabs />
 
-      {/* CPU + Memory Usage */}
+      <KpiCards overview={overview} />
+
       <ResourceUsagePanel
         cpu={overview.cpu}
         memory={overview.memory}
@@ -39,130 +47,14 @@ isFetching={isFetching}
         nodesRestricted={overview.permissions?.nodes === false}
       />
 
-      {/* Events + Workload Health */}
       <div className="grid grid-cols-2 gap-3">
         <EventsFeed events={overview.events?.slice(0, 15) || []} />
         <WorkloadHealth overview={overview} />
       </div>
 
-      {/* Time-series view of cluster resources from the agent.
-          Distinguished from the CPU/Memory commitment bars above:
-          those show what's reserved and used *right now* (works
-          without the agent, via Metrics Server); these show how it
-          *moved* over the selected window. The whole panel hides
-          itself when the agent isn't installed — current values are
-          already covered above, and rendering empty charts here
-          would be misleading. */}
-      <ClusterTrendsPanel />
-
-      {/* Namespace Workload Sections */}
       {overview.namespaceWorkloads && overview.namespaceWorkloads.length > 0 && (
-        <div className="space-y-5 mt-2">
-          <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-            Workloads by namespace
-          </div>
-          {overview.namespaceWorkloads.map((nsw) => (
-            <NamespaceSection key={nsw.namespace} namespaceWorkload={nsw} />
-          ))}
-        </div>
+        <NamespaceTiles namespaceWorkloads={overview.namespaceWorkloads} />
       )}
-    </div>
-  )
-}
-
-// ─── Cluster trends ─────────────────────────────────────────────
-
-function ClusterTrendsPanel() {
-  const { data: agent, isLoading } = useQuery({
-    queryKey: ['integration', 'agent'],
-    queryFn: () => api.getIntegration('agent'),
-    refetchInterval: 10_000,
-    staleTime: 5_000,
-  })
-
-  if (isLoading) return null
-
-  const installed = agent && (agent.status === 'installed' || agent.status === 'degraded')
-
-  if (!installed) {
-    // Current CPU and memory are already covered by the bars above
-    // (ResourceUsagePanel, sourced from Metrics Server), so we don't
-    // duplicate them here — just leave a clear "trends need the
-    // agent" notice in place of the chart grid.
-    return (
-      <div className="space-y-2 pt-2">
-        <div className="flex items-baseline justify-between">
-          <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-            Cluster trends
-          </div>
-          <div className="text-[10px] text-kb-text-tertiary">
-            current totals shown above · agent unlocks history
-          </div>
-        </div>
-        <AgentRequiredPlaceholder
-          title="Time-series trends require the KubeBolt Agent"
-          description="Current CPU and memory totals are already shown above, sourced from the Kubernetes Metrics Server. Install the agent to unlock historical CPU, memory, network, and filesystem trends with a selectable range."
-          hideWhileLoading
-        />
-      </div>
-    )
-  }
-
-  return (
-    <div className="space-y-2 pt-2">
-      <div className="flex items-baseline justify-between">
-        <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-          Cluster trends
-        </div>
-        <div className="text-[10px] text-kb-text-tertiary">
-          actual usage over time · range selectable per chart
-        </div>
-      </div>
-      <div className="grid grid-cols-2 gap-3">
-        <MetricChart
-          title="CPU usage"
-          unit="cores"
-          query={`sum(node_cpu_usage_cores)`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.cpu}
-          chartType="area"
-          showStats={false}
-          height={180}
-        />
-        <MetricChart
-          title="Memory working set"
-          unit="bytes"
-          query={`sum(node_memory_working_set_bytes)`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.memory}
-          chartType="area"
-          showStats={false}
-          height={180}
-        />
-        <MetricChart
-          title="Network activity (RX up / TX down)"
-          unit="bytes/s"
-          queries={[
-            { query: `sum(rate(node_network_receive_bytes_total[1m]))`, prefix: 'RX' },
-            { query: `sum(rate(node_network_transmit_bytes_total[1m]))`, prefix: 'TX', negate: true },
-          ]}
-          seriesLabel={(_labels, prefix) => prefix ?? 'total'}
-          accents={METRIC_ACCENTS.networkRxTx}
-          chartType="area"
-          showStats={false}
-          height={180}
-        />
-        <MetricChart
-          title="Filesystem used"
-          unit="bytes"
-          query={`sum(node_fs_used_bytes)`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.filesystem}
-          chartType="area"
-          showStats={false}
-          height={180}
-        />
-      </div>
     </div>
   )
 }

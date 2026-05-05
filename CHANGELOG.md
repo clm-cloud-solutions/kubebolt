@@ -4,6 +4,242 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-05-04
+
+Resilience and first-use UX release. Agent-proxy clusters now survive
+backend restarts; the post-restart reconnect window is no longer a
+disruptive blank page; first-boot installs with zero clusters get a
+clean empty-state with an Add-cluster CTA instead of a generic
+"Cluster unreachable" page; and the Integrations catalog renders even
+when no cluster is connected so a fresh install can browse what's
+installable before connecting anything.
+
+### Added
+
+- **Persistent agent registry.** New `agents` BoltDB bucket captures
+  every agent Hello (capabilities, displayName from
+  `KUBEBOLT_AGENT_CLUSTER_NAME`, node, version) on connect and stamps
+  `DisconnectedAt` on clean Unregister. On boot, records advertising
+  the `kube-proxy` capability are replayed into
+  `manager.agentProxyContexts` **before** the gRPC server starts
+  accepting traffic — the cluster selector keeps showing every
+  previously-connected agent-proxy cluster from the moment the
+  backend boots, instead of going blank for the ~30s reconnect
+  window. Records older than 24h with a non-zero `DisconnectedAt`
+  are pruned (configurable via
+  `KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON`).
+- **Connector auto-recovery.** When an agent registers and the
+  manager has an agent-proxy context whose connector is currently
+  failed (typical post-restart race: UI auto-switches before the
+  agent has reconnected), `AddAgentProxyCluster` now spawns a
+  goroutine that re-runs `connectToContextLocked` so the cluster
+  recovers without a manual click on Retry. Pairs with a `cluster:connected`
+  WebSocket broadcast that invalidates `['clusters']` +
+  `['cluster-overview']` immediately on receipt, instead of waiting
+  up to 30s for TanStack Query's next refetch tick.
+- **Fast-fail on no-agent connect.** `connectToContextLocked` checks
+  `agentRegistry.CountByCluster()` before `Connector.Start()` and
+  bails sub-millisecond when zero agents are registered for that
+  cluster_id — the user gets a 503 immediately instead of waiting
+  the full `WaitForCacheSync(20s)` on list calls that were always
+  going to fail. Auto-recovery then takes over once the agent dials
+  in.
+- **No-clusters empty state.** Layout detects `clusters: []` (Go's
+  nil-slice JSON shape) and renders a centered `Cable` icon + "No
+  clusters configured" + admin-only "Add cluster" CTA pointing at
+  `/clusters`. The Topbar's selector reads "No clusters" instead of
+  the prior misleading "loading…", and the dropdown stays
+  interactive so admins reach Manage Clusters from there.
+- **Waiting-for-agent empty state.** Distinct from "Cluster
+  unreachable" — when the connector failed because no agent has
+  registered yet (transient post-restart), Layout shows a spinning
+  Loader2 + "Waiting for agent to register" copy and **no Retry
+  button** (clicking it just re-fast-fails). The page auto-heals via
+  the `cluster:connected` WS broadcast.
+- **Platform routes bypass.** `/clusters`, `/admin/*`, and
+  `/settings` always render their own page regardless of cluster
+  state — so the user can manage clusters / users / integrations
+  from inside an empty-state without any chicken-and-egg trap.
+- **Integrations catalog without a cluster.** `/integrations` and
+  `/integrations/{id}` left the `requireConnector` middleware
+  group; handlers degrade to metadata-only with `StatusNotInstalled`
+  + Health.Message="No cluster connected" when `conn==nil`. The
+  Integrations page shows an info banner and disables Install /
+  Manage buttons (with explanatory tooltips) until a cluster is
+  available — install routes still 503 server-side so the gate is
+  enforced regardless of UI state.
+- **Workload Monitor coverage banner**, promised in 1.7.0 NOTES.
+  Detects when fewer pods are reporting samples than declared
+  replicas and renders an amber "Partial coverage — KubeBolt Agent
+  has data for X of N replicas" banner that distinguishes a
+  scheduling gap from a healthy chart. (Implementation landed in
+  the priority-knobs commit; this release also fixes a label-name
+  bug below.)
+- **`make dev-clean` / `make dev-api-clean` targets.** Boot the API
+  against an empty kubeconfig synthesized at
+  `/tmp/kb-empty-kubeconfig.yaml` on every invocation — useful for
+  testing the persistent-registry boot-restore path and the
+  no-clusters empty-state UX without touching `~/.kube/config`.
+- **Agent-proxy tunnel idle timeout + audit log** (Sprint A.5 §0.9
+  commit 8f, partial — idle timeout and audit; max-duration / quotas
+  / Prometheus metrics deferred). Every SPDY tunnel opened through
+  the agent (exec, port-forward, file browser) now ships with a
+  watchdog goroutine that closes the tunnel when no Read/Write has
+  happened for `KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT` (default 5m) —
+  catches orphan tunnels left behind when the agent crashes
+  mid-session and the upstream HTTP client doesn't notice the EOF.
+  Each tunnel emits one INFO log line on open and one on close with
+  cluster_id, agent_id, request_id, path, reason
+  (`local close` / `peer EOF` / `peer stream_closed: <reason>` /
+  `multiplexor slot closed` / `idle timeout`), duration, and
+  `bytes_in`/`bytes_out` — single grep'able lifecycle record per
+  session.
+- **Dashboard split into Overview / Capacity / Reliability sub-tabs.**
+  The previous single-page Overview was carrying both the at-a-glance
+  scan ("is everything fine?") and the investigation surface ("why
+  is this slow / over-provisioned?"). They wanted different
+  attention budgets, so they're now lenses on the same dashboard,
+  driven by a sub-nav under the Topbar with `LayoutDashboard` /
+  `Gauge` / `Activity` icons. The Sidebar's Overview item and the
+  Topbar's Dashboard pill stay active across all three sub-tabs;
+  active state is centralized in `apps/web/src/utils/routes.ts` so
+  future sub-tabs land in one place. Active underline switched from
+  `kb-accent` (brand green, reserved for Kobi / health-OK signals)
+  to `status-info` (blue, the same selection color the Sidebar and
+  Topbar use), which homologates the "I'm here" palette across the
+  app.
+- **Capacity sub-tab.** Investigation surface for "how is the cluster
+  consuming, and is it sized right for what it's actually doing?"
+  Same `RangeSelector` + `DataFreshnessIndicator` as Overview.
+  Panels: 2×2 trends grid (CPU / Memory / Network / Filesystem) with
+  overlaid deploy markers + tooltip-grouped "X deploys here" for
+  same-bucket rollouts; **Recent Deploys** table backed by a new
+  `/deploys` endpoint that walks ReplicaSet creation timestamps and
+  emits `DeployEvent[]` with namespace/kind/name/deployedAt/image;
+  **Top Workloads · CPU** ranks cluster-wide consumers using a
+  `label_replace` chain that collapses ReplicaSet names to their
+  Deployment (recovers the user-visible workload from the agent's
+  one-step ownerRef enrichment); **Right-sizing Recommendations**
+  applies deterministic rules (NEAR-LIMIT if P95 ≥ 80% × limit,
+  OVER-PROV if P95 < 50% × request with absolute floor of 50m / 100Mi,
+  NO-SPECS for workloads with neither). Each panel ships with an
+  Ask-Kobi affordance — panel-level for summarization, plus per-row
+  on Recent Deploys and Right-sizing where each row is its own
+  actionable investigation; single-row payloads switch the prompt
+  builder to a singular phrasing so the LLM stays narrow instead of
+  re-summarizing the list.
+- **Reliability sub-tab.** L7 lens on what the cluster is actually
+  serving — surfaces only when Hubble HTTP metrics are flowing into
+  VictoriaMetrics (`useHubbleAvailable` probe), so empty clusters
+  don't see a "needs Hubble" placeholder. Five panels: **Cluster
+  error rate** chart split into 4xx (amber) and 5xx (red) series so
+  the tooltip answers "client mistakes or server breakage?" at a
+  glance, with a `tooltipExtra` slot showing absolute volume context
+  (total req/s, error req/s) at the hovered timestamp;
+  **Top Workloads · Traffic** with a stacked status_class
+  distribution bar, per-class chips with absolute rates, and a
+  sparkline of req/s; **Top Workloads · Latency** with a prominent
+  160×20 sparkline and an inline `min..max` range derived from the
+  trend array (no extra query) — status breakdown lives in the
+  tooltip only to avoid duplicating Traffic; **Error Hot-spots**
+  ranks pod-to-pod (collapsed to workload) flows by absolute error
+  req/s, not percentage, so a low-volume but consistently-failing
+  flow doesn't get buried; **Network Drops** surfaces L4 flows with
+  `verdict=dropped` from `pod_flow_events_total` — the early-warning
+  channel for NetworkPolicy violations and connection refused that
+  the HTTP panels miss because they only see traffic that completed
+  the handshake. Per-row Kobi on Error Hot-spots and Network Drops
+  for focused investigation. Cross-cutting: shared
+  `StatusDistribution` module with `useWorkloadStatusDist` hook so
+  Traffic and Latency dedupe the same VM round-trip via TanStack
+  Query's queryKey cache.
+- **`MetricChart` `tooltipExtra` slot.** Optional callback receiving
+  the hovered unix timestamp and returning JSX rendered below the
+  standard payload, behind a divider. Lets a page surface
+  out-of-band context (a separate range query, a joined map) without
+  forcing every chart in the app to learn about it. Default
+  behavior unchanged for charts that don't pass the prop. Also
+  added `'percent'` to `UnitKind` (label `%`, divisor 1) and an
+  `errorRate` accent (red `#ef4056`) to `METRIC_ACCENTS`.
+- **`PanelInquiry` Kobi triggers.** Five new panel kinds in
+  `apps/web/src/services/copilot/triggers.ts`:
+  `top_consumers_cpu`, `right_sizing`, `recent_deploys`,
+  `top_workloads_traffic`, `error_hotspots`, `top_latency`,
+  `network_drops`. Each carries multi-row (lead/close) phrasing for
+  panel-level Ask-Kobi and singular phrasing (`singleLead` /
+  `singleClose`) for per-row Ask-Kobi, with operational hints baked
+  in where useful — e.g. `error_hotspots` reminds the LLM that
+  4xx points at the caller while 5xx points at the receiver, and
+  `network_drops` enumerates likely causes (NetworkPolicy,
+  connection refused, host firewall, pod down) so the model doesn't
+  have to guess.
+
+### Changed
+
+- **Welcome before Register on the agent gRPC handshake.** Server
+  now sends the Welcome envelope BEFORE adding the agent to the
+  registry, closing a race where the new connector auto-retry could
+  route a kube_request through the multiplexor while a DaemonSet
+  pod was still mid-handshake — the agent's reader bailed with
+  `expected Welcome, got KubeRequest` and went into a 1-minute
+  backoff. With this fix the multiplexor only ever sees agents that
+  have completed handshake.
+- **`agents` BoltDB bucket** added to `auth.NewStore` schema. Lives
+  in the same database file as `users`, `tenants`, etc. Backwards-
+  compatible: missing on first boot of an upgraded install, created
+  on next start.
+- **WebSocket message types** add `cluster:connected` for connector
+  recovery events. Frontend `useWebSocket` invalidates
+  `['clusters']` + `['cluster-overview']` immediately on receipt,
+  bypassing the existing 2s overview-debounce.
+
+### Fixed
+
+- **Workload Monitor "Partial coverage" banner false-fired on every
+  multi-replica workload.** The count query grouped by `pod` (Prom
+  convention) but the agent shipper emits the label as `pod_name`;
+  grouping by a non-existent label collapsed every matching series
+  into one bucket, so `count(...)` returned 1 regardless of how
+  many replicas were observed. Switched to `by (pod_name)`. Verified
+  against VictoriaMetrics: same selector returned 2 for a 2-replica
+  deployment with the corrected label, vs 1 with the old one.
+- **Agent flow aggregator silently dropped every `verdict=dropped`
+  flow** (`packages/agent/internal/flows/aggregator.go`). The
+  pod-to-pod path filtered out flows whose direction wasn't `EGRESS`
+  to avoid double-counting forwarded traffic — each forwarded
+  packet appears twice (egress on the source node, ingress on the
+  destination), and we keep the egress observation. But Cilium
+  emits dropped flows with `TRAFFIC_DIRECTION_UNKNOWN` (the SYN was
+  rejected before direction classification kicked in) and they
+  appear exactly once at the denial point. The EGRESS filter was
+  swallowing every drop in clusters with NetworkPolicies active, so
+  `pod_flow_events_total{verdict="dropped"}` never reached
+  VictoriaMetrics and the new Reliability tab's Network Drops panel
+  was perma-empty regardless of how many drops were actually
+  happening — its empty state ("NetworkPolicies are passing —
+  nothing's silently blocked") was a false positive in the worst
+  way: looked reassuring, said nothing about reality. Fix: bypass
+  the `is_reply` and `EGRESS-only` checks when verdict is
+  `dropped`. Verified end-to-end against a temporary
+  `CiliumNetworkPolicy` with `ingressDeny`: drops appeared in
+  `cilium hubble observe`, in
+  `pod_flow_events_total{verdict="dropped"}` in VM, and in the
+  Network Drops panel within ~30s.
+- **Sub-tabs active underline used `kb-accent` (brand green)
+  instead of `status-info` (selection blue).** Inconsistent with
+  every other "I'm here" indicator in the app — Sidebar items, the
+  Topbar Dashboard pill, etc. all use blue. Switched to
+  `border-status-info`; brand green stays reserved for Kobi /
+  health-OK signals so the two color meanings don't collide.
+- **Sidebar's Overview item and Topbar's Dashboard pill went
+  inactive on `/capacity` and `/reliability`.** Both used
+  `<NavLink to="/" end>`, which only matches the exact `/` route —
+  but conceptually the dashboard is a single surface with three
+  sub-tabs. Active state is now driven by `isDashboardPath()` from
+  `apps/web/src/utils/routes.ts`, which checks the pathname
+  against a centralized `DASHBOARD_PATHS` list. Future sub-tabs
+  add to one place.
+
 ## [1.7.0] — 2026-05-01
 
 Quality-of-life release focused on the day-to-day operator views: list

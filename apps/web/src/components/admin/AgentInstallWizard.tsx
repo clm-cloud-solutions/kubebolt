@@ -76,6 +76,26 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
     staleTime: 30_000,
   })
 
+  // Topology defaults. When KubeBolt is in-cluster we pre-fill backendUrl
+  // with the internal Service DNS and namespace with kubebolt-system —
+  // the operator opens the wizard and most fields are already correct.
+  // External (desktop / docker-compose) → leave fields empty so the user
+  // picks a preset themselves.
+  const { data: defaults } = useQuery({
+    queryKey: ['agent-install-defaults'],
+    queryFn: () => api.getAgentInstallDefaults(),
+    staleTime: 30_000,
+  })
+
+  useEffect(() => {
+    if (!defaults) return
+    setCfg((prev) => ({
+      ...prev,
+      backendUrl: prev.backendUrl || defaults.internalBackendUrl || '',
+      namespace: prev.namespace || defaults.agentNamespace,
+    }))
+  }, [defaults])
+
   const [issuedToken, setIssuedToken] = useState<AgentIssueTokenResponse | null>(null)
   const [issueError, setIssueError] = useState<string | null>(null)
   const [selectedTenantId, setSelectedTenantId] = useState<string>('')

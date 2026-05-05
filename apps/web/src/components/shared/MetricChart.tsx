@@ -19,7 +19,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count'
+type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
 
 interface QuerySpec {
   query: string
@@ -41,6 +41,25 @@ interface ReferenceLineSpec {
   shortLabel?: string
 }
 
+// Vertical event markers — used for "something happened at this
+// timestamp" overlays (rollouts on the Capacity dashboard, future:
+// alerts firing, scale-ups, config changes). Distinct from the
+// horizontal threshold ReferenceLines above so consumers don't
+// have to reason about "y vs x" with the same shape.
+export interface EventMarker {
+  // Unix seconds. Matches the chart's X-axis dataKey (`t`) so the
+  // marker lands at the right pixel position automatically.
+  timestamp: number
+  // Tooltip / accessibility label, plus the small inline tag at the
+  // top of the line.
+  label: string
+  // CSS color string. Defaults to a neutral slate so markers read
+  // as "annotation" rather than "another series" — and so they
+  // don't collide with the Filesystem chart's violet (#a855f7),
+  // which an earlier violet marker color did.
+  color?: string
+}
+
 interface RangeOption {
   label: string
   minutes: number
@@ -49,6 +68,14 @@ interface RangeOption {
 
 interface MetricChartProps {
   title: string
+
+  // Optional icon rendered alongside the title. When provided, the
+  // header switches from the compact uppercase-mono format used in
+  // resource detail pages to the larger sentence-case + icon format
+  // used by the dashboard's overview cards (CPU Usage / Memory
+  // Usage). Pass a 16×16 lucide icon to keep it visually balanced
+  // with the title text.
+  icon?: React.ReactNode
 
   // One of these two must be provided.
   query?: string
@@ -62,8 +89,21 @@ interface MetricChartProps {
 
   referenceLines?: ReferenceLineSpec[]
 
+  // Vertical "event happened here" markers. Filtered to the chart's
+  // visible X domain via Recharts' `ifOverflow="discard"` so callers
+  // can pass a wider list (e.g. all deploys in the last 24h) without
+  // worrying about pre-trimming.
+  eventMarkers?: EventMarker[]
+
   defaultRangeMinutes?: number
   rangeOptions?: RangeOption[]
+
+  // Externally-driven range. When set, the chart uses this value instead
+  // of its internal state and hides the per-chart range selector — the
+  // assumption is that an outer page (e.g. OverviewPage) is providing a
+  // single selector that drives multiple charts at once. Resolving the
+  // step from this number uses the same lookup as the internal state.
+  controlledRangeMinutes?: number
 
   refetchMs?: number
 
@@ -80,6 +120,16 @@ interface MetricChartProps {
   // "area" draws stroke + gradient fill (used for volume-like metrics like
   // Filesystem). Defaults to "area" for backward compatibility.
   chartType?: 'line' | 'area'
+
+  // Optional extra rows appended to the bottom of the tooltip,
+  // separated by a divider. Receives the hovered timestamp (unix
+  // seconds) so the caller can look up its own out-of-band data
+  // (separate range query, joined map, etc.) and render context
+  // that the chart's series alone don't carry — typical use is
+  // showing absolute volume next to a percentage curve. Returning
+  // null is fine when no data exists for that timestamp; the
+  // divider only renders when the callback returns truthy JSX.
+  tooltipExtra?: (timestampSec: number) => React.ReactNode
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -90,6 +140,13 @@ const DEFAULT_RANGE_OPTIONS: RangeOption[] = [
   { label: '1h', minutes: 60, step: '30s' },
   { label: '6h', minutes: 360, step: '2m' },
   { label: '24h', minutes: 1440, step: '10m' },
+  // 7d uses a 1h step: at finer resolutions VictoriaMetrics rejects
+  // the query for exceeding -search.maxPointsPerTimeseries (default
+  // 30000). 7d × 1h = 168 points; comfortable margin. Must stay in
+  // sync with RangeSelector's OVERVIEW_RANGE_OPTIONS — when the page
+  // selector drives this chart in controlled mode, the lookup here
+  // is what resolves the step.
+  { label: '7d', minutes: 10080, step: '1h' },
 ]
 
 const DEFAULT_COLORS = [
@@ -112,6 +169,7 @@ export const METRIC_ACCENTS = {
   memory: ['#3b82f6'],                    // blue
   filesystem: ['#a855f7'],                // violet
   networkRxTx: ['#eab308', '#f97316'],   // yellow (RX), orange (TX) — warm family, visibly distinct
+  errorRate: ['#ef4056'],                 // red — reserved for "things that look bad"
 } as const
 
 // ─── Formatting helpers ─────────────────────────────────────────────────────
@@ -133,6 +191,12 @@ function pickScale(absMax: number, unit?: UnitKind): UnitScale {
     // Use millicores when every interesting value is below 100m.
     if (absMax > 0 && absMax < 0.1) return { divisor: 0.001, label: 'm' }
     return { divisor: 1, label: 'cores' }
+  }
+  if (unit === 'percent') {
+    // Caller is expected to pre-scale to 0–100 (or 0–1; we don't
+    // assume one). divisor=1 keeps values intact and the '%' suffix
+    // tells the user how to read the axis.
+    return { divisor: 1, label: '%' }
   }
   return { divisor: 1, label: '' }
 }
@@ -218,6 +282,7 @@ interface SeriesInfo {
 
 export function MetricChart({
   title,
+  icon,
   query,
   queries,
   unit,
@@ -226,16 +291,22 @@ export function MetricChart({
   referenceLines,
   defaultRangeMinutes = 15,
   rangeOptions = DEFAULT_RANGE_OPTIONS,
+  controlledRangeMinutes,
+  eventMarkers,
   refetchMs = 15_000,
   height = 220,
   showStats = true,
   accents,
   chartType = 'area',
+  tooltipExtra,
 }: MetricChartProps) {
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
     : DEFAULT_COLORS
-  const [rangeMinutes, setRangeMinutes] = useState(defaultRangeMinutes)
+  const [internalRangeMinutes, setInternalRangeMinutes] = useState(defaultRangeMinutes)
+  // Controlled mode: outside selector wins, internal state is ignored.
+  const rangeMinutes = controlledRangeMinutes ?? internalRangeMinutes
+  const setRangeMinutes = setInternalRangeMinutes
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   const [hiddenRefs, setHiddenRefs] = useState<Set<string>>(new Set())
   const gradPrefix = useId().replace(/:/g, '') // unique prefix per chart instance
@@ -352,9 +423,18 @@ export function MetricChart({
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
-          <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary truncate">
-            {title}
-          </h4>
+          {icon ? (
+            <>
+              <span className="text-kb-text-secondary shrink-0">{icon}</span>
+              <h4 className="text-sm font-semibold text-kb-text-primary truncate">
+                {title}
+              </h4>
+            </>
+          ) : (
+            <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary truncate">
+              {title}
+            </h4>
+          )}
           {hasData && (
             <AskCopilotButton
               payload={{
@@ -422,27 +502,31 @@ export function MetricChart({
               })}
             </div>
           )}
-          {/* Range selector is always visible — otherwise a wide-range
-              query that returns no data traps the user with no way back
-              to a working window. */}
-          <div className="flex items-center gap-1">
-            {rangeOptions.map(opt => {
-              const selected = opt.minutes === rangeMinutes
-              return (
-                <button
-                  key={opt.minutes}
-                  onClick={() => setRangeMinutes(opt.minutes)}
-                  className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
-                    selected
-                      ? 'bg-kb-accent/20 border-kb-accent text-kb-accent font-semibold'
-                      : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              )
-            })}
-          </div>
+          {/* Range selector — hidden in controlled mode, since the
+              outer page is providing a single shared selector. In
+              uncontrolled mode it stays always visible: a wide-range
+              query that returns no data would otherwise trap the user
+              with no way back to a working window. */}
+          {controlledRangeMinutes == null && (
+            <div className="flex items-center gap-1">
+              {rangeOptions.map(opt => {
+                const selected = opt.minutes === rangeMinutes
+                return (
+                  <button
+                    key={opt.minutes}
+                    onClick={() => setRangeMinutes(opt.minutes)}
+                    className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
+                      selected
+                        ? 'bg-kb-accent/20 border-kb-accent text-kb-accent font-semibold'
+                        : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                )
+              })}
+            </div>
+          )}
         </div>
       </div>
 
@@ -547,6 +631,16 @@ export function MetricChart({
                   cursor={{ stroke: 'var(--kb-border-active)', strokeWidth: 1 }}
                   content={({ active, payload, label }) => {
                     if (!active || !payload?.length) return null
+                    // Effective step from the actual data spacing —
+                    // robust against range option string parsing. We
+                    // claim a marker as "at this hovered timestamp"
+                    // when it sits within ±step/2 of the cursor's X.
+                    const stepSec =
+                      points.length >= 2 ? points[1].t - points[0].t : 60
+                    const tolerance = stepSec / 2
+                    const nearbyMarkers = (eventMarkers ?? []).filter(
+                      (m) => Math.abs(m.timestamp - (label as number)) <= tolerance,
+                    )
                     return (
                       <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
                         <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
@@ -568,6 +662,30 @@ export function MetricChart({
                             </div>
                           ))}
                         </div>
+                        {nearbyMarkers.length > 0 && (
+                          <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                            {nearbyMarkers.map((m, idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <span
+                                  className="w-2 h-2 rounded-full flex-shrink-0"
+                                  style={{ background: m.color ?? '#94a3b8' }}
+                                />
+                                <span className="text-kb-text-secondary truncate max-w-[200px]">
+                                  {m.label}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {tooltipExtra && (() => {
+                          const extra = tooltipExtra(label as number)
+                          if (!extra) return null
+                          return (
+                            <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                              {extra}
+                            </div>
+                          )
+                        })()}
                       </div>
                     )
                   }}
@@ -600,6 +718,35 @@ export function MetricChart({
                     }}
                   />
                 ))}
+                {eventMarkers?.map((m, i) => {
+                  const color = m.color ?? '#94a3b8'
+                  return (
+                    <ReferenceLine
+                      key={`event-${i}`}
+                      x={m.timestamp}
+                      stroke={color}
+                      strokeDasharray="3 3"
+                      strokeWidth={1}
+                      ifOverflow="discard"
+                      // Tiny downward triangle at the top of the
+                      // line — clean signal that "an event happened
+                      // here" without text labels that pile up when
+                      // multiple deploys land close together. The
+                      // event's name lives in the chart tooltip
+                      // (filtered by ±step/2 around the cursor).
+                      label={(props: { viewBox?: { x?: number; y?: number } }) => {
+                        const x = props.viewBox?.x ?? 0
+                        const y = props.viewBox?.y ?? 0
+                        return (
+                          <polygon
+                            points={`${x - 6},${y} ${x + 6},${y} ${x},${y + 9}`}
+                            fill={color}
+                          />
+                        )
+                      }}
+                    />
+                  )
+                })}
                 {series.map((s, i) =>
                   chartType === 'area' ? (
                     <Area

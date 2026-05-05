@@ -89,6 +89,52 @@ Independent toggle from `rbac.mode`. Three values:
   `auth.tokenReview.audience=kubebolt-backend` (matches the
   backend's expected audience).
 
+## Achieving full node coverage
+
+The agent runs as a DaemonSet — one pod per node. When a pod can't
+be scheduled (node CPU/memory pressure, NoSchedule taint without a
+matching toleration, namespace-scoped agent, etc.) KubeBolt loses
+visibility for the workloads on that node. The Workload → Monitor
+view in the dashboard shows an amber **"Partial coverage"** banner
+when this happens, so it's never a silent failure.
+
+The cleanest fix is to give the agent enough scheduling priority to
+preempt lower-priority pods on saturated nodes. Three install modes
+trade off coverage vs cluster policy strictness:
+
+| Your situation | Knobs | Trade-off |
+|---|---|---|
+| **Cloud cluster, no strict admission policy** *(default)* | `priority.enabled=false` | Agent only runs where there's room at scheduling time. Coverage banner alerts you when gaps appear; you can flip the knob then. |
+| **Want full coverage; OPA/Kyverno policy flags `system-*` PriorityClasses outside `kube-system`** | `priority.enabled=true` *(empty `className`)* | Chart creates a managed PriorityClass `<release>-priority` at value `999999000`. High enough to preempt user workloads with no PriorityClass (priority=0), but **outside the `system-*` range** policies typically guard. |
+| **Permissive cluster, want maximum coverage** | `priority.enabled=true`, `priority.className=system-cluster-critical` | Reuses the kubelet-tier PriorityClass. Some auditors flag it outside `kube-system`. |
+| **Custom workload taints on certain nodes** *(GPU pools, dedicated worker pools)* | (current default) `tolerations: [{operator: Exists}]` | Agent already runs on every node. To exclude specific nodes, override `tolerations` to a more restrictive list. |
+
+> ⚠️ **About PriorityClass and preemption.** Increasing the agent's
+> priority means the scheduler can evict pods with priority `0` (the
+> default for any user workload without an explicit `priorityClassName`)
+> on tight nodes to make room. This is a deliberate trade-off — it's
+> the only way to guarantee an agent on every node when nodes are
+> saturated. If your shop is policy-strict, leave `priority.enabled=false`
+> and accept that pods on saturated nodes may not have metrics. The
+> coverage banner ensures the gap is visible, not silent.
+
+> ⚠️ **About tolerations.** The chart defaults to `[{operator: Exists}]`
+> which tolerates **every** taint, including custom ones used to dedicate
+> nodes to specific workloads. If you have GPU pools or dedicated
+> worker pools you don't want the agent on, override:
+>
+> ```yaml
+> tolerations:
+>   - key: node-role.kubernetes.io/control-plane
+>     operator: Exists
+>     effect: NoSchedule
+> ```
+
+> 💡 **Resource requests.** Default requests are intentionally tiny
+> (`10m` CPU / `30Mi` memory) so the agent fits even on busy nodes.
+> Don't raise these unless you have a specific reason; raising them
+> makes Pending pods more likely.
+
 ## Upgrade
 
 ```bash
