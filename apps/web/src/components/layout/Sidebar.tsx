@@ -2,7 +2,6 @@ import { useState, useCallback } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { isDashboardPath } from '@/utils/routes'
 import {
-  Zap,
   LayoutDashboard,
   Box,
   Server,
@@ -37,6 +36,7 @@ import {
 import { useAuth } from '@/contexts/AuthContext'
 import { VERSION } from '@/version'
 import { AboutModal } from '@/components/layout/AboutModal'
+import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import type { ClusterOverview } from '@/types/kubernetes'
 
 interface SidebarProps {
@@ -190,7 +190,7 @@ export function Sidebar({ overview }: SidebarProps) {
         onClick={handleLogoClick}
       >
         <div className={`w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center transition-transform ${celebrating ? 'animate-spin' : ''}`}>
-          <Zap className="w-4 h-4 text-kb-accent" />
+          <KubeBoltLogo className="w-4 h-4 text-kb-accent" />
         </div>
         <div className="flex flex-col">
           <span className="text-sm font-semibold text-kb-text-primary leading-tight">KubeBolt</span>

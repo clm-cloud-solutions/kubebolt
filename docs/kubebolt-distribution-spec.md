@@ -410,10 +410,10 @@ EOF
 # Check status
 kubectl get kubebolt
 # NAME       STATUS    VERSION   AGE
-# kubebolt   Running   1.6.0     5m
+# kubebolt   Running   1.7.0     5m
 
 # Upgrade
-kubectl patch kubebolt kubebolt --type merge -p '{"spec":{"version":"1.7.0"}}'
+kubectl patch kubebolt kubebolt --type merge -p '{"spec":{"version":"1.8.0"}}'
 
 # Delete
 kubectl delete kubebolt kubebolt

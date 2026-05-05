@@ -16,6 +16,16 @@ cd apps/api && go test ./...                                           # Run tes
 cd apps/api && go test ./internal/insights/...                         # Run single package tests
 ```
 
+### Local stack with empty kubeconfig
+```bash
+make dev-clean       # API + Web on host with /tmp/kb-empty-kubeconfig.yaml (no contexts)
+make dev-api-clean   # API only with empty kubeconfig
+```
+Use these when testing the persistent-registry boot-restore path or
+the no-clusters / waiting-for-agent empty-state UX without touching
+your real `~/.kube/config`. The empty kubeconfig is regenerated on
+every invocation so accidental edits don't persist.
+
 ### Frontend (React)
 ```bash
 cd apps/web && npm install    # Install dependencies
@@ -53,7 +63,7 @@ When deployed via Helm, the API auto-detects in-cluster config (ServiceAccount t
 
 Uses `go.work` with three modules:
 - `apps/api` — main backend server
-- `packages/agent` — Phase 2 lightweight node agent (stub)
+- `packages/agent` — DaemonSet node agent. Ships kubelet stats (`metrics/collector.go`) and Hubble flow events (`internal/flows/`) over the gRPC AgentChannel into the backend's VictoriaMetrics ingest. **Aggregator gotcha:** `internal/flows/aggregator.go` filters pod-to-pod flows whose direction != `EGRESS` to dedupe forwarded traffic (each forwarded packet appears twice — egress on source node, ingress on destination), but bypasses that filter when `verdict == "dropped"` because Cilium emits drops with `TRAFFIC_DIRECTION_UNKNOWN` and they appear exactly once at the denial point. Without the bypass, every drop in clusters with active NetworkPolicies is silently swallowed and `pod_flow_events_total{verdict="dropped"}` never reaches VM.
 - `packages/shared` — shared Go utilities
 
 ### Backend (`apps/api`)
@@ -61,7 +71,7 @@ Uses `go.work` with three modules:
 Entry point: `cmd/server/main.go` (flags: `--kubeconfig`, `--port`)
 
 Key packages under `internal/`:
-- **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster. Initial connection is **async** — HTTP server binds immediately; manager starts in disconnected state if the default cluster is unreachable. `ConnError()` exposes the last connection error. **In-cluster support:** when no kubeconfig file is found, auto-detects ServiceAccount token via `rest.InClusterConfig()` and creates a single "in-cluster" context.
+- **cluster/manager.go** — Multi-cluster manager: reads all kubeconfig contexts, handles cluster switching, manages connector/collector/engine lifecycle per cluster. Initial connection is **async** — HTTP server binds immediately; manager starts in disconnected state if the default cluster is unreachable. `ConnError()` exposes the last connection error. **In-cluster support:** when no kubeconfig file is found, auto-detects ServiceAccount token via `rest.InClusterConfig()` and creates a single "in-cluster" context. **Agent-proxy resilience:** `connectToContextLocked` fast-fails (sub-millisecond, no 20s `WaitForCacheSync` wait) when the target context is agent-proxy and `agentRegistry.CountByCluster()==0`. `AddAgentProxyCluster` spawns a goroutine that re-runs the connect on every fresh agent registration when the active context's connector is currently failed; on success, broadcasts `cluster:connected` so the frontend invalidates `['clusters']` + `['cluster-overview']` immediately instead of waiting for the 30s refetch tick.
 - **cluster/connector.go** — Kubernetes client-go shared informers for all resource types + dynamic client for Gateway API (Gateways, HTTPRoutes). `Start()` returns an error if `WaitForCacheSync` does not complete within 20s. `rest.Config.Timeout = 15s` prevents hanging on mid-session cluster failures. Informers are **gated by permissions** — only started for resources the connected SA can access. For namespace-scoped SAs, creates per-namespace `SharedInformerFactory` instances instead of a single cluster-wide factory.
 - **cluster/permissions.go** — RBAC permission probing via `SelfSubjectAccessReview`. Probes 22 resource types at connection time (list verb only, ~2-5s). Two-phase probe: cluster-wide first, then namespace-level fallback for RoleBinding-based access. `PermissionDeniedError` type for 403 responses. `ResourcePermissions` map tracks `CanList`/`CanWatch`/`CanGet` per resource, plus `NamespaceScoped` flag and `Namespaces` list for namespace-scoped SAs.
 - **cluster/nslister.go** — Multi-namespace lister wrappers that aggregate results from per-namespace informer factories. Implements all client-go lister interfaces (`PodLister`, `DeploymentLister`, etc.) with `List()` merging across factories and `Get()` trying each factory until found. Required for namespace-scoped ServiceAccounts.
@@ -69,8 +79,8 @@ Key packages under `internal/`:
 - **cluster/relationships.go** — Edge detection: ownerRefs, selectors, Gateway parentRefs, volumes. All lister calls nil-guarded for partial-permission scenarios.
 - **metrics/collector.go** — Polls Metrics Server API (`metrics.k8s.io/v1beta1`) every 30s with synchronous initial poll. In-memory cache, no DB. Supports **per-namespace polling** when cluster-wide metrics access is denied (namespace-scoped SAs). Distinguishes 403 Forbidden from "metrics server not installed" via `apierrors.IsForbidden()`.
 - **insights/engine.go** — 12 rule-based insight evaluations (crash-loop, OOM, CPU throttle, memory pressure, etc.)
-- **websocket/hub.go** — WebSocket connection management (4096 buffer, silent drops when no clients)
-- **api/router.go** — Chi router with `requireConnector` middleware guarding all cluster-dependent routes; `/clusters` and `/clusters/switch` are always available even when disconnected.
+- **websocket/hub.go** — WebSocket connection management (4096 buffer, silent drops when no clients). Event types in `websocket/events.go`: `resource:updated`, `resource:deleted`, `event:new`, `insight:new`, `insight:resolved`, `metrics:refresh`, `cluster:connected` (fired when an agent-proxy connector recovers).
+- **api/router.go** — Chi router with `requireConnector` middleware guarding all cluster-dependent routes; `/clusters`, `/clusters/switch`, `/integrations`, `/integrations/{id}` (catalog read-only) and the `/admin/*` administration endpoints are always available even when disconnected. Install / configure / uninstall on integrations stay inside `requireConnector` (admin role + cluster needed).
 - **api/handlers.go** — REST handlers including resource detail with metrics injection, YAML endpoint (dynamic client), pod logs streaming, deployment/statefulset/daemonset/job pod listing, deployment history. Permission-denied errors mapped to HTTP 403 (was generic 404/500). YAML apply via PUT endpoint. New `getPermissions` handler.
 - **api/exec.go** — WebSocket-to-SPDY exec bridge for pod terminal. Auto-detects shell (bash → sh). Handles permission errors, session lifecycle, terminal resize.
 - **api/portforward.go** — PortForwardManager for pod port forwarding via SPDY. TCP listener on backend host with reverse proxy fallback. Start/Stop/List/StopAll with auto-cleanup on cluster switch.
@@ -80,13 +90,16 @@ Key packages under `internal/`:
 - **api/files.go** — Pod file browser via exec-based `ls`/`find`/`cat` commands. List directories, view file content (1MB limit), download files. Handles distroless containers and permission denied gracefully.
 - **api/copilot.go** — AI Copilot chat handler with multi-step tool calling loop. SSE streaming. Auto-fallback to secondary provider on recoverable errors (429, 5xx, network). Reads `KUBEBOLT_AI_*` env vars via `config.LoadCopilotConfig()`.
 - **copilot/** — Copilot package: provider interface, Anthropic + OpenAI adapters, tool executor (server-side, calls existing connector methods), system prompt builder, tool definitions. BYO key model — no KubeBolt-managed AI service.
-- **auth/store.go** — User store backed by BoltDB (`go.etcd.io/bbolt`, pure Go, no CGO). Schema: `users` and `refresh_tokens` buckets with username index. CRUD for users, refresh token rotation, admin seed on first boot. Bcrypt cost 12 for password hashing.
+- **auth/store.go** — User store backed by BoltDB (`go.etcd.io/bbolt`, pure Go, no CGO). Schema: `users`, `refresh_tokens`, `tenants`, `clusters`, `cluster_display`, `copilot_sessions`, `agents` (persistent agent records — see `agent/channel/registry_store.go`), and `username_index`/`tenant_*_index` indices. CRUD for users, refresh token rotation, admin seed on first boot. Bcrypt cost 12 for password hashing. Buckets created at boot via `NewStore`; missing buckets are added automatically on upgrade so the schema can evolve forward-compat.
 - **auth/jwt.go** — JWT service: HS256 access tokens (short-lived, 15m default) with `uid`/`usr`/`role` claims. Refresh tokens are random hex strings stored hashed (SHA-256) in BoltDB.
 - **auth/middleware.go** — `RequireAuth` middleware validates JWT from `Authorization: Bearer` header. `RequireRole(minRole)` checks role hierarchy (viewer < editor < admin). When auth is disabled, `ContextRole()` returns `RoleAdmin` (pass-through).
 - **auth/handlers.go** — Login (bcrypt verify + JWT + httpOnly refresh cookie), refresh (token rotation), logout, me, change password. Cookie: `kb_refresh`, path `/api/v1/auth`, httpOnly, SameSite=Strict.
 - **auth/user_handlers.go** — Admin-only user CRUD. Protections: cannot delete self, cannot delete/demote last admin. Password minimum 8 chars.
 - **config/auth.go** — `LoadAuthConfig()` reads `KUBEBOLT_AUTH_*` env vars. Auto-generates admin password (printed to stderr) and JWT secret (with restart warning) if not set.
 - **models/types.go** — All domain types: `ClusterOverview` (with counts for 15 resource types + `Permissions` map), `ResourceUsage`, `ResourceList` (with `Forbidden` flag), `Insight`, `TopologyNode/Edge`, `ClusterInfoResponse`
+- **agent/channel/registry.go** + **agent/channel/registry_store.go** — In-memory `AgentRegistry` (live channels, keyed by `<clusterID>/<agentID>`) backed by a persistent `AgentStore` interface. `BoltAgentStore` writes JSON-encoded `AgentRecord` values (capabilities, displayName from Hello label `kubebolt.io/cluster-name`, node, version, FirstSeen/LastSeen/DisconnectedAt) to the `agents` bucket on every `Register`; `MemoryAgentStore` is the test impl. On boot, `cmd/server/main.go` lists records, filters `HasKubeProxy()`, picks the most-recent display name per `cluster_id`, and replays into `manager.AddAgentProxyCluster` BEFORE the gRPC server binds — so the cluster selector keeps showing previously-connected agent-proxy clusters from boot. A 1h ticker prunes records with non-zero `DisconnectedAt` older than the horizon (default 24h, override via `KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON`). Records for currently-connected agents (DisconnectedAt zero) never expire.
+- **agent/server.go** — gRPC `AgentChannel` handler. **Welcome before Register** is a hard ordering rule: the agent's reader bails with a 1m backoff if anything other than Welcome is the first message it receives, so `Send(Welcome)` runs BEFORE `registry.Register(agent)` to prevent the multiplexor from routing a `kube_request` to an agent that's still mid-handshake. Defers stay in their LIFO teardown order: `defer maybeAutoUnregisterCluster` (fires last), `defer registeredAgent.Close` (middle), `defer registry.Unregister` (first).
+- **agent/channel/tunnel.go** — `TunnelConn` (net.Conn over the gRPC channel for SPDY exec/portforward/files). Credit-based flow control via `KubeStreamAck` (256 KiB window default, configurable via `TunnelWindowBytes`). **Idle watchdog:** every successful Read/Write bumps `lastActivity` (atomic int64 unix-nano); if `idleTimeout > 0` (default `DefaultTunnelIdleTimeout = 5m`, override via `KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT`) a goroutine ticks at `timeout/4` (floored at 100ms so unit tests work) and closes the tunnel with `reason="idle timeout"` when the gap exceeds the window — catches orphan tunnels left behind when the agent crashes mid-session. **Audit log:** one `INFO agent-proxy tunnel opened` line on construction and one `agent-proxy tunnel closed` on `Close()` carrying cluster_id, agent_id, request_id, path, reason, duration, bytes_in, bytes_out. `closeReason` is stashed by `demuxLoop` on peer-EOF / `StreamClosed` / multiplexor-slot-close so the audit log distinguishes those from a `local close`.
 
 ### API Endpoints
 
@@ -186,9 +199,43 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 - Cross-resource links: Pod→Node, PVC→PV/StorageClass, HPA→target, namespace links
 - Configurable refresh interval (5s–2m) persisted in localStorage, selector in DataFreshnessIndicator
 
+### Dashboard Sub-tabs
+
+The Dashboard surface is split into three sub-tabs that share the same `OverviewHeader` + `RangeSelector` + `DataFreshnessIndicator` chrome but offer different lenses on the cluster:
+
+| Route | Component | Question it answers |
+|-------|-----------|---------------------|
+| `/` | `OverviewPage` | "Is everything fine right now?" — at-a-glance scan |
+| `/capacity` | `CapacityPage` | "How is the cluster consuming, and is it sized right?" — investigation |
+| `/reliability` | `ReliabilityPage` | "What's the cluster actually serving?" — Hubble L7 lens, conditional |
+
+`DashboardSubTabs.tsx` is the underline-active sub-nav. Reliability is gated on `useHubbleAvailable()` (`apps/web/src/hooks/useHubbleAvailable.ts`) — a 60s-cached probe of `count(pod_flow_http_requests_total{source="hubble"})`. When zero, the tab disappears entirely; an empty Reliability page would be noise, not invitation. The Sidebar's Overview item AND the Topbar's Dashboard pill mark active across all three sub-tabs via `isDashboardPath()` from `apps/web/src/utils/routes.ts`. Future sub-tabs add to `DASHBOARD_PATHS` in that file.
+
+**CapacityPage panels** — 2×2 trends grid (CPU / Memory / Network / Filesystem) from VictoriaMetrics, overlaid with deploy markers from `/deploys` (backend walks ReplicaSet creation timestamps to emit `DeployEvent[]`); Recent Deploys table; `TopWorkloadsCpu` (cluster-wide top consumers, `label_replace` chain collapses ReplicaSet → Deployment); `RightSizingPanel` (deterministic NEAR-LIMIT / OVER-PROV / NO-SPECS rules with absolute floors of 50m CPU / 100Mi memory).
+
+**ReliabilityPage panels** — Cluster error rate chart split into 4xx + 5xx series, with `MetricChart`'s new `tooltipExtra` slot showing absolute volume context at the hovered timestamp (separate range query joined client-side via fuzzy ±step/2 lookup); `TopWorkloadsTraffic` (status_class distribution bar + chips + req/s sparkline); `TopLatencyWorkloads` (160×20 latency sparkline + inline `min..max` from the trend array, no extra query — status breakdown lives in tooltip only to avoid duplicating Traffic); `ErrorHotspots` (sorted by absolute error req/s, not %, so consistently-failing low-volume flows aren't buried); `NetworkDrops` (L4 `verdict=dropped` from `pod_flow_events_total` — the early-warning channel for NetworkPolicy violations and connection refused that HTTP panels miss).
+
+**StatusDistribution shared module** (`apps/web/src/components/dashboard/StatusDistribution.tsx`) — `StatusDistBar`, `ClassRates`, `ClassTooltipRows` visual primitives + `useWorkloadStatusDist(rangeMinutes)` hook with shared queryKey so Traffic and Latency dedupe the same VM round-trip. Agent emits `ok` / `redir` / `client_err` / `server_err` / `info` / `unknown` for status_class — `buildDistIndex` maps these to `success` / `redirect` / `clientErr` / `serverErr` / `unknown` buckets (1xx folded into "other" since it's vanishingly rare).
+
+**Kobi triggers for panels** (`apps/web/src/services/copilot/triggers.ts`) — `panel_inquiry` payload type with kind discriminator (`top_consumers_cpu`, `right_sizing`, `recent_deploys`, `top_workloads_traffic`, `error_hotspots`, `top_latency`, `network_drops`). Multi-row variant for panel-level Ask-Kobi, single-row variant (`singleLead` / `singleClose`) for per-row Ask-Kobi where each row is its own actionable investigation (Recent Deploys, Right-sizing, Error Hot-spots, Network Drops). Operational hints baked into the close prompts — e.g. `error_hotspots` reminds the LLM that 4xx points at the caller while 5xx points at the receiver.
+
+**`MetricChart` `tooltipExtra` prop** — optional callback receiving the hovered timestamp (unix seconds) and returning JSX rendered below the standard payload, behind a divider. Lets a page surface out-of-band context (separate range query, joined map) without forcing every chart to learn about it. Default behavior unchanged for charts that don't pass the prop. Also added `'percent'` to `UnitKind` (label `%`, divisor 1) and `errorRate` accent (red `#ef4056`) to `METRIC_ACCENTS`.
+
+**`collapsePodToWorkload` helper** (`apps/web/src/utils/promql.ts`) — three-pass `label_replace` chain that derives a `workload` label from a Hubble pod-keyed metric: pass 1 sets workload = pod (default fallback), pass 2 strips a single trailing hash (DaemonSet shape), pass 3 strips two trailing hashes (ReplicaSet/Deployment shape). StatefulSet pods retain their full name (numeric ordinal `redis-0` doesn't match `[a-z0-9]{4,8}`), which is correct — the pod IS the unit in a StatefulSet. Accepts `podLabel` (default `dst_pod`) and `outputLabel` (default `workload`) so both src and dst can be collapsed in the same query (used by `ErrorHotspots` and `NetworkDrops`).
+
+**Layout empty-state precedence** (`components/layout/Layout.tsx`) — the main render branch picks one of these in order:
+1. `isSwitching` → "Connecting to cluster" spinner.
+2. `isPlatformRoute` (`/clusters`, `/admin/*`, `/settings`) → render `<Outlet />` regardless of cluster state, so the user can manage from inside an empty state.
+3. `noClusters` (clusters list `null` or `[]`) → centered "No clusters configured" + admin-only "Add cluster" CTA → `/clusters`. Detect both `null` (Go's nil-slice JSON shape) AND `[]`.
+4. `isAwaitingAgent` (503 with error message matching `/no agent connected yet|waiting for agent to register/i`) → spinner + "Waiting for agent to register" copy and **no Retry button** (clicking it just re-fast-fails). The page auto-heals via the `cluster:connected` WS broadcast.
+5. `isUnavailable` (any other 503) → existing "Cluster unreachable" + Retry button + auto-retry-every-30s.
+6. else → `<Outlet />`.
+
+When adding a new platform-level route that doesn't depend on a cluster, append it to `PLATFORM_ROUTE_PREFIXES` in Layout so it bypasses the empty-state branches.
+
 **Key frontend behaviors:**
-- TanStack Query `retry` skips retries on 503 (cluster unavailable) and 403 (permission denied)
-- `ApiError` (from `api.ts`) used to detect 503/403 vs other errors
+- TanStack Query `retry` skips retries on 503 (cluster unavailable) and 403 (permission denied). Targeted invalidation via the `cluster:connected` WS event in `useWebSocket` brings stale 503-ed queries back without waiting on the 30s refetch interval.
+- `ApiError` (from `api.ts`) used to detect 503/403 vs other errors. Layout regex-matches `error.message` for "no agent connected yet" / "waiting for agent to register" to choose the awaiting-agent branch over the generic unreachable one.
 - Resource list pages support server-side pagination (50/page) with prev/next controls, debounced search with `keepPreviousData`
 - Cluster switcher uses optimistic updates, shows "Connecting to cluster" overlay during switch, navigates to Overview on success
 - Sidebar shows resource counters from overview API (15 resource types); restricted resources dimmed with shield icon

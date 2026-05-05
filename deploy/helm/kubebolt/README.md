@@ -43,6 +43,10 @@ Open http://localhost:3000
 | `metrics.storage.embedded.persistence.storageClass` | Storage class (cluster default if empty) | `""` |
 | `metrics.storage.embedded.resources` | VM resource requests/limits | 100m/256Mi - 1000m/2Gi |
 | `metrics.storage.externalUrl` | URL of an external VictoriaMetrics (used when embedded is disabled) | `""` |
+| `agentIngest.enabled` | Bind the gRPC channel for `kubebolt-agent` connections | `true` |
+| `agentIngest.port` | gRPC port the agent dials | `9090` |
+| `agentIngest.authMode` | `disabled` / `permissive` / `enforced`. Controls whether unauthenticated agents are rejected at the welcome handshake. `permissive` accepts but logs a warning — useful while migrating an existing fleet onto auth. | `disabled` |
+| `agentIngest.tokenAudience` | Audience the projected SA token must carry when `auth.mode=tokenreview` on the agent side. Empty = backend default (`kubebolt-backend`) | `""` |
 | `auth.enabled` | Enable built-in authentication | `true` |
 | `auth.adminPassword` | Initial admin password (generated if empty) | `""` |
 | `auth.jwtSecret` | JWT signing secret (generated if empty, won't survive restarts) | `""` |
@@ -233,6 +237,19 @@ KubeBolt deploys three workloads:
 - **VictoriaMetrics** (StatefulSet, optional) — Time-series database for metrics and flow events. Deployed by default; can be replaced with an external instance via `metrics.storage.externalUrl`.
 
 The Helm chart creates a ServiceAccount with a ClusterRole granting read access to all cluster resources, plus exec and port-forward permissions for pod management.
+
+### Agent-proxy clusters
+
+Clusters reached via `kubebolt-agent` (DaemonSet inside another
+cluster, dialing back to this backend's gRPC port) are persisted in
+the API's BoltDB and **restored on boot** before the gRPC server
+starts accepting traffic — so a `helm upgrade` or pod-restart of the
+API doesn't blank the cluster selector for the ~30s window each
+agent takes to reconnect. Records older than 24h whose agent never
+reconnected are pruned automatically;
+`KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON` (parseable Go duration, e.g.
+`12h`, `7d`) overrides the horizon if you need longer or shorter
+retention.
 
 ## RBAC
 

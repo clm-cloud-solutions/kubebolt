@@ -197,10 +197,6 @@ function DropTooltip({ row }: { row: DropRow }) {
         <TooltipRow color={null} label="Source ns" value={row.srcNamespace} />
         <TooltipRow color={null} label="Dest ns" value={row.dstNamespace} />
       </div>
-      <div className="mt-2 pt-1.5 border-t border-kb-border/60 text-[10px] text-kb-text-tertiary leading-relaxed">
-        Most likely a NetworkPolicy / CiliumNetworkPolicy blocking traffic.
-        Could also be connection refused or destination pod down.
-      </div>
     </>
   )
 }

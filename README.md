@@ -37,7 +37,41 @@ Full cluster visibility in under 2 minutes. No agents, no configuration, no Prom
 ---
 
 ### Dashboard Overview
-![KubeBolt Dashboard](docs/images/kubebolt-dashboard.webp)
+
+The dashboard is split into three sub-tabs that share the same range
+selector and freshness indicator but offer different lenses on the
+cluster.
+
+**Overview — at-a-glance scan.** KPIs, commitment bars, workload
+health, namespace tiles, recent events. Answers "is everything fine
+right now?".
+
+![KubeBolt Dashboard — Overview](docs/images/kubebolt-dashboard.webp)
+
+**Capacity — investigation surface.** 2×2 trend charts (CPU / Memory
+/ Network / Filesystem) overlaid with deploy markers so a metric
+shift can be correlated with what changed; Recent Deploys table;
+cluster-wide Top Workloads · CPU; deterministic Right-sizing
+Recommendations driven by 7d P95 (over-provisioned / near-limit /
+no-specs).
+
+![KubeBolt Dashboard — Capacity](docs/images/kubebolt-dashboard-capacity.webp)
+
+**Reliability — Hubble L7 lens.** Surfaces only when Hubble HTTP
+metrics are flowing into VictoriaMetrics: cluster error rate split
+by 4xx / 5xx; Top Workloads · Traffic with status_class distribution;
+Top Workloads · Latency with min..max range; Error Hot-spots ranked
+by absolute error req/s; L4 Network Drops for NetworkPolicy
+violations and connection refused. Empty when Hubble isn't installed
+— no placeholder banner; the tab simply doesn't appear until L7
+data exists.
+
+![KubeBolt Dashboard — Reliability](docs/images/kubebolt-dashboard-reliability.webp)
+
+Each panel ships with an Ask-Kobi affordance — panel-level for
+summarization, plus per-row on rows where each one is its own
+actionable investigation (Recent Deploys, Right-sizing, Error
+Hot-spots, Network Drops).
 
 ### Cluster Topology Map
 ![KubeBolt Cluster Map](docs/images/kubebolt-cluster-map.webp)
@@ -256,6 +290,12 @@ able to do (full picker in
 | `reader` | ✅ | ❌ | recommended |
 | `operator` | ✅ | ✅ | **yes** |
 
+Once an agent has connected, its cluster registration **survives
+backend restarts** — the cluster selector keeps showing the agent-
+proxy entry from boot, instead of going blank for the agent's
+reconnect window. See `docs/architecture/sprint-a5-agent-proxy.md`
+for the persistent-registry details.
+
 Install paths — pick whichever fits your shop:
 
 ```bash
@@ -455,7 +495,6 @@ See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and ro
 - Teams and organizations
 - Hierarchical AI agents (detectors → router → investigator → planner → executor → postmortem) with per-incident economy via tiered model selection
 - JSON-aware truncation in tool results (structure-aware rather than byte-aligned)
-- Coverage-gap banner on workload Monitor charts when the agent doesn't reach every node carrying a replica
 
 ## License
 
