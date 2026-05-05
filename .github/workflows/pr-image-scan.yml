@@ -51,7 +51,7 @@ jobs:
           fi
 
       - name: Trivy scan VictoriaMetrics image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
           format: table
@@ -64,7 +64,7 @@ jobs:
 
       - name: Trivy scan VictoriaMetrics image (SARIF)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
           format: sarif

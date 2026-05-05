@@ -49,7 +49,7 @@ jobs:
           fi
 
       - name: Trivy scan VictoriaMetrics image
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
           format: table
@@ -62,7 +62,7 @@ jobs:
 
       - name: Trivy scan VictoriaMetrics image (SARIF for code scanning)
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
           format: sarif
@@ -190,7 +190,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Trivy scan API image (by digest)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.API_IMAGE }}@${{ needs.build-api.outputs.digest }}
           format: table
@@ -202,7 +202,7 @@ jobs:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
       - name: Trivy scan Web image (by digest)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.WEB_IMAGE }}@${{ needs.build-web.outputs.digest }}
           format: table
@@ -214,7 +214,7 @@ jobs:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
       - name: Trivy scan single-container image (by digest)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}@${{ needs.build-single-container.outputs.digest }}
           format: table
@@ -230,7 +230,7 @@ jobs:
       # always upload the report to code scanning for visibility.
       - name: Trivy SARIF — API
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.API_IMAGE }}@${{ needs.build-api.outputs.digest }}
           format: sarif
@@ -242,7 +242,7 @@ jobs:
 
       - name: Trivy SARIF — Web
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.WEB_IMAGE }}@${{ needs.build-web.outputs.digest }}
           format: sarif
@@ -254,7 +254,7 @@ jobs:
 
       - name: Trivy SARIF — single-container
         if: always()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}@${{ needs.build-single-container.outputs.digest }}
           format: sarif
@@ -276,7 +276,7 @@ jobs:
       # Track) can ingest the exact composition we shipped.
       - name: Trivy SBOM — API
         if: success()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.API_IMAGE }}@${{ needs.build-api.outputs.digest }}
           format: cyclonedx
@@ -286,7 +286,7 @@ jobs:
 
       - name: Trivy SBOM — Web
         if: success()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ${{ env.WEB_IMAGE }}@${{ needs.build-web.outputs.digest }}
           format: cyclonedx
@@ -296,7 +296,7 @@ jobs:
 
       - name: Trivy SBOM — single-container
         if: success()
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: ghcr.io/${{ github.repository }}@${{ needs.build-single-container.outputs.digest }}
           format: cyclonedx
