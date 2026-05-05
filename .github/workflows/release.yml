@@ -264,12 +264,28 @@ jobs:
         env:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
-      - name: Upload Trivy SARIF reports
+      # GitHub Code Scanning rejects multiple SARIF runs sharing a category
+      # (change rolled out 2025-07-21), so each image uploads under its own.
+      - name: Upload Trivy SARIF — API
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: '.'
-          category: trivy-release-images
+          sarif_file: trivy-api.sarif
+          category: trivy-release-api
+
+      - name: Upload Trivy SARIF — Web
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-web.sarif
+          category: trivy-release-web
+
+      - name: Upload Trivy SARIF — single-container
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-single.sarif
+          category: trivy-release-single
 
       # CycloneDX SBOM per image — attached to the GitHub Release so
       # downstream consumers and SBOM-driven scanners (e.g. Dependency
