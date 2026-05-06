@@ -1,18 +1,20 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
-import { StatusBadge } from './StatusBadge'
 import { UsageBar } from './UsageBar'
+import { NodeActionMenu } from './NodeActionMenu'
+import { DrainModal } from './DrainModal'
 import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
 import { MetricChart } from '@/components/shared/MetricChart'
 import { api } from '@/services/api'
 import { formatCPU, formatMemory } from '@/utils/formatters'
 import type { ResourceItem } from '@/types/kubernetes'
 
-function NodeCard({ node }: { node: ResourceItem }) {
+function NodeCard({ node, onDrain }: { node: ResourceItem; onDrain: (node: ResourceItem) => void }) {
   const cpuPercent = Number(node.cpuPercent ?? 0)
   const memPercent = Number(node.memoryPercent ?? 0)
   const cpuUsage = Number(node.cpuUsage ?? 0)
@@ -24,6 +26,7 @@ function NodeCard({ node }: { node: ResourceItem }) {
   const kubeletVersion = (node.kubeletVersion as string) ?? ''
   const containerRuntime = (node.containerRuntime as string) ?? ''
   const hasMetrics = cpuUsage > 0 || memUsage > 0
+  const unschedulable = (node as unknown as { unschedulable?: boolean }).unschedulable === true
 
   return (
     <Link to={`/nodes/_/${node.name}`} className="block bg-kb-card border border-kb-border rounded-[10px] p-4 hover:bg-kb-card-hover transition-colors">
@@ -31,9 +34,20 @@ function NodeCard({ node }: { node: ResourceItem }) {
       <div className="flex items-center gap-2.5 mb-3">
         <div className={`w-2.5 h-2.5 rounded-full ${node.status === 'Ready' ? 'bg-status-ok' : 'bg-status-error'}`} />
         <div className="flex-1 min-w-0">
-          <div className="text-[13px] font-semibold text-kb-text-primary truncate">{node.name}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-[13px] font-semibold text-kb-text-primary truncate">{node.name}</div>
+            {unschedulable && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="Node is cordoned — new pods will not be scheduled here"
+              >
+                SchedulingDisabled
+              </span>
+            )}
+          </div>
           <div className="text-[10px] font-mono text-kb-text-tertiary">{(node.labels as Record<string, string>)?.['node.kubernetes.io/instance-type'] || ''}</div>
         </div>
+        <NodeActionMenu node={node} onDrain={onDrain} />
       </div>
 
       {/* Bars */}
@@ -77,6 +91,10 @@ function NodeCard({ node }: { node: ResourceItem }) {
 
 export function NodesPage() {
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources('nodes')
+  // Drain modal lives at the page level rather than per-card so a
+  // single instance can render even when the operator opens it from
+  // any node card. Keeps state from leaking into NodeCard re-renders.
+  const [drainTarget, setDrainTarget] = useState<ResourceItem | null>(null)
 
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
@@ -96,10 +114,13 @@ export function NodesPage() {
       </div>
       <div className="grid grid-cols-3 gap-3 mb-5">
         {nodes.map((node) => (
-          <NodeCard key={node.name} node={node} />
+          <NodeCard key={node.name} node={node} onDrain={setDrainTarget} />
         ))}
       </div>
       <NodeFleetCharts />
+      {drainTarget && (
+        <DrainModal node={drainTarget} onClose={() => setDrainTarget(null)} />
+      )}
     </div>
   )
 }

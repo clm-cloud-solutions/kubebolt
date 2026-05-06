@@ -454,6 +454,72 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Node maintenance — cordon / uncordon. Drain lives separately
+  // because it streams SSE rather than returning a single JSON
+  // response. Both use the same `_` placeholder for the namespace
+  // segment of cluster-scoped resources.
+  cordonNode: (name: string, source?: string) =>
+    postJSON<{ status: 'cordoned'; alreadyCordoned: boolean; node: ResourceItem | null }>(
+      `${API_BASE}/resources/nodes/_/${name}/cordon`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  uncordonNode: (name: string, source?: string) =>
+    postJSON<{ status: 'uncordoned'; alreadyUncordoned: boolean; node: ResourceItem | null }>(
+      `${API_BASE}/resources/nodes/_/${name}/uncordon`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Drain — long-running streaming operation. The POST body
+  // configures the drain; the response IS the SSE stream of pod-
+  // evicted events terminating in drain-complete. We return the
+  // raw Response so the caller can use `response.body.getReader()`
+  // to parse events as they arrive — JSON parsing wouldn't fit
+  // since the body never closes until the drain finishes.
+  drainNode: (
+    name: string,
+    body: {
+      gracePeriodSeconds: number
+      timeoutSeconds: number
+      deleteEmptyDirData: boolean
+      ignoreDaemonsets: boolean
+      force: boolean
+      disableEviction: boolean
+    },
+    source?: string,
+    signal?: AbortSignal,
+  ) =>
+    fetchWithAuth(`${API_BASE}/resources/nodes/_/${name}/drain`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(source ? { 'X-KubeBolt-Action-Source': source } : {}),
+      },
+      body: JSON.stringify(body),
+      signal,
+    }),
+
+  // Re-attach to an in-flight drain. Returns 404 if no session is
+  // active for this node, otherwise the same SSE stream the POST
+  // would have produced (with replay of past events first). Used
+  // when the operator closes the modal mid-drain and reopens it.
+  attachDrainSession: (name: string, signal?: AbortSignal) =>
+    fetchWithAuth(`${API_BASE}/resources/nodes/_/${name}/drain`, {
+      method: 'GET',
+      signal,
+    }),
+
+  // Cancel an in-flight drain. Pods already submitted for eviction
+  // continue terminating per their grace period; new evictions
+  // stop. The backend's session emits drain-complete with
+  // status=cancelled.
+  cancelDrain: (name: string) =>
+    deleteRequest<{ status: string; node: string }>(
+      `${API_BASE}/resources/nodes/_/${name}/drain`,
+    ),
+
   // Port forwarding
   createPortForward: (body: { namespace: string; pod: string; container?: string; remotePort: number }) =>
     postJSON<{ id: string; url: string; namespace: string; pod: string; remotePort: number; localPort: number; status: string; createdAt: string }>(

@@ -570,6 +570,143 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+// handleCordon marks a Node unschedulable. It's the equivalent of
+// `kubectl cordon <node>` — the controller stops placing new pods on
+// the node, but existing pods keep running. Operators usually pair
+// this with `drain` (Cut 2 of node-maintenance) for a full
+// maintenance window; cordon alone is the right call when you want
+// to prevent NEW workloads from landing without disrupting current
+// ones.
+//
+// We Get-then-Patch instead of blind-Patch so we can detect the
+// already-cordoned no-op and surface it explicitly. Some admission
+// webhooks have side effects on every Patch even when the field
+// doesn't change, so the round-trip is worth the extra read.
+func (h *handlers) handleCordon(w http.ResponseWriter, r *http.Request) {
+	h.handleSetNodeSchedulability(w, r, true /*unschedulable*/, "cordon")
+}
+
+// handleUncordon is cordon's inverse — clears Node.spec.unschedulable
+// so the controller can place pods on the node again. Same Get-then-
+// Patch shape, same audit + response semantics.
+func (h *handlers) handleUncordon(w http.ResponseWriter, r *http.Request) {
+	h.handleSetNodeSchedulability(w, r, false /*unschedulable*/, "uncordon")
+}
+
+// handleSetNodeSchedulability is the shared implementation behind
+// cordon/uncordon. Pulled out so the audit-action label, target-state
+// flag, and "alreadyX" response key are the only things that vary.
+func (h *handlers) handleSetNodeSchedulability(w http.ResponseWriter, r *http.Request, target bool, action string) {
+	resourceType := chi.URLParam(r, "type")
+	name := chi.URLParam(r, "name")
+
+	// Node is cluster-scoped. The router uses the same {type}/{ns}/{name}
+	// template as namespaced resources for consistency, with `_` as the
+	// placeholder. We don't read namespace because nodes don't have one,
+	// but we do enforce that the type is right — otherwise a
+	// `POST /resources/pods/.../cordon` would silently no-op.
+	if resourceType != "nodes" {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot %s %s — only nodes are cordon/uncordon-able", action, resourceType))
+		return
+	}
+
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+
+	clientset := conn.Clientset()
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	node, err := clientset.CoreV1().Nodes().Get(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		auditMutation(r, action, resourceType, "", name, nil, err)
+		respondMutationError(w, err)
+		return
+	}
+
+	already := node.Spec.Unschedulable == target
+	params := map[string]any{
+		"target":  target,
+		"alreadyAtTarget": already,
+	}
+
+	if already {
+		// No-op: skip the apiserver round-trip but still return the
+		// node detail so the client's setQueryData stays consistent.
+		auditMutation(r, action, resourceType, "", name, params, nil)
+		nodeDetail, _ := conn.GetResourceDetail("nodes", "", name)
+		if nodeDetail != nil {
+			// We Get'd live above; informer can still lag, so
+			// override defensively for parity with the patch path.
+			nodeDetail["unschedulable"] = target
+		}
+		respondJSON(w, http.StatusOK, buildSchedulabilityResponse(action, nodeDetail, true))
+		return
+	}
+
+	patch, err := buildSchedulabilityPatch(target)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to build patch")
+		return
+	}
+
+	if _, err := clientset.CoreV1().Nodes().Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		auditMutation(r, action, resourceType, "", name, params, err)
+		log.Printf("%s failed for node/%s: %v", action, name, err)
+		respondMutationError(w, err)
+		return
+	}
+
+	auditMutation(r, action, resourceType, "", name, params, nil)
+	nodeDetail, _ := conn.GetResourceDetail("nodes", "", name)
+	// GetResourceDetail reads from the local informer cache, which
+	// can lag the apiserver by a few hundred milliseconds. The
+	// patch we just sent might not have been observed yet, so the
+	// `unschedulable` field can come back stale (showing the
+	// pre-patch value). Override it with the target we know we
+	// just set — this keeps the client's optimistic update from
+	// being overridden by lagging cache data.
+	if nodeDetail != nil {
+		nodeDetail["unschedulable"] = target
+	}
+	respondJSON(w, http.StatusOK, buildSchedulabilityResponse(action, nodeDetail, false))
+}
+
+// buildSchedulabilityPatch returns the JSON merge-patch body for
+// flipping Node.spec.unschedulable. Extracted so tests can verify
+// the exact bytes without standing up an apiserver.
+func buildSchedulabilityPatch(unschedulable bool) ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"spec": map[string]interface{}{
+			"unschedulable": unschedulable,
+		},
+	})
+}
+
+// buildSchedulabilityResponse mirrors the `{status, alreadyX, node}`
+// shape the spec defines so cordon and uncordon return the same
+// schema (just with the action-specific status string + flag name).
+func buildSchedulabilityResponse(action string, node map[string]interface{}, already bool) map[string]interface{} {
+	resp := map[string]interface{}{
+		"node": node,
+	}
+	switch action {
+	case "cordon":
+		resp["status"] = "cordoned"
+		resp["alreadyCordoned"] = already
+	case "uncordon":
+		resp["status"] = "uncordoned"
+		resp["alreadyUncordoned"] = already
+	default:
+		resp["status"] = action
+		resp["alreadyAtTarget"] = already
+	}
+	return resp
+}
+
 func containsForbidden(s string) bool {
 	for _, sub := range []string{"forbidden", "Forbidden"} {
 		if len(s) >= len(sub) {

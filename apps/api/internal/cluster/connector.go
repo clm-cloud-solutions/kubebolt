@@ -2363,6 +2363,11 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		"cpuAllocatable":    node.Status.Allocatable.Cpu().MilliValue(),
 		"memoryAllocatable": node.Status.Allocatable.Memory().Value(),
 		"conditions":        nodeConditionsToSlice(node.Status.Conditions),
+		// Schedulability flag — exposed in list payload (not just
+		// detail) so the Nodes page can render the SchedulingDisabled
+		// badge + decide which action menu items to show without an
+		// extra round-trip per card.
+		"unschedulable":     node.Spec.Unschedulable,
 	}
 }
 

@@ -2800,7 +2800,21 @@ export function ResourceDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
+            {/* SchedulingDisabled badge for cordoned nodes — surfaces
+                state at the top of the detail page instead of buried
+                in the allocation card. Mirrors the badge on the
+                Nodes list cards so the visual language is consistent. */}
+            {type === 'nodes' && (item as unknown as { unschedulable?: boolean }).unschedulable === true && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="Node is cordoned — new pods will not be scheduled here"
+              >
+                SchedulingDisabled
+              </span>
+            )}
+          </div>
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
         <div className="flex gap-2 items-center">
