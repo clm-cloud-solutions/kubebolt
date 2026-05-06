@@ -12,9 +12,11 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
@@ -28,6 +30,15 @@ var restartableTypes = map[string]bool{
 var scalableTypes = map[string]bool{
 	"deployments": true,
 	"statefulsets": true,
+}
+
+// setImageableTypes are workload kinds whose pod template containers
+// can be patched in-place via `kubectl set image`. Same set as restart;
+// they all expose `spec.template.spec.containers[]`.
+var setImageableTypes = map[string]bool{
+	"deployments":  true,
+	"statefulsets": true,
+	"daemonsets":   true,
 }
 
 // auditMutation emits a structured audit log entry for any cluster mutation.
@@ -285,6 +296,225 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 		"toRevision":    toRev,
 		"resource":      resource,
 	})
+}
+
+// imagePair is the container/image tuple reported in audit + UI.
+type imagePair struct {
+	Container string `json:"container"`
+	Image     string `json:"image"`
+}
+
+// handleSetImage patches the container image(s) of a Deployment,
+// StatefulSet, or DaemonSet via strategic merge patch — the same
+// behavior as `kubectl set image`. Strategic merge knows that the
+// `containers` array is keyed by `name`, so we only mutate the
+// targeted entries' `image` field; env, volumes, probes, resources,
+// and any other container fields are preserved.
+//
+// The request includes the from-image state in the response so the
+// caller (and the audit log) records both sides of the change.
+func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
+	resourceType := chi.URLParam(r, "type")
+	namespace := chi.URLParam(r, "namespace")
+	name := chi.URLParam(r, "name")
+
+	if namespace == "_" {
+		namespace = ""
+	}
+
+	if !setImageableTypes[resourceType] {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot set-image on %s — only deployments, statefulsets, and daemonsets", resourceType))
+		return
+	}
+
+	var body struct {
+		Images []imagePair `json:"images"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if len(body.Images) == 0 {
+		respondError(w, http.StatusBadRequest, "images is required and must be non-empty")
+		return
+	}
+	for i, img := range body.Images {
+		if img.Container == "" {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("images[%d].container is required", i))
+			return
+		}
+		if img.Image == "" {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf("images[%d].image is required", i))
+			return
+		}
+	}
+
+	conn := h.manager.Connector()
+	if conn == nil {
+		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+
+	clientset := conn.Clientset()
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	// 1. Capture pre-patch state. We need both the from-image map for
+	//    the audit / response AND the set of valid container names so
+	//    we can reject "container does not exist" with a useful error
+	//    instead of silently no-op'ing (which is what strategic merge
+	//    would do — it'd add a phantom container to the array).
+	currentImages, err := getCurrentContainerImages(ctx, clientset, resourceType, namespace, name)
+	if err != nil {
+		auditMutation(r, "set_image", resourceType, namespace, name, nil, err)
+		respondMutationError(w, err)
+		return
+	}
+	validContainers := make([]string, 0, len(currentImages))
+	for _, p := range currentImages {
+		validContainers = append(validContainers, p.Container)
+	}
+
+	fromImages := make([]imagePair, 0, len(body.Images))
+	for _, req := range body.Images {
+		var found *imagePair
+		for i := range currentImages {
+			if currentImages[i].Container == req.Container {
+				found = &currentImages[i]
+				break
+			}
+		}
+		if found == nil {
+			respondError(w, http.StatusBadRequest, fmt.Sprintf(
+				"container %q not found in %s/%s; valid containers: %v",
+				req.Container, resourceType, name, validContainers))
+			return
+		}
+		fromImages = append(fromImages, *found)
+	}
+
+	// 2. Short-circuit if every requested image equals the current
+	//    image. K8s would no-op the patch (no new revision), but
+	//    surfacing "no changes" up front is friendlier than letting
+	//    the client poll for a rollout that never happens.
+	allUnchanged := true
+	for i, req := range body.Images {
+		if req.Image != fromImages[i].Image {
+			allUnchanged = false
+			break
+		}
+	}
+	if allUnchanged {
+		respondJSON(w, http.StatusOK, map[string]any{
+			"status":     "unchanged",
+			"fromImages": fromImages,
+			"toImages":   body.Images,
+		})
+		return
+	}
+
+	// 3. Build the strategic merge patch.
+	patchBytes, err := buildSetImagePatch(body.Images)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to build patch")
+		return
+	}
+
+	params := map[string]any{
+		"fromImages": fromImages,
+		"toImages":   body.Images,
+	}
+
+	switch resourceType {
+	case "deployments":
+		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	case "statefulsets":
+		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	case "daemonsets":
+		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+	}
+
+	if err != nil {
+		auditMutation(r, "set_image", resourceType, namespace, name, params, err)
+		log.Printf("Set-image failed for %s/%s/%s: %v", resourceType, namespace, name, err)
+		respondMutationError(w, err)
+		return
+	}
+
+	auditMutation(r, "set_image", resourceType, namespace, name, params, nil)
+	// Return the post-mutation resource so the client can setQueryData
+	// on its detail query and reflect the change immediately, same
+	// pattern as handleRestart / handleScale.
+	resource, _ := conn.GetResourceDetail(resourceType, namespace, name)
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"status":     "patched",
+		"fromImages": fromImages,
+		"toImages":   body.Images,
+		"resource":   resource,
+	})
+}
+
+// getCurrentContainerImages returns the current container/image pairs
+// of a workload's pod template spec. Used by handleSetImage to capture
+// pre-patch state and to validate that every requested container
+// actually exists.
+func getCurrentContainerImages(ctx context.Context, clientset kubernetes.Interface, resourceType, namespace, name string) ([]imagePair, error) {
+	switch resourceType {
+	case "deployments":
+		d, err := clientset.AppsV1().Deployments(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return containersToImagePairs(d.Spec.Template.Spec.Containers), nil
+	case "statefulsets":
+		sts, err := clientset.AppsV1().StatefulSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return containersToImagePairs(sts.Spec.Template.Spec.Containers), nil
+	case "daemonsets":
+		ds, err := clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
+		if err != nil {
+			return nil, err
+		}
+		return containersToImagePairs(ds.Spec.Template.Spec.Containers), nil
+	}
+	return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+}
+
+// buildSetImagePatch returns the strategic-merge patch body for a set
+// of container/image overrides. The shape
+// `{spec:{template:{spec:{containers:[{name,image}]}}}}` is merged by
+// name (strategic merge knows the patchMergeKey for PodSpec.containers
+// is "name"), so only the targeted entries' image fields are touched —
+// every other container field (env, ports, volumeMounts, probes,
+// resources) is preserved on both targeted and untargeted containers.
+func buildSetImagePatch(images []imagePair) ([]byte, error) {
+	containers := make([]map[string]interface{}, len(images))
+	for i, img := range images {
+		containers[i] = map[string]interface{}{
+			"name":  img.Container,
+			"image": img.Image,
+		}
+	}
+	patch := map[string]interface{}{
+		"spec": map[string]interface{}{
+			"template": map[string]interface{}{
+				"spec": map[string]interface{}{
+					"containers": containers,
+				},
+			},
+		},
+	}
+	return json.Marshal(patch)
+}
+
+func containersToImagePairs(cs []corev1.Container) []imagePair {
+	out := make([]imagePair, len(cs))
+	for i, c := range cs {
+		out[i] = imagePair{Container: c.Name, Image: c.Image}
+	}
+	return out
 }
 
 func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {

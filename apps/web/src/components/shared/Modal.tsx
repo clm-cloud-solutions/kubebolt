@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { useRef } from 'react'
 import { createPortal } from 'react-dom'
 import { X } from 'lucide-react'
 import { useEscapeClose } from '@/hooks/useEscapeClose'
@@ -60,15 +61,32 @@ export interface ModalProps {
 export function Modal({ badge, title, onClose, size = 'md', children, unbounded }: ModalProps) {
   useEscapeClose(onClose)
 
+  // Only close on backdrop-click when BOTH mousedown and mouseup landed
+  // on the backdrop wrapper itself. Without this, dragging a text
+  // selection from inside the card past its edge ends with mouseup on
+  // the backdrop — the browser fires `click` on the common ancestor
+  // (the wrapper), and `stopPropagation` on the card never sees it
+  // because the click target is already the backdrop. Tracking the
+  // mousedown origin lets us tell "user clicked the backdrop to
+  // dismiss" apart from "user released a drag-select on the backdrop".
+  const mouseDownOnBackdrop = useRef(false)
+
   return createPortal(
     <div
       className="fixed inset-0 z-[99999] flex items-center justify-center"
-      onClick={onClose}
+      onMouseDown={(e) => {
+        mouseDownOnBackdrop.current = e.target === e.currentTarget
+      }}
+      onMouseUp={(e) => {
+        if (mouseDownOnBackdrop.current && e.target === e.currentTarget) {
+          onClose()
+        }
+        mouseDownOnBackdrop.current = false
+      }}
     >
-      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm pointer-events-none" />
       <div
         className={`relative w-[90vw] ${sizeToMax[size]} ${unbounded ? '' : 'max-h-[85vh]'} bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden`}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="px-5 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3 min-w-0">

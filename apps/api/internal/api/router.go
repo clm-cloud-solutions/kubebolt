@@ -210,6 +210,7 @@ func NewRouter(
 					r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
 					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)
+					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
 					r.Post("/portforward", h.handleCreatePortForward)
 					r.Delete("/portforward/{id}", h.handleDeletePortForward)
 				})

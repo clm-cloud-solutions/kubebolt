@@ -4,7 +4,8 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon } from 'lucide-react'
+import { SetImageModal } from '@/components/resources/SetImageModal'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
@@ -2698,6 +2699,7 @@ export function ResourceDetailPage() {
   const [scaleValue, setScaleValue] = useState(0)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
+  const [showSetImage, setShowSetImage] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -2886,6 +2888,17 @@ export function ResourceDetailPage() {
             </div>
           )}
           {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+            <button
+              onClick={() => { setShowSetImage(true); setShowRestart(false); setShowScale(false) }}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Set container image (kubectl set image)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <ImageIcon className="w-3 h-3" />
+              Set image
+            </button>
+          )}
+          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
             <div className="relative">
               <button
                 onClick={() => { setShowRestart(!showRestart); setShowScale(false) }}
@@ -2953,6 +2966,17 @@ export function ResourceDetailPage() {
       {/* Describe modal */}
       {showDescribe && (
         <DescribeModal type={type} namespace={namespace} name={name} onClose={() => setShowDescribe(false)} />
+      )}
+
+      {/* Set image modal */}
+      {showSetImage && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <SetImageModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSetImage(false)}
+        />
       )}
 
       {/* Delete modal */}

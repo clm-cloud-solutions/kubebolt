@@ -417,6 +417,31 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Set image — strategic merge patch on container images, equivalent
+  // to `kubectl set image deploy/X c=img:tag`. The backend captures
+  // the from-image state and returns it so the UI can show a
+  // before/after diff. `status` is "patched" on a real change or
+  // "unchanged" if every requested image already matches the current
+  // one (we short-circuit those to avoid spurious "rollout in progress"
+  // states).
+  setImageResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    images: { container: string; image: string }[],
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched' | 'unchanged'
+      fromImages: { container: string; image: string }[]
+      toImages: { container: string; image: string }[]
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/set-image`,
+      { images },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Port forwarding
   createPortForward: (body: { namespace: string; pod: string; container?: string; remotePort: number }) =>
     postJSON<{ id: string; url: string; namespace: string; pod: string; remotePort: number; localPort: number; status: string; createdAt: string }>(
