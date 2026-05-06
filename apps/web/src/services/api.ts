@@ -331,6 +331,18 @@ export const api = {
   getWorkloadHistory: (type: string, namespace: string, name: string) =>
     fetchJSON<{ items: ResourceItem[]; total: number }>(`${API_BASE}/resources/${type}/${namespace}/${name}/history`),
 
+  // Detailed history: rich per-revision metadata used by the rollout-
+  // history UI (multi-container images, change-cause annotation,
+  // current-revision marker). Works for deployments, statefulsets,
+  // and daemonsets — the backend dispatches based on resource type.
+  getRolloutHistory: (type: string, namespace: string, name: string) => {
+    const url =
+      type === 'deployments'
+        ? `${API_BASE}/resources/deployments/${namespace}/${name}/history?detailed=true`
+        : `${API_BASE}/resources/${type}/${namespace}/${name}/history?detailed=true`
+    return fetchJSON<RolloutHistory>(url)
+  },
+
   getCronJobJobs: (namespace: string, name: string) =>
     fetchJSON<ResourceList>(`${API_BASE}/resources/cronjobs/${namespace}/${name}/jobs`),
 
@@ -578,6 +590,30 @@ export const api = {
 // Save button is disabled with a tooltip until the operator picks
 // ingest-token (or tokenreview, if the backend is in-cluster).
 // `tenants` populates the dropdown for the Generate Token flow.
+// Rollout-history payload returned by ?detailed=true. Same shape
+// across Deployment / StatefulSet / DaemonSet so the timeline UI
+// is one component.
+export interface RevisionImage {
+  container: string
+  image: string
+}
+
+export interface DetailedRevision {
+  revision: number
+  name: string
+  createdAt: string
+  age: string
+  images: RevisionImage[]
+  changeCause: string
+  replicaCount: number
+  active: boolean
+}
+
+export interface RolloutHistory {
+  currentRevision: number
+  revisions: DetailedRevision[]
+}
+
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'
 
 export interface AgentAuthInfo {

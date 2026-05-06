@@ -240,16 +240,17 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	// PoC: rollback only supported for Deployments. STS/DS use ControllerRevisions
-	// with different rollback semantics; left for a future iteration.
-	if resourceType != "deployments" {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot rollback %s — only deployments are supported", resourceType))
+	// Rollback supports the three workload kinds that have a
+	// revision concept. Deployments use ReplicaSet-derived revisions;
+	// StatefulSets and DaemonSets use ControllerRevisions.
+	if resourceType != "deployments" && resourceType != "statefulsets" && resourceType != "daemonsets" {
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot rollback %s — only deployments, statefulsets, and daemonsets", resourceType))
 		return
 	}
 
 	// toRevision is optional; 0 (or absent) means "previous revision".
 	var body struct {
-		ToRevision int `json:"toRevision"`
+		ToRevision int64 `json:"toRevision"`
 	}
 	if r.ContentLength > 0 {
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -266,7 +267,18 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 
 	params := map[string]any{"toRevision": body.ToRevision}
 
-	fromRev, toRev, err := conn.RollbackDeployment(namespace, name, body.ToRevision)
+	var fromRev, toRev int64
+	var err error
+	switch resourceType {
+	case "deployments":
+		var f, t int
+		f, t, err = conn.RollbackDeployment(namespace, name, int(body.ToRevision))
+		fromRev, toRev = int64(f), int64(t)
+	case "statefulsets":
+		fromRev, toRev, err = conn.RollbackStatefulSet(namespace, name, body.ToRevision)
+	case "daemonsets":
+		fromRev, toRev, err = conn.RollbackDaemonSet(namespace, name, body.ToRevision)
+	}
 	if fromRev > 0 {
 		params["fromRevision"] = fromRev
 	}

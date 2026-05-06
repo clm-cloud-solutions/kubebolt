@@ -1,9 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
-import { Image as ImageIcon, AlertTriangle, Info } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
+import { Image as ImageIcon, AlertTriangle, Info, ChevronDown } from 'lucide-react'
 import { Modal } from '@/components/shared/Modal'
 import { api, ApiError } from '@/services/api'
 import { useQueryClient } from '@tanstack/react-query'
 import type { ResourceItem } from '@/types/kubernetes'
+import { useRolloutHistory } from '@/hooks/useResources'
+import { RolloutStatusPanel } from './RolloutStatusPanel'
 
 // SetImageModal — UI for the `kubectl set image` equivalent.
 //
@@ -11,15 +14,18 @@ import type { ResourceItem } from '@/types/kubernetes'
 //   - One row per container in the workload's pod template.
 //   - The "Current" cell shows what's deployed today.
 //   - The "New" input is pre-filled with the current image; operator
-//     edits only the rows they want to change.
+//     edits only the rows they want to change. A small dropdown next
+//     to the input lists prior images for that container, sourced
+//     from the rollout-history endpoint — one click to pick a
+//     known-good image without having to remember the tag.
 //   - We submit ALL containers in the request (not just the changed
 //     ones) — the backend short-circuits to "unchanged" if every
 //     image equals current. Sending unchanged rows alongside changed
 //     ones makes the audit log unambiguous about what the operator
 //     reviewed at decision time.
-//
-// We pull the container list from the resource detail's
-// spec.template.spec.containers — same path the backend reads.
+//   - On successful submit, the modal switches to RolloutStatusPanel
+//     and stays open so the operator can watch the rolling update
+//     converge or fail.
 
 interface ContainerImage {
   name: string
@@ -86,6 +92,47 @@ export function SetImageModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [unchangedNotice, setUnchangedNotice] = useState(false)
+  // After a successful patched response we switch to the live
+  // rollout-status view. expectedGeneration + submittedAtMs scope
+  // convergence + failure detection to THIS submission, same way
+  // RollbackModal uses them.
+  const [applying, setApplying] = useState<{
+    expectedGeneration: number
+    submittedAtMs: number
+  } | null>(null)
+
+  // Rollout history is the data source for the "prior images"
+  // dropdown. Only fetched when the modal is mounted (the hook
+  // already gates on namespace+name being non-empty). Same shape
+  // is reused by RollbackModal — no duplicate query.
+  const { data: history } = useRolloutHistory(type, namespace, name)
+
+  // Index history by container name → ordered list of distinct
+  // images, newest revision first. Excludes the current image since
+  // it's already shown in the "Current" cell. Capped at 10 entries
+  // so a long-lived workload with hundreds of revisions doesn't
+  // produce a scrolling popover.
+  const priorImagesByContainer = useMemo(() => {
+    const out: Record<string, { image: string; revision: number; active: boolean }[]> = {}
+    if (!history?.revisions) return out
+    const currentByContainer = new Map(containers.map((c) => [c.name, c.image]))
+    for (const rev of history.revisions) {
+      for (const img of rev.images ?? []) {
+        const current = currentByContainer.get(img.container)
+        if (img.image === current) continue
+        const list = out[img.container] ?? (out[img.container] = [])
+        // Dedup — first occurrence wins (newest revision first
+        // because history.revisions is sorted DESC).
+        if (!list.some((e) => e.image === img.image)) {
+          list.push({ image: img.image, revision: rev.revision, active: rev.active })
+        }
+      }
+    }
+    for (const k of Object.keys(out)) {
+      out[k] = out[k].slice(0, 10)
+    }
+    return out
+  }, [history, containers])
 
   // Initialize drafts from the live container list. Re-run if the
   // resource refreshes mid-modal so the operator never edits a stale
@@ -122,6 +169,10 @@ export function SetImageModal({
     setBusy(true)
     setError(null)
     setUnchangedNotice(false)
+    // Pre-await snapshots — see RollbackModal for the rationale on
+    // why these are captured BEFORE the network call.
+    const preGen = ((resource as unknown as { generation?: number })?.generation ?? 0) + 1
+    const submittedAtMs = Date.now()
     try {
       const images = containers.map((c) => ({
         container: c.name,
@@ -137,13 +188,51 @@ export function SetImageModal({
         queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
       }
       queryClient.invalidateQueries({ queryKey: ['resources'] })
-      onClose()
+      queryClient.invalidateQueries({ queryKey: ['rollout-history', type, namespace, name] })
+      // Switch to the live progress view instead of closing — the
+      // operator can watch the new pods come up and catch a bad
+      // image (ImagePullBackOff) from inside the same modal.
+      setApplying({ expectedGeneration: preGen, submittedAtMs })
     } catch (e) {
       const msg = e instanceof ApiError ? e.message : (e as Error).message
       setError(msg)
     } finally {
       setBusy(false)
     }
+  }
+
+  if (applying) {
+    return (
+      <Modal
+        badge={
+          <span className="flex items-center gap-1 px-1 -mx-1 rounded bg-status-info text-kb-bg font-semibold">
+            <ImageIcon className="w-3 h-3" /> applying
+          </span>
+        }
+        title={`Set image · ${name}`}
+        onClose={onClose}
+        size="lg"
+      >
+        <div className="flex-1 overflow-y-auto px-5 py-4">
+          <RolloutStatusPanel
+            type={type}
+            namespace={namespace}
+            name={name}
+            title="Applying new container image…"
+            expectedGeneration={applying.expectedGeneration}
+            submittedAtMs={applying.submittedAtMs}
+          />
+        </div>
+        <div className="px-5 py-3 border-t border-kb-border flex justify-end shrink-0">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated"
+          >
+            Close
+          </button>
+        </div>
+      </Modal>
+    )
   }
 
   return (
@@ -186,6 +275,7 @@ export function SetImageModal({
                   const draft = drafts[c.name] ?? c.image
                   const changed = draft !== c.image
                   const refKind = imageRefKind(draft)
+                  const priorImages = priorImagesByContainer[c.name] ?? []
                   return (
                     <tr
                       key={c.name}
@@ -199,18 +289,11 @@ export function SetImageModal({
                       </td>
                       <td className="px-3 py-2.5">
                         <div className="flex items-center gap-2">
-                          <input
-                            type="text"
+                          <ImageInputWithSuggestions
                             value={draft}
-                            onChange={(e) =>
-                              setDrafts({ ...drafts, [c.name]: e.target.value })
-                            }
-                            className={`flex-1 px-2 py-1.5 text-[11px] font-mono bg-kb-bg border rounded text-kb-text-primary focus:outline-none focus:border-kb-border-active ${
-                              changed
-                                ? 'border-status-info'
-                                : 'border-kb-border'
-                            }`}
-                            placeholder="registry/image:tag"
+                            onChange={(v) => setDrafts({ ...drafts, [c.name]: v })}
+                            changed={changed}
+                            priorImages={priorImages}
                           />
                           {refKind === 'digest' && (
                             <span
@@ -297,5 +380,150 @@ export function SetImageModal({
         </button>
       </div>
     </Modal>
+  )
+}
+
+// ImageInputWithSuggestions — text input with an optional dropdown
+// of prior images for this container. The dropdown only renders the
+// trigger when there's history to show; for a brand-new workload
+// with one revision, the input behaves as a plain text field.
+//
+// The popover is rendered via a portal into document.body. The
+// modal has THREE overflow-hidden / overflow-y-auto ancestors (the
+// shared Modal card, the modal body scroll wrapper, and the table
+// wrapper) — an absolutely-positioned popover gets clipped by all of
+// them. Portal + position:fixed coordinates derived from the input's
+// getBoundingClientRect bypasses the whole stack. Same trick the
+// usage tooltip uses.
+//
+// Click outside / Escape closes the dropdown. Selecting an item
+// fills the input and closes the popover.
+function ImageInputWithSuggestions({
+  value,
+  onChange,
+  changed,
+  priorImages,
+}: {
+  value: string
+  onChange: (v: string) => void
+  changed: boolean
+  priorImages: { image: string; revision: number; active: boolean }[]
+}) {
+  const [open, setOpen] = useState(false)
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null)
+
+  // Position the portalled popover under the input wrapper. Run
+  // synchronously after layout (useLayoutEffect) so the popover
+  // appears in the right spot on the same frame it opens — without
+  // this, you see a one-frame flash at (0,0) before it lands.
+  useLayoutEffect(() => {
+    if (!open || !wrapperRef.current) return
+    const update = () => {
+      const rect = wrapperRef.current!.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: rect.left, width: rect.width })
+    }
+    update()
+    // Resize / scroll listeners keep the popover anchored if the
+    // user resizes the window or the modal body scrolls. Use
+    // capture phase on scroll so we catch scrolls in any ancestor.
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function handleDocClick(e: MouseEvent) {
+      const target = e.target as Node
+      // Click is inside trigger OR inside popover → keep open. The
+      // popover is portalled outside the wrapper, so we have to
+      // check both refs explicitly.
+      if (wrapperRef.current?.contains(target)) return
+      if (popoverRef.current?.contains(target)) return
+      setOpen(false)
+    }
+    function handleEsc(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', handleDocClick)
+    document.addEventListener('keydown', handleEsc)
+    return () => {
+      document.removeEventListener('mousedown', handleDocClick)
+      document.removeEventListener('keydown', handleEsc)
+    }
+  }, [open])
+
+  const hasSuggestions = priorImages.length > 0
+
+  return (
+    <div className="relative flex-1" ref={wrapperRef}>
+      <div className="flex items-stretch">
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className={`flex-1 px-2 py-1.5 text-[11px] font-mono bg-kb-bg border ${
+            hasSuggestions ? 'rounded-l border-r-0' : 'rounded'
+          } text-kb-text-primary focus:outline-none focus:border-kb-border-active ${
+            changed ? 'border-status-info' : 'border-kb-border'
+          }`}
+          placeholder="registry/image:tag"
+        />
+        {hasSuggestions && (
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            title="Previous images for this container"
+            className={`px-1.5 border rounded-r ${
+              changed ? 'border-status-info' : 'border-kb-border'
+            } bg-kb-bg text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-elevated`}
+          >
+            <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+          </button>
+        )}
+      </div>
+      {open && hasSuggestions && pos &&
+        createPortal(
+          <div
+            ref={popoverRef}
+            className="fixed bg-kb-card border border-kb-border rounded-lg shadow-xl overflow-hidden"
+            style={{
+              // z-index 100000 sits above the modal's 99999 backdrop
+              // — without this the popover renders behind the modal.
+              zIndex: 100000,
+              top: pos.top,
+              left: pos.left,
+              width: pos.width,
+            }}
+          >
+            <div className="px-3 py-2 bg-kb-elevated/50 text-[10px] uppercase tracking-wider text-kb-text-tertiary border-b border-kb-border">
+              Previous images ({priorImages.length})
+            </div>
+            <ul className="max-h-64 overflow-y-auto">
+              {priorImages.map((p) => (
+                <li key={`${p.revision}-${p.image}`}>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onChange(p.image)
+                      setOpen(false)
+                    }}
+                    className="w-full text-left px-3 py-2 text-[11px] font-mono hover:bg-kb-elevated flex items-center gap-2"
+                  >
+                    <span className="text-kb-text-tertiary shrink-0">rev {p.revision}</span>
+                    <span className="text-kb-text-secondary break-all flex-1">{p.image}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>,
+          document.body,
+        )}
+    </div>
   )
 }

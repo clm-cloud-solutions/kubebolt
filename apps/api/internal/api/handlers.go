@@ -465,6 +465,19 @@ func (h *handlers) getDeploymentHistory(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
+	// `?detailed=true` returns the rich rollout-history payload
+	// (multi-container images, change-cause, current-revision marker).
+	// The legacy shape stays the default to keep the existing
+	// History tab working until the revision-picker UI cuts over.
+	if r.URL.Query().Get("detailed") == "true" {
+		resp, err := conn.GetDeploymentHistoryDetailed(namespace, name)
+		if err != nil {
+			respondMutationError(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, resp)
+		return
+	}
 	history := conn.GetDeploymentHistory(namespace, name)
 	respondJSON(w, http.StatusOK, map[string]interface{}{
 		"items": history,
@@ -539,6 +552,18 @@ func (h *handlers) getWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 	conn := h.manager.Connector()
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		return
+	}
+	// Detailed STS/DS history: unmarshals each ControllerRevision's
+	// embedded pod template to expose container images alongside
+	// the revision/timestamp the legacy shape provides.
+	if r.URL.Query().Get("detailed") == "true" {
+		resp, err := conn.GetWorkloadHistoryDetailed(resourceType, namespace, name)
+		if err != nil {
+			respondMutationError(w, err)
+			return
+		}
+		respondJSON(w, http.StatusOK, resp)
 		return
 	}
 	history := conn.GetWorkloadHistory(resourceType, namespace, name)

@@ -121,6 +121,22 @@ export function useDeploymentHistory(namespace: string, name: string) {
   })
 }
 
+// useRolloutHistory returns the rich per-revision payload that the
+// rollout-history UI needs (multi-container images, change-cause
+// annotation, current-revision marker). Works for deployments,
+// statefulsets, and daemonsets — same shape, same query key root.
+//
+// Refresh interval is intentionally low (5s) when expanded: the
+// "Active" flag flips during a rollout and operators watch it live.
+export function useRolloutHistory(type: string, namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['rollout-history', type, namespace, name],
+    queryFn: () => api.getRolloutHistory(type, namespace, name),
+    enabled: !!type && !!namespace && !!name,
+    refetchInterval: 5000,
+  })
+}
+
 // Logs have their own fixed refresh interval (independent of global setting)
 export function usePodLogs(namespace: string, name: string, container: string, tailLines: number) {
   return useQuery({

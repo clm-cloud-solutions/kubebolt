@@ -6,6 +6,8 @@ import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
+import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
+import { RollbackModal } from '@/components/resources/RollbackModal'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
@@ -2700,6 +2702,10 @@ export function ResourceDetailPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
   const [showSetImage, setShowSetImage] = useState(false)
+  // showRollback carries the target revision so the modal can render
+  // before/after diffs without re-fetching. null = closed. Cut 4
+  // implements the modal; this Cut 3 just plumbs the open trigger.
+  const [showRollback, setShowRollback] = useState<{ revision: number } | null>(null)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -2746,6 +2752,19 @@ export function ResourceDetailPage() {
       case 'node-pods': return <NodePodsTab nodeName={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history':
+        if (type === 'deployments' || type === 'statefulsets' || type === 'daemonsets') {
+          return (
+            <RevisionTimeline
+              type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+              namespace={namespace}
+              name={name}
+              canEdit={canEdit}
+              onRollback={(rev) => setShowRollback({ revision: rev })}
+            />
+          )
+        }
+        // Other workload kinds keep the legacy view (for now this
+        // path is unused — only the three kinds above expose History).
         if (type === 'deployments') return <HistoryTab namespace={namespace} name={name} />
         return <WorkloadHistoryTab type={type} namespace={namespace} name={name} />
       case 'cronjob-jobs': return <CronJobJobsTab namespace={namespace} name={name} />
@@ -2976,6 +2995,18 @@ export function ResourceDetailPage() {
           name={name}
           resource={item}
           onClose={() => setShowSetImage(false)}
+        />
+      )}
+
+      {/* Rollback confirmation modal */}
+      {showRollback && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <RollbackModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          targetRevision={showRollback.revision}
+          resource={item}
+          onClose={() => setShowRollback(null)}
         />
       )}
 
