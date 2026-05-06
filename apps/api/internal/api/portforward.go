@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -19,6 +20,29 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
+
+// pfLogWriter pipes client-go portforward's internal stdout/stderr
+// (which are silenced today by passing nil,nil to portforward.New)
+// into our structured log so we can see what k8s.io/client-go thinks
+// is happening when a forward hangs. Tagged with the forward's id so
+// concurrent forwards don't bleed into each other.
+type pfLogWriter struct {
+	id     string
+	stream string // "stdout" or "stderr"
+}
+
+func (w *pfLogWriter) Write(p []byte) (int, error) {
+	msg := strings.TrimRight(string(p), "\n")
+	if msg == "" {
+		return len(p), nil
+	}
+	slog.Info("client-go portforward",
+		slog.String("id", w.id),
+		slog.String("stream", w.stream),
+		slog.String("msg", msg),
+	)
+	return len(p), nil
+}
 
 const maxPortForwards = 20
 
@@ -106,12 +130,26 @@ func (m *PortForwardManager) Start(conn *cluster.Connector, namespace, pod, cont
 		stopCh:     stopCh,
 	}
 
-	// Create the forwarder
+	// Create the forwarder. We pipe out/errOut into structured logs
+	// so client-go's internal stream-creation messages, "lost
+	// connection to pod", "error copying" etc. surface in our log
+	// instead of being dropped. Critical for diagnosing port-forward
+	// hangs without attaching a debugger.
 	ports := []string{fmt.Sprintf("%d:%d", localPort, remotePort)}
-	fw, err := portforward.New(dialer, ports, stopCh, readyCh, nil, nil)
+	outW := &pfLogWriter{id: id, stream: "stdout"}
+	errW := &pfLogWriter{id: id, stream: "stderr"}
+	fw, err := portforward.New(dialer, ports, stopCh, readyCh, outW, errW)
 	if err != nil {
 		return nil, fmt.Errorf("creating port forwarder: %w", err)
 	}
+
+	slog.Info("portforward starting",
+		slog.String("id", id),
+		slog.String("namespace", namespace),
+		slog.String("pod", pod),
+		slog.Int("remotePort", remotePort),
+		slog.Int("localPort", localPort),
+	)
 
 	// Run in background
 	go func() {
@@ -122,7 +160,12 @@ func (m *PortForwardManager) Start(conn *cluster.Connector, namespace, pod, cont
 				existing.Error = err.Error()
 			}
 			m.mu.Unlock()
-			log.Printf("Port-forward %s ended with error: %v", id, err)
+			slog.Warn("portforward ended with error",
+				slog.String("id", id),
+				slog.String("error", err.Error()),
+			)
+		} else {
+			slog.Info("portforward ended cleanly", slog.String("id", id))
 		}
 	}()
 
