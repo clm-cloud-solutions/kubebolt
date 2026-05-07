@@ -1,9 +1,8 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { useQueryClient } from '@tanstack/react-query'
 import { MoreVertical, Lock, Unlock, AlertCircle, ChevronLeft, Loader2 } from 'lucide-react'
-import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
+import { useNodeSchedulability } from '@/hooks/useNodeSchedulability'
 import { MutationErrorToast } from '@/components/shared/MutationErrorToast'
 import type { ResourceItem } from '@/types/kubernetes'
 
@@ -50,8 +49,12 @@ export function NodeActionMenu({ node, onDrain }: Props) {
   const triggerRef = useRef<HTMLButtonElement | null>(null)
   const popoverRef = useRef<HTMLDivElement | null>(null)
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
-  const [mutationError, setMutationError] = useState<{ err: unknown; action: string } | null>(null)
-  const queryClient = useQueryClient()
+  // Mutation logic is shared with NodeSchedulabilityToolbarButton
+  // (the detail-page-toolbar twin of this menu) via
+  // useNodeSchedulability. Both components hand the same
+  // optimistic-flip + cache-sync + rollback dance to the hook so
+  // the cordon/uncordon UX stays consistent across surfaces.
+  const schedulability = useNodeSchedulability(node)
   const { hasRole } = useAuth()
   const canEdit = hasRole('editor')
   const canAdmin = hasRole('admin')
@@ -110,63 +113,8 @@ export function NodeActionMenu({ node, onDrain }: Props) {
   // confirmed in the second pane.
   async function setSchedulability(targetUnschedulable: boolean) {
     setPane('busy')
-
-    // Optimistic flip across every resources-list cache entry. We
-    // also explicitly target the most-likely exact key so a prefix-
-    // match miss in setQueriesData doesn't leave the badge stale.
-    queryClient.setQueriesData<{ items: ResourceItem[] }>(
-      { queryKey: ['resources', 'nodes'] },
-      (old) => {
-        if (!old) return old
-        return {
-          ...old,
-          items: old.items.map((n) =>
-            n.name === nodeName ? { ...n, unschedulable: targetUnschedulable } : n,
-          ),
-        }
-      },
-    )
-
-    try {
-      const res = targetUnschedulable
-        ? await api.cordonNode(nodeName, 'ui')
-        : await api.uncordonNode(nodeName, 'ui')
-      // Sync detail cache. Backend overrides `unschedulable` to
-      // the patched value before responding so this is reliable
-      // even if its informer cache is briefly stale.
-      if (res.node) {
-        queryClient.setQueryData(['resource-detail', 'nodes', '_', nodeName], res.node)
-      }
-      // Also sync every list cache entry. We could call
-      // refetchQueries here, but that hits the backend's GET path
-      // which reads from the informer cache — and the informer
-      // can lag the apiserver by ~hundreds of ms after a Patch,
-      // returning the pre-patch value and overriding our
-      // optimistic update. Trust the optimistic flip; the periodic
-      // refetchInterval will reconcile any drift later.
-      queryClient.setQueriesData<{ items: ResourceItem[] }>(
-        { queryKey: ['resources', 'nodes'] },
-        (old) => {
-          if (!old) return old
-          return {
-            ...old,
-            items: old.items.map((n) =>
-              n.name === nodeName ? { ...n, unschedulable: targetUnschedulable } : n,
-            ),
-          }
-        },
-      )
-      setOpen(false)
-    } catch (err) {
-      // Rollback by refetching — simpler than snapshotting every
-      // variant of the list cache. The optimistic flip reverts as
-      // soon as the refetch lands. (Refetch is fine on error path:
-      // we WANT canonical state, even if it's a few hundred ms
-      // behind the apiserver.)
-      queryClient.refetchQueries({ queryKey: ['resources', 'nodes'], type: 'active' })
-      setMutationError({ err, action: targetUnschedulable ? 'Cordon' : 'Uncordon' })
-      setOpen(false)
-    }
+    await schedulability.run(targetUnschedulable)
+    setOpen(false)
   }
 
   return (
@@ -269,11 +217,11 @@ export function NodeActionMenu({ node, onDrain }: Props) {
           </div>,
           document.body,
         )}
-      {mutationError && (
+      {schedulability.error && (
         <MutationErrorToast
-          error={mutationError.err}
-          action={mutationError.action}
-          onDismiss={() => setMutationError(null)}
+          error={schedulability.error.err}
+          action={schedulability.error.action}
+          onDismiss={schedulability.clearError}
         />
       )}
     </>

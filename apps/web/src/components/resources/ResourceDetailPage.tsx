@@ -4,11 +4,13 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
+import { DrainModal } from '@/components/resources/DrainModal'
+import { NodeSchedulabilityToolbarButton } from '@/components/resources/NodeSchedulabilityToolbarButton'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
@@ -2712,6 +2714,10 @@ export function ResourceDetailPage() {
   // tracked via actionLoading (so the existing Restart/Scale state
   // doesn't conflict).
   const [showTrigger, setShowTrigger] = useState(false)
+  // Drain opens the existing DrainModal — same component the
+  // Nodes list uses. State lives on the detail page so the modal
+  // mounts at this level rather than per-button.
+  const [showDrain, setShowDrain] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -3010,6 +3016,23 @@ export function ResourceDetailPage() {
               )}
             </div>
           )}
+          {/* Node maintenance — toolbar parity with the Nodes list
+              cards. Cordon/Uncordon swaps based on spec.unschedulable;
+              Drain opens the same modal the list page uses. */}
+          {type === 'nodes' && item && (
+            <NodeSchedulabilityToolbarButton node={item} canEdit={canEdit} />
+          )}
+          {type === 'nodes' && (
+            <button
+              onClick={() => setShowDrain(true)}
+              disabled={!hasRole('admin')}
+              title={hasRole('admin') ? 'Evict pods (kubectl drain)' : 'Admin role required'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <AlertCircle className="w-3 h-3" />
+              Drain…
+            </button>
+          )}
           {/* CronJob: trigger now / suspend or resume. Trigger
               opens a small modal (jobName + concurrency warning).
               Suspend/Resume are direct mutations — single click.
@@ -3161,6 +3184,13 @@ export function ResourceDetailPage() {
           cronJob={item}
           onClose={() => setShowTrigger(false)}
         />
+      )}
+
+      {/* Node drain modal — same component the Nodes list page
+          uses. Mounted here only for type=nodes so the show/hide
+          state doesn't leak across resource types. */}
+      {showDrain && type === 'nodes' && item && (
+        <DrainModal node={item} onClose={() => setShowDrain(false)} />
       )}
 
       {/* Delete modal */}
