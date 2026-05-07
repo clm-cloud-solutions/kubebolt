@@ -9,7 +9,37 @@ each tag.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] — 2026-05-05
+## [0.2.2] — 2026-05-07
+
+Patch release. One fix in the Hubble flow collector — without it, the
+Reliability dashboard's L7 panels could go silently empty for days
+after a single transient apiserver hiccup.
+
+### Fixed
+
+- **Flow collector now self-heals after losing the leader-election lease.**
+  Only one agent pod streams flows from `hubble-relay` at a time; the
+  others sit on the lease and take over if the leader's pod dies.
+  `RunLeaderElectedCollector` was calling
+  `leaderelection.RunOrDie` directly, which returns once the lease is
+  lost (e.g., a 10s renew window crossed during an apiserver restart
+  or an EKS control-plane upgrade). When it returned, the goroutine
+  ended permanently — no peer pod ever re-attempted the election, so
+  the Lease object stayed wedged with `holderIdentity: ""` and zero
+  flows reached VictoriaMetrics. Observed in production for ~2 days
+  with every agent pod healthy and the Hubble badge in the UI still
+  green; symptom was a perma-empty Reliability tab. Fix: wrap
+  `RunOrDie` in a `runElectionLoop` that re-attempts indefinitely
+  with exponential backoff (1s → 30s) honoring `ctx` cancellation.
+  Backoff resets only when the prior term held the lease at least
+  30s, so a real term ending re-attempts immediately while a flapping
+  apiserver doesn't get papered over by a slow-attempt cadence.
+  Validated in-vivo on a kind cluster by stealing the lease via
+  `kubectl patch` (`holderIdentity=fake-stealer`): peer pod
+  re-acquired and resumed streaming ~5s later, where the prior code
+  stayed broken forever.
+
+
 
 Patch release. Two fixes — one in the shipper (faster reconnect after
 backend restarts), one in the flow aggregator (without it, the new
