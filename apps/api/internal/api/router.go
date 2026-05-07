@@ -46,6 +46,7 @@ func NewRouter(
 		manager:              manager,
 		wsHub:                wsHub,
 		pfManager:            NewPortForwardManager(),
+		drainManager:         newDrainSessionManager(),
 		copilotConfig:        copilotCfg,
 		copilotUsage:         copilotUsage,
 		authHandlers:         authHandlers,
@@ -210,12 +211,37 @@ func NewRouter(
 					r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
 					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)
+					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
+					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
+					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
+					// CronJob ergonomics. Suspend/resume flip
+					// spec.suspend; trigger creates a one-off Job
+					// from the CronJob's jobTemplate (kubectl
+					// create job --from=cronjob/X).
+					r.Post("/resources/{type}/{namespace}/{name}/suspend", h.handleCronJobSuspend)
+					r.Post("/resources/{type}/{namespace}/{name}/resume", h.handleCronJobResume)
+					r.Post("/resources/{type}/{namespace}/{name}/trigger", h.handleCronJobTrigger)
 					r.Post("/portforward", h.handleCreatePortForward)
 					r.Delete("/portforward/{id}", h.handleDeletePortForward)
 				})
 
-				// Destructive endpoints — Admin role required
-				r.With(auth.RequireRole(auth.RoleAdmin)).Delete("/resources/{type}/{namespace}/{name}", h.handleDelete)
+				// Destructive endpoints — Admin role required.
+				// Drain joins delete here because evicting every pod
+				// on a node is high-impact: it can violate PDBs,
+				// degrade cluster capacity, and disrupt running
+				// workloads. Cordon/uncordon stay Editor+ since they
+				// only flip a schedule flag.
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Delete("/resources/{type}/{namespace}/{name}", h.handleDelete)
+					r.Post("/resources/{type}/{namespace}/{name}/drain", h.handleDrain)
+					// GET re-attaches to an in-flight drain (SSE);
+					// DELETE cancels. Same Admin gate because
+					// inspecting the drain stream effectively shows
+					// what pods are being evicted across namespaces.
+					r.Get("/resources/{type}/{namespace}/{name}/drain", h.handleDrainSession)
+					r.Delete("/resources/{type}/{namespace}/{name}/drain", h.handleDrainCancel)
+				})
 			})
 		})
 	})

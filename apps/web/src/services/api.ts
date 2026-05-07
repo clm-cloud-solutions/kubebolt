@@ -331,6 +331,18 @@ export const api = {
   getWorkloadHistory: (type: string, namespace: string, name: string) =>
     fetchJSON<{ items: ResourceItem[]; total: number }>(`${API_BASE}/resources/${type}/${namespace}/${name}/history`),
 
+  // Detailed history: rich per-revision metadata used by the rollout-
+  // history UI (multi-container images, change-cause annotation,
+  // current-revision marker). Works for deployments, statefulsets,
+  // and daemonsets — the backend dispatches based on resource type.
+  getRolloutHistory: (type: string, namespace: string, name: string) => {
+    const url =
+      type === 'deployments'
+        ? `${API_BASE}/resources/deployments/${namespace}/${name}/history?detailed=true`
+        : `${API_BASE}/resources/${type}/${namespace}/${name}/history?detailed=true`
+    return fetchJSON<RolloutHistory>(url)
+  },
+
   getCronJobJobs: (namespace: string, name: string) =>
     fetchJSON<ResourceList>(`${API_BASE}/resources/cronjobs/${namespace}/${name}/jobs`),
 
@@ -414,6 +426,141 @@ export const api = {
     postJSON<{ status: string; fromRevision: number; toRevision: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollback`,
       { toRevision: toRevision ?? 0 },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Set image — strategic merge patch on container images, equivalent
+  // to `kubectl set image deploy/X c=img:tag`. The backend captures
+  // the from-image state and returns it so the UI can show a
+  // before/after diff. `status` is "patched" on a real change or
+  // "unchanged" if every requested image already matches the current
+  // one (we short-circuit those to avoid spurious "rollout in progress"
+  // states).
+  setImageResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    images: { container: string; image: string }[],
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched' | 'unchanged'
+      fromImages: { container: string; image: string }[]
+      toImages: { container: string; image: string }[]
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/set-image`,
+      { images },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Node maintenance — cordon / uncordon. Drain lives separately
+  // because it streams SSE rather than returning a single JSON
+  // response. Both use the same `_` placeholder for the namespace
+  // segment of cluster-scoped resources.
+  cordonNode: (name: string, source?: string) =>
+    postJSON<{ status: 'cordoned'; alreadyCordoned: boolean; node: ResourceItem | null }>(
+      `${API_BASE}/resources/nodes/_/${name}/cordon`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  uncordonNode: (name: string, source?: string) =>
+    postJSON<{ status: 'uncordoned'; alreadyUncordoned: boolean; node: ResourceItem | null }>(
+      `${API_BASE}/resources/nodes/_/${name}/uncordon`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Drain — long-running streaming operation. The POST body
+  // configures the drain; the response IS the SSE stream of pod-
+  // evicted events terminating in drain-complete. We return the
+  // raw Response so the caller can use `response.body.getReader()`
+  // to parse events as they arrive — JSON parsing wouldn't fit
+  // since the body never closes until the drain finishes.
+  drainNode: (
+    name: string,
+    body: {
+      gracePeriodSeconds: number
+      timeoutSeconds: number
+      deleteEmptyDirData: boolean
+      ignoreDaemonsets: boolean
+      force: boolean
+      disableEviction: boolean
+    },
+    source?: string,
+    signal?: AbortSignal,
+  ) =>
+    fetchWithAuth(`${API_BASE}/resources/nodes/_/${name}/drain`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(source ? { 'X-KubeBolt-Action-Source': source } : {}),
+      },
+      body: JSON.stringify(body),
+      signal,
+    }),
+
+  // Re-attach to an in-flight drain. Returns 404 if no session is
+  // active for this node, otherwise the same SSE stream the POST
+  // would have produced (with replay of past events first). Used
+  // when the operator closes the modal mid-drain and reopens it.
+  attachDrainSession: (name: string, signal?: AbortSignal) =>
+    fetchWithAuth(`${API_BASE}/resources/nodes/_/${name}/drain`, {
+      method: 'GET',
+      signal,
+    }),
+
+  // Cancel an in-flight drain. Pods already submitted for eviction
+  // continue terminating per their grace period; new evictions
+  // stop. The backend's session emits drain-complete with
+  // status=cancelled.
+  cancelDrain: (name: string) =>
+    deleteRequest<{ status: string; node: string }>(
+      `${API_BASE}/resources/nodes/_/${name}/drain`,
+    ),
+
+  // CronJob ergonomics — suspend / resume / trigger.
+  // Suspend & resume mirror cordon/uncordon: the response includes
+  // an `alreadySuspended`/`alreadyActive` flag so the UI can render
+  // "no change" rather than a fake success toast on a no-op.
+  suspendCronJob: (namespace: string, name: string, source?: string) =>
+    postJSON<{ status: 'suspended'; alreadySuspended: boolean; cronJob: ResourceItem | null }>(
+      `${API_BASE}/resources/cronjobs/${namespace}/${name}/suspend`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  resumeCronJob: (namespace: string, name: string, source?: string) =>
+    postJSON<{ status: 'resumed'; alreadyActive: boolean; cronJob: ResourceItem | null }>(
+      `${API_BASE}/resources/cronjobs/${namespace}/${name}/resume`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Trigger creates a one-off Job from the CronJob's jobTemplate.
+  // Body fields are all optional — without them the backend
+  // auto-generates a Job name and won't auto-suspend.
+  triggerCronJob: (
+    namespace: string,
+    name: string,
+    body?: { jobName?: string; suspendAfterTrigger?: boolean },
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'triggered'
+      // Full Job map (same shape as GET /resources/jobs/<ns>/<name>),
+      // built directly from the freshly-created object on the
+      // backend rather than via the informer cache. Lets the modal
+      // pre-populate the destination page's detail-cache so
+      // "Open job" doesn't 404 while the informer catches up.
+      job: ResourceItem
+      fromCronJob: string
+      suspended?: boolean
+      suspendError?: string
+    }>(
+      `${API_BASE}/resources/cronjobs/${namespace}/${name}/trigger`,
+      body ?? {},
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
@@ -553,6 +700,30 @@ export const api = {
 // Save button is disabled with a tooltip until the operator picks
 // ingest-token (or tokenreview, if the backend is in-cluster).
 // `tenants` populates the dropdown for the Generate Token flow.
+// Rollout-history payload returned by ?detailed=true. Same shape
+// across Deployment / StatefulSet / DaemonSet so the timeline UI
+// is one component.
+export interface RevisionImage {
+  container: string
+  image: string
+}
+
+export interface DetailedRevision {
+  revision: number
+  name: string
+  createdAt: string
+  age: string
+  images: RevisionImage[]
+  changeCause: string
+  replicaCount: number
+  active: boolean
+}
+
+export interface RolloutHistory {
+  currentRevision: number
+  revisions: DetailedRevision[]
+}
+
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'
 
 export interface AgentAuthInfo {

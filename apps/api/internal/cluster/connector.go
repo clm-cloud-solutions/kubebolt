@@ -1873,7 +1873,7 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return jobToMap(job), nil
+		return JobToMap(job), nil
 	case "cronjobs":
 		cj, err := c.cronJobLister.CronJobs(namespace).Get(name)
 		if err != nil {
@@ -2363,6 +2363,11 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		"cpuAllocatable":    node.Status.Allocatable.Cpu().MilliValue(),
 		"memoryAllocatable": node.Status.Allocatable.Memory().Value(),
 		"conditions":        nodeConditionsToSlice(node.Status.Conditions),
+		// Schedulability flag — exposed in list payload (not just
+		// detail) so the Nodes page can render the SchedulingDisabled
+		// badge + decide which action menu items to show without an
+		// extra round-trip per card.
+		"unschedulable":     node.Spec.Unschedulable,
 	}
 }
 
@@ -2408,13 +2413,44 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 	}
 }
 
-func jobToMap(job *batchv1.Job) map[string]interface{} {
+func JobToMap(job *batchv1.Job) map[string]interface{} {
 	status := "Running"
 	if job.Status.Succeeded > 0 {
 		status = "Complete"
 	} else if job.Status.Failed > 0 {
 		status = "Failed"
 	}
+
+	// Completions string in `kubectl get jobs` style — "N/M" when
+	// spec.Completions is set (typical), "N/-" for parallel-only
+	// jobs that don't define a target completion count.
+	completions := ""
+	if job.Spec.Completions != nil {
+		completions = fmt.Sprintf("%d/%d", job.Status.Succeeded, *job.Spec.Completions)
+	} else {
+		completions = fmt.Sprintf("%d/-", job.Status.Succeeded)
+	}
+
+	// Duration: completion - start when finished; elapsed when still
+	// running; empty when not yet started. Same conventions kubectl
+	// uses in its DURATION column.
+	duration := ""
+	if job.Status.StartTime != nil {
+		startT := job.Status.StartTime.Time
+		var d time.Duration
+		if job.Status.CompletionTime != nil {
+			d = job.Status.CompletionTime.Time.Sub(startT)
+		} else if job.Status.Active > 0 {
+			d = time.Since(startT)
+		}
+		if d > 0 {
+			// Round to seconds and format compactly: "12s", "3m45s",
+			// "1h2m". time.Duration.String() does most of the work
+			// once we round off the sub-second noise.
+			duration = d.Round(time.Second).String()
+		}
+	}
+
 	return map[string]interface{}{
 		"name":            job.Name,
 		"namespace":       job.Namespace,
@@ -2422,6 +2458,8 @@ func jobToMap(job *batchv1.Job) map[string]interface{} {
 		"succeeded":       job.Status.Succeeded,
 		"failed":          job.Status.Failed,
 		"active":          job.Status.Active,
+		"completions":     completions,
+		"duration":        duration,
 		"labels":          safeLabels(job.Labels),
 		"annotations":     safeAnnotations(job.Annotations),
 		"createdAt":       job.CreationTimestamp.Time.Format(time.RFC3339),
@@ -2432,24 +2470,58 @@ func jobToMap(job *batchv1.Job) map[string]interface{} {
 }
 
 func cronJobToMap(cj *batchv1.CronJob) map[string]interface{} {
-	var lastSchedule *time.Time
+	// Two representations of the last-fire time so consumers can
+	// pick what fits: `lastSchedule` is a relative-age string the
+	// list view renders directly ("3m", "1h"), `lastScheduleTime`
+	// is the raw RFC3339 for clients that want to format it
+	// themselves. Empty when the cron has never fired.
+	var lastScheduleTime *time.Time
+	lastSchedule := ""
 	if cj.Status.LastScheduleTime != nil {
 		t := cj.Status.LastScheduleTime.Time
-		lastSchedule = &t
+		lastScheduleTime = &t
+		lastSchedule = formatAge(t)
 	}
+
+	concurrency := ""
+	if cj.Spec.ConcurrencyPolicy != "" {
+		concurrency = string(cj.Spec.ConcurrencyPolicy)
+	}
+
+	// Status reflects whether the schedule is actively firing.
+	// "Suspended" when spec.suspend=true (no future runs queue
+	// up); "Scheduled" otherwise. Without this, the list view's
+	// Status badge said "Scheduled" for paused crons too, which
+	// directly contradicted the State badge next to it.
+	cjStatus := "Scheduled"
+	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
+		cjStatus = "Suspended"
+	}
+
 	return map[string]interface{}{
-		"name":             cj.Name,
-		"namespace":        cj.Namespace,
-		"status":           "Scheduled",
-		"schedule":         cj.Spec.Schedule,
-		"lastScheduleTime": lastSchedule,
-		"suspend":          cj.Spec.Suspend != nil && *cj.Spec.Suspend,
-		"activeJobs":       len(cj.Status.Active),
-		"labels":           safeLabels(cj.Labels),
-		"annotations":      safeAnnotations(cj.Annotations),
-		"createdAt":        cj.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":              formatAge(cj.CreationTimestamp.Time),
-		"ownerReferences":  ownerRefsToSlice(cj.OwnerReferences),
+		"name":              cj.Name,
+		"namespace":         cj.Namespace,
+		"status":            cjStatus,
+		"schedule":          cj.Spec.Schedule,
+		// `lastSchedule` is the friendly relative string (e.g. "3m")
+		// matching the column header "Last Run" in the list page.
+		// The TS field name on the frontend was lastSchedule; the
+		// pre-existing payload only had lastScheduleTime, so the
+		// column was always rendering "—".
+		"lastSchedule":      lastSchedule,
+		"lastScheduleTime":  lastScheduleTime,
+		"suspend":           cj.Spec.Suspend != nil && *cj.Spec.Suspend,
+		"activeJobs":        len(cj.Status.Active),
+		// concurrencyPolicy surfaces in the trigger modal banner —
+		// pre-existing UI uses cj.concurrencyPolicy from the detail
+		// payload; adding it to the list shape too lets a future
+		// list-level indicator filter on it without an extra fetch.
+		"concurrencyPolicy": concurrency,
+		"labels":            safeLabels(cj.Labels),
+		"annotations":       safeAnnotations(cj.Annotations),
+		"createdAt":         cj.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":               formatAge(cj.CreationTimestamp.Time),
+		"ownerReferences":   ownerRefsToSlice(cj.OwnerReferences),
 	}
 }
 
@@ -3377,12 +3449,79 @@ func (c *Connector) listReplicaSets(namespace string) []map[string]interface{} {
 
 func (c *Connector) listJobs(namespace string) []map[string]interface{} {
 	list, _ := c.jobLister.List(everythingSelector())
+	// Pre-load pods + metrics ONCE so we don't re-fetch per job.
+	// Mirrors listDaemonSets: walk the pod set, attribute by
+	// OwnerReferences. Without this enrichment, the Jobs list page
+	// shows "—" in CPU/Memory columns even when metrics-server
+	// has data.
+	pods, _ := c.podLister.List(everythingSelector())
+	var podMetrics map[string]*models.MetricPoint
+	if c.collector != nil {
+		podMetrics = c.collector.GetAllPodMetrics()
+	}
+
 	var items []map[string]interface{}
 	for _, job := range list {
 		if namespace != "" && job.Namespace != namespace {
 			continue
 		}
-		items = append(items, jobToMap(job))
+		m := JobToMap(job)
+		var cpuUsed, memUsed, cpuReq, cpuLim, memReq, memLim int64
+		hasMetrics := false
+		for _, pod := range pods {
+			if pod.Namespace != job.Namespace {
+				continue
+			}
+			owned := false
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == "Job" && ref.Name == job.Name {
+					owned = true
+					break
+				}
+			}
+			if !owned {
+				continue
+			}
+			for _, cont := range pod.Spec.Containers {
+				cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+				cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+				memReq += cont.Resources.Requests.Memory().Value()
+				memLim += cont.Resources.Limits.Memory().Value()
+			}
+			if podMetrics != nil {
+				if pm, ok := podMetrics[pod.Namespace+"/"+pod.Name]; ok {
+					cpuUsed += pm.CPUUsage
+					memUsed += pm.MemUsage
+					hasMetrics = true
+				}
+			}
+		}
+		// Same shape the detail page renders. Includes hasMetrics
+		// flag so the frontend's ResourceUsageCell can distinguish
+		// "metrics-server reported 0" from "no data at all".
+		if hasMetrics {
+			m["cpuUsage"] = cpuUsed
+			m["memoryUsage"] = memUsed
+		}
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		denom := cpuLim
+		if denom == 0 {
+			denom = cpuReq
+		}
+		if denom > 0 {
+			m["cpuPercent"] = float64(cpuUsed) / float64(denom) * 100
+		}
+		denom = memLim
+		if denom == 0 {
+			denom = memReq
+		}
+		if denom > 0 {
+			m["memoryPercent"] = float64(memUsed) / float64(denom) * 100
+		}
+		items = append(items, m)
 	}
 	return items
 }
@@ -4332,7 +4471,7 @@ func (c *Connector) GetCronJobJobs(namespace, cronJobName string) []map[string]i
 		if !owned {
 			continue
 		}
-		items = append(items, jobToMap(job))
+		items = append(items, JobToMap(job))
 	}
 	// Sort by creation time descending (newest first)
 	sort.Slice(items, func(i, j int) bool {

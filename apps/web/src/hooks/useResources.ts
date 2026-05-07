@@ -109,7 +109,19 @@ export function useJobPods(namespace: string, name: string) {
     queryKey: ['job-pods', namespace, name],
     queryFn: () => api.getJobPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: interval,
+    // Adaptive polling: fast (3s) while the pod list is empty,
+    // global interval once pods exist. The Job controller schedules
+    // the first pod within a few seconds of Job creation; without
+    // this, an operator who triggered a CronJob waits up to a full
+    // refresh interval (default 15s) before "No pods found"
+    // resolves. Once pods are present we drop back to the user's
+    // chosen interval to avoid hammering the API for steady-state
+    // observation.
+    refetchInterval: (query) => {
+      const data = query.state.data as { items?: unknown[] } | undefined
+      if (!data || !data.items || data.items.length === 0) return 3000
+      return interval
+    },
   })
 }
 
@@ -118,6 +130,22 @@ export function useDeploymentHistory(namespace: string, name: string) {
     queryKey: ['deployment-history', namespace, name],
     queryFn: () => api.getDeploymentHistory(namespace, name),
     enabled: !!namespace && !!name,
+  })
+}
+
+// useRolloutHistory returns the rich per-revision payload that the
+// rollout-history UI needs (multi-container images, change-cause
+// annotation, current-revision marker). Works for deployments,
+// statefulsets, and daemonsets — same shape, same query key root.
+//
+// Refresh interval is intentionally low (5s) when expanded: the
+// "Active" flag flips during a rollout and operators watch it live.
+export function useRolloutHistory(type: string, namespace: string, name: string) {
+  return useQuery({
+    queryKey: ['rollout-history', type, namespace, name],
+    queryFn: () => api.getRolloutHistory(type, namespace, name),
+    enabled: !!type && !!namespace && !!name,
+    refetchInterval: 5000,
   })
 }
 
