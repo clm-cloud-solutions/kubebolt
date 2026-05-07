@@ -109,7 +109,19 @@ export function useJobPods(namespace: string, name: string) {
     queryKey: ['job-pods', namespace, name],
     queryFn: () => api.getJobPods(namespace, name),
     enabled: !!namespace && !!name,
-    refetchInterval: interval,
+    // Adaptive polling: fast (3s) while the pod list is empty,
+    // global interval once pods exist. The Job controller schedules
+    // the first pod within a few seconds of Job creation; without
+    // this, an operator who triggered a CronJob waits up to a full
+    // refresh interval (default 15s) before "No pods found"
+    // resolves. Once pods are present we drop back to the user's
+    // chosen interval to avoid hammering the API for steady-state
+    // observation.
+    refetchInterval: (query) => {
+      const data = query.state.data as { items?: unknown[] } | undefined
+      if (!data || !data.items || data.items.length === 0) return 3000
+      return interval
+    },
   })
 }
 

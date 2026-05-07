@@ -214,6 +214,13 @@ func NewRouter(
 					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
+					// CronJob ergonomics. Suspend/resume flip
+					// spec.suspend; trigger creates a one-off Job
+					// from the CronJob's jobTemplate (kubectl
+					// create job --from=cronjob/X).
+					r.Post("/resources/{type}/{namespace}/{name}/suspend", h.handleCronJobSuspend)
+					r.Post("/resources/{type}/{namespace}/{name}/resume", h.handleCronJobResume)
+					r.Post("/resources/{type}/{namespace}/{name}/trigger", h.handleCronJobTrigger)
 					r.Post("/portforward", h.handleCreatePortForward)
 					r.Delete("/portforward/{id}", h.handleDeletePortForward)
 				})

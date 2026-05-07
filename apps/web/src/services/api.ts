@@ -520,6 +520,50 @@ export const api = {
       `${API_BASE}/resources/nodes/_/${name}/drain`,
     ),
 
+  // CronJob ergonomics — suspend / resume / trigger.
+  // Suspend & resume mirror cordon/uncordon: the response includes
+  // an `alreadySuspended`/`alreadyActive` flag so the UI can render
+  // "no change" rather than a fake success toast on a no-op.
+  suspendCronJob: (namespace: string, name: string, source?: string) =>
+    postJSON<{ status: 'suspended'; alreadySuspended: boolean; cronJob: ResourceItem | null }>(
+      `${API_BASE}/resources/cronjobs/${namespace}/${name}/suspend`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  resumeCronJob: (namespace: string, name: string, source?: string) =>
+    postJSON<{ status: 'resumed'; alreadyActive: boolean; cronJob: ResourceItem | null }>(
+      `${API_BASE}/resources/cronjobs/${namespace}/${name}/resume`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Trigger creates a one-off Job from the CronJob's jobTemplate.
+  // Body fields are all optional — without them the backend
+  // auto-generates a Job name and won't auto-suspend.
+  triggerCronJob: (
+    namespace: string,
+    name: string,
+    body?: { jobName?: string; suspendAfterTrigger?: boolean },
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'triggered'
+      // Full Job map (same shape as GET /resources/jobs/<ns>/<name>),
+      // built directly from the freshly-created object on the
+      // backend rather than via the informer cache. Lets the modal
+      // pre-populate the destination page's detail-cache so
+      // "Open job" doesn't 404 while the informer catches up.
+      job: ResourceItem
+      fromCronJob: string
+      suspended?: boolean
+      suspendError?: string
+    }>(
+      `${API_BASE}/resources/cronjobs/${namespace}/${name}/trigger`,
+      body ?? {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Port forwarding
   createPortForward: (body: { namespace: string; pod: string; container?: string; remotePort: number }) =>
     postJSON<{ id: string; url: string; namespace: string; pod: string; remotePort: number; localPort: number; status: string; createdAt: string }>(

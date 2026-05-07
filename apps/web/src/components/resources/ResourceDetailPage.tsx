@@ -4,10 +4,11 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
+import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
@@ -2201,10 +2202,10 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2250,10 +2251,10 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2299,10 +2300,10 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2348,10 +2349,10 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
               </td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2528,10 +2529,10 @@ function NodePodsTab({ nodeName }: { nodeName: string }) {
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2706,6 +2707,11 @@ export function ResourceDetailPage() {
   // before/after diffs without re-fetching. null = closed. Cut 4
   // implements the modal; this Cut 3 just plumbs the open trigger.
   const [showRollback, setShowRollback] = useState<{ revision: number } | null>(null)
+  // CronJob actions: trigger opens a small modal; suspend/resume
+  // are single-action mutations with their own loading state
+  // tracked via actionLoading (so the existing Restart/Scale state
+  // doesn't conflict).
+  const [showTrigger, setShowTrigger] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -2722,7 +2728,14 @@ export function ResourceDetailPage() {
   // dropped naturally on navigation.
 
   if (isLoading) return <LoadingSpinner />
-  if (error || !item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
+  // Only show full-screen error when we have NO data to render.
+  // If we previously loaded `item` and a subsequent refetch failed
+  // (transient backend hiccup, informer cache lost a watch event,
+  // brief 404 between create-and-observe), keep showing the cached
+  // data instead of yanking the operator out of their workflow.
+  // The DataFreshnessIndicator already exposes refetch/error state
+  // to the user; no need to bulldoze the page for a temporary blip.
+  if (!item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
 
   const tabs = getTabsForResource(type, item)
   const parentLabel = resourceLabels[type] || type
@@ -2812,6 +2825,18 @@ export function ResourceDetailPage() {
                 title="Node is cordoned — new pods will not be scheduled here"
               >
                 SchedulingDisabled
+              </span>
+            )}
+            {/* CronJob suspended badge — same visual language as
+                SchedulingDisabled so the operator scans for "this
+                resource is in a paused/restricted state" the same
+                way across resource types. */}
+            {type === 'cronjobs' && (item as unknown as { suspend?: boolean }).suspend === true && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="CronJob is suspended — scheduled runs will not fire until you resume"
+              >
+                Suspended
               </span>
             )}
           </div>
@@ -2985,6 +3010,112 @@ export function ResourceDetailPage() {
               )}
             </div>
           )}
+          {/* CronJob: trigger now / suspend or resume. Trigger
+              opens a small modal (jobName + concurrency warning).
+              Suspend/Resume are direct mutations — single click.
+              The button switches label/icon based on the current
+              spec.suspend so the operator never sees both. */}
+          {type === 'cronjobs' && (
+            <button
+              onClick={() => setShowTrigger(true)}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Run a one-off Job from this CronJob (kubectl create job --from=cronjob/X)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Play className="w-3 h-3" />
+              Trigger now
+            </button>
+          )}
+          {type === 'cronjobs' && (item as unknown as { suspend?: boolean }).suspend !== true && (
+            <button
+              onClick={async () => {
+                setActionLoading('suspend')
+                try {
+                  const res = await api.suspendCronJob(namespace, name, 'ui')
+                  if (res.cronJob) {
+                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.cronJob)
+                  }
+                  // Optimistic flip across every cronjobs-list cache
+                  // entry. We deliberately do NOT call
+                  // invalidateQueries afterward — the backend's GET
+                  // path reads from the informer cache which can lag
+                  // a Patch by a few hundred ms, returning the
+                  // pre-patch suspend=false and overriding our
+                  // correct optimistic update. The periodic
+                  // refetchInterval reconciles drift later. Same
+                  // bug + same fix as cordon/uncordon.
+                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                    { queryKey: ['resources', 'cronjobs'] },
+                    (old) => {
+                      if (!old) return old
+                      return {
+                        ...old,
+                        items: old.items.map((c) =>
+                          c.name === name && c.namespace === namespace
+                            ? { ...c, suspend: true }
+                            : c,
+                        ),
+                      }
+                    },
+                  )
+                } catch (err) {
+                  // On error, refetch to roll back the optimistic
+                  // flip — simpler than snapshotting every variant
+                  // of the list cache.
+                  queryClient.refetchQueries({ queryKey: ['resources', 'cronjobs'], type: 'active' })
+                  setMutationError({ err, action: 'Suspend' })
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={!canEdit || actionLoading === 'suspend'}
+              title={!canEdit ? 'Editor role required' : 'Pause the schedule — no new scheduled runs will fire until resumed'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Pause className={`w-3 h-3 ${actionLoading === 'suspend' ? 'animate-pulse' : ''}`} />
+              Suspend
+            </button>
+          )}
+          {type === 'cronjobs' && (item as unknown as { suspend?: boolean }).suspend === true && (
+            <button
+              onClick={async () => {
+                setActionLoading('resume')
+                try {
+                  const res = await api.resumeCronJob(namespace, name, 'ui')
+                  if (res.cronJob) {
+                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.cronJob)
+                  }
+                  // Same optimistic-flip-no-invalidate dance as
+                  // suspend above — see comment there.
+                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                    { queryKey: ['resources', 'cronjobs'] },
+                    (old) => {
+                      if (!old) return old
+                      return {
+                        ...old,
+                        items: old.items.map((c) =>
+                          c.name === name && c.namespace === namespace
+                            ? { ...c, suspend: false }
+                            : c,
+                        ),
+                      }
+                    },
+                  )
+                } catch (err) {
+                  queryClient.refetchQueries({ queryKey: ['resources', 'cronjobs'], type: 'active' })
+                  setMutationError({ err, action: 'Resume' })
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={!canEdit || actionLoading === 'resume'}
+              title={!canEdit ? 'Editor role required' : 'Resume the schedule — scheduled runs will fire again'}
+              className="px-3 py-1.5 text-xs bg-status-ok-dim border border-status-ok/30 rounded-lg text-status-ok hover:bg-status-ok/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Play className={`w-3 h-3 ${actionLoading === 'resume' ? 'animate-pulse' : ''}`} />
+              Resume
+            </button>
+          )}
           <button
             onClick={() => { setShowDelete(true); setShowRestart(false); setShowScale(false) }}
             disabled={!canDelete}
@@ -3021,6 +3152,14 @@ export function ResourceDetailPage() {
           targetRevision={showRollback.revision}
           resource={item}
           onClose={() => setShowRollback(null)}
+        />
+      )}
+
+      {/* CronJob trigger modal */}
+      {showTrigger && type === 'cronjobs' && item && (
+        <CronJobTriggerModal
+          cronJob={item}
+          onClose={() => setShowTrigger(false)}
         />
       )}
 
