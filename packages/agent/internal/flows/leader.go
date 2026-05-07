@@ -143,43 +143,122 @@ func RunLeaderElectedCollector(
 		}
 	}()
 
-	leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
-		Lock:            lock,
-		ReleaseOnCancel: true,
-		// Lease timing: 15s lease, 10s renew deadline, 2s retry.
-		// Standard K8s defaults — rotates within a minute if the leader
-		// crashes, which is fine for flow collection (15s of buffered
-		// events is not catastrophic).
-		LeaseDuration: 15 * time.Second,
-		RenewDeadline: 10 * time.Second,
-		RetryPeriod:   2 * time.Second,
-		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: func(leaderCtx context.Context) {
-				slog.Info("hubble: acquired flow-collector lease",
-					slog.String("relay", relayAddr),
-					slog.String("identity", identity))
-				leadingNow = true
-				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, true)
-				collCtx, cancel := context.WithCancel(leaderCtx)
-				collectorCancel = cancel
-				RunCollector(collCtx, relayAddr, buf, clusterID, clusterName, nodeName)
+	// runOnce is a single election cycle. RunOrDie blocks until the
+	// context is cancelled OR the lease is lost — at which point it
+	// returns and the cycle is over. We wrap this with a retry loop
+	// (runElectionLoop below) so a transient apiserver hiccup that
+	// causes the leader to drop the lease doesn't permanently kill
+	// flow collection. Without the loop, the agent's flow collector
+	// stayed dead for two days on a real install after one
+	// renew-deadline-exceeded blip.
+	runOnce := func(ctx context.Context) {
+		leaderelection.RunOrDie(ctx, leaderelection.LeaderElectionConfig{
+			Lock:            lock,
+			ReleaseOnCancel: true,
+			// Lease timing: 15s lease, 10s renew deadline, 2s retry.
+			// Standard K8s defaults — rotates within a minute if the leader
+			// crashes, which is fine for flow collection (15s of buffered
+			// events is not catastrophic).
+			LeaseDuration: 15 * time.Second,
+			RenewDeadline: 10 * time.Second,
+			RetryPeriod:   2 * time.Second,
+			Callbacks: leaderelection.LeaderCallbacks{
+				OnStartedLeading: func(leaderCtx context.Context) {
+					slog.Info("hubble: acquired flow-collector lease",
+						slog.String("relay", relayAddr),
+						slog.String("identity", identity))
+					leadingNow = true
+					emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, true)
+					collCtx, cancel := context.WithCancel(leaderCtx)
+					collectorCancel = cancel
+					RunCollector(collCtx, relayAddr, buf, clusterID, clusterName, nodeName)
+				},
+				OnStoppedLeading: func() {
+					slog.Info("hubble: lost flow-collector lease", slog.String("identity", identity))
+					leadingNow = false
+					emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, false)
+					if collectorCancel != nil {
+						collectorCancel()
+						collectorCancel = nil
+					}
+				},
+				OnNewLeader: func(leader string) {
+					if leader != identity {
+						slog.Info("hubble: flow-collector leader", slog.String("pod", leader))
+					}
+				},
 			},
-			OnStoppedLeading: func() {
-				slog.Info("hubble: lost flow-collector lease", slog.String("identity", identity))
-				leadingNow = false
-				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, false)
-				if collectorCancel != nil {
-					collectorCancel()
-					collectorCancel = nil
-				}
-			},
-			OnNewLeader: func(leader string) {
-				if leader != identity {
-					slog.Info("hubble: flow-collector leader", slog.String("pod", leader))
-				}
-			},
-		},
-	})
+		})
+	}
+
+	// Backoff: 1s → 2s → 4s → ... capped at 30s. Reset to 1s after
+	// any cycle that held the lease for >30s — that signals a real
+	// loss (transient blip) rather than a "we couldn't even win the
+	// election" loop, so we shouldn't escalate the wait. 30s also
+	// happens to match the heartbeat tick + the leader-election
+	// retry period, so the cap doesn't make us slower than the
+	// underlying primitives.
+	runElectionLoop(ctx, runOnce, 30*time.Second, time.Second, 30*time.Second)
+}
+
+// runElectionLoop calls `attempt` repeatedly until ctx is canceled.
+// Each invocation runs one full election cycle: win the lease, hold
+// it as long as renewals succeed, lose it (or never win), return.
+//
+// Why we need this: client-go's leaderelection.RunOrDie returns
+// when the lease is lost — it does NOT re-attempt. A transient
+// apiserver timeout during a renew can drop the lease forever.
+// Wrapping with a retry loop lets the collector self-heal.
+//
+// Backoff strategy:
+//   - Starts at backoffInitial, doubles after each cycle, caps at
+//     backoffMax.
+//   - Resets to backoffInitial after any cycle that held the lease
+//     for at least minHeldToReset. Distinguishes "we lost a real
+//     lease after holding it" (transient — try again immediately
+//     after one short wait) from "we never won and the loop is
+//     spinning" (escalate to backoffMax to avoid hammering the
+//     apiserver).
+//
+// Exposed at package scope so it can be unit-tested with a stub
+// attempt function — the production attempt wraps RunOrDie which
+// requires a real apiserver to validate end-to-end.
+func runElectionLoop(
+	ctx context.Context,
+	attempt func(context.Context),
+	minHeldToReset time.Duration,
+	backoffInitial, backoffMax time.Duration,
+) {
+	backoff := backoffInitial
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		start := time.Now()
+		attempt(ctx)
+		held := time.Since(start)
+		if ctx.Err() != nil {
+			return
+		}
+		if held >= minHeldToReset {
+			slog.Info("hubble: election cycle ended after a real term, resetting backoff",
+				slog.Duration("held", held))
+			backoff = backoffInitial
+		} else {
+			slog.Info("hubble: election cycle ended quickly, will re-attempt with backoff",
+				slog.Duration("held", held),
+				slog.Duration("backoff", backoff))
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(backoff):
+		}
+		backoff *= 2
+		if backoff > backoffMax {
+			backoff = backoffMax
+		}
+	}
 }
 
 // ResolveLeaseNamespace picks a namespace for the Lease from the
