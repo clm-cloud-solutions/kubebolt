@@ -211,6 +211,70 @@ KUBEBOLT_AI_MODEL=accounts/fireworks/models/llama-v3p3-70b-instruct
 
 ---
 
+### xAI Grok
+
+| Field | Value |
+|---|---|
+| Base URL | `https://api.x.ai/v1/chat/completions` |
+| Get an API key | https://console.x.ai |
+
+**Recommended models:**
+
+| Model ID | Best for | Context | Cost (in/out per 1M) |
+|---|---|---|---|
+| `grok-4.3` | **Default** — flagship reasoning, deep troubleshooting | 1M | $1.25 / $2.50 |
+| `grok-4.20-0309-reasoning` | Multi-step problems, RCA | 2M | $1.25 / $2.50 |
+| `grok-4-1-fast-reasoning` | Cost-sensitive with reasoning, fallback | 2M | $0.20 / $0.50 |
+| `grok-4-1-fast-non-reasoning` | Fast simple queries, cheapest | 2M | $0.20 / $0.50 |
+
+```bash
+KUBEBOLT_AI_PROVIDER=openai
+KUBEBOLT_AI_BASE_URL=https://api.x.ai/v1/chat/completions
+KUBEBOLT_AI_API_KEY=xai-...
+KUBEBOLT_AI_MODEL=grok-4.3
+```
+
+> The image-generation (`grok-imagine-*`) and voice models are not supported — Copilot
+> needs text-only chat completions with tool calling.
+
+---
+
+### MiniMax
+
+| Field | Value |
+|---|---|
+| Base URL | `https://api.minimax.io/v1/text/chatcompletion_v2` |
+| Get an API key | https://platform.minimax.io |
+
+**Recommended models:**
+
+| Model ID | Best for | Tool calling | Cost (in/out per 1M) |
+|---|---|---|---|
+| `MiniMax-M2.7` | **Default** — agentic model, native tool use | ✅ Confirmed | $0.30 / $1.20 |
+| `MiniMax-M2.7-highspeed` | Same as above, lower latency | ✅ Confirmed | $0.60 / $2.40 |
+| `MiniMax-M2.5` | Older generation, cheap | ⚠️ Not documented | $0.30 / $1.20 |
+| `MiniMax-M2.5-highspeed` | Older gen, lower latency | ⚠️ Not documented | $0.60 / $2.40 |
+
+```bash
+KUBEBOLT_AI_PROVIDER=openai
+KUBEBOLT_AI_BASE_URL=https://api.minimax.io/v1/text/chatcompletion_v2
+KUBEBOLT_AI_API_KEY=<minimax-key>
+KUBEBOLT_AI_MODEL=MiniMax-M2.7
+```
+
+> **Endpoint path is non-standard.** Unlike most OpenAI-compatible providers that use
+> `/v1/chat/completions`, MiniMax uses `/v1/text/chatcompletion_v2`. The request/response
+> body remains OpenAI-compatible. Set the full path in `KUBEBOLT_AI_BASE_URL`.
+
+> **Use M2.7 for KubeBolt.** Tool calling is officially documented only for the M2.7
+> family. M2.5 may work but is not guaranteed — start with M2.7 and only fall back to M2.5
+> if cost is critical.
+
+> The dialogue/roleplay model `M2-her` is not recommended for cluster troubleshooting —
+> it's tuned for conversational use cases.
+
+---
+
 ### Other Compatible Providers
 
 These also expose an OpenAI-compatible API and work with `KUBEBOLT_AI_PROVIDER=openai`:
@@ -220,7 +284,6 @@ These also expose an OpenAI-compatible API and work with `KUBEBOLT_AI_PROVIDER=o
 | **Anyscale** | `https://api.endpoints.anyscale.com/v1/chat/completions` |
 | **Perplexity** | `https://api.perplexity.ai/chat/completions` |
 | **Cerebras** | `https://api.cerebras.ai/v1/chat/completions` |
-| **xAI Grok** | `https://api.x.ai/v1/chat/completions` |
 
 ---
 
@@ -484,6 +547,10 @@ Token costs vary by provider — check each one's pricing page. As of writing:
 | GPT-4o-mini | ~$0.15 | ~$0.60 |
 | DeepSeek Chat | ~$0.27 | ~$1.10 |
 | Groq Llama 3.3 70B | ~$0.59 | ~$0.79 |
+| Grok 4.3 / 4.20 | ~$1.25 | ~$2.50 |
+| Grok 4-1 fast | ~$0.20 | ~$0.50 |
+| MiniMax M2.7 | ~$0.30 | ~$1.20 |
+| MiniMax M2.7-highspeed | ~$0.60 | ~$2.40 |
 
 > Always verify current pricing on the provider's website. KubeBolt reads no telemetry and
 > reports no usage data — your bill comes directly from the LLM provider.
@@ -508,6 +575,9 @@ through tools. A model without tool calling will not work as the primary model.
 | Mistral Large | ✅ Yes | Good tool calling |
 | Mistral Small/Nemo | ⚠️ Limited | Works but less reliable |
 | DeepSeek Chat | ✅ Yes | OpenAI-compatible tool calling |
+| Grok 4.x (any) | ✅ Yes | OpenAI-compatible; reasoning variants emit `reasoning_content` separately |
+| MiniMax M2.7 / M2.7-highspeed | ✅ Yes | Officially documented as "Agentic Model" with tool use |
+| MiniMax M2.5 / M2.5-highspeed | ⚠️ Undocumented | May work but not confirmed by MiniMax docs |
 | Gemma 2 | ❌ No | No native tool calling |
 
 ### Streaming support
