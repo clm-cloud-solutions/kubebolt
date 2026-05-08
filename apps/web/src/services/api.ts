@@ -501,6 +501,27 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Edit metadata — kubectl label / kubectl annotate equivalents.
+  // JSON merge patch on metadata.labels + metadata.annotations via
+  // the dynamic client; works on any kind. Tier 2 #8 — see
+  // internal/k8s-operations/tier2-edit-labels-annotations.md.
+  editResourceMetadata: (
+    type: string,
+    namespace: string,
+    name: string,
+    body: EditMetadataBody,
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched'
+      labels: MetadataDiff
+      annotations: MetadataDiff
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/edit-metadata`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Node maintenance — cordon / uncordon. Drain lives separately
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
@@ -892,6 +913,30 @@ export interface ContainerEnvSnapshot {
   container: string
   initContainer?: boolean
   env: EnvEntryPair[]
+}
+
+// Edit metadata types — Tier 2 #8. Both labels and annotations use
+// the same Add/Remove envelope; the backend issues a JSON merge
+// patch where Remove keys appear as null values (RFC 7396 = delete).
+export interface MetadataMapEdit {
+  add?: Record<string, string>
+  remove?: string[]
+}
+
+export interface EditMetadataBody {
+  labels?: MetadataMapEdit
+  annotations?: MetadataMapEdit
+}
+
+// Response-side per-map diff — the operator sees added (highlight),
+// updated (from→to), and removed (strike) keys without having to
+// recompute against the live state.
+export interface MetadataDiff {
+  from: Record<string, string>
+  to: Record<string, string>
+  added?: string[]
+  updated?: string[]
+  removed?: string[]
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'

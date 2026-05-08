@@ -222,6 +222,12 @@ func NewRouter(
 					// the `$patch: delete` directive. Tier 2 #7, see
 					// internal/k8s-operations/tier2-set-env.md.
 					r.Post("/resources/{type}/{namespace}/{name}/set-env", h.handleSetEnv)
+					// Edit metadata — kubectl label / kubectl annotate
+					// equivalents. JSON merge patch on metadata.labels +
+					// metadata.annotations via the dynamic client; works
+					// on every kind. Tier 2 #8, see
+					// internal/k8s-operations/tier2-edit-labels-annotations.md.
+					r.Post("/resources/{type}/{namespace}/{name}/edit-metadata", h.handleEditMetadata)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
 					// Rollout pause/resume. Deployment-only — flips

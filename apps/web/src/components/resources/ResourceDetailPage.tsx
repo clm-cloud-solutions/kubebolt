@@ -4,10 +4,11 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
+import { EditMetadataModal } from '@/components/resources/EditMetadataModal'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
@@ -2709,6 +2710,7 @@ export function ResourceDetailPage() {
   const [showSetImage, setShowSetImage] = useState(false)
   const [showSetResources, setShowSetResources] = useState(false)
   const [showSetEnv, setShowSetEnv] = useState(false)
+  const [showEditMetadata, setShowEditMetadata] = useState(false)
   // showRollback carries the target revision so the modal can render
   // before/after diffs without re-fetching. null = closed. Cut 4
   // implements the modal; this Cut 3 just plumbs the open trigger.
@@ -3280,6 +3282,20 @@ export function ResourceDetailPage() {
               Resume
             </button>
           )}
+          {/* Edit metadata — Tier 2 #8. Universal across resource
+              kinds (every K8s object has metadata.labels +
+              metadata.annotations). Sits just before Delete because
+              it's an "alter this resource" action like the others
+              above, but at a different abstraction layer. */}
+          <button
+            onClick={() => { setShowEditMetadata(true); setShowRestart(false); setShowScale(false) }}
+            disabled={!canEdit}
+            title={!canEdit ? 'Editor role required' : 'Edit labels and annotations (kubectl label / kubectl annotate)'}
+            className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Tag className="w-3 h-3" />
+            Edit metadata
+          </button>
           <button
             onClick={() => { setShowDelete(true); setShowRestart(false); setShowScale(false) }}
             disabled={!canDelete}
@@ -3326,6 +3342,17 @@ export function ResourceDetailPage() {
           name={name}
           resource={item}
           onClose={() => setShowSetEnv(false)}
+        />
+      )}
+
+      {/* Edit metadata modal — Tier 2 #8. Universal across kinds. */}
+      {showEditMetadata && (
+        <EditMetadataModal
+          type={type}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowEditMetadata(false)}
         />
       )}
 

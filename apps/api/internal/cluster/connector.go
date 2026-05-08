@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
@@ -3246,6 +3247,39 @@ func (c *Connector) DeleteResource(resourceType, namespace, name string, propaga
 }
 
 // ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
+// PatchResourceMetadata applies a JSON merge patch to a resource via
+// the dynamic client. Used by the edit-metadata endpoint (Tier 2 #8)
+// to layer label / annotation changes on top of any kind the dynamic
+// client can resolve, without forcing a typed-client switch per kind.
+//
+// Returns the post-patch object as an unstructured map so the handler
+// can extract the post-patch labels / annotations for the response
+// diff. JSON merge patch (RFC 7396) treats `null` values as "remove
+// this key" — that's how the handler expresses removes.
+func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, namespace, name string, patchJSON []byte) (map[string]interface{}, error) {
+	if c.dynamicClient == nil {
+		return nil, fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+
+	var (
+		obj *unstructured.Unstructured
+		err error
+	)
+	if isClusterScoped(resourceType) {
+		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{})
+	} else {
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return obj.Object, nil
+}
+
 func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yamlData []byte) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
