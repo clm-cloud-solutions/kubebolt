@@ -20,6 +20,7 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -1719,6 +1720,26 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		return models.ResourceList{Kind: resourceType, Items: []map[string]interface{}{}, Total: 0}
 	}
 
+	// Tombstone filter — mask resources we just deleted (and their
+	// to-be-cascaded dependents) until the informer cache catches up.
+	// Without this, the UI shows the deleted Deployment + its RS +
+	// its Pods lingering in lists for several seconds, making the
+	// delete look like it didn't take. Single central pass after
+	// the per-kind list builders so every kind benefits without
+	// touching their individual builders.
+	if c.recentWrites != nil {
+		visible := items[:0]
+		for _, item := range items {
+			itemName, _ := item["name"].(string)
+			itemNS, _ := item["namespace"].(string)
+			if !c.isResourceVisible(resourceType, itemNS, itemName, item) {
+				continue
+			}
+			visible = append(visible, item)
+		}
+		items = visible
+	}
+
 	// Filter by search
 	if search != "" {
 		search = strings.ToLower(search)
@@ -1814,6 +1835,15 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 	}
 	if permKey != "gateways" && permKey != "httproutes" && !c.permissions.CanListWatch(permKey) {
 		return nil, &PermissionDeniedError{Resource: resourceType}
+	}
+
+	// Tombstone short-circuit — if the operator just deleted this
+	// resource, return NotFound immediately. Otherwise the informer
+	// cache may still serve the stale object for a second or two
+	// after the apiserver has reaped it, and the detail page would
+	// briefly re-render the deleted resource as if alive.
+	if c.recentWrites != nil && c.recentWrites.IsDeleted(resourceType, namespace, name) {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: resourceType}, name)
 	}
 
 	switch resourceType {
@@ -3240,13 +3270,167 @@ func (c *Connector) DeleteResource(resourceType, namespace, name string, propaga
 	if gracePeriod != nil {
 		opts.GracePeriodSeconds = gracePeriod
 	}
+	var err error
 	if isClusterScoped(resourceType) {
-		return c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
+		err = c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
+	} else {
+		err = c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
 	}
-	return c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
+	if err == nil {
+		// Record a tombstone so list/detail reads mask the deleted
+		// resource until the informer's deletion event propagates.
+		// 10s default TTL covers the typical informer lag (<1s) plus
+		// cascade GC time for owned dependents (a few seconds for
+		// Deployment → ReplicaSet → Pod). After the TTL the read
+		// path goes back to pure-informer; by then the cache has
+		// caught up. See cluster/recent_writes.go.
+		c.recentWrites.RecordDeletion(resourceType, namespace, name, 10*time.Second)
+	}
+	return err
+}
+
+// isResourceVisible returns false when the operator-facing read paths
+// should mask the resource — either because it's directly tombstoned
+// after a delete, or because one of its ancestors (controller-owner)
+// was just tombstoned and the cascade GC hasn't finished reaping it.
+//
+// The walk is up to two levels deep, which covers the K8s standard
+// owner chains:
+//   - Pod → ReplicaSet → Deployment
+//   - Pod → Job → CronJob
+//   - Pod → StatefulSet / DaemonSet (1 level)
+//   - ReplicaSet → Deployment (1 level)
+//   - Job → CronJob (1 level)
+//
+// Custom controllers with their own ownership trees aren't covered;
+// those would only be filtered if their direct owner is tombstoned.
+// Acceptable scope for v1 — extend if a real demand surfaces.
+func (c *Connector) isResourceVisible(resourceType, namespace, name string, item map[string]interface{}) bool {
+	if c.recentWrites == nil {
+		return true
+	}
+	if c.recentWrites.IsDeleted(resourceType, namespace, name) {
+		return false
+	}
+	refs, _ := item["ownerReferences"].([]map[string]interface{})
+	for _, ref := range refs {
+		ownerKind, _ := ref["kind"].(string)
+		ownerName, _ := ref["name"].(string)
+		ownerType := ownerKindToResourceType(ownerKind)
+		if ownerType == "" || ownerName == "" {
+			continue
+		}
+		if c.recentWrites.IsDeleted(ownerType, namespace, ownerName) {
+			return false
+		}
+		// Walk one more level for the indirect-cascade cases.
+		// Pod → RS → Deployment: the Pod's direct owner (RS) might
+		// not be tombstoned, but its parent Deployment is, and the
+		// GC controller will reap RS+Pod together. Mask the Pod
+		// transitively.
+		if resourceType == "pods" && ownerKind == "ReplicaSet" {
+			if c.replicaSetLister == nil {
+				continue
+			}
+			rs, err := c.replicaSetLister.ReplicaSets(namespace).Get(ownerName)
+			if err != nil {
+				continue
+			}
+			for _, rsOwner := range rs.OwnerReferences {
+				rsOwnerType := ownerKindToResourceType(rsOwner.Kind)
+				if rsOwnerType == "" {
+					continue
+				}
+				if c.recentWrites.IsDeleted(rsOwnerType, namespace, rsOwner.Name) {
+					return false
+				}
+			}
+		}
+		// Pod → Job → CronJob: same shape, different chain.
+		if resourceType == "pods" && ownerKind == "Job" {
+			if c.jobLister == nil {
+				continue
+			}
+			job, err := c.jobLister.Jobs(namespace).Get(ownerName)
+			if err != nil {
+				continue
+			}
+			for _, jobOwner := range job.OwnerReferences {
+				jobOwnerType := ownerKindToResourceType(jobOwner.Kind)
+				if jobOwnerType == "" {
+					continue
+				}
+				if c.recentWrites.IsDeleted(jobOwnerType, namespace, jobOwner.Name) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// ownerKindToResourceType maps a K8s owner-reference Kind back to the
+// URL resource-type plural we use throughout the API. Limited to the
+// owner kinds the cascade-tombstone walk needs to recognize; CRD
+// owners aren't covered.
+func ownerKindToResourceType(kind string) string {
+	switch kind {
+	case "Deployment":
+		return "deployments"
+	case "ReplicaSet":
+		return "replicasets"
+	case "StatefulSet":
+		return "statefulsets"
+	case "DaemonSet":
+		return "daemonsets"
+	case "Job":
+		return "jobs"
+	case "CronJob":
+		return "cronjobs"
+	}
+	return ""
 }
 
 // ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
+// CreateResource creates a new resource via the dynamic client. Used
+// by the apply-new-manifest endpoint (Tier 2 #10) to land any kind
+// the dynamic client can resolve without a typed-client switch.
+//
+// Caller is responsible for the unstructured object's shape (apiVersion,
+// kind, metadata.name, body) and for any pre-flight validation (kind/
+// type consistency, namespace consistency); this method just routes
+// the Create through the right namespaced/cluster-scoped path.
+func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace string, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if c.dynamicClient == nil {
+		return nil, fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+	if isClusterScoped(resourceType) {
+		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	}
+	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{})
+}
+
+// IsClusterScopedType is the public wrapper around isClusterScoped so
+// the API handler can do scope validation (URL namespace must be `_`
+// for cluster-scoped types) without importing the cluster package's
+// internals.
+func (c *Connector) IsClusterScopedType(resourceType string) bool {
+	return isClusterScoped(resourceType)
+}
+
+// SupportedResourceType reports whether the resource type is in the
+// resourceTypeToGVR map. Used by handlers to reject unknown types
+// up front with a friendly error before the dynamic client surfaces
+// a confusing GVR-not-found.
+func (c *Connector) SupportedResourceType(resourceType string) bool {
+	_, ok := resourceTypeToGVR(resourceType)
+	return ok
+}
+
 // PatchResourceMetadata applies a JSON merge patch to a resource via
 // the dynamic client. Used by the edit-metadata endpoint (Tier 2 #8)
 // to layer label / annotation changes on top of any kind the dynamic

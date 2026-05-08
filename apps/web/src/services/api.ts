@@ -539,6 +539,35 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Create a new resource from a YAML or JSON manifest. Tier 2 #10
+  // — kubectl create -f equivalent. URL is /resources/:type/:ns; the
+  // resource NAME comes from metadata.name in the manifest body.
+  // For cluster-scoped kinds, namespace is `_`.
+  createResource: (
+    type: string,
+    namespace: string,
+    manifest: string,
+    source?: string,
+  ) => {
+    // Send the raw manifest bytes — the backend's sigs.k8s.io/yaml
+    // decoder accepts both YAML and JSON, so a single content-type
+    // (application/yaml) covers both. We don't go through postJSON
+    // because the body isn't JSON-serialized; it's the raw text.
+    const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
+    if (source) headers['X-KubeBolt-Action-Source'] = source
+    return fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}`, {
+      method: 'POST',
+      headers,
+      body: manifest,
+    }).then(async (res) => {
+      if (!res.ok) {
+        const { message, payload } = await extractErrorPayload(res)
+        throw new ApiError(res.status, message, payload)
+      }
+      return (await res.json()) as CreateResourceResponse
+    })
+  },
+
   // Node maintenance — cordon / uncordon. Drain lives separately
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
@@ -979,6 +1008,19 @@ export interface SecretRevealResponse {
   revealedAt: string
   values: SecretRevealedValue[]
   missing: string[]
+}
+
+// Apply new manifest types — Tier 2 #10. Response is the bare
+// identifying fields the UI uses to navigate to the new resource
+// (kind, name, namespace, uid). The backend strips status and
+// managedFields before responding so the payload stays minimal.
+export interface CreateResourceResponse {
+  status: 'created'
+  name: string
+  namespace: string
+  kind: string
+  apiVersion: string
+  uid: string
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'

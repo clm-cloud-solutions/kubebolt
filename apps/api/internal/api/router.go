@@ -208,6 +208,12 @@ func NewRouter(
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleEditor))
 					r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
+					// Create new resource from manifest — kubectl create -f
+					// equivalent. URL is /resources/:type/:ns (no :name —
+					// the name lives in the body's metadata.name). Single-
+					// document YAML or JSON bodies. Tier 2 #10, see
+					// internal/k8s-operations/tier2-apply-new-manifest.md.
+					r.Post("/resources/{type}/{namespace}", h.handleCreateResource)
 					r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
 					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)

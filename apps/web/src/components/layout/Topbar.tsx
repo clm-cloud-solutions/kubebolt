@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { isDashboardPath } from '@/utils/routes'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
+import { NewResourceModal } from '@/components/resources/NewResourceModal'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -19,6 +20,7 @@ interface TopbarProps {
 export function Topbar({ overview }: TopbarProps) {
   const [open, setOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [newResourceOpen, setNewResourceOpen] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const queryClient = useQueryClient()
   const { hasRole } = useAuth()
@@ -228,6 +230,18 @@ export function Topbar({ overview }: TopbarProps) {
           <kbd className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
         </button>
         {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
+
+        {/* New resource — Tier 2 #10 global CTA. Opens the
+            create-from-manifest modal with the Pod default kind. */}
+        <button
+          onClick={() => setNewResourceOpen(true)}
+          title="Create a new resource from a manifest"
+          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+          <span>New</span>
+        </button>
+        {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
 
         {/* Theme toggle */}
         <button
