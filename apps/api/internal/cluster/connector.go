@@ -66,6 +66,15 @@ type Connector struct {
 	graph         *TopologyGraph
 	wsHub         *websocket.Hub
 	stopCh        chan struct{}
+	// recentWrites bridges the read-after-write gap between an
+	// apiserver Patch landing and the informer cache catching up
+	// (~hundreds of ms). Mutation handlers Record(...) the field
+	// they just changed; GetResourceDetail / list paths Apply(...)
+	// the override on top of the informer-derived map. Entries
+	// auto-expire (default 5s). Without this, a manual Refresh in
+	// the first second after Pause/Resume reads stale informer
+	// state and the UI looks like the action didn't take.
+	recentWrites *RecentWritesOverlay
 	mu            sync.RWMutex
 	clusterName    string
 	clusterUID     string // kube-system namespace UID, used to scope VM queries per cluster
@@ -169,6 +178,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		graph:         NewTopologyGraph(),
 		wsHub:         wsHub,
 		stopCh:        make(chan struct{}),
+		recentWrites:  NewRecentWritesOverlay(),
 		clusterName:   clusterName,
 	}
 
@@ -215,6 +225,16 @@ func (c *Connector) RestConfig() *rest.Config {
 // Clientset returns the Kubernetes clientset for this cluster connection.
 func (c *Connector) Clientset() kubernetes.Interface {
 	return c.clientset
+}
+
+// RecentWrites exposes the read-after-write overlay so mutation
+// handlers in apps/api/internal/api can Record(...) the field they
+// just patched. The overlay layers their value on top of the
+// informer-derived map for ~5s, covering the gap until the watch
+// event reaches the cache. See cluster/recent_writes.go for the
+// full design.
+func (c *Connector) RecentWrites() *RecentWritesOverlay {
+	return c.recentWrites
 }
 
 // SetCollector sets the metrics collector reference for use in GetOverview.
@@ -1816,6 +1836,11 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		// Clients that need a true "all pods gone" signal (e.g. the
 		// Copilot's scale-to-0 progress polling) should use this field.
 		m["livePodCount"] = len(c.GetDeploymentPods(namespace, name))
+		// Recent-writes overlay covers the ~hundreds-of-ms gap between
+		// a Patch landing and the informer cache catching up. Without
+		// this, a manual Refresh after Pause/Resume reads stale state
+		// and the UI shows the pre-patch value until the next refetch.
+		c.recentWrites.Apply("deployments", namespace, name, m)
 		return m, nil
 	case "services":
 		svc, err := c.serviceLister.Services(namespace).Get(name)
@@ -2215,6 +2240,10 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"annotations":       safeAnnotations(d.Annotations),
 		"selector":          d.Spec.Selector,
 		"strategy":          string(d.Spec.Strategy.Type),
+		// paused mirrors Deployment.Spec.Paused so the UI can show
+		// the rollout-paused badge and toggle Pause/Resume rollout
+		// buttons (Tier 2 #5). Same shape as cronjobs' "suspend" field.
+		"paused":            d.Spec.Paused,
 		"createdAt":         d.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":               formatAge(d.CreationTimestamp.Time),
 		"ownerReferences":   ownerRefsToSlice(d.OwnerReferences),
@@ -3334,6 +3363,11 @@ func (c *Connector) listDeployments(namespace string) []map[string]interface{} {
 		if memDenom > 0 {
 			m["memoryPercent"] = float64(memUsed) / float64(memDenom) * 100
 		}
+		// Apply read-after-write overlay so the deployments list page
+		// also sees the post-Pause/Resume state immediately on a
+		// manual refresh, not just the detail page. Same overlay
+		// the GetResourceDetail("deployments", ...) branch uses.
+		c.recentWrites.Apply("deployments", d.Namespace, d.Name, m)
 		items = append(items, m)
 	}
 	return items

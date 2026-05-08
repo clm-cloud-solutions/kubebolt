@@ -214,6 +214,14 @@ func NewRouter(
 					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
+					// Rollout pause/resume. Deployment-only — flips
+					// spec.paused so the deployment controller stops
+					// reconciling without touching pods. The
+					// `rollout-` prefix avoids colliding with CronJob
+					// /resume below; full reasoning in
+					// internal/k8s-operations/tier2-rollout-pause-resume.md.
+					r.Post("/resources/{type}/{namespace}/{name}/rollout-pause", h.handleRolloutPause)
+					r.Post("/resources/{type}/{namespace}/{name}/rollout-resume", h.handleRolloutResume)
 					// CronJob ergonomics. Suspend/resume flip
 					// spec.suspend; trigger creates a one-off Job
 					// from the CronJob's jobTemplate (kubectl
