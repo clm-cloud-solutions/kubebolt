@@ -6,18 +6,68 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [1.9.0] — 2026-05-08
 
-Workload-write release. Closes the kubectl-equivalent gap for the
-day-to-day "edit a workload's spec" operations so an operator can
-stop dropping to a terminal for routine right-sizing, env-var
-rotation, and label/annotation hygiene. Plus the first two Hybrid
-features (Secret reveal with audit, Apply new manifest from UI) —
-both ship a complete OSS path today with a documented Enterprise
-upgrade lane. Resource detail toolbar collapses the now-extensive
-action set into per-kind primary buttons and a single Actions ▾
-overflow menu.
+The k8s-operations release. The 1.8.x cycle was dedicated to
+dashboard sub-tabs (Capacity, Reliability) and agent resilience;
+this release ships the **entire k8s-operations roadmap** the
+internal spec calls Tiers 1 and 2 — every kubectl-equivalent verb
+needed to edit a workload's spec from the dashboard without
+dropping to a terminal. Operators get set-image / rollout history /
+node maintenance / cronjob controls (Tier 1) AND set-resources /
+set-env / edit-labels / rollout pause-resume / secret reveal / apply
+new manifest (Tier 2) in one cycle. Plus the supporting
+infrastructure — `RecentWritesOverlay` for read-after-write
+consistency, deletion tombstones for cascade-aware list views — and
+a toolbar refactor that collapses the now-extensive action set into
+per-kind primary buttons + a single Actions ▾ overflow menu.
+
+The first two **Hybrid OSS** features (Secret reveal with mandatory
+audit, Apply new manifest from a topbar CTA) land here too — both
+ship a complete OSS path today with a documented Enterprise upgrade
+lane (audit chain-of-custody for reveal, policy-gate for apply).
 
 ### Added
 
+#### k8s-operations Tier 1 (PR #6) — kubectl-write-ops baseline
+
+- **Set image** (`kubectl set image`). `POST /resources/:type/:ns/:name/set-image`,
+  Editor+ gated. Strategic-merge patch on
+  `spec.template.spec.containers[].image` for Deployment /
+  StatefulSet / DaemonSet. Multi-container support, init container
+  flag, cross-registry warning when the host changes mid-edit,
+  same-image short-circuit (`status: "unchanged"`). Modal with
+  per-container row, prior-images dropdown sourced from rollout
+  history. Post-apply switches to `RolloutStatusPanel` for live
+  progress.
+- **Rollout history with revision picker**. `GET /resources/:type/:ns/:name/history`
+  returns the full revision chain for Deployment / StatefulSet /
+  DaemonSet; `POST /resources/:type/:ns/:name/rollback` accepts an
+  optional `toRevision`. UI shows a clickable timeline with the
+  active revision highlighted; rollback opens a confirmation modal
+  that diffs the target revision's images against current.
+- **Node maintenance — cordon / uncordon / drain**. `POST /resources/nodes/_/:name/cordon`
+  + `uncordon` + `drain` (drain is `POST` to start, `GET` for SSE
+  progress, `DELETE` to cancel mid-flight). Drain modal streams
+  pod-evicted events as they arrive, terminating in
+  `drain-complete`. Toolbar parity with the Nodes list cards.
+- **CronJob controls** (`kubectl create job --from=cronjob/X` +
+  `kubectl patch cronjob` for spec.suspend). Trigger-now creates a
+  manual Job with the standard
+  `cronjob.kubernetes.io/instantiate=manual` annotation +
+  OwnerReference. Suspend/Resume flip `spec.suspend` with no-op
+  detection so the apiserver doesn't fire admission webhooks for
+  nothing.
+
+#### k8s-operations Tier 2 (PRs #7, #8, #9) — second-tier writes
+
+- **Rollout pause / resume** (Tier 2 #5, PR #7). `POST /resources/deployments/:ns/:name/rollout-{pause,resume}`.
+  Flips `spec.paused` so the deployment controller stops
+  reconciling without scaling pods to zero or rolling back. Common
+  use cases: freeze a misbehaving rolling update mid-flight while
+  you investigate, or pre-stage a sequence of edits and resume so
+  they all land as one ReplicaSet. Deployment-only — upstream
+  apps/v1 StatefulSet has no `.spec.paused` as of K8s 1.32. Toolbar
+  shows a "Rollout paused" badge in the resource header when
+  active.
 - **Set resources** (Tier 2 #6, PR #8). `POST /resources/:type/:ns/:name/set-resources`,
   Editor+ gated. Strategic-merge patch on container resource
   requests / limits — same workload-type scope as Set image
@@ -113,11 +163,11 @@ overflow menu.
   Pod → Job → tombstoned CronJob). Six unit tests cover the
   tombstone path; suite is `-race` clean.
 - **Read-after-write overlay extended to cordon/uncordon and
-  cronjob suspend/resume** (PR #9). Same overlay added in 1.8.x
-  for `deployments.paused` is now wired into
-  `nodes.unschedulable` and `cronjobs.suspend`. Manual Refresh
-  inside the 5s overlay window keeps the post-mutation state
-  visible regardless of informer-cache lag.
+  cronjob suspend/resume** (PR #9). The `RecentWritesOverlay`
+  added earlier in this release (PR #7) for `deployments.paused`
+  is now wired into `nodes.unschedulable` and `cronjobs.suspend`.
+  Manual Refresh inside the 5s overlay window keeps the
+  post-mutation state visible regardless of informer-cache lag.
 - **Copilot pricing for xAI Grok and MiniMax** (PR #10). Three Grok
   variants (4.3, 4.20, 4-1 fast — input/output only) and four
   MiniMax variants (M2.7 / M2.5 + highspeed — includes cache
