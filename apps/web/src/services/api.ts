@@ -477,6 +477,30 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Set env — kubectl set env. Strategic merge patch on each
+  // container's env array. Per-row action discriminates set vs
+  // remove; the backend uses the strategic-merge `$patch: delete`
+  // directive to drop targeted entries. Tier 2 #7 — see
+  // internal/k8s-operations/tier2-set-env.md.
+  setEnvResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    body: SetEnvBody,
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched'
+      fromEnv: ContainerEnvSnapshot[]
+      toEnv: ContainerEnvSnapshot[]
+      triggerRollout: boolean
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/set-env`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Node maintenance — cordon / uncordon. Drain lives separately
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
@@ -806,6 +830,68 @@ export interface ContainerResourcePair {
   initContainer?: boolean
   requests?: Record<string, string>
   limits?: Record<string, string>
+}
+
+// Set env types — Tier 2 #7. Mirrors k8s.io/api/core/v1.EnvVarSource
+// for the valueFrom variants (configMap / secret / field /
+// resourceField); for v1 the UI primarily exercises configMap and
+// secret refs.
+export interface ConfigMapKeyRef {
+  name: string
+  key: string
+  optional?: boolean
+}
+
+export interface SecretKeyRef {
+  name: string
+  key: string
+  optional?: boolean
+}
+
+export interface ObjectFieldRef {
+  fieldPath: string
+}
+
+export interface EnvVarSourcePatch {
+  configMapKeyRef?: ConfigMapKeyRef
+  secretKeyRef?: SecretKeyRef
+  fieldRef?: ObjectFieldRef
+}
+
+export interface EnvVarPatch {
+  name: string
+  action: 'set' | 'remove'
+  value?: string
+  valueFrom?: EnvVarSourcePatch
+}
+
+export interface ContainerEnvPatch {
+  container: string
+  initContainer?: boolean
+  env: EnvVarPatch[]
+}
+
+export interface SetEnvBody {
+  containers: ContainerEnvPatch[]
+  triggerRollout?: boolean
+}
+
+// Response-side: each entry's resolved kind + value or valueFrom so
+// the UI can render the from/to diff without inspecting nested
+// variants.
+export type EnvEntryKind = 'literal' | 'configMap' | 'secret' | 'field' | 'resourceField' | 'removed'
+
+export interface EnvEntryPair {
+  name: string
+  kind: EnvEntryKind
+  value?: string
+  valueFrom?: EnvVarSourcePatch
+}
+
+export interface ContainerEnvSnapshot {
+  container: string
+  initContainer?: boolean
+  env: EnvEntryPair[]
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'

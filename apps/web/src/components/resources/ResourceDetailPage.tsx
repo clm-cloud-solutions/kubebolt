@@ -4,9 +4,10 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
+import { SetEnvModal } from '@/components/resources/SetEnvModal'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
@@ -2707,6 +2708,7 @@ export function ResourceDetailPage() {
   const [showDelete, setShowDelete] = useState(false)
   const [showSetImage, setShowSetImage] = useState(false)
   const [showSetResources, setShowSetResources] = useState(false)
+  const [showSetEnv, setShowSetEnv] = useState(false)
   // showRollback carries the target revision so the modal can render
   // before/after diffs without re-fetching. null = closed. Cut 4
   // implements the modal; this Cut 3 just plumbs the open trigger.
@@ -2990,6 +2992,19 @@ export function ResourceDetailPage() {
             >
               <Cpu className="w-3 h-3" />
               Set resources
+            </button>
+          )}
+          {/* Set env — Tier 2 #7. kubectl set env equivalent. Same
+              workload-type scope as set-image / set-resources. */}
+          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+            <button
+              onClick={() => { setShowSetEnv(true); setShowRestart(false); setShowScale(false) }}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Add / update / remove environment variables (kubectl set env)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Variable className="w-3 h-3" />
+              Set env
             </button>
           )}
           {/* Rollout pause / resume — Deployment-only (Tier 2 #5).
@@ -3300,6 +3315,17 @@ export function ResourceDetailPage() {
           name={name}
           resource={item}
           onClose={() => setShowSetResources(false)}
+        />
+      )}
+
+      {/* Set env modal — Tier 2 #7 */}
+      {showSetEnv && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <SetEnvModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSetEnv(false)}
         />
       )}
 

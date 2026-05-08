@@ -2882,7 +2882,49 @@ func templateContainerSpecs(cs []corev1.Container) []map[string]interface{} {
 			"imagePullPolicy": string(c.ImagePullPolicy),
 			"resources":       containerResourcesToMap(c.Resources),
 			"ports":           c.Ports,
+			// env is exposed for SetEnvModal (Tier 2 #7) — the modal
+			// renders the existing list + drafts, and the operator
+			// edits / removes / adds against this baseline. Each
+			// entry includes the resolved kind so the UI doesn't have
+			// to inspect nested ValueFrom variants.
+			"env": templateEnvSpecs(c.Env),
 		})
+	}
+	return out
+}
+
+// templateEnvSpecs serializes a container's env list into the shape
+// the SetEnvModal expects: { name, kind, value?, valueFrom? }. The
+// kind classifier lets the modal pick the right input row variant
+// without inspecting ValueFrom internals.
+func templateEnvSpecs(env []corev1.EnvVar) []map[string]interface{} {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(env))
+	for _, e := range env {
+		entry := map[string]interface{}{
+			"name": e.Name,
+		}
+		if e.ValueFrom == nil {
+			entry["kind"] = "literal"
+			entry["value"] = e.Value
+		} else {
+			entry["valueFrom"] = e.ValueFrom
+			switch {
+			case e.ValueFrom.ConfigMapKeyRef != nil:
+				entry["kind"] = "configMap"
+			case e.ValueFrom.SecretKeyRef != nil:
+				entry["kind"] = "secret"
+			case e.ValueFrom.FieldRef != nil:
+				entry["kind"] = "field"
+			case e.ValueFrom.ResourceFieldRef != nil:
+				entry["kind"] = "resourceField"
+			default:
+				entry["kind"] = "literal"
+			}
+		}
+		out = append(out, entry)
 	}
 	return out
 }

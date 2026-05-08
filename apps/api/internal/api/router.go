@@ -217,6 +217,11 @@ func NewRouter(
 					// without going through the YAML editor. Tier 2 #6,
 					// see internal/k8s-operations/tier2-set-resources.md.
 					r.Post("/resources/{type}/{namespace}/{name}/set-resources", h.handleSetResources)
+					// Set env — kubectl set env. Strategic merge patch
+					// on container env arrays, supporting set/remove via
+					// the `$patch: delete` directive. Tier 2 #7, see
+					// internal/k8s-operations/tier2-set-env.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-env", h.handleSetEnv)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
 					// Rollout pause/resume. Deployment-only — flips
