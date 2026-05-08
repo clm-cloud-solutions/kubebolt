@@ -4,12 +4,14 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
 import { EditMetadataModal } from '@/components/resources/EditMetadataModal'
 import { SecretRevealModal } from '@/components/resources/SecretRevealModal'
+import { ScaleModal } from '@/components/resources/ScaleModal'
+import { ResourceActionsMenu, type ActionItem } from '@/components/resources/ResourceActionsMenu'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
@@ -2704,8 +2706,11 @@ export function ResourceDetailPage() {
   }
   const [showDescribe, setShowDescribe] = useState(false)
   const [showRestart, setShowRestart] = useState(false)
+  // showScale opens the ScaleModal (post-refactor: was a popover, now
+  // a modal so it can be triggered from the Actions menu without an
+  // anchor mismatch). scaleValue is gone — the modal manages its own
+  // input state, seeded from currentReplicas.
   const [showScale, setShowScale] = useState(false)
-  const [scaleValue, setScaleValue] = useState(0)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
   const [showSetImage, setShowSetImage] = useState(false)
@@ -2754,6 +2759,130 @@ export function ResourceDetailPage() {
   const tabs = getTabsForResource(type, item)
   const parentLabel = resourceLabels[type] || type
   const parentPath = `/${type}`
+
+  // Toolbar Actions ▾ menu items — built per-kind. Primary actions
+  // (Restart, Set image for workloads; Trigger/Suspend for cronjobs;
+  // Cordon/Drain for nodes; Reveal for secrets) stay inline in the
+  // toolbar; the writes below are the second-tier actions that pile
+  // up otherwise. Edit metadata is universal — when it's the ONLY
+  // item, the toolbar promotes it inline instead of showing a sad
+  // single-entry dropdown.
+  const isWorkload = type === 'deployments' || type === 'statefulsets' || type === 'daemonsets'
+  const isPaused = (item as unknown as { paused?: boolean })?.paused === true
+  const menuItems: ActionItem[] = []
+  if (type === 'deployments' || type === 'statefulsets') {
+    menuItems.push({
+      id: 'scale',
+      label: 'Scale',
+      icon: ArrowUpDown,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : undefined,
+      onClick: () => setShowScale(true),
+    })
+  }
+  if (isWorkload) {
+    menuItems.push({
+      id: 'set-resources',
+      label: 'Set resources',
+      icon: Cpu,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : undefined,
+      onClick: () => setShowSetResources(true),
+    })
+    menuItems.push({
+      id: 'set-env',
+      label: 'Set env',
+      icon: Variable,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : undefined,
+      onClick: () => setShowSetEnv(true),
+    })
+  }
+  if (type === 'deployments') {
+    menuItems.push(
+      isPaused
+        ? {
+            id: 'rollout-resume',
+            label: 'Resume rollout',
+            icon: Play,
+            variant: 'success',
+            disabled: !canEdit || actionLoading === 'rollout-resume',
+            hint: !canEdit ? 'Editor role required' : 'Resume rollout — kubectl rollout resume',
+            onClick: async () => {
+              setActionLoading('rollout-resume')
+              try {
+                const res = await api.resumeRollout(type, namespace, name, 'ui')
+                if (res.deployment) {
+                  queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
+                }
+                queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                  { queryKey: ['resources', 'deployments'] },
+                  (old) => {
+                    if (!old) return old
+                    return {
+                      ...old,
+                      items: old.items.map((d) =>
+                        d.name === name && d.namespace === namespace ? { ...d, paused: false } : d,
+                      ),
+                    }
+                  },
+                )
+              } catch (err) {
+                queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
+                setMutationError({ err, action: 'Resume rollout' })
+              } finally {
+                setActionLoading(null)
+              }
+            },
+          }
+        : {
+            id: 'rollout-pause',
+            label: 'Pause rollout',
+            icon: Pause,
+            disabled: !canEdit || actionLoading === 'rollout-pause',
+            hint: !canEdit ? 'Editor role required' : 'Pause rollout — kubectl rollout pause',
+            onClick: async () => {
+              setActionLoading('rollout-pause')
+              try {
+                const res = await api.pauseRollout(type, namespace, name, 'ui')
+                if (res.deployment) {
+                  queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
+                }
+                queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                  { queryKey: ['resources', 'deployments'] },
+                  (old) => {
+                    if (!old) return old
+                    return {
+                      ...old,
+                      items: old.items.map((d) =>
+                        d.name === name && d.namespace === namespace ? { ...d, paused: true } : d,
+                      ),
+                    }
+                  },
+                )
+              } catch (err) {
+                queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
+                setMutationError({ err, action: 'Pause rollout' })
+              } finally {
+                setActionLoading(null)
+              }
+            },
+          },
+    )
+  }
+  // Edit metadata — universal across all kinds, always last in the
+  // menu. When this is the ONLY item, the toolbar promotes it inline
+  // (see render branch below) so the operator doesn't pay a click
+  // for a single-entry dropdown.
+  menuItems.push({
+    id: 'edit-metadata',
+    label: 'Edit metadata',
+    icon: Tag,
+    disabled: !canEdit,
+    hint: !canEdit ? 'Editor role required' : 'Edit labels and annotations (kubectl label / annotate)',
+    onClick: () => setShowEditMetadata(true),
+    separator: isWorkload, // visually group "metadata" apart from the workload-template writes above
+  })
 
   function renderTab() {
     const tab = tabs.find(t => t.id === activeTab)
@@ -2900,78 +3029,30 @@ export function ResourceDetailPage() {
               },
             }}
           />
-          <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
+          <button
+            onClick={() => refetch()}
+            title="Refetch this resource from the apiserver"
+            className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3 h-3" />
             Refresh
           </button>
           <button
             onClick={() => setShowDescribe(!showDescribe)}
-            className={`px-3 py-1.5 text-xs border rounded-lg transition-colors ${
+            title="Open kubectl describe output for this resource"
+            className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
               showDescribe
                 ? 'bg-status-info-dim border-status-info/20 text-status-info'
                 : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
             }`}
           >
+            <FileText className="w-3 h-3" />
             Describe
           </button>
-          {['deployments', 'statefulsets'].includes(type) && (
-            <div className="relative">
-              <button
-                onClick={() => { setScaleValue(Number(item.replicas ?? 1)); setShowScale(!showScale); setShowRestart(false) }}
-                disabled={!canEdit}
-                title={!canEdit ? 'Editor role required' : undefined}
-                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
-                  showScale ? 'bg-status-info-dim border-status-info/20 text-status-info' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
-                }`}
-              >
-                <ArrowUpDown className="w-3 h-3" />
-                Scale
-              </button>
-              {showScale && (
-                <div className="absolute top-full right-0 mt-1 bg-kb-card border border-kb-border rounded-xl shadow-xl z-50 p-4 w-64">
-                  <h4 className="text-sm font-semibold text-kb-text-primary mb-1">Scale {type === 'deployments' ? 'Deployment' : 'StatefulSet'}</h4>
-                  <p className="text-[11px] text-kb-text-tertiary mb-3">Adjust the number of replicas for this {type === 'deployments' ? 'deployment' : 'statefulset'}.</p>
-                  <div className="text-[10px] font-mono text-kb-text-tertiary mb-1.5">Replicas</div>
-                  <div className="mb-3">
-                    <input
-                      type="number"
-                      min="0"
-                      value={scaleValue}
-                      onChange={e => setScaleValue(Math.max(0, parseInt(e.target.value) || 0))}
-                      className="w-full px-2 py-1.5 text-xs font-mono bg-kb-bg border border-kb-border rounded-md text-kb-text-primary outline-none focus:border-kb-border-active"
-                      autoFocus
-                    />
-                  </div>
-                  <button
-                    onClick={async () => {
-                      setActionLoading('scale')
-                      setShowScale(false)
-                      try {
-                        const res = await api.scaleResource(type, namespace, name, scaleValue)
-                        // Seed the detail-page cache with the post-mutation
-                        // object so the UI reflects the new replicas count
-                        // immediately. WS events that follow keep status
-                        // (readyReplicas, etc.) in sync as the controller
-                        // reconciles.
-                        if (res.resource) {
-                          queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
-                        }
-                        queryClient.invalidateQueries({ queryKey: ['resources'] })
-                      } catch (err) {
-                        setMutationError({ err, action: 'Scale' })
-                      } finally {
-                        setActionLoading(null)
-                      }
-                    }}
-                    disabled={actionLoading === 'scale'}
-                    className="w-full py-2 text-xs font-medium bg-status-info text-white rounded-lg hover:bg-status-info/90 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                  >
-                    <ArrowUpDown className="w-3 h-3" />
-                    Scale
-                  </button>
-                </div>
-              )}
-            </div>
-          )}
+          {/* Workload write actions — Set image kept inline as the most-
+              used "deploy a new version" verb. Restart stays inline below.
+              Scale, Set resources, Set env, Pause/Resume rollout, Edit
+              metadata all moved into the Actions ▾ menu (computed below). */}
           {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
             <button
               onClick={() => { setShowSetImage(true); setShowRestart(false); setShowScale(false) }}
@@ -2983,130 +3064,9 @@ export function ResourceDetailPage() {
               Set image
             </button>
           )}
-          {/* Set resources — Tier 2 #6. kubectl set resources
-              equivalent. Patch on container resource requests/limits
-              via strategic merge. Same workload-type scope as
-              Set image. */}
-          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
-            <button
-              onClick={() => { setShowSetResources(true); setShowRestart(false); setShowScale(false) }}
-              disabled={!canEdit}
-              title={!canEdit ? 'Editor role required' : 'Set CPU / memory requests and limits (kubectl set resources)'}
-              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Cpu className="w-3 h-3" />
-              Set resources
-            </button>
-          )}
-          {/* Set env — Tier 2 #7. kubectl set env equivalent. Same
-              workload-type scope as set-image / set-resources. */}
-          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
-            <button
-              onClick={() => { setShowSetEnv(true); setShowRestart(false); setShowScale(false) }}
-              disabled={!canEdit}
-              title={!canEdit ? 'Editor role required' : 'Add / update / remove environment variables (kubectl set env)'}
-              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Variable className="w-3 h-3" />
-              Set env
-            </button>
-          )}
-          {/* Rollout pause / resume — Deployment-only (Tier 2 #5).
-              kubectl rollout pause / resume flips spec.paused so the
-              deployment controller stops reconciling without
-              touching pods or rolling back. The button switches
-              label/icon based on spec.paused so the operator never
-              sees both. Mirrors the CronJob suspend/resume pattern
-              above. */}
-          {type === 'deployments' && (item as unknown as { paused?: boolean }).paused !== true && (
-            <button
-              onClick={async () => {
-                setActionLoading('rollout-pause')
-                try {
-                  const res = await api.pauseRollout(type, namespace, name, 'ui')
-                  // Server-side recent-writes overlay (5s TTL) makes
-                  // every subsequent GET — including the manual
-                  // Refresh button — read `paused: true` until the
-                  // informer cache catches up. So we can trust the
-                  // response payload here without a client-side
-                  // defensive merge. See cluster/recent_writes.go.
-                  if (res.deployment) {
-                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
-                  }
-                  // Optimistic flip across every deployments-list
-                  // cache entry. We deliberately do NOT
-                  // invalidateQueries — the backend's GET reads from
-                  // informer cache which can lag the patch by a few
-                  // hundred ms and would override our correct
-                  // optimistic value. Same fix as cordon/uncordon
-                  // and CronJob suspend/resume.
-                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
-                    { queryKey: ['resources', 'deployments'] },
-                    (old) => {
-                      if (!old) return old
-                      return {
-                        ...old,
-                        items: old.items.map((d) =>
-                          d.name === name && d.namespace === namespace
-                            ? { ...d, paused: true }
-                            : d,
-                        ),
-                      }
-                    },
-                  )
-                } catch (err) {
-                  queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
-                  setMutationError({ err, action: 'Pause rollout' })
-                } finally {
-                  setActionLoading(null)
-                }
-              }}
-              disabled={!canEdit || actionLoading === 'rollout-pause'}
-              title={!canEdit ? 'Editor role required' : 'Pause rollout — the deployment controller stops reconciling without touching pods (kubectl rollout pause)'}
-              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Pause className={`w-3 h-3 ${actionLoading === 'rollout-pause' ? 'animate-pulse' : ''}`} />
-              Pause rollout
-            </button>
-          )}
-          {type === 'deployments' && (item as unknown as { paused?: boolean }).paused === true && (
-            <button
-              onClick={async () => {
-                setActionLoading('rollout-resume')
-                try {
-                  const res = await api.resumeRollout(type, namespace, name, 'ui')
-                  if (res.deployment) {
-                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
-                  }
-                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
-                    { queryKey: ['resources', 'deployments'] },
-                    (old) => {
-                      if (!old) return old
-                      return {
-                        ...old,
-                        items: old.items.map((d) =>
-                          d.name === name && d.namespace === namespace
-                            ? { ...d, paused: false }
-                            : d,
-                        ),
-                      }
-                    },
-                  )
-                } catch (err) {
-                  queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
-                  setMutationError({ err, action: 'Resume rollout' })
-                } finally {
-                  setActionLoading(null)
-                }
-              }}
-              disabled={!canEdit || actionLoading === 'rollout-resume'}
-              title={!canEdit ? 'Editor role required' : 'Resume rollout — the deployment controller continues reconciling (kubectl rollout resume)'}
-              className="px-3 py-1.5 text-xs bg-status-ok-dim border border-status-ok/30 rounded-lg text-status-ok hover:bg-status-ok/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Play className={`w-3 h-3 ${actionLoading === 'rollout-resume' ? 'animate-pulse' : ''}`} />
-              Resume rollout
-            </button>
-          )}
+          {/* Set resources / Set env / Pause-Resume rollout — moved
+              into the Actions ▾ menu (rendered below, before Delete).
+              See PRIMARY_ACTIONS_BY_TYPE design in the toolbar refactor. */}
           {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
             <div className="relative">
               <button
@@ -3300,26 +3260,36 @@ export function ResourceDetailPage() {
               Reveal
             </button>
           )}
-          {/* Edit metadata — Tier 2 #8. Universal across resource
-              kinds (every K8s object has metadata.labels +
-              metadata.annotations). Sits just before Delete because
-              it's an "alter this resource" action like the others
-              above, but at a different abstraction layer. */}
-          <button
-            onClick={() => { setShowEditMetadata(true); setShowRestart(false); setShowScale(false) }}
-            disabled={!canEdit}
-            title={!canEdit ? 'Editor role required' : 'Edit labels and annotations (kubectl label / kubectl annotate)'}
-            className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Tag className="w-3 h-3" />
-            Edit metadata
-          </button>
+          {/* Actions ▾ menu — overflow dropdown for the less-frequent
+              writes (Scale, Set resources, Set env, Pause/Resume
+              rollout, Edit metadata). Computed via menuItems below
+              based on kind. When the menu would only have one item
+              (eg Pod / Service / ConfigMap with just Edit metadata),
+              we render that item inline directly to avoid a sad
+              "Actions ▾" dropdown that contains a single thing. */}
+          {menuItems.length > 1 ? (
+            <ResourceActionsMenu items={menuItems} />
+          ) : menuItems.length === 1 ? (
+            <button
+              onClick={() => { menuItems[0].onClick(); setShowRestart(false); setShowScale(false) }}
+              disabled={menuItems[0].disabled}
+              title={menuItems[0].hint}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {(() => {
+                const Icon = menuItems[0].icon
+                return <Icon className="w-3 h-3" />
+              })()}
+              {menuItems[0].label}
+            </button>
+          ) : null}
           <button
             onClick={() => { setShowDelete(true); setShowRestart(false); setShowScale(false) }}
             disabled={!canDelete}
             title={!canDelete ? 'Admin role required' : undefined}
-            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-status-error-dim"
+            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-status-error-dim"
           >
+            <Trash2 className="w-3 h-3" />
             Delete
           </button>
         </div>
@@ -3381,6 +3351,19 @@ export function ResourceDetailPage() {
           name={name}
           resource={item}
           onClose={() => setShowSecretReveal(false)}
+        />
+      )}
+
+      {/* Scale modal — Tier 1 (refactored). Used to be an inline
+          toolbar popover; moved into a modal so the Actions ▾ menu
+          item has a clean trigger. */}
+      {showScale && (type === 'deployments' || type === 'statefulsets') && (
+        <ScaleModal
+          type={type as 'deployments' | 'statefulsets'}
+          namespace={namespace}
+          name={name}
+          currentReplicas={Number(item.replicas ?? 1)}
+          onClose={() => setShowScale(false)}
         />
       )}
 
