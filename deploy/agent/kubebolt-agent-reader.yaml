@@ -221,7 +221,7 @@ spec:
       #       secretName: kubebolt-agent-token
       containers:
         - name: agent
-          image: ghcr.io/clm-cloud-solutions/kubebolt/agent:v0.2.0
+          image: ghcr.io/clm-cloud-solutions/kubebolt/agent:v0.2.2
           imagePullPolicy: IfNotPresent
           env:
             # CHANGE ME — see CONFIGURABLE block at the top.
