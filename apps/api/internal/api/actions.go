@@ -660,15 +660,24 @@ func (h *handlers) handleSetNodeSchedulability(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	// Recent-writes overlay covers the gap between this Patch landing
+	// on the apiserver and the informer cache catching up (~hundreds
+	// of ms). Subsequent GETs — including the manual Refresh button,
+	// the Nodes list page, and the auto-poll — read the overlay and
+	// see `unschedulable: target` until either the informer converges
+	// or the 5s TTL expires. Without this, hitting Refresh in the
+	// first second after Cordon/Uncordon flickered back to the
+	// pre-patch value before settling on the next refetch tick.
+	// Same root cause + same fix as deployments.paused — see
+	// cluster/recent_writes.go.
+	conn.RecentWrites().Record("nodes", "", name, "unschedulable", target, 5*time.Second)
+
 	auditMutation(r, action, resourceType, "", name, params, nil)
 	nodeDetail, _ := conn.GetResourceDetail("nodes", "", name)
-	// GetResourceDetail reads from the local informer cache, which
-	// can lag the apiserver by a few hundred milliseconds. The
-	// patch we just sent might not have been observed yet, so the
-	// `unschedulable` field can come back stale (showing the
-	// pre-patch value). Override it with the target we know we
-	// just set — this keeps the client's optimistic update from
-	// being overridden by lagging cache data.
+	// GetResourceDetail's overlay-application picks up the Record
+	// above, so nodeDetail["unschedulable"] is already correct. The
+	// explicit override below is belt-and-suspenders in case a
+	// future refactor breaks the overlay path on the read side.
 	if nodeDetail != nil {
 		nodeDetail["unschedulable"] = target
 	}

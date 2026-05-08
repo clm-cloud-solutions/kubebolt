@@ -1862,6 +1862,10 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			pods, _ := c.podLister.List(everythingSelector())
 			addNodeAllocation(m, node, pods)
 		}
+		// Recent-writes overlay covers the cordon/uncordon read-after-
+		// write window. See the deployments branch and
+		// cluster/recent_writes.go for the design.
+		c.recentWrites.Apply("nodes", "", name, m)
 		return m, nil
 	case "namespaces":
 		ns, err := c.namespaceLister.Get(name)
@@ -1904,7 +1908,11 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return cronJobToMap(cj), nil
+		m := cronJobToMap(cj)
+		// Recent-writes overlay covers the suspend/resume read-after-
+		// write window. Same pattern as deployments and nodes above.
+		c.recentWrites.Apply("cronjobs", namespace, name, m)
+		return m, nil
 	case "ingresses":
 		ing, err := c.ingressLister.Ingresses(namespace).Get(name)
 		if err != nil {
@@ -3567,7 +3575,11 @@ func (c *Connector) listCronJobs(namespace string) []map[string]interface{} {
 		if namespace != "" && cj.Namespace != namespace {
 			continue
 		}
-		items = append(items, cronJobToMap(cj))
+		m := cronJobToMap(cj)
+		// Apply read-after-write overlay so the CronJobs list page sees
+		// post-suspend/resume state immediately on a manual refresh.
+		c.recentWrites.Apply("cronjobs", cj.Namespace, cj.Name, m)
+		items = append(items, m)
 	}
 	return items
 }
@@ -3857,6 +3869,10 @@ func (c *Connector) listNodes() []map[string]interface{} {
 				}
 			}
 		}
+		// Apply read-after-write overlay so the Nodes list page sees
+		// post-cordon/uncordon state immediately on a manual refresh,
+		// not just the detail page. Same pattern as deployments.
+		c.recentWrites.Apply("nodes", "", node.Name, m)
 		items = append(items, m)
 	}
 	return items
