@@ -472,6 +472,36 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Rollout pause / resume — kubectl rollout pause / resume.
+  // Deployment-only (the backend rejects other types with 400).
+  // The path uses `rollout-pause` / `rollout-resume` because the
+  // shorter `/resume` slug is already taken by the CronJob handler;
+  // the `rollout-` prefix calques `kubectl rollout pause` directly.
+  // Response carries the post-patch deployment so the panel can
+  // re-render without an extra refetch round-trip, plus the
+  // `alreadyPaused` / `alreadyActive` flag for no-op detection.
+  pauseRollout: (type: string, namespace: string, name: string, source?: string) =>
+    postJSON<{
+      status: 'paused'
+      alreadyPaused: boolean
+      deployment: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/rollout-pause`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  resumeRollout: (type: string, namespace: string, name: string, source?: string) =>
+    postJSON<{
+      status: 'resumed'
+      alreadyActive: boolean
+      deployment: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/rollout-resume`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Drain — long-running streaming operation. The POST body
   // configures the drain; the response IS the SSE stream of pod-
   // evicted events terminating in drain-complete. We return the

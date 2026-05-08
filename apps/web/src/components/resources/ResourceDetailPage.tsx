@@ -2845,6 +2845,19 @@ export function ResourceDetailPage() {
                 Suspended
               </span>
             )}
+            {/* Deployment rollout-paused badge — same visual language
+                as SchedulingDisabled / Suspended (Tier 2 #5). Surfaces
+                the paused state at the top of the page so the operator
+                doesn't have to dig into the YAML to know the
+                Deployment controller is frozen. */}
+            {type === 'deployments' && (item as unknown as { paused?: boolean }).paused === true && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="Deployment rollout is paused — the deployment controller is not reconciling. Existing pods continue running. Resume to roll forward, or rollback to revert."
+              >
+                Rollout paused
+              </span>
+            )}
           </div>
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
@@ -2960,6 +2973,102 @@ export function ResourceDetailPage() {
             >
               <ImageIcon className="w-3 h-3" />
               Set image
+            </button>
+          )}
+          {/* Rollout pause / resume — Deployment-only (Tier 2 #5).
+              kubectl rollout pause / resume flips spec.paused so the
+              deployment controller stops reconciling without
+              touching pods or rolling back. The button switches
+              label/icon based on spec.paused so the operator never
+              sees both. Mirrors the CronJob suspend/resume pattern
+              above. */}
+          {type === 'deployments' && (item as unknown as { paused?: boolean }).paused !== true && (
+            <button
+              onClick={async () => {
+                setActionLoading('rollout-pause')
+                try {
+                  const res = await api.pauseRollout(type, namespace, name, 'ui')
+                  // Server-side recent-writes overlay (5s TTL) makes
+                  // every subsequent GET — including the manual
+                  // Refresh button — read `paused: true` until the
+                  // informer cache catches up. So we can trust the
+                  // response payload here without a client-side
+                  // defensive merge. See cluster/recent_writes.go.
+                  if (res.deployment) {
+                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
+                  }
+                  // Optimistic flip across every deployments-list
+                  // cache entry. We deliberately do NOT
+                  // invalidateQueries — the backend's GET reads from
+                  // informer cache which can lag the patch by a few
+                  // hundred ms and would override our correct
+                  // optimistic value. Same fix as cordon/uncordon
+                  // and CronJob suspend/resume.
+                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                    { queryKey: ['resources', 'deployments'] },
+                    (old) => {
+                      if (!old) return old
+                      return {
+                        ...old,
+                        items: old.items.map((d) =>
+                          d.name === name && d.namespace === namespace
+                            ? { ...d, paused: true }
+                            : d,
+                        ),
+                      }
+                    },
+                  )
+                } catch (err) {
+                  queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
+                  setMutationError({ err, action: 'Pause rollout' })
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={!canEdit || actionLoading === 'rollout-pause'}
+              title={!canEdit ? 'Editor role required' : 'Pause rollout — the deployment controller stops reconciling without touching pods (kubectl rollout pause)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Pause className={`w-3 h-3 ${actionLoading === 'rollout-pause' ? 'animate-pulse' : ''}`} />
+              Pause rollout
+            </button>
+          )}
+          {type === 'deployments' && (item as unknown as { paused?: boolean }).paused === true && (
+            <button
+              onClick={async () => {
+                setActionLoading('rollout-resume')
+                try {
+                  const res = await api.resumeRollout(type, namespace, name, 'ui')
+                  if (res.deployment) {
+                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
+                  }
+                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                    { queryKey: ['resources', 'deployments'] },
+                    (old) => {
+                      if (!old) return old
+                      return {
+                        ...old,
+                        items: old.items.map((d) =>
+                          d.name === name && d.namespace === namespace
+                            ? { ...d, paused: false }
+                            : d,
+                        ),
+                      }
+                    },
+                  )
+                } catch (err) {
+                  queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
+                  setMutationError({ err, action: 'Resume rollout' })
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={!canEdit || actionLoading === 'rollout-resume'}
+              title={!canEdit ? 'Editor role required' : 'Resume rollout — the deployment controller continues reconciling (kubectl rollout resume)'}
+              className="px-3 py-1.5 text-xs bg-status-ok-dim border border-status-ok/30 rounded-lg text-status-ok hover:bg-status-ok/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Play className={`w-3 h-3 ${actionLoading === 'rollout-resume' ? 'animate-pulse' : ''}`} />
+              Resume rollout
             </button>
           )}
           {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
