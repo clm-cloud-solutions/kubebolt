@@ -359,7 +359,7 @@ kubectl apply -f https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/
 - **17 cluster tools** — Fetch resource details, logs (with grep + since), events, topology, history, kubectl describe, product docs, and more
 - **Contextual "Ask Copilot"** — One-click buttons on insights, resource detail pages (Pods, Deployments, StatefulSets, Services, Nodes) and every Warning event. Each button pre-loads a prompt with the relevant context.
 - **Conversation memory** — Auto-compact at 80% of the budget using the provider's cheap-tier model (Haiku 4.5 / gpt-4o-mini). Manual "new session with summary" via the Scissors button. Long sessions stay usable.
-- **Multi-provider** — Anthropic Claude, OpenAI (including GPT-5 with `max_completion_tokens`), Groq, OpenRouter, Azure OpenAI, DeepSeek, Mistral, or self-hosted (Ollama, vLLM, LM Studio). Prompt caching on both Anthropic and OpenAI.
+- **Multi-provider** — Anthropic Claude, OpenAI (including GPT-5 with `max_completion_tokens`), xAI Grok, MiniMax, Groq, OpenRouter, Azure OpenAI, DeepSeek, Mistral, or self-hosted (Ollama, vLLM, LM Studio). Prompt caching on both Anthropic and OpenAI.
 - **Fallback model** — Auto-retry with a secondary provider on rate limits or 5xx errors
 - **BYO API key** — KubeBolt has no managed AI service. You bring your own provider key. Disabled by default.
 - **Scope guardrail** — The system prompt keeps the assistant scoped to Kubernetes/DevOps/KubeBolt topics; out-of-scope questions get a polite refusal with a redirect.

@@ -11,14 +11,26 @@ interface ResourceUsageCellProps {
   percent: number
   type: 'cpu' | 'memory'
   size?: 'sm' | 'lg'
+  // hasMetrics distinguishes "metrics-server reported 0 for this
+  // pod" from "metrics-server has no data for this pod at all".
+  // Without this, a SUCCEEDED Job pod whose CPU usage is 0 (because
+  // the container is gone) gets rendered as "—" (unknown), creating
+  // a confusing asymmetry next to a Memory cell that shows the
+  // last cached "324 Ki". When hasMetrics=true we render an
+  // explicit "0" instead. Optional and defaults to undefined so
+  // existing call-sites keep their previous behavior.
+  hasMetrics?: boolean
 }
 
-export function ResourceUsageCell({ usage, request, limit, percent, type, size = 'sm' }: ResourceUsageCellProps) {
+export function ResourceUsageCell({ usage, request, limit, percent, type, size = 'sm', hasMetrics }: ResourceUsageCellProps) {
   const formatFn = type === 'cpu' ? formatCPU : formatMemory
   const cellRef = useRef<HTMLDivElement>(null)
   const [tooltip, setTooltip] = useState<{ x: number; y: number; above: boolean } | null>(null)
 
-  if (usage === 0 && request === 0 && limit === 0) {
+  // Suppress the "—" only when we genuinely have no signal: no
+  // usage, no resource limits/requests, and the caller didn't
+  // explicitly tell us metrics WERE collected.
+  if (usage === 0 && request === 0 && limit === 0 && !hasMetrics) {
     return <span className="text-kb-text-tertiary text-[11px] font-mono">—</span>
   }
 

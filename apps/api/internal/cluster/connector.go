@@ -20,9 +20,11 @@ import (
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
@@ -66,6 +68,15 @@ type Connector struct {
 	graph         *TopologyGraph
 	wsHub         *websocket.Hub
 	stopCh        chan struct{}
+	// recentWrites bridges the read-after-write gap between an
+	// apiserver Patch landing and the informer cache catching up
+	// (~hundreds of ms). Mutation handlers Record(...) the field
+	// they just changed; GetResourceDetail / list paths Apply(...)
+	// the override on top of the informer-derived map. Entries
+	// auto-expire (default 5s). Without this, a manual Refresh in
+	// the first second after Pause/Resume reads stale informer
+	// state and the UI looks like the action didn't take.
+	recentWrites *RecentWritesOverlay
 	mu            sync.RWMutex
 	clusterName    string
 	clusterUID     string // kube-system namespace UID, used to scope VM queries per cluster
@@ -169,6 +180,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		graph:         NewTopologyGraph(),
 		wsHub:         wsHub,
 		stopCh:        make(chan struct{}),
+		recentWrites:  NewRecentWritesOverlay(),
 		clusterName:   clusterName,
 	}
 
@@ -215,6 +227,16 @@ func (c *Connector) RestConfig() *rest.Config {
 // Clientset returns the Kubernetes clientset for this cluster connection.
 func (c *Connector) Clientset() kubernetes.Interface {
 	return c.clientset
+}
+
+// RecentWrites exposes the read-after-write overlay so mutation
+// handlers in apps/api/internal/api can Record(...) the field they
+// just patched. The overlay layers their value on top of the
+// informer-derived map for ~5s, covering the gap until the watch
+// event reaches the cache. See cluster/recent_writes.go for the
+// full design.
+func (c *Connector) RecentWrites() *RecentWritesOverlay {
+	return c.recentWrites
 }
 
 // SetCollector sets the metrics collector reference for use in GetOverview.
@@ -1698,6 +1720,26 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		return models.ResourceList{Kind: resourceType, Items: []map[string]interface{}{}, Total: 0}
 	}
 
+	// Tombstone filter — mask resources we just deleted (and their
+	// to-be-cascaded dependents) until the informer cache catches up.
+	// Without this, the UI shows the deleted Deployment + its RS +
+	// its Pods lingering in lists for several seconds, making the
+	// delete look like it didn't take. Single central pass after
+	// the per-kind list builders so every kind benefits without
+	// touching their individual builders.
+	if c.recentWrites != nil {
+		visible := items[:0]
+		for _, item := range items {
+			itemName, _ := item["name"].(string)
+			itemNS, _ := item["namespace"].(string)
+			if !c.isResourceVisible(resourceType, itemNS, itemName, item) {
+				continue
+			}
+			visible = append(visible, item)
+		}
+		items = visible
+	}
+
 	// Filter by search
 	if search != "" {
 		search = strings.ToLower(search)
@@ -1795,6 +1837,15 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		return nil, &PermissionDeniedError{Resource: resourceType}
 	}
 
+	// Tombstone short-circuit — if the operator just deleted this
+	// resource, return NotFound immediately. Otherwise the informer
+	// cache may still serve the stale object for a second or two
+	// after the apiserver has reaped it, and the detail page would
+	// briefly re-render the deleted resource as if alive.
+	if c.recentWrites != nil && c.recentWrites.IsDeleted(resourceType, namespace, name) {
+		return nil, apierrors.NewNotFound(schema.GroupResource{Resource: resourceType}, name)
+	}
+
 	switch resourceType {
 	case "pods":
 		pod, err := c.podLister.Pods(namespace).Get(name)
@@ -1816,6 +1867,11 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		// Clients that need a true "all pods gone" signal (e.g. the
 		// Copilot's scale-to-0 progress polling) should use this field.
 		m["livePodCount"] = len(c.GetDeploymentPods(namespace, name))
+		// Recent-writes overlay covers the ~hundreds-of-ms gap between
+		// a Patch landing and the informer cache catching up. Without
+		// this, a manual Refresh after Pause/Resume reads stale state
+		// and the UI shows the pre-patch value until the next refetch.
+		c.recentWrites.Apply("deployments", namespace, name, m)
 		return m, nil
 	case "services":
 		svc, err := c.serviceLister.Services(namespace).Get(name)
@@ -1837,6 +1893,10 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			pods, _ := c.podLister.List(everythingSelector())
 			addNodeAllocation(m, node, pods)
 		}
+		// Recent-writes overlay covers the cordon/uncordon read-after-
+		// write window. See the deployments branch and
+		// cluster/recent_writes.go for the design.
+		c.recentWrites.Apply("nodes", "", name, m)
 		return m, nil
 	case "namespaces":
 		ns, err := c.namespaceLister.Get(name)
@@ -1873,13 +1933,17 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return jobToMap(job), nil
+		return JobToMap(job), nil
 	case "cronjobs":
 		cj, err := c.cronJobLister.CronJobs(namespace).Get(name)
 		if err != nil {
 			return nil, err
 		}
-		return cronJobToMap(cj), nil
+		m := cronJobToMap(cj)
+		// Recent-writes overlay covers the suspend/resume read-after-
+		// write window. Same pattern as deployments and nodes above.
+		c.recentWrites.Apply("cronjobs", namespace, name, m)
+		return m, nil
 	case "ingresses":
 		ing, err := c.ingressLister.Ingresses(namespace).Get(name)
 		if err != nil {
@@ -2215,6 +2279,10 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		"annotations":       safeAnnotations(d.Annotations),
 		"selector":          d.Spec.Selector,
 		"strategy":          string(d.Spec.Strategy.Type),
+		// paused mirrors Deployment.Spec.Paused so the UI can show
+		// the rollout-paused badge and toggle Pause/Resume rollout
+		// buttons (Tier 2 #5). Same shape as cronjobs' "suspend" field.
+		"paused":            d.Spec.Paused,
 		"createdAt":         d.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":               formatAge(d.CreationTimestamp.Time),
 		"ownerReferences":   ownerRefsToSlice(d.OwnerReferences),
@@ -2363,6 +2431,11 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		"cpuAllocatable":    node.Status.Allocatable.Cpu().MilliValue(),
 		"memoryAllocatable": node.Status.Allocatable.Memory().Value(),
 		"conditions":        nodeConditionsToSlice(node.Status.Conditions),
+		// Schedulability flag — exposed in list payload (not just
+		// detail) so the Nodes page can render the SchedulingDisabled
+		// badge + decide which action menu items to show without an
+		// extra round-trip per card.
+		"unschedulable":     node.Spec.Unschedulable,
 	}
 }
 
@@ -2408,13 +2481,44 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 	}
 }
 
-func jobToMap(job *batchv1.Job) map[string]interface{} {
+func JobToMap(job *batchv1.Job) map[string]interface{} {
 	status := "Running"
 	if job.Status.Succeeded > 0 {
 		status = "Complete"
 	} else if job.Status.Failed > 0 {
 		status = "Failed"
 	}
+
+	// Completions string in `kubectl get jobs` style — "N/M" when
+	// spec.Completions is set (typical), "N/-" for parallel-only
+	// jobs that don't define a target completion count.
+	completions := ""
+	if job.Spec.Completions != nil {
+		completions = fmt.Sprintf("%d/%d", job.Status.Succeeded, *job.Spec.Completions)
+	} else {
+		completions = fmt.Sprintf("%d/-", job.Status.Succeeded)
+	}
+
+	// Duration: completion - start when finished; elapsed when still
+	// running; empty when not yet started. Same conventions kubectl
+	// uses in its DURATION column.
+	duration := ""
+	if job.Status.StartTime != nil {
+		startT := job.Status.StartTime.Time
+		var d time.Duration
+		if job.Status.CompletionTime != nil {
+			d = job.Status.CompletionTime.Time.Sub(startT)
+		} else if job.Status.Active > 0 {
+			d = time.Since(startT)
+		}
+		if d > 0 {
+			// Round to seconds and format compactly: "12s", "3m45s",
+			// "1h2m". time.Duration.String() does most of the work
+			// once we round off the sub-second noise.
+			duration = d.Round(time.Second).String()
+		}
+	}
+
 	return map[string]interface{}{
 		"name":            job.Name,
 		"namespace":       job.Namespace,
@@ -2422,6 +2526,8 @@ func jobToMap(job *batchv1.Job) map[string]interface{} {
 		"succeeded":       job.Status.Succeeded,
 		"failed":          job.Status.Failed,
 		"active":          job.Status.Active,
+		"completions":     completions,
+		"duration":        duration,
 		"labels":          safeLabels(job.Labels),
 		"annotations":     safeAnnotations(job.Annotations),
 		"createdAt":       job.CreationTimestamp.Time.Format(time.RFC3339),
@@ -2432,24 +2538,58 @@ func jobToMap(job *batchv1.Job) map[string]interface{} {
 }
 
 func cronJobToMap(cj *batchv1.CronJob) map[string]interface{} {
-	var lastSchedule *time.Time
+	// Two representations of the last-fire time so consumers can
+	// pick what fits: `lastSchedule` is a relative-age string the
+	// list view renders directly ("3m", "1h"), `lastScheduleTime`
+	// is the raw RFC3339 for clients that want to format it
+	// themselves. Empty when the cron has never fired.
+	var lastScheduleTime *time.Time
+	lastSchedule := ""
 	if cj.Status.LastScheduleTime != nil {
 		t := cj.Status.LastScheduleTime.Time
-		lastSchedule = &t
+		lastScheduleTime = &t
+		lastSchedule = formatAge(t)
 	}
+
+	concurrency := ""
+	if cj.Spec.ConcurrencyPolicy != "" {
+		concurrency = string(cj.Spec.ConcurrencyPolicy)
+	}
+
+	// Status reflects whether the schedule is actively firing.
+	// "Suspended" when spec.suspend=true (no future runs queue
+	// up); "Scheduled" otherwise. Without this, the list view's
+	// Status badge said "Scheduled" for paused crons too, which
+	// directly contradicted the State badge next to it.
+	cjStatus := "Scheduled"
+	if cj.Spec.Suspend != nil && *cj.Spec.Suspend {
+		cjStatus = "Suspended"
+	}
+
 	return map[string]interface{}{
-		"name":             cj.Name,
-		"namespace":        cj.Namespace,
-		"status":           "Scheduled",
-		"schedule":         cj.Spec.Schedule,
-		"lastScheduleTime": lastSchedule,
-		"suspend":          cj.Spec.Suspend != nil && *cj.Spec.Suspend,
-		"activeJobs":       len(cj.Status.Active),
-		"labels":           safeLabels(cj.Labels),
-		"annotations":      safeAnnotations(cj.Annotations),
-		"createdAt":        cj.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":              formatAge(cj.CreationTimestamp.Time),
-		"ownerReferences":  ownerRefsToSlice(cj.OwnerReferences),
+		"name":              cj.Name,
+		"namespace":         cj.Namespace,
+		"status":            cjStatus,
+		"schedule":          cj.Spec.Schedule,
+		// `lastSchedule` is the friendly relative string (e.g. "3m")
+		// matching the column header "Last Run" in the list page.
+		// The TS field name on the frontend was lastSchedule; the
+		// pre-existing payload only had lastScheduleTime, so the
+		// column was always rendering "—".
+		"lastSchedule":      lastSchedule,
+		"lastScheduleTime":  lastScheduleTime,
+		"suspend":           cj.Spec.Suspend != nil && *cj.Spec.Suspend,
+		"activeJobs":        len(cj.Status.Active),
+		// concurrencyPolicy surfaces in the trigger modal banner —
+		// pre-existing UI uses cj.concurrencyPolicy from the detail
+		// payload; adding it to the list shape too lets a future
+		// list-level indicator filter on it without an extra fetch.
+		"concurrencyPolicy": concurrency,
+		"labels":            safeLabels(cj.Labels),
+		"annotations":       safeAnnotations(cj.Annotations),
+		"createdAt":         cj.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":               formatAge(cj.CreationTimestamp.Time),
+		"ownerReferences":   ownerRefsToSlice(cj.OwnerReferences),
 	}
 }
 
@@ -2781,7 +2921,49 @@ func templateContainerSpecs(cs []corev1.Container) []map[string]interface{} {
 			"imagePullPolicy": string(c.ImagePullPolicy),
 			"resources":       containerResourcesToMap(c.Resources),
 			"ports":           c.Ports,
+			// env is exposed for SetEnvModal (Tier 2 #7) — the modal
+			// renders the existing list + drafts, and the operator
+			// edits / removes / adds against this baseline. Each
+			// entry includes the resolved kind so the UI doesn't have
+			// to inspect nested ValueFrom variants.
+			"env": templateEnvSpecs(c.Env),
 		})
+	}
+	return out
+}
+
+// templateEnvSpecs serializes a container's env list into the shape
+// the SetEnvModal expects: { name, kind, value?, valueFrom? }. The
+// kind classifier lets the modal pick the right input row variant
+// without inspecting ValueFrom internals.
+func templateEnvSpecs(env []corev1.EnvVar) []map[string]interface{} {
+	if len(env) == 0 {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(env))
+	for _, e := range env {
+		entry := map[string]interface{}{
+			"name": e.Name,
+		}
+		if e.ValueFrom == nil {
+			entry["kind"] = "literal"
+			entry["value"] = e.Value
+		} else {
+			entry["valueFrom"] = e.ValueFrom
+			switch {
+			case e.ValueFrom.ConfigMapKeyRef != nil:
+				entry["kind"] = "configMap"
+			case e.ValueFrom.SecretKeyRef != nil:
+				entry["kind"] = "secret"
+			case e.ValueFrom.FieldRef != nil:
+				entry["kind"] = "field"
+			case e.ValueFrom.ResourceFieldRef != nil:
+				entry["kind"] = "resourceField"
+			default:
+				entry["kind"] = "literal"
+			}
+		}
+		out = append(out, entry)
 	}
 	return out
 }
@@ -3096,13 +3278,200 @@ func (c *Connector) DeleteResource(resourceType, namespace, name string, propaga
 	if gracePeriod != nil {
 		opts.GracePeriodSeconds = gracePeriod
 	}
+	var err error
 	if isClusterScoped(resourceType) {
-		return c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
+		err = c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
+	} else {
+		err = c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
 	}
-	return c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
+	if err == nil {
+		// Record a tombstone so list/detail reads mask the deleted
+		// resource until the informer's deletion event propagates.
+		// 10s default TTL covers the typical informer lag (<1s) plus
+		// cascade GC time for owned dependents (a few seconds for
+		// Deployment → ReplicaSet → Pod). After the TTL the read
+		// path goes back to pure-informer; by then the cache has
+		// caught up. See cluster/recent_writes.go.
+		c.recentWrites.RecordDeletion(resourceType, namespace, name, 10*time.Second)
+	}
+	return err
+}
+
+// isResourceVisible returns false when the operator-facing read paths
+// should mask the resource — either because it's directly tombstoned
+// after a delete, or because one of its ancestors (controller-owner)
+// was just tombstoned and the cascade GC hasn't finished reaping it.
+//
+// The walk is up to two levels deep, which covers the K8s standard
+// owner chains:
+//   - Pod → ReplicaSet → Deployment
+//   - Pod → Job → CronJob
+//   - Pod → StatefulSet / DaemonSet (1 level)
+//   - ReplicaSet → Deployment (1 level)
+//   - Job → CronJob (1 level)
+//
+// Custom controllers with their own ownership trees aren't covered;
+// those would only be filtered if their direct owner is tombstoned.
+// Acceptable scope for v1 — extend if a real demand surfaces.
+func (c *Connector) isResourceVisible(resourceType, namespace, name string, item map[string]interface{}) bool {
+	if c.recentWrites == nil {
+		return true
+	}
+	if c.recentWrites.IsDeleted(resourceType, namespace, name) {
+		return false
+	}
+	refs, _ := item["ownerReferences"].([]map[string]interface{})
+	for _, ref := range refs {
+		ownerKind, _ := ref["kind"].(string)
+		ownerName, _ := ref["name"].(string)
+		ownerType := ownerKindToResourceType(ownerKind)
+		if ownerType == "" || ownerName == "" {
+			continue
+		}
+		if c.recentWrites.IsDeleted(ownerType, namespace, ownerName) {
+			return false
+		}
+		// Walk one more level for the indirect-cascade cases.
+		// Pod → RS → Deployment: the Pod's direct owner (RS) might
+		// not be tombstoned, but its parent Deployment is, and the
+		// GC controller will reap RS+Pod together. Mask the Pod
+		// transitively.
+		if resourceType == "pods" && ownerKind == "ReplicaSet" {
+			if c.replicaSetLister == nil {
+				continue
+			}
+			rs, err := c.replicaSetLister.ReplicaSets(namespace).Get(ownerName)
+			if err != nil {
+				continue
+			}
+			for _, rsOwner := range rs.OwnerReferences {
+				rsOwnerType := ownerKindToResourceType(rsOwner.Kind)
+				if rsOwnerType == "" {
+					continue
+				}
+				if c.recentWrites.IsDeleted(rsOwnerType, namespace, rsOwner.Name) {
+					return false
+				}
+			}
+		}
+		// Pod → Job → CronJob: same shape, different chain.
+		if resourceType == "pods" && ownerKind == "Job" {
+			if c.jobLister == nil {
+				continue
+			}
+			job, err := c.jobLister.Jobs(namespace).Get(ownerName)
+			if err != nil {
+				continue
+			}
+			for _, jobOwner := range job.OwnerReferences {
+				jobOwnerType := ownerKindToResourceType(jobOwner.Kind)
+				if jobOwnerType == "" {
+					continue
+				}
+				if c.recentWrites.IsDeleted(jobOwnerType, namespace, jobOwner.Name) {
+					return false
+				}
+			}
+		}
+	}
+	return true
+}
+
+// ownerKindToResourceType maps a K8s owner-reference Kind back to the
+// URL resource-type plural we use throughout the API. Limited to the
+// owner kinds the cascade-tombstone walk needs to recognize; CRD
+// owners aren't covered.
+func ownerKindToResourceType(kind string) string {
+	switch kind {
+	case "Deployment":
+		return "deployments"
+	case "ReplicaSet":
+		return "replicasets"
+	case "StatefulSet":
+		return "statefulsets"
+	case "DaemonSet":
+		return "daemonsets"
+	case "Job":
+		return "jobs"
+	case "CronJob":
+		return "cronjobs"
+	}
+	return ""
 }
 
 // ApplyResourceYAML updates a resource from raw YAML using the dynamic client.
+// CreateResource creates a new resource via the dynamic client. Used
+// by the apply-new-manifest endpoint (Tier 2 #10) to land any kind
+// the dynamic client can resolve without a typed-client switch.
+//
+// Caller is responsible for the unstructured object's shape (apiVersion,
+// kind, metadata.name, body) and for any pre-flight validation (kind/
+// type consistency, namespace consistency); this method just routes
+// the Create through the right namespaced/cluster-scoped path.
+func (c *Connector) CreateResource(ctx context.Context, resourceType, namespace string, obj *unstructured.Unstructured) (*unstructured.Unstructured, error) {
+	if c.dynamicClient == nil {
+		return nil, fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+	if isClusterScoped(resourceType) {
+		return c.dynamicClient.Resource(gvr).Create(ctx, obj, metav1.CreateOptions{})
+	}
+	return c.dynamicClient.Resource(gvr).Namespace(namespace).Create(ctx, obj, metav1.CreateOptions{})
+}
+
+// IsClusterScopedType is the public wrapper around isClusterScoped so
+// the API handler can do scope validation (URL namespace must be `_`
+// for cluster-scoped types) without importing the cluster package's
+// internals.
+func (c *Connector) IsClusterScopedType(resourceType string) bool {
+	return isClusterScoped(resourceType)
+}
+
+// SupportedResourceType reports whether the resource type is in the
+// resourceTypeToGVR map. Used by handlers to reject unknown types
+// up front with a friendly error before the dynamic client surfaces
+// a confusing GVR-not-found.
+func (c *Connector) SupportedResourceType(resourceType string) bool {
+	_, ok := resourceTypeToGVR(resourceType)
+	return ok
+}
+
+// PatchResourceMetadata applies a JSON merge patch to a resource via
+// the dynamic client. Used by the edit-metadata endpoint (Tier 2 #8)
+// to layer label / annotation changes on top of any kind the dynamic
+// client can resolve, without forcing a typed-client switch per kind.
+//
+// Returns the post-patch object as an unstructured map so the handler
+// can extract the post-patch labels / annotations for the response
+// diff. JSON merge patch (RFC 7396) treats `null` values as "remove
+// this key" — that's how the handler expresses removes.
+func (c *Connector) PatchResourceMetadata(ctx context.Context, resourceType, namespace, name string, patchJSON []byte) (map[string]interface{}, error) {
+	if c.dynamicClient == nil {
+		return nil, fmt.Errorf("dynamic client not available")
+	}
+	gvr, ok := resourceTypeToGVR(resourceType)
+	if !ok {
+		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
+	}
+
+	var (
+		obj *unstructured.Unstructured
+		err error
+	)
+	if isClusterScoped(resourceType) {
+		obj, err = c.dynamicClient.Resource(gvr).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{})
+	} else {
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Patch(ctx, name, types.MergePatchType, patchJSON, metav1.PatchOptions{})
+	}
+	if err != nil {
+		return nil, err
+	}
+	return obj.Object, nil
+}
+
 func (c *Connector) ApplyResourceYAML(resourceType, namespace, name string, yamlData []byte) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
@@ -3262,6 +3631,11 @@ func (c *Connector) listDeployments(namespace string) []map[string]interface{} {
 		if memDenom > 0 {
 			m["memoryPercent"] = float64(memUsed) / float64(memDenom) * 100
 		}
+		// Apply read-after-write overlay so the deployments list page
+		// also sees the post-Pause/Resume state immediately on a
+		// manual refresh, not just the detail page. Same overlay
+		// the GetResourceDetail("deployments", ...) branch uses.
+		c.recentWrites.Apply("deployments", d.Namespace, d.Name, m)
 		items = append(items, m)
 	}
 	return items
@@ -3377,12 +3751,79 @@ func (c *Connector) listReplicaSets(namespace string) []map[string]interface{} {
 
 func (c *Connector) listJobs(namespace string) []map[string]interface{} {
 	list, _ := c.jobLister.List(everythingSelector())
+	// Pre-load pods + metrics ONCE so we don't re-fetch per job.
+	// Mirrors listDaemonSets: walk the pod set, attribute by
+	// OwnerReferences. Without this enrichment, the Jobs list page
+	// shows "—" in CPU/Memory columns even when metrics-server
+	// has data.
+	pods, _ := c.podLister.List(everythingSelector())
+	var podMetrics map[string]*models.MetricPoint
+	if c.collector != nil {
+		podMetrics = c.collector.GetAllPodMetrics()
+	}
+
 	var items []map[string]interface{}
 	for _, job := range list {
 		if namespace != "" && job.Namespace != namespace {
 			continue
 		}
-		items = append(items, jobToMap(job))
+		m := JobToMap(job)
+		var cpuUsed, memUsed, cpuReq, cpuLim, memReq, memLim int64
+		hasMetrics := false
+		for _, pod := range pods {
+			if pod.Namespace != job.Namespace {
+				continue
+			}
+			owned := false
+			for _, ref := range pod.OwnerReferences {
+				if ref.Kind == "Job" && ref.Name == job.Name {
+					owned = true
+					break
+				}
+			}
+			if !owned {
+				continue
+			}
+			for _, cont := range pod.Spec.Containers {
+				cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+				cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+				memReq += cont.Resources.Requests.Memory().Value()
+				memLim += cont.Resources.Limits.Memory().Value()
+			}
+			if podMetrics != nil {
+				if pm, ok := podMetrics[pod.Namespace+"/"+pod.Name]; ok {
+					cpuUsed += pm.CPUUsage
+					memUsed += pm.MemUsage
+					hasMetrics = true
+				}
+			}
+		}
+		// Same shape the detail page renders. Includes hasMetrics
+		// flag so the frontend's ResourceUsageCell can distinguish
+		// "metrics-server reported 0" from "no data at all".
+		if hasMetrics {
+			m["cpuUsage"] = cpuUsed
+			m["memoryUsage"] = memUsed
+		}
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		denom := cpuLim
+		if denom == 0 {
+			denom = cpuReq
+		}
+		if denom > 0 {
+			m["cpuPercent"] = float64(cpuUsed) / float64(denom) * 100
+		}
+		denom = memLim
+		if denom == 0 {
+			denom = memReq
+		}
+		if denom > 0 {
+			m["memoryPercent"] = float64(memUsed) / float64(denom) * 100
+		}
+		items = append(items, m)
 	}
 	return items
 }
@@ -3394,7 +3835,11 @@ func (c *Connector) listCronJobs(namespace string) []map[string]interface{} {
 		if namespace != "" && cj.Namespace != namespace {
 			continue
 		}
-		items = append(items, cronJobToMap(cj))
+		m := cronJobToMap(cj)
+		// Apply read-after-write overlay so the CronJobs list page sees
+		// post-suspend/resume state immediately on a manual refresh.
+		c.recentWrites.Apply("cronjobs", cj.Namespace, cj.Name, m)
+		items = append(items, m)
 	}
 	return items
 }
@@ -3684,6 +4129,10 @@ func (c *Connector) listNodes() []map[string]interface{} {
 				}
 			}
 		}
+		// Apply read-after-write overlay so the Nodes list page sees
+		// post-cordon/uncordon state immediately on a manual refresh,
+		// not just the detail page. Same pattern as deployments.
+		c.recentWrites.Apply("nodes", "", node.Name, m)
 		items = append(items, m)
 	}
 	return items
@@ -4332,7 +4781,7 @@ func (c *Connector) GetCronJobJobs(namespace, cronJobName string) []map[string]i
 		if !owned {
 			continue
 		}
-		items = append(items, jobToMap(job))
+		items = append(items, JobToMap(job))
 	}
 	// Sort by creation time descending (newest first)
 	sort.Slice(items, func(i, j int) bool {

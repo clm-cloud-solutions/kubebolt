@@ -46,6 +46,7 @@ func NewRouter(
 		manager:              manager,
 		wsHub:                wsHub,
 		pfManager:            NewPortForwardManager(),
+		drainManager:         newDrainSessionManager(),
 		copilotConfig:        copilotCfg,
 		copilotUsage:         copilotUsage,
 		authHandlers:         authHandlers,
@@ -207,15 +208,76 @@ func NewRouter(
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleEditor))
 					r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
+					// Create new resource from manifest — kubectl create -f
+					// equivalent. URL is /resources/:type/:ns (no :name —
+					// the name lives in the body's metadata.name). Single-
+					// document YAML or JSON bodies. Tier 2 #10, see
+					// internal/k8s-operations/tier2-apply-new-manifest.md.
+					r.Post("/resources/{type}/{namespace}", h.handleCreateResource)
 					r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
 					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)
+					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
+					// Set resources — kubectl set resources. Strategic
+					// merge patch on container resource requests / limits
+					// without going through the YAML editor. Tier 2 #6,
+					// see internal/k8s-operations/tier2-set-resources.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-resources", h.handleSetResources)
+					// Set env — kubectl set env. Strategic merge patch
+					// on container env arrays, supporting set/remove via
+					// the `$patch: delete` directive. Tier 2 #7, see
+					// internal/k8s-operations/tier2-set-env.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-env", h.handleSetEnv)
+					// Edit metadata — kubectl label / kubectl annotate
+					// equivalents. JSON merge patch on metadata.labels +
+					// metadata.annotations via the dynamic client; works
+					// on every kind. Tier 2 #8, see
+					// internal/k8s-operations/tier2-edit-labels-annotations.md.
+					r.Post("/resources/{type}/{namespace}/{name}/edit-metadata", h.handleEditMetadata)
+					// Secret reveal — decode and return Secret values.
+					// Editor+ at the route level; the handler escalates
+					// to Admin internally for production-pattern
+					// namespaces. Tier 2 #9, see
+					// internal/k8s-operations/tier2-secret-reveal.md.
+					r.Post("/resources/{type}/{namespace}/{name}/reveal", h.handleSecretReveal)
+					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
+					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
+					// Rollout pause/resume. Deployment-only — flips
+					// spec.paused so the deployment controller stops
+					// reconciling without touching pods. The
+					// `rollout-` prefix avoids colliding with CronJob
+					// /resume below; full reasoning in
+					// internal/k8s-operations/tier2-rollout-pause-resume.md.
+					r.Post("/resources/{type}/{namespace}/{name}/rollout-pause", h.handleRolloutPause)
+					r.Post("/resources/{type}/{namespace}/{name}/rollout-resume", h.handleRolloutResume)
+					// CronJob ergonomics. Suspend/resume flip
+					// spec.suspend; trigger creates a one-off Job
+					// from the CronJob's jobTemplate (kubectl
+					// create job --from=cronjob/X).
+					r.Post("/resources/{type}/{namespace}/{name}/suspend", h.handleCronJobSuspend)
+					r.Post("/resources/{type}/{namespace}/{name}/resume", h.handleCronJobResume)
+					r.Post("/resources/{type}/{namespace}/{name}/trigger", h.handleCronJobTrigger)
 					r.Post("/portforward", h.handleCreatePortForward)
 					r.Delete("/portforward/{id}", h.handleDeletePortForward)
 				})
 
-				// Destructive endpoints — Admin role required
-				r.With(auth.RequireRole(auth.RoleAdmin)).Delete("/resources/{type}/{namespace}/{name}", h.handleDelete)
+				// Destructive endpoints — Admin role required.
+				// Drain joins delete here because evicting every pod
+				// on a node is high-impact: it can violate PDBs,
+				// degrade cluster capacity, and disrupt running
+				// workloads. Cordon/uncordon stay Editor+ since they
+				// only flip a schedule flag.
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Delete("/resources/{type}/{namespace}/{name}", h.handleDelete)
+					r.Post("/resources/{type}/{namespace}/{name}/drain", h.handleDrain)
+					// GET re-attaches to an in-flight drain (SSE);
+					// DELETE cancels. Same Admin gate because
+					// inspecting the drain stream effectively shows
+					// what pods are being evicted across namespaces.
+					r.Get("/resources/{type}/{namespace}/{name}/drain", h.handleDrainSession)
+					r.Delete("/resources/{type}/{namespace}/{name}/drain", h.handleDrainCancel)
+				})
 			})
 		})
 	})

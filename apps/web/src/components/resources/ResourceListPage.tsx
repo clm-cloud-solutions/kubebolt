@@ -99,6 +99,20 @@ function NodeCell({ node }: { node: string }) {
   )
 }
 
+// hasMetrics is derived from the presence of cpuUsage/memoryUsage
+// fields on the row payload — backend only sets them when the
+// metrics-server actually had a sample. This lets the cell render
+// a literal "0" instead of "—" when usage is genuinely zero (e.g.
+// SUCCEEDED Job pod whose container terminated), avoiding the
+// asymmetry where Memory shows the last-cached value but CPU
+// looks like "no data".
+function rowHasMetrics(item: ResourceItem): boolean {
+  return (
+    (item as unknown as { cpuUsage?: number }).cpuUsage !== undefined ||
+    (item as unknown as { memoryUsage?: number }).memoryUsage !== undefined
+  )
+}
+
 function CpuCell({ item }: { item: ResourceItem }) {
   return (
     <ResourceUsageCell
@@ -107,6 +121,7 @@ function CpuCell({ item }: { item: ResourceItem }) {
       limit={Number(item.cpuLimit ?? 0)}
       percent={Number(item.cpuPercent ?? 0)}
       type="cpu"
+      hasMetrics={rowHasMetrics(item)}
     />
   )
 }
@@ -119,6 +134,7 @@ function MemCell({ item }: { item: ResourceItem }) {
       limit={Number(item.memoryLimit ?? 0)}
       percent={Number(item.memoryPercent ?? 0)}
       type="memory"
+      hasMetrics={rowHasMetrics(item)}
     />
   )
 }
@@ -318,7 +334,50 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
   if (resourceType === 'cronjobs') {
     base.push(
       { accessorKey: 'schedule', header: 'Schedule', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
-      { accessorKey: 'lastSchedule', header: 'Last Run', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> }
+      {
+        accessorKey: 'lastSchedule',
+        header: 'Last Run',
+        // Append "ago" so the value reads as elapsed time, not as
+        // a duration (which would be ambiguous next to the cron
+        // syntax in the Schedule column). Hover shows the absolute
+        // timestamp via title.
+        cell: (info) => {
+          const v = info.getValue() as string | undefined
+          if (!v) return <span className="font-mono text-[11px] text-kb-text-tertiary">never</span>
+          const row = info.row.original as unknown as { lastScheduleTime?: string }
+          const tipDate = row.lastScheduleTime ? new Date(row.lastScheduleTime).toLocaleString() : ''
+          return (
+            <span className="font-mono text-[11px] text-kb-text-secondary" title={tipDate}>
+              {v} ago
+            </span>
+          )
+        },
+      },
+      // Suspended badge column — surfaces the suspend flag right
+      // next to the schedule so the operator scans for paused crons
+      // without opening the detail page. Empty cell when active so
+      // the column doesn't add visual noise on healthy crons.
+      {
+        id: 'suspended',
+        header: 'State',
+        accessorFn: (row) => (row as unknown as { suspend?: boolean }).suspend === true,
+        cell: (info) =>
+          info.getValue() ? (
+            <span
+              className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide"
+              title="CronJob is suspended — scheduled runs will not fire"
+            >
+              Suspended
+            </span>
+          ) : (
+            <span
+              className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-ok-dim text-status-ok uppercase tracking-wide"
+              title="CronJob is active — scheduled runs fire on cadence"
+            >
+              Active
+            </span>
+          ),
+      }
     )
   }
 

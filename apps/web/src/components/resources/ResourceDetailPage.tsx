@@ -4,7 +4,19 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText } from 'lucide-react'
+import { SetImageModal } from '@/components/resources/SetImageModal'
+import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
+import { SetEnvModal } from '@/components/resources/SetEnvModal'
+import { EditMetadataModal } from '@/components/resources/EditMetadataModal'
+import { SecretRevealModal } from '@/components/resources/SecretRevealModal'
+import { ScaleModal } from '@/components/resources/ScaleModal'
+import { ResourceActionsMenu, type ActionItem } from '@/components/resources/ResourceActionsMenu'
+import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
+import { RollbackModal } from '@/components/resources/RollbackModal'
+import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
+import { DrainModal } from '@/components/resources/DrainModal'
+import { NodeSchedulabilityToolbarButton } from '@/components/resources/NodeSchedulabilityToolbarButton'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
@@ -2198,10 +2210,10 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2247,10 +2259,10 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2296,10 +2308,10 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2345,10 +2357,10 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
               </td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2525,10 +2537,10 @@ function NodePodsTab({ nodeName }: { nodeName: string }) {
               <td className="py-2">{(() => { const val = String(pod.ready ?? '0/0'); const [r, t] = val.split('/'); return <StatusBadge status={r === t && t !== '0' ? 'Running' : 'Warning'} label={val} /> })()}</td>
               <td className="py-2"><StatusBadge status={pod.status} /></td>
               <td className="py-2 w-36 pr-6">
-                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" />
+                <ResourceUsageCell usage={Number(pod.cpuUsage ?? 0)} request={Number(pod.cpuRequest ?? 0)} limit={Number(pod.cpuLimit ?? 0)} percent={Number(pod.cpuPercent ?? 0)} type="cpu" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 w-36 pl-2">
-                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" />
+                <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
               <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
@@ -2694,10 +2706,31 @@ export function ResourceDetailPage() {
   }
   const [showDescribe, setShowDescribe] = useState(false)
   const [showRestart, setShowRestart] = useState(false)
+  // showScale opens the ScaleModal (post-refactor: was a popover, now
+  // a modal so it can be triggered from the Actions menu without an
+  // anchor mismatch). scaleValue is gone — the modal manages its own
+  // input state, seeded from currentReplicas.
   const [showScale, setShowScale] = useState(false)
-  const [scaleValue, setScaleValue] = useState(0)
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
+  const [showSetImage, setShowSetImage] = useState(false)
+  const [showSetResources, setShowSetResources] = useState(false)
+  const [showSetEnv, setShowSetEnv] = useState(false)
+  const [showEditMetadata, setShowEditMetadata] = useState(false)
+  const [showSecretReveal, setShowSecretReveal] = useState(false)
+  // showRollback carries the target revision so the modal can render
+  // before/after diffs without re-fetching. null = closed. Cut 4
+  // implements the modal; this Cut 3 just plumbs the open trigger.
+  const [showRollback, setShowRollback] = useState<{ revision: number } | null>(null)
+  // CronJob actions: trigger opens a small modal; suspend/resume
+  // are single-action mutations with their own loading state
+  // tracked via actionLoading (so the existing Restart/Scale state
+  // doesn't conflict).
+  const [showTrigger, setShowTrigger] = useState(false)
+  // Drain opens the existing DrainModal — same component the
+  // Nodes list uses. State lives on the detail page so the modal
+  // mounts at this level rather than per-button.
+  const [showDrain, setShowDrain] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -2714,11 +2747,142 @@ export function ResourceDetailPage() {
   // dropped naturally on navigation.
 
   if (isLoading) return <LoadingSpinner />
-  if (error || !item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
+  // Only show full-screen error when we have NO data to render.
+  // If we previously loaded `item` and a subsequent refetch failed
+  // (transient backend hiccup, informer cache lost a watch event,
+  // brief 404 between create-and-observe), keep showing the cached
+  // data instead of yanking the operator out of their workflow.
+  // The DataFreshnessIndicator already exposes refetch/error state
+  // to the user; no need to bulldoze the page for a temporary blip.
+  if (!item) return <ErrorState message={error?.message ?? 'Resource not found'} onRetry={() => refetch()} />
 
   const tabs = getTabsForResource(type, item)
   const parentLabel = resourceLabels[type] || type
   const parentPath = `/${type}`
+
+  // Toolbar Actions ▾ menu items — built per-kind. Primary actions
+  // (Restart, Set image for workloads; Trigger/Suspend for cronjobs;
+  // Cordon/Drain for nodes; Reveal for secrets) stay inline in the
+  // toolbar; the writes below are the second-tier actions that pile
+  // up otherwise. Edit metadata is universal — when it's the ONLY
+  // item, the toolbar promotes it inline instead of showing a sad
+  // single-entry dropdown.
+  const isWorkload = type === 'deployments' || type === 'statefulsets' || type === 'daemonsets'
+  const isPaused = (item as unknown as { paused?: boolean })?.paused === true
+  const menuItems: ActionItem[] = []
+  if (type === 'deployments' || type === 'statefulsets') {
+    menuItems.push({
+      id: 'scale',
+      label: 'Scale',
+      icon: ArrowUpDown,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : undefined,
+      onClick: () => setShowScale(true),
+    })
+  }
+  if (isWorkload) {
+    menuItems.push({
+      id: 'set-resources',
+      label: 'Set resources',
+      icon: Cpu,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : undefined,
+      onClick: () => setShowSetResources(true),
+    })
+    menuItems.push({
+      id: 'set-env',
+      label: 'Set env',
+      icon: Variable,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : undefined,
+      onClick: () => setShowSetEnv(true),
+    })
+  }
+  if (type === 'deployments') {
+    menuItems.push(
+      isPaused
+        ? {
+            id: 'rollout-resume',
+            label: 'Resume rollout',
+            icon: Play,
+            variant: 'success',
+            disabled: !canEdit || actionLoading === 'rollout-resume',
+            hint: !canEdit ? 'Editor role required' : 'Resume rollout — kubectl rollout resume',
+            onClick: async () => {
+              setActionLoading('rollout-resume')
+              try {
+                const res = await api.resumeRollout(type, namespace, name, 'ui')
+                if (res.deployment) {
+                  queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
+                }
+                queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                  { queryKey: ['resources', 'deployments'] },
+                  (old) => {
+                    if (!old) return old
+                    return {
+                      ...old,
+                      items: old.items.map((d) =>
+                        d.name === name && d.namespace === namespace ? { ...d, paused: false } : d,
+                      ),
+                    }
+                  },
+                )
+              } catch (err) {
+                queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
+                setMutationError({ err, action: 'Resume rollout' })
+              } finally {
+                setActionLoading(null)
+              }
+            },
+          }
+        : {
+            id: 'rollout-pause',
+            label: 'Pause rollout',
+            icon: Pause,
+            disabled: !canEdit || actionLoading === 'rollout-pause',
+            hint: !canEdit ? 'Editor role required' : 'Pause rollout — kubectl rollout pause',
+            onClick: async () => {
+              setActionLoading('rollout-pause')
+              try {
+                const res = await api.pauseRollout(type, namespace, name, 'ui')
+                if (res.deployment) {
+                  queryClient.setQueryData(['resource-detail', type, namespace, name], res.deployment)
+                }
+                queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                  { queryKey: ['resources', 'deployments'] },
+                  (old) => {
+                    if (!old) return old
+                    return {
+                      ...old,
+                      items: old.items.map((d) =>
+                        d.name === name && d.namespace === namespace ? { ...d, paused: true } : d,
+                      ),
+                    }
+                  },
+                )
+              } catch (err) {
+                queryClient.refetchQueries({ queryKey: ['resources', 'deployments'], type: 'active' })
+                setMutationError({ err, action: 'Pause rollout' })
+              } finally {
+                setActionLoading(null)
+              }
+            },
+          },
+    )
+  }
+  // Edit metadata — universal across all kinds, always last in the
+  // menu. When this is the ONLY item, the toolbar promotes it inline
+  // (see render branch below) so the operator doesn't pay a click
+  // for a single-entry dropdown.
+  menuItems.push({
+    id: 'edit-metadata',
+    label: 'Edit metadata',
+    icon: Tag,
+    disabled: !canEdit,
+    hint: !canEdit ? 'Editor role required' : 'Edit labels and annotations (kubectl label / annotate)',
+    onClick: () => setShowEditMetadata(true),
+    separator: isWorkload, // visually group "metadata" apart from the workload-template writes above
+  })
 
   function renderTab() {
     const tab = tabs.find(t => t.id === activeTab)
@@ -2744,6 +2908,19 @@ export function ResourceDetailPage() {
       case 'node-pods': return <NodePodsTab nodeName={name} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history':
+        if (type === 'deployments' || type === 'statefulsets' || type === 'daemonsets') {
+          return (
+            <RevisionTimeline
+              type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+              namespace={namespace}
+              name={name}
+              canEdit={canEdit}
+              onRollback={(rev) => setShowRollback({ revision: rev })}
+            />
+          )
+        }
+        // Other workload kinds keep the legacy view (for now this
+        // path is unused — only the three kinds above expose History).
         if (type === 'deployments') return <HistoryTab namespace={namespace} name={name} />
         return <WorkloadHistoryTab type={type} namespace={namespace} name={name} />
       case 'cronjob-jobs': return <CronJobJobsTab namespace={namespace} name={name} />
@@ -2779,7 +2956,46 @@ export function ResourceDetailPage() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-semibold text-kb-text-primary">{item.name}</h1>
+            {/* SchedulingDisabled badge for cordoned nodes — surfaces
+                state at the top of the detail page instead of buried
+                in the allocation card. Mirrors the badge on the
+                Nodes list cards so the visual language is consistent. */}
+            {type === 'nodes' && (item as unknown as { unschedulable?: boolean }).unschedulable === true && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="Node is cordoned — new pods will not be scheduled here"
+              >
+                SchedulingDisabled
+              </span>
+            )}
+            {/* CronJob suspended badge — same visual language as
+                SchedulingDisabled so the operator scans for "this
+                resource is in a paused/restricted state" the same
+                way across resource types. */}
+            {type === 'cronjobs' && (item as unknown as { suspend?: boolean }).suspend === true && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="CronJob is suspended — scheduled runs will not fire until you resume"
+              >
+                Suspended
+              </span>
+            )}
+            {/* Deployment rollout-paused badge — same visual language
+                as SchedulingDisabled / Suspended (Tier 2 #5). Surfaces
+                the paused state at the top of the page so the operator
+                doesn't have to dig into the YAML to know the
+                Deployment controller is frozen. */}
+            {type === 'deployments' && (item as unknown as { paused?: boolean }).paused === true && (
+              <span
+                className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn uppercase tracking-wide whitespace-nowrap"
+                title="Deployment rollout is paused — the deployment controller is not reconciling. Existing pods continue running. Resume to roll forward, or rollback to revert."
+              >
+                Rollout paused
+              </span>
+            )}
+          </div>
           {item.namespace && <div className="text-xs text-kb-text-tertiary font-mono">Namespace: {item.namespace}</div>}
         </div>
         <div className="flex gap-2 items-center">
@@ -2813,78 +3029,44 @@ export function ResourceDetailPage() {
               },
             }}
           />
-          <button onClick={() => refetch()} className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary">
+          <button
+            onClick={() => refetch()}
+            title="Refetch this resource from the apiserver"
+            className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary flex items-center gap-1.5"
+          >
+            <RefreshCw className="w-3 h-3" />
             Refresh
           </button>
           <button
             onClick={() => setShowDescribe(!showDescribe)}
-            className={`px-3 py-1.5 text-xs border rounded-lg transition-colors ${
+            title="Open kubectl describe output for this resource"
+            className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
               showDescribe
                 ? 'bg-status-info-dim border-status-info/20 text-status-info'
                 : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
             }`}
           >
+            <FileText className="w-3 h-3" />
             Describe
           </button>
-          {['deployments', 'statefulsets'].includes(type) && (
-            <div className="relative">
-              <button
-                onClick={() => { setScaleValue(Number(item.replicas ?? 1)); setShowScale(!showScale); setShowRestart(false) }}
-                disabled={!canEdit}
-                title={!canEdit ? 'Editor role required' : undefined}
-                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
-                  showScale ? 'bg-status-info-dim border-status-info/20 text-status-info' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
-                }`}
-              >
-                <ArrowUpDown className="w-3 h-3" />
-                Scale
-              </button>
-              {showScale && (
-                <div className="absolute top-full right-0 mt-1 bg-kb-card border border-kb-border rounded-xl shadow-xl z-50 p-4 w-64">
-                  <h4 className="text-sm font-semibold text-kb-text-primary mb-1">Scale {type === 'deployments' ? 'Deployment' : 'StatefulSet'}</h4>
-                  <p className="text-[11px] text-kb-text-tertiary mb-3">Adjust the number of replicas for this {type === 'deployments' ? 'deployment' : 'statefulset'}.</p>
-                  <div className="text-[10px] font-mono text-kb-text-tertiary mb-1.5">Replicas</div>
-                  <div className="mb-3">
-                    <input
-                      type="number"
-                      min="0"
-                      value={scaleValue}
-                      onChange={e => setScaleValue(Math.max(0, parseInt(e.target.value) || 0))}
-                      className="w-full px-2 py-1.5 text-xs font-mono bg-kb-bg border border-kb-border rounded-md text-kb-text-primary outline-none focus:border-kb-border-active"
-                      autoFocus
-                    />
-                  </div>
-                  <button
-                    onClick={async () => {
-                      setActionLoading('scale')
-                      setShowScale(false)
-                      try {
-                        const res = await api.scaleResource(type, namespace, name, scaleValue)
-                        // Seed the detail-page cache with the post-mutation
-                        // object so the UI reflects the new replicas count
-                        // immediately. WS events that follow keep status
-                        // (readyReplicas, etc.) in sync as the controller
-                        // reconciles.
-                        if (res.resource) {
-                          queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
-                        }
-                        queryClient.invalidateQueries({ queryKey: ['resources'] })
-                      } catch (err) {
-                        setMutationError({ err, action: 'Scale' })
-                      } finally {
-                        setActionLoading(null)
-                      }
-                    }}
-                    disabled={actionLoading === 'scale'}
-                    className="w-full py-2 text-xs font-medium bg-status-info text-white rounded-lg hover:bg-status-info/90 transition-colors flex items-center justify-center gap-1.5 disabled:opacity-50"
-                  >
-                    <ArrowUpDown className="w-3 h-3" />
-                    Scale
-                  </button>
-                </div>
-              )}
-            </div>
+          {/* Workload write actions — Set image kept inline as the most-
+              used "deploy a new version" verb. Restart stays inline below.
+              Scale, Set resources, Set env, Pause/Resume rollout, Edit
+              metadata all moved into the Actions ▾ menu (computed below). */}
+          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+            <button
+              onClick={() => { setShowSetImage(true); setShowRestart(false); setShowScale(false) }}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Set container image (kubectl set image)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <ImageIcon className="w-3 h-3" />
+              Set image
+            </button>
           )}
+          {/* Set resources / Set env / Pause-Resume rollout — moved
+              into the Actions ▾ menu (rendered below, before Delete).
+              See PRIMARY_ACTIONS_BY_TYPE design in the toolbar refactor. */}
           {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
             <div className="relative">
               <button
@@ -2939,12 +3121,175 @@ export function ResourceDetailPage() {
               )}
             </div>
           )}
+          {/* Node maintenance — toolbar parity with the Nodes list
+              cards. Cordon/Uncordon swaps based on spec.unschedulable;
+              Drain opens the same modal the list page uses. */}
+          {type === 'nodes' && item && (
+            <NodeSchedulabilityToolbarButton node={item} canEdit={canEdit} />
+          )}
+          {type === 'nodes' && (
+            <button
+              onClick={() => setShowDrain(true)}
+              disabled={!hasRole('admin')}
+              title={hasRole('admin') ? 'Evict pods (kubectl drain)' : 'Admin role required'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <AlertCircle className="w-3 h-3" />
+              Drain…
+            </button>
+          )}
+          {/* CronJob: trigger now / suspend or resume. Trigger
+              opens a small modal (jobName + concurrency warning).
+              Suspend/Resume are direct mutations — single click.
+              The button switches label/icon based on the current
+              spec.suspend so the operator never sees both. */}
+          {type === 'cronjobs' && (
+            <button
+              onClick={() => setShowTrigger(true)}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Run a one-off Job from this CronJob (kubectl create job --from=cronjob/X)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Play className="w-3 h-3" />
+              Trigger now
+            </button>
+          )}
+          {type === 'cronjobs' && (item as unknown as { suspend?: boolean }).suspend !== true && (
+            <button
+              onClick={async () => {
+                setActionLoading('suspend')
+                try {
+                  const res = await api.suspendCronJob(namespace, name, 'ui')
+                  if (res.cronJob) {
+                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.cronJob)
+                  }
+                  // Optimistic flip across every cronjobs-list cache
+                  // entry. We deliberately do NOT call
+                  // invalidateQueries afterward — the backend's GET
+                  // path reads from the informer cache which can lag
+                  // a Patch by a few hundred ms, returning the
+                  // pre-patch suspend=false and overriding our
+                  // correct optimistic update. The periodic
+                  // refetchInterval reconciles drift later. Same
+                  // bug + same fix as cordon/uncordon.
+                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                    { queryKey: ['resources', 'cronjobs'] },
+                    (old) => {
+                      if (!old) return old
+                      return {
+                        ...old,
+                        items: old.items.map((c) =>
+                          c.name === name && c.namespace === namespace
+                            ? { ...c, suspend: true }
+                            : c,
+                        ),
+                      }
+                    },
+                  )
+                } catch (err) {
+                  // On error, refetch to roll back the optimistic
+                  // flip — simpler than snapshotting every variant
+                  // of the list cache.
+                  queryClient.refetchQueries({ queryKey: ['resources', 'cronjobs'], type: 'active' })
+                  setMutationError({ err, action: 'Suspend' })
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={!canEdit || actionLoading === 'suspend'}
+              title={!canEdit ? 'Editor role required' : 'Pause the schedule — no new scheduled runs will fire until resumed'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Pause className={`w-3 h-3 ${actionLoading === 'suspend' ? 'animate-pulse' : ''}`} />
+              Suspend
+            </button>
+          )}
+          {type === 'cronjobs' && (item as unknown as { suspend?: boolean }).suspend === true && (
+            <button
+              onClick={async () => {
+                setActionLoading('resume')
+                try {
+                  const res = await api.resumeCronJob(namespace, name, 'ui')
+                  if (res.cronJob) {
+                    queryClient.setQueryData(['resource-detail', type, namespace, name], res.cronJob)
+                  }
+                  // Same optimistic-flip-no-invalidate dance as
+                  // suspend above — see comment there.
+                  queryClient.setQueriesData<{ items: ResourceItem[] }>(
+                    { queryKey: ['resources', 'cronjobs'] },
+                    (old) => {
+                      if (!old) return old
+                      return {
+                        ...old,
+                        items: old.items.map((c) =>
+                          c.name === name && c.namespace === namespace
+                            ? { ...c, suspend: false }
+                            : c,
+                        ),
+                      }
+                    },
+                  )
+                } catch (err) {
+                  queryClient.refetchQueries({ queryKey: ['resources', 'cronjobs'], type: 'active' })
+                  setMutationError({ err, action: 'Resume' })
+                } finally {
+                  setActionLoading(null)
+                }
+              }}
+              disabled={!canEdit || actionLoading === 'resume'}
+              title={!canEdit ? 'Editor role required' : 'Resume the schedule — scheduled runs will fire again'}
+              className="px-3 py-1.5 text-xs bg-status-ok-dim border border-status-ok/30 rounded-lg text-status-ok hover:bg-status-ok/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Play className={`w-3 h-3 ${actionLoading === 'resume' ? 'animate-pulse' : ''}`} />
+              Resume
+            </button>
+          )}
+          {/* Reveal — Tier 2 #9. Only for Secrets. Editor+ at the
+              route level; the backend escalates to Admin for
+              production-pattern namespaces. The yellow-warn styling
+              telegraphs that this is a sensitive action distinct
+              from the routine edit operations next to it. */}
+          {type === 'secrets' && (
+            <button
+              onClick={() => { setShowSecretReveal(true); setShowRestart(false); setShowScale(false) }}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Decode and reveal Secret values (audited; reason required)'}
+              className="px-3 py-1.5 text-xs bg-status-warn-dim border border-status-warn/30 rounded-lg text-status-warn hover:bg-status-warn/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Eye className="w-3 h-3" />
+              Reveal
+            </button>
+          )}
+          {/* Actions ▾ menu — overflow dropdown for the less-frequent
+              writes (Scale, Set resources, Set env, Pause/Resume
+              rollout, Edit metadata). Computed via menuItems below
+              based on kind. When the menu would only have one item
+              (eg Pod / Service / ConfigMap with just Edit metadata),
+              we render that item inline directly to avoid a sad
+              "Actions ▾" dropdown that contains a single thing. */}
+          {menuItems.length > 1 ? (
+            <ResourceActionsMenu items={menuItems} />
+          ) : menuItems.length === 1 ? (
+            <button
+              onClick={() => { menuItems[0].onClick(); setShowRestart(false); setShowScale(false) }}
+              disabled={menuItems[0].disabled}
+              title={menuItems[0].hint}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {(() => {
+                const Icon = menuItems[0].icon
+                return <Icon className="w-3 h-3" />
+              })()}
+              {menuItems[0].label}
+            </button>
+          ) : null}
           <button
             onClick={() => { setShowDelete(true); setShowRestart(false); setShowScale(false) }}
             disabled={!canDelete}
             title={!canDelete ? 'Admin role required' : undefined}
-            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-status-error-dim"
+            className="px-3 py-1.5 text-xs bg-status-error-dim border border-status-error/20 rounded-lg text-status-error hover:bg-status-error/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-status-error-dim"
           >
+            <Trash2 className="w-3 h-3" />
             Delete
           </button>
         </div>
@@ -2953,6 +3298,100 @@ export function ResourceDetailPage() {
       {/* Describe modal */}
       {showDescribe && (
         <DescribeModal type={type} namespace={namespace} name={name} onClose={() => setShowDescribe(false)} />
+      )}
+
+      {/* Set image modal */}
+      {showSetImage && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <SetImageModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSetImage(false)}
+        />
+      )}
+
+      {/* Set resources modal — Tier 2 #6 */}
+      {showSetResources && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <SetResourcesModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSetResources(false)}
+        />
+      )}
+
+      {/* Set env modal — Tier 2 #7 */}
+      {showSetEnv && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <SetEnvModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSetEnv(false)}
+        />
+      )}
+
+      {/* Edit metadata modal — Tier 2 #8. Universal across kinds. */}
+      {showEditMetadata && (
+        <EditMetadataModal
+          type={type}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowEditMetadata(false)}
+        />
+      )}
+
+      {/* Secret reveal modal — Tier 2 #9. Only mounts for Secrets. */}
+      {showSecretReveal && type === 'secrets' && (
+        <SecretRevealModal
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSecretReveal(false)}
+        />
+      )}
+
+      {/* Scale modal — Tier 1 (refactored). Used to be an inline
+          toolbar popover; moved into a modal so the Actions ▾ menu
+          item has a clean trigger. */}
+      {showScale && (type === 'deployments' || type === 'statefulsets') && (
+        <ScaleModal
+          type={type as 'deployments' | 'statefulsets'}
+          namespace={namespace}
+          name={name}
+          currentReplicas={Number(item.replicas ?? 1)}
+          onClose={() => setShowScale(false)}
+        />
+      )}
+
+      {/* Rollback confirmation modal */}
+      {showRollback && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <RollbackModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          targetRevision={showRollback.revision}
+          resource={item}
+          onClose={() => setShowRollback(null)}
+        />
+      )}
+
+      {/* CronJob trigger modal */}
+      {showTrigger && type === 'cronjobs' && item && (
+        <CronJobTriggerModal
+          cronJob={item}
+          onClose={() => setShowTrigger(false)}
+        />
+      )}
+
+      {/* Node drain modal — same component the Nodes list page
+          uses. Mounted here only for type=nodes so the show/hide
+          state doesn't leak across resource types. */}
+      {showDrain && type === 'nodes' && item && (
+        <DrainModal node={item} onClose={() => setShowDrain(false)} />
       )}
 
       {/* Delete modal */}

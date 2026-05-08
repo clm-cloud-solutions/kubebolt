@@ -4,6 +4,218 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-05-08
+
+The k8s-operations release. The 1.8.x cycle was dedicated to
+dashboard sub-tabs (Capacity, Reliability) and agent resilience;
+this release ships the **entire k8s-operations roadmap** the
+internal spec calls Tiers 1 and 2 — every kubectl-equivalent verb
+needed to edit a workload's spec from the dashboard without
+dropping to a terminal. Operators get set-image / rollout history /
+node maintenance / cronjob controls (Tier 1) AND set-resources /
+set-env / edit-labels / rollout pause-resume / secret reveal / apply
+new manifest (Tier 2) in one cycle. Plus the supporting
+infrastructure — `RecentWritesOverlay` for read-after-write
+consistency, deletion tombstones for cascade-aware list views — and
+a toolbar refactor that collapses the now-extensive action set into
+per-kind primary buttons + a single Actions ▾ overflow menu.
+
+The first two **Hybrid OSS** features (Secret reveal with mandatory
+audit, Apply new manifest from a topbar CTA) land here too — both
+ship a complete OSS path today with a documented Enterprise upgrade
+lane (audit chain-of-custody for reveal, policy-gate for apply).
+
+### Added
+
+#### k8s-operations Tier 1 (PR #6) — kubectl-write-ops baseline
+
+- **Set image** (`kubectl set image`). `POST /resources/:type/:ns/:name/set-image`,
+  Editor+ gated. Strategic-merge patch on
+  `spec.template.spec.containers[].image` for Deployment /
+  StatefulSet / DaemonSet. Multi-container support, init container
+  flag, cross-registry warning when the host changes mid-edit,
+  same-image short-circuit (`status: "unchanged"`). Modal with
+  per-container row, prior-images dropdown sourced from rollout
+  history. Post-apply switches to `RolloutStatusPanel` for live
+  progress.
+- **Rollout history with revision picker**. `GET /resources/:type/:ns/:name/history`
+  returns the full revision chain for Deployment / StatefulSet /
+  DaemonSet; `POST /resources/:type/:ns/:name/rollback` accepts an
+  optional `toRevision`. UI shows a clickable timeline with the
+  active revision highlighted; rollback opens a confirmation modal
+  that diffs the target revision's images against current.
+- **Node maintenance — cordon / uncordon / drain**. `POST /resources/nodes/_/:name/cordon`
+  + `uncordon` + `drain` (drain is `POST` to start, `GET` for SSE
+  progress, `DELETE` to cancel mid-flight). Drain modal streams
+  pod-evicted events as they arrive, terminating in
+  `drain-complete`. Toolbar parity with the Nodes list cards.
+- **CronJob controls** (`kubectl create job --from=cronjob/X` +
+  `kubectl patch cronjob` for spec.suspend). Trigger-now creates a
+  manual Job with the standard
+  `cronjob.kubernetes.io/instantiate=manual` annotation +
+  OwnerReference. Suspend/Resume flip `spec.suspend` with no-op
+  detection so the apiserver doesn't fire admission webhooks for
+  nothing.
+
+#### k8s-operations Tier 2 (PRs #7, #8, #9) — second-tier writes
+
+- **Rollout pause / resume** (Tier 2 #5, PR #7). `POST /resources/deployments/:ns/:name/rollout-{pause,resume}`.
+  Flips `spec.paused` so the deployment controller stops
+  reconciling without scaling pods to zero or rolling back. Common
+  use cases: freeze a misbehaving rolling update mid-flight while
+  you investigate, or pre-stage a sequence of edits and resume so
+  they all land as one ReplicaSet. Deployment-only — upstream
+  apps/v1 StatefulSet has no `.spec.paused` as of K8s 1.32. Toolbar
+  shows a "Rollout paused" badge in the resource header when
+  active.
+- **Set resources** (Tier 2 #6, PR #8). `POST /resources/:type/:ns/:name/set-resources`,
+  Editor+ gated. Strategic-merge patch on container resource
+  requests / limits — same workload-type scope as Set image
+  (Deployment / StatefulSet / DaemonSet). Per-row CPU/memory inputs
+  with inline `resource.ParseQuantity` validation, init-container
+  support via flag, and a server-side limit-≥-request guard so the
+  apiserver's admission rejection isn't the operator's first feedback.
+  Live rollout progress reuses `RolloutStatusPanel`. Connects with
+  the dashboard's `RightSizingPanel` so right-sizing recommendations
+  are one click from a matching modal.
+- **Set env** (Tier 2 #7, PR #8). `POST /resources/:type/:ns/:name/set-env`.
+  Three value sources in one dialog: literal value, ConfigMap key
+  reference, Secret key reference (with cascading source-name
+  dropdowns populated from the namespace's existing CMs/Secrets).
+  Per-row action discriminates set vs remove; the backend uses the
+  strategic-merge `$patch: delete` directive so ADD / UPDATE /
+  REMOVE happen atomically in one Patch call (cleaner than index-
+  based JSON 6902 or Get-then-Update of the full resource). Pre-
+  flight validation rejects missing CM/Secret references before the
+  audit log records a failed mutation. Soft sensitive-name detector
+  warns when literal values use names that look like
+  password/token/secret/credential. Optional `triggerRollout`
+  toggle wires the kubectl-rollout-restart annotation so literal-
+  value changes apply immediately.
+- **Edit labels / annotations** (Tier 2 #8, PR #8). `POST /resources/:type/:ns/:name/edit-metadata`.
+  JSON merge patch via the dynamic client; works on every kind.
+  Both maps applied atomically in one apiserver call. Add/update
+  rows + remove toggle on existing entries; new rows side-by-side.
+  Existing-key inputs are locked so the operator can't accidentally
+  rename a label and turn an "update" into "add new + leave old".
+  Managed-key indicator (lock icon) on keys with reserved prefixes
+  (`kubectl.kubernetes.io/`, `helm.sh/`, `argocd.argoproj.io/`,
+  `kustomize.toolkit.fluxcd.io/`) — operators can still edit, but
+  the controller may revert; the icon makes that visible.
+- **Secret reveal with audit** (Tier 2 #9, PR #8) — **Hybrid OSS**.
+  `POST /resources/secrets/:ns/:name/reveal`. POST not GET so the
+  request body and response payload don't sit in caches between
+  client and server. Apiserver Get (not informer cache) for read
+  freshness. Mandatory operator reason (≥10 chars) goes to the
+  audit log alongside who/what/when. Production-namespace pattern
+  (configurable, default `^(prod|production|prd)([-_].+)?$`) gates
+  Editor → Admin escalation server-side. Two audit channels per
+  reveal: `auditMutation` (general action log) and a dedicated
+  `auditSecretReveal` channel that carries the reason verbatim.
+  Critical invariant: neither channel ever logs the values, hashes
+  of values, or any derivative — only the keys requested + reason.
+  Binary content detection so non-UTF8 values render as
+  sha256+length descriptors instead of crashing the UI render. The
+  modal has per-key 60s auto-hide timers (each value's window
+  starts when it becomes visible; restarts on re-show), and "copy"
+  buttons transition to "copied!" for 1.5s. **Enterprise upgrade**
+  (specced) layers cryptographic chain-of-custody, SIEM export,
+  retention policies, approval gates, and JIT reveal tokens.
+- **Apply new manifest from UI** (Tier 2 #10, PR #8) — **Hybrid OSS**.
+  `POST /resources/:type/:ns` with a YAML or JSON body. The "+ New"
+  CTA in the global topbar opens a kind picker, namespace picker,
+  hand-curated starter templates per kind (18 kinds, 1-2 starters
+  each — Pod-netshoot, Deployment-nginx, Service ClusterIP,
+  ConfigMap, Secret Opaque, Job, CronJob, Ingress, etc.), and the
+  same CodeMirror 6 + lang-yaml + oneDark editor as the YAML detail
+  tab. Pre-flight validation surfaces operator errors with clean
+  messages before the apiserver round-trip: URL/body kind
+  consistency ("URL targets X but body declares kind=Y"), apiVersion
+  consistency, namespace consistency, single-document-only guard,
+  metadata.generateName not supported in v1. Apiserver errors
+  translate cleanly: AlreadyExists → 409 with "use the YAML editor
+  to update"; IsInvalid → 422 with the apiserver message verbatim.
+  Status, managedFields, and last-applied-configuration are stripped
+  from the body so paste-from-`kubectl get -o yaml` workflows don't
+  carry stale state. Post-create navigation to the new resource's
+  detail page. **Enterprise upgrade** (specced) layers org policy
+  enforcement (Kyverno / OPA / DSL), required-field templates,
+  approval workflows for high-impact kinds, Secret-creation
+  policies.
+- **Resource toolbar Actions ▾ menu** (PR #8). The Tier 1 + Tier 2
+  build-out grew the resource detail toolbar to 8-9 buttons on
+  workloads. Refactor keeps each kind's most-used actions inline
+  (Set image + Restart for workloads; Trigger + Suspend/Resume for
+  CronJobs; Cordon + Drain for Nodes; Reveal for Secrets) and
+  groups the rest under a single Wrench-icon Actions ▾ dropdown.
+  When the menu would only contain Edit metadata (most non-workload
+  kinds), the menu is promoted inline so the operator doesn't pay a
+  click for a single-entry dropdown. Refresh / Describe / Delete
+  picked up icons (RefreshCw / FileText / Trash2) so the whole
+  toolbar reads as a consistent icon-then-label rhythm.
+- **Read-after-DELETE tombstones** in the recent-writes overlay
+  (Tier 2 #10 follow-up, PR #8). After deleting a resource, the
+  cascade-reaped dependents (Deployment → ReplicaSet → Pods) stayed
+  visible in list views for a few seconds while the informer cache
+  caught up. Extended `RecentWritesOverlay` with deletion
+  tombstones (10s TTL) and an owner-ref walk that masks indirect
+  cascade dependents (Pod → ReplicaSet → tombstoned Deployment;
+  Pod → Job → tombstoned CronJob). Six unit tests cover the
+  tombstone path; suite is `-race` clean.
+- **Read-after-write overlay extended to cordon/uncordon and
+  cronjob suspend/resume** (PR #9). The `RecentWritesOverlay`
+  added earlier in this release (PR #7) for `deployments.paused`
+  is now wired into `nodes.unschedulable` and `cronjobs.suspend`.
+  Manual Refresh inside the 5s overlay window keeps the
+  post-mutation state visible regardless of informer-cache lag.
+- **Copilot pricing for xAI Grok and MiniMax** (PR #10). Three Grok
+  variants (4.3, 4.20, 4-1 fast — input/output only) and four
+  MiniMax variants (M2.7 / M2.5 + highspeed — includes cache
+  read/write tiers). New `docs/guides/copilot-providers.md` covers
+  env-var setup and pricing characteristics for every supported
+  provider. README's multi-provider list updated.
+
+### Changed
+
+- **Resource detail toolbar layout** — see "Resource toolbar
+  Actions ▾ menu" above. Net effect: workload toolbars went from
+  ~9 buttons inline to 4 inline + a dropdown.
+- **Scale modal** — Scale moved from an inline-toolbar popover to a
+  focused modal so it can be triggered from the new Actions menu
+  without an awkward anchor mismatch (the popover would have
+  anchored to a now-hidden button). Same modal pattern as Set
+  image / Set resources / Set env. Enter-to-submit, autofocus.
+- **Standalone agent manifests** (`deploy/agent/kubebolt-agent-{metrics,reader,operator}.yaml`)
+  bumped from `agent:v0.2.0` to `agent:v0.2.2` so fresh installs
+  pick up the leader-election self-heal + Hubble flow-aggregator
+  fixes shipped in the agent's own 0.2.x cycle.
+
+### Fixed
+
+- **Pricing-prefix nondeterminism** in
+  `apps/api/internal/copilot/pricing.go`. `PricingFor` was iterating
+  `modelPricing` to find the longest matching prefix; Go's map
+  iteration order is randomized, so once two keys overlapped
+  (`minimax-m2.7` vs `minimax-m2.7-highspeed`, `gpt-5` vs
+  `gpt-5-mini`), the function returned different prices on different
+  invocations. Fix: pre-sort keys longest-first; the most specific
+  key always wins. Guarded by
+  `TestPricingFor_LongestPrefixWins`.
+- **Secret-reveal auto-hide window** (Tier 2 #9, in-vivo
+  iteration). Initial impl reset the global timer on every
+  mousemove / keydown / scroll inside the modal, which made the
+  60s auto-hide unpredictable: any cursor movement extended it
+  indefinitely. Replaced with per-key fixed windows — predictable
+  to the operator and the right semantic for shoulder-surfing
+  protection (60 seconds, no exceptions, regardless of activity).
+  Re-shows after auto-hide restart their own per-key timer.
+- **Edit-metadata modal layout** for variable-width action
+  buttons (REMOVE/UNDO text vs X icon for new rows). Without a
+  fixed-width action slot, the input columns shifted across rows
+  depending on which kind of action button rendered. Fixed-width
+  `w-16` slot now keeps every input column aligned regardless of
+  state.
+
 ## [1.8.0] — 2026-05-04
 
 Resilience and first-use UX release. Agent-proxy clusters now survive
