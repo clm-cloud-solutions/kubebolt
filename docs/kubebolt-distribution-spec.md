@@ -384,7 +384,7 @@ metadata:
   name: kubebolt
   namespace: kubebolt-system
 spec:
-  version: "1.6.0"               # optional, defaults to latest
+  version: "1.9.0"               # optional, defaults to latest
   replicas: 1
   resources:
     requests:
@@ -410,10 +410,7 @@ EOF
 # Check status
 kubectl get kubebolt
 # NAME       STATUS    VERSION   AGE
-# kubebolt   Running   1.7.0     5m
-
-# Upgrade
-kubectl patch kubebolt kubebolt --type merge -p '{"spec":{"version":"1.8.0"}}'
+# kubebolt   Running   1.9.0     5m
 
 # Delete
 kubectl delete kubebolt kubebolt
