@@ -4,11 +4,12 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
 import { EditMetadataModal } from '@/components/resources/EditMetadataModal'
+import { SecretRevealModal } from '@/components/resources/SecretRevealModal'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
@@ -2711,6 +2712,7 @@ export function ResourceDetailPage() {
   const [showSetResources, setShowSetResources] = useState(false)
   const [showSetEnv, setShowSetEnv] = useState(false)
   const [showEditMetadata, setShowEditMetadata] = useState(false)
+  const [showSecretReveal, setShowSecretReveal] = useState(false)
   // showRollback carries the target revision so the modal can render
   // before/after diffs without re-fetching. null = closed. Cut 4
   // implements the modal; this Cut 3 just plumbs the open trigger.
@@ -3282,6 +3284,22 @@ export function ResourceDetailPage() {
               Resume
             </button>
           )}
+          {/* Reveal — Tier 2 #9. Only for Secrets. Editor+ at the
+              route level; the backend escalates to Admin for
+              production-pattern namespaces. The yellow-warn styling
+              telegraphs that this is a sensitive action distinct
+              from the routine edit operations next to it. */}
+          {type === 'secrets' && (
+            <button
+              onClick={() => { setShowSecretReveal(true); setShowRestart(false); setShowScale(false) }}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Decode and reveal Secret values (audited; reason required)'}
+              className="px-3 py-1.5 text-xs bg-status-warn-dim border border-status-warn/30 rounded-lg text-status-warn hover:bg-status-warn/20 transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Eye className="w-3 h-3" />
+              Reveal
+            </button>
+          )}
           {/* Edit metadata — Tier 2 #8. Universal across resource
               kinds (every K8s object has metadata.labels +
               metadata.annotations). Sits just before Delete because
@@ -3353,6 +3371,16 @@ export function ResourceDetailPage() {
           name={name}
           resource={item}
           onClose={() => setShowEditMetadata(false)}
+        />
+      )}
+
+      {/* Secret reveal modal — Tier 2 #9. Only mounts for Secrets. */}
+      {showSecretReveal && type === 'secrets' && (
+        <SecretRevealModal
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSecretReveal(false)}
         />
       )}
 

@@ -522,6 +522,23 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Reveal a Secret's values. POST (not GET) so the request body —
+  // including the operator's reason — never lands in HTTP access
+  // logs or browser history; also so caches between client and server
+  // can't snapshot the response payload. Tier 2 #9 — see
+  // internal/k8s-operations/tier2-secret-reveal.md.
+  revealSecret: (
+    namespace: string,
+    name: string,
+    body: { keys?: string[]; reason: string },
+    source?: string,
+  ) =>
+    postJSON<SecretRevealResponse>(
+      `${API_BASE}/resources/secrets/${namespace}/${name}/reveal`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Node maintenance — cordon / uncordon. Drain lives separately
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
@@ -937,6 +954,31 @@ export interface MetadataDiff {
   added?: string[]
   updated?: string[]
   removed?: string[]
+}
+
+// Secret reveal types — Tier 2 #9. The backend classifies each
+// revealed value as either text (UTF-8 printable) or binary (anything
+// else). Binary entries deliberately omit the value field — the UI
+// renders a sha256 + length descriptor with a download affordance
+// instead of trying to print bytes that would crash the renderer or
+// produce unhelpful gibberish.
+export type SecretRevealedValueKind = 'text' | 'binary'
+
+export interface SecretRevealedValue {
+  key: string
+  kind: SecretRevealedValueKind
+  value?: string
+  sha256?: string
+  bytes?: number
+}
+
+export interface SecretRevealResponse {
+  name: string
+  namespace: string
+  type: string
+  revealedAt: string
+  values: SecretRevealedValue[]
+  missing: string[]
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'

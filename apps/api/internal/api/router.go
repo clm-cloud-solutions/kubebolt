@@ -228,6 +228,12 @@ func NewRouter(
 					// on every kind. Tier 2 #8, see
 					// internal/k8s-operations/tier2-edit-labels-annotations.md.
 					r.Post("/resources/{type}/{namespace}/{name}/edit-metadata", h.handleEditMetadata)
+					// Secret reveal — decode and return Secret values.
+					// Editor+ at the route level; the handler escalates
+					// to Admin internally for production-pattern
+					// namespaces. Tier 2 #9, see
+					// internal/k8s-operations/tier2-secret-reveal.md.
+					r.Post("/resources/{type}/{namespace}/{name}/reveal", h.handleSecretReveal)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
 					// Rollout pause/resume. Deployment-only — flips
