@@ -123,11 +123,19 @@ func (h *handlers) handleSetCronJobSuspend(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Recent-writes overlay — same pattern as deployments.paused and
+	// nodes.unschedulable. Covers the read-after-write window (the
+	// few hundred ms between Patch landing and the informer cache
+	// catching up) so a manual Refresh after Suspend/Resume reads
+	// the post-patch value, not the stale informer state. See
+	// cluster/recent_writes.go.
+	conn.RecentWrites().Record("cronjobs", namespace, name, "suspend", target, 5*time.Second)
+
 	auditMutation(r, action, resourceType, namespace, name, params, nil)
 	cjDetail, _ := conn.GetResourceDetail("cronjobs", namespace, name)
-	// Same defensive override as cordon/uncordon: GetResourceDetail
-	// reads from the informer cache which can lag the apiserver by
-	// hundreds of ms. We just patched, we know the value.
+	// GetResourceDetail's overlay-application picks up the Record
+	// above. The explicit override below is belt-and-suspenders for
+	// the response payload itself.
 	if cjDetail != nil {
 		cjDetail["suspend"] = target
 	}
