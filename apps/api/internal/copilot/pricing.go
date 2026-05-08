@@ -1,6 +1,9 @@
 package copilot
 
-import "strings"
+import (
+	"sort"
+	"strings"
+)
 
 // ModelPricing holds USD-per-1M-tokens for a model. Fields track what the
 // provider actually bills: fresh input, cached-read input (discounted),
@@ -30,6 +33,31 @@ var modelPricing = map[string]ModelPricing{
 	"gpt-5-mini":         {Input: 0.25, CachedInput: 0.025, Output: 2.00},
 	"gpt-4o":             {Input: 2.50, CachedInput: 1.25, Output: 10},
 	"gpt-4o-mini":        {Input: 0.15, CachedInput: 0.075, Output: 0.60},
+
+	// xAI Grok — https://x.ai/api (text models)
+	"grok-4.3":           {Input: 1.25, Output: 2.50},
+	"grok-4.20":          {Input: 1.25, Output: 2.50},
+	"grok-4-1-fast":      {Input: 0.20, Output: 0.50},
+
+	// MiniMax — https://platform.minimax.io (text models)
+	"minimax-m2.7-highspeed": {Input: 0.60, CachedInput: 0.06, CacheCreation: 0.375, Output: 2.40},
+	"minimax-m2.7":           {Input: 0.30, CachedInput: 0.06, CacheCreation: 0.375, Output: 1.20},
+	"minimax-m2.5-highspeed": {Input: 0.60, CachedInput: 0.03, CacheCreation: 0.375, Output: 2.40},
+	"minimax-m2.5":           {Input: 0.30, CachedInput: 0.03, CacheCreation: 0.375, Output: 1.20},
+}
+
+// pricingKeys returns map keys sorted by length descending, so longer
+// (more specific) keys are checked first. Without this, HasPrefix
+// matching against keys like "minimax-m2.7" and "minimax-m2.7-highspeed"
+// — or "gpt-5" and "gpt-5-mini" — returns whichever Go's randomized map
+// iteration hits first, leading to nondeterministic mispricing.
+func pricingKeys() []string {
+	keys := make([]string, 0, len(modelPricing))
+	for k := range modelPricing {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return len(keys[i]) > len(keys[j]) })
+	return keys
 }
 
 // PricingFor returns the ModelPricing for a provider/model pair. Matches
@@ -38,9 +66,12 @@ var modelPricing = map[string]ModelPricing{
 // value if unknown — callers can check the result.
 func PricingFor(provider, model string) (ModelPricing, bool) {
 	m := strings.ToLower(model)
-	for key, price := range modelPricing {
+	if m == "" {
+		return ModelPricing{}, false
+	}
+	for _, key := range pricingKeys() {
 		if strings.HasPrefix(m, key) || strings.Contains(m, key) {
-			return price, true
+			return modelPricing[key], true
 		}
 	}
 	return ModelPricing{}, false
