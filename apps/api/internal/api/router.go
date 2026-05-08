@@ -212,6 +212,11 @@ func NewRouter(
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
 					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)
 					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
+					// Set resources — kubectl set resources. Strategic
+					// merge patch on container resource requests / limits
+					// without going through the YAML editor. Tier 2 #6,
+					// see internal/k8s-operations/tier2-set-resources.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-resources", h.handleSetResources)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
 					// Rollout pause/resume. Deployment-only — flips

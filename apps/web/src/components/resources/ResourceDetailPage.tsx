@@ -4,8 +4,9 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
+import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
@@ -2705,6 +2706,7 @@ export function ResourceDetailPage() {
   const [actionLoading, setActionLoading] = useState<string | null>(null)
   const [showDelete, setShowDelete] = useState(false)
   const [showSetImage, setShowSetImage] = useState(false)
+  const [showSetResources, setShowSetResources] = useState(false)
   // showRollback carries the target revision so the modal can render
   // before/after diffs without re-fetching. null = closed. Cut 4
   // implements the modal; this Cut 3 just plumbs the open trigger.
@@ -2973,6 +2975,21 @@ export function ResourceDetailPage() {
             >
               <ImageIcon className="w-3 h-3" />
               Set image
+            </button>
+          )}
+          {/* Set resources — Tier 2 #6. kubectl set resources
+              equivalent. Patch on container resource requests/limits
+              via strategic merge. Same workload-type scope as
+              Set image. */}
+          {['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+            <button
+              onClick={() => { setShowSetResources(true); setShowRestart(false); setShowScale(false) }}
+              disabled={!canEdit}
+              title={!canEdit ? 'Editor role required' : 'Set CPU / memory requests and limits (kubectl set resources)'}
+              className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              <Cpu className="w-3 h-3" />
+              Set resources
             </button>
           )}
           {/* Rollout pause / resume — Deployment-only (Tier 2 #5).
@@ -3272,6 +3289,17 @@ export function ResourceDetailPage() {
           name={name}
           resource={item}
           onClose={() => setShowSetImage(false)}
+        />
+      )}
+
+      {/* Set resources modal — Tier 2 #6 */}
+      {showSetResources && ['deployments', 'statefulsets', 'daemonsets'].includes(type) && (
+        <SetResourcesModal
+          type={type as 'deployments' | 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          resource={item}
+          onClose={() => setShowSetResources(false)}
         />
       )}
 

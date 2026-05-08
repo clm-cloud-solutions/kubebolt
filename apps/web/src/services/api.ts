@@ -454,6 +454,29 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Set resources — kubectl set resources. Strategic merge patch on
+  // each container's resources sub-object. Only the dimensions the
+  // operator explicitly sets are touched; absent or empty-string
+  // dimensions are skipped server-side. Tier 2 #6 — see
+  // internal/k8s-operations/tier2-set-resources.md.
+  setResourcesResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    containers: ContainerResourcesPatch[],
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched'
+      fromResources: ContainerResourcePair[]
+      toResources: ContainerResourcePair[]
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/set-resources`,
+      { containers },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Node maintenance — cordon / uncordon. Drain lives separately
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
@@ -752,6 +775,37 @@ export interface DetailedRevision {
 export interface RolloutHistory {
   currentRevision: number
   revisions: DetailedRevision[]
+}
+
+// Set resources types — Tier 2 #6. The patch shape mirrors the API
+// design in internal/k8s-operations/tier2-set-resources.md: every
+// dimension is independently optional, so the operator can bump
+// only memory limit without touching cpu request, etc.
+//
+// Empty strings are treated as "leave alone" in v1 (same as field
+// absent). Removing a dimension is deferred to v2 — operators have
+// the YAML editor for that path.
+export interface ResourceQuantityInput {
+  cpu?: string
+  memory?: string
+}
+
+export interface ContainerResourcesPatch {
+  container: string
+  initContainer?: boolean
+  requests?: ResourceQuantityInput
+  limits?: ResourceQuantityInput
+}
+
+// ContainerResourcePair is the response-side from/to envelope. Both
+// requests and limits arrive as a flat map[string]string — the
+// backend pre-flattens them so the UI doesn't need to handle
+// nullable nested shapes.
+export interface ContainerResourcePair {
+  container: string
+  initContainer?: boolean
+  requests?: Record<string, string>
+  limits?: Record<string, string>
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'
