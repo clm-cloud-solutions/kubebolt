@@ -208,10 +208,38 @@ func NewRouter(
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleEditor))
 					r.Put("/resources/{type}/{namespace}/{name}/yaml", h.putResourceYAML)
+					// Create new resource from manifest — kubectl create -f
+					// equivalent. URL is /resources/:type/:ns (no :name —
+					// the name lives in the body's metadata.name). Single-
+					// document YAML or JSON bodies. Tier 2 #10, see
+					// internal/k8s-operations/tier2-apply-new-manifest.md.
+					r.Post("/resources/{type}/{namespace}", h.handleCreateResource)
 					r.Post("/resources/{type}/{namespace}/{name}/restart", h.handleRestart)
 					r.Post("/resources/{type}/{namespace}/{name}/scale", h.handleScale)
 					r.Post("/resources/{type}/{namespace}/{name}/rollback", h.handleRollback)
 					r.Post("/resources/{type}/{namespace}/{name}/set-image", h.handleSetImage)
+					// Set resources — kubectl set resources. Strategic
+					// merge patch on container resource requests / limits
+					// without going through the YAML editor. Tier 2 #6,
+					// see internal/k8s-operations/tier2-set-resources.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-resources", h.handleSetResources)
+					// Set env — kubectl set env. Strategic merge patch
+					// on container env arrays, supporting set/remove via
+					// the `$patch: delete` directive. Tier 2 #7, see
+					// internal/k8s-operations/tier2-set-env.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-env", h.handleSetEnv)
+					// Edit metadata — kubectl label / kubectl annotate
+					// equivalents. JSON merge patch on metadata.labels +
+					// metadata.annotations via the dynamic client; works
+					// on every kind. Tier 2 #8, see
+					// internal/k8s-operations/tier2-edit-labels-annotations.md.
+					r.Post("/resources/{type}/{namespace}/{name}/edit-metadata", h.handleEditMetadata)
+					// Secret reveal — decode and return Secret values.
+					// Editor+ at the route level; the handler escalates
+					// to Admin internally for production-pattern
+					// namespaces. Tier 2 #9, see
+					// internal/k8s-operations/tier2-secret-reveal.md.
+					r.Post("/resources/{type}/{namespace}/{name}/reveal", h.handleSecretReveal)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
 					// Rollout pause/resume. Deployment-only — flips

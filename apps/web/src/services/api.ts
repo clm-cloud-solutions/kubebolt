@@ -454,6 +454,120 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Set resources — kubectl set resources. Strategic merge patch on
+  // each container's resources sub-object. Only the dimensions the
+  // operator explicitly sets are touched; absent or empty-string
+  // dimensions are skipped server-side. Tier 2 #6 — see
+  // internal/k8s-operations/tier2-set-resources.md.
+  setResourcesResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    containers: ContainerResourcesPatch[],
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched'
+      fromResources: ContainerResourcePair[]
+      toResources: ContainerResourcePair[]
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/set-resources`,
+      { containers },
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Set env — kubectl set env. Strategic merge patch on each
+  // container's env array. Per-row action discriminates set vs
+  // remove; the backend uses the strategic-merge `$patch: delete`
+  // directive to drop targeted entries. Tier 2 #7 — see
+  // internal/k8s-operations/tier2-set-env.md.
+  setEnvResource: (
+    type: string,
+    namespace: string,
+    name: string,
+    body: SetEnvBody,
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched'
+      fromEnv: ContainerEnvSnapshot[]
+      toEnv: ContainerEnvSnapshot[]
+      triggerRollout: boolean
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/set-env`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Edit metadata — kubectl label / kubectl annotate equivalents.
+  // JSON merge patch on metadata.labels + metadata.annotations via
+  // the dynamic client; works on any kind. Tier 2 #8 — see
+  // internal/k8s-operations/tier2-edit-labels-annotations.md.
+  editResourceMetadata: (
+    type: string,
+    namespace: string,
+    name: string,
+    body: EditMetadataBody,
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched'
+      labels: MetadataDiff
+      annotations: MetadataDiff
+    }>(
+      `${API_BASE}/resources/${type}/${namespace}/${name}/edit-metadata`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Reveal a Secret's values. POST (not GET) so the request body —
+  // including the operator's reason — never lands in HTTP access
+  // logs or browser history; also so caches between client and server
+  // can't snapshot the response payload. Tier 2 #9 — see
+  // internal/k8s-operations/tier2-secret-reveal.md.
+  revealSecret: (
+    namespace: string,
+    name: string,
+    body: { keys?: string[]; reason: string },
+    source?: string,
+  ) =>
+    postJSON<SecretRevealResponse>(
+      `${API_BASE}/resources/secrets/${namespace}/${name}/reveal`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Create a new resource from a YAML or JSON manifest. Tier 2 #10
+  // — kubectl create -f equivalent. URL is /resources/:type/:ns; the
+  // resource NAME comes from metadata.name in the manifest body.
+  // For cluster-scoped kinds, namespace is `_`.
+  createResource: (
+    type: string,
+    namespace: string,
+    manifest: string,
+    source?: string,
+  ) => {
+    // Send the raw manifest bytes — the backend's sigs.k8s.io/yaml
+    // decoder accepts both YAML and JSON, so a single content-type
+    // (application/yaml) covers both. We don't go through postJSON
+    // because the body isn't JSON-serialized; it's the raw text.
+    const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
+    if (source) headers['X-KubeBolt-Action-Source'] = source
+    return fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}`, {
+      method: 'POST',
+      headers,
+      body: manifest,
+    }).then(async (res) => {
+      if (!res.ok) {
+        const { message, payload } = await extractErrorPayload(res)
+        throw new ApiError(res.status, message, payload)
+      }
+      return (await res.json()) as CreateResourceResponse
+    })
+  },
+
   // Node maintenance — cordon / uncordon. Drain lives separately
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
@@ -752,6 +866,161 @@ export interface DetailedRevision {
 export interface RolloutHistory {
   currentRevision: number
   revisions: DetailedRevision[]
+}
+
+// Set resources types — Tier 2 #6. The patch shape mirrors the API
+// design in internal/k8s-operations/tier2-set-resources.md: every
+// dimension is independently optional, so the operator can bump
+// only memory limit without touching cpu request, etc.
+//
+// Empty strings are treated as "leave alone" in v1 (same as field
+// absent). Removing a dimension is deferred to v2 — operators have
+// the YAML editor for that path.
+export interface ResourceQuantityInput {
+  cpu?: string
+  memory?: string
+}
+
+export interface ContainerResourcesPatch {
+  container: string
+  initContainer?: boolean
+  requests?: ResourceQuantityInput
+  limits?: ResourceQuantityInput
+}
+
+// ContainerResourcePair is the response-side from/to envelope. Both
+// requests and limits arrive as a flat map[string]string — the
+// backend pre-flattens them so the UI doesn't need to handle
+// nullable nested shapes.
+export interface ContainerResourcePair {
+  container: string
+  initContainer?: boolean
+  requests?: Record<string, string>
+  limits?: Record<string, string>
+}
+
+// Set env types — Tier 2 #7. Mirrors k8s.io/api/core/v1.EnvVarSource
+// for the valueFrom variants (configMap / secret / field /
+// resourceField); for v1 the UI primarily exercises configMap and
+// secret refs.
+export interface ConfigMapKeyRef {
+  name: string
+  key: string
+  optional?: boolean
+}
+
+export interface SecretKeyRef {
+  name: string
+  key: string
+  optional?: boolean
+}
+
+export interface ObjectFieldRef {
+  fieldPath: string
+}
+
+export interface EnvVarSourcePatch {
+  configMapKeyRef?: ConfigMapKeyRef
+  secretKeyRef?: SecretKeyRef
+  fieldRef?: ObjectFieldRef
+}
+
+export interface EnvVarPatch {
+  name: string
+  action: 'set' | 'remove'
+  value?: string
+  valueFrom?: EnvVarSourcePatch
+}
+
+export interface ContainerEnvPatch {
+  container: string
+  initContainer?: boolean
+  env: EnvVarPatch[]
+}
+
+export interface SetEnvBody {
+  containers: ContainerEnvPatch[]
+  triggerRollout?: boolean
+}
+
+// Response-side: each entry's resolved kind + value or valueFrom so
+// the UI can render the from/to diff without inspecting nested
+// variants.
+export type EnvEntryKind = 'literal' | 'configMap' | 'secret' | 'field' | 'resourceField' | 'removed'
+
+export interface EnvEntryPair {
+  name: string
+  kind: EnvEntryKind
+  value?: string
+  valueFrom?: EnvVarSourcePatch
+}
+
+export interface ContainerEnvSnapshot {
+  container: string
+  initContainer?: boolean
+  env: EnvEntryPair[]
+}
+
+// Edit metadata types — Tier 2 #8. Both labels and annotations use
+// the same Add/Remove envelope; the backend issues a JSON merge
+// patch where Remove keys appear as null values (RFC 7396 = delete).
+export interface MetadataMapEdit {
+  add?: Record<string, string>
+  remove?: string[]
+}
+
+export interface EditMetadataBody {
+  labels?: MetadataMapEdit
+  annotations?: MetadataMapEdit
+}
+
+// Response-side per-map diff — the operator sees added (highlight),
+// updated (from→to), and removed (strike) keys without having to
+// recompute against the live state.
+export interface MetadataDiff {
+  from: Record<string, string>
+  to: Record<string, string>
+  added?: string[]
+  updated?: string[]
+  removed?: string[]
+}
+
+// Secret reveal types — Tier 2 #9. The backend classifies each
+// revealed value as either text (UTF-8 printable) or binary (anything
+// else). Binary entries deliberately omit the value field — the UI
+// renders a sha256 + length descriptor with a download affordance
+// instead of trying to print bytes that would crash the renderer or
+// produce unhelpful gibberish.
+export type SecretRevealedValueKind = 'text' | 'binary'
+
+export interface SecretRevealedValue {
+  key: string
+  kind: SecretRevealedValueKind
+  value?: string
+  sha256?: string
+  bytes?: number
+}
+
+export interface SecretRevealResponse {
+  name: string
+  namespace: string
+  type: string
+  revealedAt: string
+  values: SecretRevealedValue[]
+  missing: string[]
+}
+
+// Apply new manifest types — Tier 2 #10. Response is the bare
+// identifying fields the UI uses to navigate to the new resource
+// (kind, name, namespace, uid). The backend strips status and
+// managedFields before responding so the payload stays minimal.
+export interface CreateResourceResponse {
+  status: 'created'
+  name: string
+  namespace: string
+  kind: string
+  apiVersion: string
+  uid: string
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'

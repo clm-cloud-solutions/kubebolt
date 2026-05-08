@@ -36,9 +36,24 @@ import (
 // RecentWritesOverlay is goroutine-safe — Record is called from the
 // API mutation handlers (one per request goroutine); Apply is called
 // from GetResourceDetail / list paths (also goroutine-per-request).
+//
+// Two related-but-distinct mechanisms live on the same struct:
+//
+//   1. Field overlays (entries) — for in-place mutations (cordon,
+//      pause, suspend). The patched field's value is layered on top
+//      of the informer-derived map until the watch event arrives.
+//
+//   2. Tombstones — for deletes. The deleted resource is masked from
+//      list and detail reads until the informer's deletion event
+//      propagates. Without this, the UI shows a deleted resource
+//      lingering in the list for several seconds, looking like the
+//      delete didn't take.
+//
+// Both share the same TTL-bounded model and goroutine-safety guarantees.
 type RecentWritesOverlay struct {
-	mu      sync.RWMutex
-	entries map[string]map[string]recentWriteEntry // resourceKey -> field -> entry
+	mu         sync.RWMutex
+	entries    map[string]map[string]recentWriteEntry // resourceKey -> field -> entry
+	tombstones map[string]time.Time                   // resourceKey -> expires
 }
 
 type recentWriteEntry struct {
@@ -50,7 +65,8 @@ type recentWriteEntry struct {
 // The caller stashes it on the Connector (one per cluster).
 func NewRecentWritesOverlay() *RecentWritesOverlay {
 	return &RecentWritesOverlay{
-		entries: map[string]map[string]recentWriteEntry{},
+		entries:    map[string]map[string]recentWriteEntry{},
+		tombstones: map[string]time.Time{},
 	}
 }
 
@@ -142,6 +158,67 @@ func (o *RecentWritesOverlay) Clear(resourceType, namespace, name string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	delete(o.entries, overlayKey(resourceType, namespace, name))
+}
+
+// RecordDeletion marks a resource as deleted for `ttl`. Used by the
+// delete handler to mask the resource from subsequent list / detail
+// reads until the informer's deletion watch event propagates —
+// typically <1s but the UI's refetch can fire faster than that, so a
+// brief tombstone closes the visual gap.
+//
+// Default TTL when ttl≤0 is 10s, longer than the field-overlay default
+// because cascade deletes (Deployment → ReplicaSets → Pods) take a
+// few seconds to ripple through the informer.
+func (o *RecentWritesOverlay) RecordDeletion(resourceType, namespace, name string, ttl time.Duration) {
+	if o == nil {
+		return
+	}
+	if ttl <= 0 {
+		ttl = 10 * time.Second
+	}
+	key := overlayKey(resourceType, namespace, name)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.tombstones[key] = time.Now().Add(ttl)
+}
+
+// IsDeleted reports whether the resource is in its tombstone window.
+// Expired tombstones are GC'd opportunistically on read so the map
+// stays small without a background sweeper.
+func (o *RecentWritesOverlay) IsDeleted(resourceType, namespace, name string) bool {
+	if o == nil {
+		return false
+	}
+	key := overlayKey(resourceType, namespace, name)
+	o.mu.RLock()
+	expires, ok := o.tombstones[key]
+	o.mu.RUnlock()
+	if !ok {
+		return false
+	}
+	if time.Now().After(expires) {
+		o.mu.Lock()
+		// Re-check under write lock — another goroutine may have
+		// re-recorded the deletion in the meantime.
+		if t, still := o.tombstones[key]; still && time.Now().After(t) {
+			delete(o.tombstones, key)
+		}
+		o.mu.Unlock()
+		return false
+	}
+	return true
+}
+
+// ClearTombstone removes a deletion tombstone for a resource. Useful
+// when a resource of the same name is re-created within the tombstone
+// window — the new resource is real and shouldn't be masked.
+func (o *RecentWritesOverlay) ClearTombstone(resourceType, namespace, name string) {
+	if o == nil {
+		return
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	delete(o.tombstones, overlayKey(resourceType, namespace, name))
 }
 
 func overlayKey(resourceType, namespace, name string) string {

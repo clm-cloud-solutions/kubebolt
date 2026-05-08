@@ -125,6 +125,94 @@ func TestRecentWritesOverlayNilSafety(t *testing.T) {
 	o.Clear("deployments", "default", "payments")
 }
 
+// Tombstone tests — added when the overlay grew the deletion-mask
+// mechanism (Tier 2 #10 follow-up). Tombstones live alongside field
+// overlays on the same struct; tests verify they don't interfere.
+
+func TestTombstoneRecordAndRead(t *testing.T) {
+	o := NewRecentWritesOverlay()
+	o.RecordDeletion("deployments", "default", "my-app", 5*time.Second)
+
+	if !o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("IsDeleted should return true within TTL")
+	}
+	// Different resource shouldn't be affected.
+	if o.IsDeleted("deployments", "default", "other-app") {
+		t.Error("IsDeleted should return false for an unrelated resource")
+	}
+	if o.IsDeleted("services", "default", "my-app") {
+		t.Error("IsDeleted should distinguish by resource type")
+	}
+	if o.IsDeleted("deployments", "kube-system", "my-app") {
+		t.Error("IsDeleted should distinguish by namespace")
+	}
+}
+
+func TestTombstoneExpiry(t *testing.T) {
+	o := NewRecentWritesOverlay()
+	o.RecordDeletion("deployments", "default", "my-app", 10*time.Millisecond)
+
+	if !o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("IsDeleted should return true within TTL")
+	}
+	time.Sleep(30 * time.Millisecond)
+	if o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("IsDeleted should return false after TTL expiry")
+	}
+
+	// Expired entry should be GC'd.
+	o.mu.RLock()
+	_, stillThere := o.tombstones["deployments:default:my-app"]
+	o.mu.RUnlock()
+	if stillThere {
+		t.Error("expired tombstone should be GC'd by IsDeleted")
+	}
+}
+
+func TestTombstoneClearTombstone(t *testing.T) {
+	o := NewRecentWritesOverlay()
+	o.RecordDeletion("deployments", "default", "my-app", 5*time.Second)
+	o.ClearTombstone("deployments", "default", "my-app")
+
+	if o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("IsDeleted should return false after ClearTombstone")
+	}
+}
+
+func TestTombstoneZeroTTLDefaultsToTen(t *testing.T) {
+	o := NewRecentWritesOverlay()
+	o.RecordDeletion("deployments", "default", "my-app", 0)
+	if !o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("zero TTL should default to 10s, IsDeleted should return true")
+	}
+}
+
+func TestTombstoneIndependentFromFieldOverlays(t *testing.T) {
+	o := NewRecentWritesOverlay()
+	// Both mechanisms on the same resource — they must NOT interfere.
+	o.Record("deployments", "default", "my-app", "paused", true, 5*time.Second)
+	if o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("recording a field overlay must NOT mark the resource as deleted")
+	}
+
+	// Tombstoning doesn't blow away the field overlay map.
+	o.RecordDeletion("deployments", "default", "my-app", 5*time.Second)
+	m := map[string]interface{}{"paused": false}
+	o.Apply("deployments", "default", "my-app", m)
+	if m["paused"] != true {
+		t.Errorf("field overlay should still apply alongside tombstone: paused=%v", m["paused"])
+	}
+}
+
+func TestTombstoneNilSafety(t *testing.T) {
+	var o *RecentWritesOverlay
+	o.RecordDeletion("deployments", "default", "my-app", time.Second)
+	if o.IsDeleted("deployments", "default", "my-app") {
+		t.Error("nil overlay should report not-deleted")
+	}
+	o.ClearTombstone("deployments", "default", "my-app")
+}
+
 // TestRecentWritesOverlayConcurrentRecordApply hammers the overlay
 // from multiple goroutines to surface any obvious race. Run with
 // `go test -race` to catch real races.
