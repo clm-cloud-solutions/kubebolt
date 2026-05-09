@@ -116,6 +116,23 @@ data:
           - if: '{__meta_kubernetes_pod_annotation_prometheus_io_port=~".+", __meta_kubernetes_pod_container_port_number=~".+"}'
             source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_container_port_number]
             action: keep_if_equal
+          # Drop pods already covered by a dedicated scrape job.
+          # Without this, the kubernetes-pods (annotation-driven) job
+          # AND the dedicated job both pick up the same pod, producing
+          # two parallel sets of identical series — only differentiated
+          # by the `job` label, so VM stores them as distinct timelines
+          # and `sum(rate(...))` queries double-count. The dedup chain
+          # in priority order: dedicated job (richer config, defaults)
+          # > annotation-driven > nothing. We drop the lower-priority
+          # annotation path here when the dedicated path is enabled.
+{{- if .Values.scrape.discovery.nodeExporter.enabled }}
+          - if: '{__meta_kubernetes_pod_label_app_kubernetes_io_name="node-exporter"}'
+            action: drop
+{{- end }}
+{{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
+          - if: '{__meta_kubernetes_pod_label_app_kubernetes_io_name="kube-state-metrics"}'
+            action: drop
+{{- end }}
           # Resolve port: annotation wins, otherwise vmagent picks
           # the first declared containerPort.
           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]

@@ -199,6 +199,45 @@ func TestStatsCollector_NoClusterName(t *testing.T) {
 	}
 }
 
+// TestStatsCollector_DeferNodeNetwork validates the option that
+// suppresses node_network_*_bytes_total emission. Wired by the helm
+// chart when the vmagent sidecar is configured to scrape node-exporter
+// (the only metric names where the agent and node-exporter overlap
+// exactly). Other node_* metrics MUST keep emitting — names diverge
+// from node-exporter's set, so there's no double-counting risk.
+func TestStatsCollector_DeferNodeNetwork(t *testing.T) {
+	srv := newFixtureServer(t, "stats_summary.json")
+	t.Cleanup(srv.Close)
+	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
+	c := NewStats(client, "test-cluster-id", "test-cluster", "kind-control-plane",
+		WithDeferNodeNetwork(true))
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	t.Run("node_network_*_bytes_total NOT emitted", func(t *testing.T) {
+		mustNotHaveMetric(t, samples, "node_network_receive_bytes_total")
+		mustNotHaveMetric(t, samples, "node_network_transmit_bytes_total")
+	})
+
+	t.Run("other node_* metrics still emitted (no overlap with node-exporter)", func(t *testing.T) {
+		// These names diverge from node-exporter's. Dropping them
+		// would lose data the UI consumes (CapacityPage, NodesPage,
+		// ResourceDetailPage Node monitor charts).
+		mustHaveMetric(t, samples, "node_cpu_usage_seconds_total")
+		mustHaveMetric(t, samples, "node_memory_working_set_bytes")
+		mustHaveMetric(t, samples, "node_fs_used_bytes")
+	})
+
+	t.Run("container_network_* still emitted (unrelated to node-network)", func(t *testing.T) {
+		// Pod-level network metrics live on the container_* prefix
+		// per cAdvisor convention. node-exporter doesn't expose these
+		// — the defer flag is scoped strictly to the node-* names.
+		mustHaveMetric(t, samples, "container_network_receive_bytes_total")
+	})
+}
+
 // TestStatsCollector_FallbackInterface validates the docker-desktop fallback:
 // when interfaces[] is empty, top-level network fields are projected as a
 // single eth0 interface so metrics still land.

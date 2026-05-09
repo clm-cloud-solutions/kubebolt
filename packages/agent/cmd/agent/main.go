@@ -75,7 +75,18 @@ func main() {
 	)
 
 	pods := collector.NewPods(kc)
-	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName)
+	// KUBEBOLT_AGENT_DEFER_NODE_NETWORK=true tells the kubelet stats
+	// collector to skip emitting node_network_*_bytes_total. The
+	// helm chart auto-sets this when the vmagent sidecar is
+	// configured to scrape node-exporter — node-exporter emits the
+	// same metric name with identical labels from the same kernel
+	// counters, so a single source-of-truth avoids the 3× overcount
+	// surfaced during Phase 2 in-vivo validation. Other node_*
+	// metrics (CPU/memory/filesystem) keep emitting because their
+	// names diverge from node-exporter's.
+	deferNodeNetwork := strings.EqualFold(os.Getenv("KUBEBOLT_AGENT_DEFER_NODE_NETWORK"), "true")
+	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName,
+		collector.WithDeferNodeNetwork(deferNodeNetwork))
 	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName)
 	buf := buffer.New(*bufferSize)
 	selfC := self.New(buf, clusterID, clusterName, *nodeName, agentVersion)

@@ -32,15 +32,46 @@ type StatsCollector struct {
 	clusterID   string
 	clusterName string
 	nodeName    string
+	// deferNodeNetwork suppresses emission of node_network_receive_bytes_total
+	// and node_network_transmit_bytes_total — the only two node-scoped
+	// metrics whose names overlap exactly with what node-exporter emits.
+	// When the agent is deployed alongside a vmagent sidecar that
+	// scrapes node-exporter (Phase 2 of the Universal Data Plane Plan),
+	// keeping the agent's emission would pile a third copy of the same
+	// series into VictoriaMetrics, producing the 3× overcount on
+	// `sum(rate(node_network_*[1m]))` queries surfaced during in-vivo
+	// validation. Other node-* metrics from the agent
+	// (node_cpu_usage_seconds_total, node_memory_working_set_bytes,
+	// node_fs_used_bytes, etc.) have DIFFERENT names from node-exporter
+	// and don't overlap — they keep emitting unconditionally, including
+	// some that node-exporter has no equivalent for (working_set_bytes
+	// is kubelet-derived from cgroup accounting). The flag is
+	// surgical, scoped only to the names that actually collide.
+	deferNodeNetwork bool
 }
 
-func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName string) *StatsCollector {
-	return &StatsCollector{
+// StatsOption is a functional option for NewStats.
+type StatsOption func(*StatsCollector)
+
+// WithDeferNodeNetwork suppresses node_network_*_bytes_total emission.
+// Wired by the helm chart when the vmagent sidecar is configured to
+// scrape node-exporter; node-exporter emits the same metric name with
+// the same labels, so the agent steps aside to avoid double-counting.
+func WithDeferNodeNetwork(defer_ bool) StatsOption {
+	return func(c *StatsCollector) { c.deferNodeNetwork = defer_ }
+}
+
+func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName string, opts ...StatsOption) *StatsCollector {
+	c := &StatsCollector{
 		client:      client,
 		clusterID:   clusterID,
 		clusterName: clusterName,
 		nodeName:    nodeName,
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
 }
 
 func (c *StatsCollector) Name() string { return "kubelet_stats_summary" }
@@ -131,19 +162,26 @@ func (c *StatsCollector) collectNode(s *statsSummary, ts *timestamppb.Timestamp)
 	}
 
 	// Node network: aligns with node-exporter convention (label `device`).
-	nodeIfaces := s.Node.Network.Interfaces
-	if len(nodeIfaces) == 0 {
-		if fb, ok := s.Node.Network.asFallbackInterface(); ok {
-			nodeIfaces = []netInterface{fb}
+	// Skipped entirely when the deployer wired WithDeferNodeNetwork —
+	// node-exporter emits the same metric name with identical labels
+	// from the same kernel counters, so two emitters produce a 2×
+	// (or higher, with annotation re-discovery) overcount on
+	// `sum(rate(node_network_*[1m]))` queries.
+	if !c.deferNodeNetwork {
+		nodeIfaces := s.Node.Network.Interfaces
+		if len(nodeIfaces) == 0 {
+			if fb, ok := s.Node.Network.asFallbackInterface(); ok {
+				nodeIfaces = []netInterface{fb}
+			}
 		}
-	}
-	for _, iface := range nodeIfaces {
-		ifaceLabels := mergeLabels(base, map[string]string{"device": iface.Name})
-		if iface.RxBytes != nil {
-			samples = append(samples, sample("node_network_receive_bytes_total", float64(*iface.RxBytes), ifaceLabels, ts))
-		}
-		if iface.TxBytes != nil {
-			samples = append(samples, sample("node_network_transmit_bytes_total", float64(*iface.TxBytes), ifaceLabels, ts))
+		for _, iface := range nodeIfaces {
+			ifaceLabels := mergeLabels(base, map[string]string{"device": iface.Name})
+			if iface.RxBytes != nil {
+				samples = append(samples, sample("node_network_receive_bytes_total", float64(*iface.RxBytes), ifaceLabels, ts))
+			}
+			if iface.TxBytes != nil {
+				samples = append(samples, sample("node_network_transmit_bytes_total", float64(*iface.TxBytes), ifaceLabels, ts))
+			}
 		}
 	}
 	return samples
