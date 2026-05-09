@@ -166,6 +166,16 @@ metrics:
     #   http://victoria-metrics.observability.svc.cluster.local:8428
     #   https://vmselect.example.com
     externalUrl: ""
+  # Prom remote_write receiver (Phase 2 of the Universal Data Plane
+  # Plan). When enabled, the backend exposes POST /api/v1/prom/write
+  # so a kubebolt-agent v1.0+ vmagent sidecar can ship scraped
+  # samples directly into VM. Default off — Phase 2 stages the path
+  # without auth and we don't want to expose an unauthenticated
+  # ingest port on existing installs by accident. Phase 3 will
+  # replace this gate with a bearer-token middleware + per-tenant
+  # cardinality limits.
+  remoteWrite:
+    enabled: false
 
 # Number of replicas
 replicaCount: 1

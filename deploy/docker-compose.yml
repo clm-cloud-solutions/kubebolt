@@ -28,6 +28,10 @@ services:
       # queries via PromQL. VictoriaMetrics is the default; swap by pointing
       # this URL at any Prom-compatible TSDB.
       - KUBEBOLT_METRICS_STORAGE_URL=${KUBEBOLT_METRICS_STORAGE_URL:-http://victoriametrics:8428}
+      # Prom remote_write receiver (Phase 2). Gates POST /api/v1/prom/write —
+      # the path vmagent (kubebolt-agent v1.0+ sidecar) uses to ship scraped
+      # samples into VM. Default off until Phase 3 adds auth.
+      - KUBEBOLT_REMOTE_WRITE_ENABLED=${KUBEBOLT_REMOTE_WRITE_ENABLED:-false}
       # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
       # The copilot is disabled if no key is set; KubeBolt works fully without it.
       - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}

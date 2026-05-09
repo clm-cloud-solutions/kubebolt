@@ -82,6 +82,12 @@ spec:
             # so misconfigurations don't reach a running pod.
             - name: KUBEBOLT_METRICS_STORAGE_URL
               value: {{ include "kubebolt.metricsStorageUrl" . | quote }}
+            # Prom remote_write receiver gate (Phase 2). When false
+            # (default), POST /api/v1/prom/write returns 404 with a
+            # hint pointing at this var. Flip to true to accept
+            # samples from the kubebolt-agent vmagent sidecar.
+            - name: KUBEBOLT_REMOTE_WRITE_ENABLED
+              value: {{ .Values.metrics.remoteWrite.enabled | quote }}
             # --- Authentication ---
             - name: KUBEBOLT_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}
