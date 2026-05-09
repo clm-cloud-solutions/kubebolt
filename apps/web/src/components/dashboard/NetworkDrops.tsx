@@ -48,17 +48,17 @@ interface Props {
 export function NetworkDrops({ rangeMinutes }: Props) {
   const RATE_WINDOW = `${rangeMinutes}m`
 
-  // Two-pass collapse: src_pod and dst_pod separately. Both go
-  // into the `sum by` so aggregation lands on the workload pair.
-  const dropQuery = `topk(${TOP_N}, sum by (src_namespace, src_workload, dst_namespace, dst_workload) (`
+  // Two-pass collapse: source_pod and destination_pod separately.
+  // Both go into the `sum by` so aggregation lands on the workload pair.
+  const dropQuery = `topk(${TOP_N}, sum by (source_namespace, source_workload, destination_namespace, destination_workload) (`
     + collapsePodToWorkload(
       collapsePodToWorkload(
         `rate(pod_flow_events_total{source="hubble", verdict="dropped"}[${RATE_WINDOW}])`,
-        'src_pod',
-        'src_workload',
+        'source_pod',
+        'source_workload',
       ),
-      'dst_pod',
-      'dst_workload',
+      'destination_pod',
+      'destination_workload',
     )
     + `))`
 
@@ -74,10 +74,10 @@ export function NetworkDrops({ rangeMinutes }: Props) {
 
   const rows: DropRow[] = (dropQ.data?.data?.result ?? [])
     .map((s) => ({
-      srcNamespace: s.metric.src_namespace ?? '',
-      srcWorkload: s.metric.src_workload ?? '',
-      dstNamespace: s.metric.dst_namespace ?? '',
-      dstWorkload: s.metric.dst_workload ?? '',
+      srcNamespace: s.metric.source_namespace ?? '',
+      srcWorkload: s.metric.source_workload ?? '',
+      dstNamespace: s.metric.destination_namespace ?? '',
+      dstWorkload: s.metric.destination_workload ?? '',
       dropRate: parseFloat(s.value?.[1] ?? '0'),
     }))
     .filter((r) => r.srcWorkload && r.dstWorkload && Number.isFinite(r.dropRate) && r.dropRate > 0)

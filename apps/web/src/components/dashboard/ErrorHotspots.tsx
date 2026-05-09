@@ -51,30 +51,31 @@ export function ErrorHotspots({ rangeMinutes }: Props) {
   // invalidates and re-fetches.
   const RATE_WINDOW = `${rangeMinutes}m`
   // For source-pod collapse we use a different output label name so
-  // both src_workload and dst_workload survive the `sum by` below.
+  // both source_workload and destination_workload survive the
+  // `sum by` below.
   const errorByPair =
-    `sum by (src_namespace, src_workload, dst_namespace, dst_workload, status_class) (`
+    `sum by (source_namespace, source_workload, destination_namespace, destination_workload, status_class) (`
     + collapsePodToWorkload(
       collapsePodToWorkload(
         `rate(pod_flow_http_requests_total{source="hubble", status_class=~"server_err|client_err"}[${RATE_WINDOW}])`,
-        'src_pod',
-        'src_workload',
+        'source_pod',
+        'source_workload',
       ),
-      'dst_pod',
-      'dst_workload',
+      'destination_pod',
+      'destination_workload',
     )
     + `)`
 
   const totalByPair =
-    `sum by (src_namespace, src_workload, dst_namespace, dst_workload) (`
+    `sum by (source_namespace, source_workload, destination_namespace, destination_workload) (`
     + collapsePodToWorkload(
       collapsePodToWorkload(
         `rate(pod_flow_http_requests_total{source="hubble"}[${RATE_WINDOW}])`,
-        'src_pod',
-        'src_workload',
+        'source_pod',
+        'source_workload',
       ),
-      'dst_pod',
-      'dst_workload',
+      'destination_pod',
+      'destination_workload',
     )
     + `)`
 
@@ -99,10 +100,10 @@ export function ErrorHotspots({ rangeMinutes }: Props) {
   // populates both, so we only walk the result vector once.
   const pairMap = new Map<string, HotspotRow>()
   for (const s of errQ.data?.data?.result ?? []) {
-    const srcNs = s.metric.src_namespace ?? ''
-    const srcWl = s.metric.src_workload ?? ''
-    const dstNs = s.metric.dst_namespace ?? ''
-    const dstWl = s.metric.dst_workload ?? ''
+    const srcNs = s.metric.source_namespace ?? ''
+    const srcWl = s.metric.source_workload ?? ''
+    const dstNs = s.metric.destination_namespace ?? ''
+    const dstWl = s.metric.destination_workload ?? ''
     if (!srcWl || !dstWl) continue
     const k = pairKey(srcNs, srcWl, dstNs, dstWl)
     const v = parseFloat(s.value?.[1] ?? '0')
@@ -130,10 +131,10 @@ export function ErrorHotspots({ rangeMinutes }: Props) {
   // those — we only render hot-spots, not all flows.
   for (const s of totalQ.data?.data?.result ?? []) {
     const k = pairKey(
-      s.metric.src_namespace ?? '',
-      s.metric.src_workload ?? '',
-      s.metric.dst_namespace ?? '',
-      s.metric.dst_workload ?? '',
+      s.metric.source_namespace ?? '',
+      s.metric.source_workload ?? '',
+      s.metric.destination_namespace ?? '',
+      s.metric.destination_workload ?? '',
     )
     const row = pairMap.get(k)
     if (!row) continue
