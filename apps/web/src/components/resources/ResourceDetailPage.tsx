@@ -1558,7 +1558,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
   // Both labels are emitted by the agent's stats collector on every sample.
   // Filtering by namespace+name (rather than UID) keeps the chart continuous
   // across pod recreations with the same name — useful for debugging.
-  const selector = `pod_namespace="${ns}",pod_name="${name}"`
+  const selector = `namespace="${ns}",pod="${name}"`
 
   const sums = podResourceSums(item)
 
@@ -1605,7 +1605,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // sum by (container) collapses historical pod_uid instances
           // (e.g. pod restarts) into one line per container. If the pod
           // has never been recreated the query behaves identically.
-          query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
+          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -1624,8 +1624,12 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         title="Network traffic (RX up / TX down)"
         unit="bytes/s"
         queries={[
-          { query: `sum by (interface) (rate(pod_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
-          { query: `sum by (interface) (rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+          // container_network_* with container="" is the cAdvisor pod-level
+          // row (the pause container owns the pod's network namespace).
+          // Without the filter the per-container rows duplicate the counters
+          // and inflate the rate.
+          { query: `sum by (interface) (rate(container_network_receive_bytes_total{${selector},container=""}[1m]))`, prefix: 'RX' },
+          { query: `sum by (interface) (rate(container_network_transmit_bytes_total{${selector},container=""}[1m]))`, prefix: 'TX', negate: true },
         ]}
         accents={METRIC_ACCENTS.networkRxTx}
         chartType="area"
@@ -1671,12 +1675,11 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
     queryKey: ['workload-coverage', selector],
     queryFn: () =>
       api.queryMetrics({
-        // Group by pod_name (the label the agent actually emits — `pod`
-        // is the Prom convention but our shipper uses `pod_name`).
-        // Grouping by a non-existent label collapses every matching
-        // series into one bucket, returning count=1 regardless of how
-        // many replicas are observed — false-positive coverage banner.
-        query: `count(group(container_cpu_usage_cores{${selector}}) by (pod_name))`,
+        // Group by `pod` (canonical label since v1.0). Grouping by a
+        // non-existent label collapses every matching series into one
+        // bucket, returning count=1 regardless of how many replicas are
+        // observed — false-positive coverage banner.
+        query: `count(group(rate(container_cpu_usage_seconds_total{${selector}}[1m])) by (pod))`,
       }),
     enabled: coverageEnabled,
     staleTime: 30_000,
@@ -1744,7 +1747,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         <MetricChart
           title={`CPU by container (sum across ${replicaLabel})`}
           unit="cores"
-          query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
+          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -1763,8 +1766,8 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         title={`Network traffic — total across ${replicaLabel} (RX up / TX down)`}
         unit="bytes/s"
         queries={[
-          { query: `sum(rate(pod_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
-          { query: `sum(rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+          { query: `sum(rate(container_network_receive_bytes_total{${selector},container=""}[1m]))`, prefix: 'RX' },
+          { query: `sum(rate(container_network_transmit_bytes_total{${selector},container=""}[1m]))`, prefix: 'TX', negate: true },
         ]}
         seriesLabel={(_labels, prefix) => prefix ?? 'total'}
         accents={METRIC_ACCENTS.networkRxTx}
@@ -1783,7 +1786,7 @@ function DeploymentMonitorCharts({ item }: { item: ResourceItem }) {
   // the deployment name plus a hash suffix (e.g. my-app-7b4d5f6c89). We match
   // by prefix anchored at end to avoid overlap with sibling deployments that
   // share a prefix.
-  const selector = `pod_namespace="${ns}",workload_kind="ReplicaSet",workload_name=~"${escapeRegex(name)}-[a-z0-9]+$"`
+  const selector = `namespace="${ns}",workload_kind="ReplicaSet",workload_name=~"${escapeRegex(name)}-[a-z0-9]+$"`
   return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="Deployment" />
 }
 
@@ -1791,7 +1794,7 @@ function StatefulSetMonitorCharts({ item }: { item: ResourceItem }) {
   const ns = String(item.namespace)
   const name = String(item.name)
   const replicas = Math.max(1, Number(item.specReplicas ?? 1) || 1)
-  const selector = `pod_namespace="${ns}",workload_kind="StatefulSet",workload_name="${name}"`
+  const selector = `namespace="${ns}",workload_kind="StatefulSet",workload_name="${name}"`
   return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="StatefulSet" />
 }
 
@@ -1799,7 +1802,7 @@ function DaemonSetMonitorCharts({ item }: { item: ResourceItem }) {
   const ns = String(item.namespace)
   const name = String(item.name)
   const replicas = Math.max(1, Number(item.specReplicas ?? 0) || 1)
-  const selector = `pod_namespace="${ns}",workload_kind="DaemonSet",workload_name="${name}"`
+  const selector = `namespace="${ns}",workload_kind="DaemonSet",workload_name="${name}"`
   return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="DaemonSet" />
 }
 
@@ -1827,7 +1830,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MetricChart
           title="CPU usage"
           unit="cores"
-          query={`node_cpu_usage_cores{${selector}}`}
+          query={`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"

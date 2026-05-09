@@ -57,8 +57,8 @@ var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 // naming convention (one of these prefixes + `_` + body). Extend the
 // list when a new metric family ships from the agent.
 //
-// Identifiers used as label names elsewhere — `cluster_id`, `pod_name`,
-// `pod_namespace`, `pod_uid` — would also match this regex. Two
+// Identifiers used as label names elsewhere — `cluster_id`, `pod_uid`,
+// and any future `pod_*` label — would also match this regex. Two
 // guards keep them from being misidentified as metric references:
 // step 2 of scopeQueryByCluster skips text inside `{...}` selectors,
 // AND skips text inside `by(...)` / `without(...)` aggregation clauses
@@ -92,11 +92,13 @@ var groupingClauseRE = regexp.MustCompile(`\b(?:by|without)\s*\(`)
 //     skipped if they already have one). Handles `metric{a="b"}` and
 //     bare label sets like `{source="hubble"}`.
 //  2. Bare metric references with no selector get a fresh
-//     `{cluster_id="..."}` appended. Handles `sum(node_cpu_usage_cores)`
-//     and `rate(node_network_total[1m])` — query shapes used by
-//     OverviewPage and NodesPage that have no `{...}` chunk for pass 1
-//     to find. Pass 2 walks the string honoring `{...}` boundaries so
-//     label names inside selectors aren't mistaken for metrics.
+//     `{cluster_id="..."}` appended. Handles
+//     `sum(rate(node_cpu_usage_seconds_total[1m]))` and
+//     `rate(node_network_receive_bytes_total[1m])` — query shapes used
+//     by CapacityPage and NodesPage that have no `{...}` chunk for
+//     pass 1 to find. Pass 2 walks the string honoring `{...}`
+//     boundaries so label names inside selectors aren't mistaken for
+//     metrics.
 //
 // Regex-based rather than a real PromQL parser because our query shapes
 // are stable and simple. If we ever need multi-cluster aggregation or
@@ -241,9 +243,9 @@ func unmaskQuotedStrings(s string, saved []string) string {
 // that case. References sitting inside a `by(...)` or `without(...)`
 // aggregation clause are also left alone — those are label names,
 // not metric refs, even when they happen to share the same prefix
-// (e.g. `pod_namespace`, `pod_name`). Without this guard, queries
-// like `sum by (pod_namespace) (...)` get rewritten to invalid PromQL
-// (`sum by (pod_namespace{cluster_id="..."}) (...)`).
+// (e.g. `pod_uid`). Without this guard, queries like
+// `sum by (pod_uid) (...)` get rewritten to invalid PromQL
+// (`sum by (pod_uid{cluster_id="..."}) (...)`).
 func injectBareMetrics(s, injected string, nextChar byte) string {
 	matches := bareMetricRE.FindAllStringIndex(s, -1)
 	if len(matches) == 0 {
@@ -288,7 +290,7 @@ func injectBareMetrics(s, injected string, nextChar byte) string {
 // `start` is the index of the first char after the opening `(`;
 // `end` is the index of the matching `)`. Nested parentheses
 // (rare in our queries but legal in PromQL) are tracked so an
-// expression like `by(pod_name) (sum(...))` doesn't accidentally
+// expression like `by(pod_uid) (sum(...))` doesn't accidentally
 // extend the skip region into the metric body.
 func findGroupingRegions(s string) [][2]int {
 	locs := groupingClauseRE.FindAllStringIndex(s, -1)

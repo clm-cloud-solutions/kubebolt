@@ -205,7 +205,7 @@ function AgentTrendsBlock({
           title="CPU Usage"
           icon={<Cpu className="w-4 h-4" />}
           unit="cores"
-          query={`sum(node_cpu_usage_cores)`}
+          query={`sum(rate(node_cpu_usage_seconds_total[1m]))`}
           seriesLabel={() => 'cluster total'}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"

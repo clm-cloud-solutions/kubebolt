@@ -92,25 +92,31 @@ const LIMIT_HEADROOM = 1.5
 // PromQL: P95 over 7d, grouped by workload (Deployment / StatefulSet
 // / DaemonSet). The label_replace pair collapses ReplicaSet →
 // Deployment same way TopWorkloadsCpu does.
-function buildP95Query(metric: string): string {
+//
+// `expr` is a builder that produces the inner per-series expression
+// given a label-matcher fragment — needed because CPU is a counter
+// (must be wrapped in rate()) while memory is a gauge.
+function buildP95Query(expr: (matcher: string) => string): string {
   return [
     `quantile_over_time(0.95,`,
-    `  sum by (workload_kind, workload_name, pod_namespace) (`,
+    `  sum by (workload_kind, workload_name, namespace) (`,
     `    label_replace(`,
     `      label_replace(`,
-    `        ${metric}{workload_kind="ReplicaSet",workload_name!=""},`,
+    `        ${expr('workload_kind="ReplicaSet",workload_name!=""')},`,
     `        "workload_name", "$1", "workload_name", "^(.+)-[a-z0-9]{6,12}$"`,
     `      ),`,
     `      "workload_kind", "Deployment", "workload_kind", "ReplicaSet"`,
     `    )`,
-    `    or ${metric}{workload_kind=~"StatefulSet|DaemonSet",workload_name!=""}`,
+    `    or ${expr('workload_kind=~"StatefulSet|DaemonSet",workload_name!=""')}`,
     `  )[7d:5m]`,
     `)`,
   ].join(' ')
 }
 
-const CPU_P95_QUERY = buildP95Query('container_cpu_usage_cores')
-const MEM_P95_QUERY = buildP95Query('container_memory_working_set_bytes')
+// CPU rate window aligned with the outer subquery step (5m) so each
+// sample inside the quantile_over_time has matching resolution.
+const CPU_P95_QUERY = buildP95Query((m) => `rate(container_cpu_usage_seconds_total{${m}}[5m])`)
+const MEM_P95_QUERY = buildP95Query((m) => `container_memory_working_set_bytes{${m}}`)
 
 export function RightSizingPanel({ installed, overview }: Props) {
   // P95 queries are heavy (subqueries over 7d), so cache 5m and
@@ -514,7 +520,7 @@ function buildP95Index(
   const map = new Map<string, number>()
   if (!result) return map
   for (const s of result) {
-    const ns = s.metric.pod_namespace
+    const ns = s.metric.namespace
     const kind = s.metric.workload_kind
     const name = s.metric.workload_name
     if (!ns || !kind || !name) continue
