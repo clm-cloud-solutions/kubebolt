@@ -40,6 +40,11 @@ type Option func(*Client)
 func WithTokenPath(p string) Option       { return func(c *Client) { c.tokenPath = p } }
 func WithHTTPClient(h *http.Client) Option { return func(c *Client) { c.http = h } }
 
+// WithBaseURL overrides the default `https://<nodeIP>:10250` URL. Intended
+// for tests that point the client at an httptest.Server. Token-based auth
+// is a no-op in this mode if the test sets WithTokenPath to an empty file.
+func WithBaseURL(u string) Option { return func(c *Client) { c.baseURL = u } }
+
 // New builds a client pointing at the kubelet on the given node IP. If
 // nodeIP is empty it falls back to the KUBEBOLT_AGENT_NODE_IP env var, then
 // to "127.0.0.1" for host-network debugging.
@@ -102,6 +107,11 @@ func (c *Client) Get(ctx context.Context, path string) ([]byte, error) {
 func (c *Client) BaseURL() string { return c.baseURL }
 
 func (c *Client) readToken() (string, error) {
+	// Empty path = no-auth mode (test affordance — pair with WithBaseURL).
+	// Production callers always have the SA token mount path configured.
+	if c.tokenPath == "" {
+		return "", nil
+	}
 	b, err := os.ReadFile(c.tokenPath)
 	if err != nil {
 		return "", err

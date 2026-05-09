@@ -1,0 +1,152 @@
+{
+  "node": {
+    "nodeName": "kind-control-plane",
+    "cpu": {
+      "time": "2026-05-09T12:00:00Z",
+      "usageNanoCores": 250000000,
+      "usageCoreNanoSeconds": 12345678900000
+    },
+    "memory": {
+      "time": "2026-05-09T12:00:00Z",
+      "usageBytes": 4294967296,
+      "workingSetBytes": 3221225472,
+      "rssBytes": 2147483648,
+      "availableBytes": 4294967296
+    },
+    "fs": {
+      "availableBytes": 53687091200,
+      "capacityBytes": 107374182400,
+      "usedBytes": 53687091200,
+      "inodesFree": 6000000,
+      "inodesUsed": 100000
+    },
+    "network": {
+      "name": "eth0",
+      "rxBytes": 1000000000,
+      "rxErrors": 5,
+      "txBytes": 500000000,
+      "txErrors": 2,
+      "interfaces": [
+        {
+          "name": "eth0",
+          "rxBytes": 1000000000,
+          "rxErrors": 5,
+          "txBytes": 500000000,
+          "txErrors": 2
+        },
+        {
+          "name": "eth1",
+          "rxBytes": 50000000,
+          "txBytes": 25000000
+        }
+      ]
+    }
+  },
+  "pods": [
+    {
+      "podRef": {
+        "namespace": "default",
+        "name": "nginx-abc123",
+        "uid": "11111111-aaaa-bbbb-cccc-111111111111"
+      },
+      "containers": [
+        {
+          "name": "nginx",
+          "cpu": {
+            "time": "2026-05-09T12:00:00Z",
+            "usageNanoCores": 50000000,
+            "usageCoreNanoSeconds": 1234567890000
+          },
+          "memory": {
+            "time": "2026-05-09T12:00:00Z",
+            "usageBytes": 134217728,
+            "workingSetBytes": 100663296,
+            "rssBytes": 67108864,
+            "pageFaults": 12345,
+            "majorPageFaults": 42
+          }
+        },
+        {
+          "name": "sidecar",
+          "cpu": {
+            "time": "2026-05-09T12:00:00Z",
+            "usageCoreNanoSeconds": 234567890000
+          },
+          "memory": {
+            "time": "2026-05-09T12:00:00Z",
+            "workingSetBytes": 33554432,
+            "rssBytes": 16777216
+          }
+        }
+      ],
+      "network": {
+        "name": "eth0",
+        "rxBytes": 1500000,
+        "txBytes": 750000,
+        "rxErrors": 0,
+        "txErrors": 0,
+        "interfaces": [
+          {
+            "name": "eth0",
+            "rxBytes": 1500000,
+            "txBytes": 750000,
+            "rxErrors": 0,
+            "txErrors": 0
+          }
+        ]
+      },
+      "volume": [
+        {
+          "name": "data",
+          "usedBytes": 524288000,
+          "capacityBytes": 1073741824,
+          "availableBytes": 549453824,
+          "inodes": 100000,
+          "inodesUsed": 1500,
+          "inodesFree": 98500,
+          "pvcRef": {
+            "name": "nginx-data",
+            "namespace": "default"
+          }
+        },
+        {
+          "name": "tmp",
+          "usedBytes": 1048576,
+          "capacityBytes": 67108864,
+          "availableBytes": 66060288
+        },
+        {
+          "name": "config",
+          "usedBytes": 4096,
+          "capacityBytes": 8192,
+          "availableBytes": 4096
+        }
+      ]
+    },
+    {
+      "podRef": {
+        "namespace": "kube-system",
+        "name": "coredns-xyz",
+        "uid": "22222222-aaaa-bbbb-cccc-222222222222"
+      },
+      "containers": [
+        {
+          "name": "coredns",
+          "cpu": {
+            "time": "2026-05-09T12:00:00Z",
+            "usageCoreNanoSeconds": 9876543210000
+          },
+          "memory": {
+            "time": "2026-05-09T12:00:00Z",
+            "workingSetBytes": 16777216
+          }
+        }
+      ],
+      "network": {
+        "name": "eth0",
+        "interfaces": []
+      },
+      "volume": []
+    }
+  ]
+}
