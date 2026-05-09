@@ -1,0 +1,41 @@
+# HELP container_cpu_usage_seconds_total Cumulative cpu time consumed in seconds.
+# TYPE container_cpu_usage_seconds_total counter
+container_cpu_usage_seconds_total{container="",id="/kubepods/pod111",image="",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 12345.67 1714999999000
+container_cpu_usage_seconds_total{container="nginx",id="/kubepods/pod111/nginx",image="nginx:1.25",name="k8s_nginx",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 1234.56 1714999999000
+
+# HELP container_network_receive_bytes_total Cumulative count of bytes received
+# TYPE container_network_receive_bytes_total counter
+container_network_receive_bytes_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 1500000 1714999999000
+container_network_receive_bytes_total{container="nginx",id="/kubepods/pod111/nginx",image="nginx:1.25",interface="eth0",name="k8s_nginx",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 1500000 1714999999000
+
+# HELP container_network_transmit_bytes_total Cumulative count of bytes transmitted
+# TYPE container_network_transmit_bytes_total counter
+container_network_transmit_bytes_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 750000 1714999999000
+
+# HELP container_network_receive_errors_total Cumulative count of errors encountered while receiving
+# TYPE container_network_receive_errors_total counter
+container_network_receive_errors_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 0 1714999999000
+
+# HELP container_network_transmit_errors_total Cumulative count of errors encountered while transmitting
+# TYPE container_network_transmit_errors_total counter
+container_network_transmit_errors_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 0 1714999999000
+
+# HELP container_network_receive_packets_dropped_total Cumulative count of packets dropped while receiving
+# TYPE container_network_receive_packets_dropped_total counter
+container_network_receive_packets_dropped_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 17 1714999999000
+
+# HELP container_network_transmit_packets_dropped_total Cumulative count of packets dropped while transmitting
+# TYPE container_network_transmit_packets_dropped_total counter
+container_network_transmit_packets_dropped_total{container="",id="/kubepods/pod111",image="",interface="eth0",name="",namespace="default",pod="nginx-abc123",pod_uid="11111111-aaaa-bbbb-cccc-111111111111"} 4 1714999999000
+
+# Pod-level row for a pod with NO pod label set (cAdvisor non-pod row, e.g. kubepods cgroup root)
+container_network_receive_bytes_total{container="",id="/kubepods",image="",interface="cali0",name=""} 99999999 1714999999000
+
+# Another pod, kube-system namespace
+container_network_receive_bytes_total{container="",id="/kubepods/pod222",image="",interface="eth0",name="",namespace="kube-system",pod="coredns-xyz",pod_uid="22222222-aaaa-bbbb-cccc-222222222222"} 5000000 1714999999000
+container_network_transmit_bytes_total{container="",id="/kubepods/pod222",image="",interface="eth0",name="",namespace="kube-system",pod="coredns-xyz",pod_uid="22222222-aaaa-bbbb-cccc-222222222222"} 4000000 1714999999000
+
+# A metric we DON'T emit (should be filtered)
+# HELP container_memory_working_set_bytes Current working set in bytes
+# TYPE container_memory_working_set_bytes gauge
+container_memory_working_set_bytes{container="nginx",namespace="default",pod="nginx-abc123"} 100663296 1714999999000
