@@ -186,7 +186,69 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.scrape.enabled }}
+        # ─── vmagent sidecar (Phase 2) ────────────────────────────
+        # Scrapes Prom-compatible /metrics endpoints and ships
+        # samples to the backend's /api/v1/prom/write receiver.
+        # Per ADR-005 vmagent does NOT multiplex through the agent's
+        # gRPC channel — it talks remote_write directly. That keeps
+        # the agent's responsibility focused (collect + tunnel) and
+        # lets vmagent crash without taking the agent with it.
+        - name: vmagent
+          image: "{{ .Values.scrape.image.repository }}:{{ .Values.scrape.image.tag }}"
+          imagePullPolicy: {{ .Values.scrape.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - "-promscrape.config=/etc/vmagent/scrape.yml"
+            {{- if .Values.scrape.remoteWriteUrl }}
+            - "-remoteWrite.url={{ .Values.scrape.remoteWriteUrl }}"
+            {{- end }}
+            # vmagent's persistent queue lives on disk; without an
+            # emptyDir mount it'd try to write to the read-only
+            # rootfs. The path matches `tmpDataPath` below.
+            - "-remoteWrite.tmpDataPath=/var/lib/vmagent"
+            # Refuse memory growth that would push the pod past its
+            # limit (and into OOM kill). 60% of the limit leaves
+            # headroom for scrape buffers.
+            - "-memory.allowedPercent=60"
+            {{- range $k, $v := .Values.scrape.extraArgs }}
+            - "-{{ $k }}={{ $v }}"
+            {{- end }}
+          env:
+            # Surfaced so future scrape configs can use $(NODE_NAME)
+            # in their service-discovery filter (per ADR-003).
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: vmagent-config
+              mountPath: /etc/vmagent
+              readOnly: true
+            - name: vmagent-tmp
+              mountPath: /var/lib/vmagent
+          resources:
+            {{- toYaml .Values.scrape.resources | nindent 12 }}
+        {{- end }}
       volumes:
+        {{- if .Values.scrape.enabled }}
+        # vmagent scrape config rendered by configmap-vmagent.yaml.
+        - name: vmagent-config
+          configMap:
+            name: {{ include "kubebolt-agent.fullname" . }}-vmagent
+        # Persistent queue + WAL for remote_write retries. emptyDir
+        # is fine — if the pod dies, vmagent loses at most one
+        # scrape window of buffered samples (negligible vs the cost
+        # of a per-pod PVC across N nodes).
+        - name: vmagent-tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- end }}
         {{- if .Values.hubble.relay.tls.existingSecret }}
         - name: hubble-tls
           secret:

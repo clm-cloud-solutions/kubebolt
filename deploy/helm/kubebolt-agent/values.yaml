@@ -54,6 +54,52 @@ hubble:
       # SNI / verification hostname. Empty defaults to the dial target.
       serverName: ""
 
+# ─── Scrape sidecar (vmagent) ───────────────────────────────
+# Phase 2 of the Universal Data Plane Plan. When enabled the
+# DaemonSet pod gets a vmagent sidecar that scrapes Prom-compatible
+# /metrics endpoints in the cluster (kube-state-metrics, node-
+# exporter, app pods carrying prometheus.io/scrape: "true") and
+# remote_writes the samples to KubeBolt's /api/v1/prom/write.
+#
+# Day 2 of Phase 2 (this release) ships the sidecar with an empty
+# scrape_configs file — operators get the container running but no
+# targets are scraped yet. Day 3 fills in the service-discovery
+# defaults (kube-state-metrics, node-exporter, annotation-driven
+# pods) keyed off the values below.
+#
+# Default off — Phase 2 is opt-in until the receiver path is
+# blinded with auth in Phase 3.
+scrape:
+  enabled: false
+  image:
+    repository: victoriametrics/vmagent
+    # Track the same VictoriaMetrics line as the bundled VM in the
+    # kubebolt chart (deploy/helm/kubebolt). The release-pin map in
+    # CLAUDE.md "Third-party image pins" should list this when
+    # promoted.
+    tag: v1.142.0
+    pullPolicy: IfNotPresent
+  # Where vmagent ships scraped samples. Typically the kubebolt
+  # backend's remote_write receiver:
+  #   http://kubebolt.kubebolt.svc.cluster.local/api/v1/prom/write
+  # Empty disables the upstream — the sidecar still runs and scrapes,
+  # but samples are dropped (useful for dry-run validation of the
+  # scrape config without filling VM with cardinality).
+  remoteWriteUrl: ""
+  resources:
+    requests:
+      cpu: 10m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  # vmagent CLI flags rendered as -key=value. Use this to set
+  # cardinality limits (-promscrape.maxSeriesPerTarget,
+  # -promscrape.maxScrapeSize) or any other vmagent knob without
+  # waiting on a chart change. See:
+  #   https://docs.victoriametrics.com/vmagent.html#advanced-usage
+  extraArgs: {}
+
 # ─── Scheduling ────────────────────────────────────────────
 # The agent needs to land on every node (including control-plane) so
 # it can reach each kubelet. Defaults match the dev manifest; override

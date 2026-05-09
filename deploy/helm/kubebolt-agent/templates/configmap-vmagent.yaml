@@ -1,0 +1,43 @@
+{{- /*
+ConfigMap holding the vmagent scrape config. Rendered only when the
+scrape sidecar is enabled. Day 2 of Phase 2 emits an empty config —
+the sidecar starts, the scrape loop runs, but no targets are picked
+up. Day 3 fills the file with service-discovery rules driven by the
+values under .Values.scrape.
+
+The shape mirrors a Prom scrape_configs document because vmagent
+parses the same format. Keeping the ConfigMap separate from the
+DaemonSet template means a values change that only affects scrape
+config triggers a quicker reconcile (just the ConfigMap reloads;
+the DaemonSet pods restart only when their pod template hash
+changes).
+
+The pod-spec checksum on the DaemonSet (podAnnotationChecksum)
+hashes ALL .Values, so it picks up scrape config changes already.
+That triggers a rolling restart of the DaemonSet whenever the
+ConfigMap content shifts — vmagent reloads on SIGHUP but not on
+configmap-projected file changes, so a pod restart is the safest
+path until we wire `-promscrape.config.fileWatchInterval` (Day 4
+or later).
+*/}}
+{{- if .Values.scrape.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-vmagent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+data:
+  scrape.yml: |
+    # vmagent scrape configuration.
+    #
+    # Day 2 of Phase 2 — the file is intentionally empty (just a
+    # global block with sane defaults). Day 3 of Phase 2 will append
+    # scrape_configs entries for kube-state-metrics, node-exporter,
+    # and annotation-driven pod discovery.
+    global:
+      scrape_interval: 30s
+      scrape_timeout: 10s
+    scrape_configs: []
+{{- end }}
