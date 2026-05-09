@@ -72,6 +72,15 @@ func NewRouter(
 		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
 		r.Get("/copilot/config", h.HandleCopilotConfig)
 
+		// Prom remote_write receiver. PUBLIC because vmagent doesn't
+		// carry a JWT; gating is via the dedicated
+		// KUBEBOLT_REMOTE_WRITE_ENABLED env var (default false). The
+		// handler itself returns 404 with a hint when the var is off.
+		// Phase 3 will add a bearer-token middleware specific to this
+		// path (separate from the user-session JWT auth) and remove
+		// the env-var gate.
+		r.Post("/prom/write", h.handlePromWrite)
+
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
 			r.Use(authHandlers.RequireAuth)
@@ -105,14 +114,6 @@ func NewRouter(
 			// from the same TSDB. Empty response when Hubble / other
 			// traffic observability source hasn't produced any data yet.
 			r.Get("/flows/edges", h.handleFlowEdges)
-
-			// Prometheus remote_write receiver. Forwards Snappy/protobuf
-			// payloads to vminsert. Gated by KUBEBOLT_REMOTE_WRITE_ENABLED
-			// so a misconfigured client gets a clean 404 instead of an
-			// unauthenticated ingest port. Phase 3 will require a bearer
-			// token + per-tenant cardinality limits; for Phase 2 dev use
-			// the path stays unauthenticated.
-			r.Post("/prom/write", h.handlePromWrite)
 
 			// Coverage banner — which observability sources are
 			// actively shipping samples to VM for the current cluster.

@@ -212,11 +212,14 @@ spec:
             # limit (and into OOM kill). 60% of the limit leaves
             # headroom for scrape buffers.
             - "-memory.allowedPercent=60"
-            # Enable %{ENV}% expansion in the scrape config so each
+            # Enable %{ENV} expansion in the scrape config so each
             # vmagent can filter SD to its own node via the
             # NODE_NAME env var. Without this the relabel regex
-            # %{NODE_NAME}% would be a literal string and match
+            # %{NODE_NAME} would be a literal string and match
             # nothing, leaving every vmagent scraping zero pods.
+            # vmagent's syntax is %{ENV_NAME} — no closing percent
+            # (got that wrong in the first revision; the trailing %
+            # passed through as a literal in the regex).
             - "-envflag.enable=true"
             # Cardinality caps — defensive limits that protect VM
             # from a single misconfigured target. Operators can

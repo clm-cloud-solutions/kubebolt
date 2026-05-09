@@ -69,7 +69,7 @@ data:
           # Filter to pods running on THIS node only.
           - source_labels: [__meta_kubernetes_pod_node_name]
             action: keep
-            regex: "%{NODE_NAME}%"
+            regex: "%{NODE_NAME}"
           # Resolve port: annotation wins, otherwise vmagent picks
           # the first declared containerPort.
           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
@@ -106,7 +106,7 @@ data:
             regex: "node-exporter"
           - source_labels: [__meta_kubernetes_pod_node_name]
             action: keep
-            regex: "%{NODE_NAME}%"
+            regex: "%{NODE_NAME}"
           - source_labels: [__address__]
             action: replace
             regex: "([^:]+)(?::\\d+)?"
