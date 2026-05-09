@@ -30,6 +30,7 @@ import (
 	"github.com/kubebolt/kubebolt/packages/agent/internal/flows"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/proxy"
+	"github.com/kubebolt/kubebolt/packages/agent/internal/self"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/shipper"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
@@ -72,6 +73,7 @@ func main() {
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName)
 	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName)
 	buf := buffer.New(*bufferSize)
+	selfC := self.New(buf, clusterID, clusterName, *nodeName, agentVersion)
 
 	// Auth + TLS config from helm-injected env vars. Half-set
 	// combinations fail loud here so misconfigurations don't silently
@@ -180,6 +182,28 @@ func main() {
 				return
 			case <-tick.C:
 				collectAndBuffer(rootCtx, cadvisor, pods, buf)
+			}
+		}
+	}()
+
+	// Agent self-metrics collector — emits kubebolt_agent_* every stats
+	// tick so VM has fresh self-observability for KubeBolt's own
+	// dashboards (buffer occupancy, drop rate, memory). Cardinality is
+	// fixed (7 series per agent), so cost is negligible. The samples go
+	// through pods.Enrich for label uniformity but the enrichment is a
+	// no-op (no pod_uid label present).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		collectAndBuffer(rootCtx, selfC, pods, buf)
+		tick := time.NewTicker(*statsInterval)
+		defer tick.Stop()
+		for {
+			select {
+			case <-rootCtx.Done():
+				return
+			case <-tick.C:
+				collectAndBuffer(rootCtx, selfC, pods, buf)
 			}
 		}
 	}()
