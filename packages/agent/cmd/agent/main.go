@@ -35,7 +35,12 @@ import (
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
-const agentVersion = "0.0.7-cluster-ident"
+// agentVersion is reported in the gRPC Hello and as the
+// `agent_version` label of `kubebolt_agent_info`. Bump on schema-
+// affecting changes — the backend uses semver comparison against
+// MinAgentVersion to warn when an older agent connects (legacy
+// schema = empty dashboards).
+const agentVersion = "1.0.0"
 
 func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")

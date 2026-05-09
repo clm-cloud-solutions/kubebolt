@@ -13,6 +13,7 @@ require (
 	github.com/kubebolt/kubebolt/packages/proto v0.0.0
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.50.0
+	golang.org/x/mod v0.34.0
 	google.golang.org/grpc v1.79.3
 	google.golang.org/protobuf v1.36.11
 	k8s.io/api v0.35.3
