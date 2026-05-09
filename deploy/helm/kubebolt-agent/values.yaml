@@ -100,6 +100,44 @@ scrape:
   #   https://docs.victoriametrics.com/vmagent.html#advanced-usage
   extraArgs: {}
 
+  # ── Service discovery ──
+  # Built-in scrape jobs that vmagent renders into the ConfigMap.
+  # Each one is independently toggleable so operators can pick
+  # only what their cluster has installed.
+  discovery:
+    # Annotation-driven pod discovery — every pod with
+    # `prometheus.io/scrape: "true"` gets scraped on the port +
+    # path it advertises (`prometheus.io/port`,
+    # `prometheus.io/path`, default 80 / /metrics). Filtered to
+    # the local node (per ADR-003) so each vmagent scrapes only
+    # its own pods, avoiding N-way duplicate samples in clusters
+    # with N nodes.
+    pods:
+      enabled: true
+    # Node-exporter — per-node metrics about the host (CPU, mem,
+    # filesystem, network at the OS level). Works perfectly with
+    # the sidecar model: each vmagent scrapes only the
+    # node-exporter pod on its own node. Default off because
+    # not every cluster runs node-exporter; enable when you do.
+    nodeExporter:
+      enabled: false
+      # Label selector to find node-exporter pods. The default
+      # matches the prometheus-community/node-exporter chart.
+      # Override if you run a custom DaemonSet.
+      labelSelector: "app.kubernetes.io/name=node-exporter"
+      port: 9100
+      path: /metrics
+    # kube-state-metrics — cluster-scoped (one Deployment, not
+    # per-node). Per-pod scraping by N vmagent sidecars would
+    # duplicate every series N times, so KSM lives behind a
+    # leader-election pattern shipped in Day 4 of Phase 2.
+    # Default off until then.
+    kubeStateMetrics:
+      enabled: false
+      labelSelector: "app.kubernetes.io/name=kube-state-metrics"
+      port: 8080
+      path: /metrics
+
 # ─── Scheduling ────────────────────────────────────────────
 # The agent needs to land on every node (including control-plane) so
 # it can reach each kubelet. Defaults match the dev manifest; override
