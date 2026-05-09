@@ -9,29 +9,18 @@ import { Activity, CheckCircle2, MinusCircle } from 'lucide-react'
 // banner exists so the operator can see "agent ✓, hubble ✓,
 // node-exporter ✗" without leaving the dashboard.
 //
-// Hidden when nothing is active yet (greenfield install pre-Phase 2,
-// no agent installed) so it doesn't add visual noise to the
-// cluster-unreachable empty state. Also hidden when ALL known
-// sources are active — the all-green case doesn't need a banner
-// taking up space.
-//
-// The intermediate state — at least one active, at least one
-// inactive — is where the banner pulls its weight. Operator sees
-// at a glance what they don't have yet.
+// Always rendered as long as the coverage endpoint responds.
+// Earlier iteration tried to hide on all-green ("no nag") but that
+// made post-install validation confusing — the operator wanted
+// confirmation that everything works, and the banner vanishing
+// looked like a regression. Persistent status row is friendlier
+// than transient warning. Truly empty-cluster cases (no clusters
+// configured, cluster unreachable) are handled higher up in
+// Layout.tsx.
 export function CoverageBanner() {
   const { data, isLoading, error } = useCoverage()
 
-  if (isLoading || error || !data) return null
-
-  const active = data.sources.filter((s) => s.status === 'active')
-  const inactive = data.sources.filter((s) => s.status === 'inactive')
-
-  // Hide when nothing is active (greenfield) — the install banner
-  // elsewhere on the page already covers this case.
-  if (active.length === 0) return null
-
-  // Hide when everything is green — no signal, no noise.
-  if (inactive.length === 0) return null
+  if (isLoading || error || !data || data.sources.length === 0) return null
 
   return (
     <div className="rounded-lg border border-kb-border bg-kb-card px-4 py-2.5 flex items-center gap-3 text-[11px]">
