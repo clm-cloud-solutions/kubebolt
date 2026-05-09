@@ -204,6 +204,18 @@ spec:
             {{- if .Values.scrape.remoteWriteUrl }}
             - "-remoteWrite.url={{ .Values.scrape.remoteWriteUrl }}"
             {{- end }}
+            {{- /* When the agent is configured with ingest-token auth,
+                   reuse the SAME Secret for vmagent's remote_write —
+                   no second token to provision. The backend validates
+                   the bearer against the same TenantsStore that the
+                   gRPC channel hits via BearerIngestAuth.
+                   tokenreview mode doesn't carry through (it's a
+                   projected SA token good for the apiserver, not for
+                   /api/v1/prom/write — Phase 3 will add token-review
+                   handling on the receiver side too). */ -}}
+            {{- if eq .Values.auth.mode "ingest-token" }}
+            - "-remoteWrite.bearerTokenFile=/var/run/secrets/kubebolt/token"
+            {{- end }}
             # vmagent's persistent queue lives on disk; without an
             # emptyDir mount it'd try to write to the read-only
             # rootfs. The path matches `tmpDataPath` below.
@@ -256,6 +268,16 @@ spec:
               readOnly: true
             - name: vmagent-tmp
               mountPath: /var/lib/vmagent
+            {{- if eq .Values.auth.mode "ingest-token" }}
+            # Same `kubebolt-token` volume the agent container uses
+            # — the bearer token serves both the gRPC channel
+            # (BearerIngestAuth) and vmagent's remote_write
+            # (TenantsStore-backed HTTP middleware on
+            # /api/v1/prom/write). Single Secret, two consumers.
+            - name: kubebolt-token
+              mountPath: /var/run/secrets/kubebolt
+              readOnly: true
+            {{- end }}
           resources:
             {{- toYaml .Values.scrape.resources | nindent 12 }}
         {{- end }}

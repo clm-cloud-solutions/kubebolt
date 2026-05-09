@@ -8,7 +8,35 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
+
+// newTenantsStoreWithToken spins a fresh BoltDB + TenantsStore in
+// t.TempDir() and issues a single non-expiring ingest token. Returns
+// the store + the plaintext token for use in Authorization headers.
+func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, string) {
+	t.Helper()
+	dir := t.TempDir()
+	store, err := auth.NewStore(dir)
+	if err != nil {
+		t.Fatalf("auth.NewStore: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	ts, err := auth.NewTenantsStore(store.DB())
+	if err != nil {
+		t.Fatalf("auth.NewTenantsStore: %v", err)
+	}
+	tn, err := ts.CreateTenant("test-tenant", "team")
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	plaintext, _, err := ts.IssueToken(tn.ID, "scrape", "admin", nil)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	return ts, plaintext
+}
 
 // fakeUpstream is a minimal stand-in for VictoriaMetrics' /api/v1/write.
 // Captures the last request the handler proxied and replies with whatever
@@ -189,6 +217,120 @@ func TestHandlePromWrite_BodyTooLargeReturns413(t *testing.T) {
 		t.Errorf("expected 413, got %d (body=%q)", rec.Code, rec.Body.String())
 	}
 }
+
+// ─── Auth (TenantsStore-backed) ───────────────────────────────────
+
+func TestHandlePromWrite_AuthOn_NoBearerReturns401(t *testing.T) {
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with no bearer, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePromWrite_AuthOn_BadBearerReturns401(t *testing.T) {
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	req.Header.Set("Authorization", "Bearer kbtok_v1_not-a-real-token")
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with bad bearer, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandlePromWrite_AuthOn_EmptyBearerReturns401(t *testing.T) {
+	withPromWriteEnabled(t)
+	store, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	req.Header.Set("Authorization", "Bearer ")
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("expected 401 with empty bearer, got %d", rec.Code)
+	}
+}
+
+func TestHandlePromWrite_AuthOn_ValidBearerForwards(t *testing.T) {
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, plaintext := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store}
+
+	body := []byte("snappy-protobuf-bytes")
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	req.Header.Set("Content-Encoding", "snappy")
+	req.Header.Set("Content-Type", "application/x-protobuf")
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected upstream's 204 to pass through, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	if !bytes.Equal(upstream.lastBody, body) {
+		t.Errorf("upstream did not receive the original body bytes")
+	}
+}
+
+func TestHandlePromWrite_AuthOff_BackwardsCompat(t *testing.T) {
+	// tenantsStore = nil → dev-mode bypass. The handler must still
+	// accept requests (with a one-time WARN log) so existing dev
+	// installs don't break when they upgrade to a backend that
+	// added the auth gate. Production posture is auth-on; the dev
+	// path is opt-in only by NOT wiring auth at all.
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	h := &handlers{tenantsStore: nil}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204 in dev-bypass, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+}
+
+// ─── Truthy / falsy parsing of the env-var gate ───────────────────
 
 func TestPromWriteEnabled_Truthy(t *testing.T) {
 	for _, v := range []string{"true", "TRUE", "True", "1", "yes", "Yes"} {

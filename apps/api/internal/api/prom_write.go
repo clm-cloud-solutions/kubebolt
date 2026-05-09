@@ -2,12 +2,14 @@ package api
 
 import (
 	"bytes"
+	"crypto/subtle"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 )
 
 // promWriteEnabled returns true when the operator opted into the
@@ -30,6 +32,66 @@ const promWriteUpstreamPath = "/api/v1/write"
 // generous for vmagent's default scrape window (~1m of samples) but
 // firmly bounded; vmagent will retry the next batch if we 413.
 const promWriteMaxBodyBytes = 16 << 20
+
+// promWriteUnauthWarnOnce ensures the "running unauthenticated" log
+// fires once per process — not per request. Without it, every vmagent
+// scrape cycle (every 30s) would emit a WARN; the operator stops
+// noticing within minutes.
+var promWriteUnauthWarnOnce sync.Once
+
+// authenticatePromWrite gates the remote_write endpoint on the
+// existing agent ingest-token infrastructure (the same TenantsStore
+// that BearerIngestAuth uses for the gRPC channel). Two operating
+// modes:
+//
+//   tenantsStore != nil   bearer header REQUIRED. Lookup against the
+//                         store; mismatch / missing / disabled tenant
+//                         all return 401. This is the production
+//                         posture and what prevents an open metrics
+//                         ingest port on tagged releases.
+//
+//   tenantsStore == nil   no token validation possible (KubeBolt was
+//                         booted without auth wiring, e.g. dev mode
+//                         with KUBEBOLT_AUTH_ENABLED=false). The
+//                         request is allowed through with a one-time
+//                         WARN log so the operator knows the channel
+//                         is unauthenticated. Backwards-compat for
+//                         existing dev installs that haven't migrated
+//                         to auth yet.
+//
+// The bearer comparison goes through TenantsStore.LookupByToken which
+// hashes the plaintext and compares against the stored hash — same
+// constant-time semantics as gRPC. The subtle.ConstantTimeCompare
+// guard at the entry is for early-rejection of empty bearers (avoids
+// hitting the store) and is not security-load-bearing on its own.
+//
+// Returns true when the request is authorized (or when the dev-mode
+// bypass kicks in). Returns false after writing a 401 to w.
+func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) bool {
+	if h.tenantsStore == nil {
+		promWriteUnauthWarnOnce.Do(func() {
+			slog.Warn("prom remote_write running UNAUTHENTICATED — TenantsStore not wired",
+				slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true and provision an ingest token via the admin UI / API to gate this endpoint"))
+		})
+		return true
+	}
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(authz, prefix) {
+		respondError(w, http.StatusUnauthorized, "missing Bearer token")
+		return false
+	}
+	token := strings.TrimSpace(authz[len(prefix):])
+	if subtle.ConstantTimeCompare([]byte(token), []byte("")) == 1 {
+		respondError(w, http.StatusUnauthorized, "empty Bearer token")
+		return false
+	}
+	if _, _, err := h.tenantsStore.LookupByToken(token); err != nil {
+		respondError(w, http.StatusUnauthorized, "invalid ingest token")
+		return false
+	}
+	return true
+}
 
 // handlePromWrite forwards a Prometheus remote_write request to the
 // underlying metrics storage. The wire format is opaque from the
@@ -60,6 +122,14 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 
 	if !promWriteEnabled() {
 		respondError(w, http.StatusNotFound, "remote_write receiver disabled — set KUBEBOLT_REMOTE_WRITE_ENABLED=true")
+		return
+	}
+
+	// Auth gate. Bearer token validated against the same TenantsStore
+	// that the gRPC channel's BearerIngestAuth uses — operators can
+	// reuse the agent's existing ingest token Secret instead of
+	// provisioning a separate credential just for the scrape sidecar.
+	if !h.authenticatePromWrite(w, r) {
 		return
 	}
 
