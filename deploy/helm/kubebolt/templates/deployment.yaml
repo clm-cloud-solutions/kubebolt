@@ -88,6 +88,12 @@ spec:
             # samples from the kubebolt-agent vmagent sidecar.
             - name: KUBEBOLT_REMOTE_WRITE_ENABLED
               value: {{ .Values.metrics.remoteWrite.enabled | quote }}
+            # Three-tier auth on the same endpoint:
+            # disabled | permissive | enforced. Same TenantsStore
+            # the gRPC channel uses, same Secret on the agent side
+            # (vmagent reuses the ingest-token mount).
+            - name: KUBEBOLT_REMOTE_WRITE_AUTH_MODE
+              value: {{ default "disabled" .Values.metrics.remoteWrite.authMode | quote }}
             # --- Authentication ---
             - name: KUBEBOLT_AUTH_ENABLED
               value: {{ .Values.auth.enabled | quote }}

@@ -39,54 +39,106 @@ const promWriteMaxBodyBytes = 16 << 20
 // noticing within minutes.
 var promWriteUnauthWarnOnce sync.Once
 
-// authenticatePromWrite gates the remote_write endpoint on the
-// existing agent ingest-token infrastructure (the same TenantsStore
-// that BearerIngestAuth uses for the gRPC channel). Two operating
-// modes:
+// Promwrite enforcement modes — string constants chosen to match the
+// agent gRPC channel's AuthEnforcement values so a single env-var
+// document covers both surfaces. Empty / unrecognized falls back to
+// "disabled" at the call site (parsed in main.go via the same
+// agent.ParseEnforcement helper).
+const (
+	promWriteAuthDisabled   = "disabled"
+	promWriteAuthPermissive = "permissive"
+	promWriteAuthEnforced   = "enforced"
+)
+
+// authenticatePromWrite gates the remote_write endpoint with the
+// same three-tier enforcement the agent's gRPC channel uses
+// (Sprint A's AuthEnforcement). The mode is selected per-deployment
+// via KUBEBOLT_REMOTE_WRITE_AUTH_MODE and passed through NewRouter:
 //
-//   tenantsStore != nil   bearer header REQUIRED. Lookup against the
-//                         store; mismatch / missing / disabled tenant
-//                         all return 401. This is the production
-//                         posture and what prevents an open metrics
-//                         ingest port on tagged releases.
+//	disabled    bearer header IGNORED. The endpoint accepts every
+//	            request that passes the env-var gate. Sprint A
+//	            migration default — keeps existing dev installs
+//	            working while operators learn the feature.
 //
-//   tenantsStore == nil   no token validation possible (KubeBolt was
-//                         booted without auth wiring, e.g. dev mode
-//                         with KUBEBOLT_AUTH_ENABLED=false). The
-//                         request is allowed through with a one-time
-//                         WARN log so the operator knows the channel
-//                         is unauthenticated. Backwards-compat for
-//                         existing dev installs that haven't migrated
-//                         to auth yet.
+//	permissive  bearer header OPTIONAL. If present, it is validated
+//	            against TenantsStore; bad/missing bearers log a WARN
+//	            (rate-limited via Once) and the call is allowed
+//	            through with the synthetic identity. Same semantics
+//	            as the gRPC permissive-fallback. Useful while
+//	            rolling out tokens to an existing fleet.
 //
-// The bearer comparison goes through TenantsStore.LookupByToken which
-// hashes the plaintext and compares against the stored hash — same
-// constant-time semantics as gRPC. The subtle.ConstantTimeCompare
-// guard at the entry is for early-rejection of empty bearers (avoids
-// hitting the store) and is not security-load-bearing on its own.
+//	enforced    bearer header REQUIRED. Missing/bad bearer → 401.
+//	            Production posture for tagged releases. Backend
+//	            startup fails loud if enforced is selected without
+//	            a TenantsStore — silent acceptance would mask the
+//	            misconfiguration.
 //
-// Returns true when the request is authorized (or when the dev-mode
-// bypass kicks in). Returns false after writing a 401 to w.
+// The bearer comparison goes through TenantsStore.LookupByToken
+// which hashes the plaintext and compares against the stored hash
+// (same constant-time semantics as the gRPC bearer auth). The
+// subtle.ConstantTimeCompare guard at the entry is for early-
+// rejection of empty bearers (avoids hitting the store) and is not
+// security-load-bearing on its own.
+//
+// Returns true when the request is authorized. Returns false after
+// writing the appropriate response (4xx) to w.
 func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) bool {
+	mode := h.promWriteAuthMode
+	if mode == "" {
+		mode = promWriteAuthDisabled
+	}
+
+	// disabled: ignore the header entirely. No WARN (the operator
+	// asked for this mode explicitly).
+	if mode == promWriteAuthDisabled {
+		return true
+	}
+
+	// Configuration sanity: enforced mode without a TenantsStore is
+	// a misconfiguration we caught at startup, but defend in depth
+	// — accepting silently here would defeat the point of enforced.
+	// permissive without a store is fine: there's nothing to
+	// validate against, so the WARN-and-accept branch fires.
 	if h.tenantsStore == nil {
+		if mode == promWriteAuthEnforced {
+			respondError(w, http.StatusInternalServerError, "remote_write auth enforced but TenantsStore not wired")
+			return false
+		}
 		promWriteUnauthWarnOnce.Do(func() {
-			slog.Warn("prom remote_write running UNAUTHENTICATED — TenantsStore not wired",
-				slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true and provision an ingest token via the admin UI / API to gate this endpoint"))
+			slog.Warn("prom remote_write permissive but TenantsStore not wired — calls allowed without validation",
+				slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true to enable token validation"))
 		})
 		return true
 	}
+
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authz, prefix) {
+		if mode == promWriteAuthPermissive {
+			slog.Warn("prom remote_write permissive-fallback: missing bearer",
+				slog.String("remote", r.RemoteAddr))
+			return true
+		}
 		respondError(w, http.StatusUnauthorized, "missing Bearer token")
 		return false
 	}
 	token := strings.TrimSpace(authz[len(prefix):])
 	if subtle.ConstantTimeCompare([]byte(token), []byte("")) == 1 {
+		if mode == promWriteAuthPermissive {
+			slog.Warn("prom remote_write permissive-fallback: empty bearer",
+				slog.String("remote", r.RemoteAddr))
+			return true
+		}
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
 		return false
 	}
 	if _, _, err := h.tenantsStore.LookupByToken(token); err != nil {
+		if mode == promWriteAuthPermissive {
+			slog.Warn("prom remote_write permissive-fallback: bad bearer",
+				slog.String("remote", r.RemoteAddr),
+				slog.String("error", err.Error()))
+			return true
+		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
 		return false
 	}

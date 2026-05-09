@@ -42,6 +42,17 @@ type handlers struct {
 	// nil when auth is disabled — the issue-token endpoint refuses
 	// in that case.
 	tenantsStore *auth.TenantsStore
+	// promWriteAuthMode mirrors agentAuthEnforcement above but
+	// scopes the policy to the HTTP /api/v1/prom/write receiver
+	// (vmagent's ingest path). Same three values:
+	//   "enforced"   bearer required AND validated, 401 otherwise
+	//   "permissive" bearer optional; if present must validate, but
+	//                missing/bad bearers log a WARN and pass through
+	//                — same Sprint A migration semantics the gRPC
+	//                channel uses
+	//   "disabled"   bearer ignored entirely (Sprint A default)
+	// Empty string falls back to "disabled" at parse time.
+	promWriteAuthMode string
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

@@ -218,17 +218,23 @@ func TestHandlePromWrite_BodyTooLargeReturns413(t *testing.T) {
 	}
 }
 
-// ─── Auth (TenantsStore-backed) ───────────────────────────────────
+// ─── Auth (three-tier enforcement) ────────────────────────────────
+//
+// Mirrors the gRPC channel's AuthEnforcement semantics. The authoritative
+// behavior table:
+//
+//                       no bearer    bad bearer    valid bearer
+//   disabled   (*)      pass         pass          pass
+//   permissive (*)      WARN+pass    WARN+pass     pass
+//   enforced            401          401           pass
+//
+// (*) "disabled" ignores the header entirely; "permissive" still
+// validates the header when present, but also accepts when missing.
 
-func TestHandlePromWrite_AuthOn_NoBearerReturns401(t *testing.T) {
-	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
-	ts := httptest.NewServer(upstream.handler())
-	defer ts.Close()
+func TestHandlePromWrite_Enforced_NoBearerReturns401(t *testing.T) {
 	withPromWriteEnabled(t)
-	pointStorageAt(t, ts)
-
 	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store}
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	rec := httptest.NewRecorder()
@@ -236,19 +242,14 @@ func TestHandlePromWrite_AuthOn_NoBearerReturns401(t *testing.T) {
 	h.handlePromWrite(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 with no bearer, got %d (body=%q)", rec.Code, rec.Body.String())
+		t.Errorf("expected 401 with no bearer in enforced mode, got %d", rec.Code)
 	}
 }
 
-func TestHandlePromWrite_AuthOn_BadBearerReturns401(t *testing.T) {
-	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
-	ts := httptest.NewServer(upstream.handler())
-	defer ts.Close()
+func TestHandlePromWrite_Enforced_BadBearerReturns401(t *testing.T) {
 	withPromWriteEnabled(t)
-	pointStorageAt(t, ts)
-
 	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store}
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer kbtok_v1_not-a-real-token")
@@ -257,14 +258,14 @@ func TestHandlePromWrite_AuthOn_BadBearerReturns401(t *testing.T) {
 	h.handlePromWrite(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 with bad bearer, got %d (body=%q)", rec.Code, rec.Body.String())
+		t.Errorf("expected 401 with bad bearer in enforced mode, got %d", rec.Code)
 	}
 }
 
-func TestHandlePromWrite_AuthOn_EmptyBearerReturns401(t *testing.T) {
+func TestHandlePromWrite_Enforced_EmptyBearerReturns401(t *testing.T) {
 	withPromWriteEnabled(t)
 	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store}
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer ")
@@ -273,11 +274,11 @@ func TestHandlePromWrite_AuthOn_EmptyBearerReturns401(t *testing.T) {
 	h.handlePromWrite(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("expected 401 with empty bearer, got %d", rec.Code)
+		t.Errorf("expected 401 with empty bearer in enforced mode, got %d", rec.Code)
 	}
 }
 
-func TestHandlePromWrite_AuthOn_ValidBearerForwards(t *testing.T) {
+func TestHandlePromWrite_Enforced_ValidBearerForwards(t *testing.T) {
 	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
 	ts := httptest.NewServer(upstream.handler())
 	defer ts.Close()
@@ -285,13 +286,11 @@ func TestHandlePromWrite_AuthOn_ValidBearerForwards(t *testing.T) {
 	pointStorageAt(t, ts)
 
 	store, plaintext := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store}
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
 
 	body := []byte("snappy-protobuf-bytes")
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
 	req.Header.Set("Authorization", "Bearer "+plaintext)
-	req.Header.Set("Content-Encoding", "snappy")
-	req.Header.Set("Content-Type", "application/x-protobuf")
 	rec := httptest.NewRecorder()
 
 	h.handlePromWrite(rec, req)
@@ -306,19 +305,37 @@ func TestHandlePromWrite_AuthOn_ValidBearerForwards(t *testing.T) {
 	}
 }
 
-func TestHandlePromWrite_AuthOff_BackwardsCompat(t *testing.T) {
-	// tenantsStore = nil → dev-mode bypass. The handler must still
-	// accept requests (with a one-time WARN log) so existing dev
-	// installs don't break when they upgrade to a backend that
-	// added the auth gate. Production posture is auth-on; the dev
-	// path is opt-in only by NOT wiring auth at all.
+func TestHandlePromWrite_Enforced_NoStoreReturns500(t *testing.T) {
+	// Defense in depth: enforced mode without TenantsStore is a
+	// misconfiguration. main.go downgrades to disabled at startup
+	// and logs a WARN, but if the field somehow gets set without a
+	// store (future code path, programmatic test), the handler must
+	// fail closed rather than accepting silently.
+	withPromWriteEnabled(t)
+	h := &handlers{tenantsStore: nil, promWriteAuthMode: promWriteAuthEnforced}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	req.Header.Set("Authorization", "Bearer something")
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 (misconfig) when enforced+no-store, got %d", rec.Code)
+	}
+}
+
+// ─── Permissive — header is optional, validated when present ──────
+
+func TestHandlePromWrite_Permissive_NoBearerLogsWarnAndForwards(t *testing.T) {
 	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
 	ts := httptest.NewServer(upstream.handler())
 	defer ts.Close()
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	h := &handlers{tenantsStore: nil}
+	store, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	rec := httptest.NewRecorder()
@@ -326,7 +343,94 @@ func TestHandlePromWrite_AuthOff_BackwardsCompat(t *testing.T) {
 	h.handlePromWrite(rec, req)
 
 	if rec.Code != http.StatusNoContent {
-		t.Errorf("expected 204 in dev-bypass, got %d (body=%q)", rec.Code, rec.Body.String())
+		t.Errorf("expected 204 (permissive accepts no-bearer), got %d", rec.Code)
+	}
+}
+
+func TestHandlePromWrite_Permissive_BadBearerLogsWarnAndForwards(t *testing.T) {
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	req.Header.Set("Authorization", "Bearer kbtok_v1_garbage")
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204 (permissive accepts bad-bearer), got %d", rec.Code)
+	}
+}
+
+func TestHandlePromWrite_Permissive_ValidBearerForwards(t *testing.T) {
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, plaintext := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204 (valid bearer always accepted), got %d", rec.Code)
+	}
+}
+
+// ─── Disabled — header ignored, store unused ──────────────────────
+
+func TestHandlePromWrite_Disabled_BadBearerStillForwards(t *testing.T) {
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthDisabled}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	req.Header.Set("Authorization", "Bearer kbtok_v1_garbage")
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204 (disabled ignores header), got %d", rec.Code)
+	}
+}
+
+func TestHandlePromWrite_Disabled_DefaultsWhenModeEmpty(t *testing.T) {
+	// Empty string promWriteAuthMode falls back to "disabled" —
+	// matches the parser default in main.go for unset env var. Same
+	// code path as Sprint A migration default.
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	h := &handlers{tenantsStore: nil, promWriteAuthMode: ""}
+
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Errorf("expected 204 (empty mode → disabled), got %d", rec.Code)
 	}
 }
 

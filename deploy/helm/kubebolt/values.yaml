@@ -176,6 +176,17 @@ metrics:
   # cardinality limits.
   remoteWrite:
     enabled: false
+    # Three-tier enforcement for the bearer middleware on the
+    # /api/v1/prom/write endpoint. Mirrors the gRPC channel's
+    # AGENT_AUTH_MODE semantics (auth.agentAuthMode in this chart).
+    # Values: disabled | permissive | enforced. Default disabled
+    # for Sprint A migration compatibility — flip to enforced once
+    # operators have provisioned ingest tokens via the agent
+    # integration's "Generate token + create Secret" flow. The
+    # backend uses the SAME TenantsStore for both surfaces, so
+    # operators get one token to manage, two consumers (agent
+    # gRPC + vmagent HTTP).
+    authMode: disabled
 
 # Number of replicas
 replicaCount: 1

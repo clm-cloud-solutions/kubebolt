@@ -33,6 +33,7 @@ func NewRouter(
 	integrationRegistry *integrations.Registry,
 	agentAuthEnforcement string,
 	tenantsStore *auth.TenantsStore,
+	promWriteAuthMode string,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -54,6 +55,7 @@ func NewRouter(
 		integrations:         integrationRegistry,
 		agentAuthEnforcement: agentAuthEnforcement,
 		tenantsStore:         tenantsStore,
+		promWriteAuthMode:    promWriteAuthMode,
 	}
 
 	// Health check endpoint
