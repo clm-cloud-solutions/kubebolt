@@ -49,6 +49,10 @@ data:
         cluster_name: {{ .Values.cluster.name | quote }}
         {{- end }}
     scrape_configs:
+{{- /* Reusable per-job metric_relabel_configs. Each scrape_configs
+       entry below pulls this in via `include`, so adding a new
+       built-in job picks the same operator-supplied relabels
+       automatically. The 8-space indent matches scrape_configs[].* */ -}}
 {{- if .Values.scrape.discovery.pods.enabled }}
       - job_name: kubernetes-pods
         # Each vmagent scrapes only pods on its own node — the
@@ -86,6 +90,7 @@ data:
             target_label: pod
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
+{{- include "kubebolt-agent.metricRelabelConfigs" . }}
 {{- end }}
 {{- if .Values.scrape.discovery.nodeExporter.enabled }}
       - job_name: node-exporter
@@ -111,6 +116,7 @@ data:
             replacement: {{ .Values.scrape.discovery.nodeExporter.path | quote }}
           - source_labels: [__meta_kubernetes_pod_node_name]
             target_label: node
+{{- include "kubebolt-agent.metricRelabelConfigs" . }}
 {{- end }}
 {{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
       # ⚠️  kube-state-metrics is cluster-scoped — enabling this
@@ -132,6 +138,7 @@ data:
             target_label: __address__
           - target_label: __metrics_path__
             replacement: {{ .Values.scrape.discovery.kubeStateMetrics.path | quote }}
+{{- include "kubebolt-agent.metricRelabelConfigs" . }}
 {{- end }}
 {{- if not (or .Values.scrape.discovery.pods.enabled .Values.scrape.discovery.nodeExporter.enabled .Values.scrape.discovery.kubeStateMetrics.enabled) }}
       # All discovery jobs disabled — vmagent runs but scrapes

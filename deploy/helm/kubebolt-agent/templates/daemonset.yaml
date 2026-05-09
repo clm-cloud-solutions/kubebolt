@@ -218,6 +218,21 @@ spec:
             # %{NODE_NAME}% would be a literal string and match
             # nothing, leaving every vmagent scraping zero pods.
             - "-envflag.enable=true"
+            # Cardinality caps — defensive limits that protect VM
+            # from a single misconfigured target. Operators can
+            # raise individually via .Values.scrape.limits.*
+            # printf %d coerces YAML's float64 default for large
+            # numbers (e.g. 16777216 → 1.6777216e+07) back into a
+            # plain integer string that vmagent can parse.
+            {{- if .Values.scrape.limits.maxScrapeSize }}
+            - "-promscrape.maxScrapeSize={{ printf "%d" (int64 .Values.scrape.limits.maxScrapeSize) }}"
+            {{- end }}
+            {{- if .Values.scrape.limits.maxSeriesPerTarget }}
+            - "-promscrape.seriesLimitPerTarget={{ printf "%d" (int64 .Values.scrape.limits.maxSeriesPerTarget) }}"
+            {{- end }}
+            {{- if .Values.scrape.limits.maxSeriesGlobal }}
+            - "-remoteWrite.maxHourlySeries={{ printf "%d" (int64 .Values.scrape.limits.maxSeriesGlobal) }}"
+            {{- end }}
             {{- range $k, $v := .Values.scrape.extraArgs }}
             - "-{{ $k }}={{ $v }}"
             {{- end }}

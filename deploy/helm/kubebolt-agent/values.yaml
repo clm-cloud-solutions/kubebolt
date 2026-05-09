@@ -94,11 +94,45 @@ scrape:
       cpu: 200m
       memory: 256Mi
   # vmagent CLI flags rendered as -key=value. Use this to set
-  # cardinality limits (-promscrape.maxSeriesPerTarget,
-  # -promscrape.maxScrapeSize) or any other vmagent knob without
-  # waiting on a chart change. See:
-  #   https://docs.victoriametrics.com/vmagent.html#advanced-usage
+  # any vmagent knob not already covered by a dedicated value below.
+  # See: https://docs.victoriametrics.com/vmagent.html#advanced-usage
   extraArgs: {}
+
+  # ── Cardinality limits ──
+  # Defensive caps to keep one misconfigured target (an app
+  # exposing per-request-id labels, a buggy library spamming
+  # unique gauges) from filling VictoriaMetrics' index. Each cap
+  # rejects samples beyond the limit with a vmagent log line —
+  # operators see the rejection and can either fix the target,
+  # raise the cap, or filter the high-cardinality label via
+  # metricRelabelConfigs below.
+  limits:
+    # Maximum scrape body size in bytes. Default 16 MiB matches
+    # vmagent's default; lower it to catch runaway exporters
+    # earlier.
+    maxScrapeSize: 16777216  # 16 MiB
+    # Maximum unique samples per (job, target) per scrape. A
+    # well-behaved exporter (kube-state-metrics, node-exporter,
+    # most apps) stays well under this. Single-target overshoot
+    # logs a warning; if it persists, raise the cap or relabel.
+    maxSeriesPerTarget: 30000
+    # Soft cap on TOTAL active series across all scrape targets.
+    # vmagent rejects new series past the cap (existing series
+    # keep updating) and emits an alert metric. Set to 0 to
+    # disable the global cap and rely on per-target only.
+    maxSeriesGlobal: 1000000
+
+  # ── Sample relabeling ──
+  # Drop high-cardinality labels at scrape time before they hit
+  # VictoriaMetrics. The defaults strip a few labels we know are
+  # noisy and rarely useful for queries (instance hash suffixes,
+  # k8s replicaset hashes that already collapse to workload
+  # labels via Phase 1's UI). Operators can append more.
+  metricRelabelConfigs: []
+  # Example to add to the list:
+  #   - source_labels: [my_high_card_label]
+  #     action: labeldrop
+  #     regex: my_high_card_label
 
   # ── Service discovery ──
   # Built-in scrape jobs that vmagent renders into the ConfigMap.
@@ -128,10 +162,27 @@ scrape:
       port: 9100
       path: /metrics
     # kube-state-metrics — cluster-scoped (one Deployment, not
-    # per-node). Per-pod scraping by N vmagent sidecars would
-    # duplicate every series N times, so KSM lives behind a
-    # leader-election pattern shipped in Day 4 of Phase 2.
-    # Default off until then.
+    # per-node). Two ways to get its samples into VM without
+    # duplicating across N vmagent sidecars:
+    #
+    #   RECOMMENDED — annotation-driven discovery. The official
+    #   KSM chart and bundled manifests set
+    #   `prometheus.io/scrape: "true"` on the KSM pod. The
+    #   kubernetes-pods scrape job above (filtered to local node)
+    #   then scrapes KSM exactly once: from whichever vmagent
+    #   sidecar happens to share a node with the KSM pod. No
+    #   leader election needed; the per-node filter does the work.
+    #
+    #   FALLBACK — enable this dedicated job. Use ONLY if your
+    #   KSM deployment doesn't carry the annotation and you can't
+    #   add it. Without VictoriaMetrics-side deduplication
+    #   (`-dedup.minScrapeInterval` on vmstorage / vminsert) this
+    #   will produce N×duplicate series in clusters with N nodes.
+    #   The kubebolt helm chart enables VM dedup by default at
+    #   the matching scrape interval, so the duplicates collapse
+    #   server-side — but if you're shipping samples to your own
+    #   VM cluster, configure dedup there or expect inflated
+    #   series counts.
     kubeStateMetrics:
       enabled: false
       labelSelector: "app.kubernetes.io/name=kube-state-metrics"
