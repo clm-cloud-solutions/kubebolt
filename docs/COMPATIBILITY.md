@@ -173,4 +173,5 @@ additions only, never renames.
 
 - [`packages/agent/CHANGELOG.md`](../packages/agent/CHANGELOG.md) — agent release history with full schema migration table
 - [`docs/releases/v1.10.0.md`](releases/v1.10.0.md) — kubebolt 1.10.0 release notes
+- [`docs/agent-scraping.md`](agent-scraping.md) — operator guide for the vmagent sidecar (Phase 2): quickstart, config reference, troubleshooting
 - [`internal/kubebolt-agent-technical-spec.md`](../internal/kubebolt-agent-technical-spec.md) — authoritative metric / label catalog (v0.2 reflects v1.0 schema)

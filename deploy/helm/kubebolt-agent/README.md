@@ -263,3 +263,14 @@ helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 
 A present `ca.crt` alone enables TLS (relay authenticated, client
 anonymous). Adding `tls.crt` + `tls.key` turns on mTLS.
+
+## Scrape sidecar (`scrape.enabled`)
+
+The agent ships an opt-in vmagent sidecar that scrapes
+Prom-compatible `/metrics` endpoints in the cluster
+(kube-state-metrics, node-exporter, any pod with
+`prometheus.io/scrape: "true"`) and remote_writes the samples to the
+KubeBolt backend. Default off.
+
+Quick start + full config reference + troubleshooting:
+[`docs/agent-scraping.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/agent-scraping.md).

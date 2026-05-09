@@ -318,6 +318,14 @@ kubectl apply -f https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/
 # access to the target cluster — Administration → Integrations)
 ```
 
+The agent v1.0+ also ships an opt-in **vmagent sidecar** that scrapes
+Prom-compatible `/metrics` endpoints (kube-state-metrics, node-exporter,
+any pod with `prometheus.io/scrape: "true"`) and ships the samples to
+KubeBolt's bundled VictoriaMetrics — so you get the depth of a
+Prometheus stack without running your own Prom. See
+[`docs/agent-scraping.md`](docs/agent-scraping.md) for the
+quickstart + config reference.
+
 ## Features
 
 ### Monitoring & Observability
