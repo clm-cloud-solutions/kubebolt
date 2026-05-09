@@ -129,6 +129,28 @@ func TestScopeQueryByCluster(t *testing.T) {
 			want: `label_replace(container_memory_working_set_bytes{` + inj + `}, "label", "with \" quote", "src", "{ignored}")`,
 		},
 
+		// --- Phase 2 prefixes: kube_* and kubelet_* ------------------
+		// Surfaced during Phase 2 in-vivo testing — the coverage banner
+		// reported kube-state-metrics as ACTIVE because the bare-metric
+		// regex didn't recognize `kube_*` and the query went to VM
+		// unscoped, matching every cluster's KSM samples. Same gap
+		// existed for `kubelet_volume_stats_*` since Day 1 of Phase 1.
+		{
+			name: "kube_* metric scoped (kube-state-metrics)",
+			in:   `count(kube_pod_info)`,
+			want: `count(kube_pod_info{` + inj + `})`,
+		},
+		{
+			name: "kubelet_* metric scoped (kubelet_volume_stats)",
+			in:   `kubelet_volume_stats_used_bytes`,
+			want: `kubelet_volume_stats_used_bytes{` + inj + `}`,
+		},
+		{
+			name: "kube_* with existing selector preserved",
+			in:   `kube_deployment_status_replicas{namespace="demo"}`,
+			want: `kube_deployment_status_replicas{` + inj + `,namespace="demo"}`,
+		},
+
 		// --- empty uid fails closed ----------------------------------
 		// When the backend can't discover the kube-system UID (e.g. EKS
 		// auth was slow at startup), unscoped queries used to leak data

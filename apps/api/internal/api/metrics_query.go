@@ -61,6 +61,21 @@ var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 // naming convention (one of these prefixes + `_` + body). Extend the
 // list when a new metric family ships from the agent.
 //
+// Phase 2 of the Universal Data Plane Plan introduced two more
+// scrape sources whose canonical metric names sit outside the
+// original five-prefix list:
+//
+//   - `kubelet_*`  emitted by the agent for kubelet_volume_stats_*
+//                  (Day 1 of Phase 1)
+//   - `kube_*`     emitted by kube-state-metrics scraped via vmagent
+//                  (Phase 2 Day 2-3)
+//
+// Without these prefixes, queries like `count(kube_pod_info)` or
+// `count(kubelet_volume_stats_used_bytes)` would leave VictoriaMetrics
+// unscoped, leaking samples across clusters that share the same VM.
+// Fix surfaced in Phase 2 in-vivo testing — the coverage banner
+// reported KSM as ACTIVE even when its cluster_id didn't match.
+//
 // Identifiers used as label names elsewhere — `cluster_id`, `pod_uid`,
 // and any future `pod_*` label — would also match this regex. Two
 // guards keep them from being misidentified as metric references:
@@ -68,7 +83,7 @@ var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 // AND skips text inside `by(...)` / `without(...)` aggregation clauses
 // (see groupingClauseRE). Anything outside both is a real metric ref.
 var bareMetricRE = regexp.MustCompile(
-	`\b(?:node|pod|container|kubebolt|hubble)_[a-zA-Z0-9_]+\b`,
+	`\b(?:node|pod|container|kubebolt|kubelet|kube|hubble)_[a-zA-Z0-9_]+\b`,
 )
 
 // groupingClauseRE matches the start of a PromQL aggregation grouping

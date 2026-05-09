@@ -23,7 +23,38 @@ of the DaemonSet. vmagent reloads on SIGHUP but not on configmap-
 projected file changes, so a pod restart is the safest path until
 we wire `-promscrape.config.fileWatchInterval` (Day 4 or later).
 */}}
+{{- /* Resolve cluster_id at install time. The agent auto-discovers
+       it from the kube-system namespace UID at startup; vmagent
+       runs as a separate process with no apiserver reach for that
+       same lookup, so we mirror the agent's logic here via Helm's
+       `lookup` function. The fallback chain:
+
+         1. .Values.cluster.id explicitly set     (highest priority)
+         2. kube-system namespace UID (lookup)    (matches agent default)
+         3. .Values.cluster.name                  (last-resort fallback;
+                                                   produces a UID/name
+                                                   mismatch with the
+                                                   agent — should only
+                                                   happen on a dry-run
+                                                   or restricted RBAC)
+
+       Without this matching, the agent emits with cluster_id=<UID>
+       while vmagent stamps cluster_id=<chart-name>; the backend
+       filters by UID so the vmagent samples become invisible to
+       coverage probes and dashboards. Surfaced during Phase 2
+       in-vivo testing on a kind cluster.
+*/}}
 {{- if .Values.scrape.enabled }}
+{{- $clusterID := .Values.cluster.id -}}
+{{- if not $clusterID -}}
+  {{- $kubesys := lookup "v1" "Namespace" "" "kube-system" -}}
+  {{- if and $kubesys $kubesys.metadata $kubesys.metadata.uid -}}
+    {{- $clusterID = $kubesys.metadata.uid -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $clusterID -}}
+  {{- $clusterID = .Values.cluster.name -}}
+{{- end -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -40,11 +71,10 @@ data:
         # Stamps cluster_id onto every series this vmagent ships.
         # The receiver trusts this label for cluster scoping in
         # Phase 2; Phase 3 will assert it against a bearer token.
-        # When cluster.id is empty we fall back to cluster.name —
-        # not ideal but better than no scoping. Operators are
-        # nudged via README + helm NOTES to set cluster.id
-        # explicitly.
-        cluster_id: {{ default .Values.cluster.name .Values.cluster.id | quote }}
+        # Resolution order is in the comment block at the top of
+        # this template — the kube-system namespace UID lookup
+        # above ensures vmagent matches what the agent emits.
+        cluster_id: {{ $clusterID | quote }}
         {{- if .Values.cluster.name }}
         cluster_name: {{ .Values.cluster.name | quote }}
         {{- end }}
