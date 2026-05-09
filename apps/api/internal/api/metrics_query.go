@@ -27,12 +27,16 @@ var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // activeClusterUID returns the kube-system UID of the cluster this
 // handler is currently pointed at, or empty when no connector is
-// available (startup before first connect, or connection errored).
+// available (startup before first connect, or connection errored,
+// or unit tests that construct the handler without a manager).
 // scopeQueryByCluster fails closed on empty by injecting a sentinel
 // that no real cluster would ever emit, so an unknown UID returns
 // zero series rather than leaking data from other clusters that
 // happen to share the same VM.
 func (h *handlers) activeClusterUID() string {
+	if h.manager == nil {
+		return ""
+	}
 	conn := h.manager.Connector()
 	if conn == nil {
 		return ""

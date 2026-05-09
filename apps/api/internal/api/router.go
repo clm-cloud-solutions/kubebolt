@@ -114,6 +114,11 @@ func NewRouter(
 			// the path stays unauthenticated.
 			r.Post("/prom/write", h.handlePromWrite)
 
+			// Coverage banner — which observability sources are
+			// actively shipping samples to VM for the current cluster.
+			// Cheap (4 instant queries), poll-friendly from the UI.
+			r.Get("/coverage", h.handleCoverage)
+
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
