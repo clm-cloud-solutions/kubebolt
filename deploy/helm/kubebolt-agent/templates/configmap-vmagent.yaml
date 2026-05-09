@@ -100,6 +100,22 @@ data:
           - source_labels: [__meta_kubernetes_pod_node_name]
             action: keep
             regex: "%{NODE_NAME}"
+          # Dedup pod SD's per-containerPort fanout. When a pod
+          # declares multiple containerPorts (e.g. cilium-operator's
+          # `health` 9234 + `prometheus` 9963 with annotation port
+          # 9963), vmagent emits one target per port and the
+          # `__address__` relabel below rewrites both to the same
+          # final address — same labels → vmagent dedupes one and
+          # logs a noisy "skipping duplicate scrape target" WARN per
+          # cycle. The `if:` filter scopes this rule to pods that
+          # have BOTH annotation_port and container_port_number set;
+          # `keep_if_equal` then keeps only the target whose
+          # containerPort matches the annotation. Pods without an
+          # annotation port (or hostNetwork pods with no declared
+          # containerPort) skip the rule entirely.
+          - if: '{__meta_kubernetes_pod_annotation_prometheus_io_port=~".+", __meta_kubernetes_pod_container_port_number=~".+"}'
+            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_container_port_number]
+            action: keep_if_equal
           # Resolve port: annotation wins, otherwise vmagent picks
           # the first declared containerPort.
           - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
