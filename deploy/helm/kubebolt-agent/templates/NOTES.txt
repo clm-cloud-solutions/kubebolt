@@ -4,6 +4,14 @@ Release:   {{ .Release.Name }}
 Chart:     {{ .Chart.Name }}-{{ .Chart.Version }}
 Image:     {{ include "kubebolt-agent.image" . }}
 
+⚠️  KubeBolt backend compatibility:
+  This agent emits the v1.0 Prom-canonical schema. It REQUIRES
+  KubeBolt >= 1.10.0 — older backends will register the agent
+  successfully but their dashboards render EMPTY because their
+  queries look for the pre-1.0 label/metric names.
+  Compat matrix:
+    https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/COMPATIBILITY.md
+
 Check the rollout:
   kubectl -n {{ .Release.Namespace }} rollout status ds/{{ include "kubebolt-agent.fullname" . }}
   kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/name={{ include "kubebolt-agent.name" . }}
