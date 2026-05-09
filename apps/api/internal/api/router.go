@@ -106,6 +106,14 @@ func NewRouter(
 			// traffic observability source hasn't produced any data yet.
 			r.Get("/flows/edges", h.handleFlowEdges)
 
+			// Prometheus remote_write receiver. Forwards Snappy/protobuf
+			// payloads to vminsert. Gated by KUBEBOLT_REMOTE_WRITE_ENABLED
+			// so a misconfigured client gets a clean 404 instead of an
+			// unauthenticated ingest port. Phase 3 will require a bearer
+			// token + per-tenant cardinality limits; for Phase 2 dev use
+			// the path stays unauthenticated.
+			r.Post("/prom/write", h.handlePromWrite)
+
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
