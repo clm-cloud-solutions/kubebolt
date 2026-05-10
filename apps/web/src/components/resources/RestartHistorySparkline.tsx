@@ -121,7 +121,23 @@ export function RestartHistorySparkline({
   // the honor_labels chart fix. Anchoring to end() means "alive
   // now or not at all" — stale series get filtered uniformly
   // across all steps.
-  const innerQuery = `(increase(${baseSelector}[1h]) * on(namespace,pod,container,uid) present_over_time(${baseSelector}[5m] @ end()))`
+  //
+  // `instance,job` ARE part of the join keys (not just the four
+  // pod-identity labels). Same (namespace,pod,container,uid) can
+  // legitimately exist across DIFFERENT scrape sources — e.g. a
+  // cluster transitioning from one KSM install to another (annotation-
+  // discovered hand-rolled KSM → dedicated kube-prometheus-stack
+  // KSM). The OLD series stays in VM for the retention window
+  // (30d default) but stops getting samples after the swap. Without
+  // `instance,job` in the join, the OLD series's increase value
+  // shows a counterpart in present_over_time (because we'd match
+  // on pod identity alone), and its historical 24h increase gets
+  // summed in the `sum by (pod)` outer wrapper — visible as the
+  // "Last 24h: 6" bug when lifetime is only 3. Including
+  // instance+job means each scrape-source pair must have its OWN
+  // active sample to pass the filter; the dead series fails the
+  // join and drops out.
+  const innerQuery = `(increase(${baseSelector}[1h]) * on(namespace,pod,container,uid,instance,job) present_over_time(${baseSelector}[5m] @ end()))`
   const query = container ? innerQuery : `sum by (pod) (${innerQuery})`
 
   const { data, isLoading, error } = useQuery({
