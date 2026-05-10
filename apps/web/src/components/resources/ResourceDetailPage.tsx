@@ -261,18 +261,98 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
 
 // ─── Status Overview Cards ───────────────────────────────────────
 
+// LastTerminationField surfaces the previous run's termination
+// reason on a pod's status overview. The visual weight is tuned by
+// reason: OOMKilled goes red because it's actionable (memory limit
+// or leak); Error goes amber because it could be transient; Completed
+// reads neutral (Job-style). The relative time tail anchors "is this
+// still relevant?" — a finishedAt from 4 days ago carries different
+// urgency than one from 30 seconds ago.
+function LastTerminationField({
+  termination,
+  containerName,
+}: {
+  termination: { reason?: string; finishedAt?: string; exitCode?: number }
+  containerName?: string
+}) {
+  const reason = termination.reason || 'Unknown'
+  const isOOM = reason === 'OOMKilled'
+  const isError = reason === 'Error' || (termination.exitCode != null && termination.exitCode !== 0 && !isOOM && reason !== 'Completed')
+  const tone = isOOM
+    ? 'bg-status-error-dim text-status-error'
+    : isError
+      ? 'bg-status-warn-dim text-status-warn'
+      : 'bg-kb-elevated text-kb-text-secondary'
+  const ago = termination.finishedAt ? formatAge(termination.finishedAt) : null
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-[0.04em] font-semibold ${tone}`}>
+        {reason}
+      </span>
+      {termination.exitCode != null && (
+        <span className="text-[10px] font-mono text-kb-text-tertiary">
+          exit {termination.exitCode}
+        </span>
+      )}
+      {ago && (
+        <span className="text-[10px] font-mono text-kb-text-tertiary">
+          {ago} ago{containerName ? ` · ${containerName}` : ''}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
   const metrics: { label: string; value: React.ReactNode }[] = []
 
   switch (type) {
-    case 'pods':
+    case 'pods': {
+      // Walk the pod's containers to find the most recent termination
+      // across them. The k8s API only retains the previous run's outcome
+      // per container (LastTerminationState), so this is a "what just
+      // killed me" snapshot rather than a full history. The CapacityPage
+      // OOMKill panel covers cluster-wide trend; here we surface the
+      // pod-local signal so opening a crashlooping pod tells the
+      // operator the cause without diving into kubectl describe.
+      type LastTermination = {
+        reason?: string
+        finishedAt?: string
+        exitCode?: number
+      }
+      type ContainerSlim = {
+        name?: string
+        state?: { lastTermination?: LastTermination }
+      }
+      const containers = (item.containers as ContainerSlim[] | undefined) ?? []
+      type Pair = { name?: string; lt: LastTermination }
+      const pairs: Pair[] = []
+      for (const c of containers) {
+        if (c.state?.lastTermination) {
+          pairs.push({ name: c.name, lt: c.state.lastTermination })
+        }
+      }
+      pairs.sort((a, b) => {
+        const ta = a.lt.finishedAt ? new Date(a.lt.finishedAt).getTime() : 0
+        const tb = b.lt.finishedAt ? new Date(b.lt.finishedAt).getTime() : 0
+        return tb - ta
+      })
+      const lastTerm = pairs[0]
+
       metrics.push(
         { label: 'Phase', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
         { label: 'Ready Containers', value: String(item.ready ?? '-') },
         { label: 'Restart Count', value: String(item.restarts ?? 0) },
         { label: 'Node', value: item.nodeName ? <ResourceLink name={String(item.nodeName)} resourceType="nodes" /> : '-' },
       )
+      if (lastTerm) {
+        metrics.push({
+          label: 'Last Termination',
+          value: <LastTerminationField termination={lastTerm.lt} containerName={lastTerm.name} />,
+        })
+      }
       break
+    }
     case 'deployments':
       metrics.push(
         { label: 'Status', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Available' || item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
