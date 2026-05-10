@@ -58,6 +58,57 @@ automatically through the annotation-driven job. The dedicated
 `kube-state-metrics` toggle is a fallback for KSM deployments that
 don't carry the annotation.
 
+### Running against kube-prometheus-stack (or any ServiceMonitor-driven Prom)
+
+The default path above assumes the operator's KSM and node-exporter
+pods carry `prometheus.io/scrape: "true"` annotations. The official
+[`kube-prometheus-stack`](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
+chart, and any install that uses Prometheus Operator's
+`ServiceMonitor` / `PodMonitor` CRDs, **does not add those
+annotations** — it relies entirely on the operator's selector
+machinery. Plain annotation-driven discovery silently picks up
+nothing.
+
+For these clusters, enable both dedicated jobs explicitly and
+optionally rename the chart's node-exporter so the agent's
+`labelSelector` defaults match:
+
+```bash
+# 1. Install kube-prometheus-stack with the node-exporter name
+#    aligned to what the agent searches for (saves overriding
+#    labelSelector below). This step is the customer's normal
+#    install — the rename is the only kubebolt-specific tweak.
+helm install kube-prom prometheus-community/kube-prometheus-stack \
+  -n monitoring --create-namespace \
+  --set prometheus-node-exporter.nameOverride=node-exporter
+
+# 2. Install the kubebolt-agent with both dedicated scrape jobs on.
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  -n kubebolt-agent --create-namespace \
+  --set scrape.enabled=true \
+  --set scrape.discovery.nodeExporter.enabled=true \
+  --set scrape.discovery.kubeStateMetrics.enabled=true \
+  --set scrape.remoteWriteUrl=http://kubebolt.kubebolt.svc.cluster.local/api/v1/prom/write
+```
+
+**Trade-off you accept by enabling the dedicated KSM job:** without
+per-node leader election, *every* vmagent (one DaemonSet pod per
+node) scrapes the cluster-scoped KSM service. With N nodes you
+get N×duplicate samples in VM. The bundled KubeBolt VictoriaMetrics
+ships `--dedup.minScrapeInterval=30s` by default, which collapses
+the duplicates at write time — but if you point KubeBolt at an
+**external** TSDB (`metrics.storage.externalUrl`), enable dedup
+there yourself or expect inflated series counts. See *Metrics
+Storage* in the kubebolt chart README.
+
+If you can't modify the customer's `kube-prometheus-stack` install
+(common in audited environments), override the agent-side selector
+to whatever name the upstream chart used:
+
+```bash
+--set scrape.discovery.nodeExporter.labelSelector="app.kubernetes.io/name=prometheus-node-exporter"
+```
+
 ### Why a per-pod sidecar (not a cluster-wide deployment)
 
 [ADR-003](../internal/agent-universal-data-plane-plan.md#adr-003-sidecar-per-pod-no-cluster-wide)
@@ -327,18 +378,35 @@ skipping duplicate scrape target with identical labels;
 endpoint=http://10.244.1.143:8080/metrics, ...
 ```
 
-**Cause:** kube-state-metrics declares two `containerPort`s
-(`http-metrics` 8080 and `telemetry` 8081). vmagent's pod SD
-generates one target per containerPort; the relabel rule rewrites
-both to address `:8080` (from the `prometheus.io/port` annotation),
-collapsing them into one target with identical labels. vmagent
-correctly drops the duplicate but logs a warning every cycle.
+**Cause:** kube-state-metrics 2.x declares two `containerPort`s
+(`http` 8080 and `metrics`/`telemetry` 8081). vmagent's pod SD
+generates one target per containerPort; the relabel that rewrites
+`__address__` to a single configured port collapses both into one
+target with identical labels. vmagent drops the duplicate but logs
+the warning every cycle.
 
-**Fix:** Drop the telemetry port from the KSM manifest if you don't
-scrape it. Production KSM installs that need the telemetry port
-back can re-add it with a separate `prometheus.io/scrape: "false"`
-annotation on a sidecar Service, or with a vmagent relabel rule
-that drops the second port.
+**Fix in current chart (post-Phase-2.5):** the `kubernetes-pods`,
+`node-exporter`, and `kube-state-metrics` scrape jobs all ship with
+a `keep` filter on `__meta_kubernetes_pod_container_port_number`
+that drops non-matching containerPorts before the address rewrite,
+so vmagent never sees the duplicate target. If you're hitting this
+on a current chart version, check that:
+
+- The rendered ConfigMap actually carries the filter:
+  ```bash
+  kubectl get cm -n kubebolt-agent <release>-vmagent \
+    -o jsonpath='{.data.scrape\.yml}' | grep container_port_number
+  ```
+  Should show one `keep` line per dedicated job. If empty, upgrade
+  the agent chart.
+- The values `scrape.discovery.{nodeExporter,kubeStateMetrics}.port`
+  match the actual containerPort the metrics endpoint listens on
+  (defaults `9100` and `8080`; some custom builds differ).
+
+**Fallback for older chart versions or unusual builds:** drop the
+extra containerPort from the KSM manifest, or add a vmagent relabel
+rule of your own filtering by port name (`http` for KSM, `metrics`
+for node-exporter).
 
 ### 5. /api/v1/prom/write returns 401 from vmagent
 

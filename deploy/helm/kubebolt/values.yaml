@@ -156,8 +156,13 @@ metrics:
           cpu: 1000m
           memory: 2Gi
       # Extra args passed to the VictoriaMetrics binary. The chart
-      # already provides --storageDataPath, --retentionPeriod, and
-      # --httpListenAddr — anything you add here is appended.
+      # already provides --storageDataPath, --retentionPeriod,
+      # --httpListenAddr, and --dedup.minScrapeInterval=30s
+      # (collapses N×duplicate kube-state-metrics samples produced
+      # by the multi-vmagent DaemonSet pattern). Anything you add
+      # here is appended. To DISABLE dedup (e.g. when running a
+      # single vmagent and you want raw sample density), pass
+      # --dedup.minScrapeInterval=0 here — explicit override wins.
       extraArgs: []
     # External TSDB URL — used when embedded.enabled is false. Must
     # support the VictoriaMetrics ingestion API ("/api/v1/import" and

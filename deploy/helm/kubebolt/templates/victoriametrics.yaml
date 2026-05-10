@@ -53,6 +53,15 @@ spec:
             - "--storageDataPath=/victoria-metrics-data"
             - "--retentionPeriod={{ .Values.metrics.storage.embedded.retention }}"
             - "--httpListenAddr=:8428"
+            # Collapse identical samples written within this window. Multi-
+            # vmagent installs (kubebolt-agent DaemonSet, one pod per node)
+            # produce N×duplicate kube-state-metrics samples when KSM is
+            # scraped via the dedicated job — VM keeps only the latest within
+            # the dedup bucket. Match the agent's scrape_interval (30s) so
+            # duplicates land in the same bucket. Day 4 (361887d) documented
+            # this strategy but never wired the flag; closed here.
+            # Idempotent for single-vmagent setups — no duplicates to collapse.
+            - "--dedup.minScrapeInterval=30s"
             {{- with .Values.metrics.storage.embedded.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

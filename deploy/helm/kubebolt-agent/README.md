@@ -272,5 +272,25 @@ Prom-compatible `/metrics` endpoints in the cluster
 `prometheus.io/scrape: "true"`) and remote_writes the samples to the
 KubeBolt backend. Default off.
 
-Quick start + full config reference + troubleshooting:
+**For clusters running `kube-prometheus-stack`** (or any Prom install
+driven by `ServiceMonitor` / `PodMonitor` CRDs rather than annotations),
+the annotation-driven path picks up nothing — those charts don't
+add `prometheus.io/scrape` to their pods. Enable both dedicated
+scrape jobs explicitly:
+
+```bash
+--set scrape.discovery.nodeExporter.enabled=true \
+--set scrape.discovery.kubeStateMetrics.enabled=true
+```
+
+This routes node-exporter + KSM through the agent's dedicated jobs,
+which match by `app.kubernetes.io/name=...` label. Beware: the
+dedicated KSM job runs in every agent DaemonSet pod, so KSM samples
+are produced N× across an N-node cluster. The bundled KubeBolt
+VictoriaMetrics collapses them at write time via
+`--dedup.minScrapeInterval=30s`; external TSDBs need the same flag
+configured on your side.
+
+Quick start + full config reference + troubleshooting (including the
+`kube-prometheus-stack` recipe with `prometheus-node-exporter.nameOverride`):
 [`docs/agent-scraping.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/agent-scraping.md).

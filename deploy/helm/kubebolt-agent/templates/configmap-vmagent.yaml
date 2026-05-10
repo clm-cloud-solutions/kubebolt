@@ -185,6 +185,21 @@ data:
           - source_labels: [__meta_kubernetes_pod_node_name]
             action: keep
             regex: "%{NODE_NAME}"
+          # Pod-SD emits one target per containerPort. node-exporter
+          # 1.x typically declares only `metrics=9100` so this filter
+          # is a no-op today, but kube-prometheus-stack and other
+          # upstream charts have history of adding sidecar ports
+          # (textfile collector, control-plane exporter). Without
+          # this keep, those extra ports get rewritten to the same
+          # __address__ as the metrics port via the replace below
+          # and vmagent logs "skipping duplicate scrape target" once
+          # per cycle. Same fix pattern as Day 6 follow-up applied
+          # to the kubernetes-pods job (217175f), but for dedicated
+          # jobs: keep only the containerPort that matches the
+          # configured scrape port.
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "{{ .Values.scrape.discovery.nodeExporter.port }}"
           - source_labels: [__address__]
             action: replace
             regex: "([^:]+)(?::\\d+)?"
@@ -198,10 +213,20 @@ data:
 {{- end }}
 {{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
       # ⚠️  kube-state-metrics is cluster-scoped — enabling this
-      # without the leader-election wrapper from Day 4 of Phase 2
-      # will duplicate every KSM series N times (once per node).
-      # Day 4 will replace this stanza with a leased scrape that
-      # exactly one vmagent picks up at a time.
+      # without per-vmagent dedup means N×duplicate samples (one
+      # per node where an agent runs). Mitigation paths:
+      #   1. Annotation-driven discovery (preferred when KSM has
+      #      `prometheus.io/scrape=true` + `port` annotations) —
+      #      the kubernetes-pods job's per-node filter ensures
+      #      single-scrape semantics. kube-prometheus-stack does
+      #      NOT add these annotations, so this path requires
+      #      operator action on the customer side.
+      #   2. VM-side dedup — `--dedup.minScrapeInterval=30s` on
+      #      the storage flag collapses duplicate samples at write
+      #      time. The bundled kubebolt chart and docker-compose
+      #      ship this flag by default since the post-Phase-2.5
+      #      follow-up; external Prom-compatible TSDBs need the
+      #      operator to enable it.
       - job_name: kube-state-metrics
         kubernetes_sd_configs:
           - role: pod
@@ -209,6 +234,20 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
             action: keep
             regex: "kube-state-metrics"
+          # KSM 2.x exposes two containerPorts — `http` (metrics)
+          # and `metrics` (telemetry). Pod-SD emits one target per
+          # port; without this keep, the __address__ rewrite below
+          # collapses both to the same final URL and vmagent logs
+          # "skipping duplicate scrape target" once per cycle.
+          # Same fix pattern as Day 6 follow-up applied to the
+          # kubernetes-pods job (217175f), but for dedicated jobs:
+          # keep only the containerPort that matches the configured
+          # scrape port. Surfaced when running against
+          # kube-prometheus-stack instead of the bundled hand-rolled
+          # KSM (which had a single explicit containerPort).
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "{{ .Values.scrape.discovery.kubeStateMetrics.port }}"
           - source_labels: [__address__]
             action: replace
             regex: "([^:]+)(?::\\d+)?"
