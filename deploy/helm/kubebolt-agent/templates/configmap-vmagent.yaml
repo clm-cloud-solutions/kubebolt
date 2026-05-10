@@ -89,6 +89,21 @@ data:
         # `__meta_kubernetes_pod_node_name == NODE_NAME` keep rule
         # below enforces it. With N nodes you get exactly one scrape
         # per pod, never N duplicates.
+        # honor_labels: true — when the scraped metric body already
+        # carries `namespace`, `pod`, or `container` labels (kube-
+        # state-metrics is the canonical example: it emits those
+        # labels for the OBSERVED pod, not for the KSM container
+        # itself), the metric-body value wins over our SD relabel.
+        # Without this, our relabel below would overwrite KSM's
+        # correct labels with the KSM container's own ns/pod, and
+        # queries like `kube_pod_container_status_restarts_total
+        # {namespace="X",pod="Y"}` would never match because every
+        # series ended up labeled `namespace="prom-stack",pod=
+        # "kube-state-metrics-..."`. For app exporters that DON'T
+        # emit their own namespace/pod, our relabel fills them in
+        # — honor_labels only resolves conflicts, it doesn't
+        # remove the relabel.
+        honor_labels: true
         kubernetes_sd_configs:
           - role: pod
         relabel_configs:

@@ -13,6 +13,7 @@ import { SecretRevealModal } from '@/components/resources/SecretRevealModal'
 import { ScaleModal } from '@/components/resources/ScaleModal'
 import { ResourceActionsMenu, type ActionItem } from '@/components/resources/ResourceActionsMenu'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
+import { RestartHistorySparkline } from '@/components/resources/RestartHistorySparkline'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
@@ -673,7 +674,16 @@ function ContainersTab({ item }: { item: ResourceItem }) {
                   {state?.startedAt != null && <span className="text-[10px] text-kb-text-tertiary">since {new Date(String(state.startedAt)).toLocaleString()}</span>}
                 </div>
               </InfoField>
-              <InfoField label="Restart Count">{String(state?.restartCount ?? 0)}</InfoField>
+              <InfoField label="Restart Count">
+                <div className="flex items-center gap-3">
+                  <span>{String(state?.restartCount ?? 0)}</span>
+                  <RestartHistorySparkline
+                    namespace={String(item.namespace)}
+                    pod={String(item.name)}
+                    container={String(c.name)}
+                  />
+                </div>
+              </InfoField>
             </div>
 
             {resources && (
@@ -2218,7 +2228,14 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2267,7 +2284,14 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2316,7 +2340,14 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2365,7 +2396,14 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>
           ))}
@@ -2545,7 +2583,14 @@ function NodePodsTab({ nodeName }: { nodeName: string }) {
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>

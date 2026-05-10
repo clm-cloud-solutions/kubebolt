@@ -4,6 +4,7 @@ import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight, Filter, X } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
+import { RestartHistorySparkline } from './RestartHistorySparkline'
 import { FilterBar } from './FilterBar'
 import { StatusBadge } from './StatusBadge'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -203,10 +204,18 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         header: 'Restarts',
         cell: (info) => {
           const v = Number(info.getValue() ?? 0)
+          const item = info.row.original
+          // The component owns both the count and the recency icon —
+          // count color depends on recency analysis, not on lifetime
+          // alone, so a stable-now pod with high lifetime doesn't
+          // scream red.
           return (
-            <span className={`text-[11px] font-mono ${v > 0 ? 'text-status-error' : 'text-kb-text-secondary'}`}>
-              {v}
-            </span>
+            <RestartHistorySparkline
+              namespace={String(item.namespace ?? '')}
+              pod={String(item.name ?? '')}
+              variant="badge"
+              lifetimeCount={v}
+            />
           )
         },
       },
