@@ -1888,6 +1888,50 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.networkRxTx}
           chartType="area"
         />
+        {/* Load average — three series (1m / 5m / 15m). The 1m line
+            tracks the immediate "right now" load; 5m and 15m smooth
+            out spikes and surface sustained pressure. Operators
+            comparing the three see whether load is climbing,
+            falling, or steady — a single line wouldn't tell that
+            story. No reference line: the right "high load" value
+            depends on core count (load == cores ≈ saturated) and
+            we don't have core count plumbed into this component
+            cheaply enough to justify the wiring for a hint. */}
+        <MetricChart
+          title="Load average"
+          unit="count"
+          queries={[
+            { query: `node_load1{${selector}}`, prefix: '1m' },
+            { query: `node_load5{${selector}}`, prefix: '5m' },
+            { query: `node_load15{${selector}}`, prefix: '15m' },
+          ]}
+          seriesLabel={(_labels, prefix) => prefix ?? 'load'}
+          chartType="line"
+        />
+        {/* PSI pressure — % of time at least one task was waiting on
+            cpu / io / memory in the last minute. Raw rate() is
+            dimensionless 0-1; we multiply by 100 to render as a
+            percentage so MetricChart's `percent` axis can do the
+            formatting and the operator reads "12% blocked" instead
+            of "0.12". Reference lines at 10% (watch) / 30% (page)
+            match the WARN/CRIT bands the list-view PSI badge
+            uses. Three series keep cpu/io/memory separable so the
+            binding axis is obvious at a glance. */}
+        <MetricChart
+          title="PSI pressure (waiting)"
+          unit="percent"
+          queries={[
+            { query: `100 * rate(node_pressure_cpu_waiting_seconds_total{${selector}}[1m])`, prefix: 'cpu' },
+            { query: `100 * rate(node_pressure_io_waiting_seconds_total{${selector}}[1m])`, prefix: 'io' },
+            { query: `100 * rate(node_pressure_memory_waiting_seconds_total{${selector}}[1m])`, prefix: 'memory' },
+          ]}
+          seriesLabel={(_labels, prefix) => prefix ?? 'psi'}
+          referenceLines={[
+            { y: 10, label: '10% watch', color: '#f5a623', shortLabel: '10%' },
+            { y: 30, label: '30% page', color: '#ef4444', shortLabel: '30%' },
+          ]}
+          chartType="line"
+        />
       </div>
     </div>
   )

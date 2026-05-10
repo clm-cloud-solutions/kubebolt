@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
+import { Activity } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -10,11 +11,27 @@ import { NodeActionMenu } from './NodeActionMenu'
 import { DrainModal } from './DrainModal'
 import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
 import { MetricChart } from '@/components/shared/MetricChart'
+import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { api } from '@/services/api'
 import { formatCPU, formatMemory } from '@/utils/formatters'
+import {
+  useNodeStress,
+  classifyPSI,
+  PSI_WARN,
+  PSI_CRIT,
+  type NodeStress,
+} from '@/hooks/useNodeStress'
 import type { ResourceItem } from '@/types/kubernetes'
 
-function NodeCard({ node, onDrain }: { node: ResourceItem; onDrain: (node: ResourceItem) => void }) {
+function NodeCard({
+  node,
+  onDrain,
+  stress,
+}: {
+  node: ResourceItem
+  onDrain: (node: ResourceItem) => void
+  stress?: NodeStress
+}) {
   const cpuPercent = Number(node.cpuPercent ?? 0)
   const memPercent = Number(node.memoryPercent ?? 0)
   const cpuUsage = Number(node.cpuUsage ?? 0)
@@ -81,6 +98,18 @@ function NodeCard({ node, onDrain }: { node: ResourceItem; onDrain: (node: Resou
         </div>
       </div>
 
+      {/* Load + PSI row — only renders when node-exporter is shipping
+          (stress map populated). Load is always shown when present;
+          the PSI badge is gated on the WARN threshold so quiet
+          nodes stay quiet. The Activity icon next to the badge
+          telegraphs "this is a stress signal" before the user
+          parses the percentage. Tooltip carries the full per-axis
+          breakdown so an operator hovering on a yellow badge can
+          tell whether it's CPU, IO, or memory binding. */}
+      {stress && (
+        <NodeStressRow stress={stress} />
+      )}
+
       {/* Footer */}
       <div className="mt-3 text-[10px] font-mono text-kb-text-tertiary">
         {kubeletVersion}{containerRuntime ? ` · ${containerRuntime}` : ''}
@@ -89,8 +118,94 @@ function NodeCard({ node, onDrain }: { node: ResourceItem; onDrain: (node: Resou
   )
 }
 
+function NodeStressRow({ stress }: { stress: NodeStress }) {
+  const psi = classifyPSI(stress)
+  const worstAxis = (() => {
+    const m = Math.max(stress.psiCpu, stress.psiIo, stress.psiMemory)
+    if (m === stress.psiCpu) return 'cpu'
+    if (m === stress.psiIo) return 'io'
+    return 'memory'
+  })()
+  const worstPct = Math.max(stress.psiCpu, stress.psiIo, stress.psiMemory) * 100
+  const psiTooltip = (
+    <>
+      <TooltipHeader right={`${worstPct.toFixed(1)}% on ${worstAxis}`}>
+        Pressure (PSI)
+      </TooltipHeader>
+      <div className="space-y-1">
+        <TooltipRow
+          color={psiColor(stress.psiCpu)}
+          label="cpu"
+          value={`${(stress.psiCpu * 100).toFixed(1)}%`}
+        />
+        <TooltipRow
+          color={psiColor(stress.psiIo)}
+          label="io"
+          value={`${(stress.psiIo * 100).toFixed(1)}%`}
+        />
+        <TooltipRow
+          color={psiColor(stress.psiMemory)}
+          label="memory"
+          value={`${(stress.psiMemory * 100).toFixed(1)}%`}
+        />
+      </div>
+      <div className="mt-2 pt-2 border-t border-kb-border text-[10px] text-kb-text-tertiary leading-snug">
+        Fraction of last 1m at least one task was waiting. {Math.round(PSI_WARN * 100)}% triggers watch, {Math.round(PSI_CRIT * 100)}% page.
+      </div>
+    </>
+  )
+
+  return (
+    <div className="mt-3 flex items-center justify-between text-[10px] font-mono">
+      <span className="text-kb-text-tertiary">
+        Load <span className="text-kb-text-secondary tabular-nums">{stress.load1.toFixed(2)}</span>
+        <span className="text-kb-text-tertiary/60"> · </span>
+        <span className="text-kb-text-secondary tabular-nums">{stress.load5.toFixed(2)}</span>
+        <span className="text-kb-text-tertiary/60"> · </span>
+        <span className="text-kb-text-secondary tabular-nums">{stress.load15.toFixed(2)}</span>
+      </span>
+      {psi && (
+        <HoverTooltip body={psiTooltip}>
+          <span
+            className={`flex items-center gap-1 px-1.5 py-0.5 rounded ${
+              psi === 'crit'
+                ? 'bg-status-error-dim text-status-error'
+                : 'bg-status-warn-dim text-status-warn'
+            }`}
+            onClick={(e) => {
+              // The card itself is wrapped in a <Link>, so any click
+              // bubbles to navigation. The badge is purely informational
+              // — keep clicks local so hovering for the tooltip doesn't
+              // accidentally drill in.
+              e.preventDefault()
+              e.stopPropagation()
+            }}
+          >
+            <Activity className="w-3 h-3" />
+            <span className="text-[9px] font-semibold uppercase tracking-[0.04em]">
+              PSI {worstPct.toFixed(0)}%
+            </span>
+          </span>
+        </HoverTooltip>
+      )}
+    </div>
+  )
+}
+
+function psiColor(v: number): string {
+  if (v >= PSI_CRIT) return '#ef4056'
+  if (v >= PSI_WARN) return '#f5a623'
+  return '#555770'
+}
+
 export function NodesPage() {
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources('nodes')
+  // Stress data is fetched once at the page level so 3 VM queries
+  // (load + PSI waiting) run for the whole list, not N. Each card
+  // reads its own slice from the map. Returns an empty map when
+  // node-exporter isn't shipping — cards gracefully drop the
+  // load/PSI row.
+  const { stress } = useNodeStress()
   // Drain modal lives at the page level rather than per-card so a
   // single instance can render even when the operator opens it from
   // any node card. Keeps state from leaking into NodeCard re-renders.
@@ -114,7 +229,12 @@ export function NodesPage() {
       </div>
       <div className="grid grid-cols-3 gap-3 mb-5">
         {nodes.map((node) => (
-          <NodeCard key={node.name} node={node} onDrain={setDrainTarget} />
+          <NodeCard
+            key={node.name}
+            node={node}
+            onDrain={setDrainTarget}
+            stress={stress[String(node.name)]}
+          />
         ))}
       </div>
       <NodeFleetCharts />
