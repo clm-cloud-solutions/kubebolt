@@ -14,6 +14,7 @@ import { ApiError } from '@/services/api'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { formatAge } from '@/utils/formatters'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
+import { EndpointHealthCell } from './EndpointHealthCell'
 import type { ResourceItem } from '@/types/kubernetes'
 
 const PAGE_SIZE = 50
@@ -284,6 +285,26 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         accessorKey: 'type',
         header: 'Type',
         cell: (info) => <span className="text-[11px] font-mono text-kb-text-secondary">{info.getValue() as string}</span>,
+      },
+      {
+        id: 'endpoints',
+        header: 'Endpoints',
+        // Endpoint health is fetched by EndpointHealthCell via shared
+        // TanStack Query cache, so all rows trigger one VM round-trip
+        // total. Cell handles the "no data" case (KSM not scraping)
+        // by rendering a neutral em-dash — no broken UI on clusters
+        // without scrape sidecar.
+        cell: (info) => {
+          const item = info.row.original
+          return (
+            <EndpointHealthCell
+              namespace={String(item.namespace ?? '')}
+              name={String(item.name ?? '')}
+              serviceType={String(item.type ?? '')}
+              clusterIP={String(item.clusterIP ?? '')}
+            />
+          )
+        },
       },
       {
         accessorKey: 'clusterIP',

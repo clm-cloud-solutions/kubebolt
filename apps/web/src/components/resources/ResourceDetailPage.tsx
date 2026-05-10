@@ -14,6 +14,7 @@ import { ScaleModal } from '@/components/resources/ScaleModal'
 import { ResourceActionsMenu, type ActionItem } from '@/components/resources/ResourceActionsMenu'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
 import { RestartHistorySparkline } from '@/components/resources/RestartHistorySparkline'
+import { EndpointHealthCell } from '@/components/resources/EndpointHealthCell'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
@@ -285,6 +286,23 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
         { label: 'Type', value: String(item.type ?? '-') },
         { label: 'Cluster IP', value: <span className="font-mono">{String(item.clusterIP ?? '-')}</span> },
         { label: 'Ports', value: Array.isArray(item.ports) ? (item.ports as Array<Record<string, unknown>>).map(p => `${p.port}/${p.protocol ?? 'TCP'}`).join(', ') : '-' },
+        // Endpoints field hovers a tooltip with the ready/notReady
+        // breakdown — it's the most operator-actionable signal on
+        // this page (more so than ports), so it earns a status-overview
+        // slot. Cell handles the gated cases (ExternalName / Headless /
+        // KSM-not-scraping) inline so the field just always works.
+        {
+          label: 'Endpoints',
+          value: (
+            <EndpointHealthCell
+              namespace={String(item.namespace ?? '')}
+              name={String(item.name ?? '')}
+              serviceType={String(item.type ?? '')}
+              clusterIP={String(item.clusterIP ?? '')}
+              variant="inline"
+            />
+          ),
+        },
       )
       break
     case 'nodes':
