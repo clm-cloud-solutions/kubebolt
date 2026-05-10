@@ -1854,9 +1854,26 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           chartType="area"
         />
         <MetricChart
-          title="Filesystem used"
-          unit="bytes"
-          query={`node_fs_used_bytes{${selector}}`}
+          title="Filesystem usage"
+          unit="percent"
+          // Per-mountpoint % used. Filters:
+          //   fstype  drops pseudo-filesystems (tmpfs, overlay,
+          //           cgroup, etc.) — they're memory or kernel
+          //           artifacts, not real disk capacity.
+          //   mountpoint  drops kind/container bind-mounts
+          //           (/etc/hosts, /etc/resolv.conf, /run/*) and
+          //           the kubelet's per-pod volume mounts that
+          //           explode cardinality without adding signal.
+          // Series labeled by mountpoint so /var, /, /var/lib/docker
+          // each get a distinct line. Reference lines at the two
+          // operator-meaningful thresholds: 80% (start watching),
+          // 95% (page someone).
+          query={`100 * (1 - node_filesystem_avail_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"} / node_filesystem_size_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"})`}
+          seriesLabel={(labels) => labels.mountpoint || labels.device || 'fs'}
+          referenceLines={[
+            { y: 80, label: '80%', color: '#f5a623', shortLabel: '80%' },
+            { y: 95, label: '95%', color: '#ef4444', shortLabel: '95%' },
+          ]}
           accents={METRIC_ACCENTS.filesystem}
           chartType="area"
         />
