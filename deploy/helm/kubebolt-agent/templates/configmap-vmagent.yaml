@@ -83,8 +83,11 @@ data:
                via KUBEBOLT_TENANT_ID on its gRPC-shipped samples, so
                both ingest paths feed the same labeled series into VM.
                Empty omits the label entirely; the backend receiver
-               auto-stamps in that case (Day 4.1 fallback). */}}
-        {{- if .Values.tenant.id }}
+               auto-stamps in that case (Day 4.1 fallback). Nil-guard
+               with `and` so helm upgrade --reuse-values from a
+               pre-Phase-3 release (no `tenant` key in user values)
+               doesn't panic on `nil pointer evaluating interface {}.id`. */}}
+        {{- if and .Values.tenant .Values.tenant.id }}
         tenant_id: {{ .Values.tenant.id | quote }}
         {{- end }}
     scrape_configs:

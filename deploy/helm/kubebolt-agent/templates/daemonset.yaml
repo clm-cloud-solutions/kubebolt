@@ -102,8 +102,12 @@ spec:
                    cardinality + rate limit. Empty value omits the env
                    var entirely so the agent can't accidentally emit a
                    `tenant_id=""` label; receiver auto-stamps from the
-                   bearer in that case. */}}
-            {{- if .Values.tenant.id }}
+                   bearer in that case. Nil-guarded with `and` so
+                   helm upgrade --reuse-values from a pre-Phase-3
+                   release (no `tenant` key in user values) keeps
+                   rendering — without this guard the template panics
+                   on `nil pointer evaluating interface {}.id`. */}}
+            {{- if and .Values.tenant .Values.tenant.id }}
             - name: KUBEBOLT_TENANT_ID
               value: {{ .Values.tenant.id | quote }}
             {{- end }}
