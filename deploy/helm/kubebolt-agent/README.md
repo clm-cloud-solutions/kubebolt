@@ -41,7 +41,7 @@ when migrating between methods. See the Uninstall section below.
 ```bash
 helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
   --namespace kubebolt-system --create-namespace \
-  --set backendUrl=kubebolt.kubebolt.svc.cluster.local:9090
+  --set backendUrl=kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090
 ```
 
 Replace `backendUrl` with wherever your KubeBolt backend's gRPC port
@@ -239,7 +239,7 @@ Full reference with every knob the chart exposes is in
 | Topology | `backendUrl` |
 |----------|---------------|
 | Backend in Docker Compose on your laptop, agent in Docker Desktop K8s | `host.docker.internal:9090` |
-| Backend in-cluster via the main chart (release `kubebolt` in namespace `kubebolt`) | `kubebolt.kubebolt.svc.cluster.local:9090` |
+| Backend in-cluster via the main chart (release `kubebolt` in namespace `kubebolt`) | `kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090` |
 | Backend behind an internal LoadBalancer | that LB's IP:9090 |
 | Backend on a VM reachable from the cluster | that host:9090 |
 
