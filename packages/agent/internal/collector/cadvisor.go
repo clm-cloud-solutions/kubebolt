@@ -23,14 +23,24 @@ type CadvisorCollector struct {
 	clusterID   string
 	clusterName string
 	nodeName    string
+	// tenantID is the per-tenant identifier stamped on every sample
+	// for SaaS billing + cardinality scoping (Phase 3 Day 4.2).
+	// Sourced from KUBEBOLT_TENANT_ID env var via helm value
+	// `tenant.id`. Empty string means "no tenant" — samples ship
+	// without a tenant_id label and the backend's receiver
+	// auto-stamps from the bearer token's tenant (Day 4.1 fallback).
+	// Once Day 4.3 lands and enforced mode requires the label,
+	// operators MUST set tenant.id at install.
+	tenantID string
 }
 
-func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName string) *CadvisorCollector {
+func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string) *CadvisorCollector {
 	return &CadvisorCollector{
 		client:      client,
 		clusterID:   clusterID,
 		clusterName: clusterName,
 		nodeName:    nodeName,
+		tenantID:    tenantID,
 	}
 }
 
@@ -103,6 +113,9 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 		}
 		if c.clusterName != "" {
 			sampleLabels["cluster_name"] = c.clusterName
+		}
+		if c.tenantID != "" {
+			sampleLabels["tenant_id"] = c.tenantID
 		}
 		samples = append(samples, &agentv2.Sample{
 			Timestamp:  now,

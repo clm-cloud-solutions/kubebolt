@@ -36,6 +36,12 @@ services:
       # gRPC channel's KUBEBOLT_AGENT_AUTH_MODE. Default disabled for
       # backwards compat with Sprint A migration.
       - KUBEBOLT_REMOTE_WRITE_AUTH_MODE=${KUBEBOLT_REMOTE_WRITE_AUTH_MODE:-disabled}
+      # Per-tenant Prom remote_write limits (Phase 3). Fleet-wide
+      # defaults applied when a tenant has no admin-API override.
+      # See deploy/.env.example for the full description.
+      - KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC=${KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC:-10000}
+      - KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES=${KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES:-100000}
+      - KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES=${KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES:-1000000}
       # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
       # The copilot is disabled if no key is set; KubeBolt works fully without it.
       - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}

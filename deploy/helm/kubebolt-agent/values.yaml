@@ -24,6 +24,23 @@ image:
 # imagePullSecrets:
 #   - name: my-registry-secret
 
+# ─── Tenant identity (Phase 3 Day 4.2) ────────────────────
+# Per-tenant identifier stamped on every sample so the backend can:
+#   - validate anti-spoof (asserted label == bearer token's tenant)
+#   - enforce per-tenant cardinality + rate limits
+#   - bill / scope queries in the SaaS edition
+#
+# Provisioning: when KubeBolt's admin generates an ingest token for
+# a tenant, the response includes the tenant's UUID. Paste it here
+# (and your token into auth.ingestToken below) at install time.
+#
+# Empty is intentionally allowed — the agent ships samples without a
+# tenant_id label and the backend's receiver auto-stamps from the
+# bearer token. This is the transitional path; a future release will
+# require this value in enforced auth mode.
+tenant:
+  id: ""
+
 # ─── Cluster identity ──────────────────────────────────────
 cluster:
   # Human-readable label emitted alongside cluster_id. The UI

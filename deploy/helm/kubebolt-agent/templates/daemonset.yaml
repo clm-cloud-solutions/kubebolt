@@ -95,6 +95,18 @@ spec:
             - name: KUBEBOLT_AGENT_CLUSTER_ID
               value: {{ .Values.cluster.id | quote }}
             {{- end }}
+            {{- /* Phase 3 Day 4.2 — tenant identity stamped on every
+                   sample by the collectors. The receiver validates the
+                   asserted label against the bearer token's tenant
+                   (anti-spoof) and consumes it for per-tenant
+                   cardinality + rate limit. Empty value omits the env
+                   var entirely so the agent can't accidentally emit a
+                   `tenant_id=""` label; receiver auto-stamps from the
+                   bearer in that case. */}}
+            {{- if .Values.tenant.id }}
+            - name: KUBEBOLT_TENANT_ID
+              value: {{ .Values.tenant.id | quote }}
+            {{- end }}
             - name: KUBEBOLT_HUBBLE_ENABLED
               value: {{ .Values.hubble.enabled | quote }}
             {{- /* When the vmagent sidecar is configured to scrape

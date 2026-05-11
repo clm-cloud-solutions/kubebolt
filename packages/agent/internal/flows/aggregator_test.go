@@ -16,7 +16,7 @@ import (
 // Phase 2.
 func TestAggregator_PromCanonicalLabels(t *testing.T) {
 	buf := buffer.New(1024)
-	agg := NewAggregator(buf, "test-cluster-id", "test-cluster", "kind-control-plane")
+	agg := NewAggregator(buf, "test-cluster-id", "test-cluster", "kind-control-plane", "")
 
 	// One pod-to-pod forwarded flow + one dropped flow + one external flow.
 	agg.Record(testPodFlow("default", "client-1", "default", "server-1", flowpb.Verdict_FORWARDED))
@@ -139,5 +139,45 @@ func assertLabel(t *testing.T, s *agentv2.Sample, key, want string) {
 	t.Helper()
 	if got := s.Labels[key]; got != want {
 		t.Errorf("metric %s: label %s = %q, want %q", s.MetricName, key, got, want)
+	}
+}
+
+// TestAggregator_TenantIDStamped validates the Phase 3 Day 4.2 path:
+// when the aggregator is constructed with a tenant_id, every emitted
+// flow sample carries the label. The receiver's anti-spoof check
+// validates this against the bearer token's tenant.
+func TestAggregator_TenantIDStamped(t *testing.T) {
+	buf := buffer.New(1024)
+	agg := NewAggregator(buf, "cid", "cn", "node", "tenant-flows")
+	agg.Record(testPodFlow("default", "client-1", "default", "server-1", flowpb.Verdict_FORWARDED))
+	agg.Flush()
+	samples := drainBuffer(buf)
+	if len(samples) == 0 {
+		t.Fatal("Flush emitted zero samples")
+	}
+	for _, s := range samples {
+		if got := s.Labels["tenant_id"]; got != "tenant-flows" {
+			t.Errorf("metric %s tenant_id = %q, want tenant-flows", s.MetricName, got)
+		}
+	}
+}
+
+// TestAggregator_TenantIDAbsent ensures the conditional-stamp logic
+// skips the label when tenantID is empty — receiver auto-stamps in
+// this case (Phase 3 Day 4.1 fallback).
+func TestAggregator_TenantIDAbsent(t *testing.T) {
+	buf := buffer.New(1024)
+	agg := NewAggregator(buf, "cid", "cn", "node", "")
+	agg.Record(testPodFlow("default", "client-1", "default", "server-1", flowpb.Verdict_FORWARDED))
+	agg.Flush()
+	samples := drainBuffer(buf)
+	if len(samples) == 0 {
+		t.Fatal("Flush emitted zero samples")
+	}
+	for _, s := range samples {
+		if _, has := s.Labels["tenant_id"]; has {
+			t.Errorf("metric %s should not carry tenant_id when empty config", s.MetricName)
+			return
+		}
 	}
 }

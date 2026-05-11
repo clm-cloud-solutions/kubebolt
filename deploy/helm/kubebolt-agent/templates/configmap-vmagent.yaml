@@ -78,6 +78,15 @@ data:
         {{- if .Values.cluster.name }}
         cluster_name: {{ .Values.cluster.name | quote }}
         {{- end }}
+        {{- /* Phase 3 Day 4.2 — tenant_id stamped on every series this
+               vmagent scrapes. Matches what the agent process stamps
+               via KUBEBOLT_TENANT_ID on its gRPC-shipped samples, so
+               both ingest paths feed the same labeled series into VM.
+               Empty omits the label entirely; the backend receiver
+               auto-stamps in that case (Day 4.1 fallback). */}}
+        {{- if .Values.tenant.id }}
+        tenant_id: {{ .Values.tenant.id | quote }}
+        {{- end }}
     scrape_configs:
 {{- /* Reusable per-job metric_relabel_configs. Each scrape_configs
        entry below pulls this in via `include`, so adding a new
