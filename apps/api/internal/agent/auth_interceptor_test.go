@@ -407,7 +407,7 @@ func TestInterceptor_E2E_EnforcedAcceptsValidCredentials(t *testing.T) {
 
 func TestResolveAgentID(t *testing.T) {
 	t.Run("nil identity falls back to UUID + local cluster", func(t *testing.T) {
-		id, cluster := resolveAgentID(nil, "node-a")
+		id, cluster := resolveAgentID(nil, "node-a", "")
 		if cluster != "local" {
 			t.Errorf("cluster = %s, want local", cluster)
 		}
@@ -416,7 +416,7 @@ func TestResolveAgentID(t *testing.T) {
 		}
 	})
 	t.Run("disabled mode falls back to UUID", func(t *testing.T) {
-		id, _ := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a")
+		id, _ := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "")
 		if len(id) != 36 {
 			t.Errorf("expected UUID-shaped id, got %s", id)
 		}
@@ -425,8 +425,8 @@ func TestResolveAgentID(t *testing.T) {
 		identity := &auth.AgentIdentity{
 			Mode: auth.ModeIngestToken, TenantID: "t1", ClusterID: "c1",
 		}
-		id1, _ := resolveAgentID(identity, "node-a")
-		id2, _ := resolveAgentID(identity, "node-a")
+		id1, _ := resolveAgentID(identity, "node-a", "")
+		id2, _ := resolveAgentID(identity, "node-a", "")
 		if id1 != id2 {
 			t.Errorf("derived id must be stable, got %s vs %s", id1, id2)
 		}
@@ -434,11 +434,61 @@ func TestResolveAgentID(t *testing.T) {
 			t.Errorf("derived id = %s (len=%d), want 16 hex chars", id1, len(id1))
 		}
 	})
-	t.Run("identity with empty cluster falls back to local", func(t *testing.T) {
+	t.Run("identity with empty cluster and empty hint falls back to local", func(t *testing.T) {
 		identity := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "t1"}
-		_, cluster := resolveAgentID(identity, "node-a")
+		_, cluster := resolveAgentID(identity, "node-a", "")
 		if cluster != "local" {
 			t.Errorf("cluster = %s, want local fallback", cluster)
+		}
+	})
+
+	// BUG-1 regression cases (internal/cluster-validation/sessions/00-humo-test/09)
+	// — pre-fix the backend dropped Hello.cluster_hint and collapsed all
+	// agents without an auth-set ClusterID to "local". These guard the
+	// precedence id.ClusterID > clusterHint > "local" in both branches.
+	t.Run("disabled mode honors non-empty cluster_hint", func(t *testing.T) {
+		// No auth identity but the agent reported a cluster_id —
+		// preserve it so multi-cluster OSS deployments work.
+		_, cluster := resolveAgentID(nil, "node-a", "cluster-A")
+		if cluster != "cluster-A" {
+			t.Errorf("cluster = %s, want cluster-A (from hint)", cluster)
+		}
+	})
+	t.Run("ModeDisabled identity honors non-empty cluster_hint", func(t *testing.T) {
+		// Same as above but with an explicit ModeDisabled identity —
+		// exercises the second arm of the disabled-path predicate.
+		_, cluster := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "cluster-B")
+		if cluster != "cluster-B" {
+			t.Errorf("cluster = %s, want cluster-B (from hint)", cluster)
+		}
+	})
+	t.Run("ingest-token with empty ClusterID falls back to cluster_hint", func(t *testing.T) {
+		// BearerIngestAuth doesn't populate ClusterID, so the hint
+		// must take over — otherwise SaaS multi-cluster (the topology
+		// that drove the bug escalation) collapses to "local".
+		identity := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "t1"}
+		agentID, cluster := resolveAgentID(identity, "node-a", "cluster-C")
+		if cluster != "cluster-C" {
+			t.Errorf("cluster = %s, want cluster-C (from hint)", cluster)
+		}
+		// And the derived agent_id must vary by cluster so two
+		// clusters with the same node name don't collide.
+		_, clusterD := resolveAgentID(identity, "node-a", "cluster-D")
+		agentIDD, _ := resolveAgentID(identity, "node-a", "cluster-D")
+		if clusterD != "cluster-D" || agentIDD == agentID {
+			t.Errorf("agent_id must vary by cluster_id; got %s for both cluster-C and cluster-D", agentID)
+		}
+	})
+	t.Run("auth ClusterID wins over cluster_hint", func(t *testing.T) {
+		// tokenreview/mTLS bind the cluster at startup — the operator
+		// configuration trumps anything the client claims, otherwise
+		// the security guarantee evaporates.
+		identity := &auth.AgentIdentity{
+			Mode: auth.ModeTokenReview, TenantID: "t1", ClusterID: "auth-cluster",
+		}
+		_, cluster := resolveAgentID(identity, "node-a", "spoofed-cluster")
+		if cluster != "auth-cluster" {
+			t.Errorf("cluster = %s, want auth-cluster (identity must win)", cluster)
 		}
 	})
 }

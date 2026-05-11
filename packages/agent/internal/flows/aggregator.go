@@ -95,9 +95,13 @@ type Aggregator struct {
 	clusterID   string
 	clusterName string
 	node        string
+	// tenantID is stamped on every emitted sample. See
+	// collector.CadvisorCollector.tenantID for the full Day 4.2
+	// semantic — empty means "no tenant" (receiver auto-stamps).
+	tenantID string
 }
 
-func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node string) *Aggregator {
+func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node, tenantID string) *Aggregator {
 	return &Aggregator{
 		totals:      make(map[flowKey]uint64),
 		httpReqs:    make(map[httpKey]uint64),
@@ -108,6 +112,7 @@ func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node string) *Aggre
 		clusterID:   clusterID,
 		clusterName: clusterName,
 		node:        node,
+		tenantID:    tenantID,
 	}
 }
 
@@ -346,11 +351,14 @@ func (a *Aggregator) Flush() {
 	ts := timestamppb.Now()
 	samples := make([]*agentv2.Sample, 0, len(flowSnap)+len(httpReqSnap)+2*len(httpLatSnap))
 
-	// Inlined tag helper — adds cluster_name when the aggregator has
-	// one configured. Keeps the sample-emission sites below compact.
+	// Inlined tag helper — adds cluster_name + tenant_id when
+	// configured. Keeps the sample-emission sites below compact.
 	tag := func(m map[string]string) map[string]string {
 		if a.clusterName != "" {
 			m["cluster_name"] = a.clusterName
+		}
+		if a.tenantID != "" {
+			m["tenant_id"] = a.tenantID
 		}
 		return m
 	}

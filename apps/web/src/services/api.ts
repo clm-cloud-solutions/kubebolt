@@ -172,6 +172,25 @@ async function putJSON<T>(url: string, body: unknown, headers?: Record<string, s
   return res.json()
 }
 
+// putJSONWithWarnings is the variant for endpoints that surface soft
+// validation warnings via the X-KubeBolt-Validation-Warnings response
+// header (currently: /admin/tenants/:id/limits). Body still parses as
+// JSON; warnings are split on "; " to match the server's joiner.
+async function putJSONWithWarnings<T>(url: string, body: unknown): Promise<{ data: T; warnings: string[] }> {
+  const res = await fetchWithAuth(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    throw new ApiError(res.status, await extractErrorMessage(res))
+  }
+  const data = (await res.json()) as T
+  const raw = res.headers.get('X-KubeBolt-Validation-Warnings') ?? ''
+  const warnings = raw ? raw.split('; ').filter(Boolean) : []
+  return { data, warnings }
+}
+
 export const api = {
   // --- Auth ---
   getAuthConfig: () =>
@@ -234,6 +253,25 @@ export const api = {
     deleteRequest<{ status: string }>(
       `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}`,
     ),
+
+  // --- Per-tenant Prom remote_write limits (Phase 3) ---
+  //
+  // GET returns the three-view DTO: effective (what enforcement uses),
+  // custom (the overrides the tenant has applied), defaults (the system
+  // fallback so the UI can render Reset). PUT accepts a partial patch —
+  // omit a field to leave its current override in place. DELETE clears
+  // every override at once.
+  getTenantLimits: (tenantID: string) =>
+    fetchJSON<LimitsResponse>(`${API_BASE}/admin/tenants/${tenantID}/limits`),
+
+  setTenantLimits: (tenantID: string, patch: TenantLimits) =>
+    putJSONWithWarnings<LimitsResponse>(
+      `${API_BASE}/admin/tenants/${tenantID}/limits`,
+      patch,
+    ),
+
+  resetTenantLimits: (tenantID: string) =>
+    deleteRequest<LimitsResponse>(`${API_BASE}/admin/tenants/${tenantID}/limits`),
 
   // --- Cluster management ---
   listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
@@ -1288,6 +1326,32 @@ export interface TenantWithTokens extends Tenant {
 export interface IssuedToken {
   token: string // plaintext — shown once
   info: IngestToken
+}
+
+// --- Per-tenant Prom remote_write limits ---
+//
+// Mirrors apps/api/internal/auth/tenant_limits.go. Each TenantLimits
+// field is optional — a missing value means "inherit the system
+// default". The Effective view collapses overrides + defaults so the
+// enforcement layers (rate limiter, cardinality tracker) consume
+// concrete numbers; the UI compares Custom against Effective to
+// decide which fields render the "Default" vs "Custom" badge.
+export interface TenantLimits {
+  writeSamplesPerSec?: number
+  writeBurstSamples?: number
+  maxActiveSeries?: number
+}
+
+export interface EffectiveLimits {
+  writeSamplesPerSec: number
+  writeBurstSamples: number
+  maxActiveSeries: number
+}
+
+export interface LimitsResponse {
+  effective: EffectiveLimits
+  custom?: TenantLimits
+  defaults: EffectiveLimits
 }
 
 // Prometheus-compatible range query response (from VictoriaMetrics).

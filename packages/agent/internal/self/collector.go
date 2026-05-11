@@ -40,15 +40,19 @@ type Collector struct {
 	clusterName  string
 	nodeName     string
 	agentVersion string
+	// tenantID stamped on every sample. See collector.CadvisorCollector
+	// for the full Day 4.2 semantic.
+	tenantID string
 }
 
-func New(buf *buffer.Ring, clusterID, clusterName, nodeName, agentVersion string) *Collector {
+func New(buf *buffer.Ring, clusterID, clusterName, nodeName, agentVersion, tenantID string) *Collector {
 	return &Collector{
 		buf:          buf,
 		clusterID:    clusterID,
 		clusterName:  clusterName,
 		nodeName:     nodeName,
 		agentVersion: agentVersion,
+		tenantID:     tenantID,
 	}
 }
 
@@ -90,6 +94,9 @@ func (c *Collector) baseLabels() map[string]string {
 	}
 	if c.clusterName != "" {
 		out["cluster_name"] = c.clusterName
+	}
+	if c.tenantID != "" {
+		out["tenant_id"] = c.tenantID
 	}
 	return out
 }

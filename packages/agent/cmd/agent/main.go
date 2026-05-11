@@ -85,11 +85,20 @@ func main() {
 	// metrics (CPU/memory/filesystem) keep emitting because their
 	// names diverge from node-exporter's.
 	deferNodeNetwork := strings.EqualFold(os.Getenv("KUBEBOLT_AGENT_DEFER_NODE_NETWORK"), "true")
-	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName,
+	// tenantID (Phase 3 Day 4.2) — operator-provisioned via helm
+	// value `tenant.id` and templated into KUBEBOLT_TENANT_ID. Empty
+	// is fine: collectors skip the tenant_id label and the backend
+	// receiver auto-stamps from the bearer token's tenant (Day 4.1
+	// fallback). Day 4.3 will require this in enforced mode.
+	tenantID := os.Getenv("KUBEBOLT_TENANT_ID")
+	if tenantID != "" {
+		slog.Info("tenant identity", slog.String("tenant_id", tenantID))
+	}
+	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
 		collector.WithDeferNodeNetwork(deferNodeNetwork))
-	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName)
+	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID)
 	buf := buffer.New(*bufferSize)
-	selfC := self.New(buf, clusterID, clusterName, *nodeName, agentVersion)
+	selfC := self.New(buf, clusterID, clusterName, *nodeName, agentVersion, tenantID)
 
 	// Auth + TLS config from helm-injected env vars. Half-set
 	// combinations fail loud here so misconfigurations don't silently
@@ -247,7 +256,7 @@ func main() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			flows.RunLeaderElectedCollector(rootCtx, buf, clusterID, clusterName, *nodeName, leaseNs)
+			flows.RunLeaderElectedCollector(rootCtx, buf, clusterID, clusterName, *nodeName, leaseNs, tenantID)
 		}()
 	} else {
 		slog.Debug("hubble: skipping flow collector (no lease namespace)",

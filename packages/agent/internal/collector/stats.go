@@ -32,6 +32,11 @@ type StatsCollector struct {
 	clusterID   string
 	clusterName string
 	nodeName    string
+	// tenantID is the per-tenant identifier stamped on every sample
+	// for SaaS billing + cardinality scoping (Phase 3 Day 4.2).
+	// See CadvisorCollector.tenantID for the full semantic. Empty
+	// string means "no tenant" — receiver auto-stamps as fallback.
+	tenantID string
 	// deferNodeNetwork suppresses emission of node_network_receive_bytes_total
 	// and node_network_transmit_bytes_total — the only two node-scoped
 	// metrics whose names overlap exactly with what node-exporter emits.
@@ -61,12 +66,13 @@ func WithDeferNodeNetwork(defer_ bool) StatsOption {
 	return func(c *StatsCollector) { c.deferNodeNetwork = defer_ }
 }
 
-func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName string, opts ...StatsOption) *StatsCollector {
+func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, opts ...StatsOption) *StatsCollector {
 	c := &StatsCollector{
 		client:      client,
 		clusterID:   clusterID,
 		clusterName: clusterName,
 		nodeName:    nodeName,
+		tenantID:    tenantID,
 	}
 	for _, opt := range opts {
 		opt(c)
@@ -84,6 +90,9 @@ func (c *StatsCollector) nodeLabels() map[string]string {
 	}
 	if c.clusterName != "" {
 		labels["cluster_name"] = c.clusterName
+	}
+	if c.tenantID != "" {
+		labels["tenant_id"] = c.tenantID
 	}
 	return labels
 }

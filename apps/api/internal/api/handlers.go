@@ -53,6 +53,29 @@ type handlers struct {
 	//   "disabled"   bearer ignored entirely (Sprint A default)
 	// Empty string falls back to "disabled" at parse time.
 	promWriteAuthMode string
+	// promRateLimiter is the per-tenant token-bucket gate added in
+	// Phase 3 Day 3. nil means "no rate limit" (transitional / test
+	// envs); production wires this always via NewPromRateLimiter
+	// with the fleet defaults from config.LoadPromWriteLimitsConfig.
+	// Bucket state is in-memory only; restart resets every tenant's
+	// counter, which is the conservative right answer (slightly
+	// more permissive than persisting state, no extra BoltDB writes
+	// on the hot path).
+	promRateLimiter *PromRateLimiter
+	// promCardinality enforces the per-tenant MaxActiveSeries cap by
+	// periodically querying VictoriaMetrics for the current series
+	// count per tenant_id label. Day 4 of Phase 3. nil means
+	// cardinality enforcement is disabled (e.g. when VM URL isn't
+	// reachable at boot or in test fixtures). The refresh goroutine
+	// is started by main.go alongside the HTTP server.
+	promCardinality *CardinalityTracker
+	// promWriteMetrics records per-tenant request outcomes,
+	// accepted samples + bytes, and the active-series gauge driven
+	// by the cardinality tracker's refresh loop. Exposed at /metrics
+	// via promhttp. Day 5 of Phase 3. nil means observability is
+	// disabled — increments become no-ops (the metrics methods
+	// nil-guard). Test fixtures pass nil; production wires it.
+	promWriteMetrics *PromWriteMetrics
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

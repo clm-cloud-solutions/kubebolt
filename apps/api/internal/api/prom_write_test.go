@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/golang/snappy"
+
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
@@ -451,5 +453,168 @@ func TestPromWriteEnabled_Falsy(t *testing.T) {
 		if promWriteEnabled() {
 			t.Errorf("promWriteEnabled() with %q = true, want false", v)
 		}
+	}
+}
+
+// ─── Phase 3 Day 4.3 — enforced mode rejects missing tenant_id ────────
+
+// limitDefaultsForTest is a small fixed-config EffectiveLimits used by
+// the Day 4 / 4.3 tests. Keeps the rate-limit bucket roomy so the
+// tenant_id validation path is the one being tested, not the rate
+// limit gate.
+func limitDefaultsForTest() auth.EffectiveLimits {
+	return auth.EffectiveLimits{
+		WriteSamplesPerSec: 100_000,
+		WriteBurstSamples:  1_000_000,
+		MaxActiveSeries:    10_000_000,
+	}
+}
+
+// buildSnappyWriteRequest constructs a real snappy-compressed
+// WriteRequest body for the test. labels are applied to a single
+// TimeSeries; if labels is empty the series has no labels (so
+// readTenantIDFromFirstSeries reports absent).
+func buildSnappyWriteRequest(t *testing.T, labels [][2]string) []byte {
+	t.Helper()
+	body := buildWriteRequestRich([]struct {
+		Labels  [][2]string
+		Samples int
+	}{
+		{Labels: labels, Samples: 1},
+	})
+	return snappy.Encode(nil, body)
+}
+
+func TestHandlePromWrite_Enforced_MissingTenantIDReturns401(t *testing.T) {
+	// Day 4.3: in enforced mode, samples WITHOUT a tenant_id label
+	// are rejected outright (no auto-stamp fallback). Operator must
+	// configure tenant.id via helm.
+	withPromWriteEnabled(t)
+	store, plaintext := newTenantsStoreWithToken(t)
+
+	h := &handlers{
+		tenantsStore:      store,
+		promWriteAuthMode: promWriteAuthEnforced,
+		// promRateLimiter MUST be non-nil to activate the decode +
+		// validation path. Day 4.1 wires the entire tenant_id check
+		// inside `if h.promRateLimiter != nil`.
+		promRateLimiter: NewPromRateLimiter(limitDefaultsForTest()),
+	}
+
+	// Body has labels but NO tenant_id.
+	body := buildSnappyWriteRequest(t, [][2]string{{"__name__", "up"}, {"job", "node"}})
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("enforced + missing tenant_id should 401, got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "tenant_id label required in enforced mode") {
+		t.Errorf("error body should explain the missing tenant_id requirement, got %q", rec.Body.String())
+	}
+}
+
+func TestHandlePromWrite_Permissive_MissingTenantIDAutoStamps(t *testing.T) {
+	// Day 4.1's auto-stamp safety net stays alive in permissive mode.
+	// Missing tenant_id → receiver injects it server-side, forwards
+	// the stamped body. Transitional path for legacy agents that
+	// haven't been re-deployed with `tenant.id` set yet.
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, plaintext := newTenantsStoreWithToken(t)
+
+	h := &handlers{
+		tenantsStore:      store,
+		promWriteAuthMode: promWriteAuthPermissive,
+		promRateLimiter:   NewPromRateLimiter(limitDefaultsForTest()),
+	}
+
+	body := buildSnappyWriteRequest(t, [][2]string{{"__name__", "up"}, {"job", "node"}})
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("permissive + missing tenant_id should auto-stamp and forward (204), got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	// Verify upstream received a body different from the original —
+	// the auto-stamp re-encoded, so byte equality must fail.
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	if bytes.Equal(upstream.lastBody, body) {
+		t.Errorf("auto-stamp should have rewritten the body before forwarding; upstream received original bytes")
+	}
+	// Decode the upstream body to confirm tenant_id is now present.
+	// Use LookupByToken to get the ACTUAL bearer tenant (not the
+	// auto-seeded "default" — the helper creates a separate
+	// "test-tenant" and issues against that).
+	decoded, err := snappy.Decode(nil, upstream.lastBody)
+	if err != nil {
+		t.Fatalf("upstream body should be valid snappy, got: %v", err)
+	}
+	bearerTenant, _, err := store.LookupByToken(plaintext)
+	if err != nil {
+		t.Fatalf("LookupByToken: %v", err)
+	}
+	tid, found := readTenantIDFromFirstSeries(decoded)
+	if !found {
+		t.Errorf("tenant_id should be stamped on the forwarded body, got absent")
+	} else if tid != bearerTenant.ID {
+		t.Errorf("tenant_id should match the bearer's tenant ID; got %q want %q", tid, bearerTenant.ID)
+	}
+}
+
+func TestHandlePromWrite_Enforced_MatchingTenantIDForwards(t *testing.T) {
+	// Fast path: enforced mode + tenant_id label present and matching
+	// the bearer's tenant. No auto-stamp, no rewrite — original body
+	// forwarded byte-for-byte.
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
+	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
+	store, plaintext := newTenantsStoreWithToken(t)
+	// Resolve the actual tenant the bearer maps to (the helper
+	// creates "test-tenant", not the auto-seeded "default").
+	bearerTenant, _, err := store.LookupByToken(plaintext)
+	if err != nil {
+		t.Fatalf("LookupByToken: %v", err)
+	}
+
+	h := &handlers{
+		tenantsStore:      store,
+		promWriteAuthMode: promWriteAuthEnforced,
+		promRateLimiter:   NewPromRateLimiter(limitDefaultsForTest()),
+	}
+
+	// Body's first TimeSeries already carries tenant_id matching the
+	// bearer's tenant.
+	body := buildSnappyWriteRequest(t, [][2]string{
+		{"__name__", "up"},
+		{TenantIDLabelName, bearerTenant.ID},
+	})
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+
+	h.handlePromWrite(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("enforced + matching tenant_id should forward (204), got %d (body=%q)", rec.Code, rec.Body.String())
+	}
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	if !bytes.Equal(upstream.lastBody, body) {
+		t.Errorf("matching tenant_id should forward the original body byte-for-byte (no re-encode)")
 	}
 }

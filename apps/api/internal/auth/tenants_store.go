@@ -66,6 +66,13 @@ var (
 // Tenant is the canonical owner of ingest tokens and (later) of cluster
 // agents and quota. Tokens are inlined because the cap per tenant is small
 // (~20) and reads always need them together with tenant metadata.
+//
+// Limits is the per-tenant override of system-default Prom remote_write
+// limits (rate, burst, cardinality). nil means "inherit from the fleet-
+// wide defaults set via KUBEBOLT_PROM_WRITE_DEFAULT_* env vars". See
+// tenant_limits.go for the resolution model. The pointer + omitempty
+// preserves wire compatibility with pre-Phase-3 tenant records (they
+// unmarshal cleanly with Limits == nil).
 type Tenant struct {
 	ID           string        `json:"id"`
 	Name         string        `json:"name"`
@@ -74,6 +81,7 @@ type Tenant struct {
 	UpdatedAt    time.Time     `json:"updatedAt"`
 	Disabled     bool          `json:"disabled"`
 	IngestTokens []IngestToken `json:"ingestTokens"`
+	Limits       *TenantLimits `json:"limits,omitempty"`
 }
 
 // IngestToken is a long-lived bearer credential issued by the backend for
@@ -291,6 +299,41 @@ func (s *TenantsStore) UpdateTenant(id string, mut func(*Tenant) error) (*Tenant
 		return nil, err
 	}
 	return &updated, nil
+}
+
+// SetLimits applies a partial update of the tenant's per-tenant limits
+// overrides. Fields set on the patch overwrite the existing values; nil
+// fields preserve whatever was there (or fall back to system defaults
+// at enforcement time). To clear ALL overrides and revert the tenant
+// to system defaults, use ClearLimits.
+//
+// The patch is validated via ValidateLimits before persistence; hard-
+// reject errors propagate (caller maps to HTTP 400). Warnings are
+// returned so the admin handler can surface them in the response.
+func (s *TenantsStore) SetLimits(id string, patch *TenantLimits) (*Tenant, LimitsValidation, error) {
+	v, err := ValidateLimits(patch)
+	if err != nil {
+		return nil, v, fmt.Errorf("%w: %v", ErrLimitsValidation, err)
+	}
+	updated, err := s.UpdateTenant(id, func(t *Tenant) error {
+		t.Limits = MergeLimits(t.Limits, patch)
+		return nil
+	})
+	if err != nil {
+		return nil, v, err
+	}
+	return updated, v, nil
+}
+
+// ClearLimits removes ALL per-tenant overrides so the tenant inherits
+// the fleet-wide system defaults again. Used by the admin "Reset to
+// default" affordance. Idempotent: clearing on a tenant with no
+// overrides is a no-op.
+func (s *TenantsStore) ClearLimits(id string) (*Tenant, error) {
+	return s.UpdateTenant(id, func(t *Tenant) error {
+		t.Limits = nil
+		return nil
+	})
 }
 
 // DeleteTenant removes the tenant and clears every index entry it owned.

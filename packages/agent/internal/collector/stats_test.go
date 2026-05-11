@@ -180,13 +180,57 @@ func TestStatsCollector_PromCanonicalSchema(t *testing.T) {
 	})
 }
 
+// TestStatsCollector_TenantIDStamped validates the Phase 3 Day 4.2
+// tenant_id propagation path. When KUBEBOLT_TENANT_ID is set (helm
+// value `tenant.id`), every node-level and pod-level sample carries
+// the label; the receiver's anti-spoof check then validates that
+// the bearer token's tenant matches.
+func TestStatsCollector_TenantIDStamped(t *testing.T) {
+	srv := newFixtureServer(t, "stats_summary.json")
+	defer srv.Close()
+	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
+	c := NewStats(client, "cid", "cn", "node", "tenant-prod")
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(samples) == 0 {
+		t.Fatal("expected samples")
+	}
+	for _, s := range samples {
+		if got := s.Labels["tenant_id"]; got != "tenant-prod" {
+			t.Errorf("metric %s tenant_id = %q, want tenant-prod", s.MetricName, got)
+		}
+	}
+}
+
+// TestStatsCollector_TenantIDAbsent ensures the conditional-stamp
+// logic skips the label when tenantID is empty. Receiver auto-stamps
+// in this case (Day 4.1 fallback).
+func TestStatsCollector_TenantIDAbsent(t *testing.T) {
+	srv := newFixtureServer(t, "stats_summary.json")
+	defer srv.Close()
+	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
+	c := NewStats(client, "cid", "cn", "node", "")
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, s := range samples {
+		if _, has := s.Labels["tenant_id"]; has {
+			t.Errorf("tenant_id should be absent on metric %s when tenantID==\"\"", s.MetricName)
+			return
+		}
+	}
+}
+
 // TestStatsCollector_NoClusterName ensures the cluster_name label is omitted
 // rather than emitted empty when not configured.
 func TestStatsCollector_NoClusterName(t *testing.T) {
 	srv := newFixtureServer(t, "stats_summary.json")
 	defer srv.Close()
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
-	c := NewStats(client, "test-cluster-id", "" /* no cluster name */, "kind-control-plane")
+	c := NewStats(client, "test-cluster-id", "" /* no cluster name */, "kind-control-plane", "")
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -209,7 +253,7 @@ func TestStatsCollector_DeferNodeNetwork(t *testing.T) {
 	srv := newFixtureServer(t, "stats_summary.json")
 	t.Cleanup(srv.Close)
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
-	c := NewStats(client, "test-cluster-id", "test-cluster", "kind-control-plane",
+	c := NewStats(client, "test-cluster-id", "test-cluster", "kind-control-plane", "",
 		WithDeferNodeNetwork(true))
 	samples, err := c.Collect(context.Background())
 	if err != nil {
@@ -263,7 +307,7 @@ func collectFromFixture(t *testing.T, fixture string) []*agentv2.Sample {
 	srv := newFixtureServer(t, fixture)
 	t.Cleanup(srv.Close)
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
-	c := NewStats(client, "test-cluster-id", "test-cluster", "kind-control-plane")
+	c := NewStats(client, "test-cluster-id", "test-cluster", "kind-control-plane", "")
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
