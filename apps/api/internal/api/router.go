@@ -5,6 +5,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
@@ -36,6 +37,7 @@ func NewRouter(
 	promWriteAuthMode string,
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
+	promWriteMetrics *PromWriteMetrics,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -60,6 +62,7 @@ func NewRouter(
 		promWriteAuthMode:    promWriteAuthMode,
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
+		promWriteMetrics:     promWriteMetrics,
 	}
 
 	// Health check endpoint
@@ -67,6 +70,16 @@ func NewRouter(
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+
+	// Prometheus scrape endpoint (Phase 3 Day 5). Exposes the
+	// kubebolt_prom_write_* observability metrics in the standard
+	// text-exposition format. No auth — operators firewall this
+	// port at the LB / NetworkPolicy layer. Production SaaS setups
+	// should add a ServiceMonitor or scrape config to pull this
+	// into their VM / external Prom.
+	if promWriteMetrics != nil {
+		r.Method(http.MethodGet, "/metrics", PromHTTPHandler(prometheus.DefaultGatherer))
+	}
 
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Use(JSONContentType)

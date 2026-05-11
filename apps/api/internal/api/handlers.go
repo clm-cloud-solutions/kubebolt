@@ -69,6 +69,13 @@ type handlers struct {
 	// reachable at boot or in test fixtures). The refresh goroutine
 	// is started by main.go alongside the HTTP server.
 	promCardinality *CardinalityTracker
+	// promWriteMetrics records per-tenant request outcomes,
+	// accepted samples + bytes, and the active-series gauge driven
+	// by the cardinality tracker's refresh loop. Exposed at /metrics
+	// via promhttp. Day 5 of Phase 3. nil means observability is
+	// disabled — increments become no-ops (the metrics methods
+	// nil-guard). Test fixtures pass nil; production wires it.
+	promWriteMetrics *PromWriteMetrics
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

@@ -50,6 +50,17 @@ type CardinalityTracker struct {
 	counts   map[string]int     // tenant_id → current series count
 	known    map[string]struct{} // set of tenants observed via SeenTenant
 	hasFresh bool                // true after first successful refresh
+
+	// OnSnapshot is an optional callback invoked after every
+	// successful refresh with the current counts map (a defensive
+	// copy — callers may retain it). Used by the Day 5 metrics
+	// integration to mirror the cache into the
+	// kubebolt_prom_write_active_series gauge without coupling
+	// the tracker to the prometheus client_golang package.
+	//
+	// Set by main.go after construction. nil is safe — the
+	// tracker no-ops when the callback isn't installed.
+	OnSnapshot func(map[string]int)
 }
 
 // NewCardinalityTracker constructs the tracker. vmURL is the base
@@ -275,5 +286,21 @@ func (c *CardinalityTracker) refresh(ctx context.Context) {
 	}
 	c.counts = newCounts
 	c.hasFresh = true
+	cb := c.OnSnapshot
+	// Build a defensive copy for the callback so the caller can
+	// retain the map without racing on subsequent refreshes.
+	var snap map[string]int
+	if cb != nil {
+		snap = make(map[string]int, len(newCounts))
+		for k, v := range newCounts {
+			snap[k] = v
+		}
+	}
 	c.mu.Unlock()
+
+	if cb != nil {
+		// Invoked outside the lock so a slow consumer doesn't
+		// block the next refresh tick.
+		cb(snap)
+	}
 }

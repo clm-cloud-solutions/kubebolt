@@ -17,6 +17,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -490,6 +492,13 @@ func main() {
 	// "Defaults" view AND the enforcement layer in lockstep.
 	promRateLimiter := api.NewPromRateLimiter(promLimitsEffective)
 
+	// Per-tenant observability metrics (Phase 3 Day 5). Exposed at
+	// /metrics in the standard Prom text-exposition format. The
+	// global prometheus.DefaultRegisterer is fine for production —
+	// tests pass a fresh registry to isolate (see prom_write_metrics
+	// _test.go).
+	promWriteMetrics := api.NewPromWriteMetrics(prometheus.DefaultRegisterer)
+
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
 	// ({tenant_id!=""})` and caches the result. Pre-forward gate
@@ -500,6 +509,11 @@ func main() {
 	vmURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
 	if vmURL != "" {
 		promCardinality = api.NewCardinalityTracker(vmURL, promLimitsEffective, nil, 30*time.Second)
+		// Hook the metrics gauge to the cardinality tracker so each
+		// successful refresh updates kubebolt_prom_write_active_series.
+		// The tracker doesn't reference the metrics package directly;
+		// this callback is the bridge.
+		promCardinality.OnSnapshot = promWriteMetrics.SetActiveSeries
 		// Start the background refresh goroutine. It's tied to the
 		// process lifetime via context.Background — the process
 		// shuts down via SIGTERM, dragging the goroutine with it.
@@ -507,7 +521,7 @@ func main() {
 	}
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
