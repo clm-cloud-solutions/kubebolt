@@ -199,6 +199,196 @@ The `status` label takes one of: `accepted`, `rate_limit`,
 
 ---
 
+## Coexisting with the bundled kubebolt-agent
+
+When `kubebolt-agent` is running alongside the external Prometheus
+described above, three categories of metric overlap end up in
+VictoriaMetrics:
+
+1. **`node_network_*_bytes_total`** — agent reads them from
+   kubelet's `/stats/summary`, Prom reads them from node-exporter
+   (or its own kubelet scrape). Same metric name, same node label
+   convention after the relabel fix above, so `sum(rate(...))`
+   reads 2× their true value.
+2. **`container_*`** (CPU, memory, network) — agent reads them
+   from kubelet's `/stats/summary` + `/metrics/cadvisor`, Prom
+   reads them from its kubelet ServiceMonitor. Same metric name,
+   same `(pod, namespace, container)` labels.
+3. **`container=""` pod-level rows** — Prom's kubelet scrape
+   surfaces every cAdvisor pod-level entry (with empty container
+   label) per cgroup hierarchy; the agent only emits rows with
+   real container names from `/stats/summary`.
+
+KubeBolt handles each overlap at a different layer:
+
+### `node_network_*` — operator opts the agent out
+
+Set the helm value `agent.deferNodeNetwork: true` on the
+`kubebolt-agent` chart when you're running an external Prometheus
+that already scrapes node-exporter:
+
+```yaml
+# values.yaml for kubebolt-agent
+agent:
+  deferNodeNetwork: true
+
+# If you're shipping via external Prom you probably don't need
+# the bundled vmagent sidecar either:
+scrape:
+  enabled: false
+```
+
+The agent's stats collector skips `node_network_receive_bytes_total`
+and `node_network_transmit_bytes_total` so only node-exporter
+emits them. Cluster-wide network panels (Capacity, Node Monitor)
+read 1× their true value.
+
+Everything else the agent emits (node CPU, memory, filesystem,
+kubelet_volume_stats_*, agent self-metrics, Hubble flows) keeps
+flowing — none of those overlap with what Prom scrapes.
+
+### `container_*` — chart-side `job=""` filter (no operator action)
+
+The Pod Monitor and Workload Monitor charts filter `job=""` in
+their PromQL so they always read agent's emission, never Prom's.
+This preserves the agent's `workload_kind` / `workload_name`
+labels (PodsCache enrichment) that Workload Monitor needs to scope
+its sums, and eliminates the duplicate from Prom's parallel
+emission.
+
+The trade-off: if you DON'T run kubebolt-agent at all (Prom-only
+topology), Pod Monitor and Workload Monitor go blank because they
+have no `job=""` series to query. **Future Phase 4+ work will
+derive workload attribution from `kube_pod_owner` + 
+`kube_replicaset_owner`** (kube-state-metrics standard names),
+allowing those charts to function against Prom-only data.
+
+### `container=""` pod-level rows — chart-side `container!=""` filter
+
+The same Pod Monitor queries add `container!=""` to drop Prom's
+pod-level cAdvisor entries that previously rendered as a phantom
+"Series" legend entry. The agent didn't emit these, so the filter
+is a no-op when the agent is the source, but it shields the chart
+from Prom's higher cardinality when both sources coexist.
+
+### Pseudo-interface noise
+
+Linux network namespaces always carry pseudo-interfaces (`gre0`,
+`sit0`, `ip6_vti0`, etc.) with all-zero counters. Prom's kubelet
+scrape surfaces every one of them; the agent's `/stats/summary`
+parser collapses by default. The Pod Monitor Network panel
+filters `interface=~"eth.*|en.*|cilium_.*"` to show only the
+interfaces that carry real traffic.
+
+---
+
+## Label compatibility — kube-prometheus-stack users
+
+If you're shipping samples to KubeBolt from a kube-prometheus-stack
+installation, **add this relabel to your node-exporter
+ServiceMonitor** or two panels in the node detail view (Load
+average + PSI pressure) and one Insights hook (`useNodeStress`)
+will silently degrade. The Filesystem panel uses a built-in
+fallback so it still renders coarse data, but you lose the
+per-mountpoint breakdown.
+
+### Why the relabel is needed
+
+KubeBolt's frontend filters node-scoped charts by a `node` label
+that matches the Kubernetes node name (e.g.
+`node="kubebolt-dev-worker"`). The bundled `kubebolt-agent`
+stamps this label on every kubelet-scoped metric it emits. But
+kube-prometheus-stack's default ServiceMonitor for node-exporter
+stamps `instance=<pod-name-or-ip>` instead of `node=<node-name>`,
+so Prom-shipped node-exporter series arrive at the receiver
+without the `node` label the chart queries expect.
+
+Other ServiceMonitors in kube-prometheus-stack (kubelet,
+kube-state-metrics) already propagate `node` correctly — only
+node-exporter needs the fix.
+
+### The fix — Helm values (recommended)
+
+If you install kube-prometheus-stack via its Helm chart, add the
+relabel under the node-exporter ServiceMonitor's `relabelings`:
+
+```yaml
+# values.yaml for kube-prometheus-stack
+prometheus-node-exporter:
+  prometheus:
+    monitor:
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+```
+
+`upgrade` the release and within ~60s (operator reconcile + Prom
+config-reloader cycle) the new scrape cycle ships series with the
+`node` label set.
+
+### The fix — direct ServiceMonitor patch
+
+If you don't manage kube-prometheus-stack via Helm (or want a
+quick in-vivo verification without a full upgrade), patch the
+ServiceMonitor directly:
+
+```bash
+kubectl patch servicemonitor <prefix>-node-exporter -n monitoring \
+  --type json -p '[{
+    "op": "add",
+    "path": "/spec/endpoints/0/relabelings",
+    "value": [{
+      "sourceLabels": ["__meta_kubernetes_pod_node_name"],
+      "targetLabel": "node"
+    }]
+  }]'
+```
+
+This patch is **not Helm-stable** — the next `helm upgrade` will
+revert it. Use the values.yaml approach for durable installs.
+
+### Verification
+
+Two PromQL probes confirm the relabel took effect. Run them
+against the KubeBolt backend's VictoriaMetrics endpoint
+(`http://kubebolt:8428` in-cluster, or `:8428` port-forwarded):
+
+```promql
+# 1. Series count grouped by node — every row should have a
+#    non-empty node value matching a real cluster node name.
+count by (node) (node_filesystem_avail_bytes{job="node-exporter"})
+
+# 2. Same for the metrics that previously went blank.
+count by (node) (node_load1)
+count by (node) (node_pressure_cpu_waiting_seconds_total)
+```
+
+Before the fix: `node="<empty>"` for every row.
+After the fix: `node="<actual-node-name>"` per cluster node.
+
+### Affected panels — full inventory
+
+The relabel surfaces directly affect three frontend surfaces:
+
+| Surface | Affected metric | Without relabel | With relabel |
+|---|---|---|---|
+| Node Monitor → Filesystem Usage | `node_filesystem_avail/size_bytes` | Coarse fallback (`node_fs_used_bytes` from the agent — a single bytes counter per node) | Per-mountpoint, multiple series |
+| Node Monitor → Load average | `node_load1/5/15` | Panel empty | Three lines (1m / 5m / 15m) |
+| Node Monitor → PSI pressure | `node_pressure_*_waiting_seconds_total` | Panel empty | Three lines (cpu / io / memory pressure) |
+| `useNodeStress` hook → Insights / banner | `node_pressure_*_waiting_seconds_total` | False negative (banner suppressed) | Stress states correctly detected |
+
+The following panels are **unaffected** because their queries
+either don't filter by `node` (cluster-wide aggregations) or use
+metrics the agent emits with `node` correctly stamped:
+
+- CapacityPage cluster CPU / Memory / Filesystem / Network
+- Node Monitor → CPU, Memory, Network panels
+- NodesPage sparkline cards (CPU, Memory, Filesystem, Network)
+- All pod / workload Monitor panels (container_* metrics filtered
+  by `pod=` / `namespace=`, not `node=`)
+
+---
+
 ## See also
 
 - [`docs/agent-scraping.md`](../agent-scraping.md) — alternative path: run the bundled `vmagent` sidecar instead of standalone Prometheus
