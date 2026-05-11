@@ -124,7 +124,15 @@ spec:
                    node-exporter's set. Operators can override by
                    setting the env var explicitly via .Values.extraEnv
                    if they want both sources for some reason. */ -}}
-            {{- if and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled }}
+            {{- /* Two paths trigger KUBEBOLT_AGENT_DEFER_NODE_NETWORK:
+                   (1) the bundled vmagent sidecar scrapes node-exporter
+                       (sidecar topology — Phase 2), or
+                   (2) `agent.deferNodeNetwork=true` (explicit operator
+                       opt-in — for external Prom topology with no
+                       bundled sidecar).
+                   Either path sets the env var; main.go reads it once
+                   and passes it to stats.go's WithDeferNodeNetwork. */ -}}
+            {{- if or (and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled) (and .Values.agent .Values.agent.deferNodeNetwork) }}
             - name: KUBEBOLT_AGENT_DEFER_NODE_NETWORK
               value: "true"
             {{- end }}

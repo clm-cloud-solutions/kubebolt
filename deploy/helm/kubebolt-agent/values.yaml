@@ -84,6 +84,42 @@ hubble:
 # defaults (kube-state-metrics, node-exporter, annotation-driven
 # pods) keyed off the values below.
 #
+# ─── Agent runtime knobs ───────────────────────────────────────
+# Set deferNodeNetwork=true when you're shipping metrics into
+# KubeBolt from an EXTERNAL Prometheus that scrapes node-exporter
+# (the topology documented in docs/integrations/prometheus.md).
+# Without this flag, the agent's kubelet /stats/summary and the
+# external node-exporter scrape both emit
+# node_network_*_bytes_total under identical labels, and queries
+# like `sum(rate(node_network_*[1m]))` in Capacity and Node
+# Monitor panels read 2×.
+#
+# When true: the agent suppresses node_network_receive_bytes_total
+# and node_network_transmit_bytes_total only. Everything else
+# keeps emitting — including container_*, which the UI's Pod
+# and Workload Monitor charts depend on for the agent's
+# workload_kind / workload_name label enrichment (Prom kubelet
+# scrape doesn't add those labels, so deferring container_* would
+# leave Workload Monitor empty).
+#
+# Note on container_* duplication when an external Prom scrapes
+# the kubelet: the agent's container_* series and Prom's kubelet
+# container_* series coexist in VM. The UI works around this on
+# the chart side by filtering `job=""` (agent-only) in Pod and
+# Workload Monitor queries, so duplication doesn't show. Future
+# Workload Monitor re-engineering (Phase 4+) will derive workload
+# attribution from kube-state-metrics, allowing safe agent
+# deferral on container_*; until then the chart-side filter is
+# the canonical fix.
+#
+# Default off — Phase 2's sidecar-driven path (scrape.enabled +
+# scrape.discovery.nodeExporter.enabled, below) already wires the
+# defer env var for the bundled vmagent topology. Set this value
+# explicitly only when the bundled sidecar is OFF and an external
+# Prometheus is the canonical node-exporter scraper.
+agent:
+  deferNodeNetwork: false
+
 # Default off — Phase 2 is opt-in until the receiver path is
 # blinded with auth in Phase 3.
 scrape:
