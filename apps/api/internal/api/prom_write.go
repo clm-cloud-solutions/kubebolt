@@ -46,6 +46,45 @@ const promWriteMaxBodyBytes = 16 << 20
 // noticing within minutes.
 var promWriteUnauthWarnOnce sync.Once
 
+// promWriteFallbackWarnOnce gates the per-request permissive-fallback
+// WARNs (missing / empty / bad bearer) so they fire exactly once per
+// process — same intent as promWriteUnauthWarnOnce above. Without
+// this, a vmagent / external Prometheus shipping every 15s without a
+// bearer fills the log with thousands of identical lines: the
+// 5-day-in-vivo run saw 12,880 WARNs from one source. The ongoing
+// signal lives in the metric kubebolt_prom_write_requests_total
+// labeled tenant_id="anonymous" — every fallback bumps it whether the
+// log is silent or not. Subsequent fallback events drop to DEBUG so
+// they remain accessible via KUBEBOLT_LOG_LEVEL=debug when an
+// operator is actively diagnosing.
+var promWriteFallbackWarnOnce sync.Once
+
+// logPromWriteFallback emits the first fallback per process at WARN
+// (with a hint pointing at the metric) and every subsequent fallback
+// at DEBUG. `variant` identifies which fallback path engaged so the
+// metric labels and the log message stay consistent.
+func logPromWriteFallback(variant, remote string, errMsg string) {
+	promWriteFallbackWarnOnce.Do(func() {
+		attrs := []any{
+			slog.String("variant", variant),
+			slog.String("remote", remote),
+			slog.String("hint", "ongoing fallback rate observable at kubebolt_prom_write_requests_total{tenant_id=\"anonymous\"}; subsequent fallbacks logged at DEBUG"),
+		}
+		if errMsg != "" {
+			attrs = append(attrs, slog.String("error", errMsg))
+		}
+		slog.Warn("prom remote_write permissive-fallback engaged", attrs...)
+	})
+	attrs := []any{
+		slog.String("variant", variant),
+		slog.String("remote", remote),
+	}
+	if errMsg != "" {
+		attrs = append(attrs, slog.String("error", errMsg))
+	}
+	slog.Debug("prom remote_write permissive-fallback", attrs...)
+}
+
 // Promwrite enforcement modes — string constants chosen to match the
 // agent gRPC channel's AuthEnforcement values so a single env-var
 // document covers both surfaces. Empty / unrecognized falls back to
@@ -132,8 +171,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authz, prefix) {
 		if mode == promWriteAuthPermissive {
-			slog.Warn("prom remote_write permissive-fallback: missing bearer",
-				slog.String("remote", r.RemoteAddr))
+			logPromWriteFallback("missing-bearer", r.RemoteAddr, "")
 			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "missing Bearer token")
@@ -142,8 +180,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	token := strings.TrimSpace(authz[len(prefix):])
 	if subtle.ConstantTimeCompare([]byte(token), []byte("")) == 1 {
 		if mode == promWriteAuthPermissive {
-			slog.Warn("prom remote_write permissive-fallback: empty bearer",
-				slog.String("remote", r.RemoteAddr))
+			logPromWriteFallback("empty-bearer", r.RemoteAddr, "")
 			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
@@ -152,9 +189,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	tenant, _, err := h.tenantsStore.LookupByToken(token)
 	if err != nil {
 		if mode == promWriteAuthPermissive {
-			slog.Warn("prom remote_write permissive-fallback: bad bearer",
-				slog.String("remote", r.RemoteAddr),
-				slog.String("error", err.Error()))
+			logPromWriteFallback("bad-bearer", r.RemoteAddr, err.Error())
 			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
