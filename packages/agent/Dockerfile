@@ -4,7 +4,9 @@
 # packages/proto). From the repo root:
 #   docker build -f packages/agent/Dockerfile -t kubebolt-agent:dev .
 
-FROM golang:1.25-alpine AS builder
+# Explicit patch pin — see apps/api/Dockerfile for the CVE rationale.
+# Bump in lockstep with all other Dockerfiles and the CI workflows.
+FROM golang:1.25.10-alpine AS builder
 
 WORKDIR /src
 

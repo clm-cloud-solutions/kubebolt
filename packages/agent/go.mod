@@ -2,6 +2,10 @@ module github.com/kubebolt/kubebolt/packages/agent
 
 go 1.25.0
 
+// Forces Go 1.25.10+ — closes 5 HIGH stdlib CVEs that landed under
+// 1.25.9. Bumped in lockstep with apps/api/go.mod and packages/proto/go.mod.
+toolchain go1.25.10
+
 require (
 	github.com/cilium/cilium v1.19.3
 	github.com/kubebolt/kubebolt/packages/proto v0.0.0

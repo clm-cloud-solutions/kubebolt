@@ -7,7 +7,7 @@
 # Build from the repo root:
 #   docker build -f tests/e2e/Dockerfile.api-e2e -t kubebolt-api:e2e .
 
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.10-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
