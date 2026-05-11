@@ -275,7 +275,9 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 			if found && asserted != tenant.ID {
 				// Anti-spoofing: client claimed a tenant_id that
 				// doesn't match its bearer. Strict reject — no
-				// permissive fallback for spoof attempts.
+				// permissive fallback for spoof attempts (the
+				// mode doesn't matter for mismatches; this is an
+				// active attack).
 				slog.Warn("prom remote_write tenant_id mismatch",
 					slog.String("asserted", asserted),
 					slog.String("bearer_tenant", tenant.ID),
@@ -284,14 +286,25 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !found {
-				// Auto-stamp fallback: the client (legacy agent /
-				// external Prom not yet configured with the label)
-				// didn't include tenant_id. We inject it server-side
-				// so cardinality enforcement + future per-tenant
-				// queries work uniformly. Day 4.2 will make the agent
-				// stamp proactively, after which this path becomes
-				// rare. Day 4.3 will tighten enforced mode to reject
-				// missing tenant_id outright.
+				// Missing tenant_id label. Behavior is mode-sensitive
+				// (Day 4.3): enforced mode rejects — operator must
+				// configure tenant.id via helm at install. Permissive
+				// auto-stamps as a transitional safety net for
+				// legacy agents / external Prom installs that
+				// haven't been migrated yet.
+				if h.promWriteAuthMode == promWriteAuthEnforced {
+					slog.Warn("prom remote_write tenant_id label missing in enforced mode",
+						slog.String("bearer_tenant", tenant.ID),
+						slog.String("remote", r.RemoteAddr))
+					respondError(w, http.StatusUnauthorized,
+						"tenant_id label required in enforced mode — set helm value `tenant.id` "+
+							"on kubebolt-agent or `external_labels.tenant_id` on your external Prometheus")
+					return
+				}
+				// Permissive mode auto-stamp. Day 4.2 makes the
+				// agent stamp proactively, after which this path
+				// becomes rare — used only for legacy installs
+				// that haven't redeployed with `tenant.id` set.
 				stamped, injErr := injectTenantID(decoded, tenant.ID)
 				if injErr != nil {
 					slog.Warn("prom remote_write tenant_id auto-stamp failed",
