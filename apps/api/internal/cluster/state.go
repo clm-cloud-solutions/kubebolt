@@ -6,6 +6,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 )
 
 // GetPods returns all pods from the cache.
@@ -84,4 +85,30 @@ func (c *Connector) GetEventsRaw() []*corev1.Event {
 		return nil
 	}
 	return events
+}
+
+// GetServices returns all Services from the cache.
+func (c *Connector) GetServices() []*corev1.Service {
+	if c.serviceLister == nil {
+		return nil
+	}
+	services, err := c.serviceLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing services: %v", err)
+		return nil
+	}
+	return services
+}
+
+// GetEndpointSlices returns all EndpointSlices from the cache.
+func (c *Connector) GetEndpointSlices() []*discoveryv1.EndpointSlice {
+	if c.endpointSliceLister == nil {
+		return nil
+	}
+	slices, err := c.endpointSliceLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing endpoint slices: %v", err)
+		return nil
+	}
+	return slices
 }

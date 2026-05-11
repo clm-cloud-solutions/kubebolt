@@ -33,6 +33,7 @@ func NewRouter(
 	integrationRegistry *integrations.Registry,
 	agentAuthEnforcement string,
 	tenantsStore *auth.TenantsStore,
+	promWriteAuthMode string,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -54,6 +55,7 @@ func NewRouter(
 		integrations:         integrationRegistry,
 		agentAuthEnforcement: agentAuthEnforcement,
 		tenantsStore:         tenantsStore,
+		promWriteAuthMode:    promWriteAuthMode,
 	}
 
 	// Health check endpoint
@@ -71,6 +73,15 @@ func NewRouter(
 		r.Post("/auth/refresh", authHandlers.Refresh)
 		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
 		r.Get("/copilot/config", h.HandleCopilotConfig)
+
+		// Prom remote_write receiver. PUBLIC because vmagent doesn't
+		// carry a JWT; gating is via the dedicated
+		// KUBEBOLT_REMOTE_WRITE_ENABLED env var (default false). The
+		// handler itself returns 404 with a hint when the var is off.
+		// Phase 3 will add a bearer-token middleware specific to this
+		// path (separate from the user-session JWT auth) and remove
+		// the env-var gate.
+		r.Post("/prom/write", h.handlePromWrite)
 
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
@@ -105,6 +116,11 @@ func NewRouter(
 			// from the same TSDB. Empty response when Hubble / other
 			// traffic observability source hasn't produced any data yet.
 			r.Get("/flows/edges", h.handleFlowEdges)
+
+			// Coverage banner — which observability sources are
+			// actively shipping samples to VM for the current cluster.
+			// Cheap (4 instant queries), poll-friendly from the UI.
+			r.Get("/coverage", h.handleCoverage)
 
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {

@@ -443,8 +443,32 @@ func main() {
 		resolvedEnforcement = string(agent.EnforcementDisabled)
 	}
 
+	// Receiver auth mode (separate from gRPC channel — operators can run
+	// the agent gRPC enforced while keeping remote_write disabled, or
+	// vice-versa). Same three-tier semantics. Default mirrors the gRPC
+	// channel: disabled for Sprint A migration.
+	resolvedPromWriteEnforcement := string(agent.EnforcementDisabled)
+	if v := os.Getenv("KUBEBOLT_REMOTE_WRITE_AUTH_MODE"); v != "" {
+		if parsed, ok := agent.ParseEnforcement(v); ok {
+			resolvedPromWriteEnforcement = string(parsed)
+		} else {
+			slog.Warn("KUBEBOLT_REMOTE_WRITE_AUTH_MODE has unknown value, defaulting to disabled",
+				slog.String("value", v))
+		}
+	}
+	// Same defense-in-depth as the gRPC path: if there's no
+	// TenantsStore, enforced is impossible — downgrade to disabled
+	// (with a loud WARN). The router-side handler also defends, so a
+	// future code path that sets enforced via a different config
+	// surface still fails closed.
+	if tenantsStore == nil && resolvedPromWriteEnforcement == string(agent.EnforcementEnforced) {
+		slog.Warn("KUBEBOLT_REMOTE_WRITE_AUTH_MODE=enforced but TenantsStore not wired — falling back to disabled",
+			slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true to enable token validation"))
+		resolvedPromWriteEnforcement = string(agent.EnforcementDisabled)
+	}
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

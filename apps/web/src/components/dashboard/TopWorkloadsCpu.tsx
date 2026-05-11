@@ -69,15 +69,15 @@ const WORKLOAD_TYPE_TO_PATH: Record<string, string> = {
 export function TopWorkloadsCpu({ installed, overview, refetchMs = 30_000, topN = 6 }: Props) {
   const enabled = installed
   const query = [
-    `topk(${topN}, sum by (workload_kind, workload_name, pod_namespace) (`,
+    `topk(${topN}, sum by (workload_kind, workload_name, namespace) (`,
     `  label_replace(`,
     `    label_replace(`,
-    `      container_cpu_usage_cores{workload_kind="ReplicaSet",workload_name!=""},`,
+    `      rate(container_cpu_usage_seconds_total{workload_kind="ReplicaSet",workload_name!=""}[5m]),`,
     `      "workload_name", "$1", "workload_name", "^(.+)-[a-z0-9]{6,12}$"`,
     `    ),`,
     `    "workload_kind", "Deployment", "workload_kind", "ReplicaSet"`,
     `  )`,
-    `  or container_cpu_usage_cores{workload_kind=~"StatefulSet|DaemonSet",workload_name!=""}`,
+    `  or rate(container_cpu_usage_seconds_total{workload_kind=~"StatefulSet|DaemonSet",workload_name!=""}[5m])`,
     `))`,
   ].join(' ')
 
@@ -106,7 +106,7 @@ export function TopWorkloadsCpu({ installed, overview, refetchMs = 30_000, topN 
 
   const rows: WorkloadRow[] = (data?.data?.result ?? [])
     .map((s) => ({
-      namespace: s.metric.pod_namespace ?? '',
+      namespace: s.metric.namespace ?? '',
       kind: s.metric.workload_kind ?? '',
       name: s.metric.workload_name ?? '',
       cores: parseFloat(s.value?.[1] ?? '0'),

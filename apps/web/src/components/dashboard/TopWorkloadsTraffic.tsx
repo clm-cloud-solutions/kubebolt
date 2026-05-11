@@ -40,7 +40,7 @@ import {
 // Four queries: instant topk for ranking, instant breakdown by
 // status_class for the dist bar (error rate is derived from this),
 // instant latency for the tooltip, and a range query for the
-// sparkline. All keyed off (dst_namespace, workload) so the join
+// sparkline. All keyed off (destination_namespace, workload) so the join
 // is O(1) per row.
 
 const TOP_N = 10
@@ -82,7 +82,7 @@ export function TopWorkloadsTraffic({ rangeMinutes }: Props) {
   const trendStepS = Math.max(TREND_STEP_MIN_S, Math.floor((rangeMinutes * 60) / TREND_POINTS))
   const trendWindow = `${trendStepS * 2}s`
 
-  const totalQuery = `topk(${TOP_N}, sum by (dst_namespace, workload) (${collapsePodToWorkload(
+  const totalQuery = `topk(${TOP_N}, sum by (destination_namespace, workload) (${collapsePodToWorkload(
     `rate(pod_flow_http_requests_total{source="hubble"}[${RATE_WINDOW}])`,
   )}))`
 
@@ -94,15 +94,15 @@ export function TopWorkloadsTraffic({ rangeMinutes }: Props) {
   // for that pair (no requests in the window). Filtered client-side
   // so the row just shows "—" instead of a misleading 0ms.
   const latQuery =
-    `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+    `sum by (destination_namespace, workload) (${collapsePodToWorkload(
       `rate(pod_flow_http_latency_seconds_sum{source="hubble"}[${RATE_WINDOW}])`,
     )})`
     + ` / `
-    + `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+    + `sum by (destination_namespace, workload) (${collapsePodToWorkload(
       `rate(pod_flow_http_latency_seconds_count{source="hubble"}[${RATE_WINDOW}])`,
     )})`
 
-  const trendQuery = `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+  const trendQuery = `sum by (destination_namespace, workload) (${collapsePodToWorkload(
     `rate(pod_flow_http_requests_total{source="hubble"}[${trendWindow}])`,
   )})`
 
@@ -149,7 +149,7 @@ export function TopWorkloadsTraffic({ rangeMinutes }: Props) {
 
   const rows: ServiceRow[] = (totalQ.data?.data?.result ?? [])
     .map((s) => {
-      const namespace = s.metric.dst_namespace ?? ''
+      const namespace = s.metric.destination_namespace ?? ''
       const workload = s.metric.workload ?? ''
       const reqRate = parseFloat(s.value?.[1] ?? '0')
       const k = keyOf(namespace, workload)
@@ -372,7 +372,7 @@ function buildLatIndex(
   const map = new Map<string, number>()
   if (!result) return map
   for (const s of result) {
-    const k = keyOf(s.metric.dst_namespace, s.metric.workload)
+    const k = keyOf(s.metric.destination_namespace, s.metric.workload)
     if (!k) continue
     const v = parseFloat(s.value?.[1] ?? 'NaN')
     if (Number.isFinite(v) && v > 0) map.set(k, v * 1000)
@@ -392,7 +392,7 @@ function buildTrendIndex(
   const map = new Map<string, number[]>()
   if (!result) return map
   for (const s of result) {
-    const k = keyOf(s.metric.dst_namespace, s.metric.workload)
+    const k = keyOf(s.metric.destination_namespace, s.metric.workload)
     if (!k) continue
     const raw = (s.values ?? [])
       .map((p) => parseFloat(p[1]))

@@ -1,6 +1,11 @@
 import { Link } from 'react-router-dom'
 import type { NamespaceWorkload, WorkloadSummary } from '@/types/kubernetes'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
+import {
+  useNamespaceQuotas,
+  formatQuotaValue,
+  type NamespaceQuotaSummary,
+} from '@/hooks/useNamespaceQuotas'
 
 interface Props {
   namespaceWorkloads: NamespaceWorkload[]
@@ -26,6 +31,12 @@ interface Props {
 // All ready → healthy, some ready → degraded, majority not ready →
 // critical. Empty namespaces (no workloads) render muted/idle.
 export function NamespaceTiles({ namespaceWorkloads }: Props) {
+  // Quota lookup is fetched once at the section level so each tile
+  // doesn't re-issue the same VM query. Result is keyed by namespace
+  // — a missing entry means "no ResourceQuota configured", which is
+  // the common case and renders the tile unchanged.
+  const { quotas } = useNamespaceQuotas()
+
   if (!namespaceWorkloads || namespaceWorkloads.length === 0) return null
 
   return (
@@ -41,7 +52,7 @@ export function NamespaceTiles({ namespaceWorkloads }: Props) {
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
         {namespaceWorkloads.map((nsw) => (
-          <NamespaceTile key={nsw.namespace} nsw={nsw} />
+          <NamespaceTile key={nsw.namespace} nsw={nsw} quota={quotas[nsw.namespace]} />
         ))}
       </div>
     </section>
@@ -67,7 +78,13 @@ const HEALTH_DOT_COLOR = {
   empty: '#555770',
 }
 
-function NamespaceTile({ nsw }: { nsw: NamespaceWorkload }) {
+function NamespaceTile({
+  nsw,
+  quota,
+}: {
+  nsw: NamespaceWorkload
+  quota?: NamespaceQuotaSummary
+}) {
   const workloads = nsw.workloads ?? []
 
   let totalPods = 0
@@ -122,12 +139,31 @@ function NamespaceTile({ nsw }: { nsw: NamespaceWorkload }) {
     .filter((k) => (kindCounts[k] ?? 0) > 0)
     .map((k) => `${kindCounts[k]} ${KIND_SHORT[k] ?? k}`)
 
+  // Quota chip is gated: only shows above a threshold so unconstrained
+  // or comfortable namespaces don't grow noise on the tile. Below the
+  // threshold the user sees nothing extra; the data still appears in
+  // the tooltip footer so the answer to "is this namespace bound by a
+  // quota?" is one hover away. Color tiers match the operator-actionable
+  // bands from P25-04: 70% start watching, 85% page someone.
+  const QUOTA_WARN = 70
+  const QUOTA_CRIT = 85
+  const quotaChipState: 'warn' | 'crit' | null =
+    quota && quota.maxPct >= QUOTA_CRIT
+      ? 'crit'
+      : quota && quota.maxPct >= QUOTA_WARN
+        ? 'warn'
+        : null
+
   // Tooltip lists every unhealthy workload (capped) so a glance
   // tells the user not just "this namespace is degraded" but
   // "redis-cache 1/3, payments-api 2/4". When everything's healthy,
   // the tooltip falls back to a kind-by-kind summary so it still
-  // adds context beyond what's already in the tile.
-  const tooltipBody =
+  // adds context beyond what's already in the tile. When a quota
+  // exists, a footer block is appended showing the breakdown
+  // regardless of which workload state we're in — the chip on the
+  // tile is gated, but the tooltip is the place where the full
+  // picture lives.
+  const headerTooltip =
     unhealthy.length > 0 ? (
       <>
         <TooltipHeader right={`${unhealthy.length} degraded`}>{nsw.namespace}</TooltipHeader>
@@ -163,6 +199,52 @@ function NamespaceTile({ nsw }: { nsw: NamespaceWorkload }) {
             ))}
           <TooltipRow color={null} label="pods" value={`${readyPods}/${totalPods}`} />
         </div>
+      </>
+    ) : null
+
+  const quotaTooltip = quota ? (
+    <div
+      className={
+        headerTooltip
+          ? 'mt-2 pt-2 border-t border-kb-border space-y-1'
+          : 'space-y-1'
+      }
+    >
+      {!headerTooltip && (
+        <TooltipHeader right={`${quota.items.length} resource${quota.items.length === 1 ? '' : 's'}`}>
+          {nsw.namespace}
+        </TooltipHeader>
+      )}
+      <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-[0.06em] mb-1">
+        Quota · {quota.quotaName}
+      </div>
+      {quota.items.slice(0, 6).map((it) => (
+        <TooltipRow
+          key={it.resource}
+          color={
+            it.pct >= QUOTA_CRIT
+              ? '#ef4056'
+              : it.pct >= QUOTA_WARN
+                ? '#f5a623'
+                : '#555770'
+          }
+          label={it.resource}
+          value={`${formatQuotaValue(it.resource, it.used)} / ${formatQuotaValue(it.resource, it.hard)} · ${it.pct.toFixed(0)}%`}
+        />
+      ))}
+      {quota.items.length > 6 && (
+        <div className="text-[10px] text-kb-text-tertiary pt-1">
+          +{quota.items.length - 6} more
+        </div>
+      )}
+    </div>
+  ) : null
+
+  const tooltipBody =
+    headerTooltip || quotaTooltip ? (
+      <>
+        {headerTooltip}
+        {quotaTooltip}
       </>
     ) : null
 
@@ -213,7 +295,7 @@ function NamespaceTile({ nsw }: { nsw: NamespaceWorkload }) {
           chips keep the strip scannable even when several kinds are
           present. Hides entirely on namespaces with no workloads to
           avoid a stretched empty row. */}
-      {kindChips.length > 0 && (
+      {(kindChips.length > 0 || quotaChipState) && (
         <div className="mt-1.5 flex items-center gap-1.5 flex-wrap text-[10px] font-mono text-kb-text-tertiary leading-none">
           {kindChips.map((chip, i) => (
             <span key={chip} className="flex items-center gap-1.5">
@@ -221,9 +303,27 @@ function NamespaceTile({ nsw }: { nsw: NamespaceWorkload }) {
               <span>{chip}</span>
             </span>
           ))}
-          {unhealthy.length > 0 && (
-            <span className="ml-auto px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn text-[9px] font-semibold uppercase tracking-[0.04em]">
-              {unhealthy.length} degraded
+          {(unhealthy.length > 0 || quotaChipState) && (
+            <span className="ml-auto flex items-center gap-1">
+              {unhealthy.length > 0 && (
+                <span className="px-1.5 py-0.5 rounded bg-status-warn-dim text-status-warn text-[9px] font-semibold uppercase tracking-[0.04em]">
+                  {unhealthy.length} degraded
+                </span>
+              )}
+              {/* Quota chip — only renders past the WARN threshold so
+                  comfortable namespaces stay clean. The tooltip still
+                  carries the full breakdown regardless. */}
+              {quotaChipState && quota && (
+                <span
+                  className={`px-1.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-[0.04em] ${
+                    quotaChipState === 'crit'
+                      ? 'bg-status-error-dim text-status-error'
+                      : 'bg-status-warn-dim text-status-warn'
+                  }`}
+                >
+                  Q {quota.maxPct.toFixed(0)}%
+                </span>
+              )}
             </span>
           )}
         </div>

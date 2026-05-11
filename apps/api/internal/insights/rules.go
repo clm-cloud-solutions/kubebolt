@@ -26,6 +26,7 @@ func AllRules() []Rule {
 		frequentRestartsRule(),
 		imagePullBackoffRule(),
 		evictedPodsRule(),
+		serviceNoEndpointsRule(),
 	}
 }
 
@@ -47,6 +48,8 @@ func newInsight(severity, resource, title, message, suggestion string) models.In
 			category = "storage"
 		case "HPA":
 			category = "autoscaling"
+		case "Service":
+			category = "networking"
 		}
 	}
 	return models.Insight{
@@ -376,6 +379,106 @@ func imagePullBackoffRule() Rule {
 						))
 					}
 				}
+			}
+			return insights
+		},
+	}
+}
+
+// 13. Service has zero ready endpoints (P25-05).
+//
+// Fires when a Service that's expected to back a workload (has a
+// selector, is not Headless, is not ExternalName) has zero
+// EndpointSlice addresses with `ready=true`. The signal answers
+// "is this Service actually serving?" — a common failure mode is
+// a Service whose selector drifted away from its pods (mismatched
+// labels after a rename, deleted Deployment leaving the Service
+// behind), and traffic to ClusterIP black-holes silently. This
+// rule surfaces it before users hit a 503.
+//
+// Skip rules:
+//   - ExternalName services have no endpoints by design.
+//   - Headless services (clusterIP == "None") are DNS-only and
+//     legitimately can have zero ready endpoints during scale-to-
+//     zero of operator workloads (think StatefulSet with replicas=0).
+//   - Services without a selector are manually managed — the operator
+//     wires Endpoints by hand, and that's intentional.
+//
+// EndpointSlice <-> Service binding uses the canonical
+// `kubernetes.io/service-name` label, which the EndpointSlice
+// controller writes for every slice it produces.
+func serviceNoEndpointsRule() Rule {
+	return Rule{
+		ID:       "service-no-endpoints",
+		Name:     "Service Has Zero Ready Endpoints",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+
+			// Index slices by (namespace, service-name) for O(1) lookup
+			// per service. A single Service can have multiple slices
+			// (sharded by IP family or address count), so the value is
+			// a list.
+			slicesByService := map[string][]int{}
+			for i, slice := range state.EndpointSlices {
+				name := slice.Labels["kubernetes.io/service-name"]
+				if name == "" {
+					continue
+				}
+				key := slice.Namespace + "/" + name
+				slicesByService[key] = append(slicesByService[key], i)
+			}
+
+			for _, svc := range state.Services {
+				if svc.Spec.Type == corev1.ServiceTypeExternalName {
+					continue
+				}
+				if svc.Spec.ClusterIP == corev1.ClusterIPNone {
+					continue
+				}
+				if len(svc.Spec.Selector) == 0 {
+					continue
+				}
+
+				readyCount := 0
+				totalCount := 0
+				key := svc.Namespace + "/" + svc.Name
+				for _, idx := range slicesByService[key] {
+					slice := state.EndpointSlices[idx]
+					for _, ep := range slice.Endpoints {
+						totalCount++
+						if ep.Conditions.Ready != nil && *ep.Conditions.Ready {
+							readyCount++
+						}
+					}
+				}
+
+				if readyCount > 0 {
+					continue
+				}
+
+				suggestion := "Verify the Service selector matches pod labels and that pods are running and ready. " +
+					"Try: kubectl get endpoints " + svc.Name + " -n " + svc.Namespace
+				message := fmt.Sprintf("Service %s/%s has no ready endpoints", svc.Namespace, svc.Name)
+				if totalCount > 0 {
+					// Distinguishes "selector matches pods, but they're not ready"
+					// (workload is unhealthy) from "selector matches nothing"
+					// (configuration error). Different operator response.
+					message = fmt.Sprintf(
+						"Service %s/%s has %d endpoint(s) but none are ready",
+						svc.Namespace, svc.Name, totalCount,
+					)
+					suggestion = "Pods backing this Service exist but aren't passing readiness. " +
+						"Check pod readiness probes and container logs."
+				}
+
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("Service/%s/%s", svc.Namespace, svc.Name),
+					"Service Has Zero Ready Endpoints",
+					message,
+					suggestion,
+				))
 			}
 			return insights
 		},

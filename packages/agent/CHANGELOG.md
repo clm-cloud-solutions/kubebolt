@@ -9,6 +9,126 @@ each tag.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.0] — 2026-05-09
+
+**Breaking release.** Aligns every metric and label the agent emits
+to **Prometheus convention K8s** (the de-facto schema of cAdvisor +
+kube-state-metrics + node-exporter + Hubble). This is Phase 1 of the
+Universal Data Plane Plan — KubeBolt's strategic move to a single
+canonical schema across every ingestion path (agent, future Prom
+remote_write receiver, future OTLP receiver).
+
+**No dual emission.** v1.0 ships only the canonical names; v0.x and
+v1.0 cannot coexist on the same VictoriaMetrics — operators upgrade
+the agent helm chart and the corresponding KubeBolt backend in
+lockstep. KubeBolt >=1.10.0 logs a `WARN` on registration when an
+agent below 1.0 connects (legacy schema = empty dashboards).
+
+### Compatibility
+
+This release **requires KubeBolt >= 1.10.0**. Older KubeBolt versions
+query the legacy schema and will render empty dashboards for the
+clusters this agent is shipping from. Full matrix and migration steps:
+[`docs/COMPATIBILITY.md`](../../docs/COMPATIBILITY.md).
+
+### Migration
+
+```bash
+# 1. Bump KubeBolt FIRST (1.10.0+ ships the v1.0 query consumers).
+helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+    --version 1.10.0 \
+    -n kubebolt --reuse-values
+
+# 2. Bump the agent in lockstep, in every cluster connected to it.
+helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+    --version 1.0.0 \
+    -n kubebolt-agent --reuse-values
+kubectl rollout status ds/kubebolt-agent -n kubebolt-agent
+```
+
+For dev clusters using local-built images, see CLAUDE.md's
+`make agent-image` + `kind load docker-image` flow.
+
+### Changed (breaking schema rename)
+
+- **Pod-scope labels migrate to canonical Prom convention.**
+  `pod_namespace` → `namespace`, `pod_name` → `pod`. The
+  enrichment-only label `pod_uid` keeps its name.
+- **Per-container CPU usage gauge removed.**
+  `container_cpu_usage_cores` (derived gauge) is no longer emitted
+  — the agent ships only the `*_seconds_total` counter and the
+  backend / UI compute rates with `rate(...[Xm])`. Same change for
+  `node_cpu_usage_cores` → use `rate(node_cpu_usage_seconds_total[Xm])`.
+- **Memory metrics align to cAdvisor canonical names.**
+  `container_memory_rss_bytes` → `container_memory_rss`. The two
+  page-fault counters `container_memory_page_faults_total` and
+  `container_memory_major_page_faults_total` collapse into a single
+  `container_memory_failures_total{failure_type=pgfault|pgmajfault, scope=container}`.
+- **Pod network labels switch to cAdvisor convention.**
+  `pod_network_*_bytes_total` → `container_network_*_bytes_total`
+  with `container=""` for pod-level rows (same series cAdvisor emits
+  for the pause container that owns the pod's network namespace).
+  Per-container rows are also emitted; dashboards filter
+  `container=""` for the pod-level view, accepting the 5x
+  cardinality trade-off for canonical compatibility.
+- **Volume metrics align to kubelet convention.**
+  `pod_volume_used_bytes` etc. → `kubelet_volume_stats_used_bytes`,
+  `_capacity_bytes`, `_available_bytes`, `_inodes`, `_inodes_used`,
+  `_inodes_free`. Label `pvc_name` → `persistentvolumeclaim`. Only
+  PVCs are reported now; emptyDir / configMap / secret volumes are
+  out of scope (kubelet canonical doesn't expose them).
+- **Hubble flow labels switch to source_/destination_ prefixes.**
+  `src_namespace` → `source_namespace`, `src_pod` → `source_pod`,
+  `dst_namespace` → `destination_namespace`, `dst_pod` →
+  `destination_pod`, `dst_ip` → `destination_ip`. Aligns with the
+  Hubble exporter, Istio, and Linkerd telemetry naming so future
+  service-mesh sources interleave cleanly. The aggregator's
+  `verdict=dropped` bypass (added in 0.2.1) is unchanged.
+- **Node network label `interface` → `device`** (node-exporter
+  convention) for `node_network_*_bytes_total`.
+- **`node_cpu_capacity_cores`, `node_load_average_*m`, `node_uptime_seconds`,
+  `node_imagefs_used_bytes`, `container_processes`, `container_threads`,
+  `container_file_descriptors` removed.** Phase 2 reintroduces them
+  via the vmagent sidecar scraping node-exporter and cAdvisor
+  directly; v1.0 trims to what kubelet's `/stats/summary` plus
+  `/metrics/cadvisor` actually expose without expanding scrape
+  surface.
+
+### Added
+
+- **`kubebolt_agent_*` self-metrics** (Phase 1 Day 4, commit `2c9bf3d`).
+  The agent is now observable in the same dashboard as the rest of
+  the cluster:
+  - `kubebolt_agent_samples_collected_total` (counter)
+  - `kubebolt_agent_samples_dropped_total` (counter)
+  - `kubebolt_agent_buffer_size_current` (gauge)
+  - `kubebolt_agent_buffer_size_max` (gauge)
+  - `kubebolt_agent_memory_bytes` (gauge — `runtime.MemStats.Alloc`)
+  - `kubebolt_agent_goroutines` (gauge)
+  - `kubebolt_agent_info{agent_version="..."}` (gauge=1, identity marker)
+- **`agentVersion` constant in `cmd/agent/main.go` set to `1.0.0`**
+  (was `0.0.7-cluster-ident`). Reported in the gRPC Hello and as
+  the `agent_version` label of `kubebolt_agent_info`. Backend uses
+  semver comparison vs `MinAgentVersion = "1.0.0"` to log a WARN
+  when an older agent connects.
+- **Helm chart 0.2.2 → 1.0.0** (chart version + appVersion).
+
+### Reference (Phase 1 commits)
+
+| Day | Commit | Scope |
+|---|---|---|
+| 1 | `373ef20` | `stats.go` — namespace/pod labels, container_memory rename, page-fault collapse, kubelet_volume_stats, container_network with container="" |
+| 2 | `85455e5` | `cadvisor.go` — same label rename + container_network passthrough |
+| 3 | `6f92dee` | `flows/aggregator.go` — source_/destination_ flow labels |
+| 4 | `2c9bf3d` | `internal/self/` — kubebolt_agent_* collector |
+| 5 | `fe1e4a0` | UI + backend metrics_query consumers |
+| 5 (follow-up) | `9dc6dc6` | UI + backend flow consumers (was missed in initial Day 5 sweep, surfaced during in-vivo smoke test) |
+
+### Spec
+
+`internal/kubebolt-agent-technical-spec.md` bumped to v0.2; §4 is now
+authoritative for the metric / label set the agent emits.
+
 ## [0.2.2] — 2026-05-07
 
 Patch release. One fix in the Hubble flow collector — without it, the

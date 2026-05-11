@@ -74,28 +74,28 @@ export function TopLatencyWorkloads({ rangeMinutes }: Props) {
   // need an extra "had requests" filter.
   const topkLatencyQuery =
     `topk(${TOP_N},`
-    + ` sum by (dst_namespace, workload) (${collapsePodToWorkload(
+    + ` sum by (destination_namespace, workload) (${collapsePodToWorkload(
       `rate(pod_flow_http_latency_seconds_sum{source="hubble"}[${RATE_WINDOW}])`,
     )})`
     + ` / `
-    + `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+    + `sum by (destination_namespace, workload) (${collapsePodToWorkload(
       `rate(pod_flow_http_latency_seconds_count{source="hubble"}[${RATE_WINDOW}])`,
     )})`
     + `)`
 
   // Per-workload req/s — secondary context for the row.
-  const reqRateQuery = `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+  const reqRateQuery = `sum by (destination_namespace, workload) (${collapsePodToWorkload(
     `rate(pod_flow_http_requests_total{source="hubble"}[${RATE_WINDOW}])`,
   )})`
 
   // Range query for the per-row latency sparkline. Same divide
   // pattern but unwrapped so VM evaluates it at each step.
   const trendQuery =
-    `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+    `sum by (destination_namespace, workload) (${collapsePodToWorkload(
       `rate(pod_flow_http_latency_seconds_sum{source="hubble"}[${trendWindow}])`,
     )})`
     + ` / `
-    + `sum by (dst_namespace, workload) (${collapsePodToWorkload(
+    + `sum by (destination_namespace, workload) (${collapsePodToWorkload(
       `rate(pod_flow_http_latency_seconds_count{source="hubble"}[${trendWindow}])`,
     )})`
 
@@ -145,7 +145,7 @@ export function TopLatencyWorkloads({ rangeMinutes }: Props) {
 
   const rows: LatencyRow[] = (latQ.data?.data?.result ?? [])
     .map((s) => {
-      const namespace = s.metric.dst_namespace ?? ''
+      const namespace = s.metric.destination_namespace ?? ''
       const workload = s.metric.workload ?? ''
       const latencySec = parseFloat(s.value?.[1] ?? 'NaN')
       if (!Number.isFinite(latencySec) || latencySec <= 0) return null
@@ -403,7 +403,7 @@ function buildReqIndex(
   const map = new Map<string, number>()
   if (!result) return map
   for (const s of result) {
-    const ns = s.metric.dst_namespace
+    const ns = s.metric.destination_namespace
     const wl = s.metric.workload
     if (!ns || !wl) continue
     const v = parseFloat(s.value?.[1] ?? '0')
@@ -419,7 +419,7 @@ function buildTrendIndex(
   const map = new Map<string, number[]>()
   if (!result) return map
   for (const s of result) {
-    const ns = s.metric.dst_namespace
+    const ns = s.metric.destination_namespace
     const wl = s.metric.workload
     if (!ns || !wl) continue
     const raw = (s.values ?? [])

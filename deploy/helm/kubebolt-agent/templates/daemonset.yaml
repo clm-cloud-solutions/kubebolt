@@ -97,6 +97,21 @@ spec:
             {{- end }}
             - name: KUBEBOLT_HUBBLE_ENABLED
               value: {{ .Values.hubble.enabled | quote }}
+            {{- /* When the vmagent sidecar is configured to scrape
+                   node-exporter, the agent steps aside on
+                   node_network_*_bytes_total emission — node-exporter
+                   gives the same metric name with identical labels
+                   from the same /proc/net/dev counters, so two
+                   sources would double-count cluster-wide network
+                   queries. Other node_* metrics (CPU, memory, FS)
+                   keep emitting because their names diverge from
+                   node-exporter's set. Operators can override by
+                   setting the env var explicitly via .Values.extraEnv
+                   if they want both sources for some reason. */ -}}
+            {{- if and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled }}
+            - name: KUBEBOLT_AGENT_DEFER_NODE_NETWORK
+              value: "true"
+            {{- end }}
             {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
             {{- /* Auto-derive proxy enable from rbac.mode unless an
                    explicit override was given. proxy is the path the
@@ -186,7 +201,115 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+        {{- if .Values.scrape.enabled }}
+        # ─── vmagent sidecar (Phase 2) ────────────────────────────
+        # Scrapes Prom-compatible /metrics endpoints and ships
+        # samples to the backend's /api/v1/prom/write receiver.
+        # Per ADR-005 vmagent does NOT multiplex through the agent's
+        # gRPC channel — it talks remote_write directly. That keeps
+        # the agent's responsibility focused (collect + tunnel) and
+        # lets vmagent crash without taking the agent with it.
+        - name: vmagent
+          image: "{{ .Values.scrape.image.repository }}:{{ .Values.scrape.image.tag }}"
+          imagePullPolicy: {{ .Values.scrape.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          args:
+            - "-promscrape.config=/etc/vmagent/scrape.yml"
+            {{- if .Values.scrape.remoteWriteUrl }}
+            - "-remoteWrite.url={{ .Values.scrape.remoteWriteUrl }}"
+            {{- end }}
+            {{- /* When the agent is configured with ingest-token auth,
+                   reuse the SAME Secret for vmagent's remote_write —
+                   no second token to provision. The backend validates
+                   the bearer against the same TenantsStore that the
+                   gRPC channel hits via BearerIngestAuth.
+                   tokenreview mode doesn't carry through (it's a
+                   projected SA token good for the apiserver, not for
+                   /api/v1/prom/write — Phase 3 will add token-review
+                   handling on the receiver side too). */ -}}
+            {{- if eq .Values.auth.mode "ingest-token" }}
+            - "-remoteWrite.bearerTokenFile=/var/run/secrets/kubebolt/token"
+            {{- end }}
+            # vmagent's persistent queue lives on disk; without an
+            # emptyDir mount it'd try to write to the read-only
+            # rootfs. The path matches `tmpDataPath` below.
+            - "-remoteWrite.tmpDataPath=/var/lib/vmagent"
+            # Refuse memory growth that would push the pod past its
+            # limit (and into OOM kill). 60% of the limit leaves
+            # headroom for scrape buffers.
+            - "-memory.allowedPercent=60"
+            # Enable %{ENV} expansion in the scrape config so each
+            # vmagent can filter SD to its own node via the
+            # NODE_NAME env var. Without this the relabel regex
+            # %{NODE_NAME} would be a literal string and match
+            # nothing, leaving every vmagent scraping zero pods.
+            # vmagent's syntax is %{ENV_NAME} — no closing percent
+            # (got that wrong in the first revision; the trailing %
+            # passed through as a literal in the regex).
+            - "-envflag.enable=true"
+            # Cardinality caps — defensive limits that protect VM
+            # from a single misconfigured target. Operators can
+            # raise individually via .Values.scrape.limits.*
+            # printf %d coerces YAML's float64 default for large
+            # numbers (e.g. 16777216 → 1.6777216e+07) back into a
+            # plain integer string that vmagent can parse.
+            {{- if .Values.scrape.limits.maxScrapeSize }}
+            - "-promscrape.maxScrapeSize={{ printf "%d" (int64 .Values.scrape.limits.maxScrapeSize) }}"
+            {{- end }}
+            {{- if .Values.scrape.limits.maxSeriesPerTarget }}
+            - "-promscrape.seriesLimitPerTarget={{ printf "%d" (int64 .Values.scrape.limits.maxSeriesPerTarget) }}"
+            {{- end }}
+            {{- if .Values.scrape.limits.maxSeriesGlobal }}
+            - "-remoteWrite.maxHourlySeries={{ printf "%d" (int64 .Values.scrape.limits.maxSeriesGlobal) }}"
+            {{- end }}
+            {{- range $k, $v := .Values.scrape.extraArgs }}
+            - "-{{ $k }}={{ $v }}"
+            {{- end }}
+          env:
+            # Surfaced so future scrape configs can use $(NODE_NAME)
+            # in their service-discovery filter (per ADR-003).
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: vmagent-config
+              mountPath: /etc/vmagent
+              readOnly: true
+            - name: vmagent-tmp
+              mountPath: /var/lib/vmagent
+            {{- if eq .Values.auth.mode "ingest-token" }}
+            # Same `kubebolt-token` volume the agent container uses
+            # — the bearer token serves both the gRPC channel
+            # (BearerIngestAuth) and vmagent's remote_write
+            # (TenantsStore-backed HTTP middleware on
+            # /api/v1/prom/write). Single Secret, two consumers.
+            - name: kubebolt-token
+              mountPath: /var/run/secrets/kubebolt
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.scrape.resources | nindent 12 }}
+        {{- end }}
       volumes:
+        {{- if .Values.scrape.enabled }}
+        # vmagent scrape config rendered by configmap-vmagent.yaml.
+        - name: vmagent-config
+          configMap:
+            name: {{ include "kubebolt-agent.fullname" . }}-vmagent
+        # Persistent queue + WAL for remote_write retries. emptyDir
+        # is fine — if the pod dies, vmagent loses at most one
+        # scrape window of buffered samples (negligible vs the cost
+        # of a per-pod PVC across N nodes).
+        - name: vmagent-tmp
+          emptyDir:
+            sizeLimit: 256Mi
+        {{- end }}
         {{- if .Values.hubble.relay.tls.existingSecret }}
         - name: hubble-tls
           secret:

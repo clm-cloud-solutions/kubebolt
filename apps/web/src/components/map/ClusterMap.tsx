@@ -520,7 +520,7 @@ function sortNamespacesByTrafficDirection<T extends { ns: string }>(
   for (const f of flows) {
     const srcNs = f.srcNamespace || '(cluster)'
     // Pod-to-external flows land on the synthetic (external)
-    // namespace regardless of the caller's dst_namespace label
+    // namespace regardless of the caller's destination_namespace label
     // (which is empty).
     const dstNs = f.dstPod ? (f.dstNamespace || '(cluster)') : '(external)'
     if (srcNs === dstNs) continue
@@ -1107,8 +1107,8 @@ function ClusterMapInner() {
       }
 
       // Aggregate BOTH hops of the intent flow so edge IDs stay unique.
-      // First hop (src_pod → Service) aggregates across all destination
-      // pods behind the same Service; the second hop (Service → dst_pod)
+      // First hop (source_pod → Service) aggregates across all destination
+      // pods behind the same Service; the second hop (Service → destination_pod)
       // aggregates across all source pods calling into the same pod.
       // Without this, two demo-load pods calling the same demo-web pod
       // emitted two edges with the same id, which React logs as a

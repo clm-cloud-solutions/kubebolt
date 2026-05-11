@@ -85,6 +85,13 @@ interface HoverTooltipProps {
   // Override min-width on the panel — default 200px. Useful when
   // the tooltip is intentionally narrow (single-line).
   minWidth?: number
+  // Cap on tooltip width. Without this, a long-form note line
+  // (e.g. an explanatory sentence inside TooltipNote) would stretch
+  // the panel across half the viewport. The default is wide enough
+  // for typical 2-line wraps and tight enough to read like a chip
+  // rather than a sub-window. Override per-call when a panel
+  // legitimately needs more breathing room.
+  maxWidth?: number
 }
 
 // Position threshold for the auto-flip below → above. The tooltip's
@@ -105,6 +112,7 @@ export function HoverTooltip({
   interactive = false,
   offset = 6,
   minWidth = 200,
+  maxWidth = 320,
 }: HoverTooltipProps) {
   const triggerRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<AnchoredPos | null>(null)
@@ -162,6 +170,7 @@ export function HoverTooltip({
               top: pos.kind === 'below' ? pos.top : undefined,
               bottom: pos.kind === 'above' ? pos.bottom : undefined,
               minWidth,
+              maxWidth,
             }}
             onMouseEnter={interactive ? handleEnter : undefined}
             onMouseLeave={interactive ? handleLeave : undefined}

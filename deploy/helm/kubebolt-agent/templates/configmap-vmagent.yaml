@@ -1,0 +1,268 @@
+{{- /*
+ConfigMap holding the vmagent scrape config. Rendered only when the
+scrape sidecar is enabled.
+
+Day 3 of Phase 2 populates the ConfigMap with the built-in scrape
+jobs. Each one is gated on its own values.yaml toggle so operators
+can enable only what their cluster has installed:
+
+  - kubernetes-pods       — annotation-driven discovery, filtered to
+                            the local node (ADR-003) so each vmagent
+                            only scrapes pods on its own node
+  - node-exporter         — per-node DaemonSet, fits the sidecar
+                            model perfectly
+  - kube-state-metrics    — cluster-scoped Deployment (NOT per-node)
+                            — Day 4 of Phase 2 wraps this in a
+                            leader-election pattern; until then the
+                            toggle exists but enabling it would
+                            duplicate every KSM series N times
+
+The pod-spec checksum on the DaemonSet (podAnnotationChecksum)
+hashes ALL .Values, so any change here triggers a rolling restart
+of the DaemonSet. vmagent reloads on SIGHUP but not on configmap-
+projected file changes, so a pod restart is the safest path until
+we wire `-promscrape.config.fileWatchInterval` (Day 4 or later).
+*/}}
+{{- /* Resolve cluster_id at install time. The agent auto-discovers
+       it from the kube-system namespace UID at startup; vmagent
+       runs as a separate process with no apiserver reach for that
+       same lookup, so we mirror the agent's logic here via Helm's
+       `lookup` function. The fallback chain:
+
+         1. .Values.cluster.id explicitly set     (highest priority)
+         2. kube-system namespace UID (lookup)    (matches agent default)
+         3. .Values.cluster.name                  (last-resort fallback;
+                                                   produces a UID/name
+                                                   mismatch with the
+                                                   agent — should only
+                                                   happen on a dry-run
+                                                   or restricted RBAC)
+
+       Without this matching, the agent emits with cluster_id=<UID>
+       while vmagent stamps cluster_id=<chart-name>; the backend
+       filters by UID so the vmagent samples become invisible to
+       coverage probes and dashboards. Surfaced during Phase 2
+       in-vivo testing on a kind cluster.
+*/}}
+{{- if .Values.scrape.enabled }}
+{{- $clusterID := .Values.cluster.id -}}
+{{- if not $clusterID -}}
+  {{- $kubesys := lookup "v1" "Namespace" "" "kube-system" -}}
+  {{- if and $kubesys $kubesys.metadata $kubesys.metadata.uid -}}
+    {{- $clusterID = $kubesys.metadata.uid -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $clusterID -}}
+  {{- $clusterID = .Values.cluster.name -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-vmagent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+data:
+  scrape.yml: |
+    global:
+      scrape_interval: 30s
+      scrape_timeout: 10s
+      external_labels:
+        # Stamps cluster_id onto every series this vmagent ships.
+        # The receiver trusts this label for cluster scoping in
+        # Phase 2; Phase 3 will assert it against a bearer token.
+        # Resolution order is in the comment block at the top of
+        # this template — the kube-system namespace UID lookup
+        # above ensures vmagent matches what the agent emits.
+        cluster_id: {{ $clusterID | quote }}
+        {{- if .Values.cluster.name }}
+        cluster_name: {{ .Values.cluster.name | quote }}
+        {{- end }}
+    scrape_configs:
+{{- /* Reusable per-job metric_relabel_configs. Each scrape_configs
+       entry below pulls this in via `include`, so adding a new
+       built-in job picks the same operator-supplied relabels
+       automatically. The 8-space indent matches scrape_configs[].* */ -}}
+{{- if .Values.scrape.discovery.pods.enabled }}
+      - job_name: kubernetes-pods
+        # Each vmagent scrapes only pods on its own node — the
+        # `__meta_kubernetes_pod_node_name == NODE_NAME` keep rule
+        # below enforces it. With N nodes you get exactly one scrape
+        # per pod, never N duplicates.
+        # honor_labels: true — when the scraped metric body already
+        # carries `namespace`, `pod`, or `container` labels (kube-
+        # state-metrics is the canonical example: it emits those
+        # labels for the OBSERVED pod, not for the KSM container
+        # itself), the metric-body value wins over our SD relabel.
+        # Without this, our relabel below would overwrite KSM's
+        # correct labels with the KSM container's own ns/pod, and
+        # queries like `kube_pod_container_status_restarts_total
+        # {namespace="X",pod="Y"}` would never match because every
+        # series ended up labeled `namespace="prom-stack",pod=
+        # "kube-state-metrics-..."`. For app exporters that DON'T
+        # emit their own namespace/pod, our relabel fills them in
+        # — honor_labels only resolves conflicts, it doesn't
+        # remove the relabel.
+        honor_labels: true
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          # Filter to pods that opt in via annotation.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: "true"
+          # Filter to pods running on THIS node only.
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: keep
+            regex: "%{NODE_NAME}"
+          # Dedup pod SD's per-containerPort fanout. When a pod
+          # declares multiple containerPorts (e.g. cilium-operator's
+          # `health` 9234 + `prometheus` 9963 with annotation port
+          # 9963), vmagent emits one target per port and the
+          # `__address__` relabel below rewrites both to the same
+          # final address — same labels → vmagent dedupes one and
+          # logs a noisy "skipping duplicate scrape target" WARN per
+          # cycle. The `if:` filter scopes this rule to pods that
+          # have BOTH annotation_port and container_port_number set;
+          # `keep_if_equal` then keeps only the target whose
+          # containerPort matches the annotation. Pods without an
+          # annotation port (or hostNetwork pods with no declared
+          # containerPort) skip the rule entirely.
+          - if: '{__meta_kubernetes_pod_annotation_prometheus_io_port=~".+", __meta_kubernetes_pod_container_port_number=~".+"}'
+            source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_port, __meta_kubernetes_pod_container_port_number]
+            action: keep_if_equal
+          # Drop pods already covered by a dedicated scrape job.
+          # Without this, the kubernetes-pods (annotation-driven) job
+          # AND the dedicated job both pick up the same pod, producing
+          # two parallel sets of identical series — only differentiated
+          # by the `job` label, so VM stores them as distinct timelines
+          # and `sum(rate(...))` queries double-count. The dedup chain
+          # in priority order: dedicated job (richer config, defaults)
+          # > annotation-driven > nothing. We drop the lower-priority
+          # annotation path here when the dedicated path is enabled.
+{{- if .Values.scrape.discovery.nodeExporter.enabled }}
+          - if: '{__meta_kubernetes_pod_label_app_kubernetes_io_name="node-exporter"}'
+            action: drop
+{{- end }}
+{{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
+          - if: '{__meta_kubernetes_pod_label_app_kubernetes_io_name="kube-state-metrics"}'
+            action: drop
+{{- end }}
+          # Resolve port: annotation wins, otherwise vmagent picks
+          # the first declared containerPort.
+          - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+            action: replace
+            regex: "([^:]+)(?::\\d+)?;(\\d+)"
+            replacement: "$1:$2"
+            target_label: __address__
+          # Path annotation, defaults to /metrics.
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: "(.+)"
+          # Carry pod labels through as Prom labels (namespace, pod,
+          # node) for compatibility with the canonical schema.
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+{{- include "kubebolt-agent.metricRelabelConfigs" . }}
+{{- end }}
+{{- if .Values.scrape.discovery.nodeExporter.enabled }}
+      - job_name: node-exporter
+        # node-exporter runs as a DaemonSet — one pod per node.
+        # Same node filter as the pods job: scrape only the local
+        # one to avoid N-way duplication.
+        kubernetes_sd_configs:
+          - role: pod
+        scheme: http
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: "node-exporter"
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: keep
+            regex: "%{NODE_NAME}"
+          # Pod-SD emits one target per containerPort. node-exporter
+          # 1.x typically declares only `metrics=9100` so this filter
+          # is a no-op today, but kube-prometheus-stack and other
+          # upstream charts have history of adding sidecar ports
+          # (textfile collector, control-plane exporter). Without
+          # this keep, those extra ports get rewritten to the same
+          # __address__ as the metrics port via the replace below
+          # and vmagent logs "skipping duplicate scrape target" once
+          # per cycle. Same fix pattern as Day 6 follow-up applied
+          # to the kubernetes-pods job (217175f), but for dedicated
+          # jobs: keep only the containerPort that matches the
+          # configured scrape port.
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "{{ .Values.scrape.discovery.nodeExporter.port }}"
+          - source_labels: [__address__]
+            action: replace
+            regex: "([^:]+)(?::\\d+)?"
+            replacement: "$1:{{ .Values.scrape.discovery.nodeExporter.port }}"
+            target_label: __address__
+          - target_label: __metrics_path__
+            replacement: {{ .Values.scrape.discovery.nodeExporter.path | quote }}
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            target_label: node
+{{- include "kubebolt-agent.metricRelabelConfigs" . }}
+{{- end }}
+{{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
+      # ⚠️  kube-state-metrics is cluster-scoped — enabling this
+      # without per-vmagent dedup means N×duplicate samples (one
+      # per node where an agent runs). Mitigation paths:
+      #   1. Annotation-driven discovery (preferred when KSM has
+      #      `prometheus.io/scrape=true` + `port` annotations) —
+      #      the kubernetes-pods job's per-node filter ensures
+      #      single-scrape semantics. kube-prometheus-stack does
+      #      NOT add these annotations, so this path requires
+      #      operator action on the customer side.
+      #   2. VM-side dedup — `--dedup.minScrapeInterval=30s` on
+      #      the storage flag collapses duplicate samples at write
+      #      time. The bundled kubebolt chart and docker-compose
+      #      ship this flag by default since the post-Phase-2.5
+      #      follow-up; external Prom-compatible TSDBs need the
+      #      operator to enable it.
+      - job_name: kube-state-metrics
+        kubernetes_sd_configs:
+          - role: pod
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: "kube-state-metrics"
+          # KSM 2.x exposes two containerPorts — `http` (metrics)
+          # and `metrics` (telemetry). Pod-SD emits one target per
+          # port; without this keep, the __address__ rewrite below
+          # collapses both to the same final URL and vmagent logs
+          # "skipping duplicate scrape target" once per cycle.
+          # Same fix pattern as Day 6 follow-up applied to the
+          # kubernetes-pods job (217175f), but for dedicated jobs:
+          # keep only the containerPort that matches the configured
+          # scrape port. Surfaced when running against
+          # kube-prometheus-stack instead of the bundled hand-rolled
+          # KSM (which had a single explicit containerPort).
+          - source_labels: [__meta_kubernetes_pod_container_port_number]
+            action: keep
+            regex: "{{ .Values.scrape.discovery.kubeStateMetrics.port }}"
+          - source_labels: [__address__]
+            action: replace
+            regex: "([^:]+)(?::\\d+)?"
+            replacement: "$1:{{ .Values.scrape.discovery.kubeStateMetrics.port }}"
+            target_label: __address__
+          - target_label: __metrics_path__
+            replacement: {{ .Values.scrape.discovery.kubeStateMetrics.path | quote }}
+{{- include "kubebolt-agent.metricRelabelConfigs" . }}
+{{- end }}
+{{- if not (or .Values.scrape.discovery.pods.enabled .Values.scrape.discovery.nodeExporter.enabled .Values.scrape.discovery.kubeStateMetrics.enabled) }}
+      # All discovery jobs disabled — vmagent runs but scrapes
+      # nothing. Useful for dry-run validation of the sidecar
+      # itself (process liveness, remote_write reachability) before
+      # opening the firehose. Enable scrape.discovery.pods or
+      # scrape.discovery.nodeExporter to start collecting.
+      []
+{{- end }}
+{{- end }}

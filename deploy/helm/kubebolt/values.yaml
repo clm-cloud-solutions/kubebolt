@@ -156,8 +156,13 @@ metrics:
           cpu: 1000m
           memory: 2Gi
       # Extra args passed to the VictoriaMetrics binary. The chart
-      # already provides --storageDataPath, --retentionPeriod, and
-      # --httpListenAddr — anything you add here is appended.
+      # already provides --storageDataPath, --retentionPeriod,
+      # --httpListenAddr, and --dedup.minScrapeInterval=30s
+      # (collapses N×duplicate kube-state-metrics samples produced
+      # by the multi-vmagent DaemonSet pattern). Anything you add
+      # here is appended. To DISABLE dedup (e.g. when running a
+      # single vmagent and you want raw sample density), pass
+      # --dedup.minScrapeInterval=0 here — explicit override wins.
       extraArgs: []
     # External TSDB URL — used when embedded.enabled is false. Must
     # support the VictoriaMetrics ingestion API ("/api/v1/import" and
@@ -166,6 +171,27 @@ metrics:
     #   http://victoria-metrics.observability.svc.cluster.local:8428
     #   https://vmselect.example.com
     externalUrl: ""
+  # Prom remote_write receiver (Phase 2 of the Universal Data Plane
+  # Plan). When enabled, the backend exposes POST /api/v1/prom/write
+  # so a kubebolt-agent v1.0+ vmagent sidecar can ship scraped
+  # samples directly into VM. Default off — Phase 2 stages the path
+  # without auth and we don't want to expose an unauthenticated
+  # ingest port on existing installs by accident. Phase 3 will
+  # replace this gate with a bearer-token middleware + per-tenant
+  # cardinality limits.
+  remoteWrite:
+    enabled: false
+    # Three-tier enforcement for the bearer middleware on the
+    # /api/v1/prom/write endpoint. Mirrors the gRPC channel's
+    # AGENT_AUTH_MODE semantics (auth.agentAuthMode in this chart).
+    # Values: disabled | permissive | enforced. Default disabled
+    # for Sprint A migration compatibility — flip to enforced once
+    # operators have provisioned ingest tokens via the agent
+    # integration's "Generate token + create Secret" flow. The
+    # backend uses the SAME TenantsStore for both surfaces, so
+    # operators get one token to manage, two consumers (agent
+    # gRPC + vmagent HTTP).
+    authMode: disabled
 
 # Number of replicas
 replicaCount: 1

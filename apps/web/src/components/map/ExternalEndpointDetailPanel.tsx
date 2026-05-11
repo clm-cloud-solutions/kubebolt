@@ -45,8 +45,8 @@ export function ExternalEndpointDetailPanel({
   )
 
   // Per-caller rate + verdict breakdown. Multiple flows from the
-  // same pod can land here (one per verdict + dst_ip combo), so we
-  // sum by (namespace, pod).
+  // same pod can land here (one per verdict + destination_ip combo),
+  // so we sum by (namespace, pod).
   type CallerAgg = {
     ns: string
     pod: string

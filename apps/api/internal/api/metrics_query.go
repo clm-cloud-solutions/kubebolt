@@ -27,12 +27,16 @@ var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
 // activeClusterUID returns the kube-system UID of the cluster this
 // handler is currently pointed at, or empty when no connector is
-// available (startup before first connect, or connection errored).
+// available (startup before first connect, or connection errored,
+// or unit tests that construct the handler without a manager).
 // scopeQueryByCluster fails closed on empty by injecting a sentinel
 // that no real cluster would ever emit, so an unknown UID returns
 // zero series rather than leaking data from other clusters that
 // happen to share the same VM.
 func (h *handlers) activeClusterUID() string {
+	if h.manager == nil {
+		return ""
+	}
 	conn := h.manager.Connector()
 	if conn == nil {
 		return ""
@@ -57,14 +61,29 @@ var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
 // naming convention (one of these prefixes + `_` + body). Extend the
 // list when a new metric family ships from the agent.
 //
-// Identifiers used as label names elsewhere — `cluster_id`, `pod_name`,
-// `pod_namespace`, `pod_uid` — would also match this regex. Two
+// Phase 2 of the Universal Data Plane Plan introduced two more
+// scrape sources whose canonical metric names sit outside the
+// original five-prefix list:
+//
+//   - `kubelet_*`  emitted by the agent for kubelet_volume_stats_*
+//                  (Day 1 of Phase 1)
+//   - `kube_*`     emitted by kube-state-metrics scraped via vmagent
+//                  (Phase 2 Day 2-3)
+//
+// Without these prefixes, queries like `count(kube_pod_info)` or
+// `count(kubelet_volume_stats_used_bytes)` would leave VictoriaMetrics
+// unscoped, leaking samples across clusters that share the same VM.
+// Fix surfaced in Phase 2 in-vivo testing — the coverage banner
+// reported KSM as ACTIVE even when its cluster_id didn't match.
+//
+// Identifiers used as label names elsewhere — `cluster_id`, `pod_uid`,
+// and any future `pod_*` label — would also match this regex. Two
 // guards keep them from being misidentified as metric references:
 // step 2 of scopeQueryByCluster skips text inside `{...}` selectors,
 // AND skips text inside `by(...)` / `without(...)` aggregation clauses
 // (see groupingClauseRE). Anything outside both is a real metric ref.
 var bareMetricRE = regexp.MustCompile(
-	`\b(?:node|pod|container|kubebolt|hubble)_[a-zA-Z0-9_]+\b`,
+	`\b(?:node|pod|container|kubebolt|kubelet|kube|hubble)_[a-zA-Z0-9_]+\b`,
 )
 
 // groupingClauseRE matches the start of a PromQL aggregation grouping
@@ -92,11 +111,13 @@ var groupingClauseRE = regexp.MustCompile(`\b(?:by|without)\s*\(`)
 //     skipped if they already have one). Handles `metric{a="b"}` and
 //     bare label sets like `{source="hubble"}`.
 //  2. Bare metric references with no selector get a fresh
-//     `{cluster_id="..."}` appended. Handles `sum(node_cpu_usage_cores)`
-//     and `rate(node_network_total[1m])` — query shapes used by
-//     OverviewPage and NodesPage that have no `{...}` chunk for pass 1
-//     to find. Pass 2 walks the string honoring `{...}` boundaries so
-//     label names inside selectors aren't mistaken for metrics.
+//     `{cluster_id="..."}` appended. Handles
+//     `sum(rate(node_cpu_usage_seconds_total[1m]))` and
+//     `rate(node_network_receive_bytes_total[1m])` — query shapes used
+//     by CapacityPage and NodesPage that have no `{...}` chunk for
+//     pass 1 to find. Pass 2 walks the string honoring `{...}`
+//     boundaries so label names inside selectors aren't mistaken for
+//     metrics.
 //
 // Regex-based rather than a real PromQL parser because our query shapes
 // are stable and simple. If we ever need multi-cluster aggregation or
@@ -241,9 +262,9 @@ func unmaskQuotedStrings(s string, saved []string) string {
 // that case. References sitting inside a `by(...)` or `without(...)`
 // aggregation clause are also left alone — those are label names,
 // not metric refs, even when they happen to share the same prefix
-// (e.g. `pod_namespace`, `pod_name`). Without this guard, queries
-// like `sum by (pod_namespace) (...)` get rewritten to invalid PromQL
-// (`sum by (pod_namespace{cluster_id="..."}) (...)`).
+// (e.g. `pod_uid`). Without this guard, queries like
+// `sum by (pod_uid) (...)` get rewritten to invalid PromQL
+// (`sum by (pod_uid{cluster_id="..."}) (...)`).
 func injectBareMetrics(s, injected string, nextChar byte) string {
 	matches := bareMetricRE.FindAllStringIndex(s, -1)
 	if len(matches) == 0 {
@@ -288,7 +309,7 @@ func injectBareMetrics(s, injected string, nextChar byte) string {
 // `start` is the index of the first char after the opening `(`;
 // `end` is the index of the matching `)`. Nested parentheses
 // (rare in our queries but legal in PromQL) are tracked so an
-// expression like `by(pod_name) (sum(...))` doesn't accidentally
+// expression like `by(pod_uid) (sum(...))` doesn't accidentally
 // extend the skip region into the metric body.
 func findGroupingRegions(s string) [][2]int {
 	locs := groupingClauseRE.FindAllStringIndex(s, -1)

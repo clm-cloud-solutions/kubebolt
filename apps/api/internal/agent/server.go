@@ -22,6 +22,7 @@ import (
 	"net"
 
 	"github.com/google/uuid"
+	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -38,6 +39,14 @@ import (
 type MetricsWriter interface {
 	Write(ctx context.Context, samples []*agentv2.Sample) error
 }
+
+// MinAgentVersion is the lowest agent release that emits the Prom-canonical
+// schema (Phase 1 of the Universal Data Plane Plan, commits 373ef20..9dc6dc6).
+// Older agents still connect — fail-soft preserves visibility during a rolling
+// chart upgrade — but the dashboards consult v1.0 metric/label names so they
+// render empty for the cluster the legacy agent is reporting from. The
+// warning logged on registration tells the operator exactly what to do.
+const MinAgentVersion = "1.0.0"
 
 // Server implements agentv2.AgentChannelServer.
 //
@@ -161,6 +170,31 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		)
 	}
 	slog.Info("agent registered", logAttrs...)
+
+	// Warn (don't reject) when the agent reports a version below the
+	// minimum that emits the v1.0 Prom-canonical schema. Older agents
+	// connect fine and ship samples, but those samples carry the legacy
+	// label/metric names that the UI no longer queries — the operator's
+	// dashboards will look "empty" until the helm chart is bumped.
+	// Empty / unparseable AgentVersion is silent: not all clients set
+	// it (test mocks, pre-Hello-version forks). semver wants a leading
+	// "v" so we add one before comparing.
+	if av := hello.GetAgentVersion(); av != "" {
+		want := "v" + MinAgentVersion
+		got := av
+		if got[0] != 'v' {
+			got = "v" + got
+		}
+		if semver.IsValid(got) && semver.Compare(got, want) < 0 {
+			slog.Warn("agent below minimum version — legacy schema",
+				slog.String("agent_id", agentID),
+				slog.String("cluster_id", clusterID),
+				slog.String("agent_version", av),
+				slog.String("min_agent_version", MinAgentVersion),
+				slog.String("hint", "upgrade kubebolt-agent helm chart to >=1.0.0; v0.x emits the legacy schema and dashboards will render empty"),
+			)
+		}
+	}
 
 	// Build an Agent that wraps this stream as its Sender. All
 	// outbound BackendMessages funnel through agent.Send so concurrent

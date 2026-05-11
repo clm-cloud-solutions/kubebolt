@@ -3,16 +3,16 @@
 
 // collapsePodToWorkload wraps a metric expression in nested
 // label_replace calls that derive a "workload" label from a pod
-// name. Hubble flow metrics (pod_flow_*) carry dst_pod / src_pod
-// (full pod names with the controller's hash suffixes) but no
-// workload label — so panels that want to group rates by Deployment
-// / DaemonSet / StatefulSet need to recover that grouping client-
-// side.
+// name. Hubble flow metrics (pod_flow_*) carry destination_pod /
+// source_pod (full pod names with the controller's hash suffixes)
+// but no workload label — so panels that want to group rates by
+// Deployment / DaemonSet / StatefulSet need to recover that
+// grouping client-side.
 //
 // Three passes, applied in order. Each later pass overrides the
-// workload label only if its regex matches dst_pod, so the most
-// specific pattern wins:
-//   1. workload = dst_pod  (default fallback for unmatched names)
+// workload label only if its regex matches the pod label, so the
+// most specific pattern wins:
+//   1. workload = pod label  (default fallback for unmatched names)
 //   2. ^(.+)-[a-z0-9]{4,8}$               — DaemonSet pattern (single trailing hash)
 //   3. ^(.+)-[a-z0-9]{6,12}-[a-z0-9]{4,8}$ — ReplicaSet/Deployment (two hashes)
 //
@@ -28,7 +28,7 @@
 // workloads are rare and still recognizable in the UI.
 export function collapsePodToWorkload(
   metric: string,
-  podLabel = 'dst_pod',
+  podLabel = 'destination_pod',
   outputLabel = 'workload',
 ): string {
   return [
