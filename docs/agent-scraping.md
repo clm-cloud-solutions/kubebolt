@@ -148,7 +148,7 @@ scrape:
   enabled: false                  # Master switch.
   image:
     repository: victoriametrics/vmagent
-    tag: v1.142.0                 # Pinned to the same VM line as the
+    tag: v1.143.0                 # Pinned to the same VM line as the
                                   # bundled VictoriaMetrics in the kubebolt
                                   # chart. Bump in lockstep on upgrade.
     pullPolicy: IfNotPresent
