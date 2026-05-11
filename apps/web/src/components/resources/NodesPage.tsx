@@ -300,6 +300,16 @@ function NodeFleetCharts() {
           { query: 'sum by (node) (rate(node_network_receive_bytes_total[1m]))', prefix: 'RX' },
           { query: 'sum by (node) (rate(node_network_transmit_bytes_total[1m]))', prefix: 'TX', negate: true },
         ]}
+        // Multi-node clusters produce one series per (RX, node) and
+        // one per (TX, node). The default seriesLabel collapses by
+        // prefix only, so two RX series would both label as "RX" and
+        // the chart's collision resolver appends " (2)" — confusing
+        // (legend reads "RX" + "RX (2)" with no node hint). Include
+        // the node name explicitly so each line identifies its node.
+        seriesLabel={(labels, prefix) => {
+          const node = labels.node || 'node'
+          return prefix ? `${prefix} ${node}` : node
+        }}
         chartType="area"
       />
     </div>

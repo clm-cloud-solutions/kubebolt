@@ -1713,7 +1713,17 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // sum by (container) collapses historical pod_uid instances
           // (e.g. pod restarts) into one line per container. If the pod
           // has never been recreated the query behaves identically.
-          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
+          //
+          // `job=""` selects the agent's own emission. When an external
+          // Prometheus also scrapes the kubelet (kube-prom-stack), Prom's
+          // series carry `job="kubelet"` and would otherwise double-count
+          // the rate AND inject `container=""` pod-level cAdvisor rows
+          // that render as a phantom "Series" legend entry. The agent's
+          // emission carries `workload_kind` + `workload_name` labels
+          // (PodsCache enrichment) that the chart's parent Workload
+          // Monitor depends on, so the agent stays the primary source
+          // and this filter excludes Prom's overlap entirely.
+          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector},job="",container!=""}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -1721,7 +1731,9 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         <MetricChart
           title="Memory working set by container"
           unit="bytes"
-          query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
+          // Same job=""/container!="" filter pattern as CPU above —
+          // agent-only, excludes Prom kubelet scrape's overlap.
+          query={`sum by (container) (container_memory_working_set_bytes{${selector},job="",container!=""})`}
           referenceLines={memRefs}
           accents={METRIC_ACCENTS.memory}
           chartType="area"
@@ -1736,8 +1748,22 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // row (the pause container owns the pod's network namespace).
           // Without the filter the per-container rows duplicate the counters
           // and inflate the rate.
-          { query: `sum by (interface) (rate(container_network_receive_bytes_total{${selector},container=""}[1m]))`, prefix: 'RX' },
-          { query: `sum by (interface) (rate(container_network_transmit_bytes_total{${selector},container=""}[1m]))`, prefix: 'TX', negate: true },
+          //
+          // `interface=~"eth.*|en.*|cilium_.*"` drops the kernel default
+          // pseudo-interfaces (gre0, sit0, ip6_vti0, etc.) that exist in
+          // every Linux network namespace with all-zero counters. Without
+          // this filter, Prom kubelet scrape's per-interface emission
+          // renders 9+ flat lines at zero — the agent stamped fewer of
+          // these because /stats/summary collapses by default, but Prom's
+          // /metrics/cadvisor surfaces every interface the kernel reports.
+          //
+          // `job=""` keeps the agent-first convention from CPU/Memory
+          // above. Network is less duplicative than CPU/Memory (Prom and
+          // agent agree on the labels), but using the same filter keeps
+          // the chart consistent and yields the workload_* enrichment for
+          // the Pod Monitor's secondary indicators.
+          { query: `sum by (interface) (rate(container_network_receive_bytes_total{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"}[1m]))`, prefix: 'RX' },
+          { query: `sum by (interface) (rate(container_network_transmit_bytes_total{${selector},job="",container="",interface=~"eth.*|en.*|cilium_.*"}[1m]))`, prefix: 'TX', negate: true },
         ]}
         accents={METRIC_ACCENTS.networkRxTx}
         chartType="area"
