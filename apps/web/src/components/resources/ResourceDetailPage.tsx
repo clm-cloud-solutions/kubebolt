@@ -1954,19 +1954,42 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MetricChart
           title="Filesystem usage"
           unit="percent"
-          // Per-mountpoint % used. Filters:
-          //   fstype  drops pseudo-filesystems (tmpfs, overlay,
-          //           cgroup, etc.) — they're memory or kernel
-          //           artifacts, not real disk capacity.
-          //   mountpoint  drops kind/container bind-mounts
-          //           (/etc/hosts, /etc/resolv.conf, /run/*) and
-          //           the kubelet's per-pod volume mounts that
-          //           explode cardinality without adding signal.
-          // Series labeled by mountpoint so /var, /, /var/lib/docker
-          // each get a distinct line. Reference lines at the two
-          // operator-meaningful thresholds: 80% (start watching),
-          // 95% (page someone).
-          query={`100 * (1 - node_filesystem_avail_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"} / node_filesystem_size_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"})`}
+          // Per-mountpoint % used, with OSS-minimal fallback.
+          //
+          // Primary branch — node-exporter naming
+          //   (node_filesystem_avail_bytes / node_filesystem_size_bytes):
+          //   one series per mountpoint, the rich view P25-04 introduced.
+          //   Filters drop pseudo-filesystems (tmpfs, overlay, cgroup,
+          //   etc. — memory/kernel artifacts) and high-cardinality
+          //   ephemeral mounts (kubelet per-pod volumes, /etc/* and
+          //   /run/* bind-mounts) that would explode cardinality
+          //   without adding operator signal.
+          //
+          // Fallback branch — kubelet stats summary naming
+          //   (node_fs_used_bytes / node_fs_capacity_bytes):
+          //   single coarse series per node, emitted unconditionally
+          //   by the agent's StatsCollector. Guarded with
+          //   `unless on(node) node_filesystem_avail_bytes{selector}`
+          //   so it ONLY fires when no node-exporter series exist for
+          //   this node — otherwise the two branches would both
+          //   return (left=per-mountpoint, right=coarse) and the
+          //   chart would show one phantom extra series with no
+          //   mountpoint label per node. The `unless ... on(node)`
+          //   eliminates that overlap cleanly.
+          //
+          // Why this matters: P25-04 silently traded the agent's
+          // built-in metric for node-exporter's, leaving OSS-minimal
+          // installs (agent only, no vmagent sidecar) with an empty
+          // Filesystem panel — surfaced in cluster-validation when a
+          // freshly-installed humo-1 had no node-exporter and the
+          // chart went blank. The fallback restores the OSS-default
+          // experience without sacrificing the Prom-mature operator's
+          // per-mountpoint view.
+          //
+          // Reference lines at the two operator-meaningful thresholds:
+          // 80% (start watching), 95% (page someone). Same thresholds
+          // apply to both branches.
+          query={`(100 * (1 - node_filesystem_avail_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"} / node_filesystem_size_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"})) or ((100 * node_fs_used_bytes{${selector}} / node_fs_capacity_bytes{${selector}}) unless on(node) node_filesystem_avail_bytes{${selector}})`}
           seriesLabel={(labels) => labels.mountpoint || labels.device || 'fs'}
           referenceLines={[
             { y: 80, label: '80%', color: '#f5a623', shortLabel: '80%' },
