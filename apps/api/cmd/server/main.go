@@ -251,6 +251,22 @@ func main() {
 	// registry survives a backend restart by losing all state, same
 	// as pre-Sprint-A.5 behavior.
 	var agentStore channel.AgentStore
+
+	// Fleet-wide Prom remote_write limit defaults (Phase 3 Day 1-3).
+	// Loaded once at startup from KUBEBOLT_PROM_WRITE_DEFAULT_* env
+	// vars and shared between two consumers:
+	//   - TenantHandlers (renders the "defaults" view of /admin/tenants/:id/limits)
+	//   - PromRateLimiter (enforces these when a tenant has no override)
+	// Loading outside the auth block means rate limiting works even
+	// when auth is disabled — operators still want the bucket gate
+	// against a misbehaving Prom in single-tenant deployments.
+	promLimitsCfg := config.LoadPromWriteLimitsConfig()
+	promLimitsEffective := auth.EffectiveLimits{
+		WriteSamplesPerSec: promLimitsCfg.WriteSamplesPerSec,
+		WriteBurstSamples:  promLimitsCfg.WriteBurstSamples,
+		MaxActiveSeries:    promLimitsCfg.MaxActiveSeries,
+	}
+
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -356,16 +372,7 @@ func main() {
 			fatal("agent auth bundle", slog.String("error", err.Error()))
 		}
 		agentAuthBundle = bundle
-		// Fleet-wide Prom remote_write limit defaults — per-tenant
-		// overrides resolve against these. Loaded once at startup; env
-		// var changes require a restart, which matches the "system
-		// policy" nature of these defaults.
-		promLimits := config.LoadPromWriteLimitsConfig()
-		tenantHandlers = auth.NewTenantHandlers(tenantsStore, auth.EffectiveLimits{
-			WriteSamplesPerSec: promLimits.WriteSamplesPerSec,
-			WriteBurstSamples:  promLimits.WriteBurstSamples,
-			MaxActiveSeries:    promLimits.MaxActiveSeries,
-		}, bundle.AsCacheInvalidators()...)
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
@@ -476,8 +483,15 @@ func main() {
 		resolvedPromWriteEnforcement = string(agent.EnforcementDisabled)
 	}
 
+	// Per-tenant Prom remote_write rate limiter (Phase 3 Day 3).
+	// Reuses the same promLimitsEffective the tenant admin API uses
+	// for "defaults" rendering — single source of truth means an
+	// operator changing the env var moves both the admin UI's
+	// "Defaults" view AND the enforcement layer in lockstep.
+	promRateLimiter := api.NewPromRateLimiter(promLimitsEffective)
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

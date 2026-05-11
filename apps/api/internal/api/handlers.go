@@ -53,6 +53,15 @@ type handlers struct {
 	//   "disabled"   bearer ignored entirely (Sprint A default)
 	// Empty string falls back to "disabled" at parse time.
 	promWriteAuthMode string
+	// promRateLimiter is the per-tenant token-bucket gate added in
+	// Phase 3 Day 3. nil means "no rate limit" (transitional / test
+	// envs); production wires this always via NewPromRateLimiter
+	// with the fleet defaults from config.LoadPromWriteLimitsConfig.
+	// Bucket state is in-memory only; restart resets every tenant's
+	// counter, which is the conservative right answer (slightly
+	// more permissive than persisting state, no extra BoltDB writes
+	// on the hot path).
+	promRateLimiter *PromRateLimiter
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

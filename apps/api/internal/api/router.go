@@ -34,6 +34,7 @@ func NewRouter(
 	agentAuthEnforcement string,
 	tenantsStore *auth.TenantsStore,
 	promWriteAuthMode string,
+	promRateLimiter *PromRateLimiter,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -56,6 +57,7 @@ func NewRouter(
 		agentAuthEnforcement: agentAuthEnforcement,
 		tenantsStore:         tenantsStore,
 		promWriteAuthMode:    promWriteAuthMode,
+		promRateLimiter:      promRateLimiter,
 	}
 
 	// Health check endpoint

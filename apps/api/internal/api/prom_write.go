@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"crypto/subtle"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +12,9 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 // promWriteEnabled returns true when the operator opted into the
@@ -80,9 +85,19 @@ const (
 // rejection of empty bearers (avoids hitting the store) and is not
 // security-load-bearing on its own.
 //
-// Returns true when the request is authorized. Returns false after
-// writing the appropriate response (4xx) to w.
-func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) bool {
+// Returns the tenant the request authenticated as (or nil on
+// "disabled" / permissive-fallback / no TenantsStore wired) and a
+// boolean indicating whether the caller may continue. On false the
+// response has already been written.
+//
+// Day 3 of Phase 3 (rate limiting) requires the resolved tenant to
+// look up per-tenant overrides — the bool-only signature of the
+// prior version threw that information away. Permissive-fallback
+// returns (nil, true) which means "use fleet defaults" downstream:
+// without a verified tenant identity, the conservative posture is
+// to apply the system-wide limits as if the request belonged to an
+// anonymous bucket.
+func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) (*auth.Tenant, bool) {
 	mode := h.promWriteAuthMode
 	if mode == "" {
 		mode = promWriteAuthDisabled
@@ -91,7 +106,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	// disabled: ignore the header entirely. No WARN (the operator
 	// asked for this mode explicitly).
 	if mode == promWriteAuthDisabled {
-		return true
+		return nil, true
 	}
 
 	// Configuration sanity: enforced mode without a TenantsStore is
@@ -102,13 +117,13 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	if h.tenantsStore == nil {
 		if mode == promWriteAuthEnforced {
 			respondError(w, http.StatusInternalServerError, "remote_write auth enforced but TenantsStore not wired")
-			return false
+			return nil, false
 		}
 		promWriteUnauthWarnOnce.Do(func() {
 			slog.Warn("prom remote_write permissive but TenantsStore not wired — calls allowed without validation",
 				slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true to enable token validation"))
 		})
-		return true
+		return nil, true
 	}
 
 	authz := r.Header.Get("Authorization")
@@ -117,32 +132,33 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 		if mode == promWriteAuthPermissive {
 			slog.Warn("prom remote_write permissive-fallback: missing bearer",
 				slog.String("remote", r.RemoteAddr))
-			return true
+			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "missing Bearer token")
-		return false
+		return nil, false
 	}
 	token := strings.TrimSpace(authz[len(prefix):])
 	if subtle.ConstantTimeCompare([]byte(token), []byte("")) == 1 {
 		if mode == promWriteAuthPermissive {
 			slog.Warn("prom remote_write permissive-fallback: empty bearer",
 				slog.String("remote", r.RemoteAddr))
-			return true
+			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
-		return false
+		return nil, false
 	}
-	if _, _, err := h.tenantsStore.LookupByToken(token); err != nil {
+	tenant, _, err := h.tenantsStore.LookupByToken(token)
+	if err != nil {
 		if mode == promWriteAuthPermissive {
 			slog.Warn("prom remote_write permissive-fallback: bad bearer",
 				slog.String("remote", r.RemoteAddr),
 				slog.String("error", err.Error()))
-			return true
+			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
-		return false
+		return nil, false
 	}
-	return true
+	return tenant, true
 }
 
 // handlePromWrite forwards a Prometheus remote_write request to the
@@ -181,7 +197,13 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	// that the gRPC channel's BearerIngestAuth uses — operators can
 	// reuse the agent's existing ingest token Secret instead of
 	// provisioning a separate credential just for the scrape sidecar.
-	if !h.authenticatePromWrite(w, r) {
+	//
+	// tenant may be nil under disabled / permissive-fallback / no-
+	// TenantsStore paths; downstream rate limit treats nil as the
+	// "anonymous" bucket which uses fleet defaults. That's the same
+	// posture every unauthenticated client falls under.
+	tenant, ok := h.authenticatePromWrite(w, r)
+	if !ok {
 		return
 	}
 
@@ -199,6 +221,56 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 		_ = maxErr // silence unused if go version doesn't expose the typed error
 		respondError(w, http.StatusBadRequest, "read remote_write body")
 		return
+	}
+
+	// Rate limit gate (Phase 3 Day 3). Parse the snappy-compressed
+	// payload to count samples, then check against the tenant's
+	// effective limits. nil rateLimiter is the "feature disabled"
+	// signal — early dev installs without limits configured get the
+	// pre-Phase-3 behavior (no rate limit). Production wires this
+	// always; the nil check is for test fixtures + transitional
+	// envs that haven't restarted into the new wiring yet.
+	if h.promRateLimiter != nil {
+		sampleCount, parseErr := countWriteRequestSamples(body)
+		if parseErr != nil {
+			// Distinguish "payload too large after decompress" (413)
+			// from "malformed wire bytes" (400). Both are client-side
+			// failures; we don't want to count either against the
+			// bucket because the request can never succeed.
+			if errors.Is(parseErr, ErrPromWriteTooLarge) {
+				respondError(w, http.StatusRequestEntityTooLarge, "remote_write payload too large after decompression")
+				return
+			}
+			// Malformed payload: vminsert would reject anyway. Refuse
+			// upstream forward to save the round-trip and the
+			// resulting 4xx mystery in vmagent's logs.
+			respondError(w, http.StatusBadRequest, "remote_write payload parse: "+parseErr.Error())
+			return
+		}
+		// Resolve which tenant's bucket to consume from. Unauthed
+		// requests (tenant == nil) use the synthetic "anonymous"
+		// identity so they're still subject to rate limits — the
+		// alternative would let unauthed traffic DoS the path.
+		tenantID := "anonymous"
+		var overrides *auth.TenantLimits
+		if tenant != nil {
+			tenantID = tenant.ID
+			overrides = tenant.Limits
+		}
+		if allowed, retryAfter := h.promRateLimiter.Allow(tenantID, overrides, sampleCount); !allowed {
+			// Round up to whole seconds for the header — clients
+			// (Prom remote_write retries) expect an integer second
+			// count per RFC 7231. Subsecond delays still get a
+			// minimum of 1s, which is the right floor anyway: any
+			// faster retry would just spin against the bucket.
+			seconds := int(retryAfter.Round(time.Second) / time.Second)
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+			respondError(w, http.StatusTooManyRequests, "remote_write rate limit exceeded for tenant")
+			return
+		}
 	}
 
 	target, err := url.Parse(metricsStorageURL() + promWriteUpstreamPath)
