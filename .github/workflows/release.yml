@@ -28,6 +28,9 @@ jobs:
 
       # Single source of truth for VM tag is deploy/helm/kubebolt/values.yaml.
       # docker-compose.yml MUST stay aligned (renovate.json groups them).
+      # The vmagent sidecar pin lives in deploy/helm/kubebolt-agent/values.yaml
+      # and tracks the same VM line — kept in lockstep so a CVE patch on the
+      # VM line covers both binaries (they're built from the same source tree).
       - name: Extract pinned VictoriaMetrics tag from values.yaml
         id: vm
         run: |
@@ -39,6 +42,22 @@ jobs:
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "Pinned VictoriaMetrics tag: $TAG"
 
+      - name: Extract pinned vmagent tag from kubebolt-agent values.yaml
+        id: vmagent
+        run: |
+          # Grab the next `tag:` line after the vmagent repository line.
+          # Robust to any number of intervening comments — we don't pin
+          # the exact line offset because the comment block evolves.
+          TAG=$(grep -A20 "repository: victoriametrics/vmagent" deploy/helm/kubebolt-agent/values.yaml \
+                 | grep -m1 '^\s*tag:' \
+                 | awk '{print $2}')
+          if [ -z "$TAG" ]; then
+            echo "::error::Could not parse vmagent tag from kubebolt-agent/values.yaml"
+            exit 1
+          fi
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Pinned vmagent tag: $TAG"
+
       - name: Verify compose pin matches helm values pin
         run: |
           HELM_TAG="${{ steps.vm.outputs.tag }}"
@@ -48,10 +67,31 @@ jobs:
             exit 1
           fi
 
+      - name: Verify vmagent pin tracks VictoriaMetrics pin
+        run: |
+          VM_TAG="${{ steps.vm.outputs.tag }}"
+          VMAGENT_TAG="${{ steps.vmagent.outputs.tag }}"
+          if [ "$VM_TAG" != "$VMAGENT_TAG" ]; then
+            echo "::error::vmagent vs VictoriaMetrics tag drift — vmagent=$VMAGENT_TAG vm=$VM_TAG. Both must track the same VM release line (built from the same source tree, share Go stdlib CVEs)."
+            exit 1
+          fi
+
       - name: Trivy scan VictoriaMetrics image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan vmagent image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: docker.io/victoriametrics/vmagent:${{ steps.vmagent.outputs.tag }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
@@ -72,12 +112,31 @@ jobs:
         env:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
-      - name: Upload SARIF to code scanning
+      - name: Trivy scan vmagent image (SARIF for code scanning)
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: docker.io/victoriametrics/vmagent:${{ steps.vmagent.outputs.tag }}
+          format: sarif
+          output: trivy-vmagent.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Upload VictoriaMetrics SARIF to code scanning
         if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: trivy-vm.sarif
           category: trivy-victoriametrics
+
+      - name: Upload vmagent SARIF to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-vmagent.sarif
+          category: trivy-vmagent
 
   build-api:
     needs: preflight-third-party-scan

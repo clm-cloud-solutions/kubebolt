@@ -292,8 +292,9 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 | Image | Authoritative pin | Mirror (must match) |
 |-------|-------------------|----------------------|
 | `victoriametrics/victoria-metrics` | `deploy/helm/kubebolt/values.yaml` (`metrics.storage.embedded.image.tag`) | `deploy/docker-compose.yml` (`victoriametrics:` service) |
+| `victoriametrics/vmagent` | `deploy/helm/kubebolt-agent/values.yaml` (`scrape.image.tag`) | must match the VictoriaMetrics pin above — both binaries are built from the same source tree, so they share Go stdlib CVEs. Drift between the two trips the preflight scan. |
 
-When adding a new third-party image, add it to this table, add a Trivy scan step in `preflight-third-party-scan`, and extend the drift check.
+When adding a new third-party image, add it to this table, add a Trivy scan step in `preflight-third-party-scan`, extend the drift check, and add a Renovate `customManager` entry in `renovate.json` so the bump auto-PRs land grouped with the rest of the line.
 
 ## Key Reference
 

@@ -16,8 +16,13 @@
   },
   "packageRules": [
     {
-      "description": "Group VictoriaMetrics image bumps across docker-compose and helm values so we never ship drift between the two pin sites.",
-      "matchPackageNames": ["victoriametrics/victoria-metrics", "docker.io/victoriametrics/victoria-metrics"],
+      "description": "Group VictoriaMetrics + vmagent image bumps across docker-compose, helm/kubebolt, and helm/kubebolt-agent. vmagent tracks the VM release line (built from the same source tree, share Go stdlib CVEs) so the three pin sites must move in lockstep — the preflight-third-party-scan fails on drift.",
+      "matchPackageNames": [
+        "victoriametrics/victoria-metrics",
+        "docker.io/victoriametrics/victoria-metrics",
+        "victoriametrics/vmagent",
+        "docker.io/victoriametrics/vmagent"
+      ],
       "groupName": "victoriametrics image",
       "labels": ["dependencies", "image-bump"]
     },
@@ -37,10 +42,19 @@
   "customManagers": [
     {
       "customType": "regex",
-      "description": "Pick up the VictoriaMetrics tag in helm values.yaml (the file isn't a recognised Renovate manager template).",
+      "description": "Pick up the VictoriaMetrics tag in helm/kubebolt values.yaml (the file isn't a recognised Renovate manager template).",
       "fileMatch": ["^deploy/helm/kubebolt/values\\.yaml$"],
       "matchStrings": [
         "repository:\\s*(?<depName>victoriametrics/victoria-metrics)\\s*\\n\\s*tag:\\s*(?<currentValue>v[0-9.]+)"
+      ],
+      "datasourceTemplate": "docker"
+    },
+    {
+      "customType": "regex",
+      "description": "Pick up the vmagent tag in helm/kubebolt-agent values.yaml. Tolerant of comment lines between `repository:` and `tag:` (the values file documents the lockstep policy with prose).",
+      "fileMatch": ["^deploy/helm/kubebolt-agent/values\\.yaml$"],
+      "matchStrings": [
+        "repository:\\s*(?<depName>victoriametrics/vmagent)\\s*\\n(?:\\s*#.*\\n)*\\s*tag:\\s*(?<currentValue>v[0-9.]+)"
       ],
       "datasourceTemplate": "docker"
     }
