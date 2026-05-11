@@ -356,7 +356,16 @@ func main() {
 			fatal("agent auth bundle", slog.String("error", err.Error()))
 		}
 		agentAuthBundle = bundle
-		tenantHandlers = auth.NewTenantHandlers(tenantsStore, bundle.AsCacheInvalidators()...)
+		// Fleet-wide Prom remote_write limit defaults — per-tenant
+		// overrides resolve against these. Loaded once at startup; env
+		// var changes require a restart, which matches the "system
+		// policy" nature of these defaults.
+		promLimits := config.LoadPromWriteLimitsConfig()
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, auth.EffectiveLimits{
+			WriteSamplesPerSec: promLimits.WriteSamplesPerSec,
+			WriteBurstSamples:  promLimits.WriteBurstSamples,
+			MaxActiveSeries:    promLimits.MaxActiveSeries,
+		}, bundle.AsCacheInvalidators()...)
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()

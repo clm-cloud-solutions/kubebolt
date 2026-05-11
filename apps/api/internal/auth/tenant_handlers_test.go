@@ -27,7 +27,14 @@ func newTestHandlers(t *testing.T) (*TenantHandlers, *mockInvalidator) {
 		t.Fatalf("NewTenantsStore: %v", err)
 	}
 	inv := &mockInvalidator{}
-	return NewTenantHandlers(ts, inv), inv
+	// Synthetic defaults distinct from real production values so tests
+	// asserting limits behavior can pin them deterministically.
+	defaults := EffectiveLimits{
+		WriteSamplesPerSec: 1_000,
+		WriteBurstSamples:  10_000,
+		MaxActiveSeries:    100_000,
+	}
+	return NewTenantHandlers(ts, defaults, inv), inv
 }
 
 // withAdminUser fakes a chi-routed request as an authenticated admin.
@@ -352,5 +359,171 @@ func TestHandlers_DeleteTenant_InvalidatesCache(t *testing.T) {
 	}
 	if inv.calls.Load() != before+1 {
 		t.Errorf("delete must invalidate cache once, calls = %d", inv.calls.Load())
+	}
+}
+
+// ─── Per-tenant Prom remote_write limits (Phase 3) ────────────────────
+
+// newTenantViaHandler is a helper for the limits tests — creates a
+// fresh tenant via the same POST /admin/tenants surface as production
+// would, returns its ID. Avoids hand-poking BoltDB and keeps the
+// tests honest about the wire contract.
+func newTenantViaHandler(t *testing.T, srv http.Handler, name string) string {
+	t.Helper()
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/admin/tenants",
+		strings.NewReader(`{"name":"`+name+`"}`)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create tenant %q: status %d, body %s", name, rr.Code, rr.Body)
+	}
+	var tr tenantResponse
+	decodeJSON(t, rr.Body.Bytes(), &tr)
+	return tr.ID
+}
+
+func TestHandlers_GetTenantLimits_DefaultsOnUnconfiguredTenant(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+	tid := newTenantViaHandler(t, srv, "limits-default")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/tenants/"+tid+"/limits", nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET limits: status %d, body %s", rr.Code, rr.Body)
+	}
+	var resp LimitsResponse
+	decodeJSON(t, rr.Body.Bytes(), &resp)
+	// New tenants inherit defaults — Custom should be nil, Effective
+	// must equal Defaults.
+	if resp.Custom != nil {
+		t.Errorf("Custom expected nil on fresh tenant, got %+v", resp.Custom)
+	}
+	if resp.Effective != resp.Defaults {
+		t.Errorf("Effective should equal Defaults on fresh tenant: effective=%+v defaults=%+v", resp.Effective, resp.Defaults)
+	}
+	// Test defaults match what newTestHandlers wires.
+	if resp.Defaults.WriteSamplesPerSec != 1_000 {
+		t.Errorf("WriteSamplesPerSec defaults: expected 1000, got %d", resp.Defaults.WriteSamplesPerSec)
+	}
+}
+
+func TestHandlers_SetTenantLimits_PartialOverride(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+	tid := newTenantViaHandler(t, srv, "limits-partial")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+tid+"/limits",
+		strings.NewReader(`{"writeBurstSamples":50000}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("PUT limits: status %d, body %s", rr.Code, rr.Body)
+	}
+	var resp LimitsResponse
+	decodeJSON(t, rr.Body.Bytes(), &resp)
+	if resp.Custom == nil || resp.Custom.WriteBurstSamples == nil || *resp.Custom.WriteBurstSamples != 50000 {
+		t.Fatalf("Custom.WriteBurstSamples expected 50000, got %+v", resp.Custom)
+	}
+	// Burst overridden, the other two stay on defaults.
+	if resp.Effective.WriteBurstSamples != 50000 {
+		t.Errorf("Effective burst: expected 50000, got %d", resp.Effective.WriteBurstSamples)
+	}
+	if resp.Effective.WriteSamplesPerSec != resp.Defaults.WriteSamplesPerSec {
+		t.Errorf("Effective rate should match default: got %d expected %d", resp.Effective.WriteSamplesPerSec, resp.Defaults.WriteSamplesPerSec)
+	}
+}
+
+func TestHandlers_SetTenantLimits_PreservesPriorOverrides(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+	tid := newTenantViaHandler(t, srv, "limits-merge")
+
+	// First PUT: set burst.
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+tid+"/limits",
+		strings.NewReader(`{"writeBurstSamples":50000}`)))
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("first PUT: %d", rr1.Code)
+	}
+	// Second PUT: set max_series only — must preserve burst.
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+tid+"/limits",
+		strings.NewReader(`{"maxActiveSeries":500000}`)))
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("second PUT: %d, body %s", rr2.Code, rr2.Body)
+	}
+	var resp LimitsResponse
+	decodeJSON(t, rr2.Body.Bytes(), &resp)
+	if resp.Custom.WriteBurstSamples == nil || *resp.Custom.WriteBurstSamples != 50000 {
+		t.Errorf("burst should be preserved across second PUT, got %+v", resp.Custom)
+	}
+	if resp.Custom.MaxActiveSeries == nil || *resp.Custom.MaxActiveSeries != 500000 {
+		t.Errorf("max_series should be set by second PUT, got %+v", resp.Custom)
+	}
+}
+
+func TestHandlers_SetTenantLimits_RejectsNegative(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+	tid := newTenantViaHandler(t, srv, "limits-negative")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+tid+"/limits",
+		strings.NewReader(`{"writeSamplesPerSec":-1}`)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("negative value should be 400, got %d body=%s", rr.Code, rr.Body)
+	}
+}
+
+func TestHandlers_SetTenantLimits_BurstBelowRateEmitsWarningHeader(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+	tid := newTenantViaHandler(t, srv, "limits-warning")
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+tid+"/limits",
+		strings.NewReader(`{"writeSamplesPerSec":10000,"writeBurstSamples":5000}`)))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("burst < rate is a soft warning, not 400. status %d body=%s", rr.Code, rr.Body)
+	}
+	if got := rr.Header().Get("X-KubeBolt-Validation-Warnings"); got == "" {
+		t.Errorf("expected validation warning header, got empty")
+	}
+}
+
+func TestHandlers_ResetTenantLimits_RemovesOverrides(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+	tid := newTenantViaHandler(t, srv, "limits-reset")
+
+	// Set then reset.
+	rr1 := httptest.NewRecorder()
+	srv.ServeHTTP(rr1, httptest.NewRequest(http.MethodPut, "/admin/tenants/"+tid+"/limits",
+		strings.NewReader(`{"writeBurstSamples":50000}`)))
+	if rr1.Code != http.StatusOK {
+		t.Fatalf("PUT setup: %d", rr1.Code)
+	}
+	rr2 := httptest.NewRecorder()
+	srv.ServeHTTP(rr2, httptest.NewRequest(http.MethodDelete, "/admin/tenants/"+tid+"/limits", nil))
+	if rr2.Code != http.StatusOK {
+		t.Fatalf("DELETE: %d body=%s", rr2.Code, rr2.Body)
+	}
+	var resp LimitsResponse
+	decodeJSON(t, rr2.Body.Bytes(), &resp)
+	if resp.Custom != nil {
+		t.Errorf("Custom should be nil after reset, got %+v", resp.Custom)
+	}
+	if resp.Effective != resp.Defaults {
+		t.Errorf("Effective should match Defaults after reset, got effective=%+v defaults=%+v", resp.Effective, resp.Defaults)
+	}
+}
+
+func TestHandlers_GetTenantLimits_NotFound(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	srv := mountAdmin(t, h)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/tenants/nonexistent-id/limits", nil))
+	if rr.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d body=%s", rr.Code, rr.Body)
 	}
 }
