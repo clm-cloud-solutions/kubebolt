@@ -22,8 +22,8 @@ import (
 // UI can distinguish "Cilium working" from "Cilium unreachable" even
 // between flow samples. The gauge lives on the leader only — non-leader
 // pods don't run the collector at all.
-func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, clusterName, node string) {
-	agg := NewAggregator(buf, clusterID, clusterName, node)
+func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, clusterName, node, tenantID string) {
+	agg := NewAggregator(buf, clusterID, clusterName, node, tenantID)
 
 	// Flush loop independent of the stream so samples still accumulate
 	// and ship even when the relay connection is flapping.

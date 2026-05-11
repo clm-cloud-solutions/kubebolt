@@ -33,7 +33,7 @@ import (
 // need "actual current leader" should filter by sample age or combine
 // with the Lease object. Acceptable for now; a future iteration can
 // add a synchronous buffer-flush on shutdown if needed.
-func emitLeaderStatus(buf *buffer.Ring, clusterID, clusterName, nodeName, podName string, leading bool) {
+func emitLeaderStatus(buf *buffer.Ring, clusterID, clusterName, nodeName, podName, tenantID string, leading bool) {
 	labels := map[string]string{
 		"cluster_id": clusterID,
 		"node":       nodeName,
@@ -41,6 +41,9 @@ func emitLeaderStatus(buf *buffer.Ring, clusterID, clusterName, nodeName, podNam
 	}
 	if clusterName != "" {
 		labels["cluster_name"] = clusterName
+	}
+	if tenantID != "" {
+		labels["tenant_id"] = tenantID
 	}
 	value := 0.0
 	if leading {
@@ -77,7 +80,7 @@ func emitLeaderStatus(buf *buffer.Ring, clusterID, clusterName, nodeName, podNam
 func RunLeaderElectedCollector(
 	ctx context.Context,
 	buf *buffer.Ring,
-	clusterID, clusterName, nodeName, leaseNamespace string,
+	clusterID, clusterName, nodeName, leaseNamespace, tenantID string,
 ) {
 	cfg, err := rest.InClusterConfig()
 	if err != nil {
@@ -123,7 +126,7 @@ func RunLeaderElectedCollector(
 	// Emit an initial non-leader sample so this pod's series exists in
 	// VM even before the lease resolves — dashboards don't go blank
 	// during the election phase.
-	emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, false)
+	emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, tenantID, false)
 
 	// Periodic re-emit so VM's 5-minute staleness window never lets
 	// the gauge fall off. Cheap: one sample per tick per agent pod.
@@ -138,7 +141,7 @@ func RunLeaderElectedCollector(
 			case <-heartbeatCtx.Done():
 				return
 			case <-tick.C:
-				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, leadingNow)
+				emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, tenantID, leadingNow)
 			}
 		}
 	}()
@@ -168,15 +171,15 @@ func RunLeaderElectedCollector(
 						slog.String("relay", relayAddr),
 						slog.String("identity", identity))
 					leadingNow = true
-					emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, true)
+					emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, tenantID, true)
 					collCtx, cancel := context.WithCancel(leaderCtx)
 					collectorCancel = cancel
-					RunCollector(collCtx, relayAddr, buf, clusterID, clusterName, nodeName)
+					RunCollector(collCtx, relayAddr, buf, clusterID, clusterName, nodeName, tenantID)
 				},
 				OnStoppedLeading: func() {
 					slog.Info("hubble: lost flow-collector lease", slog.String("identity", identity))
 					leadingNow = false
-					emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, false)
+					emitLeaderStatus(buf, clusterID, clusterName, nodeName, identity, tenantID, false)
 					if collectorCancel != nil {
 						collectorCancel()
 						collectorCancel = nil

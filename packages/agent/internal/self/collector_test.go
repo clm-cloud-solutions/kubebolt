@@ -16,7 +16,7 @@ func TestCollector_EmitsKubeboltAgentMetrics(t *testing.T) {
 		{MetricName: "x"}, {MetricName: "y"}, {MetricName: "z"},
 	})
 
-	c := New(buf, "cid-1", "test-cluster", "node-a", "v1.0.0-test")
+	c := New(buf, "cid-1", "test-cluster", "node-a", "v1.0.0-test", "")
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -145,7 +145,7 @@ func TestCollector_EmitsKubeboltAgentMetrics(t *testing.T) {
 
 func TestCollector_NoClusterName(t *testing.T) {
 	buf := buffer.New(10)
-	c := New(buf, "cid-1", "" /* no cluster_name */, "node-a", "v1.0.0")
+	c := New(buf, "cid-1", "" /* no cluster_name */, "node-a", "v1.0.0", "")
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -159,8 +159,27 @@ func TestCollector_NoClusterName(t *testing.T) {
 }
 
 func TestCollector_NameInterface(t *testing.T) {
-	c := New(buffer.New(10), "cid", "name", "node", "v1")
+	c := New(buffer.New(10), "cid", "name", "node", "v1", "")
 	if c.Name() != "agent_self" {
 		t.Errorf("Name() = %q, want agent_self", c.Name())
+	}
+}
+
+// TestCollector_TenantIDStamped validates the Phase 3 Day 4.2 path:
+// when KUBEBOLT_TENANT_ID is set, every self-metric carries
+// tenant_id. Self-metrics are quota-relevant in SaaS (billing
+// includes the agent's own observability), so propagation matters
+// here too.
+func TestCollector_TenantIDStamped(t *testing.T) {
+	buf := buffer.New(10)
+	c := New(buf, "cid", "cn", "node", "v1", "tenant-self")
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, s := range samples {
+		if got := s.Labels["tenant_id"]; got != "tenant-self" {
+			t.Errorf("metric %s tenant_id = %q, want tenant-self", s.MetricName, got)
+		}
 	}
 }

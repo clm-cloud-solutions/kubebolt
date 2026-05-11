@@ -130,6 +130,45 @@ func TestCadvisorCollector_PromCanonicalSchema(t *testing.T) {
 			t.Error("interface label missing")
 		}
 	})
+
+	t.Run("tenant_id label absent when not configured", func(t *testing.T) {
+		// The fixture-collected samples were produced with tenantID="".
+		// Validate the conditional-stamp logic: zero value → no label.
+		// Receiver auto-stamps in this case (Phase 3 Day 4.1 fallback).
+		s := mustHaveMetric(t, samples, "container_network_receive_bytes_total")
+		if _, has := s.Labels["tenant_id"]; has {
+			t.Errorf("tenant_id should be absent when tenantID==\"\", got %q", s.Labels["tenant_id"])
+		}
+	})
+}
+
+func TestCadvisorCollector_TenantIDStamped(t *testing.T) {
+	// Same fixture path as the main test, but constructed with a
+	// non-empty tenantID. Verifies the Day 4.2 stamping path.
+	path := filepath.Join("testdata", "cadvisor_metrics.txt")
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = w.Write(body)
+	}))
+	t.Cleanup(srv.Close)
+	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
+	c := NewCadvisor(client, "cid", "cn", "node", "tenant-acme")
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	if len(samples) == 0 {
+		t.Fatal("expected samples")
+	}
+	for _, s := range samples {
+		if got := s.Labels["tenant_id"]; got != "tenant-acme" {
+			t.Errorf("metric %s tenant_id = %q, want tenant-acme", s.MetricName, got)
+		}
+	}
 }
 
 func collectCadvisorFromFixture(t *testing.T, fixture string) []*agentv2.Sample {
@@ -149,7 +188,7 @@ func collectCadvisorFromFixture(t *testing.T, fixture string) []*agentv2.Sample 
 	}))
 	t.Cleanup(srv.Close)
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
-	c := NewCadvisor(client, "test-cluster-id", "test-cluster", "kind-control-plane")
+	c := NewCadvisor(client, "test-cluster-id", "test-cluster", "kind-control-plane", "")
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)

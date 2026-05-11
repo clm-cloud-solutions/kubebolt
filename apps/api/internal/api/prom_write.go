@@ -3,6 +3,8 @@ package api
 import (
 	"bytes"
 	"crypto/subtle"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -10,6 +12,11 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
+
+	"github.com/golang/snappy"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 // promWriteEnabled returns true when the operator opted into the
@@ -38,6 +45,45 @@ const promWriteMaxBodyBytes = 16 << 20
 // scrape cycle (every 30s) would emit a WARN; the operator stops
 // noticing within minutes.
 var promWriteUnauthWarnOnce sync.Once
+
+// promWriteFallbackWarnOnce gates the per-request permissive-fallback
+// WARNs (missing / empty / bad bearer) so they fire exactly once per
+// process — same intent as promWriteUnauthWarnOnce above. Without
+// this, a vmagent / external Prometheus shipping every 15s without a
+// bearer fills the log with thousands of identical lines: the
+// 5-day-in-vivo run saw 12,880 WARNs from one source. The ongoing
+// signal lives in the metric kubebolt_prom_write_requests_total
+// labeled tenant_id="anonymous" — every fallback bumps it whether the
+// log is silent or not. Subsequent fallback events drop to DEBUG so
+// they remain accessible via KUBEBOLT_LOG_LEVEL=debug when an
+// operator is actively diagnosing.
+var promWriteFallbackWarnOnce sync.Once
+
+// logPromWriteFallback emits the first fallback per process at WARN
+// (with a hint pointing at the metric) and every subsequent fallback
+// at DEBUG. `variant` identifies which fallback path engaged so the
+// metric labels and the log message stay consistent.
+func logPromWriteFallback(variant, remote string, errMsg string) {
+	promWriteFallbackWarnOnce.Do(func() {
+		attrs := []any{
+			slog.String("variant", variant),
+			slog.String("remote", remote),
+			slog.String("hint", "ongoing fallback rate observable at kubebolt_prom_write_requests_total{tenant_id=\"anonymous\"}; subsequent fallbacks logged at DEBUG"),
+		}
+		if errMsg != "" {
+			attrs = append(attrs, slog.String("error", errMsg))
+		}
+		slog.Warn("prom remote_write permissive-fallback engaged", attrs...)
+	})
+	attrs := []any{
+		slog.String("variant", variant),
+		slog.String("remote", remote),
+	}
+	if errMsg != "" {
+		attrs = append(attrs, slog.String("error", errMsg))
+	}
+	slog.Debug("prom remote_write permissive-fallback", attrs...)
+}
 
 // Promwrite enforcement modes — string constants chosen to match the
 // agent gRPC channel's AuthEnforcement values so a single env-var
@@ -80,9 +126,19 @@ const (
 // rejection of empty bearers (avoids hitting the store) and is not
 // security-load-bearing on its own.
 //
-// Returns true when the request is authorized. Returns false after
-// writing the appropriate response (4xx) to w.
-func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) bool {
+// Returns the tenant the request authenticated as (or nil on
+// "disabled" / permissive-fallback / no TenantsStore wired) and a
+// boolean indicating whether the caller may continue. On false the
+// response has already been written.
+//
+// Day 3 of Phase 3 (rate limiting) requires the resolved tenant to
+// look up per-tenant overrides — the bool-only signature of the
+// prior version threw that information away. Permissive-fallback
+// returns (nil, true) which means "use fleet defaults" downstream:
+// without a verified tenant identity, the conservative posture is
+// to apply the system-wide limits as if the request belonged to an
+// anonymous bucket.
+func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) (*auth.Tenant, bool) {
 	mode := h.promWriteAuthMode
 	if mode == "" {
 		mode = promWriteAuthDisabled
@@ -91,7 +147,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	// disabled: ignore the header entirely. No WARN (the operator
 	// asked for this mode explicitly).
 	if mode == promWriteAuthDisabled {
-		return true
+		return nil, true
 	}
 
 	// Configuration sanity: enforced mode without a TenantsStore is
@@ -102,47 +158,44 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	if h.tenantsStore == nil {
 		if mode == promWriteAuthEnforced {
 			respondError(w, http.StatusInternalServerError, "remote_write auth enforced but TenantsStore not wired")
-			return false
+			return nil, false
 		}
 		promWriteUnauthWarnOnce.Do(func() {
 			slog.Warn("prom remote_write permissive but TenantsStore not wired — calls allowed without validation",
 				slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true to enable token validation"))
 		})
-		return true
+		return nil, true
 	}
 
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if !strings.HasPrefix(authz, prefix) {
 		if mode == promWriteAuthPermissive {
-			slog.Warn("prom remote_write permissive-fallback: missing bearer",
-				slog.String("remote", r.RemoteAddr))
-			return true
+			logPromWriteFallback("missing-bearer", r.RemoteAddr, "")
+			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "missing Bearer token")
-		return false
+		return nil, false
 	}
 	token := strings.TrimSpace(authz[len(prefix):])
 	if subtle.ConstantTimeCompare([]byte(token), []byte("")) == 1 {
 		if mode == promWriteAuthPermissive {
-			slog.Warn("prom remote_write permissive-fallback: empty bearer",
-				slog.String("remote", r.RemoteAddr))
-			return true
+			logPromWriteFallback("empty-bearer", r.RemoteAddr, "")
+			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
-		return false
+		return nil, false
 	}
-	if _, _, err := h.tenantsStore.LookupByToken(token); err != nil {
+	tenant, _, err := h.tenantsStore.LookupByToken(token)
+	if err != nil {
 		if mode == promWriteAuthPermissive {
-			slog.Warn("prom remote_write permissive-fallback: bad bearer",
-				slog.String("remote", r.RemoteAddr),
-				slog.String("error", err.Error()))
-			return true
+			logPromWriteFallback("bad-bearer", r.RemoteAddr, err.Error())
+			return nil, true
 		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
-		return false
+		return nil, false
 	}
-	return true
+	return tenant, true
 }
 
 // handlePromWrite forwards a Prometheus remote_write request to the
@@ -181,8 +234,29 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	// that the gRPC channel's BearerIngestAuth uses — operators can
 	// reuse the agent's existing ingest token Secret instead of
 	// provisioning a separate credential just for the scrape sidecar.
-	if !h.authenticatePromWrite(w, r) {
+	//
+	// tenant may be nil under disabled / permissive-fallback / no-
+	// TenantsStore paths; downstream rate limit treats nil as the
+	// "anonymous" bucket which uses fleet defaults. That's the same
+	// posture every unauthenticated client falls under.
+	tenant, ok := h.authenticatePromWrite(w, r)
+	if !ok {
+		// Auth rejections all bucket as "auth" — granularity of
+		// missing/empty/invalid bearer lives in the logs; the
+		// /metrics surface stays at the "is auth failing at all?"
+		// level. Anonymous tenant label since we couldn't resolve
+		// the request to a real tenant.
+		h.promWriteMetrics.RecordRequest(PromWriteAnonymousTenant, PromWriteStatusRejectedAuth)
 		return
+	}
+
+	// Tenant label for metrics — "anonymous" when auth was disabled
+	// or permissive-fallback (no resolved tenant). Same synthetic
+	// identity the rate limiter uses, kept consistent so dashboard
+	// queries can join cleanly.
+	tenantID := PromWriteAnonymousTenant
+	if tenant != nil {
+		tenantID = tenant.ID
 	}
 
 	// Cap the body. We read the whole thing into a buffer so the
@@ -193,22 +267,147 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var maxErr *http.MaxBytesError
 		if asErr := err.Error(); strings.Contains(asErr, "http: request body too large") {
+			h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedBodySize)
 			respondError(w, http.StatusRequestEntityTooLarge, "remote_write body exceeds limit")
 			return
 		}
 		_ = maxErr // silence unused if go version doesn't expose the typed error
+		h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedMalformed)
 		respondError(w, http.StatusBadRequest, "read remote_write body")
 		return
 	}
 
+	// Decode + scan (Phase 3 Day 3 + 4). We decode the snappy body
+	// ONCE here and reuse the decoded bytes for:
+	//   - sample counting (rate limit gate)
+	//   - tenant_id label validation (Day 4 anti-spoof)
+	//   - auto-stamp fallback (Day 4, when tenant_id is missing)
+	// nil rate limiter == feature disabled (transitional envs);
+	// without it we skip all the per-tenant logic and just forward.
+	var decoded []byte
+	// sampleCount is captured outside the if-block so the success
+	// path can pass it to RecordAcceptedSamples (the Day 5 billing
+	// counter). Zero when the rate limiter isn't wired — that's the
+	// transitional path, no metric emitted.
+	var sampleCount int
+	if h.promRateLimiter != nil {
+		var dec []byte
+		var parseErr error
+		sampleCount, dec, parseErr = countWriteRequestSamples(body)
+		if parseErr != nil {
+			if errors.Is(parseErr, ErrPromWriteTooLarge) {
+				h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedBodySize)
+				respondError(w, http.StatusRequestEntityTooLarge, "remote_write payload too large after decompression")
+				return
+			}
+			h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedMalformed)
+			respondError(w, http.StatusBadRequest, "remote_write payload parse: "+parseErr.Error())
+			return
+		}
+		decoded = dec
+
+		// Rate limit gate (Day 3).
+		var overrides *auth.TenantLimits
+		if tenant != nil {
+			overrides = tenant.Limits
+		}
+		if allowed, retryAfter := h.promRateLimiter.Allow(tenantID, overrides, sampleCount); !allowed {
+			seconds := int(retryAfter.Round(time.Second) / time.Second)
+			if seconds < 1 {
+				seconds = 1
+			}
+			w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+			h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedRateLimit)
+			respondError(w, http.StatusTooManyRequests, "remote_write rate limit exceeded for tenant")
+			return
+		}
+
+		// Tenant identity gate (Day 4): only when we have a real
+		// authenticated tenant. permissive-fallback / disabled mode
+		// (tenant == nil) ships samples unchanged — no label
+		// validation possible without a known tenant identity.
+		if tenant != nil {
+			asserted, found := readTenantIDFromFirstSeries(decoded)
+			if found && asserted != tenant.ID {
+				// Anti-spoofing: client claimed a tenant_id that
+				// doesn't match its bearer. Strict reject — no
+				// permissive fallback for spoof attempts (the
+				// mode doesn't matter for mismatches; this is an
+				// active attack).
+				slog.Warn("prom remote_write tenant_id mismatch",
+					slog.String("asserted", asserted),
+					slog.String("bearer_tenant", tenant.ID),
+					slog.String("remote", r.RemoteAddr))
+				h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedTenantMismatch)
+				respondError(w, http.StatusUnauthorized, "tenant_id label does not match authenticated tenant")
+				return
+			}
+			if !found {
+				// Missing tenant_id label. Behavior is mode-sensitive
+				// (Day 4.3): enforced mode rejects — operator must
+				// configure tenant.id via helm at install. Permissive
+				// auto-stamps as a transitional safety net for
+				// legacy agents / external Prom installs that
+				// haven't been migrated yet.
+				if h.promWriteAuthMode == promWriteAuthEnforced {
+					slog.Warn("prom remote_write tenant_id label missing in enforced mode",
+						slog.String("bearer_tenant", tenant.ID),
+						slog.String("remote", r.RemoteAddr))
+					h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedTenantMissing)
+					respondError(w, http.StatusUnauthorized,
+						"tenant_id label required in enforced mode — set helm value `tenant.id` "+
+							"on kubebolt-agent or `external_labels.tenant_id` on your external Prometheus")
+					return
+				}
+				// Permissive mode auto-stamp. Day 4.2 makes the
+				// agent stamp proactively, after which this path
+				// becomes rare — used only for legacy installs
+				// that haven't redeployed with `tenant.id` set.
+				stamped, injErr := injectTenantID(decoded, tenant.ID)
+				if injErr != nil {
+					slog.Warn("prom remote_write tenant_id auto-stamp failed",
+						slog.String("tenant_id", tenant.ID),
+						slog.String("error", injErr.Error()))
+					h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusInjectionFailed)
+					respondError(w, http.StatusInternalServerError, "tenant_id injection failed")
+					return
+				}
+				// Re-encode for the forward path. Original `body`
+				// (snappy-compressed) is discarded.
+				body = snappy.Encode(nil, stamped)
+				// decoded is now stale but we don't read it again
+				// past this point.
+				decoded = stamped
+			}
+
+			// Cardinality gate (Day 4): VM-authoritative count vs
+			// per-tenant cap. Permissive boot semantics inside
+			// Allow() handle the not-yet-fresh-cache case.
+			if h.promCardinality != nil {
+				if allowed, retryAfter := h.promCardinality.Allow(tenant.ID, overrides); !allowed {
+					seconds := int(retryAfter.Round(time.Second) / time.Second)
+					if seconds < 1 {
+						seconds = 3600
+					}
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+					h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedCardinality)
+					respondError(w, http.StatusRequestEntityTooLarge, "tenant active series cardinality exceeded")
+					return
+				}
+			}
+		}
+	}
+
 	target, err := url.Parse(metricsStorageURL() + promWriteUpstreamPath)
 	if err != nil {
+		h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusUpstreamError)
 		respondError(w, http.StatusInternalServerError, "invalid storage URL")
 		return
 	}
 
 	upstream, err := http.NewRequestWithContext(r.Context(), http.MethodPost, target.String(), bytes.NewReader(body))
 	if err != nil {
+		h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusUpstreamError)
 		respondError(w, http.StatusInternalServerError, "build upstream request")
 		return
 	}
@@ -227,10 +426,22 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	resp, err := metricsHTTPClient.Do(upstream)
 	if err != nil {
 		slog.Warn("remote_write upstream failed", slog.String("error", err.Error()))
+		h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusUpstreamError)
 		respondError(w, http.StatusBadGateway, "metrics storage unreachable")
 		return
 	}
 	defer resp.Body.Close()
+
+	// Success path observability (Day 5): record the accepted request
+	// + the sample / byte counts now that we know the upstream
+	// accepted them. Note we count the FORWARDED body bytes (post
+	// auto-stamp, if any) — that's the bandwidth that actually moved.
+	// upstream-non-2xx still counts as "accepted by us" because the
+	// receiver did its job; vminsert's rejection (cardinality / etc.)
+	// is its own dimension. The wire-back of upstream's body to the
+	// client preserves the granular error.
+	h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusAccepted)
+	h.promWriteMetrics.RecordAcceptedSamples(tenantID, sampleCount, len(body))
 
 	// Forward the upstream response verbatim. vminsert returns 204 on
 	// success; on 4xx it includes a small text body explaining the

@@ -151,7 +151,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		return status.Error(codes.InvalidArgument, "first message must be Hello")
 	}
 
-	agentID, clusterID := resolveAgentID(id, hello.GetNodeName())
+	agentID, clusterID := resolveAgentID(id, hello.GetNodeName(), hello.GetClusterHint())
 
 	logAttrs := []any{
 		slog.String("agent_id", agentID),
@@ -376,13 +376,41 @@ func autoRegisterDisplayName(hello *agentv2.Hello, clusterID string) string {
 // on the same id without persistence (Sprint B replaces with a ULID stored
 // in the agents bucket). Without an identity (auth disabled) it falls back
 // to a fresh UUID.
-func resolveAgentID(id *auth.AgentIdentity, nodeName string) (agentID, clusterID string) {
-	if id == nil || id.Mode == auth.ModeDisabled || id.TenantID == "" {
-		return uuid.NewString(), "local"
+//
+// cluster_id precedence (both branches):
+//  1. id.ClusterID — operator-asserted via tokenreview / mTLS startup config.
+//     Trumps everything because it's bound to the gRPC server's deployment
+//     and can't be spoofed by the client.
+//  2. clusterHint  — best-effort identifier the agent populates in its Hello
+//     (auto-detected from kube-system namespace UID, or supplied via
+//     KUBEBOLT_AGENT_CLUSTER_ID / helm `cluster.id`). Honored when no auth
+//     identity carries one — covers ingest-token (which doesn't bind a
+//     cluster), disabled mode, and the historical OSS multi-cluster topology
+//     "one backend, agents from N clusters" that was silently broken by the
+//     prior `"local"` hardcode.
+//  3. "local"      — last-resort sentinel, used only when both the auth
+//     identity AND the agent itself failed to report a cluster_id (e.g.
+//     agent's kube-system UID lookup raced with startup permissions).
+//
+// Pre-fix code dropped clusterHint on the floor and collapsed every agent
+// without an auth-set ClusterID to "local", which is why two distinct kind
+// clusters registered under the same id in cluster-validation Test 3.
+func resolveAgentID(id *auth.AgentIdentity, nodeName, clusterHint string) (agentID, clusterID string) {
+	cluster := clusterHint
+	if id != nil && id.ClusterID != "" {
+		// Auth-supplied cluster wins. Currently only tokenreview/mTLS
+		// startup config populate this; bearer/ingest-token leaves it
+		// empty and falls through to the hint.
+		cluster = id.ClusterID
 	}
-	cluster := id.ClusterID
 	if cluster == "" {
 		cluster = "local"
+	}
+	if id == nil || id.Mode == auth.ModeDisabled || id.TenantID == "" {
+		// No auth identity → can't derive a stable agent_id, fresh UUID
+		// each connect. The cluster label is still honored from the hint
+		// so multi-cluster OSS deployments don't collapse to one entry.
+		return uuid.NewString(), cluster
 	}
 	return auth.DeriveAgentID(id.TenantID, cluster, nodeName), cluster
 }
