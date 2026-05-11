@@ -51,7 +51,7 @@ export const STATUS_COLORS = {
 // (rangeMinutes) regardless of how many panels are mounted.
 export function useWorkloadStatusDist(rangeMinutes: number) {
   const RATE_WINDOW = `${rangeMinutes}m`
-  const query = `sum by (dst_namespace, workload, status_class) (${collapsePodToWorkload(
+  const query = `sum by (destination_namespace, workload, status_class) (${collapsePodToWorkload(
     `rate(pod_flow_http_requests_total{source="hubble"}[${RATE_WINDOW}])`,
   )})`
   return useQuery({
@@ -70,7 +70,7 @@ export function buildDistIndex(
   const map = new Map<string, StatusDistribution>()
   if (!result) return map
   for (const s of result) {
-    const ns = s.metric.dst_namespace
+    const ns = s.metric.destination_namespace
     const wl = s.metric.workload
     if (!ns || !wl) continue
     const v = parseFloat(s.value?.[1] ?? '0')

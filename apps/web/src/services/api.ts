@@ -773,6 +773,10 @@ export const api = {
       })}`
     ),
 
+  // Scrape coverage (Phase 2 Day 5) — which observability sources
+  // are actively shipping samples to VM for the active cluster.
+  getCoverage: () => fetchJSON<CoverageResponse>(`${API_BASE}/coverage`),
+
   // --- Integrations ---
   listIntegrations: () => fetchJSON<Integration[]>(`${API_BASE}/integrations`),
 
@@ -1232,6 +1236,21 @@ export interface FlowEdgesResponse {
   edges: FlowEdge[]
   windowMinutes: number
   source: string
+}
+
+// --- Scrape coverage (Phase 2 Day 5) ---
+// Which observability sources are actively shipping samples to VM
+// for the active cluster. Drives the dashboard banner that tells
+// the operator "you have agent + hubble; node-exporter is missing".
+export interface CoverageSource {
+  name: string         // "kubebolt-agent" | "node-exporter" | "kube-state-metrics" | "hubble"
+  probe: string        // PromQL the backend ran for this source
+  status: 'active' | 'inactive'
+}
+
+export interface CoverageResponse {
+  sources: CoverageSource[]
+  lookbackMinutes: number
 }
 
 // --- Agent ingest tokens ---

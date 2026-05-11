@@ -28,6 +28,14 @@ services:
       # queries via PromQL. VictoriaMetrics is the default; swap by pointing
       # this URL at any Prom-compatible TSDB.
       - KUBEBOLT_METRICS_STORAGE_URL=${KUBEBOLT_METRICS_STORAGE_URL:-http://victoriametrics:8428}
+      # Prom remote_write receiver (Phase 2). Gates POST /api/v1/prom/write —
+      # the path vmagent (kubebolt-agent v1.0+ sidecar) uses to ship scraped
+      # samples into VM. Default off.
+      - KUBEBOLT_REMOTE_WRITE_ENABLED=${KUBEBOLT_REMOTE_WRITE_ENABLED:-false}
+      # Three-tier auth (disabled | permissive | enforced) — mirrors the
+      # gRPC channel's KUBEBOLT_AGENT_AUTH_MODE. Default disabled for
+      # backwards compat with Sprint A migration.
+      - KUBEBOLT_REMOTE_WRITE_AUTH_MODE=${KUBEBOLT_REMOTE_WRITE_AUTH_MODE:-disabled}
       # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
       # The copilot is disabled if no key is set; KubeBolt works fully without it.
       - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}
@@ -52,6 +60,15 @@ services:
       - "--storageDataPath=/victoria-metrics-data"
       - "--retentionPeriod=${KUBEBOLT_METRICS_RETENTION:-30d}"
       - "--httpListenAddr=:8428"
+      # Collapse identical samples written within this window. Multi-
+      # vmagent installs (kubebolt-agent DaemonSet, one pod per node)
+      # produce N×duplicate kube-state-metrics samples when KSM is
+      # scraped via the dedicated job — VM keeps only the latest within
+      # the dedup bucket. Match the agent's scrape_interval (30s) so
+      # duplicates land in the same bucket. Day 4 (361887d) documented
+      # this strategy but never wired the flag; closed here.
+      # Idempotent for single-vmagent setups — no duplicates to collapse.
+      - "--dedup.minScrapeInterval=30s"
     restart: unless-stopped
 
 volumes:

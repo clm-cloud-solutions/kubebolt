@@ -9,6 +9,7 @@ import { WorkloadHealth } from './WorkloadHealth'
 import { EventsFeed } from './EventsFeed'
 import { NamespaceTiles } from './NamespaceTiles'
 import { DashboardSubTabs } from './DashboardSubTabs'
+import { CoverageBanner } from './CoverageBanner'
 
 // OverviewPage is the "abro el dashboard en la mañana" scan: 4 KPIs,
 // commitment bars, the events + workload-health pair, and namespace
@@ -37,6 +38,8 @@ export function OverviewPage() {
       </div>
 
       <DashboardSubTabs />
+
+      <CoverageBanner />
 
       <KpiCards overview={overview} />
 

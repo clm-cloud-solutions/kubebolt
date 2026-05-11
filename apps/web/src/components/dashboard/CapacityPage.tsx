@@ -15,6 +15,7 @@ import { OverviewHeader } from './OverviewHeader'
 import { TopWorkloadsCpu } from './TopWorkloadsCpu'
 import { DeploysList } from './DeploysList'
 import { RightSizingPanel } from './RightSizingPanel'
+import { RecentOOMKills } from './RecentOOMKills'
 
 // CapacityPage answers "how is the cluster consuming, and is it
 // sized right for what it's actually doing?" — the investigative
@@ -108,6 +109,13 @@ export function CapacityPage() {
         <TopWorkloadsCpu installed={installed} overview={overview} />
         <RightSizingPanel installed={installed} overview={overview} />
       </div>
+
+      {/* OOMKill heat map — sits below the workload pair because
+          its content is sparse on healthy clusters (typically empty
+          or a single row) and a 50% column would be mostly
+          whitespace. Full-width keeps the empty state readable
+          without dominating the page when there's nothing to show. */}
+      <RecentOOMKills installed={installed} />
     </div>
   )
 }
@@ -205,7 +213,7 @@ function AgentTrendsBlock({
           title="CPU Usage"
           icon={<Cpu className="w-4 h-4" />}
           unit="cores"
-          query={`sum(node_cpu_usage_cores)`}
+          query={`sum(rate(node_cpu_usage_seconds_total[1m]))`}
           seriesLabel={() => 'cluster total'}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"

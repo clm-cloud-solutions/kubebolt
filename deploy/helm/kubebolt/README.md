@@ -221,6 +221,18 @@ Plain Prometheus remote-write isn't enough — KubeBolt also queries the
 endpoint back, so it must accept VM-style reads. vmagent + vmselect
 behind a single URL is the typical setup.
 
+**External TSDB + dedicated KSM scrape — enable dedup.** The bundled
+VictoriaMetrics ships `--dedup.minScrapeInterval=30s` by default to
+collapse the N×duplicate `kube-state-metrics` samples produced when
+the kubebolt-agent is configured with `scrape.discovery.kubeStateMetrics.enabled=true`
+(common for clusters running `kube-prometheus-stack`, where KSM lacks
+the `prometheus.io/scrape` annotation the annotation-driven path relies
+on). When you point KubeBolt at an external VM cluster, **set the same
+flag on your vmstorage / vminsert** or you'll see series counts inflated
+by N (where N is the number of agent DaemonSet pods). See
+[`docs/agent-scraping.md`](../../../docs/agent-scraping.md) for the
+full discussion of the trade-off.
+
 **Sizing.** Rule of thumb: ~1 GiB of PVC per 100 pods at 30-day retention
 with default scrape cadence. Bump `metrics.storage.embedded.persistence.size`
 and `retention` together if you need longer history. High-cardinality

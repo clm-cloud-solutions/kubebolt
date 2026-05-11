@@ -13,6 +13,8 @@ import { SecretRevealModal } from '@/components/resources/SecretRevealModal'
 import { ScaleModal } from '@/components/resources/ScaleModal'
 import { ResourceActionsMenu, type ActionItem } from '@/components/resources/ResourceActionsMenu'
 import { RevisionTimeline } from '@/components/resources/RevisionTimeline'
+import { RestartHistorySparkline } from '@/components/resources/RestartHistorySparkline'
+import { EndpointHealthCell } from '@/components/resources/EndpointHealthCell'
 import { RollbackModal } from '@/components/resources/RollbackModal'
 import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
@@ -259,18 +261,98 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
 
 // ─── Status Overview Cards ───────────────────────────────────────
 
+// LastTerminationField surfaces the previous run's termination
+// reason on a pod's status overview. The visual weight is tuned by
+// reason: OOMKilled goes red because it's actionable (memory limit
+// or leak); Error goes amber because it could be transient; Completed
+// reads neutral (Job-style). The relative time tail anchors "is this
+// still relevant?" — a finishedAt from 4 days ago carries different
+// urgency than one from 30 seconds ago.
+function LastTerminationField({
+  termination,
+  containerName,
+}: {
+  termination: { reason?: string; finishedAt?: string; exitCode?: number }
+  containerName?: string
+}) {
+  const reason = termination.reason || 'Unknown'
+  const isOOM = reason === 'OOMKilled'
+  const isError = reason === 'Error' || (termination.exitCode != null && termination.exitCode !== 0 && !isOOM && reason !== 'Completed')
+  const tone = isOOM
+    ? 'bg-status-error-dim text-status-error'
+    : isError
+      ? 'bg-status-warn-dim text-status-warn'
+      : 'bg-kb-elevated text-kb-text-secondary'
+  const ago = termination.finishedAt ? formatAge(termination.finishedAt) : null
+  return (
+    <div className="flex items-center gap-2 flex-wrap">
+      <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-mono uppercase tracking-[0.04em] font-semibold ${tone}`}>
+        {reason}
+      </span>
+      {termination.exitCode != null && (
+        <span className="text-[10px] font-mono text-kb-text-tertiary">
+          exit {termination.exitCode}
+        </span>
+      )}
+      {ago && (
+        <span className="text-[10px] font-mono text-kb-text-tertiary">
+          {ago} ago{containerName ? ` · ${containerName}` : ''}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
   const metrics: { label: string; value: React.ReactNode }[] = []
 
   switch (type) {
-    case 'pods':
+    case 'pods': {
+      // Walk the pod's containers to find the most recent termination
+      // across them. The k8s API only retains the previous run's outcome
+      // per container (LastTerminationState), so this is a "what just
+      // killed me" snapshot rather than a full history. The CapacityPage
+      // OOMKill panel covers cluster-wide trend; here we surface the
+      // pod-local signal so opening a crashlooping pod tells the
+      // operator the cause without diving into kubectl describe.
+      type LastTermination = {
+        reason?: string
+        finishedAt?: string
+        exitCode?: number
+      }
+      type ContainerSlim = {
+        name?: string
+        state?: { lastTermination?: LastTermination }
+      }
+      const containers = (item.containers as ContainerSlim[] | undefined) ?? []
+      type Pair = { name?: string; lt: LastTermination }
+      const pairs: Pair[] = []
+      for (const c of containers) {
+        if (c.state?.lastTermination) {
+          pairs.push({ name: c.name, lt: c.state.lastTermination })
+        }
+      }
+      pairs.sort((a, b) => {
+        const ta = a.lt.finishedAt ? new Date(a.lt.finishedAt).getTime() : 0
+        const tb = b.lt.finishedAt ? new Date(b.lt.finishedAt).getTime() : 0
+        return tb - ta
+      })
+      const lastTerm = pairs[0]
+
       metrics.push(
         { label: 'Phase', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
         { label: 'Ready Containers', value: String(item.ready ?? '-') },
         { label: 'Restart Count', value: String(item.restarts ?? 0) },
         { label: 'Node', value: item.nodeName ? <ResourceLink name={String(item.nodeName)} resourceType="nodes" /> : '-' },
       )
+      if (lastTerm) {
+        metrics.push({
+          label: 'Last Termination',
+          value: <LastTerminationField termination={lastTerm.lt} containerName={lastTerm.name} />,
+        })
+      }
       break
+    }
     case 'deployments':
       metrics.push(
         { label: 'Status', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Available' || item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
@@ -284,6 +366,23 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
         { label: 'Type', value: String(item.type ?? '-') },
         { label: 'Cluster IP', value: <span className="font-mono">{String(item.clusterIP ?? '-')}</span> },
         { label: 'Ports', value: Array.isArray(item.ports) ? (item.ports as Array<Record<string, unknown>>).map(p => `${p.port}/${p.protocol ?? 'TCP'}`).join(', ') : '-' },
+        // Endpoints field hovers a tooltip with the ready/notReady
+        // breakdown — it's the most operator-actionable signal on
+        // this page (more so than ports), so it earns a status-overview
+        // slot. Cell handles the gated cases (ExternalName / Headless /
+        // KSM-not-scraping) inline so the field just always works.
+        {
+          label: 'Endpoints',
+          value: (
+            <EndpointHealthCell
+              namespace={String(item.namespace ?? '')}
+              name={String(item.name ?? '')}
+              serviceType={String(item.type ?? '')}
+              clusterIP={String(item.clusterIP ?? '')}
+              variant="inline"
+            />
+          ),
+        },
       )
       break
     case 'nodes':
@@ -673,7 +772,16 @@ function ContainersTab({ item }: { item: ResourceItem }) {
                   {state?.startedAt != null && <span className="text-[10px] text-kb-text-tertiary">since {new Date(String(state.startedAt)).toLocaleString()}</span>}
                 </div>
               </InfoField>
-              <InfoField label="Restart Count">{String(state?.restartCount ?? 0)}</InfoField>
+              <InfoField label="Restart Count">
+                <div className="flex items-center gap-3">
+                  <span>{String(state?.restartCount ?? 0)}</span>
+                  <RestartHistorySparkline
+                    namespace={String(item.namespace)}
+                    pod={String(item.name)}
+                    container={String(c.name)}
+                  />
+                </div>
+              </InfoField>
             </div>
 
             {resources && (
@@ -1558,7 +1666,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
   // Both labels are emitted by the agent's stats collector on every sample.
   // Filtering by namespace+name (rather than UID) keeps the chart continuous
   // across pod recreations with the same name — useful for debugging.
-  const selector = `pod_namespace="${ns}",pod_name="${name}"`
+  const selector = `namespace="${ns}",pod="${name}"`
 
   const sums = podResourceSums(item)
 
@@ -1605,7 +1713,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           // sum by (container) collapses historical pod_uid instances
           // (e.g. pod restarts) into one line per container. If the pod
           // has never been recreated the query behaves identically.
-          query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
+          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -1624,8 +1732,12 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         title="Network traffic (RX up / TX down)"
         unit="bytes/s"
         queries={[
-          { query: `sum by (interface) (rate(pod_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
-          { query: `sum by (interface) (rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+          // container_network_* with container="" is the cAdvisor pod-level
+          // row (the pause container owns the pod's network namespace).
+          // Without the filter the per-container rows duplicate the counters
+          // and inflate the rate.
+          { query: `sum by (interface) (rate(container_network_receive_bytes_total{${selector},container=""}[1m]))`, prefix: 'RX' },
+          { query: `sum by (interface) (rate(container_network_transmit_bytes_total{${selector},container=""}[1m]))`, prefix: 'TX', negate: true },
         ]}
         accents={METRIC_ACCENTS.networkRxTx}
         chartType="area"
@@ -1671,12 +1783,11 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
     queryKey: ['workload-coverage', selector],
     queryFn: () =>
       api.queryMetrics({
-        // Group by pod_name (the label the agent actually emits — `pod`
-        // is the Prom convention but our shipper uses `pod_name`).
-        // Grouping by a non-existent label collapses every matching
-        // series into one bucket, returning count=1 regardless of how
-        // many replicas are observed — false-positive coverage banner.
-        query: `count(group(container_cpu_usage_cores{${selector}}) by (pod_name))`,
+        // Group by `pod` (canonical label since v1.0). Grouping by a
+        // non-existent label collapses every matching series into one
+        // bucket, returning count=1 regardless of how many replicas are
+        // observed — false-positive coverage banner.
+        query: `count(group(rate(container_cpu_usage_seconds_total{${selector}}[1m])) by (pod))`,
       }),
     enabled: coverageEnabled,
     staleTime: 30_000,
@@ -1744,7 +1855,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         <MetricChart
           title={`CPU by container (sum across ${replicaLabel})`}
           unit="cores"
-          query={`sum by (container) (container_cpu_usage_cores{${selector}})`}
+          query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -1763,8 +1874,8 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         title={`Network traffic — total across ${replicaLabel} (RX up / TX down)`}
         unit="bytes/s"
         queries={[
-          { query: `sum(rate(pod_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
-          { query: `sum(rate(pod_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+          { query: `sum(rate(container_network_receive_bytes_total{${selector},container=""}[1m]))`, prefix: 'RX' },
+          { query: `sum(rate(container_network_transmit_bytes_total{${selector},container=""}[1m]))`, prefix: 'TX', negate: true },
         ]}
         seriesLabel={(_labels, prefix) => prefix ?? 'total'}
         accents={METRIC_ACCENTS.networkRxTx}
@@ -1783,7 +1894,7 @@ function DeploymentMonitorCharts({ item }: { item: ResourceItem }) {
   // the deployment name plus a hash suffix (e.g. my-app-7b4d5f6c89). We match
   // by prefix anchored at end to avoid overlap with sibling deployments that
   // share a prefix.
-  const selector = `pod_namespace="${ns}",workload_kind="ReplicaSet",workload_name=~"${escapeRegex(name)}-[a-z0-9]+$"`
+  const selector = `namespace="${ns}",workload_kind="ReplicaSet",workload_name=~"${escapeRegex(name)}-[a-z0-9]+$"`
   return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="Deployment" />
 }
 
@@ -1791,7 +1902,7 @@ function StatefulSetMonitorCharts({ item }: { item: ResourceItem }) {
   const ns = String(item.namespace)
   const name = String(item.name)
   const replicas = Math.max(1, Number(item.specReplicas ?? 1) || 1)
-  const selector = `pod_namespace="${ns}",workload_kind="StatefulSet",workload_name="${name}"`
+  const selector = `namespace="${ns}",workload_kind="StatefulSet",workload_name="${name}"`
   return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="StatefulSet" />
 }
 
@@ -1799,7 +1910,7 @@ function DaemonSetMonitorCharts({ item }: { item: ResourceItem }) {
   const ns = String(item.namespace)
   const name = String(item.name)
   const replicas = Math.max(1, Number(item.specReplicas ?? 0) || 1)
-  const selector = `pod_namespace="${ns}",workload_kind="DaemonSet",workload_name="${name}"`
+  const selector = `namespace="${ns}",workload_kind="DaemonSet",workload_name="${name}"`
   return <WorkloadMonitorCharts item={item} selector={selector} replicas={replicas} kindLabel="DaemonSet" />
 }
 
@@ -1827,7 +1938,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
         <MetricChart
           title="CPU usage"
           unit="cores"
-          query={`node_cpu_usage_cores{${selector}}`}
+          query={`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`}
           referenceLines={cpuRefs}
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
@@ -1841,9 +1952,26 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           chartType="area"
         />
         <MetricChart
-          title="Filesystem used"
-          unit="bytes"
-          query={`node_fs_used_bytes{${selector}}`}
+          title="Filesystem usage"
+          unit="percent"
+          // Per-mountpoint % used. Filters:
+          //   fstype  drops pseudo-filesystems (tmpfs, overlay,
+          //           cgroup, etc.) — they're memory or kernel
+          //           artifacts, not real disk capacity.
+          //   mountpoint  drops kind/container bind-mounts
+          //           (/etc/hosts, /etc/resolv.conf, /run/*) and
+          //           the kubelet's per-pod volume mounts that
+          //           explode cardinality without adding signal.
+          // Series labeled by mountpoint so /var, /, /var/lib/docker
+          // each get a distinct line. Reference lines at the two
+          // operator-meaningful thresholds: 80% (start watching),
+          // 95% (page someone).
+          query={`100 * (1 - node_filesystem_avail_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"} / node_filesystem_size_bytes{${selector},fstype!~"tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none",mountpoint!~"^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*"})`}
+          seriesLabel={(labels) => labels.mountpoint || labels.device || 'fs'}
+          referenceLines={[
+            { y: 80, label: '80%', color: '#f5a623', shortLabel: '80%' },
+            { y: 95, label: '95%', color: '#ef4444', shortLabel: '95%' },
+          ]}
           accents={METRIC_ACCENTS.filesystem}
           chartType="area"
         />
@@ -1857,6 +1985,50 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           seriesLabel={(_labels, prefix) => prefix ?? 'total'}
           accents={METRIC_ACCENTS.networkRxTx}
           chartType="area"
+        />
+        {/* Load average — three series (1m / 5m / 15m). The 1m line
+            tracks the immediate "right now" load; 5m and 15m smooth
+            out spikes and surface sustained pressure. Operators
+            comparing the three see whether load is climbing,
+            falling, or steady — a single line wouldn't tell that
+            story. No reference line: the right "high load" value
+            depends on core count (load == cores ≈ saturated) and
+            we don't have core count plumbed into this component
+            cheaply enough to justify the wiring for a hint. */}
+        <MetricChart
+          title="Load average"
+          unit="count"
+          queries={[
+            { query: `node_load1{${selector}}`, prefix: '1m' },
+            { query: `node_load5{${selector}}`, prefix: '5m' },
+            { query: `node_load15{${selector}}`, prefix: '15m' },
+          ]}
+          seriesLabel={(_labels, prefix) => prefix ?? 'load'}
+          chartType="line"
+        />
+        {/* PSI pressure — % of time at least one task was waiting on
+            cpu / io / memory in the last minute. Raw rate() is
+            dimensionless 0-1; we multiply by 100 to render as a
+            percentage so MetricChart's `percent` axis can do the
+            formatting and the operator reads "12% blocked" instead
+            of "0.12". Reference lines at 10% (watch) / 30% (page)
+            match the WARN/CRIT bands the list-view PSI badge
+            uses. Three series keep cpu/io/memory separable so the
+            binding axis is obvious at a glance. */}
+        <MetricChart
+          title="PSI pressure (waiting)"
+          unit="percent"
+          queries={[
+            { query: `100 * rate(node_pressure_cpu_waiting_seconds_total{${selector}}[1m])`, prefix: 'cpu' },
+            { query: `100 * rate(node_pressure_io_waiting_seconds_total{${selector}}[1m])`, prefix: 'io' },
+            { query: `100 * rate(node_pressure_memory_waiting_seconds_total{${selector}}[1m])`, prefix: 'memory' },
+          ]}
+          seriesLabel={(_labels, prefix) => prefix ?? 'psi'}
+          referenceLines={[
+            { y: 10, label: '10% watch', color: '#f5a623', shortLabel: '10%' },
+            { y: 30, label: '30% page', color: '#ef4444', shortLabel: '30%' },
+          ]}
+          chartType="line"
         />
       </div>
     </div>
@@ -2215,7 +2387,14 @@ function DeploymentPodsTab({ namespace, name }: { namespace: string; name: strin
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2264,7 +2443,14 @@ function StatefulSetPodsTab({ namespace, name }: { namespace: string; name: stri
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2313,7 +2499,14 @@ function DaemonSetPodsTab({ namespace, name }: { namespace: string; name: string
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2">{pod.nodeName ? <Link to={`/nodes/_/${pod.nodeName}`} className="text-[11px] font-mono text-status-info hover:underline">{String(pod.nodeName)}</Link> : <span className="text-kb-text-tertiary">—</span>}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
@@ -2362,7 +2555,14 @@ function JobPodsTab({ namespace, name }: { namespace: string; name: string }) {
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>
           ))}
@@ -2542,7 +2742,14 @@ function NodePodsTab({ nodeName }: { nodeName: string }) {
               <td className="py-2 w-36 pl-2">
                 <ResourceUsageCell usage={Number(pod.memoryUsage ?? 0)} request={Number(pod.memoryRequest ?? 0)} limit={Number(pod.memoryLimit ?? 0)} percent={Number(pod.memoryPercent ?? 0)} type="memory" hasMetrics={pod.cpuUsage !== undefined || pod.memoryUsage !== undefined} />
               </td>
-              <td className="py-2 font-mono">{String(pod.restarts ?? 0)}</td>
+              <td className="py-2">
+                <RestartHistorySparkline
+                  namespace={String(pod.namespace)}
+                  pod={String(pod.name)}
+                  variant="badge"
+                  lifetimeCount={Number(pod.restarts ?? 0)}
+                />
+              </td>
               <td className="py-2 font-mono text-kb-text-secondary">{String(pod.ip ?? '—')}</td>
               <td className="py-2 font-mono text-kb-text-tertiary">{pod.createdAt ? formatAge(pod.createdAt) : '-'}</td>
             </tr>

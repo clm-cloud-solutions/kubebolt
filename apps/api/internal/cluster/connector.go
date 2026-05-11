@@ -2892,6 +2892,24 @@ func containerStateFromStatus(name string, statuses []corev1.ContainerStatus) ma
 		default:
 			result["state"] = "unknown"
 		}
+		// LastTermination — surfaces the previous run's outcome even
+		// when the current state is "running". Used by P25-02's pod
+		// overview badge to flag containers that recently OOMKilled
+		// without forcing the operator to read raw kubectl output.
+		// The k8s API only retains the previous termination, not a
+		// full history, so this is best-effort: a container that
+		// crashed twice will only carry the second.
+		if cs.LastTerminationState.Terminated != nil {
+			lt := map[string]interface{}{}
+			if cs.LastTerminationState.Terminated.Reason != "" {
+				lt["reason"] = cs.LastTerminationState.Terminated.Reason
+			}
+			if !cs.LastTerminationState.Terminated.FinishedAt.IsZero() {
+				lt["finishedAt"] = cs.LastTerminationState.Terminated.FinishedAt.Time.Format(time.RFC3339)
+			}
+			lt["exitCode"] = int(cs.LastTerminationState.Terminated.ExitCode)
+			result["lastTermination"] = lt
+		}
 		return result
 	}
 	return map[string]interface{}{"state": "unknown", "ready": false, "restartCount": 0}

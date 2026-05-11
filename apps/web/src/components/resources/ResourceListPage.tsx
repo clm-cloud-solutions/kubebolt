@@ -4,6 +4,7 @@ import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight, Filter, X } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
+import { RestartHistorySparkline } from './RestartHistorySparkline'
 import { FilterBar } from './FilterBar'
 import { StatusBadge } from './StatusBadge'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -13,6 +14,7 @@ import { ApiError } from '@/services/api'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { formatAge } from '@/utils/formatters'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
+import { EndpointHealthCell } from './EndpointHealthCell'
 import type { ResourceItem } from '@/types/kubernetes'
 
 const PAGE_SIZE = 50
@@ -203,10 +205,18 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         header: 'Restarts',
         cell: (info) => {
           const v = Number(info.getValue() ?? 0)
+          const item = info.row.original
+          // The component owns both the count and the recency icon —
+          // count color depends on recency analysis, not on lifetime
+          // alone, so a stable-now pod with high lifetime doesn't
+          // scream red.
           return (
-            <span className={`text-[11px] font-mono ${v > 0 ? 'text-status-error' : 'text-kb-text-secondary'}`}>
-              {v}
-            </span>
+            <RestartHistorySparkline
+              namespace={String(item.namespace ?? '')}
+              pod={String(item.name ?? '')}
+              variant="badge"
+              lifetimeCount={v}
+            />
           )
         },
       },
@@ -275,6 +285,26 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         accessorKey: 'type',
         header: 'Type',
         cell: (info) => <span className="text-[11px] font-mono text-kb-text-secondary">{info.getValue() as string}</span>,
+      },
+      {
+        id: 'endpoints',
+        header: 'Endpoints',
+        // Endpoint health is fetched by EndpointHealthCell via shared
+        // TanStack Query cache, so all rows trigger one VM round-trip
+        // total. Cell handles the "no data" case (KSM not scraping)
+        // by rendering a neutral em-dash — no broken UI on clusters
+        // without scrape sidecar.
+        cell: (info) => {
+          const item = info.row.original
+          return (
+            <EndpointHealthCell
+              namespace={String(item.namespace ?? '')}
+              name={String(item.name ?? '')}
+              serviceType={String(item.type ?? '')}
+              clusterIP={String(item.clusterIP ?? '')}
+            />
+          )
+        },
       },
       {
         accessorKey: 'clusterIP',

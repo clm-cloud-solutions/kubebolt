@@ -164,6 +164,13 @@ runs VictoriaMetrics or a compatible TSDB, see the chart README for how
 to disable the embedded instance and point at your own. Access via
 `kubectl port-forward svc/kubebolt 3000:80` or configure an Ingress.
 
+> **Pairing with kubebolt-agent.** KubeBolt and the agent ship as
+> independently versioned charts coupled at the metric/label schema.
+> KubeBolt 1.10.0+ requires `kubebolt-agent` >= 1.0.0; running them out
+> of generation produces empty dashboards (no crash, no data loss —
+> samples still ingest, the queries just don't match). See
+> [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) for the full matrix.
+
 For custom configuration:
 
 ```bash
@@ -310,6 +317,14 @@ kubectl apply -f https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/
 # UI wizard (only when KubeBolt's backend already has kubeconfig
 # access to the target cluster — Administration → Integrations)
 ```
+
+The agent v1.0+ also ships an opt-in **vmagent sidecar** that scrapes
+Prom-compatible `/metrics` endpoints (kube-state-metrics, node-exporter,
+any pod with `prometheus.io/scrape: "true"`) and ships the samples to
+KubeBolt's bundled VictoriaMetrics — so you get the depth of a
+Prometheus stack without running your own Prom. See
+[`docs/agent-scraping.md`](docs/agent-scraping.md) for the
+quickstart + config reference.
 
 ## Features
 

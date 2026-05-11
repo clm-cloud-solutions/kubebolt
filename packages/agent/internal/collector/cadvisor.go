@@ -36,15 +36,22 @@ func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName string
 
 func (c *CadvisorCollector) Name() string { return "kubelet_cadvisor_network" }
 
-// cadvisorToPodMetric maps the upstream metric name to our agent schema.
-// Empty string means the metric is ignored.
-var cadvisorToPodMetric = map[string]string{
-	"container_network_receive_bytes_total":            "pod_network_receive_bytes_total",
-	"container_network_transmit_bytes_total":           "pod_network_transmit_bytes_total",
-	"container_network_receive_errors_total":           "pod_network_receive_errors_total",
-	"container_network_transmit_errors_total":          "pod_network_transmit_errors_total",
-	"container_network_receive_packets_dropped_total":  "pod_network_receive_packets_dropped_total",
-	"container_network_transmit_packets_dropped_total": "pod_network_transmit_packets_dropped_total",
+// allowedCadvisorMetrics is the set of cAdvisor metrics this collector
+// surfaces. All upstream names pass through unchanged — Prom-canonical is
+// our own schema since v1.0. The list is intentionally narrow: container
+// CPU + memory come from stats.go (kubelet /stats/summary); cadvisor.go's
+// only job is filling network gaps that /stats/summary leaves blank
+// (notably packets_dropped_total, which the kubelet's network struct
+// doesn't expose) and acting as a fallback on kubelets that don't populate
+// the network block at all (docker-desktop pod-level, EKS Bottlerocket
+// older versions).
+var allowedCadvisorMetrics = map[string]struct{}{
+	"container_network_receive_bytes_total":            {},
+	"container_network_transmit_bytes_total":           {},
+	"container_network_receive_errors_total":           {},
+	"container_network_transmit_errors_total":          {},
+	"container_network_receive_packets_dropped_total":  {},
+	"container_network_transmit_packets_dropped_total": {},
 }
 
 func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
@@ -67,8 +74,7 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 		if !ok {
 			continue
 		}
-		outName, want := cadvisorToPodMetric[metric]
-		if !want {
+		if _, want := allowedCadvisorMetrics[metric]; !want {
 			continue
 		}
 		podNs := labels["namespace"]
@@ -76,25 +82,31 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 		if podNs == "" || podName == "" {
 			continue
 		}
-		iface := labels["interface"]
-		// All containers in a pod share a network namespace, so every
-		// cAdvisor row for a pod/iface reports the same counter value.
-		// We drop the container label entirely and let VM collapse the
-		// duplicates. Using a seen-set would save a few bytes per scrape
-		// but costs complexity; not worth it at our scale.
+		// cAdvisor emits container_network_* per pod and per container in
+		// the pod. The pod-level row carries container="" (the pause
+		// container, owner of the network namespace); per-container rows
+		// repeat the same counter values. We pass them all through with
+		// canonical labels — VM stores them as distinct series and
+		// dashboards filter on container="" for the pod-level view, per
+		// cAdvisor mainstream convention. The 5x cardinality is the
+		// accepted trade-off for canonical compatibility.
 		sampleLabels := map[string]string{
-			"cluster_id":    c.clusterID,
-			"node":          c.nodeName,
-			"pod_namespace": podNs,
-			"pod_name":      podName,
-			"interface":     iface,
+			"cluster_id": c.clusterID,
+			"node":       c.nodeName,
+			"namespace":  podNs,
+			"pod":        podName,
+			"container":  labels["container"], // may be empty for pod-level row
+			"interface":  labels["interface"],
+		}
+		if uid := labels["pod_uid"]; uid != "" {
+			sampleLabels["pod_uid"] = uid
 		}
 		if c.clusterName != "" {
 			sampleLabels["cluster_name"] = c.clusterName
 		}
 		samples = append(samples, &agentv2.Sample{
 			Timestamp:  now,
-			MetricName: outName,
+			MetricName: metric, // canonical name passed through
 			Value:      value,
 			Labels:     sampleLabels,
 		})

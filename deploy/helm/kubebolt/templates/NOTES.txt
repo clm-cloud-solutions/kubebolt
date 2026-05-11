@@ -73,4 +73,11 @@ still show live metrics from metrics-server, but historical charts and
 top-consumers stay empty. See:
 https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md
 
+⚠️  KubeBolt {{ .Chart.AppVersion }} requires kubebolt-agent >= 1.0.0.
+  Older agents (0.2.x) emit the legacy schema and your dashboards
+  will render empty for clusters that ship from them. The backend
+  logs a WARN on registration when a legacy agent connects, with a
+  hint pointing at the upgrade. Compat matrix:
+  https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/COMPATIBILITY.md
+
 For more information, visit: https://github.com/clm-cloud-solutions/kubebolt

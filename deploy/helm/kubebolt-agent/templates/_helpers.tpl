@@ -62,3 +62,16 @@ every upgrade.
 {{- $tag := default .Chart.AppVersion .Values.image.tag -}}
 {{- printf "%s:%s" .Values.image.repository $tag -}}
 {{- end }}
+
+{{/*
+Per-job metric_relabel_configs block reused across every scrape_configs
+entry in templates/configmap-vmagent.yaml. Renders nothing when the
+operator hasn't configured any rules. The 8-space indent matches the
+scrape_configs[] level in the rendered YAML.
+*/}}
+{{- define "kubebolt-agent.metricRelabelConfigs" -}}
+{{- with .Values.scrape.metricRelabelConfigs }}
+        metric_relabel_configs:
+{{ toYaml . | indent 10 }}
+{{- end -}}
+{{- end -}}
