@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang/snappy"
+
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
@@ -223,30 +225,27 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Rate limit gate (Phase 3 Day 3). Parse the snappy-compressed
-	// payload to count samples, then check against the tenant's
-	// effective limits. nil rateLimiter is the "feature disabled"
-	// signal — early dev installs without limits configured get the
-	// pre-Phase-3 behavior (no rate limit). Production wires this
-	// always; the nil check is for test fixtures + transitional
-	// envs that haven't restarted into the new wiring yet.
+	// Decode + scan (Phase 3 Day 3 + 4). We decode the snappy body
+	// ONCE here and reuse the decoded bytes for:
+	//   - sample counting (rate limit gate)
+	//   - tenant_id label validation (Day 4 anti-spoof)
+	//   - auto-stamp fallback (Day 4, when tenant_id is missing)
+	// nil rate limiter == feature disabled (transitional envs);
+	// without it we skip all the per-tenant logic and just forward.
+	var decoded []byte
 	if h.promRateLimiter != nil {
-		sampleCount, parseErr := countWriteRequestSamples(body)
+		sampleCount, dec, parseErr := countWriteRequestSamples(body)
 		if parseErr != nil {
-			// Distinguish "payload too large after decompress" (413)
-			// from "malformed wire bytes" (400). Both are client-side
-			// failures; we don't want to count either against the
-			// bucket because the request can never succeed.
 			if errors.Is(parseErr, ErrPromWriteTooLarge) {
 				respondError(w, http.StatusRequestEntityTooLarge, "remote_write payload too large after decompression")
 				return
 			}
-			// Malformed payload: vminsert would reject anyway. Refuse
-			// upstream forward to save the round-trip and the
-			// resulting 4xx mystery in vmagent's logs.
 			respondError(w, http.StatusBadRequest, "remote_write payload parse: "+parseErr.Error())
 			return
 		}
+		decoded = dec
+
+		// Rate limit gate (Day 3).
 		// Resolve which tenant's bucket to consume from. Unauthed
 		// requests (tenant == nil) use the synthetic "anonymous"
 		// identity so they're still subject to rate limits — the
@@ -258,11 +257,6 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 			overrides = tenant.Limits
 		}
 		if allowed, retryAfter := h.promRateLimiter.Allow(tenantID, overrides, sampleCount); !allowed {
-			// Round up to whole seconds for the header — clients
-			// (Prom remote_write retries) expect an integer second
-			// count per RFC 7231. Subsecond delays still get a
-			// minimum of 1s, which is the right floor anyway: any
-			// faster retry would just spin against the bucket.
 			seconds := int(retryAfter.Round(time.Second) / time.Second)
 			if seconds < 1 {
 				seconds = 1
@@ -270,6 +264,64 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
 			respondError(w, http.StatusTooManyRequests, "remote_write rate limit exceeded for tenant")
 			return
+		}
+
+		// Tenant identity gate (Day 4): only when we have a real
+		// authenticated tenant. permissive-fallback / disabled mode
+		// (tenant == nil) ships samples unchanged — no label
+		// validation possible without a known tenant identity.
+		if tenant != nil {
+			asserted, found := readTenantIDFromFirstSeries(decoded)
+			if found && asserted != tenant.ID {
+				// Anti-spoofing: client claimed a tenant_id that
+				// doesn't match its bearer. Strict reject — no
+				// permissive fallback for spoof attempts.
+				slog.Warn("prom remote_write tenant_id mismatch",
+					slog.String("asserted", asserted),
+					slog.String("bearer_tenant", tenant.ID),
+					slog.String("remote", r.RemoteAddr))
+				respondError(w, http.StatusUnauthorized, "tenant_id label does not match authenticated tenant")
+				return
+			}
+			if !found {
+				// Auto-stamp fallback: the client (legacy agent /
+				// external Prom not yet configured with the label)
+				// didn't include tenant_id. We inject it server-side
+				// so cardinality enforcement + future per-tenant
+				// queries work uniformly. Day 4.2 will make the agent
+				// stamp proactively, after which this path becomes
+				// rare. Day 4.3 will tighten enforced mode to reject
+				// missing tenant_id outright.
+				stamped, injErr := injectTenantID(decoded, tenant.ID)
+				if injErr != nil {
+					slog.Warn("prom remote_write tenant_id auto-stamp failed",
+						slog.String("tenant_id", tenant.ID),
+						slog.String("error", injErr.Error()))
+					respondError(w, http.StatusInternalServerError, "tenant_id injection failed")
+					return
+				}
+				// Re-encode for the forward path. Original `body`
+				// (snappy-compressed) is discarded.
+				body = snappy.Encode(nil, stamped)
+				// decoded is now stale but we don't read it again
+				// past this point.
+				decoded = stamped
+			}
+
+			// Cardinality gate (Day 4): VM-authoritative count vs
+			// per-tenant cap. Permissive boot semantics inside
+			// Allow() handle the not-yet-fresh-cache case.
+			if h.promCardinality != nil {
+				if allowed, retryAfter := h.promCardinality.Allow(tenant.ID, overrides); !allowed {
+					seconds := int(retryAfter.Round(time.Second) / time.Second)
+					if seconds < 1 {
+						seconds = 3600
+					}
+					w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+					respondError(w, http.StatusRequestEntityTooLarge, "tenant active series cardinality exceeded")
+					return
+				}
+			}
 		}
 	}
 

@@ -115,7 +115,7 @@ func TestCountWriteRequestSamples_SnappyRoundTrip(t *testing.T) {
 		{Labels: 2, Samples: 42},
 	})
 	encoded := snappy.Encode(nil, body)
-	n, err := countWriteRequestSamples(encoded)
+	n, _, err := countWriteRequestSamples(encoded)
 	if err != nil {
 		t.Fatalf("snappy round-trip: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestCountWriteRequestSamples_DecodedTooLargeRejects(t *testing.T) {
 	// limit + 1, the header will reflect it.
 	big := make([]byte, promWriteMaxDecodedBytes+1)
 	encoded := snappy.Encode(nil, big)
-	_, err := countWriteRequestSamples(encoded)
+	_, _, err := countWriteRequestSamples(encoded)
 	if err == nil {
 		t.Fatalf("oversized decoded payload should error")
 	}
@@ -140,7 +140,7 @@ func TestCountWriteRequestSamples_DecodedTooLargeRejects(t *testing.T) {
 }
 
 func TestCountWriteRequestSamples_BadSnappyHeader(t *testing.T) {
-	_, err := countWriteRequestSamples([]byte{0x00, 0x01})
+	_, _, err := countWriteRequestSamples([]byte{0x00, 0x01})
 	if err == nil {
 		t.Fatalf("bad snappy stream should error")
 	}

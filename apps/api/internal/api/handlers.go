@@ -62,6 +62,13 @@ type handlers struct {
 	// more permissive than persisting state, no extra BoltDB writes
 	// on the hot path).
 	promRateLimiter *PromRateLimiter
+	// promCardinality enforces the per-tenant MaxActiveSeries cap by
+	// periodically querying VictoriaMetrics for the current series
+	// count per tenant_id label. Day 4 of Phase 3. nil means
+	// cardinality enforcement is disabled (e.g. when VM URL isn't
+	// reachable at boot or in test fixtures). The refresh goroutine
+	// is started by main.go alongside the HTTP server.
+	promCardinality *CardinalityTracker
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

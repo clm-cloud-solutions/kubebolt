@@ -490,8 +490,24 @@ func main() {
 	// "Defaults" view AND the enforcement layer in lockstep.
 	promRateLimiter := api.NewPromRateLimiter(promLimitsEffective)
 
+	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
+	// goroutine polls VM every 30s for `count by (tenant_id)
+	// ({tenant_id!=""})` and caches the result. Pre-forward gate
+	// uses the cache + per-tenant MaxActiveSeries cap to reject 413
+	// when exceeded. nil only if VM URL is empty (shouldn't happen
+	// in production — bundled chart wires it always).
+	var promCardinality *api.CardinalityTracker
+	vmURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
+	if vmURL != "" {
+		promCardinality = api.NewCardinalityTracker(vmURL, promLimitsEffective, nil, 30*time.Second)
+		// Start the background refresh goroutine. It's tied to the
+		// process lifetime via context.Background — the process
+		// shuts down via SIGTERM, dragging the goroutine with it.
+		go promCardinality.RunRefreshLoop(context.Background())
+	}
+
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
@@ -527,7 +543,6 @@ func main() {
 	agentCtx, agentCancel := context.WithCancel(context.Background())
 	defer agentCancel()
 
-	vmURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
 	if vmURL == "" {
 		vmURL = "http://localhost:8428"
 	}
