@@ -22,7 +22,7 @@ jobs:
       - if: matrix.language == 'go'
         uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version: '1.25.10'  # Explicit patch — see release.yml setup-go comment for the CVE rationale
 
       - uses: github/codeql-action/init@v3
         with:

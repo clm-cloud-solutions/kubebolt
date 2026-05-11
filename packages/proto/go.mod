@@ -2,6 +2,10 @@ module github.com/kubebolt/kubebolt/packages/proto
 
 go 1.25.0
 
+// Forces Go 1.25.10+ — closes 5 HIGH stdlib CVEs that landed under
+// 1.25.9. Bumped in lockstep with apps/api/go.mod and packages/agent/go.mod.
+toolchain go1.25.10
+
 require (
 	google.golang.org/grpc v1.68.0
 	google.golang.org/protobuf v1.36.8

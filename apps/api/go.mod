@@ -2,6 +2,12 @@ module github.com/kubebolt/kubebolt/apps/api
 
 go 1.25.0
 
+// Forces Go 1.25.10+ for local + CI builds (downloaded automatically by
+// `go build` if the system toolchain is older). Closes the 5 HIGH stdlib
+// CVEs that landed under 1.25.9 — see .github/workflows/release.yml
+// setup-go comment for details.
+toolchain go1.25.10
+
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 
 require (
