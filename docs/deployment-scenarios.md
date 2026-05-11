@@ -245,7 +245,7 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
   --set scrape.discovery.nodeExporter.labelSelector="app.kubernetes.io/name=prometheus-node-exporter" \
   --set scrape.discovery.kubeStateMetrics.enabled=true \
   --set scrape.remoteWriteUrl=http://kubebolt.kubebolt.svc.cluster.local/api/v1/prom/write \
-  --set backendUrl=kubebolt-api.kubebolt.svc.cluster.local:9090 \
+  --set backendUrl=kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090 \
   --set rbac.mode=operator   # or reader / metrics per step 7
 ```
 
@@ -300,7 +300,7 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
   # Dedicated jobs OFF — kubernetes-pods job will discover KSM and
   # node-exporter via their prometheus.io/scrape annotation.
   --set scrape.remoteWriteUrl=http://kubebolt.kubebolt.svc.cluster.local/api/v1/prom/write \
-  --set backendUrl=kubebolt-api.kubebolt.svc.cluster.local:9090 \
+  --set backendUrl=kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090 \
   --set rbac.mode=operator
 ```
 
@@ -373,7 +373,7 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
 
 helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
   -n kubebolt-agent --create-namespace \
-  --set backendUrl=kubebolt-api.kubebolt.svc.cluster.local:9090 \
+  --set backendUrl=kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090 \
   --set rbac.mode=operator
   # scrape.enabled stays false — there's nothing to scrape yet.
 ```
