@@ -62,6 +62,75 @@ Insights backend's metric paths) all consult these canonical names.
 
 ---
 
+## What's new in 1.10.0-rc.2 (Phase 3 + cluster-validation fixes)
+
+RC2 supersedes RC1 — the RC1 → GA promise didn't hold once the
+cluster-validation matrix surfaced four blockers, one critical.
+All RC2 deltas are tagged at the same agent + backend generation
+(v1.0.0-rc.2 / 1.10.0-rc.2 — same Phase 1 schema, no schema
+movement) so the matrix above stays valid.
+
+### Phase 3 — customer-facing Prom `remote_write` receiver
+
+Operators with an existing Prometheus stack can point its
+`remote_write` at KubeBolt instead of running the bundled
+vmagent sidecar. Per-tenant bearer auth, token-bucket rate
+limiting, cardinality cap (VM-authoritative), admin UI for
+limit overrides at `/admin/ingest-limits`, `/metrics` per-tenant
+observability surface. Operator guide:
+[`docs/integrations/prometheus.md`](./integrations/prometheus.md).
+
+### Operator-visible behavior changes from RC1
+
+- **`Hello.cluster_hint` is now honored** (`fix(api)!:` —
+  CRITICAL). RC1 collapsed every multi-cluster agent to
+  `cluster_id="local"` in the backend's registry regardless of
+  what the agent reported. RC2 derives `cluster_id` from the
+  agent's auto-detected kube-system namespace UID via the Hello
+  message. **Operators upgrading from RC1** will see backend
+  log + UI cluster selector change from `"local"` to the real
+  UUID per cluster. VM metric labels were already on the real
+  UUID; only the backend's internal view changes. Pre-existing
+  `local/`-keyed AgentRecords in BoltDB persist as zombies in
+  the cluster selector until the 24h auto-prune horizon — see
+  the commit message for the one-shot cleanup script.
+- **Log quietude in permissive prom_write mode** — RC1's
+  `WARN msg="prom remote_write permissive-fallback"` fired per
+  request (12,880 lines/hour in one in-vivo observation). RC2
+  logs one WARN per process; ongoing rate observable at
+  `kubebolt_prom_write_requests_total{tenant_id="anonymous"}`
+  on the `/metrics` scrape endpoint.
+- **Helm upgrade from RC1 no longer panics** on the new
+  `tenant.id` value reference. The agent chart's templates now
+  nil-guard `.Values.tenant`, so `helm upgrade --reuse-values`
+  from `1.0.0-rc.1` proceeds without a template error.
+- **Filesystem panel renders for OSS-minimal installs** —
+  P25-04 had silently traded the agent's `node_fs_used_bytes`
+  for node-exporter's `node_filesystem_*`. RC2 adds a chart-side
+  fallback so the panel shows agent's coarse metric when
+  node-exporter isn't running.
+- **kube-prometheus-stack coexistence** — Pod/Workload Monitor
+  queries now filter `job=""` so agent-shipped series win over
+  Prom's parallel kubelet scrape; Network panel drops kernel
+  pseudo-interfaces (gre0, sit0, ip6_vti0, etc.). NodesPage
+  Network legend labels each line with the node name instead of
+  rendering "(2)" disambiguator. New helm value
+  `agent.deferNodeNetwork: true` lets operators silence the
+  agent's `node_network_*` emission when an external Prometheus
+  is the canonical scraper of node-exporter.
+
+### Build / toolchain hardening
+
+The release pipeline's `preflight-third-party-scan` now also
+Trivy-scans `victoriametrics/vmagent` (previously only scanned
+`victoriametrics/victoria-metrics`), enforces drift between the
+two pins, and the Go toolchain pin moved from `'1.25'` (floating
+patch — picked stale 1.25.9 with 5 HIGH stdlib CVEs from the
+runner cache) to explicit `'1.25.10'`. All Dockerfiles + go.mod
+toolchain directives lockstep.
+
+---
+
 ## Migration paths
 
 ### Greenfield install
@@ -70,11 +139,11 @@ Just install both at the latest matching version:
 
 ```bash
 helm upgrade --install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0 \
+    --version 1.10.0-rc.2 \
     -n kubebolt --create-namespace
 
 helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0 \
+    --version 1.0.0-rc.2 \
     -n kubebolt-agent --create-namespace \
     --set backendUrl=<your-backend-grpc-host:9090>
 ```
@@ -89,12 +158,12 @@ the agent reconnects at registration:
 ```bash
 # 1. Backend first
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0 \
+    --version 1.10.0-rc.2 \
     -n kubebolt --reuse-values
 
 # 2. Agent next, in any cluster connected to it
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0 \
+    --version 1.0.0-rc.2 \
     -n kubebolt-agent --reuse-values
 
 # 3. Verify the WARN is gone
