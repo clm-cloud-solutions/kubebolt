@@ -65,13 +65,21 @@ The reference frame for every "what do I lose if I skip X" question:
 | **C. Workload trends** | Capacity page CPU/Mem/Network/Filesystem charts, TopWorkloadsCpu, RightSizingPanel | agent gRPC (cAdvisor + kubelet) → bundled VM |
 | **D. L7 traffic** | Reliability sub-tab (error rate, top traffic, top latency, network drops, error hotspots) | agent gRPC (Hubble) → bundled VM |
 | **E. Cluster-state enrichments** | Pod restart history sparkline (P25-01), OOMKill Capacity panel (P25-02), Service endpoint health column (P25-05 UI), Namespace quota gauge (P25-06) | KSM → vmagent → bundled VM |
-| **F. Node OS enrichments** | Node load avg + PSI (P25-03), per-mountpoint filesystem chart (P25-04) | node-exporter → vmagent → bundled VM |
-| **G. Recent deploys overlay** | Capacity charts deploy markers, Recent Deploys table | apiserver (informer ReplicaSet creation timestamps) |
+| **F. Node OS enrichments** | Load average + PSI (P25-03), per-mountpoint filesystem chart (P25-04) | node-exporter → vmagent → bundled VM. _Note:_ basic node CPU/Memory/Network/Filesystem (single aggregate per node) is **always available** via the agent's kubelet+cAdvisor path — node-exporter only adds Load+PSI and the per-mountpoint breakdown. The F category is "the extras," not "all node OS data." |
+| **G. Recent deploys overlay** | Capacity charts deploy markers, Recent Deploys table | apiserver (informer ReplicaSet creation timestamps). _Note:_ **always populated** when any Deployment exists — even greenfield clusters. Empty only when the cluster has no Deployments at all. |
 | **H. Resource actions** | Restart, scale, delete, edit YAML, set image, set resources, set env | apiserver (mutating verbs through agent or direct kubeconfig) |
 
 A, B, G, H depend on KubeBolt's own install. C and D depend on the
 agent (which is part of the KubeBolt install). E and F are what
 this document is really about — the difference between scenarios.
+
+> **Hypothesis corrections from the 1.10 cluster-validation campaign.**
+> The F and G categories above had stricter pre-validation framings
+> ("F requires node-exporter," "G is empty in greenfield"). Empirical
+> testing across GKE-DPv2 / EKS / AKS / GKE-Calico showed both were
+> wrong: F's baseline is available without node-exporter, and G is
+> never empty in any cluster running workloads. The notes above
+> reflect post-validation behavior.
 
 ---
 
@@ -399,8 +407,8 @@ helm install node-exporter prometheus-community/prometheus-node-exporter \
 - ✅ C: Capacity workload trends (CPU/Mem/Network/Filesystem) — the agent ships kubelet/cAdvisor pull built-in, no Prom needed.
 - ✅ D: Reliability if Cilium+Hubble is installed.
 - ❌ E: No KSM → lose all 4 P25-XX enrichments listed in scenario 2b above.
-- ❌ F: No node-exporter → lose P25-03 and full P25-04 breakdown.
-- ✅ G: Recent deploys overlay (apiserver-derived, no Prom).
+- ⚠️ F: No node-exporter → keep **F.0** (single-aggregate node CPU/Mem/Net/Filesystem from the agent's kubelet path), lose **F.1** (load + PSI) and **F.2** (per-mountpoint breakdown).
+- ✅ G: Recent deploys overlay — populated as soon as the cluster runs any Deployment (apiserver ReplicaSet history, no Prom).
 - ✅ H: Resource actions (operator RBAC).
 
 ### What's enabled / lost — full install
@@ -432,9 +440,10 @@ A glance-level summary. ✅ = works; ⚠️ = partial / degraded;
 | **E.4.** Service endpoint UI column | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
 | **E.5.** Service no-endpoints insight rule | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **E.6.** Namespace quota gauge | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
+| **F.0.** Basic node CPU/Mem/Net/Filesystem (single aggregate) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **F.1.** Node load avg + PSI | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 | **F.2.** Per-mountpoint filesystem chart | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| **G.** Recent deploys overlay | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **G.** Recent deploys overlay (any Deployment present) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **H.** Resource actions (operator RBAC) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* Reliability sub-tab appears only when Cilium+Hubble is installed

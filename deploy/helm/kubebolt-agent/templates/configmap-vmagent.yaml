@@ -55,6 +55,32 @@ we wire `-promscrape.config.fileWatchInterval` (Day 4 or later).
 {{- if not $clusterID -}}
   {{- $clusterID = .Values.cluster.name -}}
 {{- end -}}
+{{- /* Parse `key=value` labelSelectors for the dedicated discovery jobs.
+       k8s Pod-SD exposes pod labels under __meta_kubernetes_pod_label_<key>
+       where the key is sanitized (.→_, /→_, -→_). We honor the operator-
+       supplied selector in BOTH the keep rule's source_labels AND the
+       drop-from-pods-job `if:` matcher so a single override propagates
+       correctly. Pre-1.10.0 the regex/value were hardcoded and the
+       labelSelector value was silently ignored — kube-prometheus-stack
+       users had to rename their node-exporter pods or patch the chart. */ -}}
+{{- $neLabel := .Values.scrape.discovery.nodeExporter.labelSelector | default "app.kubernetes.io/name=node-exporter" -}}
+{{- if .Values.scrape.discovery.nodeExporter.enabled -}}
+  {{- if not (contains "=" $neLabel) -}}
+    {{- fail (printf "scrape.discovery.nodeExporter.labelSelector must be in 'key=value' form, got: %q" $neLabel) -}}
+  {{- end -}}
+{{- end -}}
+{{- $neParts := splitList "=" $neLabel -}}
+{{- $neKey := index $neParts 0 | replace "." "_" | replace "/" "_" | replace "-" "_" -}}
+{{- $neVal := index $neParts 1 -}}
+{{- $ksmLabel := .Values.scrape.discovery.kubeStateMetrics.labelSelector | default "app.kubernetes.io/name=kube-state-metrics" -}}
+{{- if .Values.scrape.discovery.kubeStateMetrics.enabled -}}
+  {{- if not (contains "=" $ksmLabel) -}}
+    {{- fail (printf "scrape.discovery.kubeStateMetrics.labelSelector must be in 'key=value' form, got: %q" $ksmLabel) -}}
+  {{- end -}}
+{{- end -}}
+{{- $ksmParts := splitList "=" $ksmLabel -}}
+{{- $ksmKey := index $ksmParts 0 | replace "." "_" | replace "/" "_" | replace "-" "_" -}}
+{{- $ksmVal := index $ksmParts 1 -}}
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -153,11 +179,11 @@ data:
           # > annotation-driven > nothing. We drop the lower-priority
           # annotation path here when the dedicated path is enabled.
 {{- if .Values.scrape.discovery.nodeExporter.enabled }}
-          - if: '{__meta_kubernetes_pod_label_app_kubernetes_io_name="node-exporter"}'
+          - if: '{__meta_kubernetes_pod_label_{{ $neKey }}="{{ $neVal }}"}'
             action: drop
 {{- end }}
 {{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
-          - if: '{__meta_kubernetes_pod_label_app_kubernetes_io_name="kube-state-metrics"}'
+          - if: '{__meta_kubernetes_pod_label_{{ $ksmKey }}="{{ $ksmVal }}"}'
             action: drop
 {{- end }}
           # Resolve port: annotation wins, otherwise vmagent picks
@@ -191,9 +217,9 @@ data:
           - role: pod
         scheme: http
         relabel_configs:
-          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          - source_labels: [__meta_kubernetes_pod_label_{{ $neKey }}]
             action: keep
-            regex: "node-exporter"
+            regex: {{ $neVal | quote }}
           - source_labels: [__meta_kubernetes_pod_node_name]
             action: keep
             regex: "%{NODE_NAME}"
@@ -243,9 +269,9 @@ data:
         kubernetes_sd_configs:
           - role: pod
         relabel_configs:
-          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+          - source_labels: [__meta_kubernetes_pod_label_{{ $ksmKey }}]
             action: keep
-            regex: "kube-state-metrics"
+            regex: {{ $ksmVal | quote }}
           # KSM 2.x exposes two containerPorts — `http` (metrics)
           # and `metrics` (telemetry). Pod-SD emits one target per
           # port; without this keep, the __address__ rewrite below

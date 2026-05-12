@@ -2331,7 +2331,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
       {!bannerDismissed && (
         <div className="bg-kb-elevated border border-kb-border rounded-lg px-4 py-2 text-[11px] text-kb-text-secondary flex items-center gap-3">
           <span className="flex-1">
-            Historical time-series from KubeBolt Agent (sampled every 15s). If the charts are empty, confirm the agent DaemonSet is running (<code>make agent-logs</code>).
+            Historical time-series from KubeBolt Agent (sampled every 15s). If the charts are empty, confirm the agent DaemonSet is running.
           </span>
           <button
             onClick={dismissBanner}

@@ -264,6 +264,75 @@ helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 A present `ca.crt` alone enables TLS (relay authenticated, client
 anonymous). Adding `tls.crt` + `tls.key` turns on mTLS.
 
+### Deploying on GKE managed Dataplane V2
+
+Google Kubernetes Engine's managed Dataplane V2 ships Hubble Relay
+in a different namespace and on a different port than the upstream
+Cilium chart — and the relay enforces mTLS by default. The agent's
+chart defaults (`hubble-relay.kube-system.svc.cluster.local:80`,
+plaintext) silently fail against this setup with
+`stream ended, will retry` and no flows surface in the UI.
+
+| Field | Upstream Cilium default | GKE managed DPv2 actual |
+|---|---|---|
+| Relay namespace | `kube-system` | `gke-managed-dpv2-observability` |
+| Relay service port | `80` (plaintext) | `443` (mTLS) |
+| Client cert | _(none)_ | required, in Secret `hubble-relay-client-certs` |
+| CA bundle | _(system trust)_ | `ca.crt` key of that same Secret |
+
+Two steps to make the agent talk to it:
+
+```bash
+# 1. Mirror the relay client-certs Secret into the agent's namespace.
+#    GKE creates it in gke-managed-dpv2-observability; the agent's
+#    chart can only mount a Secret living in its own release namespace.
+kubectl get secret -n gke-managed-dpv2-observability hubble-relay-client-certs -o yaml \
+  | sed 's/namespace: gke-managed-dpv2-observability/namespace: kubebolt-system/' \
+  | sed '/uid:/d; /resourceVersion:/d; /creationTimestamp:/d; /ownerReferences:/,/^  [a-z]/d' \
+  | kubectl apply -f -
+
+# 2. Install / upgrade the agent with the GKE-specific Hubble overrides.
+helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt-system --create-namespace \
+  --set backendUrl=<your-backend>:9090 \
+  --set hubble.relay.address=hubble-relay.gke-managed-dpv2-observability.svc.cluster.local:443 \
+  --set hubble.relay.tls.existingSecret=hubble-relay-client-certs \
+  --set hubble.relay.tls.serverName=hubble-relay.gke-managed-dpv2-observability.svc
+```
+
+> ⚠️ **The cross-namespace mirror is not Helm-stable.** If GKE rotates
+> the relay certs (it does, on its own cadence), the mirrored Secret
+> goes stale and the agent will retry-loop until you re-run step 1.
+> For long-running installs prefer a controller that watches the
+> source Secret — `External Secrets Operator` and `Reflector` both
+> work for this. A built-in chart-side mirror is on the roadmap as
+> a follow-up to this section.
+
+#### L7 visibility caveat
+
+GKE managed Dataplane V2 emits **L3/L4 flows only**. Google has not
+exposed the `enable-l7-proxy` toggle through the managed cluster API,
+so the agent can connect to the Relay via mTLS, see flow events, and
+**still leave the Reliability tab in the dashboard hidden** — that
+tab is gated on the presence of L7 metrics (HTTP status codes,
+latencies), not on Relay reachability.
+
+Verify with one PromQL against the bundled VictoriaMetrics:
+
+```promql
+count by (__name__) ({__name__=~"pod_flow_http.*"})
+```
+
+If this returns zero rows after the agent has been running for >5
+minutes, you're on managed DPv2 (or any L3/L4-only Hubble). The L4
+panels (Network Drops, top traffic by bytes) keep working; only the
+HTTP-status-aware panels stay hidden.
+
+Operators who need full L7 visibility on GKE must either run
+self-managed Cilium on GKE Standard (with `enable-l7-proxy=true` +
+`hubble.metrics.enabled=true` in cilium-config) or wait for Google
+to expose the L7 toggle.
+
 ## Scrape sidecar (`scrape.enabled`)
 
 The agent ships an opt-in vmagent sidecar that scrapes
