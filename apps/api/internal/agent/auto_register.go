@@ -28,14 +28,40 @@ type ClusterRegistrar interface {
 
 // maybeAutoRegisterCluster registers clusterID with the manager when
 // auto-register is enabled AND the agent advertises the kube-proxy
-// capability AND a registrar is wired. The decision lives in one
-// place so the Channel handler stays small and the rule is easy to
-// pin in tests.
+// capability AND a registrar is wired AND the agent's cluster_id is
+// NOT the backend's own cluster (which is already exposed via the
+// in-cluster kubeconfig context). The decision lives in one place so
+// the Channel handler stays small and the rule is easy to pin in
+// tests.
+//
+// selfClusterID is the kube-system namespace UID of the cluster the
+// backend itself runs in, as discovered by DiscoverClusterID at boot.
+// Empty when the backend isn't running in a Kubernetes cluster (e.g.
+// dev runs with kubeconfig-on-disk, or in-cluster discovery failed):
+// the self-skip is gated off and the function preserves its prior
+// behavior. When non-empty, an agent that reports a matching
+// cluster_id is treated as the same cluster the backend already
+// represents via its in-cluster context, so registering it again as
+// an agent-proxy would surface the cluster TWICE in the UI selector.
+// This matches the topology of an operator installing both the
+// backend and an agent in the same single cluster — the obvious
+// happy-path of OSS self-hosted.
 //
 // Returns true when the cluster was registered (so the caller knows
 // to schedule the cleanup defer).
-func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegistry, autoRegister bool, clusterID, displayName string, capabilities []string) bool {
+func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegistry, autoRegister bool, clusterID, displayName string, capabilities []string, selfClusterID string) bool {
 	if reg == nil || !autoRegister {
+		return false
+	}
+	if selfClusterID != "" && clusterID == selfClusterID {
+		// Agent reports the backend's own cluster — already exposed
+		// via the in-cluster context. Skip to avoid the duplicate
+		// row in the UI cluster selector that operators surfaced in
+		// cluster-validation BUG-2 (post-rc.2 retest, when Bug-1's
+		// cluster_hint fix made the duplication visually obvious).
+		slog.Debug("auto-register skipped: agent reports backend's own cluster_id (already in-cluster)",
+			slog.String("cluster_id", clusterID),
+		)
 		return false
 	}
 	if registry == nil {

@@ -41,7 +41,7 @@ func (r *fakeRegistrar) RemoveAgentProxyCluster(clusterID string) {
 func TestMaybeAutoRegister_RegistersWhenAllConditionsMet(t *testing.T) {
 	reg := &fakeRegistrar{}
 	registry := channel.NewAgentRegistry()
-	got := maybeAutoRegisterCluster(reg, registry, true, "c-prod", "Prod EU", []string{"metrics", "kube-proxy"})
+	got := maybeAutoRegisterCluster(reg, registry, true, "c-prod", "Prod EU", []string{"metrics", "kube-proxy"}, "")
 	if !got {
 		t.Fatal("registration should have happened")
 	}
@@ -90,7 +90,7 @@ func TestAutoRegisterDisplayName_AppendsSuffix(t *testing.T) {
 func TestMaybeAutoRegister_SkipsWhenFlagOff(t *testing.T) {
 	reg := &fakeRegistrar{}
 	registry := channel.NewAgentRegistry()
-	got := maybeAutoRegisterCluster(reg, registry, false, "c1", "x", []string{"kube-proxy"})
+	got := maybeAutoRegisterCluster(reg, registry, false, "c1", "x", []string{"kube-proxy"}, "")
 	if got {
 		t.Fatal("flag=false must skip registration")
 	}
@@ -101,7 +101,7 @@ func TestMaybeAutoRegister_SkipsWhenFlagOff(t *testing.T) {
 
 func TestMaybeAutoRegister_SkipsWithoutKubeProxyCapability(t *testing.T) {
 	reg := &fakeRegistrar{}
-	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c1", "x", []string{"metrics"})
+	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c1", "x", []string{"metrics"}, "")
 	if got {
 		t.Fatal("agent without kube-proxy capability must skip registration")
 	}
@@ -111,7 +111,7 @@ func TestMaybeAutoRegister_SkipsWithoutKubeProxyCapability(t *testing.T) {
 }
 
 func TestMaybeAutoRegister_NilRegistrarIsNoop(t *testing.T) {
-	got := maybeAutoRegisterCluster(nil, channel.NewAgentRegistry(), true, "c1", "x", []string{"kube-proxy"})
+	got := maybeAutoRegisterCluster(nil, channel.NewAgentRegistry(), true, "c1", "x", []string{"kube-proxy"}, "")
 	if got {
 		t.Fatal("nil registrar must return false (no registration)")
 	}
@@ -121,7 +121,7 @@ func TestMaybeAutoRegister_NilRegistrySkips(t *testing.T) {
 	// Defensive guard: if the manager wasn't wired with a registry,
 	// skipping is preferable to panicking.
 	reg := &fakeRegistrar{}
-	got := maybeAutoRegisterCluster(reg, nil, true, "c1", "x", []string{"kube-proxy"})
+	got := maybeAutoRegisterCluster(reg, nil, true, "c1", "x", []string{"kube-proxy"}, "")
 	if got {
 		t.Fatal("nil registry should short-circuit")
 	}
@@ -132,9 +132,47 @@ func TestMaybeAutoRegister_NilRegistrySkips(t *testing.T) {
 
 func TestMaybeAutoRegister_AddErrorReturnsFalse(t *testing.T) {
 	reg := &fakeRegistrar{addErr: errSentinel("boom")}
-	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c1", "x", []string{"kube-proxy"})
+	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c1", "x", []string{"kube-proxy"}, "")
 	if got {
 		t.Fatal("AddAgentProxyCluster error must surface as false (no cleanup defer scheduled)")
+	}
+}
+
+// BUG-2 regression (internal/cluster-validation/sessions/00-humo-test/10).
+// When the backend runs in the same cluster as a connecting agent
+// (single-cluster self-hosted topology — the obvious happy-path of OSS),
+// the in-cluster kubeconfig context already exposes that cluster. An
+// agent-proxy registration for the SAME cluster would surface the
+// cluster TWICE in the UI selector. Skip the registration to keep the
+// listing 1:1.
+func TestMaybeAutoRegister_SkipsWhenClusterIDEqualsSelfClusterID(t *testing.T) {
+	reg := &fakeRegistrar{}
+	registry := channel.NewAgentRegistry()
+	const self = "abc-123"
+	got := maybeAutoRegisterCluster(reg, registry, true, self, "same-as-backend", []string{"kube-proxy"}, self)
+	if got {
+		t.Fatal("registration must be skipped when cluster_id == selfClusterID")
+	}
+	if len(reg.added) != 0 {
+		t.Errorf("AddAgentProxyCluster must NOT be called (got %d call(s))", len(reg.added))
+	}
+}
+
+// Backwards compatibility — empty selfClusterID disables the self-skip
+// branch, preserving prior behavior for backends that run out-of-cluster
+// (kubeconfig-on-disk dev path) or where in-cluster cluster_id discovery
+// failed at boot.
+func TestMaybeAutoRegister_RegistersWhenSelfClusterIDEmpty(t *testing.T) {
+	reg := &fakeRegistrar{}
+	registry := channel.NewAgentRegistry()
+	// Same cluster_id as the would-be-self ("abc-123") but selfClusterID
+	// is empty — the gate doesn't fire, registration proceeds.
+	got := maybeAutoRegisterCluster(reg, registry, true, "abc-123", "kind", []string{"kube-proxy"}, "")
+	if !got {
+		t.Fatal("registration must proceed when selfClusterID is empty (feature gated off)")
+	}
+	if len(reg.added) != 1 {
+		t.Errorf("expected exactly one AddAgentProxyCluster call, got %d", len(reg.added))
 	}
 }
 
