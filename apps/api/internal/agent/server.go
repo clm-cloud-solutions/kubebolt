@@ -69,6 +69,16 @@ type Server struct {
 	// to false so single-cluster self-hosted setups don't surprise
 	// operators with extra clusters appearing in the UI.
 	autoRegisterClusters bool
+	// selfClusterID is the kube-system namespace UID of the cluster
+	// the backend itself runs in (when running in-cluster), as
+	// discovered by DiscoverClusterID at boot. Empty when running
+	// out-of-cluster (kubeconfig-on-disk dev path) or when in-cluster
+	// discovery failed. When non-empty, agent-proxy auto-registration
+	// short-circuits for any agent reporting a matching cluster_id,
+	// so the backend's own cluster doesn't show up TWICE in the
+	// UI selector (once as in-cluster, once as agent-proxy) — see
+	// cluster-validation BUG-2.
+	selfClusterID string
 }
 
 // Option configures a Server. Functional-options pattern keeps NewServer
@@ -96,6 +106,21 @@ func WithClusterRegistrar(r ClusterRegistrar) Option {
 // kube-proxy capable Hello triggers AddAgentProxyCluster.
 func WithAutoRegisterClusters(enabled bool) Option {
 	return func(s *Server) { s.autoRegisterClusters = enabled }
+}
+
+// WithSelfClusterID configures the cluster_id the backend itself runs
+// in (the kube-system namespace UID, as discovered by
+// DiscoverClusterID at boot). Used by the auto-register path to skip
+// any agent that reports the same cluster_id — that cluster is
+// already exposed via the in-cluster kubeconfig context, so a second
+// registration would duplicate the row in the UI selector.
+//
+// Empty (the default) gates the self-skip OFF — the auto-register
+// path proceeds for every agent regardless of whether its cluster_id
+// matches the backend's own. Pass the discovered UID explicitly when
+// the backend runs in-cluster.
+func WithSelfClusterID(id string) Option {
+	return func(s *Server) { s.selfClusterID = id }
 }
 
 func NewServer(writer MetricsWriter, opts ...Option) *Server {
@@ -210,7 +235,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	// To get that order we register them in reverse: cluster cleanup
 	// FIRST (runs last), then Close, then Unregister.
 	if maybeAutoRegisterCluster(s.clusterRegistrar, s.registry, s.autoRegisterClusters,
-		clusterID, autoRegisterDisplayName(hello, clusterID), hello.GetCapabilities()) {
+		clusterID, autoRegisterDisplayName(hello, clusterID), hello.GetCapabilities(), s.selfClusterID) {
 		defer maybeAutoUnregisterCluster(s.clusterRegistrar, s.registry, clusterID)
 	}
 	defer registeredAgent.Close()
