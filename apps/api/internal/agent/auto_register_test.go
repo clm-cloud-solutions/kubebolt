@@ -138,6 +138,34 @@ func TestMaybeAutoRegister_AddErrorReturnsFalse(t *testing.T) {
 	}
 }
 
+// IsSelfCluster is the shared rule pinning the self-skip contract for
+// every site that calls into the cluster manager's AddAgentProxyCluster.
+// Both maybeAutoRegisterCluster (live-connect path) and the boot-time
+// restore loop in cmd/server/main.go use it — see cluster-validation
+// BUG-2 (live) and BUG-3 (boot) for the empirical bugs the helper
+// prevents.
+func TestIsSelfCluster(t *testing.T) {
+	cases := []struct {
+		name           string
+		clusterID      string
+		selfClusterID  string
+		want           bool
+	}{
+		{"both empty → false (feature gated off)", "", "", false},
+		{"selfClusterID empty → false regardless of clusterID", "any-id", "", false},
+		{"clusterID empty + selfClusterID set → false", "", "self", false},
+		{"matching IDs → true", "abc-123", "abc-123", true},
+		{"different IDs → false", "abc-123", "xyz-789", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsSelfCluster(tc.clusterID, tc.selfClusterID); got != tc.want {
+				t.Errorf("IsSelfCluster(%q, %q) = %v, want %v", tc.clusterID, tc.selfClusterID, got, tc.want)
+			}
+		})
+	}
+}
+
 // BUG-2 regression (internal/cluster-validation/sessions/00-humo-test/10).
 // When the backend runs in the same cluster as a connecting agent
 // (single-cluster self-hosted topology — the obvious happy-path of OSS),
