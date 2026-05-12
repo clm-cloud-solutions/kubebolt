@@ -592,6 +592,27 @@ func main() {
 		}
 	}
 
+	// Discover the cluster_id the backend itself runs in (the
+	// kube-system namespace UID), best-effort. Hoisted ABOVE the
+	// boot-restore loop so the loop's self-skip guard (BUG-3
+	// regression below) has the value. Out-of-cluster dev runs
+	// leave selfClusterID empty — the self-skip gates off in both
+	// the boot-restore path AND the live-connect path that uses
+	// agent.WithSelfClusterID(...) further down.
+	selfClusterID := ""
+	if kc, err := agent.NewInClusterKubeClient(); err == nil {
+		if id, err := agent.DiscoverClusterID(context.Background(), kc); err == nil {
+			selfClusterID = id
+			slog.Info("backend self cluster_id discovered",
+				slog.String("cluster_id", selfClusterID),
+			)
+		} else {
+			slog.Info("backend self cluster_id discovery failed; agent-proxy self-skip disabled",
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
 	// Persistence wiring + boot-time restore. When auth is disabled
 	// (agentStore == nil) all of this is skipped and the registry
 	// stays in-memory — same as pre-Sprint-A.5 behavior.
@@ -633,18 +654,37 @@ func main() {
 					seen[rec.ClusterID] = ""
 				}
 			}
+			restored := 0
+			skipped := 0
 			for clusterID, displayName := range seen {
+				// BUG-3 regression guard: never restore an agent-proxy
+				// row for the backend's own cluster — already exposed
+				// via in-cluster context. The live-connect path uses
+				// the same agent.IsSelfCluster helper inside
+				// maybeAutoRegisterCluster; without this check the
+				// boot-restore path silently re-creates the duplicate
+				// row every restart (cluster-validation BUG-3).
+				if agent.IsSelfCluster(clusterID, selfClusterID) {
+					slog.Debug("boot restore skipped: agent record matches backend's own cluster_id (already in-cluster)",
+						slog.String("cluster_id", clusterID),
+					)
+					skipped++
+					continue
+				}
 				if _, err := manager.AddAgentProxyCluster(clusterID, displayName); err != nil {
 					slog.Warn("failed to restore agent-proxy cluster",
 						slog.String("cluster_id", clusterID),
 						slog.String("display_name", displayName),
 						slog.String("error", err.Error()),
 					)
+					continue
 				}
+				restored++
 			}
-			if len(seen) > 0 {
-				slog.Info("restored agent-proxy clusters from persistent registry",
-					slog.Int("count", len(seen)),
+			if restored > 0 || skipped > 0 {
+				slog.Info("processed persisted agent-proxy records on boot",
+					slog.Int("restored", restored),
+					slog.Int("skipped_self_cluster", skipped),
 				)
 			}
 		}
@@ -695,29 +735,9 @@ func main() {
 		slog.Info("agent-proxy cluster auto-register enabled")
 	}
 
-	// Discover the cluster_id the backend itself runs in (the
-	// kube-system namespace UID), best-effort. When non-empty, the
-	// agent server's auto-register path uses it to skip any agent
-	// whose reported cluster_id matches — that cluster is already
-	// exposed via the in-cluster kubeconfig context, so registering
-	// it again as an agent-proxy would duplicate the row in the UI
-	// selector (cluster-validation BUG-2). Failures (out-of-cluster
-	// dev runs, kube-system unreachable) leave selfClusterID empty,
-	// which gates the self-skip OFF — prior behavior preserved.
-	selfClusterID := ""
-	if kc, err := agent.NewInClusterKubeClient(); err == nil {
-		if id, err := agent.DiscoverClusterID(context.Background(), kc); err == nil {
-			selfClusterID = id
-			slog.Info("backend self cluster_id discovered",
-				slog.String("cluster_id", selfClusterID),
-			)
-		} else {
-			slog.Info("backend self cluster_id discovery failed; agent-proxy self-skip disabled",
-				slog.String("error", err.Error()),
-			)
-		}
-	}
-
+	// selfClusterID already discovered above (before the boot-restore
+	// loop) so both the boot path (BUG-3 fix) and the live-connect
+	// path (BUG-2 fix) share the same value.
 	ingestSrv := agent.NewServer(writer,
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
