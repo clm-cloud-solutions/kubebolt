@@ -695,10 +695,34 @@ func main() {
 		slog.Info("agent-proxy cluster auto-register enabled")
 	}
 
+	// Discover the cluster_id the backend itself runs in (the
+	// kube-system namespace UID), best-effort. When non-empty, the
+	// agent server's auto-register path uses it to skip any agent
+	// whose reported cluster_id matches — that cluster is already
+	// exposed via the in-cluster kubeconfig context, so registering
+	// it again as an agent-proxy would duplicate the row in the UI
+	// selector (cluster-validation BUG-2). Failures (out-of-cluster
+	// dev runs, kube-system unreachable) leave selfClusterID empty,
+	// which gates the self-skip OFF — prior behavior preserved.
+	selfClusterID := ""
+	if kc, err := agent.NewInClusterKubeClient(); err == nil {
+		if id, err := agent.DiscoverClusterID(context.Background(), kc); err == nil {
+			selfClusterID = id
+			slog.Info("backend self cluster_id discovered",
+				slog.String("cluster_id", selfClusterID),
+			)
+		} else {
+			slog.Info("backend self cluster_id discovery failed; agent-proxy self-skip disabled",
+				slog.String("error", err.Error()),
+			)
+		}
+	}
+
 	ingestSrv := agent.NewServer(writer,
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
 		agent.WithAutoRegisterClusters(autoRegisterClusters),
+		agent.WithSelfClusterID(selfClusterID),
 	)
 
 	// Sprint A migration window: enforcement defaults to "disabled" so
