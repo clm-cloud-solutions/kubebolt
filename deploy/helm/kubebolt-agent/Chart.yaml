@@ -2,8 +2,8 @@ apiVersion: v2
 name: kubebolt-agent
 description: KubeBolt node agent — kubelet stats, Hubble flows, and SPDY-tunneled K8s API proxy with 3-tier RBAC
 type: application
-version: 1.0.0-rc.3
-appVersion: "1.0.0-rc.3"
+version: 1.0.0-rc.4
+appVersion: "1.0.0-rc.4"
 home: https://github.com/clm-cloud-solutions/kubebolt
 icon: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png
 sources:

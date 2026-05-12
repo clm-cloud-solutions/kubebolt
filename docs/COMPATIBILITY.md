@@ -62,6 +62,29 @@ Insights backend's metric paths) all consult these canonical names.
 
 ---
 
+## What's new in 1.10.0-rc.4 (BUG-3 boot-restore self-skip)
+
+RC4 adds one operator-visible fix on top of RC3:
+**`fix(api): boot-time restore also honors selfClusterID — extract
+IsSelfCluster helper (BUG-3)`**. RC3 short-circuited the live-connect
+auto-register path but missed the boot-time restore path that
+replays persisted `AgentRecord` entries on every backend restart.
+Operators on RC3 saw the BUG-2 duplicate row come BACK every time
+they `helm upgrade`d or otherwise restarted the backend pod — a
+silent regression of the BUG-2 contract.
+
+RC4 extracts the self-skip rule into a shared `agent.IsSelfCluster`
+helper, then applies it at BOTH call sites — the live-connect path
+(unchanged behavior vs RC3) and the boot-restore path (new). Backend
+boots now log `processed persisted agent-proxy records on boot
+restored=N skipped_self_cluster=M` so operators can confirm the
+skip happened at INFO level without flipping to DEBUG.
+
+No schema movement vs RC3 — matrix row `1.10.x ↔ 1.0.x ✅` carries
+forward unchanged.
+
+---
+
 ## What's new in 1.10.0-rc.3 (single-cluster duplicate-row fix)
 
 RC3 adds one operator-visible fix on top of RC2:
@@ -163,11 +186,11 @@ Just install both at the latest matching version:
 
 ```bash
 helm upgrade --install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0-rc.3 \
+    --version 1.10.0-rc.4 \
     -n kubebolt --create-namespace
 
 helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0-rc.3 \
+    --version 1.0.0-rc.4 \
     -n kubebolt-agent --create-namespace \
     --set backendUrl=<your-backend-grpc-host:9090>
 ```
@@ -182,12 +205,12 @@ the agent reconnects at registration:
 ```bash
 # 1. Backend first
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0-rc.3 \
+    --version 1.10.0-rc.4 \
     -n kubebolt --reuse-values
 
 # 2. Agent next, in any cluster connected to it
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0-rc.3 \
+    --version 1.0.0-rc.4 \
     -n kubebolt-agent --reuse-values
 
 # 3. Verify the WARN is gone
