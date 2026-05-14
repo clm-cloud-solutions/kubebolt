@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"io"
@@ -3188,20 +3189,61 @@ func (c *Connector) AggregateWorkloadMetrics(resourceType, namespace, name strin
 	return result
 }
 
-// GetPodLogs returns the tail of logs for a specific pod container.
-// When sinceSeconds > 0, only log entries newer than that many seconds ago
-// are returned (sinceSeconds is applied in addition to tailLines by the API).
-func (c *Connector) GetPodLogs(namespace, name, container string, tailLines, sinceSeconds int64) (string, error) {
-	opts := &corev1.PodLogOptions{
-		TailLines: &tailLines,
+// LogQuery captures the optional filters for a pod log fetch. All fields are
+// optional except the pod identity carried separately by the caller.
+//
+// Time-window semantics:
+//   - SinceSeconds (relative) and SinceTime (absolute) are mutually exclusive at
+//     the Kubernetes API level; if both are set, SinceTime wins.
+//   - EndTime is NOT supported natively by Kubernetes — when set, we enable
+//     Timestamps so the kubelet prefixes every line with an RFC3339Nano stamp,
+//     stream lines incrementally, and stop reading once a line's timestamp is
+//     past EndTime. This avoids dragging hours of trailing logs over the wire.
+type LogQuery struct {
+	Container    string
+	TailLines    int64
+	SinceSeconds int64
+	SinceTime    time.Time // zero = unset
+	EndTime      time.Time // zero = unset (no upper bound)
+	Previous     bool      // logs from the prior container instance (post-restart)
+	Timestamps   bool      // prefix each line with the kubelet timestamp
+}
+
+// hardLogByteCap bounds the bytes we'll read from the kubelet stream regardless
+// of caller-side caps. Defends against an EndTime far in the future or a
+// runaway stream when no upper window is set.
+const hardLogByteCap = 10 * 1024 * 1024
+
+// GetPodLogs returns the logs for a specific pod container, applying the
+// optional filters carried in LogQuery. Returns the raw log text (possibly
+// containing kubelet-prefixed timestamps when q.Timestamps is true).
+func (c *Connector) GetPodLogs(namespace, name string, q LogQuery) (string, error) {
+	opts := &corev1.PodLogOptions{}
+	if q.TailLines > 0 {
+		tl := q.TailLines
+		opts.TailLines = &tl
 	}
-	if container != "" {
-		opts.Container = container
+	if q.Container != "" {
+		opts.Container = q.Container
 	}
-	if sinceSeconds > 0 {
-		opts.SinceSeconds = &sinceSeconds
+	// SinceTime takes precedence over SinceSeconds when both are set.
+	switch {
+	case !q.SinceTime.IsZero():
+		t := metav1.NewTime(q.SinceTime)
+		opts.SinceTime = &t
+	case q.SinceSeconds > 0:
+		s := q.SinceSeconds
+		opts.SinceSeconds = &s
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	if q.Previous {
+		opts.Previous = true
+	}
+	// Force timestamps when EndTime is set so we can apply the upper bound.
+	if q.Timestamps || !q.EndTime.IsZero() {
+		opts.Timestamps = true
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	req := c.clientset.CoreV1().Pods(namespace).GetLogs(name, opts)
 	stream, err := req.Stream(ctx)
@@ -3209,12 +3251,56 @@ func (c *Connector) GetPodLogs(namespace, name, container string, tailLines, sin
 		return "", fmt.Errorf("failed to get logs: %w", err)
 	}
 	defer stream.Close()
-	buf := new(bytes.Buffer)
-	_, err = io.Copy(buf, stream)
-	if err != nil {
+
+	// Fast path: no upper bound — read everything up to the hard cap.
+	if q.EndTime.IsZero() {
+		buf := new(bytes.Buffer)
+		_, err = io.Copy(buf, io.LimitReader(stream, hardLogByteCap))
+		if err != nil {
+			return "", fmt.Errorf("failed to read logs: %w", err)
+		}
+		return buf.String(), nil
+	}
+
+	// Bounded path: parse the kubelet timestamp prefix and stop once we cross
+	// EndTime. The kubelet emits lines in chronological order, so the first
+	// line past EndTime is our cut-off (small skew tolerated by ScanWindow).
+	const scanSkew = 2 * time.Second
+	cutoff := q.EndTime.Add(scanSkew)
+
+	var out bytes.Buffer
+	scanner := bufio.NewScanner(io.LimitReader(stream, hardLogByteCap))
+	// Allow long lines (default 64KB is too small for some apps).
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		ts, ok := parseLogLineTimestamp(line)
+		if ok && ts.After(cutoff) {
+			break
+		}
+		out.Write(line)
+		out.WriteByte('\n')
+	}
+	if err := scanner.Err(); err != nil && err != io.EOF {
 		return "", fmt.Errorf("failed to read logs: %w", err)
 	}
-	return buf.String(), nil
+	return out.String(), nil
+}
+
+// parseLogLineTimestamp extracts the RFC3339Nano stamp the kubelet prefixes
+// onto each line when Timestamps=true. Returns ok=false when the line does not
+// start with a recognisable timestamp (e.g. blank lines, container error
+// messages prefixed by the API).
+func parseLogLineTimestamp(line []byte) (time.Time, bool) {
+	sp := bytes.IndexByte(line, ' ')
+	if sp <= 0 {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, string(line[:sp]))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t, true
 }
 
 // GetResourceYAML fetches a single resource via the dynamic client and returns its YAML representation.

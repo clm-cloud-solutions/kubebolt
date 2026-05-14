@@ -850,17 +850,116 @@ function highlightLogLine(line: string): React.ReactNode {
   return <span className="text-[#b5e5a4]">{line}</span>
 }
 
-function LogOutput({ logs, logsEndRef }: { logs: string | undefined; logsEndRef: React.RefObject<HTMLDivElement> }) {
+function LogOutput({ logs, logsEndRef, grep }: { logs: string | undefined; logsEndRef: React.RefObject<HTMLDivElement>; grep?: string }) {
   if (logs === undefined) return null
   if (!logs) return <pre className="p-4 text-[11px] font-mono text-kb-text-tertiary">No logs available</pre>
-  const lines = logs.split('\n')
+
+  let lines = logs.split('\n')
+  let filteredOut = 0
+  if (grep) {
+    try {
+      const re = new RegExp(grep, 'i')
+      const before = lines.length
+      lines = lines.filter(l => l === '' || re.test(l))
+      filteredOut = before - lines.length
+    } catch {
+      // Invalid regex — fall through and render unfiltered.
+    }
+  }
+
   return (
-    <pre className="p-4 text-[11px] font-mono leading-5 overflow-auto max-h-[600px]">
-      {lines.map((line, i) => (
-        <div key={i}>{highlightLogLine(line)}</div>
-      ))}
-      <div ref={logsEndRef} />
-    </pre>
+    <>
+      {grep && (
+        <div className="px-4 py-1.5 text-[10px] font-mono text-kb-text-tertiary border-b border-kb-border bg-kb-card/40">
+          filter: /{grep}/i · matched {lines.filter(l => l !== '').length} line{lines.filter(l => l !== '').length === 1 ? '' : 's'}
+          {filteredOut > 0 ? ` · hid ${filteredOut}` : ''}
+        </div>
+      )}
+      <pre className="p-4 text-[11px] font-mono leading-5 overflow-auto max-h-[600px]">
+        {lines.map((line, i) => (
+          <div key={i}>{highlightLogLine(line)}</div>
+        ))}
+        <div ref={logsEndRef} />
+      </pre>
+    </>
+  )
+}
+
+// Local datetime input value (YYYY-MM-DDTHH:MM in browser locale) → RFC3339 UTC.
+// Returns undefined for empty input.
+function localDateTimeToRFC3339(v: string): string | undefined {
+  if (!v) return undefined
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return undefined
+  return d.toISOString()
+}
+
+interface LogFiltersState {
+  open: boolean
+  sinceTime: string  // datetime-local string ("" = unset)
+  endTime: string    // datetime-local string ("" = unset)
+  previous: boolean
+  grep: string
+}
+
+function emptyLogFilters(): LogFiltersState {
+  return { open: false, sinceTime: '', endTime: '', previous: false, grep: '' }
+}
+
+function LogFiltersPanel({
+  filters,
+  setFilters,
+  hasRestarts,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+  hasRestarts: boolean
+}) {
+  if (!filters.open) return null
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-4 gap-3 p-3 rounded-lg border border-kb-border bg-kb-card/40">
+      <label className="flex flex-col gap-1 text-[11px] text-kb-text-secondary">
+        From
+        <input
+          type="datetime-local"
+          value={filters.sinceTime}
+          onChange={(e) => setFilters({ ...filters, sinceTime: e.target.value })}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-md text-kb-text-primary"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-[11px] text-kb-text-secondary">
+        To
+        <input
+          type="datetime-local"
+          value={filters.endTime}
+          onChange={(e) => setFilters({ ...filters, endTime: e.target.value })}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-md text-kb-text-primary"
+        />
+      </label>
+      <label className="flex flex-col gap-1 text-[11px] text-kb-text-secondary">
+        Filter (regex)
+        <input
+          type="text"
+          placeholder="e.g. error|timeout|5\\d{2}"
+          value={filters.grep}
+          onChange={(e) => setFilters({ ...filters, grep: e.target.value })}
+          className="px-2 py-1.5 text-xs font-mono bg-kb-card border border-kb-border rounded-md text-kb-text-primary"
+        />
+      </label>
+      <label className={`flex items-end gap-2 text-[11px] ${hasRestarts ? 'text-kb-text-secondary' : 'text-kb-text-tertiary'}`}>
+        <input
+          type="checkbox"
+          checked={filters.previous}
+          onChange={(e) => setFilters({ ...filters, previous: e.target.checked })}
+          disabled={!hasRestarts}
+          className="rounded border-kb-border"
+        />
+        <span>
+          Previous container
+          {!hasRestarts && <span className="block text-[10px] text-kb-text-tertiary">(no restarts yet)</span>}
+        </span>
+      </label>
+    </div>
   )
 }
 
@@ -1546,11 +1645,32 @@ function EventsTab({ type, namespace, name }: { type: string; namespace: string;
 function LogsTab({ namespace, name, item }: { namespace: string; name: string; item: ResourceItem }) {
   const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
   const containerNames = containers.map(c => String(c.name ?? ''))
+  const hasRestarts = containers.some(c => {
+    const state = (c.state ?? {}) as Record<string, unknown>
+    return Number(state.restartCount ?? 0) > 0
+  })
   const [selectedContainer, setSelectedContainer] = useState(containerNames[0] ?? '')
   const [tailLines, setTailLines] = useState(100)
+  const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
-  const { data: logs, isLoading, error, refetch } = usePodLogs(namespace, name, selectedContainer, tailLines)
+  const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
+  const endTimeRFC = localDateTimeToRFC3339(filters.endTime)
+  const rangeActive = !!(sinceTimeRFC || endTimeRFC)
+
+  const { data: logs, isLoading, error, refetch } = usePodLogs(
+    namespace,
+    name,
+    selectedContainer,
+    tailLines,
+    {
+      sinceTime: sinceTimeRFC,
+      endTime: endTimeRFC,
+      previous: filters.previous || undefined,
+      timestamps: rangeActive || undefined,
+    },
+  )
   const logsEndRef = useRef<HTMLDivElement>(null)
+  const historical = rangeActive || filters.previous
 
   useEffect(() => {
     if (logs) {
@@ -1558,10 +1678,16 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
     }
   }, [logs])
 
+  const activeFilterCount =
+    (sinceTimeRFC ? 1 : 0) +
+    (endTimeRFC ? 1 : 0) +
+    (filters.previous ? 1 : 0) +
+    (filters.grep ? 1 : 0)
+
   return (
     <div className="space-y-3">
       {/* Controls */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         {containerNames.length > 1 && (
           <select
             value={selectedContainer}
@@ -1579,7 +1705,9 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         <select
           value={tailLines}
           onChange={(e) => setTailLines(Number(e.target.value))}
-          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          disabled={rangeActive}
+          title={rangeActive ? 'Disabled while a time range is active' : undefined}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           <option value={100}>Last 100 lines</option>
           <option value={500}>Last 500 lines</option>
@@ -1587,19 +1715,49 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
           <option value={5000}>Last 5000 lines</option>
         </select>
         <button
+          onClick={() => setFilters({ ...filters, open: !filters.open })}
+          className={`px-3 py-1.5 text-xs border rounded-lg transition-colors ${
+            filters.open || activeFilterCount > 0
+              ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+              : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+          }`}
+        >
+          Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        {activeFilterCount > 0 && (
+          <button
+            onClick={() => setFilters({ ...emptyLogFilters(), open: filters.open })}
+            className="px-2 py-1.5 text-xs text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            Clear
+          </button>
+        )}
+        <button
           onClick={() => refetch()}
           className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
         >
           Refresh
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-          </span>
-          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+          {historical ? (
+            <span className="text-[10px] text-kb-text-tertiary">
+              {filters.previous ? 'Previous container · ' : ''}
+              {rangeActive ? 'Historical range · ' : ''}
+              auto-refresh off
+            </span>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+              </span>
+              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+            </>
+          )}
         </div>
       </div>
+
+      <LogFiltersPanel filters={filters} setFilters={setFilters} hasRestarts={hasRestarts} />
 
       {/* Log output */}
       <div className="bg-[#0d1117] rounded-[10px] border border-kb-border overflow-hidden">
@@ -1609,7 +1767,7 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         {error && (
           <div className="p-8 text-center text-sm text-status-error">{(error as Error).message}</div>
         )}
-        <LogOutput logs={logs} logsEndRef={logsEndRef} />
+        <LogOutput logs={logs} logsEndRef={logsEndRef} grep={filters.grep} />
       </div>
     </div>
   )
@@ -2627,6 +2785,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   const [selectedPod, setSelectedPod] = useState('')
   const [selectedContainer, setSelectedContainer] = useState('')
   const [tailLines, setTailLines] = useState(100)
+  const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
   const logsEndRef = useRef<HTMLDivElement>(null)
 
   // Set default pod when pods load
@@ -2638,9 +2797,14 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
 
   // Get containers for selected pod
   const currentPod = pods.find(p => p.name === selectedPod)
-  const containers = currentPod && Array.isArray(currentPod.containers)
-    ? (currentPod.containers as Array<Record<string, unknown>>).map(c => String(c.name ?? ''))
+  const containerObjs = currentPod && Array.isArray(currentPod.containers)
+    ? currentPod.containers as Array<Record<string, unknown>>
     : []
+  const containers = containerObjs.map(c => String(c.name ?? ''))
+  const hasRestarts = containerObjs.some(c => {
+    const state = (c.state ?? {}) as Record<string, unknown>
+    return Number(state.restartCount ?? 0) > 0
+  })
 
   // Set default container when pod changes
   useEffect(() => {
@@ -2650,7 +2814,24 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   }, [selectedPod, containers, selectedContainer])
 
   const podNamespace = currentPod?.namespace ?? ''
-  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(podNamespace, selectedPod, selectedContainer, tailLines)
+
+  const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
+  const endTimeRFC = localDateTimeToRFC3339(filters.endTime)
+  const rangeActive = !!(sinceTimeRFC || endTimeRFC)
+  const historical = rangeActive || filters.previous
+
+  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(
+    podNamespace,
+    selectedPod,
+    selectedContainer,
+    tailLines,
+    {
+      sinceTime: sinceTimeRFC,
+      endTime: endTimeRFC,
+      previous: filters.previous || undefined,
+      timestamps: rangeActive || undefined,
+    },
+  )
 
   useEffect(() => {
     if (logs) {
@@ -2662,9 +2843,15 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   if (podsError) return <ErrorState message={podsError.message} />
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
+  const activeFilterCount =
+    (sinceTimeRFC ? 1 : 0) +
+    (endTimeRFC ? 1 : 0) +
+    (filters.previous ? 1 : 0) +
+    (filters.grep ? 1 : 0)
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <select
           value={selectedPod}
           onChange={(e) => { setSelectedPod(e.target.value); setSelectedContainer('') }}
@@ -2691,12 +2878,32 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         <select
           value={tailLines}
           onChange={(e) => setTailLines(Number(e.target.value))}
-          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          disabled={rangeActive}
+          title={rangeActive ? 'Disabled while a time range is active' : undefined}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           <option value={100}>Last 100 lines</option>
           <option value={500}>Last 500 lines</option>
           <option value={1000}>Last 1000 lines</option>
         </select>
+        <button
+          onClick={() => setFilters({ ...filters, open: !filters.open })}
+          className={`px-3 py-1.5 text-xs border rounded-lg transition-colors ${
+            filters.open || activeFilterCount > 0
+              ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+              : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+          }`}
+        >
+          Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        {activeFilterCount > 0 && (
+          <button
+            onClick={() => setFilters({ ...emptyLogFilters(), open: filters.open })}
+            className="px-2 py-1.5 text-xs text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            Clear
+          </button>
+        )}
         <button
           onClick={() => refetch()}
           className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
@@ -2704,13 +2911,25 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
           Refresh
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-          </span>
-          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+          {historical ? (
+            <span className="text-[10px] text-kb-text-tertiary">
+              {filters.previous ? 'Previous container · ' : ''}
+              {rangeActive ? 'Historical range · ' : ''}
+              auto-refresh off
+            </span>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+              </span>
+              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+            </>
+          )}
         </div>
       </div>
+
+      <LogFiltersPanel filters={filters} setFilters={setFilters} hasRestarts={hasRestarts} />
 
       <div className="bg-[#0d1117] rounded-[10px] border border-kb-border overflow-hidden">
         {logsLoading && !logs && (
@@ -2719,7 +2938,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         {logsError && (
           <div className="p-8 text-center text-sm text-status-error">{(logsError as Error).message}</div>
         )}
-        <LogOutput logs={logs} logsEndRef={logsEndRef} />
+        <LogOutput logs={logs} logsEndRef={logsEndRef} grep={filters.grep} />
       </div>
     </div>
   )

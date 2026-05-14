@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -328,13 +329,35 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	q := cluster.LogQuery{
+		Container:  container,
+		TailLines:  tailLines,
+		Previous:   r.URL.Query().Get("previous") == "true",
+		Timestamps: r.URL.Query().Get("timestamps") == "true",
+	}
+	if s := r.URL.Query().Get("since"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			q.SinceSeconds = int64(d.Seconds())
+		}
+	}
+	if st := r.URL.Query().Get("sinceTime"); st != "" {
+		if t, err := time.Parse(time.RFC3339, st); err == nil {
+			q.SinceTime = t
+		}
+	}
+	if et := r.URL.Query().Get("endTime"); et != "" {
+		if t, err := time.Parse(time.RFC3339, et); err == nil {
+			q.EndTime = t
+		}
+	}
+
 	conn := h.manager.Connector()
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
 
-	logs, err := conn.GetPodLogs(namespace, name, container, tailLines, 0)
+	logs, err := conn.GetPodLogs(namespace, name, q)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

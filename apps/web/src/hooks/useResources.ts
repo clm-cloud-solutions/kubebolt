@@ -149,13 +149,29 @@ export function useRolloutHistory(type: string, namespace: string, name: string)
   })
 }
 
-// Logs have their own fixed refresh interval (independent of global setting)
-export function usePodLogs(namespace: string, name: string, container: string, tailLines: number) {
+// Logs have their own fixed refresh interval (independent of global setting).
+// When a closed time-window or previous-container query is active, auto-refresh
+// is disabled — the result is historical and shouldn't churn.
+export interface PodLogsOptions {
+  since?: string
+  sinceTime?: string
+  endTime?: string
+  previous?: boolean
+  timestamps?: boolean
+}
+export function usePodLogs(
+  namespace: string,
+  name: string,
+  container: string,
+  tailLines: number,
+  opts?: PodLogsOptions,
+) {
+  const historical = !!(opts?.sinceTime || opts?.endTime || opts?.previous)
   return useQuery({
-    queryKey: ['pod-logs', namespace, name, container, tailLines],
-    queryFn: () => api.getPodLogs(namespace, name, container || undefined, tailLines),
+    queryKey: ['pod-logs', namespace, name, container, tailLines, opts],
+    queryFn: () => api.getPodLogs(namespace, name, container || undefined, tailLines, opts),
     enabled: !!namespace && !!name,
-    refetchInterval: 10_000,
+    refetchInterval: historical ? false : 10_000,
   })
 }
 
