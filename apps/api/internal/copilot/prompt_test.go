@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestSystemPromptLogFilterGuidance pins the log-filter guidance added when we
@@ -98,6 +99,111 @@ func TestGetPodLogsToolSchema(t *testing.T) {
 		}
 		if got, _ := p["type"].(string); got != wantType {
 			t.Errorf("get_pod_logs property %q: type=%q, want %q", prop, got, wantType)
+		}
+	}
+}
+
+// TestSessionContextNowBlock pins the format of the "Now" block prepended
+// to the operator's first user message. The block is what gives Kobi a
+// clock anchor — without it the model guesses "today" from its training
+// cutoff and produces day-off errors on relative-time queries
+// ("ayer a las 10pm"). A refactor that drops these lines silently
+// regresses every "yesterday at X" question into a clarification round-trip
+// or, worse, into a query against the wrong day.
+func TestSessionContextNowBlock(t *testing.T) {
+	now := time.Date(2026, time.May, 15, 1, 53, 41, 0, time.UTC)
+
+	t.Run("with valid IANA timezone", func(t *testing.T) {
+		got := BuildSessionContext("prod-cluster", "/pods/demo/api-7b9", now, "Europe/Madrid")
+
+		// Cluster + view header preserved.
+		mustContainAll(t, got,
+			"# Session context",
+			"cluster: prod-cluster",
+			"current_view: /pods/demo/api-7b9",
+		)
+
+		// Now block: dual UTC + local clock and concrete today/yesterday in
+		// the user's TZ. May 15 in Madrid (CEST = UTC+2) → today=2026-05-15,
+		// yesterday=2026-05-14. The dates are what Kobi reads first when
+		// resolving "ayer".
+		mustContainAll(t, got,
+			"# Now",
+			"now (UTC): 2026-05-15T01:53:41Z",
+			"now (Europe/Madrid): 2026-05-15T03:53:41+02:00",
+			"today (Europe/Madrid): 2026-05-15",
+			"yesterday (Europe/Madrid): 2026-05-14",
+		)
+	})
+
+	t.Run("with empty timezone falls back to UTC", func(t *testing.T) {
+		got := BuildSessionContext("c", "/", now, "")
+
+		mustContainAll(t, got,
+			"now (UTC): 2026-05-15T01:53:41Z",
+			"today (UTC): 2026-05-15",
+			"yesterday (UTC): 2026-05-14",
+		)
+		// No second clock line when only UTC is known — avoids "now (UTC) /
+		// now (UTC)" duplication that the model would have to ignore.
+		if strings.Count(got, "now (") != 1 {
+			t.Errorf("expected a single now line in UTC-only mode, got:\n%s", got)
+		}
+	})
+
+	t.Run("with unparseable timezone falls back to UTC", func(t *testing.T) {
+		got := BuildSessionContext("c", "/", now, "Not/A/Real/Zone")
+
+		// Bad input is silently downgraded — never surface a Go parse error
+		// into the user message.
+		if strings.Contains(got, "Not/A/Real/Zone") {
+			t.Errorf("invalid TZ leaked into output: %s", got)
+		}
+		if !strings.Contains(got, "today (UTC):") {
+			t.Errorf("expected UTC fallback for unparseable TZ, got:\n%s", got)
+		}
+	})
+
+	t.Run("yesterday rolls correctly across midnight in user TZ", func(t *testing.T) {
+		// 2026-05-15 01:00 UTC = 2026-05-14 21:00 EDT — in EDT, "today"
+		// is still the 14th and "yesterday" is the 13th. This is exactly
+		// the case that bit us in the live session that motivated this fix.
+		got := BuildSessionContext("c", "/", time.Date(2026, time.May, 15, 1, 0, 0, 0, time.UTC), "America/New_York")
+
+		mustContainAll(t, got,
+			"today (America/New_York): 2026-05-14",
+			"yesterday (America/New_York): 2026-05-13",
+		)
+	})
+}
+
+// TestSystemPromptTimeAnchorGuidance pins the operator-facing guidance that
+// teaches Kobi to read the Now block and stop asking for timezone by reflex.
+// If a future refactor drops these phrases, every relative-time query
+// regresses into a clarification round-trip — the exact UX bug this change
+// was built to fix.
+func TestSystemPromptTimeAnchorGuidance(t *testing.T) {
+	prompt := strings.ToLower(BuildSystemPrompt())
+	mustContain := []string{
+		// The block exists and the model is told to read it.
+		"# now",
+		"resolve it against the now block",
+		// Default-to-local rule (the "no, don't ask which TZ" guardrail).
+		"assume their local tz",
+		"do not ask",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(prompt, s) {
+			t.Errorf("system prompt is missing time-anchor guidance %q — Kobi will regress to asking for TZ on every relative-time query", s)
+		}
+	}
+}
+
+func mustContainAll(t *testing.T, got string, wants ...string) {
+	t.Helper()
+	for _, w := range wants {
+		if !strings.Contains(got, w) {
+			t.Errorf("output is missing %q\n--- full output ---\n%s\n-------------------", w, got)
 		}
 	}
 }
