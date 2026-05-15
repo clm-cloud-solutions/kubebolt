@@ -134,6 +134,9 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		container := stringArg(args, "container")
 		grep := stringArg(args, "grep")
 		since := stringArg(args, "since")
+		sinceTimeStr := stringArg(args, "sinceTime")
+		endTimeStr := stringArg(args, "endTime")
+		previous := boolArg(args, "previous")
 
 		tailLines := int64(intArg(args, "tailLines", defaultLogTailLines))
 		if tailLines <= 0 {
@@ -143,7 +146,11 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 			tailLines = maxLogTailLines
 		}
 
-		var sinceSeconds int64
+		q := cluster.LogQuery{
+			Container: container,
+			TailLines: tailLines,
+			Previous:  previous,
+		}
 		if since != "" {
 			d, err := time.ParseDuration(since)
 			if err != nil {
@@ -152,8 +159,26 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 				return res
 			}
 			if d > 0 {
-				sinceSeconds = int64(d.Seconds())
+				q.SinceSeconds = int64(d.Seconds())
 			}
+		}
+		if sinceTimeStr != "" {
+			t, err := time.Parse(time.RFC3339, sinceTimeStr)
+			if err != nil {
+				res.Content = jsonString(map[string]string{"error": fmt.Sprintf("invalid sinceTime %q: expected RFC3339 like '2026-05-10T14:00:00Z'", sinceTimeStr)})
+				res.IsError = true
+				return res
+			}
+			q.SinceTime = t
+		}
+		if endTimeStr != "" {
+			t, err := time.Parse(time.RFC3339, endTimeStr)
+			if err != nil {
+				res.Content = jsonString(map[string]string{"error": fmt.Sprintf("invalid endTime %q: expected RFC3339 like '2026-05-10T16:00:00Z'", endTimeStr)})
+				res.IsError = true
+				return res
+			}
+			q.EndTime = t
 		}
 
 		if ns == "" || name == "" {
@@ -161,7 +186,7 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		logs, err := conn.GetPodLogs(ns, name, container, tailLines, sinceSeconds)
+		logs, err := conn.GetPodLogs(ns, name, q)
 		if err != nil {
 			res.Content = errJSON(err)
 			res.IsError = true

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -321,11 +322,45 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	tailLines := int64(100)
+	var tailLines int64
+	explicitTail := false
 	if tl := r.URL.Query().Get("tailLines"); tl != "" {
 		if v, err := strconv.ParseInt(tl, 10, 64); err == nil && v > 0 {
 			tailLines = v
+			explicitTail = true
 		}
+	}
+
+	q := cluster.LogQuery{
+		Container:  container,
+		Previous:   r.URL.Query().Get("previous") == "true",
+		Timestamps: r.URL.Query().Get("timestamps") == "true",
+	}
+	if s := r.URL.Query().Get("since"); s != "" {
+		if d, err := time.ParseDuration(s); err == nil && d > 0 {
+			q.SinceSeconds = int64(d.Seconds())
+		}
+	}
+	if st := r.URL.Query().Get("sinceTime"); st != "" {
+		if t, err := time.Parse(time.RFC3339, st); err == nil {
+			q.SinceTime = t
+		}
+	}
+	if et := r.URL.Query().Get("endTime"); et != "" {
+		if t, err := time.Parse(time.RFC3339, et); err == nil {
+			q.EndTime = t
+		}
+	}
+
+	// Apply the tail bound. Default to 100 lines only when no absolute
+	// time window is set; with a window, the 10 MiB hardcap in
+	// cluster.GetPodLogs is the only bound — slicing to the last 100
+	// lines first would silently drop older lines inside the window.
+	switch {
+	case explicitTail:
+		q.TailLines = tailLines
+	case q.SinceTime.IsZero() && q.EndTime.IsZero():
+		q.TailLines = 100
 	}
 
 	conn := h.manager.Connector()
@@ -334,7 +369,7 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	logs, err := conn.GetPodLogs(namespace, name, container, tailLines, 0)
+	logs, err := conn.GetPodLogs(namespace, name, q)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
@@ -28,6 +28,7 @@ import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicat
 import { MutationErrorToast, classifyMutationError, type MutationErrorVariant } from '@/components/shared/MutationErrorToast'
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
+import { HoverTooltip } from '@/components/shared/Tooltip'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
@@ -850,17 +851,450 @@ function highlightLogLine(line: string): React.ReactNode {
   return <span className="text-[#b5e5a4]">{line}</span>
 }
 
-function LogOutput({ logs, logsEndRef }: { logs: string | undefined; logsEndRef: React.RefObject<HTMLDivElement> }) {
+function LogOutput({ logs, grep }: { logs: string | undefined; grep?: string }) {
   if (logs === undefined) return null
   if (!logs) return <pre className="p-4 text-[11px] font-mono text-kb-text-tertiary">No logs available</pre>
-  const lines = logs.split('\n')
+
+  let lines = logs.split('\n')
+  let filteredOut = 0
+  if (grep) {
+    try {
+      const re = new RegExp(grep, 'i')
+      const before = lines.length
+      lines = lines.filter(l => l === '' || re.test(l))
+      filteredOut = before - lines.length
+    } catch {
+      // Invalid regex — fall through and render unfiltered.
+    }
+  }
+
+  const matchCount = lines.filter(l => l !== '').length
+
   return (
-    <pre className="p-4 text-[11px] font-mono leading-5 overflow-auto max-h-[600px]">
-      {lines.map((line, i) => (
-        <div key={i}>{highlightLogLine(line)}</div>
-      ))}
-      <div ref={logsEndRef} />
-    </pre>
+    <>
+      {grep && (
+        <div className="px-4 py-1.5 text-[10px] font-mono text-kb-text-tertiary border-b border-kb-border bg-kb-card/40">
+          filter: /{grep}/i · matched {matchCount} line{matchCount === 1 ? '' : 's'}
+          {filteredOut > 0 ? ` · hid ${filteredOut}` : ''}
+        </div>
+      )}
+      <VirtualLogList lines={lines} />
+    </>
+  )
+}
+
+// Manual viewport-clipping for log lines. Renders only the rows currently
+// visible (plus a small overscan buffer) instead of the full N-row DOM —
+// keeps scroll smooth at 50K+ lines without introducing a windowing dep.
+//
+// Sticky-bottom: if the user is at (or near) the bottom, new data keeps
+// the view pinned to the latest line; if they've scrolled up to read,
+// incoming refreshes don't yank them back.
+const LOG_LINE_HEIGHT = 20  // matches text-[11px] + leading-5
+
+function VirtualLogList({ lines }: { lines: string[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportH, setViewportH] = useState(600)
+  const stickyBottomRef = useRef(true)
+  const [, forceTick] = useState(0)
+
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const measure = () => setViewportH(el.clientHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onScroll = () => {
+      setScrollTop(el.scrollTop)
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      stickyBottomRef.current = distFromBottom < 30
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // After each render with a new line count, snap to bottom if the user
+  // was already there (live-tail follow). Otherwise leave their scroll
+  // position alone so they can read older lines without being yanked.
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    if (stickyBottomRef.current) {
+      el.scrollTop = el.scrollHeight
+      // Sync scrollTop state so the overscan window updates immediately.
+      setScrollTop(el.scrollTop)
+      forceTick(n => n + 1)
+    }
+  }, [lines.length])
+
+  const overscan = 30
+  const startIdx = Math.max(0, Math.floor(scrollTop / LOG_LINE_HEIGHT) - overscan)
+  const endIdx = Math.min(lines.length, Math.ceil((scrollTop + viewportH) / LOG_LINE_HEIGHT) + overscan)
+  const visible = lines.slice(startIdx, endIdx)
+  const totalH = lines.length * LOG_LINE_HEIGHT
+  const offsetY = startIdx * LOG_LINE_HEIGHT
+
+  return (
+    <div
+      ref={containerRef}
+      className="overflow-auto h-[calc(100vh-280px)] min-h-[320px] text-[11px] font-mono leading-5"
+    >
+      <div style={{ height: totalH, position: 'relative' }}>
+        <div style={{ position: 'absolute', top: offsetY, left: 0, right: 0 }}>
+          {visible.map((line, i) => (
+            <div key={startIdx + i} style={{ height: LOG_LINE_HEIGHT }} className="px-4 whitespace-pre">
+              {highlightLogLine(line)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Local datetime input value (YYYY-MM-DDTHH:MM in browser locale) → RFC3339 UTC.
+// Returns undefined for empty input.
+function localDateTimeToRFC3339(v: string): string | undefined {
+  if (!v) return undefined
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return undefined
+  return d.toISOString()
+}
+
+// "now − minutesAgo" formatted as the value an <input type=datetime-local>
+// expects (YYYY-MM-DDTHH:MM in browser local time).
+function minutesAgoToLocalInput(minutesAgo: number): string {
+  const d = new Date(Date.now() - minutesAgo * 60_000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+type LogPreset = '15m' | '1h' | '4h' | '24h'
+const LOG_PRESETS: ReadonlyArray<{ key: LogPreset; label: string; minutes: number }> = [
+  { key: '15m', label: 'Last 15m', minutes: 15 },
+  { key: '1h',  label: 'Last 1h',  minutes: 60 },
+  { key: '4h',  label: 'Last 4h',  minutes: 240 },
+  { key: '24h', label: 'Last 24h', minutes: 1440 },
+]
+
+function browserTimezone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'local' }
+}
+
+function validateRegex(pattern: string): { ok: true } | { ok: false; error: string } {
+  if (!pattern) return { ok: true }
+  try { new RegExp(pattern, 'i'); return { ok: true } }
+  catch (e) { return { ok: false, error: (e as Error).message } }
+}
+
+interface LogFiltersState {
+  open: boolean
+  preset?: LogPreset      // undefined = custom / none — chips inactive
+  sinceTime: string       // datetime-local string ("" = unset)
+  endTime: string         // datetime-local string ("" = unset)
+  previous: boolean
+  grep: string
+}
+
+function emptyLogFilters(): LogFiltersState {
+  return { open: false, preset: undefined, sinceTime: '', endTime: '', previous: false, grep: '' }
+}
+
+// True only when both endpoints are set AND endTime is at least as late
+// as sinceTime. Either endpoint missing is also "valid" (means open-ended).
+function dateRangeValid(s: LogFiltersState): boolean {
+  if (!s.sinceTime || !s.endTime) return true
+  const a = new Date(s.sinceTime).getTime()
+  const b = new Date(s.endTime).getTime()
+  if (isNaN(a) || isNaN(b)) return true
+  return b >= a
+}
+
+// Compact chip showing the active time scope. Click opens a popover with
+// presets + an optional Custom-range section. Keeps the toolbar tight —
+// most users click a preset and never expand the manual inputs.
+function TimeWindowChip({
+  filters,
+  setFilters,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [showCustom, setShowCustom] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+
+  const rangeOk = dateRangeValid(filters)
+  const active = !!(filters.sinceTime || filters.endTime)
+  const presetLabel = filters.preset ? LOG_PRESETS.find(p => p.key === filters.preset)?.label : undefined
+  const chipLabel = presetLabel ?? (active ? 'Custom range' : 'Time')
+
+  // Reveal the manual inputs automatically when opening on a custom range.
+  useEffect(() => {
+    if (open && active && filters.preset === undefined) setShowCustom(true)
+  }, [open, active, filters.preset])
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return
+    const update = () => {
+      const rect = triggerRef.current!.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: rect.left })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function onDocClick(e: MouseEvent) {
+      const t = e.target as Node
+      if (triggerRef.current?.contains(t)) return
+      if (popoverRef.current?.contains(t)) return
+      setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const applyPreset = (p: typeof LOG_PRESETS[number]) => {
+    setFilters({
+      ...filters,
+      preset: p.key,
+      sinceTime: minutesAgoToLocalInput(p.minutes),
+      endTime: '',
+    })
+    setShowCustom(false)
+    setOpen(false)
+  }
+  const clearTime = () => {
+    setFilters({ ...filters, preset: undefined, sinceTime: '', endTime: '' })
+    setShowCustom(false)
+  }
+  const onFromChange = (v: string) => setFilters({ ...filters, sinceTime: v, preset: undefined })
+  const onToChange   = (v: string) => setFilters({ ...filters, endTime: v, preset: undefined })
+
+  const triggerClass = active
+    ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+    : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className={`px-2.5 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${triggerClass}`}
+      >
+        <Clock className="w-3 h-3" />
+        {chipLabel}
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && pos && createPortal(
+        <div
+          ref={popoverRef}
+          className="fixed z-[9999] w-[280px] bg-kb-card border border-kb-border rounded-lg shadow-2xl overflow-hidden"
+          style={{ top: pos.top, left: pos.left }}
+          role="menu"
+        >
+          <div className="p-2 grid grid-cols-4 gap-1.5">
+            {LOG_PRESETS.map(p => {
+              const isActive = filters.preset === p.key
+              return (
+                <button
+                  key={p.key}
+                  onClick={() => applyPreset(p)}
+                  className={`px-2 py-1.5 text-[11px] rounded-md border transition-colors ${
+                    isActive
+                      ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+                      : 'bg-kb-card-hover border-kb-border text-kb-text-secondary hover:border-kb-border-active'
+                  }`}
+                >
+                  {p.label.replace('Last ', '')}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="border-t border-kb-border">
+            {!showCustom && (
+              <button
+                onClick={() => setShowCustom(true)}
+                className="w-full px-3 py-2 text-[11px] text-left text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center justify-between"
+              >
+                Custom range…
+                <ChevronDown className="w-3 h-3" />
+              </button>
+            )}
+            {showCustom && (
+              <div className="p-3 space-y-2">
+                <label className="flex flex-col gap-1 text-[10px] text-kb-text-tertiary">
+                  From
+                  <input
+                    type="datetime-local"
+                    value={filters.sinceTime}
+                    onChange={(e) => onFromChange(e.target.value)}
+                    className="px-2 py-1.5 text-xs bg-kb-card-hover border border-kb-border rounded-md text-kb-text-primary"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-[10px] text-kb-text-tertiary">
+                  To
+                  <input
+                    type="datetime-local"
+                    value={filters.endTime}
+                    onChange={(e) => onToChange(e.target.value)}
+                    min={filters.sinceTime || undefined}
+                    title={!rangeOk ? '"To" must be the same as or later than "From"' : undefined}
+                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border rounded-md text-kb-text-primary ${
+                      rangeOk ? 'border-kb-border' : 'border-status-error'
+                    }`}
+                  />
+                </label>
+                {!rangeOk && (
+                  <p className="text-[10px] text-status-error">End time must be at or after the start time.</p>
+                )}
+                <p className="text-[10px] text-kb-text-tertiary">Times are in your local time zone.</p>
+              </div>
+            )}
+          </div>
+
+          {active && (
+            <div className="border-t border-kb-border p-2">
+              <button
+                onClick={clearTime}
+                className="w-full px-2 py-1 text-[11px] rounded-md text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+              >
+                Clear time window
+              </button>
+            </div>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+// Compact "Previous" toggle button. Active = filled accent. Disabled
+// (no restarts on the container) silently grays out — the title attr
+// carries the reason for hover discovery.
+function PreviousToggle({
+  filters,
+  setFilters,
+  hasRestarts,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+  hasRestarts: boolean
+}) {
+  const active = filters.previous
+  const cls = !hasRestarts
+    ? 'bg-kb-card border-kb-border text-kb-text-tertiary cursor-not-allowed opacity-60'
+    : active
+      ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+      : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+  return (
+    <button
+      type="button"
+      onClick={() => hasRestarts && setFilters({ ...filters, previous: !active })}
+      disabled={!hasRestarts}
+      title={!hasRestarts ? 'No previous container — this pod has not restarted yet' : 'Show logs from the previous container instance'}
+      className={`px-2.5 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${cls}`}
+    >
+      <RotateCw className="w-3 h-3" />
+      Previous
+    </button>
+  )
+}
+
+// Slim regex highlight input. Red border on invalid pattern; the rich
+// hover tooltip (solid panel, no blur) carries the help body and the
+// specific parser error so the toolbar itself stays quiet.
+const REGEX_EXAMPLES: ReadonlyArray<{ pattern: string; meaning: string }> = [
+  { pattern: 'error|timeout',    meaning: 'matches "error" or "timeout"' },
+  { pattern: '5\\d{2}',          meaning: 'any HTTP 5xx status (500–599)' },
+  { pattern: 'GET /api/v1',      meaning: 'literal substring' },
+  { pattern: 'WARN.+connection', meaning: '"WARN" followed by "connection"' },
+  { pattern: '^\\[ERROR\\]',     meaning: 'lines starting with [ERROR]' },
+]
+
+function RegexHelpBody({ error }: { error?: string }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-kb-text-primary font-semibold text-[12px]">
+        Highlight matching log lines
+      </div>
+      <div className="text-[11px] text-kb-text-secondary leading-snug">
+        Case-insensitive regular expression. Matches stay highlighted while you scroll.
+      </div>
+      {error && (
+        <div className="text-[11px] text-status-error font-mono pt-2 border-t border-kb-border-active">
+          {error}
+        </div>
+      )}
+      <div className="pt-2 border-t border-kb-border-active space-y-1.5">
+        <div className="text-[10px] uppercase tracking-wider text-kb-text-secondary font-semibold">Examples</div>
+        {REGEX_EXAMPLES.map(ex => (
+          <div key={ex.pattern} className="flex items-baseline gap-2 text-[11px]">
+            <code className="font-mono text-kb-accent shrink-0">{ex.pattern}</code>
+            <span className="text-kb-text-primary">— {ex.meaning}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RegexFilterInput({
+  filters,
+  setFilters,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+}) {
+  const check = validateRegex(filters.grep)
+  return (
+    <HoverTooltip
+      body={<RegexHelpBody error={check.ok ? undefined : `Not a valid pattern: ${check.error}`} />}
+      minWidth={300}
+      maxWidth={360}
+      solid
+    >
+      <div className="relative">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-kb-text-tertiary pointer-events-none" />
+        <input
+          type="text"
+          placeholder="Highlight matches…"
+          value={filters.grep}
+          onChange={(e) => setFilters({ ...filters, grep: e.target.value })}
+          className={`w-[180px] pl-7 pr-2 py-1.5 text-xs font-mono bg-kb-card border rounded-lg text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-kb-border-active ${
+            check.ok ? 'border-kb-border' : 'border-status-error'
+          }`}
+        />
+      </div>
+    </HoverTooltip>
   )
 }
 
@@ -1546,22 +1980,51 @@ function EventsTab({ type, namespace, name }: { type: string; namespace: string;
 function LogsTab({ namespace, name, item }: { namespace: string; name: string; item: ResourceItem }) {
   const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
   const containerNames = containers.map(c => String(c.name ?? ''))
+  const hasRestarts = containers.some(c => {
+    const state = (c.state ?? {}) as Record<string, unknown>
+    return Number(state.restartCount ?? 0) > 0
+  })
   const [selectedContainer, setSelectedContainer] = useState(containerNames[0] ?? '')
   const [tailLines, setTailLines] = useState(100)
+  const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
-  const { data: logs, isLoading, error, refetch } = usePodLogs(namespace, name, selectedContainer, tailLines)
-  const logsEndRef = useRef<HTMLDivElement>(null)
+  const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
+  const endTimeRFC = localDateTimeToRFC3339(filters.endTime)
+  const rangeActive = !!(sinceTimeRFC || endTimeRFC)
+  // Hold the query (keeping last data on screen) while the user types an
+  // inverted window — refetches automatically once the range becomes valid.
+  const rangeOk = dateRangeValid(filters)
+  // When a time window is active, drop the tail bound entirely so the
+  // server returns the full window (capped only by the 10 MiB hardcap).
+  // Otherwise the kubelet slices to the last N lines BEFORE applying the
+  // window, and the intersection is often empty for older windows.
+  const effectiveTailLines = rangeActive ? 0 : tailLines
 
-  useEffect(() => {
-    if (logs) {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs])
+  const { data: logs, isLoading, error, refetch } = usePodLogs(
+    namespace,
+    name,
+    selectedContainer,
+    effectiveTailLines,
+    {
+      sinceTime: sinceTimeRFC,
+      endTime: endTimeRFC,
+      previous: filters.previous || undefined,
+      timestamps: rangeActive || undefined,
+      enabled: rangeOk,
+    },
+  )
+  const historical = rangeActive || filters.previous
+
+  const activeFilterCount =
+    (sinceTimeRFC ? 1 : 0) +
+    (endTimeRFC ? 1 : 0) +
+    (filters.previous ? 1 : 0) +
+    (filters.grep ? 1 : 0)
 
   return (
     <div className="space-y-3">
       {/* Controls */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         {containerNames.length > 1 && (
           <select
             value={selectedContainer}
@@ -1579,7 +2042,9 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         <select
           value={tailLines}
           onChange={(e) => setTailLines(Number(e.target.value))}
-          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          disabled={rangeActive}
+          title={rangeActive ? 'The time window controls how many lines are shown.' : undefined}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           <option value={100}>Last 100 lines</option>
           <option value={500}>Last 500 lines</option>
@@ -1587,17 +2052,49 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
           <option value={5000}>Last 5000 lines</option>
         </select>
         <button
+          onClick={() => setFilters({ ...filters, open: !filters.open })}
+          className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
+            filters.open || activeFilterCount > 0
+              ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+              : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+          }`}
+        >
+          Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        {filters.open && (
+          <>
+            <TimeWindowChip filters={filters} setFilters={setFilters} />
+            <PreviousToggle filters={filters} setFilters={setFilters} hasRestarts={hasRestarts} />
+            <RegexFilterInput filters={filters} setFilters={setFilters} />
+          </>
+        )}
+        {activeFilterCount > 0 && (
+          <button
+            onClick={() => setFilters({ ...emptyLogFilters(), open: filters.open })}
+            title="Clear all filters"
+            className="p-1.5 text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <button
           onClick={() => refetch()}
           className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
         >
           Refresh
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-          </span>
-          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+          {historical ? (
+            <span className="text-[10px] text-kb-text-tertiary">Auto-refresh paused</span>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+              </span>
+              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -1609,7 +2106,7 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         {error && (
           <div className="p-8 text-center text-sm text-status-error">{(error as Error).message}</div>
         )}
-        <LogOutput logs={logs} logsEndRef={logsEndRef} />
+        <LogOutput logs={logs} grep={filters.grep} />
       </div>
     </div>
   )
@@ -2627,7 +3124,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   const [selectedPod, setSelectedPod] = useState('')
   const [selectedContainer, setSelectedContainer] = useState('')
   const [tailLines, setTailLines] = useState(100)
-  const logsEndRef = useRef<HTMLDivElement>(null)
+  const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
   // Set default pod when pods load
   useEffect(() => {
@@ -2638,9 +3135,14 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
 
   // Get containers for selected pod
   const currentPod = pods.find(p => p.name === selectedPod)
-  const containers = currentPod && Array.isArray(currentPod.containers)
-    ? (currentPod.containers as Array<Record<string, unknown>>).map(c => String(c.name ?? ''))
+  const containerObjs = currentPod && Array.isArray(currentPod.containers)
+    ? currentPod.containers as Array<Record<string, unknown>>
     : []
+  const containers = containerObjs.map(c => String(c.name ?? ''))
+  const hasRestarts = containerObjs.some(c => {
+    const state = (c.state ?? {}) as Record<string, unknown>
+    return Number(state.restartCount ?? 0) > 0
+  })
 
   // Set default container when pod changes
   useEffect(() => {
@@ -2650,21 +3152,43 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   }, [selectedPod, containers, selectedContainer])
 
   const podNamespace = currentPod?.namespace ?? ''
-  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(podNamespace, selectedPod, selectedContainer, tailLines)
 
-  useEffect(() => {
-    if (logs) {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs])
+  const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
+  const endTimeRFC = localDateTimeToRFC3339(filters.endTime)
+  const rangeActive = !!(sinceTimeRFC || endTimeRFC)
+  const historical = rangeActive || filters.previous
+  const rangeOk = dateRangeValid(filters)
+  // See LogsTab (Pod) for the rationale: with a window active, the
+  // tail bound must be dropped or it'll silently truncate the result.
+  const effectiveTailLines = rangeActive ? 0 : tailLines
+
+  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(
+    podNamespace,
+    selectedPod,
+    selectedContainer,
+    effectiveTailLines,
+    {
+      sinceTime: sinceTimeRFC,
+      endTime: endTimeRFC,
+      previous: filters.previous || undefined,
+      timestamps: rangeActive || undefined,
+      enabled: rangeOk,
+    },
+  )
 
   if (podsLoading) return <LoadingSpinner />
   if (podsError) return <ErrorState message={podsError.message} />
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
+  const activeFilterCount =
+    (sinceTimeRFC ? 1 : 0) +
+    (endTimeRFC ? 1 : 0) +
+    (filters.previous ? 1 : 0) +
+    (filters.grep ? 1 : 0)
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <select
           value={selectedPod}
           onChange={(e) => { setSelectedPod(e.target.value); setSelectedContainer('') }}
@@ -2691,12 +3215,40 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         <select
           value={tailLines}
           onChange={(e) => setTailLines(Number(e.target.value))}
-          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          disabled={rangeActive}
+          title={rangeActive ? 'The time window controls how many lines are shown.' : undefined}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           <option value={100}>Last 100 lines</option>
           <option value={500}>Last 500 lines</option>
           <option value={1000}>Last 1000 lines</option>
         </select>
+        <button
+          onClick={() => setFilters({ ...filters, open: !filters.open })}
+          className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
+            filters.open || activeFilterCount > 0
+              ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+              : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+          }`}
+        >
+          Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        {filters.open && (
+          <>
+            <TimeWindowChip filters={filters} setFilters={setFilters} />
+            <PreviousToggle filters={filters} setFilters={setFilters} hasRestarts={hasRestarts} />
+            <RegexFilterInput filters={filters} setFilters={setFilters} />
+          </>
+        )}
+        {activeFilterCount > 0 && (
+          <button
+            onClick={() => setFilters({ ...emptyLogFilters(), open: filters.open })}
+            title="Clear all filters"
+            className="p-1.5 text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
         <button
           onClick={() => refetch()}
           className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
@@ -2704,13 +3256,20 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
           Refresh
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-          </span>
-          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+          {historical ? (
+            <span className="text-[10px] text-kb-text-tertiary">Auto-refresh paused</span>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+              </span>
+              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+            </>
+          )}
         </div>
       </div>
+
 
       <div className="bg-[#0d1117] rounded-[10px] border border-kb-border overflow-hidden">
         {logsLoading && !logs && (
@@ -2719,7 +3278,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         {logsError && (
           <div className="p-8 text-center text-sm text-status-error">{(logsError as Error).message}</div>
         )}
-        <LogOutput logs={logs} logsEndRef={logsEndRef} />
+        <LogOutput logs={logs} grep={filters.grep} />
       </div>
     </div>
   )

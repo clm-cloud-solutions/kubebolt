@@ -21,7 +21,8 @@ import { generateCopilotSuggestions } from '@/utils/copilotSuggestions'
 import { KobiSigil, type KobiSigilState } from '@/components/kobi'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
-import { parseActionProposal, type CopilotMessage, type CopilotUsage } from '@/services/copilot/types'
+import { ToolCallCard } from './ToolCallCard'
+import { parseActionProposal, type CopilotMessage, type CopilotToolCall, type CopilotUsage } from '@/services/copilot/types'
 
 // Compact number formatter: 1234 → "1.2k", 15000000 → "15M"
 function formatTokens(n: number): string {
@@ -367,27 +368,29 @@ export function CopilotPanel() {
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
         {messages.length === 0 && <EmptyState />}
 
-        {messages
-          .filter((m) => {
-            // Skip tool-result-only user turns UNLESS they carry an action
-            // proposal — those render as interactive ActionProposalCards.
-            if (m.role === 'user' && !m.content && m.toolResults && m.toolResults.length > 0) {
-              const hasProposal = m.toolResults.some(
-                (tr) => parseActionProposal(tr.content) !== null,
-              )
-              if (!hasProposal) return false
+        {(() => {
+          // Server-side flag (KUBEBOLT_AI_SHOW_TOOL_CALLS, default true).
+          // ON: render persistent ToolCallCards inline + spinner cards for
+          //     in-flight tools. OFF: keep the pre-2026-05-15 behavior —
+          //     hide tool turns and show a transient ToolCallIndicator row.
+          const showToolCalls = config?.showToolCalls !== false
+
+          // Index tool results by their tool_call_id so the inline card
+          // for an assistant tool_use can pull in its matching result
+          // from the next user turn without an O(n²) lookup per render.
+          const resultByCallId = new Map<string, { content: string; isError?: boolean }>()
+          for (const m of messages) {
+            if (m.role === 'user' && m.toolResults) {
+              for (const tr of m.toolResults) {
+                resultByCallId.set(tr.toolCallId, { content: tr.content, isError: tr.isError })
+              }
             }
-            // Skip assistant turns with only tool_calls (no content); the
-            // actual tool call indicator is rendered via pendingToolCalls.
-            if (m.role === 'assistant' && !m.content && m.toolCalls && m.toolCalls.length > 0) {
-              return false
-            }
-            return true
-          })
-          .map((m) => {
-            // User turns whose tool results include proposals render as
-            // interactive cards, not chat bubbles. The LLM never executes —
-            // the user clicks Execute on the card to trigger the mutation.
+          }
+
+          return messages.map((m) => {
+            // User turns whose tool results include proposals → interactive
+            // ActionProposalCard (the LLM never executes; the operator clicks
+            // Execute). This path is independent of showToolCalls.
             if (
               m.role === 'user' &&
               !m.content &&
@@ -410,20 +413,84 @@ export function CopilotPanel() {
                 </div>
               )
             }
+            // Other tool-result-only user turns are consumed by the inline
+            // ToolCallCards on the previous assistant turn (when ON) or
+            // hidden entirely (when OFF) — either way, no bubble.
+            if (m.role === 'user' && !m.content && m.toolResults && m.toolResults.length > 0) {
+              return null
+            }
+            // Assistant turns with text + optional toolCalls. Render the
+            // text bubble (if any) and the tool cards (when feature is on).
+            if (m.role === 'assistant') {
+              const hasText = !!m.content
+              const toolCalls: CopilotToolCall[] = m.toolCalls ?? []
+              const visibleCalls = showToolCalls
+                ? toolCalls.filter((tc) => !tc.name.startsWith('propose_'))
+                : []
+              if (!hasText && visibleCalls.length === 0) {
+                // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
+                // don't render at all; the bottom indicator covers them.
+                return null
+              }
+              return (
+                <div key={m.id} className="flex flex-col gap-2">
+                  {hasText && <MessageBubble message={m} />}
+                  {visibleCalls.length > 0 && (
+                    <ToolCardLane>
+                      {visibleCalls.map((tc) => {
+                        const tr = resultByCallId.get(tc.id)
+                        return (
+                          <ToolCallCard
+                            key={tc.id}
+                            name={tc.name}
+                            input={tc.input}
+                            result={tr?.content}
+                            isError={tr?.isError}
+                          />
+                        )
+                      })}
+                    </ToolCardLane>
+                  )}
+                </div>
+              )
+            }
             return <MessageBubble key={m.id} message={m} />
-          })}
+          })
+        })()}
 
         {pendingToolCalls.length > 0 && (
-          <div className="flex flex-col gap-1">
-            {pendingToolCalls
+          (() => {
+            const visible = pendingToolCalls
               // Proposal tools are no-ops on the backend (they just build a
               // payload); showing a "loading propose_restart_workload" spinner
               // is misleading and slow-feeling, so hide them from the indicator.
               .filter((toolName) => !toolName.startsWith('propose_'))
-              .map((toolName, i) => (
-                <ToolCallIndicator key={i} toolName={toolName} />
-              ))}
-          </div>
+            if (visible.length === 0) return null
+            const showCards = config?.showToolCalls !== false
+            // Cards inherit the same indented lane as the assistant bubble
+            // they belong to; the legacy ToolCallIndicator stays full-width
+            // since that's its existing visual contract.
+            if (!showCards) {
+              return (
+                <div className="flex flex-col gap-1">
+                  {visible.map((toolName, i) => (
+                    <ToolCallIndicator key={i} toolName={toolName} />
+                  ))}
+                </div>
+              )
+            }
+            return (
+              <ToolCardLane>
+                {visible.map((toolName, i) => (
+                  // ToolCallCard with no result = loading state. Same visual
+                  // surface as the persistent post-completion card; once the
+                  // round resolves, this row is replaced by the inline card
+                  // rendered from the assistant message above.
+                  <ToolCallCard key={i} name={toolName} />
+                ))}
+              </ToolCardLane>
+            )
+          })()
         )}
 
         {isLoading &&
@@ -585,40 +652,60 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
     })
   }
 
-  // assistant — render markdown with a copy action
+  // assistant — render markdown with a copy action.
+  //
+  // The Copy button is absolute-positioned in the top-right of the bubble
+  // (rather than a sibling row below) so it doesn't reserve ~18px of
+  // vertical space when hidden. Without this, every assistant message had
+  // a phantom gap below it that became very visible once tool cards started
+  // rendering immediately after the bubble.
   return (
     <div className="flex justify-start gap-2 group max-w-[95%] min-w-0">
       <div className="w-6 h-6 rounded-full bg-kb-accent-light flex items-center justify-center shrink-0 mt-0.5">
         <KobiSigil state="static" size={14} />
       </div>
       <div className="flex flex-col items-start min-w-0 flex-1">
-        <div className="px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
+        <div className="relative px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
           {message.content ? (
             <MarkdownRenderer content={message.content} />
           ) : (
             <span className="text-kb-text-tertiary italic">...</span>
           )}
+          {message.content && (
+            <button
+              onClick={handleCopyMessage}
+              title={copied ? 'Copied!' : 'Copy message'}
+              className="absolute top-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary bg-kb-elevated/95 hover:text-kb-accent hover:bg-kb-elevated opacity-0 group-hover:opacity-100 transition-all"
+            >
+              {copied ? (
+                <>
+                  <Check className="w-3 h-3" />
+                  Copied
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3 h-3" />
+                  Copy
+                </>
+              )}
+            </button>
+          )}
         </div>
-        {message.content && (
-          <button
-            onClick={handleCopyMessage}
-            title={copied ? 'Copied!' : 'Copy message'}
-            className="flex items-center gap-1 ml-2 mt-1 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary hover:text-kb-accent hover:bg-kb-elevated/40 opacity-0 group-hover:opacity-100 transition-all"
-          >
-            {copied ? (
-              <>
-                <Check className="w-3 h-3" />
-                Copied
-              </>
-            ) : (
-              <>
-                <Copy className="w-3 h-3" />
-                Copy
-              </>
-            )}
-          </button>
-        )}
       </div>
+    </div>
+  )
+}
+
+// ToolCardLane wraps a column of ToolCallCards in the same horizontal lane
+// the assistant MessageBubble uses: a 24px left gutter (where the assistant
+// avatar would sit) and a max-w-[95%] right edge. Without this, the cards
+// span the full panel width and break visual continuity with the bubble
+// they belong to.
+function ToolCardLane({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex justify-start gap-2 max-w-[95%] min-w-0">
+      <div className="w-6 shrink-0" aria-hidden />
+      <div className="flex flex-col gap-1.5 flex-1 min-w-0">{children}</div>
     </div>
   )
 }

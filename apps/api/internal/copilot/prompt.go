@@ -3,6 +3,7 @@ package copilot
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // BuildSystemPrompt returns the Kobi (Copilot mode) system prompt.
@@ -41,21 +42,70 @@ func BuildSystemPrompt() string {
 //	cluster: <cluster-name>
 //	current_view: <path>
 //
+//	# Now
+//	- now (UTC): <RFC3339>
+//	- now (<tz>): <RFC3339>            (only when clientTZ is a valid IANA name)
+//	- today (<tz>): <YYYY-MM-DD>
+//	- yesterday (<tz>): <YYYY-MM-DD>
+//
 // (followed by the operator's actual query, separated by a blank line)
+//
+// The Now block exists so Kobi has a clock anchor — without it the model
+// guesses "today" from its training cutoff and produces day-off errors when
+// the operator asks about "ayer" / "hace 2 horas" / "around 10pm". The block
+// also carries the user's timezone so relative times default to the operator's
+// local clock; Kobi only needs to ask for clarification when the operator
+// explicitly references a different TZ than their browser's.
 //
 // This block is intentionally short and parseable so Kobi can read it without
 // it dominating the user-message context. It does NOT go into the system
 // prompt; placing it in the user message keeps the cached prefix stable
-// regardless of which cluster/view the operator is on.
-func BuildSessionContext(clusterName, currentPath string) string {
+// regardless of which cluster/view/time the operator is on.
+//
+// `now` is the authoritative wall-clock (caller passes time.Now() or, for
+// tests, a fixed instant). `clientTZ` is an IANA timezone name from the
+// browser (Intl.DateTimeFormat().resolvedOptions().timeZone) — empty string
+// or an unparseable name silently falls back to UTC.
+func BuildSessionContext(clusterName, currentPath string, now time.Time, clientTZ string) string {
 	if clusterName == "" {
 		clusterName = "(unknown)"
 	}
 	if currentPath == "" {
 		currentPath = "/"
 	}
-	return fmt.Sprintf("# Session context\ncluster: %s\ncurrent_view: %s",
-		clusterName, currentPath)
+
+	loc := time.UTC
+	tzLabel := "UTC"
+	if clientTZ != "" {
+		if l, err := time.LoadLocation(clientTZ); err == nil {
+			loc = l
+			tzLabel = clientTZ
+		}
+	}
+	nowUTC := now.UTC().Format(time.RFC3339)
+	nowLocal := now.In(loc)
+	today := nowLocal.Format("2006-01-02")
+	yesterday := nowLocal.AddDate(0, 0, -1).Format("2006-01-02")
+
+	var nowBlock string
+	if tzLabel == "UTC" {
+		// Single-clock fallback: no client TZ provided or it failed to parse.
+		nowBlock = fmt.Sprintf(
+			"# Now\n- now (UTC): %s\n- today (UTC): %s\n- yesterday (UTC): %s",
+			nowUTC, today, yesterday,
+		)
+	} else {
+		nowBlock = fmt.Sprintf(
+			"# Now\n- now (UTC): %s\n- now (%s): %s\n- today (%s): %s\n- yesterday (%s): %s",
+			nowUTC,
+			tzLabel, nowLocal.Format(time.RFC3339),
+			tzLabel, today,
+			tzLabel, yesterday,
+		)
+	}
+
+	return fmt.Sprintf("# Session context\ncluster: %s\ncurrent_view: %s\n\n%s",
+		clusterName, currentPath, nowBlock)
 }
 
 // operationalAppendix is the static KubeBolt-specific appendix concatenated
@@ -69,17 +119,25 @@ The voice and identity above govern how you communicate. This appendix tells you
 
 ## Session context (read it from the user message)
 
-The operator's first user message in each turn carries a session context block at the top, formatted like:
+The operator's first user message in each turn carries a session context block at the top, followed by a Now block with the current clock, then a blank line, then the operator's actual question:
 
     # Session context
     cluster: <cluster-name>
     current_view: <path>
 
-(then a blank line, then the operator's actual question.)
+    # Now
+    - now (UTC): <RFC3339>
+    - now (<user-tz>): <RFC3339>            (only when the browser sent a timezone)
+    - today (<tz>): YYYY-MM-DD
+    - yesterday (<tz>): YYYY-MM-DD
 
 Read it before answering. The cluster name tells you which Kubernetes cluster you are operating on. The current_view is the page the operator is looking at right now (e.g. ` + "`/pods`" + `, ` + "`/deployments`" + `, ` + "`/deployment/production/api`" + `).
 
 When the operator asks about "this deployment" or "the deployment", default to whatever they are viewing in current_view. If their question is unambiguous about a different resource, follow that instead.
+
+### Resolving relative time
+
+When the operator uses relative time ("yesterday", "ayer", "hace 2 horas", "around 10pm", "esta tarde"), resolve it against the Now block — never against your training-cutoff intuition. The "today" and "yesterday" lines give you the absolute dates already; just pick the right one. When the operator names a clock time without a timezone ("around 10pm"), assume their local TZ from the Now block (the user-tz line). Only ask the operator to clarify the timezone when they explicitly mention a TZ that is different from the user-tz, OR when no user-tz is present and the question depends on it. Do not ask "is this UTC or local?" by reflex — pick local and proceed.
 
 The product is KubeBolt — zero-config Kubernetes monitoring and management UI.
 
@@ -128,7 +186,7 @@ The conversation context is finite.
 - For multiple pods: investigate one at a time, not all at once.
 - For large resources: use get_resource_describe instead of get_resource_yaml when status/events are what you need.
 - Do not request logs from more than 2–3 pods in one response.
-- If a tool result is truncated (flag "truncated" or a "TRUNCATED" notice), do not retry the same call — narrow the window (smaller tailLines, use since, add grep).
+- If a tool result is truncated (flag "truncated" or a "TRUNCATED" notice), do not retry the same call — narrow the window (smaller tailLines, tighter since / sinceTime+endTime, add grep).
 
 ### get_pod_logs: classify by intent, then choose
 
@@ -143,7 +201,12 @@ When grepping, tailor keywords to the domain the operator mentioned:
 - Networking: timeout|refused|unreachable|dns|tls|cert|connection
 - Combine patterns for integration issues (e.g. gitlab + keycloak = auth + networking).
 
-Use since (e.g. "15m", "1h", "2h") when the operator mentions a time window.
+Time windows — pick the right parameter for the question:
+- Recent / open-ended ("what's happening now", "in the last hour") → since: "15m" | "1h" | "2h" | "24h".
+- Past incident with a known timestamp ("yesterday at 14:00", "between 02:00 and 04:00 UTC last night", "around the deploy at 2026-05-13T10:30Z") → sinceTime + endTime as RFC3339, e.g. sinceTime="2026-05-13T10:00:00Z", endTime="2026-05-13T11:00:00Z". A closed window beats a huge tailLines for old incidents — kubelet streams in chronological order and the server cuts off at endTime, so you get the bytes that matter.
+- After a restart / CrashLoopBackOff / OOMKill ("why did the pod crash", "what happened before the restart") → previous=true. This is the ONLY way to read the prior container instance; without it you only see the fresh container that started AFTER the crash. Combine with grep ("error|panic|fatal|signal") for fast root-cause.
+
+Hard limit operators forget: Kubernetes only retains logs for the CURRENT container plus ONE previous (when previous=true). For incidents older than the pod's current+previous lifetime, the logs are gone from the kubelet — say so plainly and pivot to Events (get_events) or the Insight history. Do not pretend to retrieve what isn't there.
 
 ## Troubleshooting methodology
 

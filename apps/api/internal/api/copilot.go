@@ -44,6 +44,40 @@ func truncate(s string, max int) string {
 	return s[:max] + "..."
 }
 
+// withSessionContextPrefix returns a fresh slice with `sessionCtx` prepended
+// to the content of the FIRST user message. The original messages slice is
+// not modified and the messages it shares with the caller's slice remain
+// untouched — only the prefixed first user message is a new struct value.
+//
+// This is the LLM-facing transformation: the model sees cluster + view + Now
+// at the top of the operator's question, while the canonical messages slice
+// (which the `done` event echoes back to the chat UI, and which the next
+// turn re-sends) keeps the operator's literal text. Without the separation,
+// the prefix surfaces in the chat bubble AND multi-turn re-sends stack
+// nested Session Context blocks one per turn.
+//
+// When sessionCtx is empty (or there is no user message), the input slice
+// is returned as-is.
+func withSessionContextPrefix(messages []copilotMessageView, sessionCtx string) []copilotMessageView {
+	if sessionCtx == "" || len(messages) == 0 {
+		return messages
+	}
+	out := make([]copilotMessageView, len(messages))
+	copy(out, messages)
+	for i := range out {
+		if out[i].Role == copilot.RoleUser && out[i].Content != "" {
+			out[i].Content = sessionCtx + "\n\n" + out[i].Content
+			break
+		}
+	}
+	return out
+}
+
+// copilotMessageView is an alias for the canonical Message type. Keeping it
+// here makes the helper's intent obvious — it operates on the LLM's view of
+// messages, never on the caller's storage.
+type copilotMessageView = copilot.Message
+
 // CopilotChatRequest is the body POSTed by the frontend to /copilot/chat.
 type CopilotChatRequest struct {
 	Messages    []copilot.Message `json:"messages"`
@@ -61,6 +95,17 @@ type CopilotChatRequest struct {
 	// underestimates JSON-dense tool results. Optional; nil when this is
 	// the first request of a session.
 	LastRoundUsage *copilot.Usage `json:"lastRoundUsage,omitempty"`
+	// ClientTimezone is the IANA timezone name of the operator's browser
+	// (Intl.DateTimeFormat().resolvedOptions().timeZone). Used to anchor
+	// "today"/"yesterday" in the Now block of the session context so Kobi
+	// resolves relative time without asking. Optional; falls back to UTC
+	// when missing or unparseable.
+	ClientTimezone string `json:"clientTimezone,omitempty"`
+	// ClientNow is the operator's wall-clock at request time, as RFC3339.
+	// Currently advisory — the server's own clock is authoritative for the
+	// Now block. Reserved for future drift detection / multi-region
+	// debugging without a schema change. Optional.
+	ClientNow string `json:"clientNow,omitempty"`
 }
 
 // HandleCopilotConfig returns the public copilot configuration (no API keys).
@@ -82,6 +127,7 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 		"sessionBudget":  budget,
 		"compactTrigger": trigger,
 		"autoCompact":    h.copilotConfig.AutoCompact,
+		"showToolCalls":  h.copilotConfig.ShowToolCalls,
 	}
 	if h.copilotConfig.Fallback != nil {
 		resp["fallback"] = map[string]string{
@@ -160,25 +206,25 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 	// Multi-step tool calling loop
 	const maxRounds = 10
-	messages := req.Messages
+	// Detach from req.Messages so subsequent appends in the round loop never
+	// reach back into the caller's slice via shared backing array.
+	messages := append([]copilot.Message(nil), req.Messages...)
 
-	// Phase 6: inject the per-session context as a prefix on the first user
-	// message. The system prompt no longer carries cluster/currentPath, so
-	// the operator's first message is where the model learns which cluster
-	// it is operating on. Done once per request (idempotent — the frontend's
-	// stored history doesn't carry this prefix; we re-add it server-side
-	// every turn so the system prompt cache stays warm regardless of which
-	// cluster/view the operator is on).
+	// Phase 6: inject per-session context (cluster + current_view + Now block)
+	// as a prefix on the first user message. We compute the prefix string
+	// once per request and apply it ONLY to the LLM-facing slice via
+	// `withSessionContextPrefix` at the chat-request site below — never
+	// mutate `messages` in place. Reasons:
+	//   - The frontend replaces its transcript with `finalMessages` on the
+	//     `done` event; if we mutated, the session-context block would
+	//     appear inside the user bubble in the chat UI.
+	//   - On the next turn, the frontend re-sends that already-prefixed
+	//     content; mutating again would stack a second prefix, then a
+	//     third, etc. (observed in production: 4 nested Session Context
+	//     blocks after 4 turns).
+	sessionCtx := ""
 	if len(messages) > 0 {
-		sessionCtx := copilot.BuildSessionContext(clusterName, req.CurrentPath)
-		for i := range messages {
-			if messages[i].Role == copilot.RoleUser {
-				if messages[i].Content != "" {
-					messages[i].Content = sessionCtx + "\n\n" + messages[i].Content
-				}
-				break
-			}
-		}
+		sessionCtx = copilot.BuildSessionContext(clusterName, req.CurrentPath, time.Now(), req.ClientTimezone)
 	}
 
 	usedFallback := false
@@ -357,10 +403,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Build the chat request for this round
+		// Build the chat request for this round. Apply the session-context
+		// prefix to a fresh slice so the canonical `messages` (echoed back
+		// to the UI) stays exactly what the operator typed.
 		chatReq := copilot.ChatRequest{
 			System:    systemPrompt,
-			Messages:  messages,
+			Messages:  withSessionContextPrefix(messages, sessionCtx),
 			Tools:     tools,
 			Provider:  h.copilotConfig.Primary,
 			MaxTokens: h.copilotConfig.MaxTokens,
