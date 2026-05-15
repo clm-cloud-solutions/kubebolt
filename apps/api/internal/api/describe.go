@@ -9,7 +9,10 @@ import (
 )
 
 // resourceTypeToGroupKind maps KubeBolt resource type strings to K8s GroupKind
-// for use with kubectl's DescriberFor.
+// for use with kubectl's DescriberFor. When adding new entries here, see
+// docs/SPEC.md §3.2.1 (Resource Type Coverage) — the UI side (list page,
+// detail page, sidebar nav, route) needs to be expanded in lockstep before
+// these types can be navigated to from the operator's perspective.
 var resourceTypeToGroupKind = map[string]schema.GroupKind{
 	"pods":                {Group: "", Kind: "Pod"},
 	"nodes":              {Group: "", Kind: "Node"},
@@ -38,6 +41,18 @@ var resourceTypeToGroupKind = map[string]schema.GroupKind{
 	"rolebindings":       {Group: "rbac.authorization.k8s.io", Kind: "RoleBinding"},
 	"clusterrolebindings": {Group: "rbac.authorization.k8s.io", Kind: "ClusterRoleBinding"},
 	"endpointslices":     {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
+	// Describe-only support (added 2026-05-15): kubectl can describe these
+	// natively but the rest of the platform — informers, list pages,
+	// sidebar nav, detail tabs — still needs to catch up. See SPEC §3.2.1.
+	// Removing any of these without the SPEC update silently regresses
+	// Kobi's ability to investigate them (get_resource_describe tool).
+	"resourcequotas":       {Group: "", Kind: "ResourceQuota"},
+	"limitranges":          {Group: "", Kind: "LimitRange"},
+	"serviceaccounts":      {Group: "", Kind: "ServiceAccount"},
+	"networkpolicies":      {Group: "networking.k8s.io", Kind: "NetworkPolicy"},
+	"poddisruptionbudgets": {Group: "policy", Kind: "PodDisruptionBudget"},
+	"priorityclasses":      {Group: "scheduling.k8s.io", Kind: "PriorityClass"},
+	"ingressclasses":       {Group: "networking.k8s.io", Kind: "IngressClass"},
 }
 
 func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {

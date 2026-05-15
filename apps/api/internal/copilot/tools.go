@@ -42,8 +42,23 @@ func ToolDefinitions() []ToolDefinition {
 			InputSchema: nsResourceSchema(),
 		},
 		{
-			Name:        "get_resource_describe",
-			Description: "Get kubectl describe output for any resource. Includes events, conditions, and detailed status. Best tool for troubleshooting scheduling issues, pending pods, and resource conditions.",
+			Name: "get_resource_describe",
+			// The supported types list mirrors apps/api/internal/api/describe.go's
+			// resourceTypeToGroupKind map. When that map gains an entry, this
+			// description MUST be updated in lockstep — without the type listed
+			// here the model refuses to attempt the call (it builds up an
+			// allow-list from prior 400 responses) and misses the diagnostic
+			// value entirely. SPEC §3.2.1 has the full coverage roadmap.
+			Description: "Get kubectl describe output (events, conditions, detailed status, related resources). " +
+				"Supported types: " +
+				"workloads (pods, deployments, statefulsets, daemonsets, replicasets, jobs, cronjobs); " +
+				"networking (services, ingresses, networkpolicies, endpoints, endpointslices, ingressclasses); " +
+				"config (configmaps, secrets, serviceaccounts); " +
+				"storage (pvcs, pvs, storageclasses); " +
+				"cluster (nodes, namespaces, events); " +
+				"RBAC (roles, clusterroles, rolebindings, clusterrolebindings); " +
+				"policy/quota (resourcequotas, limitranges, poddisruptionbudgets, priorityclasses, hpas). " +
+				"Best tool for troubleshooting scheduling issues, pending pods, quota exhaustion, network policy denials, and resource conditions.",
 			InputSchema: nsResourceSchema(),
 		},
 		{

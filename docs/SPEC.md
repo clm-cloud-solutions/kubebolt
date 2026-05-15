@@ -138,6 +138,38 @@ KubeBolt is a Kubernetes monitoring platform that provides instant cluster visib
 - Events (type, reason, message, involvedObject)
 - RBAC (Roles, ClusterRoles, RoleBindings, ClusterRoleBindings)
 
+### 3.2.1 Resource Type Coverage Gaps
+
+KubeBolt covers the resource types in §3.2 end-to-end (informer, list page, detail page, sidebar entry, route). A second tier of resource types is supported only **partially** — typically by the `get_resource_describe` API endpoint (so the AI Copilot can investigate them) but not by the rest of the UI. Operators cannot navigate to these resources from the sidebar, and there is no list/detail page for them.
+
+**Currently describe-only (added 2026-05-15 for Kobi investigations; see `apps/api/internal/api/describe.go`):**
+
+| Type | Group | Discovered? | List page? | Detail page? | Sidebar? |
+|------|-------|-------------|------------|--------------|----------|
+| `resourcequotas` | core/v1 | ❌ | ❌ | ❌ | ❌ |
+| `limitranges` | core/v1 | ❌ | ❌ | ❌ | ❌ |
+| `serviceaccounts` | core/v1 | ❌ | ❌ | ❌ | ❌ |
+| `networkpolicies` | networking.k8s.io/v1 | ❌ | ❌ | ❌ | ❌ |
+| `poddisruptionbudgets` | policy/v1 | ❌ | ❌ | ❌ | ❌ |
+| `priorityclasses` | scheduling.k8s.io/v1 | ❌ | ❌ | ❌ | ❌ |
+| `ingressclasses` | networking.k8s.io/v1 | ❌ | ❌ | ❌ | ❌ |
+
+**To promote a describe-only type to full UI support, the work is symmetric across every layer:**
+
+1. **Backend informer** — register a typed informer in `apps/api/internal/cluster/connector.go` (or dynamic-client lookup for CRDs). Add to the permission-probe list in `cluster/permissions.go` so the access banner reflects whether the SA can list it.
+2. **Backend overview/counts** — extend `models/types.go` `ClusterOverview` with the new count, populate from the informer in `cluster/manager.go`.
+3. **Backend list endpoint** — wire `GET /resources/{type}` for the new type in `api/handlers.go` (most types reuse a generic lister; some need custom field projection).
+4. **Frontend route** — add `<Route path="/resourcequotas" element={<ResourceListPage resourceType="resourcequotas" />} />` (and analogous lines) in `apps/web/src/App.tsx`. The detail route `/:type/:namespace/:name` is generic and already covers it.
+5. **Frontend sidebar** — add an entry to the resource navigation in `components/layout/Sidebar.tsx`, including the icon and the counter binding.
+6. **Detail-page tabs** — `components/resources/ResourceDetailPage.tsx` decides per-type tabs (Overview, YAML, Events, etc.). Most of these types only need Overview + YAML + Events; no Logs/Terminal/Files.
+7. **Insights (optional)** — when applicable, add rules in `internal/insights/engine.go` (e.g. ResourceQuota near-exhaustion warning, NetworkPolicy with no matching pods, PDB allowing 0 disruptions during rollout).
+8. **Cluster Map (optional)** — for relationship-bearing types like NetworkPolicy or ServiceAccount, edge detection in `cluster/relationships.go`.
+9. **Update this table** — flip the columns and remove the row from the "describe-only" tier.
+
+**Why describe-only first:** Kobi (the AI Copilot) routinely needs to investigate quota exhaustion, RBAC misconfigurations, and PDB blockers when diagnosing operator questions. Adding the describer mapping is a one-line change that immediately unblocks `get_resource_describe` queries; the rest of the surface area can follow as the type's diagnostic value justifies the work.
+
+**Don't skip the describer mapping:** if a type is added to UI surfaces (informer + list page) without also being added to `resourceTypeToGroupKind`, the describe button on the detail page will return HTTP 400 "unsupported resource type for describe" — and Kobi will hit the same wall.
+
 ### 3.3 What Phase 1 Cannot Provide
 
 | Metric | Why Not Available | Phase 2 Solution |
