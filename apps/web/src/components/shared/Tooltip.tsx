@@ -23,10 +23,17 @@ import { createPortal } from 'react-dom'
 // Or, when the caller already manages mouse state, render
 // <TooltipPanel> + rows directly inside their own portal.
 
-export function TooltipPanel({ children, className = '' }: { children: ReactNode; className?: string }) {
+// Solid mode drops the translucency + backdrop-blur for surfaces that
+// hover over plain toolbar chrome (no data visible underneath worth
+// seeing through). Default is the translucent variant used over charts
+// and the cluster map, where the blur preserves spatial context.
+export function TooltipPanel({ children, className = '', solid = false }: { children: ReactNode; className?: string; solid?: boolean }) {
+  const surface = solid
+    ? 'bg-kb-elevated border-kb-border-active shadow-2xl'
+    : 'bg-kb-elevated/95 backdrop-blur border-kb-border shadow-xl'
   return (
     <div
-      className={`bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl ${className}`}
+      className={`${surface} border rounded-md px-3 py-2 text-[11px] ${className}`}
     >
       {children}
     </div>
@@ -92,6 +99,9 @@ interface HoverTooltipProps {
   // rather than a sub-window. Override per-call when a panel
   // legitimately needs more breathing room.
   maxWidth?: number
+  // Drop translucency + backdrop blur. Use over plain toolbar chrome
+  // where the blurred backdrop adds noise instead of context.
+  solid?: boolean
 }
 
 // Position threshold for the auto-flip below → above. The tooltip's
@@ -113,6 +123,7 @@ export function HoverTooltip({
   offset = 6,
   minWidth = 200,
   maxWidth = 320,
+  solid = false,
 }: HoverTooltipProps) {
   const triggerRef = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState<AnchoredPos | null>(null)
@@ -175,7 +186,7 @@ export function HoverTooltip({
             onMouseEnter={interactive ? handleEnter : undefined}
             onMouseLeave={interactive ? handleLeave : undefined}
           >
-            <TooltipPanel>{body}</TooltipPanel>
+            <TooltipPanel solid={solid}>{body}</TooltipPanel>
           </div>,
           document.body,
         )}

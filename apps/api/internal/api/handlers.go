@@ -322,16 +322,17 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	tailLines := int64(100)
+	var tailLines int64
+	explicitTail := false
 	if tl := r.URL.Query().Get("tailLines"); tl != "" {
 		if v, err := strconv.ParseInt(tl, 10, 64); err == nil && v > 0 {
 			tailLines = v
+			explicitTail = true
 		}
 	}
 
 	q := cluster.LogQuery{
 		Container:  container,
-		TailLines:  tailLines,
 		Previous:   r.URL.Query().Get("previous") == "true",
 		Timestamps: r.URL.Query().Get("timestamps") == "true",
 	}
@@ -349,6 +350,17 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		if t, err := time.Parse(time.RFC3339, et); err == nil {
 			q.EndTime = t
 		}
+	}
+
+	// Apply the tail bound. Default to 100 lines only when no absolute
+	// time window is set; with a window, the 10 MiB hardcap in
+	// cluster.GetPodLogs is the only bound — slicing to the last 100
+	// lines first would silently drop older lines inside the window.
+	switch {
+	case explicitTail:
+		q.TailLines = tailLines
+	case q.SinceTime.IsZero() && q.EndTime.IsZero():
+		q.TailLines = 100
 	}
 
 	conn := h.manager.Connector()

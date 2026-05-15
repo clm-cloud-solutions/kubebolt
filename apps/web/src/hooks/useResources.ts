@@ -158,6 +158,9 @@ export interface PodLogsOptions {
   endTime?: string
   previous?: boolean
   timestamps?: boolean
+  // Caller-side gate: defaults to true. Set false to suspend the query
+  // (e.g. while the user is editing an invalid datetime range).
+  enabled?: boolean
 }
 export function usePodLogs(
   namespace: string,
@@ -167,10 +170,11 @@ export function usePodLogs(
   opts?: PodLogsOptions,
 ) {
   const historical = !!(opts?.sinceTime || opts?.endTime || opts?.previous)
+  const callerEnabled = opts?.enabled !== false
   return useQuery({
     queryKey: ['pod-logs', namespace, name, container, tailLines, opts],
     queryFn: () => api.getPodLogs(namespace, name, container || undefined, tailLines, opts),
-    enabled: !!namespace && !!name,
+    enabled: callerEnabled && !!namespace && !!name,
     refetchInterval: historical ? false : 10_000,
   })
 }
