@@ -127,6 +127,7 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 		"sessionBudget":  budget,
 		"compactTrigger": trigger,
 		"autoCompact":    h.copilotConfig.AutoCompact,
+		"showToolCalls":  h.copilotConfig.ShowToolCalls,
 	}
 	if h.copilotConfig.Fallback != nil {
 		resp["fallback"] = map[string]string{
