@@ -4239,10 +4239,10 @@ export function ResourceDetailPage() {
           <button
             key={tab.id}
             onClick={() => !tab.soon ? setActiveTab(tab.id) : setActiveTab(tab.id)}
-            className={`px-3 py-2 text-xs font-medium transition-colors relative ${
+            className={`px-3 py-2 text-xs font-semibold transition-colors relative ${
               activeTab === tab.id
                 ? 'text-status-info border-b-2 border-status-info -mb-px'
-                : 'text-kb-text-tertiary hover:text-kb-text-secondary'
+                : 'text-kb-text-secondary hover:text-kb-text-primary'
             }`}
           >
             {tab.label}
