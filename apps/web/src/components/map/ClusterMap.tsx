@@ -14,7 +14,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight } from 'lucide-react'
+import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight, SlidersHorizontal, ChevronLeft } from 'lucide-react'
 import { useTopology } from '@/hooks/useResources'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { api } from '@/services/api'
@@ -753,6 +753,7 @@ function LegendItem({
 const PREF_ANIMATIONS = 'kb-map-animations'
 const PREF_LAYOUT = 'kb-map-layout'
 const PREF_HIDDEN_EDGE_GROUPS = 'kb-map-hidden-edge-groups'
+const PREF_CONFIG_COLLAPSED = 'kb-map-config-collapsed'
 
 // Edge categories group the many underlying edge types into user-visible
 // buckets. Each bucket has one toggle so the map isn't death by a
@@ -810,6 +811,10 @@ function ClusterMapInner() {
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => (loadPref(PREF_LAYOUT, 'flow') as LayoutMode))
   const [animationsEnabled, setAnimationsEnabled] = useState(() => loadPref(PREF_ANIMATIONS, 'on') !== 'off')
+  // Config panel collapsed state — when on, the panel shrinks to a small
+  // icon-only button at top-left, giving the map canvas more room.
+  // Persisted so the operator's choice survives reloads.
+  const [configCollapsed, setConfigCollapsed] = useState(() => loadPref(PREF_CONFIG_COLLAPSED, 'off') === 'on')
   const [hiddenEdgeGroups, setHiddenEdgeGroups] = useState<Set<EdgeGroupKey>>(() => {
     const raw = loadPref(PREF_HIDDEN_EDGE_GROUPS, '')
     if (!raw) return new Set()
@@ -856,6 +861,7 @@ function ClusterMapInner() {
   // Persist preferences on change
   useEffect(() => { savePref(PREF_LAYOUT, layoutMode) }, [layoutMode])
   useEffect(() => { savePref(PREF_ANIMATIONS, animationsEnabled ? 'on' : 'off') }, [animationsEnabled])
+  useEffect(() => { savePref(PREF_CONFIG_COLLAPSED, configCollapsed ? 'on' : 'off') }, [configCollapsed])
   useEffect(() => { savePref(PREF_HIDDEN_EDGE_GROUPS, Array.from(hiddenEdgeGroups).join(',')) }, [hiddenEdgeGroups])
 
   const toggleEdgeGroup = useCallback((key: EdgeGroupKey) => {
@@ -1433,11 +1439,44 @@ function ClusterMapInner() {
         <MapControls />
       </ReactFlow>
 
-      {/* Filter Panel */}
+      {/* Filter Panel — collapsible.
+          Collapsed: small icon-only button at top-left (matches the
+          MapControls visual language at the bottom-left). Click expands.
+          Expanded: full controls panel with a chevron in the header to
+          collapse back. Section titles use stronger weight + color than
+          the previous quiet uppercase-mono tertiary treatment so each
+          group reads as a clear control category. */}
+      {configCollapsed ? (
+        <button
+          type="button"
+          onClick={() => setConfigCollapsed(false)}
+          title="Show map configuration"
+          aria-label="Show map configuration"
+          className="absolute top-4 left-4 z-10 p-2 rounded-lg bg-kb-card/95 backdrop-blur-sm border border-kb-border text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active transition-colors shadow-sm"
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+        </button>
+      ) : (
       <div className="absolute top-4 left-4 bg-kb-card/95 backdrop-blur-sm border border-kb-border rounded-lg p-3 z-10 w-[250px] space-y-3">
+        {/* Header with collapse button */}
+        <div className="flex items-center justify-between -mt-0.5 -mb-1">
+          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-kb-text-primary">
+            <SlidersHorizontal className="w-3.5 h-3.5 text-kb-text-secondary" />
+            Map configuration
+          </div>
+          <button
+            type="button"
+            onClick={() => setConfigCollapsed(true)}
+            title="Hide configuration"
+            aria-label="Hide configuration"
+            className="p-1 rounded text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-elevated transition-colors"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+        </div>
         {/* Layout Toggle */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">Layout</div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Layout</div>
           <div className="flex rounded-md border border-kb-border overflow-hidden">
             <button
               onClick={() => setLayoutMode('grid')}
@@ -1481,7 +1520,7 @@ function ClusterMapInner() {
 
         {/* Edge category filters */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">Edges</div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Edges</div>
           <div className="flex flex-wrap gap-1">
             {EDGE_GROUPS.map((g) => {
               const visible = !hiddenEdgeGroups.has(g.key)
@@ -1518,7 +1557,7 @@ function ClusterMapInner() {
 
         {/* View Controls */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">View</div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">View</div>
           <div className="flex rounded-md border border-kb-border overflow-hidden">
             <button
               onClick={() => setAnimationsEnabled((v) => !v)}
@@ -1544,7 +1583,7 @@ function ClusterMapInner() {
 
         {/* Resource Types */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">
             Resource Types
           </div>
           <div className="flex flex-wrap gap-1">
@@ -1572,7 +1611,7 @@ function ClusterMapInner() {
         <div>
           <button
             onClick={() => setNsFilterOpen(!nsFilterOpen)}
-            className="w-full flex items-center justify-between text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5 hover:text-kb-text-secondary transition-colors"
+            className="w-full flex items-center justify-between text-[11px] font-semibold text-kb-text-secondary mb-1.5 hover:text-kb-text-primary transition-colors"
           >
             <span>Namespaces ({nsCount}/{allNamespaces.length})</span>
             <span className="text-[10px]">{nsFilterOpen ? '▲' : '▼'}</span>
@@ -1609,6 +1648,7 @@ function ClusterMapInner() {
           )}
         </div>
       </div>
+      )}
 
       {/* Traffic layout with the agent reachable but no flows arriving —
           most likely the cluster doesn't run Cilium/Hubble, or the
