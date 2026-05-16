@@ -42,6 +42,11 @@ import type { ClusterOverview } from '@/types/kubernetes'
 
 interface SidebarProps {
   overview?: ClusterOverview
+  // Icons-only mode — width shrinks, labels/counts/section titles hide,
+  // each NavLink keeps a native title tooltip so the operator can still
+  // discover what each icon means. The toggle button lives in the Topbar
+  // (top-left), not here, so the sidebar header always shows the logo.
+  collapsed: boolean
 }
 
 interface NavItem {
@@ -136,7 +141,7 @@ const adminItems = [
   { label: 'Authentication', path: '/admin/authentication', icon: <KeyRound className="w-4 h-4" /> },
 ]
 
-export function Sidebar({ overview }: SidebarProps) {
+export function Sidebar({ overview, collapsed }: SidebarProps) {
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
@@ -162,7 +167,11 @@ export function Sidebar({ overview }: SidebarProps) {
   }, [clickCount])
 
   return (
-    <aside className="w-[220px] h-full bg-kb-sidebar border-r border-kb-border flex flex-col shrink-0 relative overflow-hidden">
+    <aside
+      className={`h-full bg-kb-sidebar border-r border-kb-border flex flex-col shrink-0 relative overflow-hidden transition-[width] duration-200 ease-out ${
+        collapsed ? 'w-[56px]' : 'w-[220px]'
+      }`}
+    >
       {/* Celebration particles */}
       {celebrating && (
         <div className="absolute inset-0 pointer-events-none z-50 overflow-hidden">
@@ -186,45 +195,58 @@ export function Sidebar({ overview }: SidebarProps) {
         </div>
       )}
 
-      {/* Logo */}
-      <div
-        className="px-4 h-[52px] flex items-center gap-2 border-b border-kb-border cursor-pointer select-none"
-        onClick={handleLogoClick}
-      >
-        <div className={`w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center transition-transform ${celebrating ? 'animate-spin' : ''}`}>
+      {/* Logo — always visible. The collapse toggle lives in the Topbar
+          so the logo doesn't have to share the 56px header with another
+          control. In collapsed mode the logo centers; in expanded mode
+          it sits left with name + version next to it. */}
+      <div className={`px-3 h-[52px] flex items-center gap-2 border-b border-kb-border select-none ${collapsed ? 'justify-center' : ''}`}>
+        <div
+          onClick={handleLogoClick}
+          className={`w-7 h-7 rounded-lg bg-kb-accent-light flex items-center justify-center transition-transform shrink-0 cursor-pointer ${celebrating ? 'animate-spin' : ''}`}
+        >
           <KubeBoltLogo className="w-4 h-4 text-kb-accent" />
         </div>
-        <div className="flex flex-col">
-          <span className="text-sm font-semibold text-kb-text-primary leading-tight">KubeBolt</span>
-          <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v{VERSION}</span>
-        </div>
+        {!collapsed && (
+          <div onClick={handleLogoClick} className="flex flex-col min-w-0 cursor-pointer">
+            <span className="text-sm font-semibold text-kb-text-primary leading-tight truncate">KubeBolt</span>
+            <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v{VERSION}</span>
+          </div>
+        )}
       </div>
 
-      {/* Nav sections */}
-      <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-4">
+      {/* Nav sections. Scrollbar is hidden (cross-browser) so the menu
+          stays visually clean — content still scrolls on shorter viewports.
+          Section titles are hidden when collapsed; the space-y-4 between
+          sections keeps the visual grouping intact. Idle label color is
+          kb-text-primary (instead of secondary) so the nav reads with
+          presence; counts and section titles stay subdued as metadata. */}
+      <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {/* Overview link */}
         <div>
           <NavLink
             to="/"
+            title={collapsed ? 'Overview' : undefined}
             className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors relative ${
               dashboardActive
                 ? 'bg-status-info-dim text-status-info'
-                : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
+                : 'text-kb-text-primary hover:bg-kb-card'
             }`}
           >
             {dashboardActive && (
               <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
             )}
             <span className="shrink-0"><LayoutDashboard className="w-4 h-4" /></span>
-            <span className="flex-1 truncate">Overview</span>
+            {!collapsed && <span className="flex-1 truncate">Overview</span>}
           </NavLink>
         </div>
 
         {sections.map((section) => (
           <div key={section.title}>
-            <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
-              {section.title}
-            </div>
+            {!collapsed && (
+              <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
+                {section.title}
+              </div>
+            )}
             <div className="space-y-0.5">
               {section.items.map((item) => {
                 const count = getCount(overview, item.countKey)
@@ -235,11 +257,12 @@ export function Sidebar({ overview }: SidebarProps) {
                   <NavLink
                     key={item.path}
                     to={item.path}
+                    title={collapsed ? item.label : undefined}
                     className={({ isActive }) =>
                       `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                         isActive
                           ? 'bg-status-info-dim text-status-info'
-                          : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
+                          : 'text-kb-text-primary hover:bg-kb-card'
                       } ${isRestricted ? 'opacity-40' : ''}`
                     }
                   >
@@ -249,12 +272,12 @@ export function Sidebar({ overview }: SidebarProps) {
                           <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
                         )}
                         <span className="shrink-0">{item.icon}</span>
-                        <span className="flex-1 truncate">{item.label}</span>
-                        {isRestricted ? (
+                        {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                        {!collapsed && (isRestricted ? (
                           <ShieldOff className="w-3 h-3 text-status-warn" />
                         ) : count !== undefined ? (
                           <span className="text-[10px] font-mono text-kb-text-tertiary">{count}</span>
-                        ) : null}
+                        ) : null)}
                       </>
                     )}
                   </NavLink>
@@ -267,19 +290,22 @@ export function Sidebar({ overview }: SidebarProps) {
         {/* Administration section — admin only (or when auth disabled) */}
         {hasRole('admin') && (
           <div>
-            <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
-              Administration
-            </div>
+            {!collapsed && (
+              <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
+                Administration
+              </div>
+            )}
             <div className="space-y-0.5">
               {adminItems.map((item) => (
                 <NavLink
                   key={item.path}
                   to={item.path}
+                  title={collapsed ? item.label : undefined}
                   className={({ isActive }) =>
                     `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                       isActive
                         ? 'bg-status-info-dim text-status-info'
-                        : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
+                        : 'text-kb-text-primary hover:bg-kb-card'
                     }`
                   }
                 >
@@ -289,7 +315,7 @@ export function Sidebar({ overview }: SidebarProps) {
                         <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
                       )}
                       <span className="shrink-0">{item.icon}</span>
-                      <span className="flex-1 truncate">{item.label}</span>
+                      {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
                     </>
                   )}
                 </NavLink>
@@ -303,24 +329,26 @@ export function Sidebar({ overview }: SidebarProps) {
       <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
         <NavLink
           to="/settings"
+          title={collapsed ? 'Settings' : undefined}
           className={({ isActive }) =>
             `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors ${
               isActive
                 ? 'bg-status-info-dim text-status-info'
-                : 'text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card'
+                : 'text-kb-text-primary hover:bg-kb-card'
             }`
           }
         >
-          <Settings className="w-4 h-4" />
-          <span>Settings</span>
+          <Settings className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Settings</span>}
         </NavLink>
         <button
           type="button"
           onClick={() => setAboutOpen(true)}
-          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card transition-colors"
+          title={collapsed ? 'About' : undefined}
+          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-primary hover:bg-kb-card transition-colors"
         >
-          <Info className="w-4 h-4" />
-          <span>About</span>
+          <Info className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>About</span>}
         </button>
       </div>
 
