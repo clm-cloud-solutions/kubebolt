@@ -4245,7 +4245,7 @@ export function ResourceDetailPage() {
             onClick={() => !tab.soon ? setActiveTab(tab.id) : setActiveTab(tab.id)}
             className={`px-3 py-2 text-xs font-semibold transition-colors relative ${
               activeTab === tab.id
-                ? 'text-status-info border-b-2 border-status-info -mb-px'
+                ? 'text-kb-accent border-b-2 border-kb-accent -mb-px'
                 : 'text-kb-text-secondary hover:text-kb-text-primary'
             }`}
           >

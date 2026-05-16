@@ -228,12 +228,12 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
             title={collapsed ? 'Overview' : undefined}
             className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors relative ${
               dashboardActive
-                ? 'bg-status-info-dim text-status-info'
+                ? 'bg-kb-accent-light text-kb-accent'
                 : 'text-kb-text-primary hover:bg-kb-card'
             }`}
           >
             {dashboardActive && (
-              <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
+              <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-kb-accent" />
             )}
             <span className="shrink-0"><LayoutDashboard className="w-4 h-4" /></span>
             {!collapsed && <span className="flex-1 truncate">Overview</span>}
@@ -261,7 +261,7 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                     className={({ isActive }) =>
                       `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                         isActive
-                          ? 'bg-status-info-dim text-status-info'
+                          ? 'bg-kb-accent-light text-kb-accent'
                           : 'text-kb-text-primary hover:bg-kb-card'
                       } ${isRestricted ? 'opacity-40' : ''}`
                     }
@@ -269,7 +269,7 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                     {({ isActive }) => (
                       <>
                         {isActive && (
-                          <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
+                          <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-kb-accent" />
                         )}
                         <span className="shrink-0">{item.icon}</span>
                         {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
@@ -304,7 +304,7 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                   className={({ isActive }) =>
                     `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                       isActive
-                        ? 'bg-status-info-dim text-status-info'
+                        ? 'bg-kb-accent-light text-kb-accent'
                         : 'text-kb-text-primary hover:bg-kb-card'
                     }`
                   }
@@ -312,7 +312,7 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                   {({ isActive }) => (
                     <>
                       {isActive && (
-                        <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-status-info" />
+                        <div className="absolute left-0 top-1 bottom-1 w-[2px] rounded-full bg-kb-accent" />
                       )}
                       <span className="shrink-0">{item.icon}</span>
                       {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
@@ -333,7 +333,7 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
           className={({ isActive }) =>
             `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors ${
               isActive
-                ? 'bg-status-info-dim text-status-info'
+                ? 'bg-kb-accent-light text-kb-accent'
                 : 'text-kb-text-primary hover:bg-kb-card'
             }`
           }

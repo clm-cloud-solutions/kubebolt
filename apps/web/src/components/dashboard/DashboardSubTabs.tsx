@@ -60,7 +60,7 @@ function SubTab({
       className={({ isActive }) =>
         `flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 -mb-px transition-colors ${
           isActive
-            ? 'border-status-info text-kb-text-primary'
+            ? 'border-kb-accent text-kb-text-primary'
             : 'border-transparent text-kb-text-tertiary hover:text-kb-text-secondary'
         }`
       }
