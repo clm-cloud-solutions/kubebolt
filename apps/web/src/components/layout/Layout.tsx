@@ -1,8 +1,9 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useIsMutating, useQuery } from '@tanstack/react-query'
 import { Unplug, ShieldAlert, Loader2, Cable } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useWebSocket } from '@/hooks/useWebSocket'
@@ -22,6 +23,14 @@ export function Layout() {
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
   useWebSocket(WS_RESOURCES)
+
+  // Browser tab title — updates on every route change so a row of tabs
+  // reads as distinct pages rather than 12 copies of the same string.
+  // Page-name leads, product name follows (Linear / Notion convention).
+  // The home route (/) is special-cased to show the marketing title.
+  useEffect(() => {
+    document.title = resolveDocumentTitle(location.pathname)
+  }, [location.pathname])
 
   // Sidebar collapse preference — persisted to localStorage so the layout
   // reads the same after a refresh. The toggle lives in the sidebar header
