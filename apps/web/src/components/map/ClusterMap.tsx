@@ -754,6 +754,12 @@ const PREF_ANIMATIONS = 'kb-map-animations'
 const PREF_LAYOUT = 'kb-map-layout'
 const PREF_HIDDEN_EDGE_GROUPS = 'kb-map-hidden-edge-groups'
 const PREF_CONFIG_COLLAPSED = 'kb-map-config-collapsed'
+// Drag overrides are persisted PER LAYOUT MODE because each layout
+// (grid / flow / traffic) produces fundamentally different node
+// arrangements — a position the operator picked under Flow doesn't
+// translate cleanly to Grid. Storing under separate keys means each
+// layout keeps its own remembered arrangement.
+const PREF_DRAG_OVERRIDES_PREFIX = 'kb-map-drag-overrides'
 
 // Edge categories group the many underlying edge types into user-visible
 // buckets. Each bucket has one toggle so the map isn't death by a
@@ -793,6 +799,33 @@ function loadPref(key: string, fallback: string): string {
 
 function savePref(key: string, value: string) {
   try { localStorage.setItem(key, value) } catch { /* localStorage blocked */ }
+}
+
+// Drag overrides persistence — serialise the Map as a plain object so
+// JSON.stringify works, keyed per layout mode so switching Grid ↔ Flow
+// ↔ Traffic doesn't collide. Bad / missing data returns an empty Map
+// so the layout falls back to the auto-computed positions.
+function dragOverridesKey(mode: string): string {
+  return `${PREF_DRAG_OVERRIDES_PREFIX}:${mode}`
+}
+
+function loadDragOverrides(mode: string): Map<string, { x: number; y: number }> {
+  try {
+    const raw = localStorage.getItem(dragOverridesKey(mode))
+    if (!raw) return new Map()
+    const parsed = JSON.parse(raw) as Record<string, { x: number; y: number }>
+    return new Map(Object.entries(parsed))
+  } catch {
+    return new Map()
+  }
+}
+
+function saveDragOverrides(mode: string, map: Map<string, { x: number; y: number }>) {
+  try {
+    const obj: Record<string, { x: number; y: number }> = {}
+    map.forEach((v, k) => { obj[k] = v })
+    localStorage.setItem(dragOverridesKey(mode), JSON.stringify(obj))
+  } catch { /* localStorage blocked */ }
 }
 
 function ClusterMapInner() {
@@ -836,9 +869,29 @@ function ClusterMapInner() {
   })
   const trafficSourceAvailable =
     !!agent && (agent.status === 'installed' || agent.status === 'degraded')
-  // Manual position overrides set by user drag. Keyed by node ID.
-  // Cleared when switching layout mode or clicking Reset.
-  const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(new Map())
+  // Manual position overrides set by user drag. Keyed by node ID and
+  // persisted to localStorage per layout mode so the operator's
+  // arrangement survives:
+  //   1. Topology data refetches (every 60s + WS broadcasts) — without
+  //      persistence the arrangement was visually wiped each refresh.
+  //   2. Navigating away from /map and back.
+  //   3. Reloading the browser tab.
+  // The Reset button clears state AND the persisted entry for the
+  // current layout mode.
+  const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(
+    () => loadDragOverrides(loadPref(PREF_LAYOUT, 'flow'))
+  )
+  // When the operator switches Grid ↔ Flow ↔ Traffic, swap to the
+  // arrangement remembered for that layout (or empty Map if none).
+  useEffect(() => {
+    setDragOverrides(loadDragOverrides(layoutMode))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode])
+  // Persist on every change so a refresh / nav-away preserves the
+  // current arrangement under the active layout mode.
+  useEffect(() => {
+    saveDragOverrides(layoutMode, dragOverrides)
+  }, [dragOverrides, layoutMode])
   // Tooltip state for traffic edges. ReactFlow's own interaction layer
   // swallows pointer events before they reach our custom edge's SVG, so
   // an SVG <title> doesn't fire — we use ReactFlow's onEdgeMouseEnter /
@@ -1298,12 +1351,19 @@ function ClusterMapInner() {
   // Refit the view when filters or layout change, but not on every drag.
   // We key off the computed layout (size + layout mode), not the live flowNodes
   // state which mutates on drag.
+  //
+  // Auto-fit is GATED on dragOverrides.size === 0 — once the operator
+  // has manually arranged anything, every subsequent topology refetch
+  // (pod count delta, etc.) would otherwise re-center the viewport
+  // and visually erase their work. After a manual arrangement the
+  // camera stays put; the operator uses the Reset Layout button when
+  // they want to start over.
   useEffect(() => {
-    if (computedNodes.length > 0) {
+    if (computedNodes.length > 0 && dragOverrides.size === 0) {
       const t = setTimeout(() => fitView({ padding: 0.1 }), 100)
       return () => clearTimeout(t)
     }
-  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView])
+  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView, dragOverrides.size])
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
