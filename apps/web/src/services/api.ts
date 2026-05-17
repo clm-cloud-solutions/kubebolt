@@ -468,6 +468,19 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Evict a Pod via the policy/v1 Eviction API — distinct from
+  // `deleteResource('pods', ...)`. Eviction respects PodDisruptionBudgets;
+  // when blocked by a PDB the apiserver returns 429 and the backend
+  // surfaces a structured payload (`pdbBlocked: true`) the caller can
+  // use to render an explicit "blocked by PDB" message instead of a
+  // generic 429. Pod-only — the backend rejects other types.
+  evictPod: (namespace: string, name: string, source?: string) =>
+    postJSON<{ status: string }>(
+      `${API_BASE}/resources/pods/${namespace}/${name}/evict`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string) =>
     postJSON<{ status: string; fromReplicas: number; toReplicas: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/scale`,

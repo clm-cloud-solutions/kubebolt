@@ -4,7 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
@@ -20,7 +20,7 @@ import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
 import { NodeSchedulabilityToolbarButton } from '@/components/resources/NodeSchedulabilityToolbarButton'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/services/api'
+import { api, ApiError } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -1575,6 +1575,146 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
           >
             {deleting ? 'Deleting...' : 'Delete'}
           </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
+// EvictPodModal — graceful pod removal via policy/v1 Eviction API.
+// Distinct from DeleteModal: this respects PodDisruptionBudgets, so
+// the apiserver may return 429 when the disruption budget would be
+// violated. The backend tags that case with `pdbBlocked: true` in the
+// 429 payload; we render dedicated copy for it instead of a generic
+// rate-limit error. No name-confirmation typing because the PDB
+// guardrail already prevents the dangerous case (over-evicting from a
+// protected workload).
+function EvictPodModal({ namespace, name, onClose, onEvicted }: {
+  namespace: string; name: string; onClose: () => void; onEvicted: () => void
+}) {
+  const [evicting, setEvicting] = useState(false)
+  const [error, setError] = useState<MutationErrorVariant | null>(null)
+  const [pdbBlocked, setPdbBlocked] = useState(false)
+
+  useEffect(() => {
+    function handleEsc(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleEsc)
+    return () => document.removeEventListener('keydown', handleEsc)
+  }, [onClose])
+
+  async function handleEvict() {
+    setEvicting(true)
+    setError(null)
+    setPdbBlocked(false)
+    try {
+      await api.evictPod(namespace, name)
+      onEvicted()
+    } catch (err) {
+      // PDB-protected — switch to the specific blocked-state copy.
+      // The backend attaches `pdbBlocked: true` to the 429 payload so
+      // we don't have to parse the apiserver message; structured flag
+      // wins over string-match.
+      if (err instanceof ApiError && err.status === 429 && err.payload?.pdbBlocked === true) {
+        setPdbBlocked(true)
+        setEvicting(false)
+        return
+      }
+      setError(classifyMutationError(err))
+      setEvicting(false)
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative w-[90vw] max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-status-warn-dim flex items-center justify-center shrink-0 mt-0.5">
+              <LogOut className="w-4 h-4 text-status-warn" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-kb-text-primary">Evict pod</h4>
+              <p className="text-[11px] text-kb-text-tertiary">Graceful removal — respects PodDisruptionBudgets.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Pod info */}
+        <div className="mx-5 px-3 py-2.5 rounded-lg bg-status-warn-dim/30 border border-status-warn/10">
+          <div className="text-[11px] font-semibold text-status-warn mb-1">You are about to evict:</div>
+          <div className="text-[11px] font-mono text-kb-text-secondary space-y-0.5">
+            <div>Name: <span className="text-kb-text-primary">{name}</span></div>
+            <div>Namespace: <span className="text-kb-text-primary">{namespace}</span></div>
+          </div>
+        </div>
+
+        {/* Explanation */}
+        <div className="px-5 pt-4 text-[11px] text-kb-text-secondary leading-relaxed">
+          Eviction uses the <code className="font-mono text-kb-text-primary">policy/v1.Eviction</code> API.
+          If a PodDisruptionBudget would be violated by removing this pod, the request will be
+          blocked and you'll see a "PDB blocked" message — try again later or evict a different pod.
+        </div>
+
+        {/* PDB blocked state — distinct from generic error */}
+        {pdbBlocked && (
+          <div className="mx-5 mt-3 px-3 py-2.5 rounded-lg bg-status-warn-dim border border-status-warn/30">
+            <div className="text-[11px] font-semibold text-status-warn mb-1">Blocked by PodDisruptionBudget</div>
+            <div className="text-[11px] text-kb-text-secondary leading-relaxed">
+              A PodDisruptionBudget protecting this workload would be violated by removing this pod.
+              Wait for the disruption window to open, or evict a different pod from the same workload.
+            </div>
+          </div>
+        )}
+
+        {/* Generic error — only when not the PDB case */}
+        {error && !pdbBlocked && (
+          <div className="mx-5 mt-3 px-3 py-2.5 rounded-lg bg-status-error-dim border border-status-error/20 text-xs">
+            {error.title && <div className="font-semibold text-status-error mb-1">{error.title}</div>}
+            <div className="text-kb-text-secondary leading-relaxed">{error.body}</div>
+            {error.cta && (
+              <Link
+                to={error.cta.to}
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded bg-kb-accent text-kb-on-accent text-[11px] font-medium hover:bg-kb-accent-hover transition-colors"
+              >
+                {error.cta.label}
+              </Link>
+            )}
+            {error.detail && (
+              <details className="mt-1.5">
+                <summary className="text-[10px] font-mono text-kb-text-tertiary cursor-pointer">Server error</summary>
+                <pre className="mt-1 text-[10px] font-mono text-kb-text-tertiary whitespace-pre-wrap break-all">{error.detail}</pre>
+              </details>
+            )}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="px-5 py-4 flex gap-2 justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+          >
+            {pdbBlocked ? 'Close' : 'Cancel'}
+          </button>
+          {!pdbBlocked && (
+            <button
+              onClick={handleEvict}
+              disabled={evicting}
+              className="px-4 py-2 text-xs font-medium bg-status-warn text-white rounded-lg hover:bg-status-warn/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {evicting ? 'Evicting...' : 'Evict'}
+            </button>
+          )}
         </div>
       </div>
     </div>,
@@ -3550,6 +3690,10 @@ export function ResourceDetailPage() {
   // Nodes list uses. State lives on the detail page so the modal
   // mounts at this level rather than per-button.
   const [showDrain, setShowDrain] = useState(false)
+  // Evict opens EvictPodModal — pod-only graceful removal via the
+  // policy/v1 Eviction API. Mounted at this level so the dialog
+  // sits on top of the toolbar regardless of which tab is active.
+  const [showEvict, setShowEvict] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -3689,6 +3833,21 @@ export function ResourceDetailPage() {
           },
     )
   }
+  // Evict pod — graceful removal that respects PodDisruptionBudgets.
+  // Sits in the menu (not inline) because operators reach for it less
+  // often than Restart, and pairing it with Edit metadata keeps the
+  // toolbar uncluttered. Separator above visually groups it apart
+  // from the universal "metadata" item below.
+  if (type === 'pods') {
+    menuItems.push({
+      id: 'evict-pod',
+      label: 'Evict pod',
+      icon: LogOut,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : 'Evict respects PodDisruptionBudgets (policy/v1 Eviction API)',
+      onClick: () => setShowEvict(true),
+    })
+  }
   // Edit metadata — universal across all kinds, always last in the
   // menu. When this is the ONLY item, the toolbar promotes it inline
   // (see render branch below) so the operator doesn't pay a click
@@ -3700,7 +3859,7 @@ export function ResourceDetailPage() {
     disabled: !canEdit,
     hint: !canEdit ? 'Editor role required' : 'Edit labels and annotations (kubectl label / annotate)',
     onClick: () => setShowEditMetadata(true),
-    separator: isWorkload, // visually group "metadata" apart from the workload-template writes above
+    separator: isWorkload || type === 'pods', // visually group "metadata" apart from kind-specific writes above
   })
 
   function renderTab() {
@@ -3923,6 +4082,69 @@ export function ResourceDetailPage() {
                           if (res.resource) {
                             queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
                           }
+                          queryClient.invalidateQueries({ queryKey: ['resources'] })
+                        } catch (err) {
+                          setMutationError({ err, action: 'Restart' })
+                        } finally {
+                          setActionLoading(null)
+                        }
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium bg-status-info text-white rounded-lg hover:bg-status-info/90 transition-colors flex items-center gap-1.5"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                      Restart
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Pod-specific actions (Phase 3 of Item 4 — Pod actions
+              audit). Restart synthesizes "kubectl delete pod"; the
+              owning controller recreates it. Evict lives in the
+              Actions ▾ menu (added above to menuItems) — graceful
+              removal that respects PDBs. Navigation to the owning
+              workload is intentionally NOT a toolbar button: the
+              Overview tab already surfaces `Owner: Kind/name` as a
+              clickable KindNameLink, so a toolbar duplicate would
+              just add visual weight without new capability. */}
+          {type === 'pods' && (
+            <div className="relative">
+              <button
+                onClick={() => { setShowRestart(!showRestart); setShowScale(false) }}
+                disabled={actionLoading === 'restart' || !canEdit}
+                title={!canEdit ? 'Editor role required' : 'Restart pod (deletes; controller recreates)'}
+                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  showRestart ? 'bg-status-warn-dim border-status-warn/20 text-status-warn' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+                }`}
+              >
+                <RotateCw className={`w-3 h-3 ${actionLoading === 'restart' ? 'animate-spin' : ''}`} />
+                Restart
+              </button>
+              {showRestart && (
+                <div className="absolute top-full right-0 mt-1 bg-kb-card border border-kb-border rounded-xl shadow-xl z-50 p-4 w-72">
+                  <h4 className="text-sm font-semibold text-kb-text-primary mb-1">Restart pod</h4>
+                  <p className="text-[11px] text-kb-text-tertiary mb-4">
+                    This pod will be deleted. The owning controller (Deployment, StatefulSet, DaemonSet, Job, or ReplicaSet) recreates it on its next reconcile. Standalone pods without a controller stay deleted.
+                  </p>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      onClick={() => setShowRestart(false)}
+                      className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setActionLoading('restart')
+                        setShowRestart(false)
+                        try {
+                          await api.restartResource('pods', namespace, name)
+                          // The pod just got deleted, so the local
+                          // detail cache is stale. Don't setQueryData
+                          // (the response carries resource: null). Just
+                          // invalidate the list cache; the WS event +
+                          // refetch reconcile from there.
                           queryClient.invalidateQueries({ queryKey: ['resources'] })
                         } catch (err) {
                           setMutationError({ err, action: 'Restart' })
@@ -4211,6 +4433,24 @@ export function ResourceDetailPage() {
           state doesn't leak across resource types. */}
       {showDrain && type === 'nodes' && item && (
         <DrainModal node={item} onClose={() => setShowDrain(false)} />
+      )}
+
+      {/* Pod eviction modal — Phase 3 of Item 4. Mounted only when
+          type=pods so the dialog state doesn't leak across resource
+          types. */}
+      {showEvict && type === 'pods' && (
+        <EvictPodModal
+          namespace={namespace}
+          name={name}
+          onClose={() => setShowEvict(false)}
+          onEvicted={() => {
+            setShowEvict(false)
+            queryClient.invalidateQueries({ queryKey: ['resources'] })
+            // After eviction the pod is gone — navigate to the pods
+            // list rather than 404 on the now-deleted detail page.
+            navigate('/pods')
+          }}
+        />
       )}
 
       {/* Delete modal */}

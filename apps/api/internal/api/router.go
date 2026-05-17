@@ -275,6 +275,16 @@ func NewRouter(
 					r.Post("/resources/{type}/{namespace}/{name}/reveal", h.handleSecretReveal)
 					r.Post("/resources/{type}/{namespace}/{name}/cordon", h.handleCordon)
 					r.Post("/resources/{type}/{namespace}/{name}/uncordon", h.handleUncordon)
+					// Evict pod — single-pod version of drain. Uses the
+					// policy/v1 Eviction API which respects any PDB
+					// protecting the pod; returns 429 (pdbBlocked) when
+					// blocked. Editor+ — same gate as workload Restart
+					// since evict is the graceful cousin of delete that
+					// operators reach for during maintenance windows.
+					// Bulk eviction (drain) stays Admin below; single-pod
+					// evict is mid-risk because the PDB-respect makes it
+					// safer than force-delete.
+					r.Post("/resources/{type}/{namespace}/{name}/evict", h.handleEvictPod)
 					// Rollout pause/resume. Deployment-only — flips
 					// spec.paused so the deployment controller stops
 					// reconciling without touching pods. The
