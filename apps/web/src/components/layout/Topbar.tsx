@@ -244,57 +244,74 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
         </div>
       </div>
 
-      {/* Right side */}
+      {/* Right side — three grouped zones separated by vertical dividers:
+            (1) cluster state pills — LIVE / port-forwards / node count.
+                All three share the same chip shell so they read as one
+                row of state indicators rather than mixed standalone bits.
+            (2) tools — search / new resource / theme toggle.
+            (3) user — profile menu (own zone since it's identity, not
+                action or state).
+          The 1px dividers match the sidebar-toggle separator pattern. */}
       <div className="flex items-center gap-3">
-        {/* Search trigger */}
-        <button
-          onClick={() => setSearchOpen(true)}
-          className="flex items-center gap-2 w-52 pl-3 pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
-        >
-          <Search className="w-3.5 h-3.5" />
-          <span className="flex-1 text-left">Search...</span>
-          <kbd className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
-        </button>
-        {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
+        {/* — Cluster state group — */}
+        <div className="flex items-center gap-2">
+          {/* Live indicator */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-ok-dim">
+            <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse-live" />
+            <span className="text-[10px] font-mono font-medium text-status-ok uppercase tracking-[0.08em]">Live</span>
+          </div>
 
-        {/* New resource — Tier 2 #10 global CTA. Opens the
-            create-from-manifest modal with the Pod default kind. */}
-        <button
-          onClick={() => setNewResourceOpen(true)}
-          title="Create a new resource from a manifest"
-          className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
-        >
-          <Plus className="w-3.5 h-3.5" />
-          <span>New</span>
-        </button>
-        {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
+          {/* Active port-forwards (renders nothing when 0 active) */}
+          <PortForwardIndicator />
 
-        {/* Theme toggle */}
-        <button
-          type="button"
-          onClick={toggleTheme}
-          className="p-1.5 rounded-md text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-card border border-kb-border transition-colors"
-          title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
-        >
-          {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
-        </button>
-
-        {/* Live indicator */}
-        <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-ok-dim">
-          <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse-live" />
-          <span className="text-[10px] font-mono font-medium text-status-ok uppercase tracking-[0.08em]">Live</span>
+          {/* Node count — matched to the LIVE / FWD chip shell so the
+              three read as one row instead of "two pills + raw text". */}
+          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-kb-card border border-kb-border text-kb-text-secondary">
+            <Server className="w-3.5 h-3.5" />
+            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount} nodes</span>
+          </div>
         </div>
 
-        {/* Active port-forwards */}
-        <PortForwardIndicator />
+        <div className="w-px h-5 bg-kb-border" aria-hidden />
 
-        {/* Node count */}
-        <div className="flex items-center gap-1.5 text-kb-text-secondary">
-          <Server className="w-3.5 h-3.5" />
-          <span className="text-xs font-mono">{nodeCount} nodes</span>
+        {/* — Tools group — */}
+        <div className="flex items-center gap-2">
+          {/* Search trigger */}
+          <button
+            onClick={() => setSearchOpen(true)}
+            className="flex items-center gap-2 w-52 pl-3 pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
+          >
+            <Search className="w-3.5 h-3.5" />
+            <span className="flex-1 text-left">Search...</span>
+            <kbd className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
+          </button>
+          {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
+
+          {/* New resource — global create-from-manifest CTA. */}
+          <button
+            onClick={() => setNewResourceOpen(true)}
+            title="Create a new resource from a manifest"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            <span>New</span>
+          </button>
+          {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
+
+          {/* Theme toggle */}
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="p-1.5 rounded-md text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-card border border-kb-border transition-colors"
+            title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+          >
+            {theme === 'dark' ? <Sun className="w-3.5 h-3.5" /> : <Moon className="w-3.5 h-3.5" />}
+          </button>
         </div>
 
-        {/* User menu */}
+        <div className="w-px h-5 bg-kb-border" aria-hidden />
+
+        {/* — User group — */}
         <UserMenu />
       </div>
     </header>
@@ -339,7 +356,7 @@ function PortForwardIndicator() {
       >
         <Cable className="w-3.5 h-3.5" />
         <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">
-          {active.length} forward{active.length !== 1 ? 's' : ''}
+          {active.length} fwd{active.length !== 1 ? 's' : ''}
         </span>
       </button>
 
