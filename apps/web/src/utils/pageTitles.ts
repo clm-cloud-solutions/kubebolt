@@ -67,24 +67,56 @@ const ROUTE_TITLES: Record<string, string> = {
   '/login': 'Sign in',
 }
 
+// Short type prefix used in resource detail tab titles. Matches the
+// kubectl alias an operator already reads in their terminal so the tab
+// title is instantly classifiable as "this is a Deployment" / "this
+// is a Service" without parsing the name itself. Types without an
+// entry fall through to the URL segment as-is.
+const TYPE_ABBREVIATIONS: Record<string, string> = {
+  pods:             'pod',
+  nodes:            'node',
+  deployments:      'deploy',
+  statefulsets:     'sts',
+  daemonsets:       'ds',
+  replicasets:      'rs',
+  jobs:             'job',
+  cronjobs:         'cj',
+  services:         'svc',
+  ingresses:        'ing',
+  gateways:         'gw',
+  httproutes:       'httproute',
+  endpoints:        'ep',
+  endpointslices:   'eps',
+  pvcs:             'pvc',
+  pvs:              'pv',
+  storageclasses:   'sc',
+  configmaps:       'cm',
+  secrets:          'secret',
+  hpas:             'hpa',
+  namespaces:       'ns',
+}
+
 // titleForPath returns the page label for a given pathname, or undefined
 // when the path doesn't match any known route (caller falls back to the
 // product name alone).
 export function titleForPath(pathname: string): string | undefined {
   if (ROUTE_TITLES[pathname]) return ROUTE_TITLES[pathname]
 
-  // Resource detail route: /:type/:namespace/:name — the operator most
-  // wants to see the resource NAME in the tab so a row of tabs reads as
-  // distinct resources, not as a row of "Resource detail · KubeBolt".
+  // Resource detail route: /:type/:namespace/:name — format as
+  // "<type-abbrev>/<name>" (kubectl-style: deploy/demo-load,
+  // pod/api-server, svc/coredns). The type prefix disambiguates a
+  // row of detail tabs that would otherwise read as bare resource
+  // names, and gives any title-based usage analytics a clean token
+  // to count which resource type the operator visited.
   // Decoding handles namespaces / names that came through the router
   // with URL-encoded characters.
   const parts = pathname.split('/').filter(Boolean)
   if (parts.length === 3) {
-    try {
-      return decodeURIComponent(parts[2])
-    } catch {
-      return parts[2]
-    }
+    const type = parts[0]
+    let name: string
+    try { name = decodeURIComponent(parts[2]) } catch { name = parts[2] }
+    const abbr = TYPE_ABBREVIATIONS[type] ?? type
+    return `${abbr}/${name}`
   }
 
   return undefined
