@@ -423,18 +423,17 @@ export function MetricChart({
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
-          {icon ? (
-            <>
-              <span className="text-kb-text-secondary shrink-0">{icon}</span>
-              <h4 className="text-sm font-semibold text-kb-text-primary truncate">
-                {title}
-              </h4>
-            </>
-          ) : (
-            <h4 className="text-xs font-mono uppercase tracking-wider text-kb-text-secondary truncate">
-              {title}
-            </h4>
+          {/* Title style is uniform whether or not an icon is provided —
+              previously the no-icon variant used a quieter uppercase-mono
+              treatment which made the Monitor tab read as second-tier next
+              to Capacity's iconed charts. Same weight everywhere keeps the
+              product cohesive; the optional icon is just a visual prefix. */}
+          {icon && (
+            <span className="text-kb-text-secondary shrink-0">{icon}</span>
           )}
+          <h4 className="text-sm font-semibold text-kb-text-primary truncate">
+            {title}
+          </h4>
           {hasData && (
             <AskCopilotButton
               payload={{

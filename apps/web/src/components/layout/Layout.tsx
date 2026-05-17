@@ -1,7 +1,9 @@
+import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useIsMutating, useQuery } from '@tanstack/react-query'
 import { Unplug, ShieldAlert, Loader2, Cable } from 'lucide-react'
 import { Sidebar } from './Sidebar'
+import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useWebSocket } from '@/hooks/useWebSocket'
@@ -21,6 +23,29 @@ export function Layout() {
   const { hasRole } = useAuth()
   const isAdmin = hasRole('admin')
   useWebSocket(WS_RESOURCES)
+
+  // Browser tab title — updates on every route change so a row of tabs
+  // reads as distinct pages rather than 12 copies of the same string.
+  // Page-name leads, product name follows (Linear / Notion convention).
+  // The home route (/) is special-cased to show the marketing title.
+  useEffect(() => {
+    document.title = resolveDocumentTitle(location.pathname)
+  }, [location.pathname])
+
+  // Sidebar collapse preference — persisted to localStorage so the layout
+  // reads the same after a refresh. The toggle lives in the sidebar header
+  // (chevron icon) so operators can reclaim screen real estate when they
+  // already know their way around without losing the nav.
+  const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => {
+    try { return localStorage.getItem('kb-sidebar-collapsed') === 'true' } catch { return false }
+  })
+  const toggleSidebar = useCallback(() => {
+    setSidebarCollapsed((v) => {
+      const next = !v
+      try { localStorage.setItem('kb-sidebar-collapsed', String(next)) } catch { /* private mode */ }
+      return next
+    })
+  }, [])
 
   // First-use detection: zero clusters configured. Distinct from
   // "Cluster unreachable" (a selected cluster failed to connect) — here
@@ -77,13 +102,13 @@ export function Layout() {
 
   return (
     <div className="flex h-screen w-screen bg-kb-bg overflow-hidden">
-      <Sidebar overview={overview} />
+      <Sidebar overview={overview} collapsed={sidebarCollapsed} />
       <div className="flex-1 flex flex-col min-w-0">
         {/* Topbar stays full-width across the content column —
             even above the docked Copilot panel. The Copilot's
             top:52 avoids covering it, so the cluster switcher,
             search and theme toggle stay reachable.*/}
-        <Topbar overview={overview} />
+        <Topbar overview={overview} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
         {isLimited && (
           <div className="px-4 py-1.5 bg-status-warn-dim border-b border-kb-border text-xs text-status-warn flex items-center gap-2 shrink-0">
             <ShieldAlert className="w-3.5 h-3.5" />

@@ -150,7 +150,7 @@ function Kpi({ label, accent, pill, value, valueSuffix, sub, footer }: KpiProps)
       className={`bg-kb-card border border-kb-border rounded-[10px] p-4 transition-colors hover:bg-kb-card-hover ${restricted ? 'opacity-60' : ''}`}
     >
       <div className="flex items-center justify-between gap-2 mb-3 min-h-[20px]">
-        <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary truncate">
+        <span className="text-sm font-semibold text-kb-text-primary truncate">
           {label}
         </span>
         {pill && <PillView pill={pill} />}

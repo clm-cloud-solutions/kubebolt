@@ -1657,7 +1657,11 @@ function YAMLEditor({ value, onChange }: { value: string; onChange: (v: string) 
           }
         }),
         EditorView.theme({
-          '&': { fontSize: '11px', maxHeight: '600px' },
+          // Match the read-only viewer sizing — fills the tab's vertical
+          // space minus page chrome AND the Section wrapper's own overhead
+          // (p-5 padding + title + mb-4 = ~80px). 320px floor for short
+          // viewports.
+          '&': { fontSize: '11px', height: 'calc(100vh - 360px)', minHeight: '320px' },
           '.cm-scroller': { overflow: 'auto', fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace" },
           '.cm-content': { padding: '12px 0' },
           '.cm-gutters': { backgroundColor: '#0d1117', border: 'none' },
@@ -1785,7 +1789,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       {editing ? (
         <YAMLEditor value={editValue} onChange={setEditValue} />
       ) : (
-        <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
+        <div className="overflow-auto h-[calc(100vh-360px)] min-h-[320px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
           <pre className="text-[11px] font-mono leading-5 whitespace-pre-wrap break-all">
             {lines.map((line, i) => (
               <div key={i} className="flex">
@@ -4239,10 +4243,10 @@ export function ResourceDetailPage() {
           <button
             key={tab.id}
             onClick={() => !tab.soon ? setActiveTab(tab.id) : setActiveTab(tab.id)}
-            className={`px-3 py-2 text-xs font-medium transition-colors relative ${
+            className={`px-3 py-2 text-xs font-semibold transition-colors relative ${
               activeTab === tab.id
-                ? 'text-status-info border-b-2 border-status-info -mb-px'
-                : 'text-kb-text-tertiary hover:text-kb-text-secondary'
+                ? 'text-kb-accent border-b-2 border-kb-accent -mb-px'
+                : 'text-kb-text-secondary hover:text-kb-text-primary'
             }`}
           >
             {tab.label}
