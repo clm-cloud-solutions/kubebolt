@@ -13,6 +13,26 @@ import (
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
+// activeAggregator is the currently-running aggregator instance for
+// this process. Set when RunCollector starts (only on the leader pod
+// after leader election); cleared when it returns. Other packages
+// reach it via ActiveAggregator() so they can plumb size gauges into
+// kubebolt_agent_* observability without RunCollector having to grow
+// a returns-the-aggregator API.
+//
+// Atomic pointer (Go 1.19+) — lockless read, single-writer store/clear.
+// Tests that construct an aggregator via NewAggregator directly do NOT
+// touch this global, so they don't interfere with self collector wiring.
+var activeAggregator atomic.Pointer[Aggregator]
+
+// ActiveAggregator returns the aggregator currently running in this
+// process, or nil if none (non-leader pod, Hubble disabled, or
+// pre-startup). Callers should treat nil as "no Hubble state to
+// report" and skip emission.
+func ActiveAggregator() *Aggregator {
+	return activeAggregator.Load()
+}
+
 // RunCollector runs the Hubble ingest + aggregation loop until ctx is
 // cancelled. Stream errors retry with exponential backoff without
 // crashing the agent — Hubble Relay might be temporarily unreachable
@@ -24,6 +44,12 @@ import (
 // pods don't run the collector at all.
 func RunCollector(ctx context.Context, relayAddr string, buf *buffer.Ring, clusterID, clusterName, node, tenantID string) {
 	agg := NewAggregator(buf, clusterID, clusterName, node, tenantID)
+	// Publish for self-metrics (kubebolt_agent_aggregator_keys). Clear
+	// on return so a future re-run after a relay-failure restart
+	// re-publishes a fresh instance. Non-leader code paths never run
+	// this function so activeAggregator stays nil on those pods.
+	activeAggregator.Store(agg)
+	defer activeAggregator.Store(nil)
 
 	// Flush loop independent of the stream so samples still accumulate
 	// and ship even when the relay connection is flapping.

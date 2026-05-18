@@ -116,6 +116,25 @@ func NewAggregator(buf *buffer.Ring, clusterID, clusterName, node, tenantID stri
 	}
 }
 
+// Sizes returns the current key count of each internal map. Exposed for
+// the self.Collector so kubebolt_agent_aggregator_keys{type=…} gauges
+// can attribute memory growth to a specific source (flow / http /
+// latency / external IPs / DNS). Cheap (lock held briefly, len() only).
+//
+// Map types: "flows" / "http_reqs" / "http_lat" / "externals" / "dns".
+// Stable label values — dashboards can rely on them.
+func (a *Aggregator) Sizes() map[string]int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return map[string]int{
+		"flows":     len(a.totals),
+		"http_reqs": len(a.httpReqs),
+		"http_lat":  len(a.httpLat),
+		"externals": len(a.externals),
+		"dns":       len(a.dns),
+	}
+}
+
 // Record increments the running counter for the pod pair this flow
 // represents. Hubble emits up to four events per TCP conversation
 // (request + reply × egress + ingress perspectives). Filter to
