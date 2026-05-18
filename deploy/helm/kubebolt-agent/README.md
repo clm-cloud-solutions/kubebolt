@@ -29,7 +29,7 @@ KubeBolt reads on every poll.
 |---|---|---|---|---|
 | **This chart** | `Helm` | `helm install kubebolt-agent oci://...` | Production. Full value surface including `affinity`, custom `tolerations`, `podAnnotations`, etc. | Helm (`helm upgrade`), KubeBolt UI with force |
 | **KubeBolt UI** | `kubebolt` | Administration → Integrations → Install | Quickest path when you already have KubeBolt running. Opinionated value set covering 90% of installs. | KubeBolt UI (Configure / Uninstall) |
-| **Raw manifest** | _(unset)_ | `kubectl apply -f deploy/agent/kubebolt-agent-dev.yaml` | Dev loops, air-gapped clusters, GitOps flows that manage their own manifests | The tool that applied it; KubeBolt UI with force |
+| **Raw manifest** | _(unset)_ | `kubectl apply -f deploy/agent/kubebolt-agent-<tier>.yaml` (where `<tier>` is `metrics`, `reader`, or `operator` — see [`deploy/agent/README.md`](../../deploy/agent/README.md) for the tier picker) | Air-gapped clusters, GitOps flows that manage their own manifests, RBAC-conscious shops that want the SA's permission tier explicit in the manifest | The tool that applied it; KubeBolt UI with force |
 
 **Mixing paths:** KubeBolt's UI refuses to modify DaemonSets without
 the `managed-by=kubebolt` label by default. Uninstall has a

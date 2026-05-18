@@ -451,20 +451,96 @@ and emitting flow samples.
 
 ---
 
+## Scenario 4 — Single-container CLI (evaluation / demo / dev)
+
+**Profile:** evaluator or operator who wants to **try KubeBolt without
+deploying it to a cluster**. Use case: a 30-second `docker run`
+to point at any cluster reachable from your laptop via `~/.kube/config`.
+Not a production deployment pattern — no agent, no TSDB, no
+auth-by-default — but the right path when "just show me the UI"
+beats "stand up the full stack."
+
+### Pre-flight confirmation
+- [ ] `~/.kube/config` resolves to at least one cluster you have RBAC
+      to read from.
+- [ ] Docker daemon running on your laptop.
+
+### Install recipe
+
+```bash
+# Pulls the published OCI single-container image (api + web + embedded
+# frontend, served on :3000). Each release tag (e.g. v1.10.0) has a
+# matching single-container image; `:latest` tracks the most recent
+# stable.
+docker run --rm -p 3000:3000 \
+  -v ~/.kube:/root/.kube:ro \
+  -e KUBEBOLT_AUTH_ENABLED=false \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest
+
+# Open http://localhost:3000
+```
+
+The container reads `/root/.kube/config` at boot, switches between
+contexts via the UI (every kubeconfig context shows up in the cluster
+selector), and uses your local kubeconfig credentials for all
+apiserver calls.
+
+### What's enabled
+- ✅ **A** Operational core — lists, details, Map, Insights (13 rules),
+  exec / logs / port-forward / files (all run through your local
+  kubeconfig).
+- ⚠️ **B** Live commitment bars — depend on Metrics Server in the
+  target cluster.
+- ❌ **C** Capacity workload trends (CPU/Mem/Network/Filesystem
+  history) — no TSDB bundled, no agent shipping samples.
+- ❌ **D** Reliability sub-tab — no agent, no Hubble flow ingest.
+- ❌ **E** Cluster-state enrichments (P25-XX) — no KSM scrape, no VM
+  to store the time series.
+- ❌ **F** Node OS enrichments — no node-exporter scrape, no VM.
+- ✅ **G** Recent deploys overlay — apiserver-only, no TSDB needed.
+- ✅ **H** Resource actions — your local kubeconfig credentials.
+
+In short: A + G + H work full-speed. B partial. C/D/E/F unavailable
+because there's no TSDB.
+
+### When to graduate to Scenario 1 / 2 / 3
+The moment you want historical CPU/Mem/Network trends or the
+Reliability sub-tab, the single-container path stops being
+sufficient — that's the moment to switch to a Helm install per
+Scenarios 1-3 above. The `docker run` evaluator workflow is
+designed as the "before" of a longer journey, not the destination.
+
+### Limitations
+- **No multi-user auth** (the recipe sets `KUBEBOLT_AUTH_ENABLED=false`
+  for zero-config UX — anyone with access to `localhost:3000` is
+  effectively cluster-admin against your kubeconfig).
+- **No persistence** — restart the container and you lose your
+  Copilot session history (kept in-memory only).
+- **Performance ceiling** — single binary, single-process, embedded
+  frontend; fine for evaluating against clusters with hundreds of pods
+  but not the right shape for fleet-scale production use.
+
+---
+
 ## Decision tree (quick path for new customer)
 
 ```
-Does the customer's cluster already have Prometheus running?
-├── YES
-│   ├── Is it kube-prometheus-stack / Operator-driven?  (CRDs present)
-│   │   └── YES → Scenario 1
-│   └── NO (hand-rolled or annotation-driven Prom)
-│       ├── KSM AND node-exporter installed?  → Scenario 2a
-│       └── One or both missing                → Scenario 2b
-└── NO
-    └── Want full enrichments?
-        ├── YES → Scenario 3 full (add KSM + node-exporter sidechart)
-        └── NO  → Scenario 3 minimal (only kubebolt + agent)
+Just trying it out / 30-second demo with no cluster deploy?
+└── YES → Scenario 4 (docker run, single container)
+
+Committing to a deploy:
+
+  Does the customer's cluster already have Prometheus running?
+  ├── YES
+  │   ├── Is it kube-prometheus-stack / Operator-driven?  (CRDs present)
+  │   │   └── YES → Scenario 1
+  │   └── NO (hand-rolled or annotation-driven Prom)
+  │       ├── KSM AND node-exporter installed?  → Scenario 2a
+  │       └── One or both missing                → Scenario 2b
+  └── NO
+      └── Want full enrichments?
+          ├── YES → Scenario 3 full (add KSM + node-exporter sidechart)
+          └── NO  → Scenario 3 minimal (only kubebolt + agent)
 ```
 
 ---
