@@ -62,114 +62,62 @@ Insights backend's metric paths) all consult these canonical names.
 
 ---
 
-## What's new in 1.10.0-rc.4 (BUG-3 boot-restore self-skip)
+## Validation campaign fixes (rc.1 → 1.10.0 GA)
 
-RC4 adds one operator-visible fix on top of RC3:
-**`fix(api): boot-time restore also honors selfClusterID — extract
-IsSelfCluster helper (BUG-3)`**. RC3 short-circuited the live-connect
-auto-register path but missed the boot-time restore path that
-replays persisted `AgentRecord` entries on every backend restart.
-Operators on RC3 saw the BUG-2 duplicate row come BACK every time
-they `helm upgrade`d or otherwise restarted the backend pod — a
-silent regression of the BUG-2 contract.
+The 1.10 release went through 4 RCs in a cluster-validation campaign
+across GKE Dataplane V2, EKS, AKS, and GKE+Calico OSS. Full closure
+and per-session detail live in
+`internal/cluster-validation/CAMPAIGN-CLOSURE.md` (gitignored). Three
+operator-visible cluster-registry bugs were caught and fixed:
 
-RC4 extracts the self-skip rule into a shared `agent.IsSelfCluster`
-helper, then applies it at BOTH call sites — the live-connect path
-(unchanged behavior vs RC3) and the boot-restore path (new). Backend
-boots now log `processed persisted agent-proxy records on boot
-restored=N skipped_self_cluster=M` so operators can confirm the
-skip happened at INFO level without flipping to DEBUG.
+- **BUG-1 (rc.2): multi-cluster registry collapse (CRITICAL).**
+  `fix(api)!: honor Hello.cluster_hint in resolveAgentID`. Backend
+  no longer collapses every multi-cluster agent to
+  `cluster_id="local"`. Precedence is now
+  `id.ClusterID > clusterHint > "local"` in both auth-disabled
+  (OSS multi-cluster) and auth-enabled (SaaS ingest-token) branches.
+  **Operators upgrading from pre-1.10 with `local/`-keyed
+  AgentRecords in BoltDB**: the records persist as zombies until the
+  24h auto-prune horizon — see the commit message for the one-shot
+  cleanup script.
+- **BUG-2 (rc.3): single-cluster duplicate row in selector.**
+  `fix(api): skip agent-proxy auto-register when cluster_id matches
+  backend's own`. When the backend runs in-cluster and an agent
+  connects from the SAME cluster, the cluster no longer appears
+  twice in `/api/v1/clusters` and the UI selector. Out-of-cluster
+  dev runs (`make dev-clean`) are unaffected.
+- **BUG-3 (rc.4): duplicate row resurrects after backend restart.**
+  `fix(api): boot-time restore also honors selfClusterID — extract
+  IsSelfCluster helper`. The BUG-2 fix covered the live-connect path
+  but missed the boot-time restore path that replays persisted
+  `AgentRecord` entries on every backend restart. The self-skip rule
+  is now shared (`agent.IsSelfCluster`) between both call sites.
+  Backend boots log `processed persisted agent-proxy records on
+  boot restored=N skipped_self_cluster=M` for auditability.
 
-No schema movement vs RC3 — matrix row `1.10.x ↔ 1.0.x ✅` carries
-forward unchanged.
+No schema movement across the RC sequence — the matrix row
+`1.10.x ↔ 1.0.x ✅` is the only schema contract that matters.
 
----
-
-## What's new in 1.10.0-rc.3 (single-cluster duplicate-row fix)
-
-RC3 adds one operator-visible fix on top of RC2:
-**`fix(api): skip agent-proxy auto-register when cluster_id
-matches backend's own (BUG-2)`**. In RC2, operators who installed
-both the backend and the agent in the SAME cluster (the obvious
-single-cluster self-hosted happy-path) saw that one cluster
-appear TWICE in the UI selector — once as `in-cluster` and once
-as `agent:<UUID> (via agent)`. Surfaced by the cluster-validation
-campaign and was masked in RC1 because Bug-1 had collapsed every
-agent to `cluster_id="local"`; the rc.2 cluster_hint fix
-revealed the duplication.
-
-RC3 short-circuits the auto-register path when the agent's
-reported cluster_id matches the backend's own (kube-system
-namespace UID, discovered at boot). Out-of-cluster dev runs are
-unaffected — the self-skip gate is empty by default and only
-fires when in-cluster discovery succeeds.
-
-No schema movement vs RC2 — the matrix above stays valid for
-v1.0.0-rc.3 / 1.10.0-rc.3.
-
----
-
-## What's new in 1.10.0-rc.2 (Phase 3 + cluster-validation fixes)
-
-RC2 supersedes RC1 — the RC1 → GA promise didn't hold once the
-cluster-validation matrix surfaced four blockers, one critical.
-All RC2 deltas are tagged at the same agent + backend generation
-(v1.0.0-rc.2 / 1.10.0-rc.2 — same Phase 1 schema, no schema
-movement) so the matrix above stays valid.
-
-### Phase 3 — customer-facing Prom `remote_write` receiver
-
-Operators with an existing Prometheus stack can point its
-`remote_write` at KubeBolt instead of running the bundled
-vmagent sidecar. Per-tenant bearer auth, token-bucket rate
-limiting, cardinality cap (VM-authoritative), admin UI for
-limit overrides at `/admin/ingest-limits`, `/metrics` per-tenant
-observability surface. Operator guide:
-[`docs/integrations/prometheus.md`](./integrations/prometheus.md).
-
-### Operator-visible behavior changes from RC1
-
-- **`Hello.cluster_hint` is now honored** (`fix(api)!:` —
-  CRITICAL). RC1 collapsed every multi-cluster agent to
-  `cluster_id="local"` in the backend's registry regardless of
-  what the agent reported. RC2 derives `cluster_id` from the
-  agent's auto-detected kube-system namespace UID via the Hello
-  message. **Operators upgrading from RC1** will see backend
-  log + UI cluster selector change from `"local"` to the real
-  UUID per cluster. VM metric labels were already on the real
-  UUID; only the backend's internal view changes. Pre-existing
-  `local/`-keyed AgentRecords in BoltDB persist as zombies in
-  the cluster selector until the 24h auto-prune horizon — see
-  the commit message for the one-shot cleanup script.
-- **Log quietude in permissive prom_write mode** — RC1's
-  `WARN msg="prom remote_write permissive-fallback"` fired per
-  request (12,880 lines/hour in one in-vivo observation). RC2
-  logs one WARN per process; ongoing rate observable at
-  `kubebolt_prom_write_requests_total{tenant_id="anonymous"}`
-  on the `/metrics` scrape endpoint.
-- **Helm upgrade from RC1 no longer panics** on the new
-  `tenant.id` value reference. The agent chart's templates now
-  nil-guard `.Values.tenant`, so `helm upgrade --reuse-values`
-  from `1.0.0-rc.1` proceeds without a template error.
-- **Filesystem panel renders for OSS-minimal installs** —
-  P25-04 had silently traded the agent's `node_fs_used_bytes`
-  for node-exporter's `node_filesystem_*`. RC2 adds a chart-side
-  fallback so the panel shows agent's coarse metric when
-  node-exporter isn't running.
-- **kube-prometheus-stack coexistence** — Pod/Workload Monitor
-  queries now filter `job=""` so agent-shipped series win over
-  Prom's parallel kubelet scrape; Network panel drops kernel
-  pseudo-interfaces (gre0, sit0, ip6_vti0, etc.). NodesPage
-  Network legend labels each line with the node name instead of
-  rendering "(2)" disambiguator. New helm value
-  `agent.deferNodeNetwork: true` lets operators silence the
-  agent's `node_network_*` emission when an external Prometheus
-  is the canonical scraper of node-exporter.
+Other notable fixes from the campaign:
+- **Log spam** — `WARN msg="prom remote_write permissive-fallback"`
+  now fires once per process; ongoing rate observable via
+  `kubebolt_prom_write_requests_total{tenant_id="anonymous"}` on
+  `/metrics`.
+- **Helm upgrade nil-guard** — `helm upgrade --reuse-values` from
+  pre-Phase-3 releases (no `tenant` section in user values) no
+  longer template-panics on `.Values.tenant.id`.
+- **Filesystem panel fallback** — P25-04 falls back to the agent's
+  `node_fs_used_bytes` when node-exporter isn't emitting
+  per-mountpoint detail.
+- **kube-prometheus-stack coexistence** — `job=""` filter in
+  Pod/Workload Monitor + pseudo-interface drop + new
+  `agent.deferNodeNetwork: true` helm value for silencing the
+  agent's `node_network_*` emission.
 
 ### Build / toolchain hardening
 
 The release pipeline's `preflight-third-party-scan` now also
-Trivy-scans `victoriametrics/vmagent` (previously only scanned
+Trivy-scans `victoriametrics/vmagent` (previously only
 `victoriametrics/victoria-metrics`), enforces drift between the
 two pins, and the Go toolchain pin moved from `'1.25'` (floating
 patch — picked stale 1.25.9 with 5 HIGH stdlib CVEs from the
@@ -186,11 +134,11 @@ Just install both at the latest matching version:
 
 ```bash
 helm upgrade --install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0-rc.4 \
+    --version 1.10.0 \
     -n kubebolt --create-namespace
 
 helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0-rc.4 \
+    --version 1.0.0 \
     -n kubebolt-agent --create-namespace \
     --set backendUrl=<your-backend-grpc-host:9090>
 ```
@@ -205,12 +153,12 @@ the agent reconnects at registration:
 ```bash
 # 1. Backend first
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0-rc.4 \
+    --version 1.10.0 \
     -n kubebolt --reuse-values
 
 # 2. Agent next, in any cluster connected to it
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0-rc.4 \
+    --version 1.0.0 \
     -n kubebolt-agent --reuse-values
 
 # 3. Verify the WARN is gone
