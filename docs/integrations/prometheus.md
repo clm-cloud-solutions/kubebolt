@@ -20,6 +20,37 @@ seeing their workloads in the UI within a scrape cycle.
 
 ---
 
+## Which ingest mode fits your cluster?
+
+KubeBolt supports two shipped ingest modes today, plus one
+planned mode for managed-Prom topologies where outbound
+`remote_write` isn't available. Pick by what your cluster
+already runs.
+
+| # | Mode | Who scrapes targets | Who writes to KubeBolt VM | When to pick | Status |
+|---|---|---|---|---|---|
+| **A** | **`kubebolt-agent` vmagent sidecar** | the agent (its own `vmagent`) | the agent (HTTP `remote_write` → backend) | Greenfield clusters or clusters whose existing Prom doesn't cover what KubeBolt panels need. Batteries-included install with no Prom-side changes. | ✅ Shipped (`scrape.enabled=true` on the agent chart, see [`agent-scraping.md`](../agent-scraping.md)) |
+| **B** | **Customer Prometheus `remote_write` → KubeBolt** _(this doc)_ | the customer's existing Prometheus | the customer's Prometheus (its own `remote_write` config) | The cluster already has a healthy Prometheus you want to keep — and that Prometheus supports outbound `remote_write` to an arbitrary URL (self-managed Prom, GMP). Eliminates duplicate scraping. | ✅ Shipped (1.10.0+, the rest of this page) |
+| **C** | **Agent reads from customer Prometheus** | the customer's existing Prometheus | the agent (queries Prom's read API, forwards via gRPC) | The customer's Prom can NOT push outbound (Amazon AMP, Azure Managed Prometheus — both are query-only sinks), or change-management policy blocks edits to Prom config. | 📋 Planned, see [`internal/agent-universal-data-plane-plan.md`](../../internal/agent-universal-data-plane-plan.md) Phase 6 |
+| **D** | **True `remote_read` from customer Prom (no copy in KubeBolt)** | the customer's existing Prometheus | nobody — KubeBolt UI queries the customer's Prom on demand | Only for customers where Prom is the canonical store and storage duplication is unacceptable. Trade-off: every UI render is a round-trip to the customer's Prom, so latency and uptime track theirs. | 🔬 Research, not committed |
+
+**What each mode trades off:**
+
+| | A. Agent sidecar | B. Prom remote_write | C. Agent reads Prom | D. True remote_read |
+|---|---|---|---|---|
+| Scrape duplicated (Prom **and** vmagent hit same `/metrics`)? | ❌ in greenfield ✅ when customer also has Prom | ❌ never | ❌ never | ❌ never |
+| Storage duplicated (Prom **and** KubeBolt VM both store)? | n/a (no Prom) or ✅ | ✅ | ✅ | ❌ never |
+| Prom needs outbound network access? | n/a | ✅ (push to KubeBolt) | ❌ (agent pulls in-cluster) | ❌ (KubeBolt pulls) |
+| UI render latency | fast (local VM) | fast (local VM) | fast (local VM) | slow (per-query Prom round-trip) |
+| Works with AMP / Azure Managed Prometheus | ✅ (no Prom dependency) | ❌ (no outbound `remote_write` API) | ✅ planned | ✅ planned |
+
+If you're not sure: **start with Mode A** (the agent's vmagent sidecar)
+unless you already have a Prom you want to keep. Switching from A to B
+later is a one-line change on the customer's Prom plus
+`scrape.enabled=false` on the agent.
+
+---
+
 ## TL;DR — point an existing Prometheus at KubeBolt
 
 ```bash

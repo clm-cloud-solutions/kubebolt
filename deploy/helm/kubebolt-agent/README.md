@@ -29,7 +29,7 @@ KubeBolt reads on every poll.
 |---|---|---|---|---|
 | **This chart** | `Helm` | `helm install kubebolt-agent oci://...` | Production. Full value surface including `affinity`, custom `tolerations`, `podAnnotations`, etc. | Helm (`helm upgrade`), KubeBolt UI with force |
 | **KubeBolt UI** | `kubebolt` | Administration → Integrations → Install | Quickest path when you already have KubeBolt running. Opinionated value set covering 90% of installs. | KubeBolt UI (Configure / Uninstall) |
-| **Raw manifest** | _(unset)_ | `kubectl apply -f deploy/agent/kubebolt-agent-dev.yaml` | Dev loops, air-gapped clusters, GitOps flows that manage their own manifests | The tool that applied it; KubeBolt UI with force |
+| **Raw manifest** | _(unset)_ | `kubectl apply -f deploy/agent/kubebolt-agent-<tier>.yaml` (where `<tier>` is `metrics`, `reader`, or `operator` — see [`deploy/agent/README.md`](../../deploy/agent/README.md) for the tier picker) | Air-gapped clusters, GitOps flows that manage their own manifests, RBAC-conscious shops that want the SA's permission tier explicit in the manifest | The tool that applied it; KubeBolt UI with force |
 
 **Mixing paths:** KubeBolt's UI refuses to modify DaemonSets without
 the `managed-by=kubebolt` label by default. Uninstall has a
@@ -212,9 +212,46 @@ Full reference with every knob the chart exposes is in
 | Value | Default | Purpose |
 |-------|---------|---------|
 | `resources.requests.cpu` | `10m` | Agent is a light Go binary; defaults are sized for small clusters. |
-| `resources.requests.memory` | `30Mi` | Same — scale up for clusters with thousands of pods. |
+| `resources.requests.memory` | `64Mi` | Bumped from `30Mi` in 1.10.0 to match realistic steady-state with Hubble + agent-proxy + scrape sidecar active. Original sizing was for a kubelet-only Phase 1 agent. |
 | `resources.limits.cpu` | `100m` | |
-| `resources.limits.memory` | `80Mi` | |
+| `resources.limits.memory` | `128Mi` | Bumped from `80Mi` in 1.10.0 to give headroom against Hubble flow parsing burst allocation patterns. See "Memory and observability" below for the rationale and tuning knobs. |
+
+### Memory and observability
+
+The chart sets `GOMEMLIMIT=100MiB` as a default `extraEnv` entry. The
+Go runtime targets this value as a soft total-memory cap — when the
+process approaches it, GC runs more frequently and the page scavenger
+becomes more aggressive about returning idle heap pages to the OS.
+This addresses a memory-retention pattern surfaced during the 1.10
+validation campaign: high allocation churn from Hubble flow proto
+parsing (~200 MB/min steady-state on an active node) made `HeapSys`
+ratchet up without `GOMEMLIMIT` pressure. CPU cost: ~5-10% more time
+in GC under load — immaterial against the agent's 5-10m CPU baseline.
+
+Operators who bump `resources.limits.memory` significantly higher (e.g.
+above 256Mi for very large clusters) should remove or raise the
+`GOMEMLIMIT` entry in `extraEnv` so the scavenger pressure doesn't
+become counterproductive.
+
+The agent emits a deep set of `kubebolt_agent_heap_*` and
+`kubebolt_agent_*_sys_bytes` gauges so the same investigation pattern
+is repeatable in the field. For live heap profiling, enable the pprof
+endpoint:
+
+```yaml
+extraEnv:
+  - name: GOMEMLIMIT
+    value: "100MiB"
+  - name: KUBEBOLT_AGENT_PPROF_ADDR
+    value: "127.0.0.1:6060"  # loopback only — port-forward to access
+```
+
+Then:
+
+```bash
+kubectl port-forward -n <ns> <agent-pod> 6060:6060
+go tool pprof http://localhost:6060/debug/pprof/heap
+```
 
 ### RBAC + ServiceAccount
 
@@ -230,7 +267,8 @@ Full reference with every knob the chart exposes is in
 | Value | Default | Purpose |
 |-------|---------|---------|
 | `logLevel` | `info` | `debug` / `info` / `warn` / `error`. |
-| `extraEnv` | `[]` | Inject arbitrary env vars into the agent container — escape hatch for features without first-class values. |
+| `agent.deferNodeNetwork` | `false` | Suppress agent's `node_network_*` emission when an external Prometheus is the canonical scraper of node-exporter. Avoids 2× counts on `sum(rate(node_network_*[1m]))` queries (kubelet `/stats/summary` and node-exporter emit the same metric names from the same `/proc/net/dev` counters). The bundled `scrape.discovery.nodeExporter.enabled=true` path auto-sets this when the chart's vmagent sidecar scrapes node-exporter; flip it explicitly to `true` when a SEPARATE external Prom does the scraping. |
+| `extraEnv` | _GOMEMLIMIT preset_ | List of additional env vars. The chart's default already includes `GOMEMLIMIT=100MiB` — see "Memory and observability" above. To add operator-provided env vars, set the list directly with the default re-included: `extraEnv: [{name: GOMEMLIMIT, value: "100MiB"}, {name: KUBEBOLT_AGENT_LOG_LEVEL, value: debug}]`. |
 | `podAnnotations` | `{}` | Useful for external scrapers or policy engines. |
 | `podLabels` | `{}` | |
 
@@ -263,6 +301,75 @@ helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 
 A present `ca.crt` alone enables TLS (relay authenticated, client
 anonymous). Adding `tls.crt` + `tls.key` turns on mTLS.
+
+### Deploying on GKE managed Dataplane V2
+
+Google Kubernetes Engine's managed Dataplane V2 ships Hubble Relay
+in a different namespace and on a different port than the upstream
+Cilium chart — and the relay enforces mTLS by default. The agent's
+chart defaults (`hubble-relay.kube-system.svc.cluster.local:80`,
+plaintext) silently fail against this setup with
+`stream ended, will retry` and no flows surface in the UI.
+
+| Field | Upstream Cilium default | GKE managed DPv2 actual |
+|---|---|---|
+| Relay namespace | `kube-system` | `gke-managed-dpv2-observability` |
+| Relay service port | `80` (plaintext) | `443` (mTLS) |
+| Client cert | _(none)_ | required, in Secret `hubble-relay-client-certs` |
+| CA bundle | _(system trust)_ | `ca.crt` key of that same Secret |
+
+Two steps to make the agent talk to it:
+
+```bash
+# 1. Mirror the relay client-certs Secret into the agent's namespace.
+#    GKE creates it in gke-managed-dpv2-observability; the agent's
+#    chart can only mount a Secret living in its own release namespace.
+kubectl get secret -n gke-managed-dpv2-observability hubble-relay-client-certs -o yaml \
+  | sed 's/namespace: gke-managed-dpv2-observability/namespace: kubebolt-system/' \
+  | sed '/uid:/d; /resourceVersion:/d; /creationTimestamp:/d; /ownerReferences:/,/^  [a-z]/d' \
+  | kubectl apply -f -
+
+# 2. Install / upgrade the agent with the GKE-specific Hubble overrides.
+helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt-system --create-namespace \
+  --set backendUrl=<your-backend>:9090 \
+  --set hubble.relay.address=hubble-relay.gke-managed-dpv2-observability.svc.cluster.local:443 \
+  --set hubble.relay.tls.existingSecret=hubble-relay-client-certs \
+  --set hubble.relay.tls.serverName=hubble-relay.gke-managed-dpv2-observability.svc
+```
+
+> ⚠️ **The cross-namespace mirror is not Helm-stable.** If GKE rotates
+> the relay certs (it does, on its own cadence), the mirrored Secret
+> goes stale and the agent will retry-loop until you re-run step 1.
+> For long-running installs prefer a controller that watches the
+> source Secret — `External Secrets Operator` and `Reflector` both
+> work for this. A built-in chart-side mirror is on the roadmap as
+> a follow-up to this section.
+
+#### L7 visibility caveat
+
+GKE managed Dataplane V2 emits **L3/L4 flows only**. Google has not
+exposed the `enable-l7-proxy` toggle through the managed cluster API,
+so the agent can connect to the Relay via mTLS, see flow events, and
+**still leave the Reliability tab in the dashboard hidden** — that
+tab is gated on the presence of L7 metrics (HTTP status codes,
+latencies), not on Relay reachability.
+
+Verify with one PromQL against the bundled VictoriaMetrics:
+
+```promql
+count by (__name__) ({__name__=~"pod_flow_http.*"})
+```
+
+If this returns zero rows after the agent has been running for >5
+minutes, you're on managed DPv2 (or any L3/L4-only Hubble). The L4
+panels (Network Drops, top traffic by bytes) keep working; only the
+HTTP-status-aware panels stay hidden.
+
+Operators who need full L7 visibility on GKE must either run
+self-managed Cilium on GKE Standard (with `enable-l7-proxy=true` +
+`hubble.metrics.enabled=true` in cilium-config) or wait for Google
+to expose the L7 toggle.
 
 ## Scrape sidecar (`scrape.enabled`)
 
