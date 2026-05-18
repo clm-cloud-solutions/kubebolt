@@ -155,7 +155,8 @@ async function postJSON<T>(url: string, body: unknown, headers?: Record<string, 
     body: JSON.stringify(body),
   })
   if (!res.ok) {
-    throw new ApiError(res.status, await extractErrorMessage(res))
+    const { message, payload } = await extractErrorPayload(res)
+    throw new ApiError(res.status, message, payload)
   }
   return res.json()
 }
@@ -167,7 +168,8 @@ async function putJSON<T>(url: string, body: unknown, headers?: Record<string, s
     body: typeof body === 'string' ? body : JSON.stringify(body),
   })
   if (!res.ok) {
-    throw new ApiError(res.status, await extractErrorMessage(res))
+    const { message, payload } = await extractErrorPayload(res)
+    throw new ApiError(res.status, message, payload)
   }
   return res.json()
 }
