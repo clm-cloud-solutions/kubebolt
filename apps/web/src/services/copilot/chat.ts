@@ -1,6 +1,17 @@
 import { getAccessToken } from '@/services/api'
 import type { CompactResponse, CopilotMessage, CopilotStreamEvent, CopilotUsage } from './types'
 
+// Best-effort IANA timezone of the browser. Falls back to empty string
+// when Intl is unavailable (very old runtimes) — the backend treats an
+// empty string as "use UTC", which is correct for that scenario.
+function resolveBrowserTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+  } catch {
+    return ''
+  }
+}
+
 // Strip transient UI fields before sending to backend. Compact notices are
 // UI-only markers and never leave the client.
 function serializeMessages(messages: CopilotMessage[]) {
@@ -52,6 +63,12 @@ export async function* sendCopilotChat(
       // JSON-heavy tool results and misses the trigger on round 0 of
       // follow-up requests.
       lastRoundUsage: lastRoundUsage ?? undefined,
+      // Anchor Kobi to the user's clock. Without these the model has no
+      // notion of "today" and guesses from its training cutoff — which
+      // produces day-off errors on relative-time questions like "ayer
+      // a las 10pm" and forces a clarifying round-trip on timezone.
+      clientTimezone: resolveBrowserTimezone(),
+      clientNow: new Date().toISOString(),
     }),
     signal,
   })

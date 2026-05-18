@@ -26,6 +26,13 @@ type CopilotConfig struct {
 	AutoCompactThreshold float64 // default 0.80
 	CompactModel         string  // empty = auto-pick cheap model for provider
 	CompactPreserveTurns int     // default 3
+
+	// UI: render persistent collapsible cards for each tool call (with the
+	// tool name, status, and the result content) inline in the chat panel.
+	// Default true — operators see what Kobi did and can verify the data.
+	// Set KUBEBOLT_AI_SHOW_TOOL_CALLS=false to keep only the final assistant
+	// text and a transient loading indicator (the pre-2026-05-15 behavior).
+	ShowToolCalls bool
 }
 
 // LoadCopilotConfig reads copilot configuration from KUBEBOLT_AI_* env vars.
@@ -41,6 +48,7 @@ func LoadCopilotConfig() CopilotConfig {
 		AutoCompact:          true,
 		AutoCompactThreshold: 0.80,
 		CompactPreserveTurns: 3,
+		ShowToolCalls:        true,
 	}
 	if v := os.Getenv("KUBEBOLT_AI_MAX_TOKENS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
@@ -67,6 +75,9 @@ func LoadCopilotConfig() CopilotConfig {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			cfg.CompactPreserveTurns = n
 		}
+	}
+	if v := os.Getenv("KUBEBOLT_AI_SHOW_TOOL_CALLS"); v == "false" || v == "0" {
+		cfg.ShowToolCalls = false
 	}
 
 	// Optional fallback — only enabled when its API key is present

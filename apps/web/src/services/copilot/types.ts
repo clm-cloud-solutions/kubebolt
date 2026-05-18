@@ -170,4 +170,9 @@ export interface CopilotConfig {
   sessionBudget?: number
   compactTrigger?: number
   autoCompact?: boolean
+  // When true (default), the chat panel renders persistent collapsible
+  // cards for each tool call (name + status + result). When false, the
+  // panel keeps only the final assistant text and a transient loading
+  // indicator. Server-side: KUBEBOLT_AI_SHOW_TOOL_CALLS.
+  showToolCalls?: boolean
 }

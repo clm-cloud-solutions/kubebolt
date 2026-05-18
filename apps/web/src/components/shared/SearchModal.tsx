@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import {
   Search, X, Box, Server, Layers, Database, BarChart3, Timer, Clock,
   Globe, ArrowRightLeft, HardDrive, Disc, FolderClosed, FileText, Lock,
-  Scale, FolderOpen,
+  Scale, FolderOpen, SearchX,
 } from 'lucide-react'
 import { api } from '@/services/api'
 import { StatusBadge } from '@/components/resources/StatusBadge'
@@ -58,10 +58,18 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (query.trim().length < MIN_CHARS) {
       setResults([])
+      setLoading(false)
       return
     }
+    // Flip loading BEFORE the debounce, not inside the setTimeout. With
+    // the previous version, during the 200ms debounce window there was
+    // a frame where loading=false, results=[] (stale), and the query
+    // already crossed MIN_CHARS — the empty-state branch matched and
+    // flashed "No resources match ..." even for queries that ended up
+    // returning hits. The debounce should gate WHEN the API fires, not
+    // WHEN the loading indicator appears.
+    setLoading(true)
     const timer = setTimeout(async () => {
-      setLoading(true)
       try {
         const data = await api.search(query)
         setResults(data ?? [])
@@ -146,7 +154,22 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
           )}
 
           {!loading && query.length >= MIN_CHARS && totalResults === 0 && (
-            <div className="px-4 py-6 text-center text-xs text-kb-text-tertiary">No results found</div>
+            <div className="flex flex-col items-center justify-center px-4 py-10 text-center">
+              <SearchX className="w-8 h-8 text-kb-text-tertiary mb-3" />
+              <h3 className="text-sm font-medium text-kb-text-secondary mb-1">
+                No resources match "{query}"
+              </h3>
+              <p className="text-xs text-kb-text-tertiary mb-4 max-w-xs">
+                The search spans all 16 resource types by name. Try a shorter substring or check the spelling.
+              </p>
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                className="px-3 py-1.5 text-xs font-medium bg-kb-elevated text-kb-text-primary rounded-md border border-kb-border hover:border-kb-border-active transition-colors"
+              >
+                Clear search
+              </button>
+            </div>
           )}
 
           {!loading && Object.entries(grouped).map(([kind, items]) => (

@@ -42,8 +42,23 @@ func ToolDefinitions() []ToolDefinition {
 			InputSchema: nsResourceSchema(),
 		},
 		{
-			Name:        "get_resource_describe",
-			Description: "Get kubectl describe output for any resource. Includes events, conditions, and detailed status. Best tool for troubleshooting scheduling issues, pending pods, and resource conditions.",
+			Name: "get_resource_describe",
+			// The supported types list mirrors apps/api/internal/api/describe.go's
+			// resourceTypeToGroupKind map. When that map gains an entry, this
+			// description MUST be updated in lockstep — without the type listed
+			// here the model refuses to attempt the call (it builds up an
+			// allow-list from prior 400 responses) and misses the diagnostic
+			// value entirely. SPEC §3.2.1 has the full coverage roadmap.
+			Description: "Get kubectl describe output (events, conditions, detailed status, related resources). " +
+				"Supported types: " +
+				"workloads (pods, deployments, statefulsets, daemonsets, replicasets, jobs, cronjobs); " +
+				"networking (services, ingresses, networkpolicies, endpoints, endpointslices, ingressclasses); " +
+				"config (configmaps, secrets, serviceaccounts); " +
+				"storage (pvcs, pvs, storageclasses); " +
+				"cluster (nodes, namespaces, events); " +
+				"RBAC (roles, clusterroles, rolebindings, clusterrolebindings); " +
+				"policy/quota (resourcequotas, limitranges, poddisruptionbudgets, priorityclasses, hpas). " +
+				"Best tool for troubleshooting scheduling issues, pending pods, quota exhaustion, network policy denials, and resource conditions.",
 			InputSchema: nsResourceSchema(),
 		},
 		{
@@ -51,7 +66,10 @@ func ToolDefinitions() []ToolDefinition {
 			Description: "Get logs from a pod container. Classify user intent: if the user wants to " +
 				"read/view logs verbatim, omit 'grep'. If the user wants to investigate or diagnose a " +
 				"problem, failure, or integration issue, pass 'grep' with domain-relevant keywords " +
-				"(see system prompt for decision logic). Use 'since' for time-windowed queries. " +
+				"(see system prompt for decision logic). Use 'since' for relative time windows " +
+				"('15m', '1h'); use 'sinceTime' + 'endTime' (RFC3339) for absolute windows around past " +
+				"incidents. Use 'previous=true' to read logs from the prior container instance after a " +
+				"crash/restart — this is the ONLY way to see what happened before the pod recycled. " +
 				"Results capped at 500 lines / 48KB, newest preserved; response includes a 'truncated' " +
 				"flag when cut.",
 			InputSchema: map[string]interface{}{
@@ -61,7 +79,10 @@ func ToolDefinitions() []ToolDefinition {
 					"name":      strProp("Pod name"),
 					"container": strProp("Container name (required for multi-container pods)"),
 					"tailLines": numProp("Lines from end (default 200, max 500)"),
-					"since":     strProp("Duration window, e.g. '15m', '1h', '2h' (optional; combine with tailLines)"),
+					"since":     strProp("Relative duration window, e.g. '15m', '1h', '2h' (optional; overridden by sinceTime when both set)"),
+					"sinceTime": strProp("Absolute lower bound, RFC3339 e.g. '2026-05-10T14:00:00Z' (optional; pair with endTime for a closed window around a past incident)"),
+					"endTime":   strProp("Absolute upper bound, RFC3339 e.g. '2026-05-10T16:00:00Z' (optional; requires sinceTime or since)"),
+					"previous":  boolProp("Read logs from the previous container instance — use after a restart/crash to see pre-crash state (default false)"),
 					"grep":      strProp("Regex/keyword to filter lines, case-insensitive (optional; only when user asks to filter or when investigating incidents)"),
 				},
 				"required": []string{"namespace", "name"},
@@ -296,6 +317,10 @@ func strPropEnum(desc string, values []string) map[string]interface{} {
 
 func numProp(desc string) map[string]interface{} {
 	return map[string]interface{}{"type": "number", "description": desc}
+}
+
+func boolProp(desc string) map[string]interface{} {
+	return map[string]interface{}{"type": "boolean", "description": desc}
 }
 
 // riskProp is the shared schema for the risk argument across all proposal

@@ -2,12 +2,28 @@ package insights
 
 import (
 	"log"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
+
+// severityRank orders insight severities from most to least actionable.
+// Lower number = renders first in the sorted list.
+var severityRank = map[string]int{
+	"critical": 0,
+	"warning":  1,
+	"info":     2,
+}
+
+func severityRankOf(s string) int {
+	if r, ok := severityRank[s]; ok {
+		return r
+	}
+	return 99 // unknown severities sink to the bottom
+}
 
 // Engine runs insight rules and tracks findings.
 type Engine struct {
@@ -101,6 +117,12 @@ func (e *Engine) Evaluate(state *ClusterState) {
 }
 
 // GetInsights returns insights filtered by severity and resolved status.
+// Results are sorted by (severity rank ASC, FirstSeen DESC) so the most
+// actionable items always lead. Without this sort the order was FIFO of
+// detection — and because ClusterState's underlying maps iterate in
+// non-deterministic order in Go, that meant a critical insight could be
+// buried under older infos AND the ranking shifted between API restarts
+// on the same cluster.
 func (e *Engine) GetInsights(severity string, resolved bool) []models.Insight {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -118,6 +140,15 @@ func (e *Engine) GetInsights(severity string, resolved bool) []models.Insight {
 	if result == nil {
 		result = []models.Insight{}
 	}
+	// Stable sort so two insights with identical severity AND FirstSeen
+	// keep their insertion order rather than reshuffling between calls.
+	sort.SliceStable(result, func(i, j int) bool {
+		ri, rj := severityRankOf(result[i].Severity), severityRankOf(result[j].Severity)
+		if ri != rj {
+			return ri < rj
+		}
+		return result[i].FirstSeen.After(result[j].FirstSeen)
+	})
 	return result
 }
 

@@ -1,6 +1,6 @@
 {
   "name": "@kubebolt/web",
-  "version": "1.10.0-rc.4",
+  "version": "1.10.0",
   "type": "module",
   "scripts": {
     "dev": "vite",

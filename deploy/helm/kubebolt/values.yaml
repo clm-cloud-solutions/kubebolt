@@ -71,6 +71,14 @@ agentIngest:
   #   enforced    — reject any unauthenticated connection
   authMode: disabled
 
+  # Auto-register an "agent-proxy" cluster in the cluster switcher when
+  # an agent advertises the kube-proxy capability. Single-cluster
+  # self-hosted setups don't need it — set false. Multi-cluster fleet
+  # / SaaS operators flip it on so new agent installations surface in
+  # the UI without operator action. Maps to env
+  # KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS on the API container.
+  autoRegisterClusters: false
+
   # Audience the apiserver-issued projected SA token must carry. Must
   # match auth.tokenReview.audience in the kubebolt-agent chart.
   tokenAudience: kubebolt-backend
@@ -247,3 +255,16 @@ copilot:
     baseUrl: ""
     apiKey: ""
     existingSecret: ""    # name of Secret containing 'api-key' for fallback
+
+# Arbitrary env vars injected into the API container. Escape hatch for
+# KUBEBOLT_* knobs that don't (yet) have first-class chart values —
+# avoids forcing a chart template change per new env var the binary
+# learns to read. Same shape as the kubebolt-agent chart's extraEnv.
+#
+# Example:
+#   extraEnv:
+#     - name: KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON
+#       value: "48h"
+#     - name: KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT
+#       value: "10m"
+extraEnv: []

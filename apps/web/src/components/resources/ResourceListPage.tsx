@@ -1,7 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
-import { ChevronLeft, ChevronRight, Filter, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Filter, X, SearchX, Inbox } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
 import { RestartHistorySparkline } from './RestartHistorySparkline'
@@ -9,6 +9,7 @@ import { FilterBar } from './FilterBar'
 import { StatusBadge } from './StatusBadge'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+import { EmptyState } from '@/components/shared/EmptyState'
 import { PermissionDenied } from '@/components/shared/PermissionDenied'
 import { ApiError } from '@/services/api'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
@@ -580,7 +581,50 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
         </div>
       )}
       <div className="bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
-        <ResourceTable data={items} columns={columns} resourceType={resourceType} />
+        {items.length === 0 ? (() => {
+          // Distinguish "filtered down to nothing" from "really nothing".
+          // Filtered → tell the operator WHICH filters caused it and offer
+          // a one-click recovery; un-filtered → neutral "no X in this
+          // cluster" with no CTA (there's nothing for them to undo).
+          const hasFilters = !!(search || namespace || node)
+          const filterParts: string[] = []
+          if (search) filterParts.push(`name matching "${search}"`)
+          if (namespace) filterParts.push(`namespace ${namespace}`)
+          if (node) filterParts.push(`node ${node}`)
+          const clearFilters = () => {
+            if (search) setSearch('')
+            if (namespace) { setNamespace(''); resetPage() }
+            if (node) {
+              const next = new URLSearchParams(searchParams)
+              next.delete('node')
+              setSearchParams(next)
+            }
+          }
+          return hasFilters ? (
+            <EmptyState
+              icon={<SearchX className="w-10 h-10" />}
+              title={`No ${label.toLowerCase()} match these filters`}
+              message={filterParts.join(' · ')}
+              action={
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="px-3 py-1.5 text-xs font-medium bg-kb-elevated text-kb-text-primary rounded-md border border-kb-border hover:border-kb-border-active transition-colors"
+                >
+                  Clear filters
+                </button>
+              }
+            />
+          ) : (
+            <EmptyState
+              icon={<Inbox className="w-10 h-10" />}
+              title={`No ${label.toLowerCase()} in this cluster`}
+              message="When resources of this type get created, they will show up here."
+            />
+          )
+        })() : (
+          <ResourceTable data={items} columns={columns} resourceType={resourceType} />
+        )}
       </div>
       {totalPages > 1 && (
         // Centered so the floating Kobi button (bottom-right) doesn't

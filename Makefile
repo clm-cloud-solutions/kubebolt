@@ -131,9 +131,11 @@ agent-deploy:
 				echo "Context '$$CTX' — assuming image is reachable (real cluster with registry, etc.)"; \
 				;; \
 		esac; \
-		echo "Deploying kubebolt-agent:$$LATEST_TAG"; \
-		sed "s|image: kubebolt-agent:dev$$|image: kubebolt-agent:$$LATEST_TAG|" \
-			deploy/agent/kubebolt-agent-dev.yaml | kubectl apply --validate=false -f -
+		echo "Deploying kubebolt-agent:$$LATEST_TAG (reader tier)"; \
+		sed -e "s|image: ghcr.io/clm-cloud-solutions/kubebolt/agent:.*|image: kubebolt-agent:$$LATEST_TAG|" \
+		    -e "s|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|" \
+		    -e "s|PLACEHOLDER:9090|host.docker.internal:9090|" \
+			deploy/agent/kubebolt-agent-reader.yaml | kubectl apply --validate=false -f -
 	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=90s
 
 ## Apply the dev DaemonSet WITH backend auth (Sprint A: ingest-token mode).
@@ -191,11 +193,12 @@ agent-deploy-auth:
 			echo ""; \
 			exit 1; \
 		fi; \
-		echo "Deploying kubebolt-agent:$$LATEST_TAG with auth (secret=$(TOKEN_SECRET), key=$(TOKEN_KEY))"; \
-		sed -e "s|image: kubebolt-agent:dev$$|image: kubebolt-agent:$$LATEST_TAG|" \
-		    -e "s|__TOKEN_SECRET__|$(TOKEN_SECRET)|g" \
-		    -e "s|__TOKEN_KEY__|$(TOKEN_KEY)|g" \
-			deploy/agent/kubebolt-agent-dev-auth.yaml | kubectl apply --validate=false -f -
+		echo "Deploying kubebolt-agent:$$LATEST_TAG (operator tier, auth-enabled, secret=$(TOKEN_SECRET))"; \
+		sed -e "s|image: ghcr.io/clm-cloud-solutions/kubebolt/agent:.*|image: kubebolt-agent:$$LATEST_TAG|" \
+		    -e "s|imagePullPolicy: IfNotPresent|imagePullPolicy: Never|" \
+		    -e "s|PLACEHOLDER:9090|host.docker.internal:9090|" \
+		    -e "s|secretName: kubebolt-agent-token|secretName: $(TOKEN_SECRET)|" \
+			deploy/agent/kubebolt-agent-operator.yaml | kubectl apply --validate=false -f -
 	@kubectl rollout status ds/kubebolt-agent -n kubebolt-system --timeout=90s
 
 ## Grant the agent-proxy operator-tier RBAC.
@@ -237,9 +240,13 @@ agent-dev: agent-image agent-deploy agent-logs
 agent-dev-auth: agent-image agent-deploy-auth agent-logs
 
 ## Tear down the dev DaemonSet (keeps the namespace).
+## Tries both the no-auth (reader-tier) and auth-enabled (operator-tier)
+## manifests so the same target undoes either `make agent-deploy` or
+## `make agent-deploy-auth` without the operator having to remember
+## which one they ran.
 agent-undeploy:
-	kubectl delete -f deploy/agent/kubebolt-agent-dev.yaml --ignore-not-found
-	kubectl delete -f deploy/agent/kubebolt-agent-dev-auth.yaml --ignore-not-found 2>/dev/null || true
+	kubectl delete -f deploy/agent/kubebolt-agent-reader.yaml --ignore-not-found
+	kubectl delete -f deploy/agent/kubebolt-agent-operator.yaml --ignore-not-found 2>/dev/null || true
 
 # ─── Kind testbed ──────────────────────────────────────────────────────────
 #

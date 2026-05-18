@@ -387,10 +387,27 @@ export const api = {
   getJobPods: (namespace: string, name: string) =>
     fetchJSON<ResourceList>(`${API_BASE}/resources/jobs/${namespace}/${name}/pods`),
 
-  getPodLogs: async (namespace: string, name: string, container?: string, tailLines?: number): Promise<string> => {
+  getPodLogs: async (
+    namespace: string,
+    name: string,
+    container?: string,
+    tailLines?: number,
+    opts?: {
+      since?: string        // relative duration, e.g. '15m', '1h'
+      sinceTime?: string    // RFC3339 absolute lower bound
+      endTime?: string      // RFC3339 absolute upper bound
+      previous?: boolean    // logs from prior container instance
+      timestamps?: boolean  // kubelet-prefixed timestamps on each line
+    },
+  ): Promise<string> => {
     const params = new URLSearchParams()
     if (container) params.set('container', container)
     if (tailLines) params.set('tailLines', String(tailLines))
+    if (opts?.since) params.set('since', opts.since)
+    if (opts?.sinceTime) params.set('sinceTime', opts.sinceTime)
+    if (opts?.endTime) params.set('endTime', opts.endTime)
+    if (opts?.previous) params.set('previous', 'true')
+    if (opts?.timestamps) params.set('timestamps', 'true')
     const query = params.toString()
     const res = await fetchWithAuth(`${API_BASE}/resources/pods/${namespace}/${name}/logs${query ? `?${query}` : ''}`)
     if (!res.ok) throw new ApiError(res.status, await extractErrorMessage(res))
@@ -447,6 +464,19 @@ export const api = {
   restartResource: (type: string, namespace: string, name: string, source?: string) =>
     postJSON<{ status: string; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/restart`,
+      {},
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
+  // Evict a Pod via the policy/v1 Eviction API — distinct from
+  // `deleteResource('pods', ...)`. Eviction respects PodDisruptionBudgets;
+  // when blocked by a PDB the apiserver returns 429 and the backend
+  // surfaces a structured payload (`pdbBlocked: true`) the caller can
+  // use to render an explicit "blocked by PDB" message instead of a
+  // generic 429. Pod-only — the backend rejects other types.
+  evictPod: (namespace: string, name: string, source?: string) =>
+    postJSON<{ status: string }>(
+      `${API_BASE}/resources/pods/${namespace}/${name}/evict`,
       {},
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),

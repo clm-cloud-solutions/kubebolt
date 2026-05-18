@@ -498,7 +498,14 @@ function podTone(p: { status: string; ready: boolean }): { bg: string; border: s
 // a fully-converged OLD revision in the brief window between the
 // rollback's Update() returning and the cache catching up — and
 // fire a false-positive "Done".
-function detectStatus(
+//
+// Zero-target case: when target == 0 (deployment/STS scaled to 0, or
+// a DaemonSet whose nodeSelector matches no nodes), there are no pods
+// to update or be ready — the patch is trivially converged once the
+// apiserver has observed it. The genConverged gate alone is enough;
+// no `target > 0` guard is needed because `ready === target` and
+// `updated === target` both hold trivially when target is 0.
+export function detectStatus(
   type: 'deployments' | 'statefulsets' | 'daemonsets',
   detail: ResourceItem | undefined,
   expectedGeneration: number | undefined,
@@ -545,7 +552,7 @@ function detectStatus(
       const ready = d.availableReplicas ?? 0
       const updated = d.updatedReplicas ?? 0
       return {
-        converged: genConverged && target > 0 && ready === target && updated === target,
+        converged: genConverged && ready === target && updated === target,
         readyLabel: 'Ready',
         updatedLabel: 'Updated',
         readyCount: ready,
@@ -558,7 +565,7 @@ function detectStatus(
       const ready = d.readyReplicas ?? 0
       const updated = d.updatedReplicas ?? 0
       return {
-        converged: genConverged && target > 0 && ready === target && updated === target,
+        converged: genConverged && ready === target && updated === target,
         readyLabel: 'Ready',
         updatedLabel: 'Updated',
         readyCount: ready,
@@ -571,7 +578,7 @@ function detectStatus(
       const ready = d.ready ?? 0
       const updated = d.updatedNumber ?? 0
       return {
-        converged: genConverged && target > 0 && ready === target && updated === target,
+        converged: genConverged && ready === target && updated === target,
         readyLabel: 'Ready',
         updatedLabel: 'Updated',
         readyCount: ready,

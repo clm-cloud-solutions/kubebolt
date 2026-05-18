@@ -65,13 +65,21 @@ The reference frame for every "what do I lose if I skip X" question:
 | **C. Workload trends** | Capacity page CPU/Mem/Network/Filesystem charts, TopWorkloadsCpu, RightSizingPanel | agent gRPC (cAdvisor + kubelet) → bundled VM |
 | **D. L7 traffic** | Reliability sub-tab (error rate, top traffic, top latency, network drops, error hotspots) | agent gRPC (Hubble) → bundled VM |
 | **E. Cluster-state enrichments** | Pod restart history sparkline (P25-01), OOMKill Capacity panel (P25-02), Service endpoint health column (P25-05 UI), Namespace quota gauge (P25-06) | KSM → vmagent → bundled VM |
-| **F. Node OS enrichments** | Node load avg + PSI (P25-03), per-mountpoint filesystem chart (P25-04) | node-exporter → vmagent → bundled VM |
-| **G. Recent deploys overlay** | Capacity charts deploy markers, Recent Deploys table | apiserver (informer ReplicaSet creation timestamps) |
+| **F. Node OS enrichments** | Load average + PSI (P25-03), per-mountpoint filesystem chart (P25-04) | node-exporter → vmagent → bundled VM. _Note:_ basic node CPU/Memory/Network/Filesystem (single aggregate per node) is **always available** via the agent's kubelet+cAdvisor path — node-exporter only adds Load+PSI and the per-mountpoint breakdown. The F category is "the extras," not "all node OS data." |
+| **G. Recent deploys overlay** | Capacity charts deploy markers, Recent Deploys table | apiserver (informer ReplicaSet creation timestamps). _Note:_ **always populated** when any Deployment exists — even greenfield clusters. Empty only when the cluster has no Deployments at all. |
 | **H. Resource actions** | Restart, scale, delete, edit YAML, set image, set resources, set env | apiserver (mutating verbs through agent or direct kubeconfig) |
 
 A, B, G, H depend on KubeBolt's own install. C and D depend on the
 agent (which is part of the KubeBolt install). E and F are what
 this document is really about — the difference between scenarios.
+
+> **Hypothesis corrections from the 1.10 cluster-validation campaign.**
+> The F and G categories above had stricter pre-validation framings
+> ("F requires node-exporter," "G is empty in greenfield"). Empirical
+> testing across GKE-DPv2 / EKS / AKS / GKE-Calico showed both were
+> wrong: F's baseline is available without node-exporter, and G is
+> never empty in any cluster running workloads. The notes above
+> reflect post-validation behavior.
 
 ---
 
@@ -399,8 +407,8 @@ helm install node-exporter prometheus-community/prometheus-node-exporter \
 - ✅ C: Capacity workload trends (CPU/Mem/Network/Filesystem) — the agent ships kubelet/cAdvisor pull built-in, no Prom needed.
 - ✅ D: Reliability if Cilium+Hubble is installed.
 - ❌ E: No KSM → lose all 4 P25-XX enrichments listed in scenario 2b above.
-- ❌ F: No node-exporter → lose P25-03 and full P25-04 breakdown.
-- ✅ G: Recent deploys overlay (apiserver-derived, no Prom).
+- ⚠️ F: No node-exporter → keep **F.0** (single-aggregate node CPU/Mem/Net/Filesystem from the agent's kubelet path), lose **F.1** (load + PSI) and **F.2** (per-mountpoint breakdown).
+- ✅ G: Recent deploys overlay — populated as soon as the cluster runs any Deployment (apiserver ReplicaSet history, no Prom).
 - ✅ H: Resource actions (operator RBAC).
 
 ### What's enabled / lost — full install
@@ -432,9 +440,10 @@ A glance-level summary. ✅ = works; ⚠️ = partial / degraded;
 | **E.4.** Service endpoint UI column | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
 | **E.5.** Service no-endpoints insight rule | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **E.6.** Namespace quota gauge | ✅ | ✅ | ❌ | ✅ | ❌ | ✅ |
+| **F.0.** Basic node CPU/Mem/Net/Filesystem (single aggregate) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **F.1.** Node load avg + PSI | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
 | **F.2.** Per-mountpoint filesystem chart | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ |
-| **G.** Recent deploys overlay | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **G.** Recent deploys overlay (any Deployment present) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **H.** Resource actions (operator RBAC) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 
 \* Reliability sub-tab appears only when Cilium+Hubble is installed
@@ -442,20 +451,96 @@ and emitting flow samples.
 
 ---
 
+## Scenario 4 — Single-container CLI (evaluation / demo / dev)
+
+**Profile:** evaluator or operator who wants to **try KubeBolt without
+deploying it to a cluster**. Use case: a 30-second `docker run`
+to point at any cluster reachable from your laptop via `~/.kube/config`.
+Not a production deployment pattern — no agent, no TSDB, no
+auth-by-default — but the right path when "just show me the UI"
+beats "stand up the full stack."
+
+### Pre-flight confirmation
+- [ ] `~/.kube/config` resolves to at least one cluster you have RBAC
+      to read from.
+- [ ] Docker daemon running on your laptop.
+
+### Install recipe
+
+```bash
+# Pulls the published OCI single-container image (api + web + embedded
+# frontend, served on :3000). Each release tag (e.g. v1.10.0) has a
+# matching single-container image; `:latest` tracks the most recent
+# stable.
+docker run --rm -p 3000:3000 \
+  -v ~/.kube:/root/.kube:ro \
+  -e KUBEBOLT_AUTH_ENABLED=false \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest
+
+# Open http://localhost:3000
+```
+
+The container reads `/root/.kube/config` at boot, switches between
+contexts via the UI (every kubeconfig context shows up in the cluster
+selector), and uses your local kubeconfig credentials for all
+apiserver calls.
+
+### What's enabled
+- ✅ **A** Operational core — lists, details, Map, Insights (13 rules),
+  exec / logs / port-forward / files (all run through your local
+  kubeconfig).
+- ⚠️ **B** Live commitment bars — depend on Metrics Server in the
+  target cluster.
+- ❌ **C** Capacity workload trends (CPU/Mem/Network/Filesystem
+  history) — no TSDB bundled, no agent shipping samples.
+- ❌ **D** Reliability sub-tab — no agent, no Hubble flow ingest.
+- ❌ **E** Cluster-state enrichments (P25-XX) — no KSM scrape, no VM
+  to store the time series.
+- ❌ **F** Node OS enrichments — no node-exporter scrape, no VM.
+- ✅ **G** Recent deploys overlay — apiserver-only, no TSDB needed.
+- ✅ **H** Resource actions — your local kubeconfig credentials.
+
+In short: A + G + H work full-speed. B partial. C/D/E/F unavailable
+because there's no TSDB.
+
+### When to graduate to Scenario 1 / 2 / 3
+The moment you want historical CPU/Mem/Network trends or the
+Reliability sub-tab, the single-container path stops being
+sufficient — that's the moment to switch to a Helm install per
+Scenarios 1-3 above. The `docker run` evaluator workflow is
+designed as the "before" of a longer journey, not the destination.
+
+### Limitations
+- **No multi-user auth** (the recipe sets `KUBEBOLT_AUTH_ENABLED=false`
+  for zero-config UX — anyone with access to `localhost:3000` is
+  effectively cluster-admin against your kubeconfig).
+- **No persistence** — restart the container and you lose your
+  Copilot session history (kept in-memory only).
+- **Performance ceiling** — single binary, single-process, embedded
+  frontend; fine for evaluating against clusters with hundreds of pods
+  but not the right shape for fleet-scale production use.
+
+---
+
 ## Decision tree (quick path for new customer)
 
 ```
-Does the customer's cluster already have Prometheus running?
-├── YES
-│   ├── Is it kube-prometheus-stack / Operator-driven?  (CRDs present)
-│   │   └── YES → Scenario 1
-│   └── NO (hand-rolled or annotation-driven Prom)
-│       ├── KSM AND node-exporter installed?  → Scenario 2a
-│       └── One or both missing                → Scenario 2b
-└── NO
-    └── Want full enrichments?
-        ├── YES → Scenario 3 full (add KSM + node-exporter sidechart)
-        └── NO  → Scenario 3 minimal (only kubebolt + agent)
+Just trying it out / 30-second demo with no cluster deploy?
+└── YES → Scenario 4 (docker run, single container)
+
+Committing to a deploy:
+
+  Does the customer's cluster already have Prometheus running?
+  ├── YES
+  │   ├── Is it kube-prometheus-stack / Operator-driven?  (CRDs present)
+  │   │   └── YES → Scenario 1
+  │   └── NO (hand-rolled or annotation-driven Prom)
+  │       ├── KSM AND node-exporter installed?  → Scenario 2a
+  │       └── One or both missing                → Scenario 2b
+  └── NO
+      └── Want full enrichments?
+          ├── YES → Scenario 3 full (add KSM + node-exporter sidechart)
+          └── NO  → Scenario 3 minimal (only kubebolt + agent)
 ```
 
 ---

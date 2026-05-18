@@ -29,6 +29,21 @@ func TestCollector_EmitsKubeboltAgentMetrics(t *testing.T) {
 		"kubebolt_agent_buffer_size_max",
 		"kubebolt_agent_memory_bytes",
 		"kubebolt_agent_goroutines",
+		// Deep MemStats — added so operators can attribute a
+		// container_memory_working_set_bytes gap to the right runtime
+		// layer (Go heap retention vs off-Go mappings vs OS-side buffers).
+		"kubebolt_agent_heap_alloc_bytes",
+		"kubebolt_agent_heap_sys_bytes",
+		"kubebolt_agent_heap_inuse_bytes",
+		"kubebolt_agent_heap_idle_bytes",
+		"kubebolt_agent_heap_released_bytes",
+		"kubebolt_agent_total_sys_bytes",
+		"kubebolt_agent_stack_sys_bytes",
+		"kubebolt_agent_mspan_sys_bytes",
+		"kubebolt_agent_mcache_sys_bytes",
+		"kubebolt_agent_other_sys_bytes",
+		"kubebolt_agent_gc_num_total",
+		"kubebolt_agent_next_gc_bytes",
 		"kubebolt_agent_info",
 	}
 	got := map[string]*agentv2.Sample{}
@@ -36,7 +51,7 @@ func TestCollector_EmitsKubeboltAgentMetrics(t *testing.T) {
 		got[s.MetricName] = s
 	}
 
-	t.Run("emits all 7 expected metric names", func(t *testing.T) {
+	t.Run("emits all expected metric names", func(t *testing.T) {
 		for _, name := range want {
 			if _, ok := got[name]; !ok {
 				t.Errorf("missing metric %q", name)

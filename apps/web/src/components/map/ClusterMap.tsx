@@ -14,7 +14,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight } from 'lucide-react'
+import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight, SlidersHorizontal, ChevronLeft } from 'lucide-react'
 import { useTopology } from '@/hooks/useResources'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { api } from '@/services/api'
@@ -753,6 +753,13 @@ function LegendItem({
 const PREF_ANIMATIONS = 'kb-map-animations'
 const PREF_LAYOUT = 'kb-map-layout'
 const PREF_HIDDEN_EDGE_GROUPS = 'kb-map-hidden-edge-groups'
+const PREF_CONFIG_COLLAPSED = 'kb-map-config-collapsed'
+// Drag overrides are persisted PER LAYOUT MODE because each layout
+// (grid / flow / traffic) produces fundamentally different node
+// arrangements — a position the operator picked under Flow doesn't
+// translate cleanly to Grid. Storing under separate keys means each
+// layout keeps its own remembered arrangement.
+const PREF_DRAG_OVERRIDES_PREFIX = 'kb-map-drag-overrides'
 
 // Edge categories group the many underlying edge types into user-visible
 // buckets. Each bucket has one toggle so the map isn't death by a
@@ -794,6 +801,33 @@ function savePref(key: string, value: string) {
   try { localStorage.setItem(key, value) } catch { /* localStorage blocked */ }
 }
 
+// Drag overrides persistence — serialise the Map as a plain object so
+// JSON.stringify works, keyed per layout mode so switching Grid ↔ Flow
+// ↔ Traffic doesn't collide. Bad / missing data returns an empty Map
+// so the layout falls back to the auto-computed positions.
+function dragOverridesKey(mode: string): string {
+  return `${PREF_DRAG_OVERRIDES_PREFIX}:${mode}`
+}
+
+function loadDragOverrides(mode: string): Map<string, { x: number; y: number }> {
+  try {
+    const raw = localStorage.getItem(dragOverridesKey(mode))
+    if (!raw) return new Map()
+    const parsed = JSON.parse(raw) as Record<string, { x: number; y: number }>
+    return new Map(Object.entries(parsed))
+  } catch {
+    return new Map()
+  }
+}
+
+function saveDragOverrides(mode: string, map: Map<string, { x: number; y: number }>) {
+  try {
+    const obj: Record<string, { x: number; y: number }> = {}
+    map.forEach((v, k) => { obj[k] = v })
+    localStorage.setItem(dragOverridesKey(mode), JSON.stringify(obj))
+  } catch { /* localStorage blocked */ }
+}
+
 function ClusterMapInner() {
   const { data: topology, isLoading, error, refetch } = useTopology()
   const [selectedNode, setSelectedNode] = useState<TopologyNode | null>(null)
@@ -810,6 +844,10 @@ function ClusterMapInner() {
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => (loadPref(PREF_LAYOUT, 'flow') as LayoutMode))
   const [animationsEnabled, setAnimationsEnabled] = useState(() => loadPref(PREF_ANIMATIONS, 'on') !== 'off')
+  // Config panel collapsed state — when on, the panel shrinks to a small
+  // icon-only button at top-left, giving the map canvas more room.
+  // Persisted so the operator's choice survives reloads.
+  const [configCollapsed, setConfigCollapsed] = useState(() => loadPref(PREF_CONFIG_COLLAPSED, 'off') === 'on')
   const [hiddenEdgeGroups, setHiddenEdgeGroups] = useState<Set<EdgeGroupKey>>(() => {
     const raw = loadPref(PREF_HIDDEN_EDGE_GROUPS, '')
     if (!raw) return new Set()
@@ -831,9 +869,29 @@ function ClusterMapInner() {
   })
   const trafficSourceAvailable =
     !!agent && (agent.status === 'installed' || agent.status === 'degraded')
-  // Manual position overrides set by user drag. Keyed by node ID.
-  // Cleared when switching layout mode or clicking Reset.
-  const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(new Map())
+  // Manual position overrides set by user drag. Keyed by node ID and
+  // persisted to localStorage per layout mode so the operator's
+  // arrangement survives:
+  //   1. Topology data refetches (every 60s + WS broadcasts) — without
+  //      persistence the arrangement was visually wiped each refresh.
+  //   2. Navigating away from /map and back.
+  //   3. Reloading the browser tab.
+  // The Reset button clears state AND the persisted entry for the
+  // current layout mode.
+  const [dragOverrides, setDragOverrides] = useState<Map<string, { x: number; y: number }>>(
+    () => loadDragOverrides(loadPref(PREF_LAYOUT, 'flow'))
+  )
+  // When the operator switches Grid ↔ Flow ↔ Traffic, swap to the
+  // arrangement remembered for that layout (or empty Map if none).
+  useEffect(() => {
+    setDragOverrides(loadDragOverrides(layoutMode))
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutMode])
+  // Persist on every change so a refresh / nav-away preserves the
+  // current arrangement under the active layout mode.
+  useEffect(() => {
+    saveDragOverrides(layoutMode, dragOverrides)
+  }, [dragOverrides, layoutMode])
   // Tooltip state for traffic edges. ReactFlow's own interaction layer
   // swallows pointer events before they reach our custom edge's SVG, so
   // an SVG <title> doesn't fire — we use ReactFlow's onEdgeMouseEnter /
@@ -856,6 +914,7 @@ function ClusterMapInner() {
   // Persist preferences on change
   useEffect(() => { savePref(PREF_LAYOUT, layoutMode) }, [layoutMode])
   useEffect(() => { savePref(PREF_ANIMATIONS, animationsEnabled ? 'on' : 'off') }, [animationsEnabled])
+  useEffect(() => { savePref(PREF_CONFIG_COLLAPSED, configCollapsed ? 'on' : 'off') }, [configCollapsed])
   useEffect(() => { savePref(PREF_HIDDEN_EDGE_GROUPS, Array.from(hiddenEdgeGroups).join(',')) }, [hiddenEdgeGroups])
 
   const toggleEdgeGroup = useCallback((key: EdgeGroupKey) => {
@@ -1292,12 +1351,19 @@ function ClusterMapInner() {
   // Refit the view when filters or layout change, but not on every drag.
   // We key off the computed layout (size + layout mode), not the live flowNodes
   // state which mutates on drag.
+  //
+  // Auto-fit is GATED on dragOverrides.size === 0 — once the operator
+  // has manually arranged anything, every subsequent topology refetch
+  // (pod count delta, etc.) would otherwise re-center the viewport
+  // and visually erase their work. After a manual arrangement the
+  // camera stays put; the operator uses the Reset Layout button when
+  // they want to start over.
   useEffect(() => {
-    if (computedNodes.length > 0) {
+    if (computedNodes.length > 0 && dragOverrides.size === 0) {
       const t = setTimeout(() => fitView({ padding: 0.1 }), 100)
       return () => clearTimeout(t)
     }
-  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView])
+  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView, dragOverrides.size])
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
@@ -1433,11 +1499,44 @@ function ClusterMapInner() {
         <MapControls />
       </ReactFlow>
 
-      {/* Filter Panel */}
+      {/* Filter Panel — collapsible.
+          Collapsed: small icon-only button at top-left (matches the
+          MapControls visual language at the bottom-left). Click expands.
+          Expanded: full controls panel with a chevron in the header to
+          collapse back. Section titles use stronger weight + color than
+          the previous quiet uppercase-mono tertiary treatment so each
+          group reads as a clear control category. */}
+      {configCollapsed ? (
+        <button
+          type="button"
+          onClick={() => setConfigCollapsed(false)}
+          title="Show map configuration"
+          aria-label="Show map configuration"
+          className="absolute top-4 left-4 z-10 p-2 rounded-lg bg-kb-card/95 backdrop-blur-sm border border-kb-border text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active transition-colors shadow-sm"
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+        </button>
+      ) : (
       <div className="absolute top-4 left-4 bg-kb-card/95 backdrop-blur-sm border border-kb-border rounded-lg p-3 z-10 w-[250px] space-y-3">
+        {/* Header with collapse button */}
+        <div className="flex items-center justify-between -mt-0.5 -mb-1">
+          <div className="flex items-center gap-1.5 text-[12px] font-semibold text-kb-text-primary">
+            <SlidersHorizontal className="w-3.5 h-3.5 text-kb-text-secondary" />
+            Map configuration
+          </div>
+          <button
+            type="button"
+            onClick={() => setConfigCollapsed(true)}
+            title="Hide configuration"
+            aria-label="Hide configuration"
+            className="p-1 rounded text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-elevated transition-colors"
+          >
+            <ChevronLeft className="w-3.5 h-3.5" />
+          </button>
+        </div>
         {/* Layout Toggle */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">Layout</div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Layout</div>
           <div className="flex rounded-md border border-kb-border overflow-hidden">
             <button
               onClick={() => setLayoutMode('grid')}
@@ -1481,7 +1580,7 @@ function ClusterMapInner() {
 
         {/* Edge category filters */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">Edges</div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Edges</div>
           <div className="flex flex-wrap gap-1">
             {EDGE_GROUPS.map((g) => {
               const visible = !hiddenEdgeGroups.has(g.key)
@@ -1518,7 +1617,7 @@ function ClusterMapInner() {
 
         {/* View Controls */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">View</div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">View</div>
           <div className="flex rounded-md border border-kb-border overflow-hidden">
             <button
               onClick={() => setAnimationsEnabled((v) => !v)}
@@ -1544,7 +1643,7 @@ function ClusterMapInner() {
 
         {/* Resource Types */}
         <div>
-          <div className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5">
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">
             Resource Types
           </div>
           <div className="flex flex-wrap gap-1">
@@ -1572,7 +1671,7 @@ function ClusterMapInner() {
         <div>
           <button
             onClick={() => setNsFilterOpen(!nsFilterOpen)}
-            className="w-full flex items-center justify-between text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] mb-1.5 hover:text-kb-text-secondary transition-colors"
+            className="w-full flex items-center justify-between text-[11px] font-semibold text-kb-text-secondary mb-1.5 hover:text-kb-text-primary transition-colors"
           >
             <span>Namespaces ({nsCount}/{allNamespaces.length})</span>
             <span className="text-[10px]">{nsFilterOpen ? '▲' : '▼'}</span>
@@ -1609,6 +1708,7 @@ function ClusterMapInner() {
           )}
         </div>
       </div>
+      )}
 
       {/* Traffic layout with the agent reachable but no flows arriving —
           most likely the cluster doesn't run Cilium/Hubble, or the

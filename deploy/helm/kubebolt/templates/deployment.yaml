@@ -199,6 +199,8 @@ spec:
               value: {{ .Values.agentIngest.authMode | quote }}
             - name: KUBEBOLT_AGENT_TOKEN_AUDIENCE
               value: {{ .Values.agentIngest.tokenAudience | quote }}
+            - name: KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS
+              value: {{ .Values.agentIngest.autoRegisterClusters | quote }}
             {{- if .Values.agentIngest.rateLimit.enabled }}
             - name: KUBEBOLT_AGENT_RATE_LIMIT_ENABLED
               value: "true"
@@ -227,6 +229,9 @@ spec:
               value: "true"
             {{- end }}
             {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
           volumeMounts:
             {{- if .Values.auth.enabled }}

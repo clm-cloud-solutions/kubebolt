@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
@@ -20,7 +20,7 @@ import { CronJobTriggerModal } from '@/components/resources/CronJobTriggerModal'
 import { DrainModal } from '@/components/resources/DrainModal'
 import { NodeSchedulabilityToolbarButton } from '@/components/resources/NodeSchedulabilityToolbarButton'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { api } from '@/services/api'
+import { api, ApiError } from '@/services/api'
 import { useResources, useResourceDetail, useResourceDescribe, useResourceYAML, useResourceEvents, useTopology, usePodLogs, useDeploymentPods, useDeploymentHistory, useStatefulSetPods, useDaemonSetPods, useJobPods, useCronJobJobs, useWorkloadHistory } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -28,6 +28,7 @@ import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicat
 import { MutationErrorToast, classifyMutationError, type MutationErrorVariant } from '@/components/shared/MutationErrorToast'
 import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
+import { HoverTooltip } from '@/components/shared/Tooltip'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
@@ -850,17 +851,450 @@ function highlightLogLine(line: string): React.ReactNode {
   return <span className="text-[#b5e5a4]">{line}</span>
 }
 
-function LogOutput({ logs, logsEndRef }: { logs: string | undefined; logsEndRef: React.RefObject<HTMLDivElement> }) {
+function LogOutput({ logs, grep }: { logs: string | undefined; grep?: string }) {
   if (logs === undefined) return null
   if (!logs) return <pre className="p-4 text-[11px] font-mono text-kb-text-tertiary">No logs available</pre>
-  const lines = logs.split('\n')
+
+  let lines = logs.split('\n')
+  let filteredOut = 0
+  if (grep) {
+    try {
+      const re = new RegExp(grep, 'i')
+      const before = lines.length
+      lines = lines.filter(l => l === '' || re.test(l))
+      filteredOut = before - lines.length
+    } catch {
+      // Invalid regex — fall through and render unfiltered.
+    }
+  }
+
+  const matchCount = lines.filter(l => l !== '').length
+
   return (
-    <pre className="p-4 text-[11px] font-mono leading-5 overflow-auto max-h-[600px]">
-      {lines.map((line, i) => (
-        <div key={i}>{highlightLogLine(line)}</div>
-      ))}
-      <div ref={logsEndRef} />
-    </pre>
+    <>
+      {grep && (
+        <div className="px-4 py-1.5 text-[10px] font-mono text-kb-text-tertiary border-b border-kb-border bg-kb-card/40">
+          filter: /{grep}/i · matched {matchCount} line{matchCount === 1 ? '' : 's'}
+          {filteredOut > 0 ? ` · hid ${filteredOut}` : ''}
+        </div>
+      )}
+      <VirtualLogList lines={lines} />
+    </>
+  )
+}
+
+// Manual viewport-clipping for log lines. Renders only the rows currently
+// visible (plus a small overscan buffer) instead of the full N-row DOM —
+// keeps scroll smooth at 50K+ lines without introducing a windowing dep.
+//
+// Sticky-bottom: if the user is at (or near) the bottom, new data keeps
+// the view pinned to the latest line; if they've scrolled up to read,
+// incoming refreshes don't yank them back.
+const LOG_LINE_HEIGHT = 20  // matches text-[11px] + leading-5
+
+function VirtualLogList({ lines }: { lines: string[] }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [scrollTop, setScrollTop] = useState(0)
+  const [viewportH, setViewportH] = useState(600)
+  const stickyBottomRef = useRef(true)
+  const [, forceTick] = useState(0)
+
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const measure = () => setViewportH(el.clientHeight)
+    measure()
+    const ro = new ResizeObserver(measure)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    const onScroll = () => {
+      setScrollTop(el.scrollTop)
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      stickyBottomRef.current = distFromBottom < 30
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // After each render with a new line count, snap to bottom if the user
+  // was already there (live-tail follow). Otherwise leave their scroll
+  // position alone so they can read older lines without being yanked.
+  useLayoutEffect(() => {
+    const el = containerRef.current
+    if (!el) return
+    if (stickyBottomRef.current) {
+      el.scrollTop = el.scrollHeight
+      // Sync scrollTop state so the overscan window updates immediately.
+      setScrollTop(el.scrollTop)
+      forceTick(n => n + 1)
+    }
+  }, [lines.length])
+
+  const overscan = 30
+  const startIdx = Math.max(0, Math.floor(scrollTop / LOG_LINE_HEIGHT) - overscan)
+  const endIdx = Math.min(lines.length, Math.ceil((scrollTop + viewportH) / LOG_LINE_HEIGHT) + overscan)
+  const visible = lines.slice(startIdx, endIdx)
+  const totalH = lines.length * LOG_LINE_HEIGHT
+  const offsetY = startIdx * LOG_LINE_HEIGHT
+
+  return (
+    <div
+      ref={containerRef}
+      className="overflow-auto h-[calc(100vh-280px)] min-h-[320px] text-[11px] font-mono leading-5"
+    >
+      <div style={{ height: totalH, position: 'relative' }}>
+        <div style={{ position: 'absolute', top: offsetY, left: 0, right: 0 }}>
+          {visible.map((line, i) => (
+            <div key={startIdx + i} style={{ height: LOG_LINE_HEIGHT }} className="px-4 whitespace-pre">
+              {highlightLogLine(line)}
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// Local datetime input value (YYYY-MM-DDTHH:MM in browser locale) → RFC3339 UTC.
+// Returns undefined for empty input.
+function localDateTimeToRFC3339(v: string): string | undefined {
+  if (!v) return undefined
+  const d = new Date(v)
+  if (isNaN(d.getTime())) return undefined
+  return d.toISOString()
+}
+
+// "now − minutesAgo" formatted as the value an <input type=datetime-local>
+// expects (YYYY-MM-DDTHH:MM in browser local time).
+function minutesAgoToLocalInput(minutesAgo: number): string {
+  const d = new Date(Date.now() - minutesAgo * 60_000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+type LogPreset = '15m' | '1h' | '4h' | '24h'
+const LOG_PRESETS: ReadonlyArray<{ key: LogPreset; label: string; minutes: number }> = [
+  { key: '15m', label: 'Last 15m', minutes: 15 },
+  { key: '1h',  label: 'Last 1h',  minutes: 60 },
+  { key: '4h',  label: 'Last 4h',  minutes: 240 },
+  { key: '24h', label: 'Last 24h', minutes: 1440 },
+]
+
+function browserTimezone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone } catch { return 'local' }
+}
+
+function validateRegex(pattern: string): { ok: true } | { ok: false; error: string } {
+  if (!pattern) return { ok: true }
+  try { new RegExp(pattern, 'i'); return { ok: true } }
+  catch (e) { return { ok: false, error: (e as Error).message } }
+}
+
+interface LogFiltersState {
+  open: boolean
+  preset?: LogPreset      // undefined = custom / none — chips inactive
+  sinceTime: string       // datetime-local string ("" = unset)
+  endTime: string         // datetime-local string ("" = unset)
+  previous: boolean
+  grep: string
+}
+
+function emptyLogFilters(): LogFiltersState {
+  return { open: false, preset: undefined, sinceTime: '', endTime: '', previous: false, grep: '' }
+}
+
+// True only when both endpoints are set AND endTime is at least as late
+// as sinceTime. Either endpoint missing is also "valid" (means open-ended).
+function dateRangeValid(s: LogFiltersState): boolean {
+  if (!s.sinceTime || !s.endTime) return true
+  const a = new Date(s.sinceTime).getTime()
+  const b = new Date(s.endTime).getTime()
+  if (isNaN(a) || isNaN(b)) return true
+  return b >= a
+}
+
+// Compact chip showing the active time scope. Click opens a popover with
+// presets + an optional Custom-range section. Keeps the toolbar tight —
+// most users click a preset and never expand the manual inputs.
+function TimeWindowChip({
+  filters,
+  setFilters,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [showCustom, setShowCustom] = useState(false)
+  const triggerRef = useRef<HTMLButtonElement | null>(null)
+  const popoverRef = useRef<HTMLDivElement | null>(null)
+  const [pos, setPos] = useState<{ top: number; left: number } | null>(null)
+
+  const rangeOk = dateRangeValid(filters)
+  const active = !!(filters.sinceTime || filters.endTime)
+  const presetLabel = filters.preset ? LOG_PRESETS.find(p => p.key === filters.preset)?.label : undefined
+  const chipLabel = presetLabel ?? (active ? 'Custom range' : 'Time')
+
+  // Reveal the manual inputs automatically when opening on a custom range.
+  useEffect(() => {
+    if (open && active && filters.preset === undefined) setShowCustom(true)
+  }, [open, active, filters.preset])
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return
+    const update = () => {
+      const rect = triggerRef.current!.getBoundingClientRect()
+      setPos({ top: rect.bottom + 4, left: rect.left })
+    }
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('scroll', update, true)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('scroll', update, true)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    function onDocClick(e: MouseEvent) {
+      const t = e.target as Node
+      if (triggerRef.current?.contains(t)) return
+      if (popoverRef.current?.contains(t)) return
+      setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === 'Escape') setOpen(false)
+    }
+    document.addEventListener('mousedown', onDocClick)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDocClick)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  const applyPreset = (p: typeof LOG_PRESETS[number]) => {
+    setFilters({
+      ...filters,
+      preset: p.key,
+      sinceTime: minutesAgoToLocalInput(p.minutes),
+      endTime: '',
+    })
+    setShowCustom(false)
+    setOpen(false)
+  }
+  const clearTime = () => {
+    setFilters({ ...filters, preset: undefined, sinceTime: '', endTime: '' })
+    setShowCustom(false)
+  }
+  const onFromChange = (v: string) => setFilters({ ...filters, sinceTime: v, preset: undefined })
+  const onToChange   = (v: string) => setFilters({ ...filters, endTime: v, preset: undefined })
+
+  const triggerClass = active
+    ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+    : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen(v => !v)}
+        className={`px-2.5 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${triggerClass}`}
+      >
+        <Clock className="w-3 h-3" />
+        {chipLabel}
+        <ChevronDown className={`w-3 h-3 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && pos && createPortal(
+        <div
+          ref={popoverRef}
+          className="fixed z-[9999] w-[280px] bg-kb-card border border-kb-border rounded-lg shadow-2xl overflow-hidden"
+          style={{ top: pos.top, left: pos.left }}
+          role="menu"
+        >
+          <div className="p-2 grid grid-cols-4 gap-1.5">
+            {LOG_PRESETS.map(p => {
+              const isActive = filters.preset === p.key
+              return (
+                <button
+                  key={p.key}
+                  onClick={() => applyPreset(p)}
+                  className={`px-2 py-1.5 text-[11px] rounded-md border transition-colors ${
+                    isActive
+                      ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+                      : 'bg-kb-card-hover border-kb-border text-kb-text-secondary hover:border-kb-border-active'
+                  }`}
+                >
+                  {p.label.replace('Last ', '')}
+                </button>
+              )
+            })}
+          </div>
+
+          <div className="border-t border-kb-border">
+            {!showCustom && (
+              <button
+                onClick={() => setShowCustom(true)}
+                className="w-full px-3 py-2 text-[11px] text-left text-kb-text-secondary hover:bg-kb-card-hover transition-colors flex items-center justify-between"
+              >
+                Custom range…
+                <ChevronDown className="w-3 h-3" />
+              </button>
+            )}
+            {showCustom && (
+              <div className="p-3 space-y-2">
+                <label className="flex flex-col gap-1 text-[10px] text-kb-text-tertiary">
+                  From
+                  <input
+                    type="datetime-local"
+                    value={filters.sinceTime}
+                    onChange={(e) => onFromChange(e.target.value)}
+                    className="px-2 py-1.5 text-xs bg-kb-card-hover border border-kb-border rounded-md text-kb-text-primary"
+                  />
+                </label>
+                <label className="flex flex-col gap-1 text-[10px] text-kb-text-tertiary">
+                  To
+                  <input
+                    type="datetime-local"
+                    value={filters.endTime}
+                    onChange={(e) => onToChange(e.target.value)}
+                    min={filters.sinceTime || undefined}
+                    title={!rangeOk ? '"To" must be the same as or later than "From"' : undefined}
+                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border rounded-md text-kb-text-primary ${
+                      rangeOk ? 'border-kb-border' : 'border-status-error'
+                    }`}
+                  />
+                </label>
+                {!rangeOk && (
+                  <p className="text-[10px] text-status-error">End time must be at or after the start time.</p>
+                )}
+                <p className="text-[10px] text-kb-text-tertiary">Times are in your local time zone.</p>
+              </div>
+            )}
+          </div>
+
+          {active && (
+            <div className="border-t border-kb-border p-2">
+              <button
+                onClick={clearTime}
+                className="w-full px-2 py-1 text-[11px] rounded-md text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+              >
+                Clear time window
+              </button>
+            </div>
+          )}
+        </div>,
+        document.body,
+      )}
+    </>
+  )
+}
+
+// Compact "Previous" toggle button. Active = filled accent. Disabled
+// (no restarts on the container) silently grays out — the title attr
+// carries the reason for hover discovery.
+function PreviousToggle({
+  filters,
+  setFilters,
+  hasRestarts,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+  hasRestarts: boolean
+}) {
+  const active = filters.previous
+  const cls = !hasRestarts
+    ? 'bg-kb-card border-kb-border text-kb-text-tertiary cursor-not-allowed opacity-60'
+    : active
+      ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+      : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+  return (
+    <button
+      type="button"
+      onClick={() => hasRestarts && setFilters({ ...filters, previous: !active })}
+      disabled={!hasRestarts}
+      title={!hasRestarts ? 'No previous container — this pod has not restarted yet' : 'Show logs from the previous container instance'}
+      className={`px-2.5 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${cls}`}
+    >
+      <RotateCw className="w-3 h-3" />
+      Previous
+    </button>
+  )
+}
+
+// Slim regex highlight input. Red border on invalid pattern; the rich
+// hover tooltip (solid panel, no blur) carries the help body and the
+// specific parser error so the toolbar itself stays quiet.
+const REGEX_EXAMPLES: ReadonlyArray<{ pattern: string; meaning: string }> = [
+  { pattern: 'error|timeout',    meaning: 'matches "error" or "timeout"' },
+  { pattern: '5\\d{2}',          meaning: 'any HTTP 5xx status (500–599)' },
+  { pattern: 'GET /api/v1',      meaning: 'literal substring' },
+  { pattern: 'WARN.+connection', meaning: '"WARN" followed by "connection"' },
+  { pattern: '^\\[ERROR\\]',     meaning: 'lines starting with [ERROR]' },
+]
+
+function RegexHelpBody({ error }: { error?: string }) {
+  return (
+    <div className="space-y-2">
+      <div className="text-kb-text-primary font-semibold text-[12px]">
+        Highlight matching log lines
+      </div>
+      <div className="text-[11px] text-kb-text-secondary leading-snug">
+        Case-insensitive regular expression. Matches stay highlighted while you scroll.
+      </div>
+      {error && (
+        <div className="text-[11px] text-status-error font-mono pt-2 border-t border-kb-border-active">
+          {error}
+        </div>
+      )}
+      <div className="pt-2 border-t border-kb-border-active space-y-1.5">
+        <div className="text-[10px] uppercase tracking-wider text-kb-text-secondary font-semibold">Examples</div>
+        {REGEX_EXAMPLES.map(ex => (
+          <div key={ex.pattern} className="flex items-baseline gap-2 text-[11px]">
+            <code className="font-mono text-kb-accent shrink-0">{ex.pattern}</code>
+            <span className="text-kb-text-primary">— {ex.meaning}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function RegexFilterInput({
+  filters,
+  setFilters,
+}: {
+  filters: LogFiltersState
+  setFilters: (s: LogFiltersState) => void
+}) {
+  const check = validateRegex(filters.grep)
+  return (
+    <HoverTooltip
+      body={<RegexHelpBody error={check.ok ? undefined : `Not a valid pattern: ${check.error}`} />}
+      minWidth={300}
+      maxWidth={360}
+      solid
+    >
+      <div className="relative">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-kb-text-tertiary pointer-events-none" />
+        <input
+          type="text"
+          placeholder="Highlight matches…"
+          value={filters.grep}
+          onChange={(e) => setFilters({ ...filters, grep: e.target.value })}
+          className={`w-[180px] pl-7 pr-2 py-1.5 text-xs font-mono bg-kb-card border rounded-lg text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-kb-border-active ${
+            check.ok ? 'border-kb-border' : 'border-status-error'
+          }`}
+        />
+      </div>
+    </HoverTooltip>
   )
 }
 
@@ -1148,6 +1582,146 @@ function DeleteModal({ type, namespace, name, onClose, onDeleted }: {
   )
 }
 
+// EvictPodModal — graceful pod removal via policy/v1 Eviction API.
+// Distinct from DeleteModal: this respects PodDisruptionBudgets, so
+// the apiserver may return 429 when the disruption budget would be
+// violated. The backend tags that case with `pdbBlocked: true` in the
+// 429 payload; we render dedicated copy for it instead of a generic
+// rate-limit error. No name-confirmation typing because the PDB
+// guardrail already prevents the dangerous case (over-evicting from a
+// protected workload).
+function EvictPodModal({ namespace, name, onClose, onEvicted }: {
+  namespace: string; name: string; onClose: () => void; onEvicted: () => void
+}) {
+  const [evicting, setEvicting] = useState(false)
+  const [error, setError] = useState<MutationErrorVariant | null>(null)
+  const [pdbBlocked, setPdbBlocked] = useState(false)
+
+  useEffect(() => {
+    function handleEsc(e: KeyboardEvent) { if (e.key === 'Escape') onClose() }
+    document.addEventListener('keydown', handleEsc)
+    return () => document.removeEventListener('keydown', handleEsc)
+  }, [onClose])
+
+  async function handleEvict() {
+    setEvicting(true)
+    setError(null)
+    setPdbBlocked(false)
+    try {
+      await api.evictPod(namespace, name)
+      onEvicted()
+    } catch (err) {
+      // PDB-protected — switch to the specific blocked-state copy.
+      // The backend attaches `pdbBlocked: true` to the 429 payload so
+      // we don't have to parse the apiserver message; structured flag
+      // wins over string-match.
+      if (err instanceof ApiError && err.status === 429 && err.payload?.pdbBlocked === true) {
+        setPdbBlocked(true)
+        setEvicting(false)
+        return
+      }
+      setError(classifyMutationError(err))
+      setEvicting(false)
+    }
+  }
+
+  return createPortal(
+    <div className="fixed inset-0 z-[99999] flex items-center justify-center" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" />
+      <div
+        className="relative w-[90vw] max-w-md bg-kb-card border border-kb-border rounded-xl shadow-2xl flex flex-col overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 flex items-start justify-between">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-lg bg-status-warn-dim flex items-center justify-center shrink-0 mt-0.5">
+              <LogOut className="w-4 h-4 text-status-warn" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-kb-text-primary">Evict pod</h4>
+              <p className="text-[11px] text-kb-text-tertiary">Graceful removal — respects PodDisruptionBudgets.</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Pod info */}
+        <div className="mx-5 px-3 py-2.5 rounded-lg bg-status-warn-dim/30 border border-status-warn/10">
+          <div className="text-[11px] font-semibold text-status-warn mb-1">You are about to evict:</div>
+          <div className="text-[11px] font-mono text-kb-text-secondary space-y-0.5">
+            <div>Name: <span className="text-kb-text-primary">{name}</span></div>
+            <div>Namespace: <span className="text-kb-text-primary">{namespace}</span></div>
+          </div>
+        </div>
+
+        {/* Explanation */}
+        <div className="px-5 pt-4 text-[11px] text-kb-text-secondary leading-relaxed">
+          Eviction uses the <code className="font-mono text-kb-text-primary">policy/v1.Eviction</code> API.
+          If a PodDisruptionBudget would be violated by removing this pod, the request will be
+          blocked and you'll see a "PDB blocked" message — try again later or evict a different pod.
+        </div>
+
+        {/* PDB blocked state — distinct from generic error */}
+        {pdbBlocked && (
+          <div className="mx-5 mt-3 px-3 py-2.5 rounded-lg bg-status-warn-dim border border-status-warn/30">
+            <div className="text-[11px] font-semibold text-status-warn mb-1">Blocked by PodDisruptionBudget</div>
+            <div className="text-[11px] text-kb-text-secondary leading-relaxed">
+              A PodDisruptionBudget protecting this workload would be violated by removing this pod.
+              Wait for the disruption window to open, or evict a different pod from the same workload.
+            </div>
+          </div>
+        )}
+
+        {/* Generic error — only when not the PDB case */}
+        {error && !pdbBlocked && (
+          <div className="mx-5 mt-3 px-3 py-2.5 rounded-lg bg-status-error-dim border border-status-error/20 text-xs">
+            {error.title && <div className="font-semibold text-status-error mb-1">{error.title}</div>}
+            <div className="text-kb-text-secondary leading-relaxed">{error.body}</div>
+            {error.cta && (
+              <Link
+                to={error.cta.to}
+                onClick={onClose}
+                className="inline-flex items-center gap-1.5 mt-2 px-2.5 py-1 rounded bg-kb-accent text-kb-on-accent text-[11px] font-medium hover:bg-kb-accent-hover transition-colors"
+              >
+                {error.cta.label}
+              </Link>
+            )}
+            {error.detail && (
+              <details className="mt-1.5">
+                <summary className="text-[10px] font-mono text-kb-text-tertiary cursor-pointer">Server error</summary>
+                <pre className="mt-1 text-[10px] font-mono text-kb-text-tertiary whitespace-pre-wrap break-all">{error.detail}</pre>
+              </details>
+            )}
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="px-5 py-4 flex gap-2 justify-end">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+          >
+            {pdbBlocked ? 'Close' : 'Cancel'}
+          </button>
+          {!pdbBlocked && (
+            <button
+              onClick={handleEvict}
+              disabled={evicting}
+              className="px-4 py-2 text-xs font-medium bg-status-warn text-white rounded-lg hover:bg-status-warn/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              {evicting ? 'Evicting...' : 'Evict'}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body
+  )
+}
+
 function DescribeModal({ type, namespace, name, onClose }: { type: string; namespace: string; name: string; onClose: () => void }) {
   const { data: output, isLoading, error } = useResourceDescribe(type, namespace, name, true)
 
@@ -1223,7 +1797,11 @@ function YAMLEditor({ value, onChange }: { value: string; onChange: (v: string) 
           }
         }),
         EditorView.theme({
-          '&': { fontSize: '11px', maxHeight: '600px' },
+          // Match the read-only viewer sizing — fills the tab's vertical
+          // space minus page chrome AND the Section wrapper's own overhead
+          // (p-5 padding + title + mb-4 = ~80px). 320px floor for short
+          // viewports.
+          '&': { fontSize: '11px', height: 'calc(100vh - 360px)', minHeight: '320px' },
           '.cm-scroller': { overflow: 'auto', fontFamily: "'JetBrains Mono', 'Fira Code', Menlo, monospace" },
           '.cm-content': { padding: '12px 0' },
           '.cm-gutters': { backgroundColor: '#0d1117', border: 'none' },
@@ -1351,7 +1929,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       {editing ? (
         <YAMLEditor value={editValue} onChange={setEditValue} />
       ) : (
-        <div className="overflow-auto max-h-[600px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
+        <div className="overflow-auto h-[calc(100vh-360px)] min-h-[320px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
           <pre className="text-[11px] font-mono leading-5 whitespace-pre-wrap break-all">
             {lines.map((line, i) => (
               <div key={i} className="flex">
@@ -1546,22 +2124,51 @@ function EventsTab({ type, namespace, name }: { type: string; namespace: string;
 function LogsTab({ namespace, name, item }: { namespace: string; name: string; item: ResourceItem }) {
   const containers = Array.isArray(item.containers) ? item.containers as Array<Record<string, unknown>> : []
   const containerNames = containers.map(c => String(c.name ?? ''))
+  const hasRestarts = containers.some(c => {
+    const state = (c.state ?? {}) as Record<string, unknown>
+    return Number(state.restartCount ?? 0) > 0
+  })
   const [selectedContainer, setSelectedContainer] = useState(containerNames[0] ?? '')
   const [tailLines, setTailLines] = useState(100)
+  const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
-  const { data: logs, isLoading, error, refetch } = usePodLogs(namespace, name, selectedContainer, tailLines)
-  const logsEndRef = useRef<HTMLDivElement>(null)
+  const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
+  const endTimeRFC = localDateTimeToRFC3339(filters.endTime)
+  const rangeActive = !!(sinceTimeRFC || endTimeRFC)
+  // Hold the query (keeping last data on screen) while the user types an
+  // inverted window — refetches automatically once the range becomes valid.
+  const rangeOk = dateRangeValid(filters)
+  // When a time window is active, drop the tail bound entirely so the
+  // server returns the full window (capped only by the 10 MiB hardcap).
+  // Otherwise the kubelet slices to the last N lines BEFORE applying the
+  // window, and the intersection is often empty for older windows.
+  const effectiveTailLines = rangeActive ? 0 : tailLines
 
-  useEffect(() => {
-    if (logs) {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs])
+  const { data: logs, isLoading, error, refetch } = usePodLogs(
+    namespace,
+    name,
+    selectedContainer,
+    effectiveTailLines,
+    {
+      sinceTime: sinceTimeRFC,
+      endTime: endTimeRFC,
+      previous: filters.previous || undefined,
+      timestamps: rangeActive || undefined,
+      enabled: rangeOk,
+    },
+  )
+  const historical = rangeActive || filters.previous
+
+  const activeFilterCount =
+    (sinceTimeRFC ? 1 : 0) +
+    (endTimeRFC ? 1 : 0) +
+    (filters.previous ? 1 : 0) +
+    (filters.grep ? 1 : 0)
 
   return (
     <div className="space-y-3">
       {/* Controls */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         {containerNames.length > 1 && (
           <select
             value={selectedContainer}
@@ -1579,7 +2186,9 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         <select
           value={tailLines}
           onChange={(e) => setTailLines(Number(e.target.value))}
-          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          disabled={rangeActive}
+          title={rangeActive ? 'The time window controls how many lines are shown.' : undefined}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           <option value={100}>Last 100 lines</option>
           <option value={500}>Last 500 lines</option>
@@ -1587,17 +2196,49 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
           <option value={5000}>Last 5000 lines</option>
         </select>
         <button
+          onClick={() => setFilters({ ...filters, open: !filters.open })}
+          className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
+            filters.open || activeFilterCount > 0
+              ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+              : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+          }`}
+        >
+          Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        {filters.open && (
+          <>
+            <TimeWindowChip filters={filters} setFilters={setFilters} />
+            <PreviousToggle filters={filters} setFilters={setFilters} hasRestarts={hasRestarts} />
+            <RegexFilterInput filters={filters} setFilters={setFilters} />
+          </>
+        )}
+        {activeFilterCount > 0 && (
+          <button
+            onClick={() => setFilters({ ...emptyLogFilters(), open: filters.open })}
+            title="Clear all filters"
+            className="p-1.5 text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
+        <button
           onClick={() => refetch()}
           className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
         >
           Refresh
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-          </span>
-          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+          {historical ? (
+            <span className="text-[10px] text-kb-text-tertiary">Auto-refresh paused</span>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+              </span>
+              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+            </>
+          )}
         </div>
       </div>
 
@@ -1609,7 +2250,7 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         {error && (
           <div className="p-8 text-center text-sm text-status-error">{(error as Error).message}</div>
         )}
-        <LogOutput logs={logs} logsEndRef={logsEndRef} />
+        <LogOutput logs={logs} grep={filters.grep} />
       </div>
     </div>
   )
@@ -1690,7 +2331,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
       {!bannerDismissed && (
         <div className="bg-kb-elevated border border-kb-border rounded-lg px-4 py-2 text-[11px] text-kb-text-secondary flex items-center gap-3">
           <span className="flex-1">
-            Historical time-series from KubeBolt Agent (sampled every 15s). If the charts are empty, confirm the agent DaemonSet is running (<code>make agent-logs</code>).
+            Historical time-series from KubeBolt Agent (sampled every 15s). If the charts are empty, confirm the agent DaemonSet is running.
           </span>
           <button
             onClick={dismissBanner}
@@ -2627,7 +3268,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   const [selectedPod, setSelectedPod] = useState('')
   const [selectedContainer, setSelectedContainer] = useState('')
   const [tailLines, setTailLines] = useState(100)
-  const logsEndRef = useRef<HTMLDivElement>(null)
+  const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
   // Set default pod when pods load
   useEffect(() => {
@@ -2638,9 +3279,14 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
 
   // Get containers for selected pod
   const currentPod = pods.find(p => p.name === selectedPod)
-  const containers = currentPod && Array.isArray(currentPod.containers)
-    ? (currentPod.containers as Array<Record<string, unknown>>).map(c => String(c.name ?? ''))
+  const containerObjs = currentPod && Array.isArray(currentPod.containers)
+    ? currentPod.containers as Array<Record<string, unknown>>
     : []
+  const containers = containerObjs.map(c => String(c.name ?? ''))
+  const hasRestarts = containerObjs.some(c => {
+    const state = (c.state ?? {}) as Record<string, unknown>
+    return Number(state.restartCount ?? 0) > 0
+  })
 
   // Set default container when pod changes
   useEffect(() => {
@@ -2650,21 +3296,43 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   }, [selectedPod, containers, selectedContainer])
 
   const podNamespace = currentPod?.namespace ?? ''
-  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(podNamespace, selectedPod, selectedContainer, tailLines)
 
-  useEffect(() => {
-    if (logs) {
-      logsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-    }
-  }, [logs])
+  const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
+  const endTimeRFC = localDateTimeToRFC3339(filters.endTime)
+  const rangeActive = !!(sinceTimeRFC || endTimeRFC)
+  const historical = rangeActive || filters.previous
+  const rangeOk = dateRangeValid(filters)
+  // See LogsTab (Pod) for the rationale: with a window active, the
+  // tail bound must be dropped or it'll silently truncate the result.
+  const effectiveTailLines = rangeActive ? 0 : tailLines
+
+  const { data: logs, isLoading: logsLoading, error: logsError, refetch } = usePodLogs(
+    podNamespace,
+    selectedPod,
+    selectedContainer,
+    effectiveTailLines,
+    {
+      sinceTime: sinceTimeRFC,
+      endTime: endTimeRFC,
+      previous: filters.previous || undefined,
+      timestamps: rangeActive || undefined,
+      enabled: rangeOk,
+    },
+  )
 
   if (podsLoading) return <LoadingSpinner />
   if (podsError) return <ErrorState message={podsError.message} />
   if (pods.length === 0) return <div className="text-sm text-kb-text-tertiary text-center py-12">No pods found</div>
 
+  const activeFilterCount =
+    (sinceTimeRFC ? 1 : 0) +
+    (endTimeRFC ? 1 : 0) +
+    (filters.previous ? 1 : 0) +
+    (filters.grep ? 1 : 0)
+
   return (
     <div className="space-y-3">
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 flex-wrap">
         <select
           value={selectedPod}
           onChange={(e) => { setSelectedPod(e.target.value); setSelectedContainer('') }}
@@ -2691,12 +3359,40 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         <select
           value={tailLines}
           onChange={(e) => setTailLines(Number(e.target.value))}
-          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary"
+          disabled={rangeActive}
+          title={rangeActive ? 'The time window controls how many lines are shown.' : undefined}
+          className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
         >
           <option value={100}>Last 100 lines</option>
           <option value={500}>Last 500 lines</option>
           <option value={1000}>Last 1000 lines</option>
         </select>
+        <button
+          onClick={() => setFilters({ ...filters, open: !filters.open })}
+          className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 ${
+            filters.open || activeFilterCount > 0
+              ? 'bg-kb-accent/10 border-kb-accent/40 text-kb-accent'
+              : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+          }`}
+        >
+          Filters{activeFilterCount > 0 ? ` · ${activeFilterCount}` : ''}
+        </button>
+        {filters.open && (
+          <>
+            <TimeWindowChip filters={filters} setFilters={setFilters} />
+            <PreviousToggle filters={filters} setFilters={setFilters} hasRestarts={hasRestarts} />
+            <RegexFilterInput filters={filters} setFilters={setFilters} />
+          </>
+        )}
+        {activeFilterCount > 0 && (
+          <button
+            onClick={() => setFilters({ ...emptyLogFilters(), open: filters.open })}
+            title="Clear all filters"
+            className="p-1.5 text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        )}
         <button
           onClick={() => refetch()}
           className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors text-kb-text-secondary"
@@ -2704,13 +3400,20 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
           Refresh
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
-          <span className="relative flex h-2 w-2">
-            <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-            <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-          </span>
-          <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+          {historical ? (
+            <span className="text-[10px] text-kb-text-tertiary">Auto-refresh paused</span>
+          ) : (
+            <>
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+              </span>
+              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
+            </>
+          )}
         </div>
       </div>
+
 
       <div className="bg-[#0d1117] rounded-[10px] border border-kb-border overflow-hidden">
         {logsLoading && !logs && (
@@ -2719,7 +3422,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         {logsError && (
           <div className="p-8 text-center text-sm text-status-error">{(logsError as Error).message}</div>
         )}
-        <LogOutput logs={logs} logsEndRef={logsEndRef} />
+        <LogOutput logs={logs} grep={filters.grep} />
       </div>
     </div>
   )
@@ -2987,6 +3690,10 @@ export function ResourceDetailPage() {
   // Nodes list uses. State lives on the detail page so the modal
   // mounts at this level rather than per-button.
   const [showDrain, setShowDrain] = useState(false)
+  // Evict opens EvictPodModal — pod-only graceful removal via the
+  // policy/v1 Eviction API. Mounted at this level so the dialog
+  // sits on top of the toolbar regardless of which tab is active.
+  const [showEvict, setShowEvict] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -3126,6 +3833,21 @@ export function ResourceDetailPage() {
           },
     )
   }
+  // Evict pod — graceful removal that respects PodDisruptionBudgets.
+  // Sits in the menu (not inline) because operators reach for it less
+  // often than Restart, and pairing it with Edit metadata keeps the
+  // toolbar uncluttered. Separator above visually groups it apart
+  // from the universal "metadata" item below.
+  if (type === 'pods') {
+    menuItems.push({
+      id: 'evict-pod',
+      label: 'Evict pod',
+      icon: LogOut,
+      disabled: !canEdit,
+      hint: !canEdit ? 'Editor role required' : 'Evict respects PodDisruptionBudgets (policy/v1 Eviction API)',
+      onClick: () => setShowEvict(true),
+    })
+  }
   // Edit metadata — universal across all kinds, always last in the
   // menu. When this is the ONLY item, the toolbar promotes it inline
   // (see render branch below) so the operator doesn't pay a click
@@ -3137,7 +3859,7 @@ export function ResourceDetailPage() {
     disabled: !canEdit,
     hint: !canEdit ? 'Editor role required' : 'Edit labels and annotations (kubectl label / annotate)',
     onClick: () => setShowEditMetadata(true),
-    separator: isWorkload, // visually group "metadata" apart from the workload-template writes above
+    separator: isWorkload || type === 'pods', // visually group "metadata" apart from kind-specific writes above
   })
 
   function renderTab() {
@@ -3360,6 +4082,69 @@ export function ResourceDetailPage() {
                           if (res.resource) {
                             queryClient.setQueryData(['resource-detail', type, namespace, name], res.resource)
                           }
+                          queryClient.invalidateQueries({ queryKey: ['resources'] })
+                        } catch (err) {
+                          setMutationError({ err, action: 'Restart' })
+                        } finally {
+                          setActionLoading(null)
+                        }
+                      }}
+                      className="px-3 py-1.5 text-xs font-medium bg-status-info text-white rounded-lg hover:bg-status-info/90 transition-colors flex items-center gap-1.5"
+                    >
+                      <RotateCw className="w-3 h-3" />
+                      Restart
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+          {/* Pod-specific actions (Phase 3 of Item 4 — Pod actions
+              audit). Restart synthesizes "kubectl delete pod"; the
+              owning controller recreates it. Evict lives in the
+              Actions ▾ menu (added above to menuItems) — graceful
+              removal that respects PDBs. Navigation to the owning
+              workload is intentionally NOT a toolbar button: the
+              Overview tab already surfaces `Owner: Kind/name` as a
+              clickable KindNameLink, so a toolbar duplicate would
+              just add visual weight without new capability. */}
+          {type === 'pods' && (
+            <div className="relative">
+              <button
+                onClick={() => { setShowRestart(!showRestart); setShowScale(false) }}
+                disabled={actionLoading === 'restart' || !canEdit}
+                title={!canEdit ? 'Editor role required' : 'Restart pod (deletes; controller recreates)'}
+                className={`px-3 py-1.5 text-xs border rounded-lg transition-colors flex items-center gap-1.5 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  showRestart ? 'bg-status-warn-dim border-status-warn/20 text-status-warn' : 'bg-kb-card border-kb-border text-kb-text-secondary hover:bg-kb-card-hover'
+                }`}
+              >
+                <RotateCw className={`w-3 h-3 ${actionLoading === 'restart' ? 'animate-spin' : ''}`} />
+                Restart
+              </button>
+              {showRestart && (
+                <div className="absolute top-full right-0 mt-1 bg-kb-card border border-kb-border rounded-xl shadow-xl z-50 p-4 w-72">
+                  <h4 className="text-sm font-semibold text-kb-text-primary mb-1">Restart pod</h4>
+                  <p className="text-[11px] text-kb-text-tertiary mb-4">
+                    This pod will be deleted. The owning controller (Deployment, StatefulSet, DaemonSet, Job, or ReplicaSet) recreates it on its next reconcile. Standalone pods without a controller stay deleted.
+                  </p>
+                  <div className="flex gap-2 justify-end">
+                    <button
+                      onClick={() => setShowRestart(false)}
+                      className="px-3 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-secondary hover:bg-kb-card-hover transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={async () => {
+                        setActionLoading('restart')
+                        setShowRestart(false)
+                        try {
+                          await api.restartResource('pods', namespace, name)
+                          // The pod just got deleted, so the local
+                          // detail cache is stale. Don't setQueryData
+                          // (the response carries resource: null). Just
+                          // invalidate the list cache; the WS event +
+                          // refetch reconcile from there.
                           queryClient.invalidateQueries({ queryKey: ['resources'] })
                         } catch (err) {
                           setMutationError({ err, action: 'Restart' })
@@ -3650,6 +4435,24 @@ export function ResourceDetailPage() {
         <DrainModal node={item} onClose={() => setShowDrain(false)} />
       )}
 
+      {/* Pod eviction modal — Phase 3 of Item 4. Mounted only when
+          type=pods so the dialog state doesn't leak across resource
+          types. */}
+      {showEvict && type === 'pods' && (
+        <EvictPodModal
+          namespace={namespace}
+          name={name}
+          onClose={() => setShowEvict(false)}
+          onEvicted={() => {
+            setShowEvict(false)
+            queryClient.invalidateQueries({ queryKey: ['resources'] })
+            // After eviction the pod is gone — navigate to the pods
+            // list rather than 404 on the now-deleted detail page.
+            navigate('/pods')
+          }}
+        />
+      )}
+
       {/* Delete modal */}
       {showDelete && (
         <DeleteModal
@@ -3680,10 +4483,10 @@ export function ResourceDetailPage() {
           <button
             key={tab.id}
             onClick={() => !tab.soon ? setActiveTab(tab.id) : setActiveTab(tab.id)}
-            className={`px-3 py-2 text-xs font-medium transition-colors relative ${
+            className={`px-3 py-2 text-xs font-semibold transition-colors relative ${
               activeTab === tab.id
-                ? 'text-status-info border-b-2 border-status-info -mb-px'
-                : 'text-kb-text-tertiary hover:text-kb-text-secondary'
+                ? 'text-kb-accent border-b-2 border-kb-accent -mb-px'
+                : 'text-kb-text-secondary hover:text-kb-text-primary'
             }`}
           >
             {tab.label}

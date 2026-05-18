@@ -91,8 +91,17 @@ func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
+	// Pods "restart" via delete (owning controller recreates them);
+	// workloads via rollout-restart annotation patch. Dispatch by type
+	// before the workload-only validation below — pods don't have a
+	// `spec.template` to patch so they need the synth path.
+	if resourceType == "pods" {
+		h.restartPod(w, r, namespace, name)
+		return
+	}
+
 	if !restartableTypes[resourceType] {
-		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot restart %s — only deployments, statefulsets, and daemonsets", resourceType))
+		respondError(w, http.StatusBadRequest, fmt.Sprintf("cannot restart %s — only pods, deployments, statefulsets, and daemonsets", resourceType))
 		return
 	}
 

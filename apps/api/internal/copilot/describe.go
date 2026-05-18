@@ -10,8 +10,14 @@ import (
 )
 
 // resourceTypeToGroupKind maps copilot resource type strings to K8s GroupKind.
-// Mirrors the same map in apps/api/internal/api/describe.go.
-var resourceTypeToGroupKind = map[string]schema.GroupKind{
+// MUST stay in sync with apps/api/internal/api/describe.go (the REST endpoint
+// uses the API package's map; the Copilot tool executor uses this one). A
+// drift means the operator's UI Describe button works for a type but Kobi
+// claims the type is unsupported, or vice versa. The drift test in
+// describe_sync_test.go fails the build when these maps diverge — DO NOT
+// remove the mirror; refactor both call sites to share if you must.
+// SPEC §3.2.1 has the full coverage roadmap.
+var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	"pods":                     {Group: "", Kind: "Pod"},
 	"nodes":                    {Group: "", Kind: "Node"},
 	"namespaces":               {Group: "", Kind: "Namespace"},
@@ -34,12 +40,26 @@ var resourceTypeToGroupKind = map[string]schema.GroupKind{
 	"hpas":                     {Group: "autoscaling", Kind: "HorizontalPodAutoscaler"},
 	"horizontalpodautoscalers": {Group: "autoscaling", Kind: "HorizontalPodAutoscaler"},
 	"storageclasses":           {Group: "storage.k8s.io", Kind: "StorageClass"},
+	"roles":                    {Group: "rbac.authorization.k8s.io", Kind: "Role"},
+	"clusterroles":             {Group: "rbac.authorization.k8s.io", Kind: "ClusterRole"},
+	"rolebindings":             {Group: "rbac.authorization.k8s.io", Kind: "RoleBinding"},
+	"clusterrolebindings":      {Group: "rbac.authorization.k8s.io", Kind: "ClusterRoleBinding"},
+	"endpointslices":           {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
+	// Describe-only support (added 2026-05-15). See SPEC §3.2.1 for the
+	// full UI-coverage roadmap of these types.
+	"resourcequotas":       {Group: "", Kind: "ResourceQuota"},
+	"limitranges":          {Group: "", Kind: "LimitRange"},
+	"serviceaccounts":      {Group: "", Kind: "ServiceAccount"},
+	"networkpolicies":      {Group: "networking.k8s.io", Kind: "NetworkPolicy"},
+	"poddisruptionbudgets": {Group: "policy", Kind: "PodDisruptionBudget"},
+	"priorityclasses":      {Group: "scheduling.k8s.io", Kind: "PriorityClass"},
+	"ingressclasses":       {Group: "networking.k8s.io", Kind: "IngressClass"},
 }
 
 // describeResource runs `kubectl describe` for the given resource and returns
 // the formatted output as a string.
 func describeResource(conn *cluster.Connector, resourceType, namespace, name string) (string, error) {
-	gk, ok := resourceTypeToGroupKind[resourceType]
+	gk, ok := ResourceTypeToGroupKind[resourceType]
 	if !ok {
 		return "", fmt.Errorf("unsupported resource type for describe: %s", resourceType)
 	}
