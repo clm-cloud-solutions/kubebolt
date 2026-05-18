@@ -1,21 +1,24 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
 
-// useServiceEndpoints reads kube-state-metrics' endpoint counts and
+// useServiceEndpoints reads kube-state-metrics' EndpointSlice counts and
 // reduces them to a per-Service summary. Same gated-signal pattern
 // as useNamespaceQuotas / useNodeStress: an empty cluster (no KSM)
 // returns an empty map; consumers fall back gracefully.
 //
-// Single VM round-trip: a label-set query that pulls available and
-// not_ready in one shot via {__name__=~...}, joined client-side.
-// Two separate queries would compose the same answer with twice the
-// VM hits per refetch.
+// KSM 2.10+ removed the legacy `kube_endpoint_*` collector in favour
+// of `kube_endpointslice_*` (the EndpointSlice API is the long-term
+// shape; legacy Endpoints is frozen). We derive the Service name by
+// stripping the controller-generated 5-char hash suffix from the
+// endpointslice name — every controller-created EndpointSlice follows
+// `<service-name>-<5-char-hash>`. Custom user-created EndpointSlices
+// that don't follow this shape fall through the strip unchanged and
+// just won't match a Service row, which is the correct behaviour.
 //
-// The KSM metric `kube_endpoint_*` is keyed by (namespace, endpoint)
-// where `endpoint` matches the Service name 1:1. We surface ready,
-// notReady, and total so consumers can render compact summaries
-// (e.g. "2/3" with the missing one flagged) without needing a
-// second hook.
+// Two VM round-trips: one for existence (info) so empty selectors
+// still register a 0/0 entry, one for counts (endpoints) grouped
+// server-side by (namespace, endpointslice, ready) to keep the
+// payload bounded as the cluster grows.
 
 export interface ServiceEndpointSummary {
   ready: number
@@ -25,37 +28,60 @@ export interface ServiceEndpointSummary {
 
 export type ServiceEndpointsMap = Record<string, ServiceEndpointSummary>
 
+// Strip the controller-generated hash suffix to derive the Service
+// name from an EndpointSlice name. The hash is 5 chars [a-z0-9]+ for
+// kube-controller-manager-created slices.
+function endpointSliceToService(slice: string): string {
+  return slice.replace(/-[a-z0-9]{5}$/, '')
+}
+
 export function useServiceEndpoints() {
   const q = useQuery({
     queryKey: ['service-endpoints'],
-    queryFn: () =>
-      api.queryMetrics({
-        query: '{__name__=~"kube_endpoint_address_(available|not_ready)"}',
-      }),
+    queryFn: async () => {
+      const [info, counts] = await Promise.all([
+        api.queryMetrics({ query: 'kube_endpointslice_info' }),
+        api.queryMetrics({
+          query: 'sum by (namespace, endpointslice, ready) (kube_endpointslice_endpoints)',
+        }),
+      ])
+      return { info, counts }
+    },
     staleTime: 30_000,
     refetchInterval: 30_000,
     retry: false,
   })
 
   const map: ServiceEndpointsMap = {}
-  for (const series of q.data?.data?.result ?? []) {
+  // Pass 1: every EndpointSlice that exists registers a zero entry,
+  // so a Service whose selector matches no pods (zero endpoint rows)
+  // still surfaces as 0/0 instead of being missing from the map.
+  for (const series of q.data?.info?.data?.result ?? []) {
     const m = series.metric as Record<string, string>
     const ns = m.namespace
-    const name = m.endpoint
-    if (!ns || !name) continue
+    const slice = m.endpointslice
+    if (!ns || !slice) continue
+    const svc = endpointSliceToService(slice)
+    const key = serviceKey(ns, svc)
+    if (!map[key]) map[key] = { ready: 0, notReady: 0, total: 0 }
+  }
+  // Pass 2: tally ready vs notReady from the grouped counts.
+  for (const series of q.data?.counts?.data?.result ?? []) {
+    const m = series.metric as Record<string, string>
+    const ns = m.namespace
+    const slice = m.endpointslice
+    if (!ns || !slice) continue
     const v = parseFloat(series.value?.[1] ?? '0')
     if (!isFinite(v)) continue
-    const key = serviceKey(ns, name)
+    const svc = endpointSliceToService(slice)
+    const key = serviceKey(ns, svc)
     let entry = map[key]
     if (!entry) {
       entry = { ready: 0, notReady: 0, total: 0 }
       map[key] = entry
     }
-    if (m.__name__ === 'kube_endpoint_address_available') {
-      entry.ready = v
-    } else if (m.__name__ === 'kube_endpoint_address_not_ready') {
-      entry.notReady = v
-    }
+    if (m.ready === 'true') entry.ready += v
+    else entry.notReady += v
   }
   for (const entry of Object.values(map)) {
     entry.total = entry.ready + entry.notReady
