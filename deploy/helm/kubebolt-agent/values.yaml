@@ -299,13 +299,20 @@ priority:
 priorityClassName: ""
 
 # ─── Resources ─────────────────────────────────────────────
+# Bumped 2026-05-17 after pprof investigation. Heap allocation churn
+# from Hubble flow parsing is ~200 MB/min on an active node; live
+# heap stays ~5 MiB but Go retains HeapSys (committed-but-idle pages)
+# unless GOMEMLIMIT pushes the scavenger. Resulting steady-state
+# working set lands at 50-70 MiB depending on flow rate + pod count.
+# The 30Mi/80Mi defaults were sized when the agent was kubelet-only;
+# adding Hubble + proxy + scrape pushed the realistic floor up.
 resources:
   requests:
     cpu: 10m
-    memory: 30Mi
+    memory: 64Mi
   limits:
     cpu: 100m
-    memory: 80Mi
+    memory: 128Mi
 
 # ─── Pod tuning ────────────────────────────────────────────
 podAnnotations: {}
@@ -434,9 +441,29 @@ logLevel: info  # debug | info | warn | error
 # ─── Extras ────────────────────────────────────────────────
 # Inject arbitrary env vars into the agent container. Useful for
 # features we don't have first-class Helm fields for yet.
-extraEnv: []
-#   - name: KUBEBOLT_AGENT_LOG_LEVEL
-#     value: debug
+#
+# GOMEMLIMIT default — added 2026-05-17 to address a memory retention
+# pattern surfaced in the field: high allocation churn from Hubble
+# flow parsing (~200 MB/min steady-state) makes Go expand HeapSys but
+# the scavenger is lazy returning idle pages to the OS without an
+# explicit memory target. Setting GOMEMLIMIT slightly below
+# resources.limits.memory makes GC + scavenger aggressive enough that
+# working_set stabilizes well under the limit. Costs ~5-10% extra CPU
+# in GC under load — acceptable since the agent's CPU baseline is
+# ~5-10m. Remove this entry only when overriding limits.memory
+# significantly higher (eg. >256Mi) where the scavenger pressure
+# becomes counterproductive.
+extraEnv:
+  - name: GOMEMLIMIT
+    value: "100MiB"
+# Append your own env vars below the chart default — operators who
+# want to OVERRIDE GOMEMLIMIT entirely should set this list directly.
+# Example to add log-level override alongside the default:
+#   extraEnv:
+#     - name: GOMEMLIMIT
+#       value: "100MiB"
+#     - name: KUBEBOLT_AGENT_LOG_LEVEL
+#       value: debug
 
 # Override chart-derived names when needed.
 nameOverride: ""

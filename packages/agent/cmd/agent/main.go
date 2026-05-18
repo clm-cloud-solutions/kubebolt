@@ -13,6 +13,8 @@ import (
 	"context"
 	"flag"
 	"log/slog"
+	"net/http"
+	_ "net/http/pprof" // registers /debug/pprof handlers on http.DefaultServeMux when the endpoint is enabled via KUBEBOLT_AGENT_PPROF_ADDR
 	"os"
 	"os/exec"
 	"os/signal"
@@ -98,7 +100,40 @@ func main() {
 		collector.WithDeferNodeNetwork(deferNodeNetwork))
 	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID)
 	buf := buffer.New(*bufferSize)
-	selfC := self.New(buf, clusterID, clusterName, *nodeName, agentVersion, tenantID)
+	// Pod cache + Hubble aggregator sizes are plumbed into self-metrics
+	// so kubebolt_agent_pods_cache_size + kubebolt_agent_aggregator_keys
+	// gauges attribute working-set growth to a specific subsystem during
+	// memory investigations. Aggregator is leader-only — the closure
+	// asks flows.ActiveAggregator() which returns nil on non-leader pods,
+	// and self.Collector skips emission in that case.
+	selfC := self.New(buf, clusterID, clusterName, *nodeName, agentVersion, tenantID,
+		self.WithPodsCache(pods),
+		self.WithAggregator(liveAggregatorSizer{}),
+	)
+
+	// pprof endpoint — opt-in via env. When set, exposes /debug/pprof
+	// on the chosen address (default empty = OFF). Use 127.0.0.1:6060
+	// so it's only reachable through `kubectl port-forward`; setting
+	// 0.0.0.0:6060 would expose the heap profile cluster-wide which is
+	// useful only on a dev kind cluster.
+	if pprofAddr := os.Getenv("KUBEBOLT_AGENT_PPROF_ADDR"); pprofAddr != "" {
+		go func() {
+			slog.Info("agent pprof endpoint listening",
+				slog.String("addr", pprofAddr),
+				slog.String("hint", "kubectl port-forward <pod> 6060 && go tool pprof http://localhost:6060/debug/pprof/heap"),
+			)
+			// Dedicated server (vs http.ListenAndServe with nil handler)
+			// so we can give it its own timeouts — slow heap profiles
+			// shouldn't be killed by an aggressive default.
+			srv := &http.Server{
+				Addr:              pprofAddr,
+				ReadHeaderTimeout: 5 * time.Second,
+			}
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("agent pprof endpoint failed", slog.String("error", err.Error()))
+			}
+		}()
+	}
 
 	// Auth + TLS config from helm-injected env vars. Half-set
 	// combinations fail loud here so misconfigurations don't silently
@@ -419,4 +454,26 @@ func resolveClusterIdent(ctx context.Context) (clusterID, clusterName string) {
 		return "local", clusterName
 	}
 	return string(ns.UID), clusterName
+}
+
+// liveAggregatorSizer adapts the package-level flows.ActiveAggregator()
+// to self.AggregatorSizer. Looking up the aggregator at Sizes() time
+// (instead of capturing a pointer at agent startup) handles two cases:
+//
+//   1. Non-leader pods never run RunCollector, so the aggregator is
+//      always nil here — emission is correctly skipped.
+//   2. Leadership transitions: when the agent re-acquires the lease
+//      after a flap, RunCollector publishes a fresh aggregator. The
+//      next Sizes() call picks it up automatically; we don't get
+//      stuck reading a stale pointer.
+//
+// Returns nil (not an empty map) when no aggregator is active — the
+// self.Collector for-ranges over a nil map cleanly, emitting nothing.
+type liveAggregatorSizer struct{}
+
+func (liveAggregatorSizer) Sizes() map[string]int {
+	if agg := flows.ActiveAggregator(); agg != nil {
+		return agg.Sizes()
+	}
+	return nil
 }
