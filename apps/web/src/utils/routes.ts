@@ -19,3 +19,25 @@ export const DASHBOARD_PATHS = ['/', '/capacity', '/reliability'] as const
 export function isDashboardPath(pathname: string): boolean {
   return (DASHBOARD_PATHS as readonly string[]).includes(pathname)
 }
+
+// canonicalListRoute maps the backend's full resource kind (the
+// "type" field carried in URLs, audit logs, and Kobi proposal
+// targets) to the alias the frontend's list routes are registered
+// under in App.tsx. Without this, opening a PVC detail at
+// /persistentvolumeclaims/.../... and then deleting lands the
+// post-delete navigate(`/${type}`) on a route that doesn't exist.
+//
+// Add an entry here whenever a new resource kind is exposed both by
+// its full apiserver kind AND by a short alias in the route table.
+// Resource types whose URL form already matches their list route
+// (deployments, pods, services, etc.) don't need an entry — they
+// fall through unchanged.
+const TYPE_ALIAS_FOR_ROUTE: Record<string, string> = {
+  persistentvolumeclaims: 'pvcs',
+  persistentvolumes: 'pvs',
+  horizontalpodautoscalers: 'hpas',
+}
+
+export function canonicalListRoute(resourceType: string): string {
+  return TYPE_ALIAS_FOR_ROUTE[resourceType] ?? resourceType
+}

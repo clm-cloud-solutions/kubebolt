@@ -14,7 +14,8 @@ import {
 } from 'lucide-react'
 import { api, ApiError } from '@/services/api'
 import { useCopilot } from '@/contexts/CopilotContext'
-import type { ActionProposal } from '@/services/copilot/types'
+import { canonicalListRoute } from '@/utils/routes'
+import type { ActionProposal, ActionProposalAction } from '@/services/copilot/types'
 
 type Status = 'pending' | 'executing' | 'success' | 'error' | 'dismissed'
 
@@ -89,12 +90,25 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
       if (
         action === 'restart_workload' ||
         action === 'scale_workload' ||
-        action === 'rollback_deployment'
+        action === 'rollback_deployment' ||
+        action === 'set_resources' ||
+        action === 'set_image' ||
+        action === 'set_env'
       ) {
+        // All workload-mutating actions trigger a rolling update — take
+        // the operator to the Pods tab so they can watch pods cycle.
         const ns = target.namespace || '_'
         navigate(`/${target.type}/${ns}/${target.name}?tab=${podsTabId(target.type)}`)
+      } else if (action === 'patch_hpa') {
+        // HPA bound changes don't roll pods; land on the HPA detail page
+        // where the new bounds + current scaling math are visible.
+        const ns = target.namespace || '_'
+        navigate(`/${target.type}/${ns}/${target.name}`)
       } else if (action === 'delete_resource') {
-        navigate(`/${target.type}`)
+        // List routes are alias-only — see canonicalListRoute. Without
+        // this an HPA delete addressed by horizontalpodautoscalers (the
+        // backend's canonical form) lands on a 404'd route.
+        navigate(`/${canonicalListRoute(target.type)}`)
       }
     } catch (e) {
       // Distinguish three flavors of 403:
@@ -229,7 +243,13 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
         </div>
       )}
 
-      {/* Params (e.g., replicas) — blastRadius is rendered separately below */}
+      {/* Params (e.g., replicas) — blastRadius is rendered separately below.
+          Array-of-objects params (set_resources / set_image / set_env's
+          containers/images) are formatted by formatProposalParam — without
+          it String(v) on an array of objects yields "[object Object]"
+          literally on the card. The LLM already renders a detailed
+          before/after table in its chat response, so the chips here just
+          need to give the operator a one-glance "which containers". */}
       {Object.keys(otherParams).length > 0 && (
         <div className="flex flex-wrap gap-1.5 ml-1">
           {Object.entries(otherParams).map(([k, v]) => (
@@ -237,7 +257,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
               key={k}
               className="text-[10px] font-mono text-kb-text-secondary bg-kb-bg/60 px-1.5 py-0.5 rounded border border-kb-border"
             >
-              {k}: <span className="text-kb-text-primary">{String(v)}</span>
+              {k}: <span className="text-kb-text-primary">{formatProposalParam(k, v)}</span>
             </span>
           ))}
         </div>
@@ -314,17 +334,18 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
           </div>
           {/* Live progress only for actions that have an observable rollout
               AND only while the polling hasn't already settled. Delete
-              leaves nothing to poll. progressSettled is set the first time
+              leaves nothing to poll; patch_hpa changes scaling math but
+              doesn't roll pods. progressSettled is set the first time
               the poller reaches its terminal state and persists into the
               proposal — protects against a re-mount restarting polling
               against a cluster that has since moved on (e.g. another scale
               was issued in a later turn). */}
-          {action !== 'delete_resource' && !proposal.progressSettled && (
+          {action !== 'delete_resource' && action !== 'patch_hpa' && !proposal.progressSettled && (
             <WorkloadProgress proposal={proposal} toolCallId={toolCallId} />
           )}
           {action === 'delete_resource' ? (
             <Link
-              to={`/${target.type}`}
+              to={`/${canonicalListRoute(target.type)}`}
               className="self-start text-[10px] font-mono text-kb-accent hover:underline inline-flex items-center gap-1"
             >
               <ExternalLink className="w-2.5 h-2.5" />
@@ -376,6 +397,59 @@ function RiskBadge({ risk }: { risk: ActionProposal['risk'] }) {
   )
 }
 
+// Exported for unit tests — there's no public consumer.
+export const _formatProposalParam_FOR_TEST = (key: string, value: unknown) =>
+  formatProposalParam(key, value)
+
+// formatProposalParam renders a proposal param value as a compact
+// human-readable string for the chips above the Execute button.
+// Primitive values (strings, numbers, booleans) round-trip through
+// String(v). The interesting case is array-of-objects params like
+// `containers` (set_resources / set_env) and `images` (set_image) —
+// we summarize those by extracting the most identifying field of
+// each row (container name; container→image for image patches) so
+// the chip stays one line. The detailed before/after diff lives in
+// the LLM's chat response, not on the card.
+function formatProposalParam(key: string, value: unknown): string {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '(empty)'
+    // images: render as "container→image" pairs.
+    if (key === 'images') {
+      return value
+        .map((v) => {
+          if (v && typeof v === 'object') {
+            const o = v as { container?: unknown; image?: unknown }
+            const container = typeof o.container === 'string' ? o.container : '?'
+            const image = typeof o.image === 'string' ? o.image : '?'
+            return `${container}→${image}`
+          }
+          return String(v)
+        })
+        .join(', ')
+    }
+    // containers: render as comma-separated container names.
+    if (key === 'containers') {
+      return value
+        .map((v) => {
+          if (v && typeof v === 'object') {
+            const o = v as { container?: unknown }
+            return typeof o.container === 'string' ? o.container : '?'
+          }
+          return String(v)
+        })
+        .join(', ')
+    }
+    // Unknown array param: count rather than dump.
+    return `${value.length} item${value.length === 1 ? '' : 's'}`
+  }
+  // Plain objects fall through to a count-of-keys summary rather than
+  // [object Object]. Primitives stringify normally.
+  if (value && typeof value === 'object') {
+    return `(${Object.keys(value as object).length} field${Object.keys(value as object).length === 1 ? '' : 's'})`
+  }
+  return String(value)
+}
+
 // runProposal dispatches the proposal to the matching mutation endpoint.
 // New action types added to the backend whitelist must be added here too —
 // keeping this switch exhaustive is what enforces the frontend whitelist.
@@ -420,6 +494,87 @@ async function runProposal(p: ActionProposal): Promise<string> {
         source: SOURCE,
       })
       return `Deleted ${p.target.type}/${p.target.namespace}/${p.target.name} (${r.status})`
+    }
+    case 'set_resources': {
+      const containers = (p.params.containers as unknown[]) ?? []
+      if (!Array.isArray(containers) || containers.length === 0) {
+        throw new Error('invalid containers in proposal')
+      }
+      const r = await api.setResourcesResource(
+        p.target.type,
+        p.target.namespace,
+        p.target.name,
+        containers as Parameters<typeof api.setResourcesResource>[3],
+        SOURCE,
+      )
+      return `Resources patched (${r.toResources.length} container${r.toResources.length === 1 ? '' : 's'})`
+    }
+    case 'set_image': {
+      const images = (p.params.images as unknown[]) ?? []
+      if (!Array.isArray(images) || images.length === 0) {
+        throw new Error('invalid images in proposal')
+      }
+      const r = await api.setImageResource(
+        p.target.type,
+        p.target.namespace,
+        p.target.name,
+        images as Parameters<typeof api.setImageResource>[3],
+        SOURCE,
+      )
+      if (r.status === 'unchanged') {
+        return 'No image change applied (every container already runs the requested image)'
+      }
+      // Show the first container's before/after so the chat line is useful
+      // at a glance. Multi-container patches summarize as a count.
+      if (r.toImages.length === 1 && r.fromImages.length === 1) {
+        return `Image updated: ${r.fromImages[0].image} → ${r.toImages[0].image}`
+      }
+      return `Images patched (${r.toImages.length} containers)`
+    }
+    case 'set_env': {
+      const containers = (p.params.containers as unknown[]) ?? []
+      if (!Array.isArray(containers) || containers.length === 0) {
+        throw new Error('invalid containers in proposal')
+      }
+      const triggerRollout = p.params.triggerRollout !== false // default true
+      const r = await api.setEnvResource(
+        p.target.type,
+        p.target.namespace,
+        p.target.name,
+        {
+          containers: containers as Parameters<typeof api.setEnvResource>[3]['containers'],
+          triggerRollout,
+        },
+        SOURCE,
+      )
+      // Count entries set vs removed across all containers for a clean summary
+      let setCount = 0
+      let removeCount = 0
+      for (const c of containers as Array<{ env?: Array<{ action?: string }> }>) {
+        for (const e of c.env ?? []) {
+          if (e.action === 'set') setCount++
+          else if (e.action === 'remove') removeCount++
+        }
+      }
+      const rolloutNote = r.triggerRollout ? ' (rolling restart triggered)' : ''
+      return `Env patched: ${setCount} set, ${removeCount} removed${rolloutNote}`
+    }
+    case 'patch_hpa': {
+      const minR = typeof p.params.minReplicas === 'number' ? (p.params.minReplicas as number) : undefined
+      const maxR = typeof p.params.maxReplicas === 'number' ? (p.params.maxReplicas as number) : undefined
+      if (minR === undefined && maxR === undefined) {
+        throw new Error('invalid bounds in proposal — at least one of minReplicas/maxReplicas required')
+      }
+      const r = await api.patchHpaBounds(
+        p.target.namespace,
+        p.target.name,
+        { minReplicas: minR, maxReplicas: maxR },
+        SOURCE,
+      )
+      if (r.status === 'unchanged') {
+        return 'No bound change applied (current values already match)'
+      }
+      return `HPA bounds patched: min ${r.fromBounds.minReplicas} → ${r.toBounds.minReplicas}, max ${r.fromBounds.maxReplicas} → ${r.toBounds.maxReplicas}`
     }
     default:
       throw new Error(`unsupported action: ${p.action}`)
@@ -655,7 +810,18 @@ function WorkloadProgress({
     retry: 1,
   })
 
-  if (proposal.action !== 'restart_workload' && proposal.action !== 'scale_workload') {
+  // rollingUpdateActions are the proposals that mutate the pod template
+  // and trigger a rolling update — they share restart_workload's
+  // convergence semantics (generation observed + ready == desired).
+  // patch_hpa is excluded one level up (it doesn't roll pods).
+  const rollingUpdateActions = new Set<ActionProposalAction>([
+    'restart_workload',
+    'set_resources',
+    'set_image',
+    'set_env',
+  ])
+
+  if (!rollingUpdateActions.has(proposal.action) && proposal.action !== 'scale_workload') {
     return null
   }
 
@@ -674,7 +840,7 @@ function WorkloadProgress({
   let line: string
   let isComplete: boolean
 
-  if (proposal.action === 'restart_workload') {
+  if (rollingUpdateActions.has(proposal.action)) {
     // During a real rollout, `updated` climbs from 0 to desired — show it.
     // For no-op restarts (or when updated lags), it stays at 0 even though
     // the workload is stable; in that case we suppress the misleading

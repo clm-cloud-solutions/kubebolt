@@ -261,6 +261,12 @@ func NewRouter(
 					// the `$patch: delete` directive. Tier 2 #7, see
 					// internal/k8s-operations/tier2-set-env.md.
 					r.Post("/resources/{type}/{namespace}/{name}/set-env", h.handleSetEnv)
+					// Set HPA bounds — strategic merge patch on
+					// spec.minReplicas / spec.maxReplicas. Scoped to
+					// hpas / horizontalpodautoscalers (autoscaling/v1).
+					// Server-side cap at maxReplicas=1000. See
+					// internal/copilot-execution-capacity/06-insight-rule-coverage.md.
+					r.Post("/resources/{type}/{namespace}/{name}/set-bounds", h.handleSetHpaBounds)
 					// Edit metadata — kubectl label / kubectl annotate
 					// equivalents. JSON merge patch on metadata.labels +
 					// metadata.annotations via the dynamic client; works

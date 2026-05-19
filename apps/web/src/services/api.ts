@@ -571,6 +571,28 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Patch HPA bounds — strategic merge on spec.minReplicas /
+  // spec.maxReplicas. Companion to the set_* family but scoped to
+  // autoscaling/v1 HPAs. Backend enforces a maxReplicas <= 1000
+  // safety cap. See
+  // internal/copilot-execution-capacity/06-insight-rule-coverage.md.
+  patchHpaBounds: (
+    namespace: string,
+    name: string,
+    body: { minReplicas?: number; maxReplicas?: number },
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched' | 'unchanged'
+      fromBounds: { minReplicas: number; maxReplicas: number }
+      toBounds: { minReplicas: number; maxReplicas: number }
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/hpas/${namespace}/${name}/set-bounds`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Edit metadata — kubectl label / kubectl annotate equivalents.
   // JSON merge patch on metadata.labels + metadata.annotations via
   // the dynamic client; works on any kind. Tier 2 #8 — see
