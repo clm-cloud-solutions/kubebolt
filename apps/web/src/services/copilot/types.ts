@@ -116,10 +116,24 @@ export interface ActionProposalTarget {
   name: string
 }
 
+// Known action kinds. Stays a union of literals so a typo at a dispatch
+// switch fails the typecheck. New propose_* tools added on the backend
+// must extend this union AND add a runProposal case in
+// ActionProposalCard.tsx.
+export type ActionProposalAction =
+  | 'restart_workload'
+  | 'scale_workload'
+  | 'rollback_deployment'
+  | 'delete_resource'
+  | 'set_resources'
+  | 'set_image'
+  | 'set_env'
+  | 'patch_hpa'
+
 export interface ActionProposal {
   kind: 'action_proposal'
   version: number
-  action: string // e.g. "restart_workload", "scale_workload"
+  action: ActionProposalAction
   target: ActionProposalTarget
   params: Record<string, unknown>
   summary: string

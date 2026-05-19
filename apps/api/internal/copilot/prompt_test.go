@@ -199,6 +199,72 @@ func TestSystemPromptTimeAnchorGuidance(t *testing.T) {
 	}
 }
 
+// TestRemediationMatrixGuidance pins the rule → tool mapping that
+// teaches Kobi to pick the right propose_* for each insight rule.
+// The strings below are NOT cosmetic — dropping them silently
+// regresses Kobi to "restart everything" for resource-shape problems
+// (OOM, throttle, etc.) where restart alone is the wrong fix.
+//
+// If you reword, update both the prompt and this test deliberately —
+// these guardrails are what keep Kobi from re-proposing the same
+// useless restart after each crash.
+func TestRemediationMatrixGuidance(t *testing.T) {
+	prompt := BuildSystemPrompt()
+	lower := strings.ToLower(prompt)
+
+	mustContain := []string{
+		// Rule → tool anchors. Lowercased so cosmetic capitalization
+		// changes don't false-fail.
+		"oomkilled",
+		"propose_set_resources",
+		"propose_set_image",
+		"propose_set_env",
+		"propose_patch_hpa",
+		"hpamaxedoutrule",
+		// Negative guidance: cordon/drain and the diagnostic-only rules
+		// must explicitly NOT be proposed.
+		"nodenotready",
+		"do not propose",
+		"pvc pending",
+		"service with no endpoints",
+		// Anti-pattern callouts the LLM must internalize.
+		"restart alone is not a fix",
+		"wrong direction", // lowering minReplicas for max-pinned HPA
+		// Server-side cap on patch_hpa must surface in the prompt so
+		// the LLM knows the max it can request.
+		"maxreplicas <= 1000",
+	}
+
+	for _, s := range mustContain {
+		if !strings.Contains(lower, s) {
+			t.Errorf("system prompt is missing remediation guidance %q — Kobi will regress to wrong-tool fixes", s)
+		}
+	}
+}
+
+// TestProposeToolDefinitionsRegistered locks in that the 4 new tools
+// added in 06-insight-rule-coverage actually appear in ToolDefinitions.
+// A tool that exists in the prompt but not in the registered tool list
+// is invisible to the LLM and produces "unknown tool" errors when the
+// LLM tries to call it.
+func TestProposeToolDefinitionsRegistered(t *testing.T) {
+	want := []string{
+		"propose_set_resources",
+		"propose_set_image",
+		"propose_set_env",
+		"propose_patch_hpa",
+	}
+	registered := map[string]bool{}
+	for _, td := range ToolDefinitions() {
+		registered[td.Name] = true
+	}
+	for _, name := range want {
+		if !registered[name] {
+			t.Errorf("tool %q not registered in ToolDefinitions()", name)
+		}
+	}
+}
+
 func mustContainAll(t *testing.T, got string, wants ...string) {
 	t.Helper()
 	for _, w := range wants {

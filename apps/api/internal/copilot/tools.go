@@ -277,6 +277,171 @@ func ToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
+			Name: "propose_set_resources",
+			Description: "Propose updating CPU/memory requests and/or limits on a Deployment, StatefulSet, or " +
+				"DaemonSet — the equivalent of `kubectl set resources`. DOES NOT execute; returns a proposal " +
+				"that the UI renders as a confirmation card. " +
+				"Use this for the resource-shape insights: OOMKilled (raise memory limit), CPU throttling " +
+				"(raise CPU limit), memory pressure (raise memory), under-request (align requests with " +
+				"steady-state usage), frequent restarts where the root cause is resource starvation. " +
+				"Restart alone is NOT a fix for OOMKilled or throttling — the same crash repeats after the " +
+				"restart. " +
+				"ALWAYS call get_resource_detail first to read the current values and the live usage " +
+				"snapshot, then propose a delta grounded in what you observed (do NOT guess values). " +
+				"Send only the dimensions you want to change; empty/absent fields are left untouched. " +
+				"This triggers a rolling update.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type":      strPropEnum("Workload type", []string{"deployments", "statefulsets", "daemonsets"}),
+					"namespace": strProp("Workload namespace"),
+					"name":      strProp("Workload name"),
+					"containers": map[string]interface{}{
+						"type":        "array",
+						"description": "Per-container resource patches. Only the dimensions you set are touched.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"container":     strProp("Container name on the pod template"),
+								"initContainer": boolProp("Set true for an init container; default false"),
+								"requests": map[string]interface{}{
+									"type":        "object",
+									"description": "Resource requests. Omit a dimension to leave it alone.",
+									"properties": map[string]interface{}{
+										"cpu":    strProp("CPU request (e.g. 100m, 0.5, 2)"),
+										"memory": strProp("Memory request (e.g. 128Mi, 1Gi)"),
+									},
+								},
+								"limits": map[string]interface{}{
+									"type":        "object",
+									"description": "Resource limits. Omit a dimension to leave it alone.",
+									"properties": map[string]interface{}{
+										"cpu":    strProp("CPU limit (e.g. 500m, 1)"),
+										"memory": strProp("Memory limit (e.g. 256Mi, 2Gi)"),
+									},
+								},
+							},
+							"required": []string{"container"},
+						},
+					},
+					"rationale": strProp("Why these values are right (cite observed usage / limit, not just symptoms). Shown on the card."),
+					"risk":      riskProp(),
+				},
+				"required": []string{"type", "namespace", "name", "containers", "rationale"},
+			},
+		},
+		{
+			Name: "propose_set_image",
+			Description: "Propose updating one or more container images on a Deployment, StatefulSet, or " +
+				"DaemonSet — the equivalent of `kubectl set image`. DOES NOT execute; returns a proposal " +
+				"that the UI renders as a confirmation card. " +
+				"Use this for ImagePullBackOff / ErrImagePull when the new tag is known good (operator " +
+				"provides it OR you have strong evidence the target tag will pull). " +
+				"PREFER propose_rollback_deployment first when the PREVIOUS revision was healthy and the " +
+				"current bad tag arrived in a deploy — rollback is strictly safer (reverts the entire pod " +
+				"template, not just the image, so any other change in the same deploy reverts with it). " +
+				"Only use set_image when rollback is not applicable (no prior good revision, or operator " +
+				"asks specifically for a new tag). This triggers a rolling update.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type":      strPropEnum("Workload type", []string{"deployments", "statefulsets", "daemonsets"}),
+					"namespace": strProp("Workload namespace"),
+					"name":      strProp("Workload name"),
+					"images": map[string]interface{}{
+						"type":        "array",
+						"description": "Container/image pairs to patch.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"container": strProp("Container name on the pod template"),
+								"image":     strProp("Full image reference (registry/repo:tag or digest)"),
+							},
+							"required": []string{"container", "image"},
+						},
+					},
+					"rationale": strProp("Why this image change is the right fix. Shown on the card."),
+					"risk":      riskProp(),
+				},
+				"required": []string{"type", "namespace", "name", "images", "rationale"},
+			},
+		},
+		{
+			Name: "propose_set_env",
+			Description: "Propose adding/updating/removing environment variables on a Deployment, StatefulSet, " +
+				"or DaemonSet — the equivalent of `kubectl set env`. DOES NOT execute; returns a proposal " +
+				"that the UI renders as a confirmation card. " +
+				"Use this for crash-loops whose root cause is clearly env-config (e.g. logs show `panic: " +
+				"DATABASE_URL not set`, `invalid LOG_LEVEL=foo`, `required env BLAH missing`). " +
+				"DO NOT use for credential-shaped variables — KubeBolt rejects literal `value` for env " +
+				"names matching password|secret|token|key|credential; those changes go through " +
+				"ConfigMap/Secret resources in the YAML editor. " +
+				"Each env entry has an `action`: \"set\" (add or update; provide `value`) or \"remove\" " +
+				"(drop the entry; just provide `name`). Only literal values are supported here — " +
+				"`valueFrom` (ConfigMap/Secret/fieldRef) is reserved for the YAML editor. " +
+				"This triggers a rolling update.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"type":      strPropEnum("Workload type", []string{"deployments", "statefulsets", "daemonsets"}),
+					"namespace": strProp("Workload namespace"),
+					"name":      strProp("Workload name"),
+					"containers": map[string]interface{}{
+						"type":        "array",
+						"description": "Per-container env edits.",
+						"items": map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"container":     strProp("Container name on the pod template"),
+								"initContainer": boolProp("Set true for an init container; default false"),
+								"env": map[string]interface{}{
+									"type":        "array",
+									"description": "Env entries to set or remove.",
+									"items": map[string]interface{}{
+										"type": "object",
+										"properties": map[string]interface{}{
+											"name":   strProp("Env var name (C_IDENTIFIER: letters, digits, underscore; cannot start with a digit)"),
+											"action": strPropEnum("set = add/update; remove = drop the entry", []string{"set", "remove"}),
+											"value":  strProp("Literal value (required for set, ignored for remove). Do NOT put credentials here — use Secret refs in the YAML editor."),
+										},
+										"required": []string{"name", "action"},
+									},
+								},
+							},
+							"required": []string{"container", "env"},
+						},
+					},
+					"rationale": strProp("Why this env change is the right fix (cite the error in the logs). Shown on the card."),
+					"risk":      riskProp(),
+				},
+				"required": []string{"type", "namespace", "name", "containers", "rationale"},
+			},
+		},
+		{
+			Name: "propose_patch_hpa",
+			Description: "Propose updating an HPA's minReplicas and/or maxReplicas bounds. DOES NOT execute; " +
+				"returns a proposal that the UI renders as a confirmation card. " +
+				"Use this when an HPA is pinned at maxReplicas under sustained pressure (the " +
+				"hpaMaxedOutRule insight) AND the operator wants the workload to be able to scale " +
+				"higher. Almost always the fix is to RAISE maxReplicas — lowering minReplicas as a " +
+				"response to a max-pinned HPA is the wrong direction. " +
+				"Server-side cap: maxReplicas must be <= 1000. At least one of minReplicas / " +
+				"maxReplicas must be present; sending only one leaves the other untouched. " +
+				"This does NOT trigger a rolling update — it only changes scaling math.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"namespace":   strProp("HPA namespace"),
+					"name":        strProp("HPA name"),
+					"minReplicas": numProp("New minimum replicas (>= 0). Omit to leave unchanged."),
+					"maxReplicas": numProp("New maximum replicas (>= 1, <= 1000 safety cap). Omit to leave unchanged."),
+					"rationale":   strProp("Why this bound change is right (cite the pressure pattern). Shown on the card."),
+					"risk":        riskProp(),
+				},
+				"required": []string{"namespace", "name", "rationale"},
+			},
+		},
+		{
 			Name: "get_kubebolt_docs",
 			Description: "Return product documentation about KubeBolt itself (features, navigation, admin " +
 				"pages, configuration). Use this ONLY when the user asks how to do something in the KubeBolt " +

@@ -459,6 +459,321 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		p.Reversible = true
 		res.Content = jsonString(p)
 
+	case "propose_set_resources":
+		t := stringArg(args, "type")
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		if t == "" || ns == "" || name == "" {
+			res.Content = `{"error":"type, namespace, and name are required"}`
+			res.IsError = true
+			return res
+		}
+		switch t {
+		case "deployments", "statefulsets", "daemonsets":
+		default:
+			res.Content = fmt.Sprintf(`{"error":"cannot set-resources on %s — only deployments, statefulsets, daemonsets"}`, t)
+			res.IsError = true
+			return res
+		}
+		containers, err := parseSetResourcesContainers(args["containers"])
+		if err != nil {
+			res.Content = errJSON(err)
+			res.IsError = true
+			return res
+		}
+		if len(containers) == 0 {
+			res.Content = `{"error":"containers is required and must be non-empty"}`
+			res.IsError = true
+			return res
+		}
+		detail, err := conn.GetResourceDetail(t, ns, name)
+		if err != nil {
+			res.Content = errJSON(fmt.Errorf("target %s/%s/%s not found: %w", t, ns, name, err))
+			res.IsError = true
+			return res
+		}
+		// Validate every requested container name exists on the pod
+		// template. Reject early with the valid list so the LLM can
+		// retry with a correct name on the next turn instead of seeing
+		// a 400 after the user clicks Execute.
+		validNames := extractContainerNames(detail)
+		for _, c := range containers {
+			if !validNames[c["container"].(string)] {
+				res.Content = jsonString(map[string]interface{}{
+					"error":          fmt.Sprintf("container %q not found on %s/%s/%s", c["container"], t, ns, name),
+					"validContainers": namesAsSlice(validNames),
+				})
+				res.IsError = true
+				return res
+			}
+		}
+		p := newProposal("set_resources")
+		p.Target = ProposalTarget{Type: t, Namespace: ns, Name: name}
+		p.Params["containers"] = containers
+		p.Summary = fmt.Sprintf("Set resources on %s %s/%s (%d container%s)", strings.TrimSuffix(t, "s"), ns, name, len(containers), pluralS(len(containers)))
+		p.Rationale = rationale
+		// Default medium — spec-mutating + triggers a rolling update,
+		// so heavier than restart. LLM can override per riskProp.
+		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
+		p.Reversible = true
+		res.Content = jsonString(p)
+
+	case "propose_set_image":
+		t := stringArg(args, "type")
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		if t == "" || ns == "" || name == "" {
+			res.Content = `{"error":"type, namespace, and name are required"}`
+			res.IsError = true
+			return res
+		}
+		switch t {
+		case "deployments", "statefulsets", "daemonsets":
+		default:
+			res.Content = fmt.Sprintf(`{"error":"cannot set-image on %s — only deployments, statefulsets, daemonsets"}`, t)
+			res.IsError = true
+			return res
+		}
+		images, err := parseSetImageEntries(args["images"])
+		if err != nil {
+			res.Content = errJSON(err)
+			res.IsError = true
+			return res
+		}
+		if len(images) == 0 {
+			res.Content = `{"error":"images is required and must be non-empty"}`
+			res.IsError = true
+			return res
+		}
+		detail, err := conn.GetResourceDetail(t, ns, name)
+		if err != nil {
+			res.Content = errJSON(fmt.Errorf("target %s/%s/%s not found: %w", t, ns, name, err))
+			res.IsError = true
+			return res
+		}
+		// Build name → current image map so we can both validate the
+		// container exists AND short-circuit if every requested image
+		// already matches. Without the short-circuit Kobi would render a
+		// useless card whose Execute is a no-op.
+		currentImages := extractContainerImages(detail)
+		if len(currentImages) == 0 {
+			res.Content = jsonString(map[string]interface{}{
+				"error": fmt.Sprintf("could not read current container images for %s/%s/%s", t, ns, name),
+			})
+			res.IsError = true
+			return res
+		}
+		allUnchanged := true
+		for _, img := range images {
+			containerName := img["container"].(string)
+			requestedImage := img["image"].(string)
+			currentImage, ok := currentImages[containerName]
+			if !ok {
+				res.Content = jsonString(map[string]interface{}{
+					"error":           fmt.Sprintf("container %q not found on %s/%s/%s", containerName, t, ns, name),
+					"validContainers": mapKeys(currentImages),
+				})
+				res.IsError = true
+				return res
+			}
+			if requestedImage != currentImage {
+				allUnchanged = false
+			}
+		}
+		if allUnchanged {
+			res.Content = jsonString(map[string]interface{}{
+				"error": "no image change requested — every container already runs the requested image",
+				"hint":  "if the workload is failing despite identical images, the cause is elsewhere (probes, env, resources)",
+			})
+			res.IsError = true
+			return res
+		}
+		p := newProposal("set_image")
+		p.Target = ProposalTarget{Type: t, Namespace: ns, Name: name}
+		p.Params["images"] = images
+		p.Summary = fmt.Sprintf("Set image on %s %s/%s (%d container%s)", strings.TrimSuffix(t, "s"), ns, name, len(images), pluralS(len(images)))
+		p.Rationale = rationale
+		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
+		p.Reversible = true
+		res.Content = jsonString(p)
+
+	case "propose_set_env":
+		t := stringArg(args, "type")
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		if t == "" || ns == "" || name == "" {
+			res.Content = `{"error":"type, namespace, and name are required"}`
+			res.IsError = true
+			return res
+		}
+		switch t {
+		case "deployments", "statefulsets", "daemonsets":
+		default:
+			res.Content = fmt.Sprintf(`{"error":"cannot set-env on %s — only deployments, statefulsets, daemonsets"}`, t)
+			res.IsError = true
+			return res
+		}
+		envContainers, err := parseSetEnvContainers(args["containers"])
+		if err != nil {
+			res.Content = errJSON(err)
+			res.IsError = true
+			return res
+		}
+		if len(envContainers) == 0 {
+			res.Content = `{"error":"containers is required and must be non-empty"}`
+			res.IsError = true
+			return res
+		}
+		detail, err := conn.GetResourceDetail(t, ns, name)
+		if err != nil {
+			res.Content = errJSON(fmt.Errorf("target %s/%s/%s not found: %w", t, ns, name, err))
+			res.IsError = true
+			return res
+		}
+		validNames := extractContainerNames(detail)
+		nSet, nRemove := 0, 0
+		for _, c := range envContainers {
+			containerName := c["container"].(string)
+			if !validNames[containerName] {
+				res.Content = jsonString(map[string]interface{}{
+					"error":           fmt.Sprintf("container %q not found on %s/%s/%s", containerName, t, ns, name),
+					"validContainers": namesAsSlice(validNames),
+				})
+				res.IsError = true
+				return res
+			}
+			envList, _ := c["env"].([]map[string]interface{})
+			for _, e := range envList {
+				envName, _ := e["name"].(string)
+				action, _ := e["action"].(string)
+				if envName == "" {
+					res.Content = jsonString(map[string]interface{}{
+						"error": fmt.Sprintf("env entry on container %q has empty name", containerName),
+					})
+					res.IsError = true
+					return res
+				}
+				switch action {
+				case "set":
+					nSet++
+					// Credential guardrail: refuse a literal value for any
+					// env var whose NAME looks credential-shaped. The LLM
+					// cannot be trusted to handle credentials by direct
+					// value — the right path is Secret/CM refs in the
+					// YAML editor.
+					if credentialNameRE.MatchString(envName) {
+						if v, ok := e["value"].(string); ok && v != "" {
+							res.Content = jsonString(map[string]interface{}{
+								"error":   fmt.Sprintf("refusing to set literal value on credential-shaped env var %q on container %q", envName, containerName),
+								"hint":    "use the YAML editor to bind this env var to a Secret/ConfigMap (valueFrom.secretKeyRef / configMapKeyRef)",
+								"pattern": "names matching password|secret|token|key|credential are blocked at the Copilot layer",
+							})
+							res.IsError = true
+							return res
+						}
+					}
+				case "remove":
+					nRemove++
+				default:
+					res.Content = jsonString(map[string]interface{}{
+						"error": fmt.Sprintf("env entry %q on container %q has invalid action %q — must be \"set\" or \"remove\"", envName, containerName, action),
+					})
+					res.IsError = true
+					return res
+				}
+			}
+		}
+		p := newProposal("set_env")
+		p.Target = ProposalTarget{Type: t, Namespace: ns, Name: name}
+		p.Params["containers"] = envContainers
+		// triggerRollout=true so existing pods pick up literal-value
+		// changes immediately. The set-env endpoint applies the
+		// rollout-restart annotation when this is set.
+		p.Params["triggerRollout"] = true
+		p.Summary = fmt.Sprintf("Set env on %s %s/%s (%d set, %d remove)", strings.TrimSuffix(t, "s"), ns, name, nSet, nRemove)
+		p.Rationale = rationale
+		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
+		p.Reversible = true
+		res.Content = jsonString(p)
+
+	case "propose_patch_hpa":
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		rationale := stringArg(args, "rationale")
+		if ns == "" || name == "" {
+			res.Content = `{"error":"namespace and name are required"}`
+			res.IsError = true
+			return res
+		}
+		// At least one bound must be present. We accept the keys whether
+		// they arrive as JSON number (float64) or as an absent value.
+		_, hasMin := args["minReplicas"]
+		_, hasMax := args["maxReplicas"]
+		if !hasMin && !hasMax {
+			res.Content = `{"error":"at least one of minReplicas or maxReplicas is required"}`
+			res.IsError = true
+			return res
+		}
+		minR := intArg(args, "minReplicas", -1)
+		maxR := intArg(args, "maxReplicas", -1)
+		// Validate the side the caller actually set.
+		if hasMin && minR < 0 {
+			res.Content = `{"error":"minReplicas must be >= 0"}`
+			res.IsError = true
+			return res
+		}
+		if hasMax && maxR < 1 {
+			res.Content = `{"error":"maxReplicas must be >= 1"}`
+			res.IsError = true
+			return res
+		}
+		if hasMax && maxR > hpaMaxReplicasCap {
+			res.Content = jsonString(map[string]interface{}{
+				"error": fmt.Sprintf("maxReplicas must be <= %d (safety cap)", hpaMaxReplicasCap),
+				"hint":  "if you genuinely need more than that, scale via the YAML editor and add cluster-ops review",
+			})
+			res.IsError = true
+			return res
+		}
+		if hasMin && hasMax && maxR < minR {
+			res.Content = jsonString(map[string]interface{}{
+				"error": fmt.Sprintf("maxReplicas (%d) must be >= minReplicas (%d)", maxR, minR),
+			})
+			res.IsError = true
+			return res
+		}
+		// Verify the HPA exists (informer cache lookup).
+		if _, err := conn.GetResourceDetail("hpas", ns, name); err != nil {
+			res.Content = errJSON(fmt.Errorf("target hpas/%s/%s not found: %w", ns, name, err))
+			res.IsError = true
+			return res
+		}
+		p := newProposal("patch_hpa")
+		p.Target = ProposalTarget{Type: "hpas", Namespace: ns, Name: name}
+		if hasMin {
+			p.Params["minReplicas"] = minR
+		}
+		if hasMax {
+			p.Params["maxReplicas"] = maxR
+		}
+		// Summary line: prefer "max X → Y" when the caller is bumping
+		// maxReplicas (the common case), fall back to a generic line.
+		switch {
+		case hasMax && hasMin:
+			p.Summary = fmt.Sprintf("Patch HPA %s/%s (min=%d, max=%d)", ns, name, minR, maxR)
+		case hasMax:
+			p.Summary = fmt.Sprintf("Patch HPA %s/%s (max=%d)", ns, name, maxR)
+		case hasMin:
+			p.Summary = fmt.Sprintf("Patch HPA %s/%s (min=%d)", ns, name, minR)
+		}
+		p.Rationale = rationale
+		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
+		p.Reversible = true
+		res.Content = jsonString(p)
+
 	case "propose_delete_resource":
 		t := stringArg(args, "type")
 		ns := stringArg(args, "namespace")
@@ -760,6 +1075,224 @@ func normalizeKind(rt string) string {
 		return "StorageClass"
 	}
 	return rt
+}
+
+// hpaMaxReplicasCap is the safety ceiling Kobi enforces on
+// propose_patch_hpa. Mirrors maxReplicasSafetyCap in the api package
+// — they MUST stay in sync. If the api-layer cap changes, this
+// constant has to move with it; the load-bearing test in
+// actions_hpa_test.go (TestMaxReplicasSafetyCapDefined) pins the
+// canonical value to 1000 and is the source of truth.
+const hpaMaxReplicasCap = 1000
+
+// credentialNameRE matches env var NAMES that look credential-shaped.
+// We refuse a literal `value` on these (the operator must bind a
+// Secret/ConfigMap reference via the YAML editor). The pattern is
+// intentionally conservative — only the most obvious "this is a
+// secret" naming conventions, to avoid false positives that would
+// frustrate operators tweaking legit non-secret env vars.
+var credentialNameRE = regexp.MustCompile(`(?i)(password|secret|token|key|credential)`)
+
+// parseSetResourcesContainers normalizes the LLM-provided containers
+// array into a clean []map[string]interface{} where each row is
+// shape-checked. We rebuild instead of passing through so the
+// downstream JSON (in the ActionProposal params) is stable regardless
+// of what the LLM padded the call with.
+func parseSetResourcesContainers(raw interface{}) ([]map[string]interface{}, error) {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("containers must be an array")
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for i, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("containers[%d] must be an object", i)
+		}
+		containerName, _ := m["container"].(string)
+		if containerName == "" {
+			return nil, fmt.Errorf("containers[%d].container is required", i)
+		}
+		row := map[string]interface{}{"container": containerName}
+		if v, ok := m["initContainer"].(bool); ok && v {
+			row["initContainer"] = true
+		}
+		if req, ok := m["requests"].(map[string]interface{}); ok {
+			cleaned := cleanQuantityMap(req)
+			if len(cleaned) > 0 {
+				row["requests"] = cleaned
+			}
+		}
+		if lim, ok := m["limits"].(map[string]interface{}); ok {
+			cleaned := cleanQuantityMap(lim)
+			if len(cleaned) > 0 {
+				row["limits"] = cleaned
+			}
+		}
+		if row["requests"] == nil && row["limits"] == nil {
+			return nil, fmt.Errorf("containers[%d] must set at least one of requests/limits", i)
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// cleanQuantityMap keeps only the cpu/memory keys with non-empty
+// string values. Drops everything else so the proposal payload is
+// not contaminated by stray fields the LLM may have added.
+func cleanQuantityMap(m map[string]interface{}) map[string]interface{} {
+	out := map[string]interface{}{}
+	if v, ok := m["cpu"].(string); ok && v != "" {
+		out["cpu"] = v
+	}
+	if v, ok := m["memory"].(string); ok && v != "" {
+		out["memory"] = v
+	}
+	return out
+}
+
+// parseSetImageEntries normalizes the LLM-provided images array.
+func parseSetImageEntries(raw interface{}) ([]map[string]interface{}, error) {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("images must be an array")
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for i, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("images[%d] must be an object", i)
+		}
+		containerName, _ := m["container"].(string)
+		image, _ := m["image"].(string)
+		if containerName == "" {
+			return nil, fmt.Errorf("images[%d].container is required", i)
+		}
+		if image == "" {
+			return nil, fmt.Errorf("images[%d].image is required", i)
+		}
+		out = append(out, map[string]interface{}{
+			"container": containerName,
+			"image":     image,
+		})
+	}
+	return out, nil
+}
+
+// parseSetEnvContainers normalizes the LLM-provided env containers
+// array. The env entry list inside each container is kept as
+// []map[string]interface{} so the executor case can iterate without
+// having to reshape again. valueFrom is not exposed here — only
+// literal value or remove — per the file-level comment on the env
+// tool description (literal values + Secret refs split between Kobi
+// and the YAML editor).
+func parseSetEnvContainers(raw interface{}) ([]map[string]interface{}, error) {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("containers must be an array")
+	}
+	out := make([]map[string]interface{}, 0, len(arr))
+	for i, item := range arr {
+		m, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("containers[%d] must be an object", i)
+		}
+		containerName, _ := m["container"].(string)
+		if containerName == "" {
+			return nil, fmt.Errorf("containers[%d].container is required", i)
+		}
+		envRaw, ok := m["env"].([]interface{})
+		if !ok || len(envRaw) == 0 {
+			return nil, fmt.Errorf("containers[%d].env is required and must be non-empty", i)
+		}
+		envOut := make([]map[string]interface{}, 0, len(envRaw))
+		for j, e := range envRaw {
+			em, ok := e.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("containers[%d].env[%d] must be an object", i, j)
+			}
+			row := map[string]interface{}{}
+			if v, ok := em["name"].(string); ok {
+				row["name"] = v
+			}
+			if v, ok := em["action"].(string); ok {
+				row["action"] = v
+			}
+			if v, ok := em["value"].(string); ok {
+				row["value"] = v
+			}
+			envOut = append(envOut, row)
+		}
+		row := map[string]interface{}{
+			"container": containerName,
+			"env":       envOut,
+		}
+		if v, ok := m["initContainer"].(bool); ok && v {
+			row["initContainer"] = true
+		}
+		out = append(out, row)
+	}
+	return out, nil
+}
+
+// extractContainerNames returns the set of container names from a
+// resource detail map. Used to validate that propose_set_resources /
+// propose_set_env target a real container before emitting a card.
+// Covers both normal and init containers (init lives under the
+// `initContainers` key in pod-level details; for workloads we don't
+// expose initContainers separately yet, so init-name validation is
+// best-effort — the backend handler will reject unknown init
+// containers cleanly at Execute time).
+func extractContainerNames(detail map[string]interface{}) map[string]bool {
+	out := map[string]bool{}
+	if cs, ok := detail["containers"].([]map[string]interface{}); ok {
+		for _, c := range cs {
+			if n, ok := c["name"].(string); ok && n != "" {
+				out[n] = true
+			}
+		}
+	}
+	return out
+}
+
+// extractContainerImages returns container-name → image map from a
+// resource detail. Used by propose_set_image for the no-op short-
+// circuit + container existence check.
+func extractContainerImages(detail map[string]interface{}) map[string]string {
+	out := map[string]string{}
+	if cs, ok := detail["containers"].([]map[string]interface{}); ok {
+		for _, c := range cs {
+			n, _ := c["name"].(string)
+			img, _ := c["image"].(string)
+			if n != "" {
+				out[n] = img
+			}
+		}
+	}
+	return out
+}
+
+func namesAsSlice(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func mapKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	return out
+}
+
+func pluralS(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // ensure unused models import survives compile

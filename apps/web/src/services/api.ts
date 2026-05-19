@@ -571,6 +571,28 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Patch HPA bounds — strategic merge on spec.minReplicas /
+  // spec.maxReplicas. Companion to the set_* family but scoped to
+  // autoscaling/v1 HPAs. Backend enforces a maxReplicas <= 1000
+  // safety cap. See
+  // internal/copilot-execution-capacity/06-insight-rule-coverage.md.
+  patchHpaBounds: (
+    namespace: string,
+    name: string,
+    body: { minReplicas?: number; maxReplicas?: number },
+    source?: string,
+  ) =>
+    postJSON<{
+      status: 'patched' | 'unchanged'
+      fromBounds: { minReplicas: number; maxReplicas: number }
+      toBounds: { minReplicas: number; maxReplicas: number }
+      resource: ResourceItem | null
+    }>(
+      `${API_BASE}/resources/hpas/${namespace}/${name}/set-bounds`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   // Edit metadata — kubectl label / kubectl annotate equivalents.
   // JSON merge patch on metadata.labels + metadata.annotations via
   // the dynamic client; works on any kind. Tier 2 #8 — see
@@ -1095,6 +1117,14 @@ export interface CreateResourceResponse {
   kind: string
   apiVersion: string
   uid: string
+  // Post-create detail snapshot the backend produces by polling the
+  // informer cache for up to ~500ms after the apiserver Create()
+  // returns. Used by NewResourceModal to seed the detail query cache
+  // before navigating, eliminating the "Resource not found" flash
+  // that used to appear while the cache caught up. May be null when
+  // the cache never observed the create inside the retry budget; the
+  // caller falls back to the regular detail fetch with retry.
+  resource: ResourceItem | null
 }
 
 export type AgentAuthEnforcement = 'enforced' | 'permissive' | 'disabled'
@@ -1200,6 +1230,12 @@ export interface Integration {
   // other external path. Meaningful only when status is
   // 'installed' or 'degraded'.
   managed: boolean
+  // True when the underlying provider implements Install/Uninstall
+  // through the backend. False for ingest-based integrations
+  // (e.g. Prometheus remote_write) that have no in-cluster
+  // workload KubeBolt could create or destroy. Drives whether the
+  // Manage panel renders the Danger zone + uninstall affordance.
+  installable: boolean
 }
 
 // Per-integration install configs. Each one matches the provider's

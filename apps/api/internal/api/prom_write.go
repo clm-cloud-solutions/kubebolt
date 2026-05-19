@@ -186,7 +186,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
 		return nil, false
 	}
-	tenant, _, err := h.tenantsStore.LookupByToken(token)
+	tenant, tok, err := h.tenantsStore.LookupByToken(token)
 	if err != nil {
 		if mode == promWriteAuthPermissive {
 			logPromWriteFallback("bad-bearer", r.RemoteAddr, err.Error())
@@ -194,6 +194,16 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
 		return nil, false
+	}
+	// Mark the token as recently used so the Prometheus integration
+	// card (and any future operator-facing heartbeat panel) can
+	// resolve "is this Prom currently pushing?" without needing the
+	// receiver's own /metrics counters. MarkUsed is debounced
+	// internally — high-rate ingest doesn't pound BoltDB.
+	if tok != nil {
+		// Best-effort: a debounce miss isn't worth failing the request
+		// over. The heartbeat is a hint, not a billing primitive.
+		_ = h.tenantsStore.MarkUsed(tenant.ID, tok.ID, time.Now())
 	}
 	return tenant, true
 }

@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { canonicalListRoute } from '@/utils/routes'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
@@ -4462,7 +4463,12 @@ export function ResourceDetailPage() {
           onClose={() => setShowDelete(false)}
           onDeleted={() => {
             queryClient.invalidateQueries({ queryKey: ['resources'] })
-            navigate(`/${type}`)
+            // Detail pages accept both the full kind and the alias as
+            // their :type URL param, but list routes are alias-only —
+            // navigate via canonicalListRoute so a PVC opened at
+            // /persistentvolumeclaims/... still lands on /pvcs after
+            // delete instead of a 404'd /persistentvolumeclaims.
+            navigate(`/${canonicalListRoute(type)}`)
           }}
         />
       )}
