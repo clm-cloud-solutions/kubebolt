@@ -295,6 +295,21 @@ func (h *handlers) handleCreateResource(w http.ResponseWriter, r *http.Request) 
 	}
 
 	auditMutation(r, "create", resourceType, namespace, obj.GetName(), auditParams, nil)
+
+	// Read the newly-created resource through the connector so the
+	// response carries the same detail shape every other mutation
+	// handler returns (restart / scale / set-* all include `resource`).
+	// Without this the frontend would have to issue a second
+	// /resources/.../{ns}/{name} request whose first attempt typically
+	// 404s because the informer cache hasn't observed the create yet.
+	//
+	// The cache lag is small (single-digit-to-tens of ms in practice)
+	// but real — the apiserver's Create() returns when its store has
+	// the write, while our connector's GetResourceDetail reads through
+	// the local SharedInformer lister, which only updates after the
+	// watch event lands. We poll briefly to bridge that window.
+	resourceDetail := readPostCreateDetail(conn, resourceType, created.GetNamespace(), created.GetName())
+
 	respondJSON(w, http.StatusCreated, map[string]interface{}{
 		"status":     "created",
 		"name":       created.GetName(),
@@ -302,7 +317,51 @@ func (h *handlers) handleCreateResource(w http.ResponseWriter, r *http.Request) 
 		"kind":       created.GetKind(),
 		"apiVersion": created.GetAPIVersion(),
 		"uid":        string(created.GetUID()),
+		// May be nil if the informer cache never caught up within the
+		// retry window — the frontend treats nil as "skip the seed,
+		// fall through to the regular detail fetch with retry."
+		"resource": resourceDetail,
 	})
+}
+
+// postCreateDetailAttempts and postCreateDetailDelay define the short
+// retry loop used to bridge the apiserver-write → informer-cache-update
+// gap right after a Create(). Tuned conservatively:
+//   - 5 attempts × 100ms = 500ms total upper bound — well under any
+//     reasonable UX latency budget for a create-and-navigate flow.
+//   - Linear (not exponential) backoff because the typical gap is a
+//     handful of ms; exponential would over-wait on the common case.
+const (
+	postCreateDetailAttempts = 5
+	postCreateDetailDelay    = 100 * time.Millisecond
+)
+
+// readPostCreateDetail polls the connector for the just-created resource
+// until the informer cache has observed it, or returns nil after the
+// retry budget. Nil is a valid response — the caller still returns 201
+// Created with the apiserver-confirmed metadata, and the frontend
+// gracefully degrades (no cache seed, regular detail fetch with retry).
+//
+// Exposed as a package var so tests can stub the connector-detail
+// reader without spinning up a full cluster. The default implementation
+// is the real GetResourceDetail call.
+var readPostCreateDetail = func(conn detailReader, resourceType, namespace, name string) map[string]interface{} {
+	for i := 0; i < postCreateDetailAttempts; i++ {
+		if detail, err := conn.GetResourceDetail(resourceType, namespace, name); err == nil && detail != nil {
+			return detail
+		}
+		if i < postCreateDetailAttempts-1 {
+			time.Sleep(postCreateDetailDelay)
+		}
+	}
+	return nil
+}
+
+// detailReader is the narrow interface the retry helper needs from the
+// connector. Lets the test stub a fake reader instead of the full
+// *cluster.Connector type (which carries a lot more surface).
+type detailReader interface {
+	GetResourceDetail(resourceType, namespace, name string) (map[string]interface{}, error)
 }
 
 // hasMultiDoc returns true when the body contains a YAML document

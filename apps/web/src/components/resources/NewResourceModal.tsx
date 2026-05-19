@@ -4,7 +4,7 @@ import { Plus, AlertTriangle, FileCode, RefreshCw } from 'lucide-react'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml as yamlLang } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Modal } from '@/components/shared/Modal'
 import { api, ApiError } from '@/services/api'
 import type { ResourceList } from '@/types/kubernetes'
@@ -474,6 +474,7 @@ export function NewResourceModal({
   onClose: () => void
 }) {
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const [type, setType] = useState<string>(defaultType ?? 'pods')
   const [namespace, setNamespace] = useState<string>(defaultNamespace ?? 'default')
   const [manifest, setManifest] = useState<string>(() => STARTERS[defaultType ?? 'pods']?.[0]?.manifest ?? '')
@@ -535,6 +536,21 @@ export function NewResourceModal({
       // for cluster-scoped kinds — same convention the rest of the
       // app uses.
       const detailNS = res.namespace || '_'
+      // Seed the detail-query cache with the post-create snapshot the
+      // backend already polled for us — same pattern restart/scale/set-*
+      // use. Without this, the detail page mounts, fires its first
+      // /resources/.../{ns}/{name} fetch, the informer cache hasn't
+      // observed the apiserver Create yet, and the user sees "Resource
+      // not found" before the next refetch tick reconciles. Resource
+      // may be null when the backend's own retry window expired —
+      // skip the seed in that case and let the page's normal fetch
+      // (which retries on its own) handle it.
+      if (res.resource) {
+        queryClient.setQueryData(['resource-detail', type, detailNS, res.name], res.resource)
+      }
+      // Pre-invalidate the list query so the new resource shows up
+      // when the user navigates back.
+      queryClient.invalidateQueries({ queryKey: ['resources'] })
       navigate(`/${type}/${detailNS}/${res.name}`)
       onClose()
     } catch (e) {
