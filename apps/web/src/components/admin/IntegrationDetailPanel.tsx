@@ -156,7 +156,15 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
             )}
             {integration.health && (
               <>
-                <Fact label="Pods ready" value={`${integration.health.podsReady}/${integration.health.podsDesired}`} mono />
+                {/* Pods ready is workload-specific — hide it for
+                    ingest-based integrations (e.g. Prometheus
+                    remote_write) that don't deploy any in-cluster
+                    workload. PodsDesired==0 + a non-empty message
+                    means "we read state through some other signal
+                    than a workload count" — show the message only. */}
+                {integration.health.podsDesired > 0 && (
+                  <Fact label="Pods ready" value={`${integration.health.podsReady}/${integration.health.podsDesired}`} mono />
+                )}
                 {integration.health.message && (
                   <div className="col-span-2">
                     <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-1">Note</div>
@@ -275,8 +283,16 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
               confirmation flow. Managed installs get a simple
               confirm. Externally-managed installs (Helm, kubectl)
               get an expanded warning + typed confirmation so the
-              operator opts into the force path consciously. */}
-          {isInstalled && isAdmin && (
+              operator opts into the force path consciously.
+
+              Gated on `installable`: ingest-based integrations like
+              Prometheus remote_write deploy no in-cluster workload
+              KubeBolt can uninstall — the receiver runs in our
+              backend, the customer's Prom lives in their cluster.
+              Showing a Danger zone there would be misleading
+              (suggesting we can remove their Prometheus, which we
+              can't and shouldn't). */}
+          {isInstalled && isAdmin && integration.installable && (
             <div className="pt-4 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider mb-2">Danger zone</div>
 

@@ -444,6 +444,14 @@ func main() {
 	// is one line — the handlers pick it up automatically.
 	integrationRegistry := integrations.NewRegistry()
 	integrationRegistry.Register(integrations.NewAgent())
+	// Prometheus integration is gated on the TenantsStore: detection
+	// reads ingest-token usage from there as the heartbeat signal.
+	// When auth is disabled the store isn't wired and the receiver
+	// stamps every sample as "anonymous", so a per-tenant integration
+	// card has no signal to read — skip registration entirely.
+	if tenantsStore != nil {
+		integrationRegistry.Register(integrations.NewPrometheus(tenantsStore))
+	}
 
 	// Resolve the agent auth enforcement that the router will surface
 	// to the UI for "refuse proxy + empty auth on enforced backend"

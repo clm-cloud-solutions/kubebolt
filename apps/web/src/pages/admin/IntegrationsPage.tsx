@@ -70,9 +70,19 @@ function IntegrationCard({
                 </span>
               )}
             </div>
-            <div className="text-[10px] font-mono text-kb-text-tertiary mt-0.5 truncate">
-              {integration.namespace || 'ns: —'}
-            </div>
+            {/* Namespace is a workload-level coordinate — hide the
+                line entirely for ingest-based integrations whose
+                upstream client may live in any cluster (the agent
+                always sets it; Prometheus remote_write doesn't,
+                because the customer's Prom isn't ours to locate).
+                Showing "ns: —" reads as missing data, which the
+                operator would try to fix. Hiding it tells the
+                truth: there's no namespace to show. */}
+            {integration.namespace && (
+              <div className="text-[10px] font-mono text-kb-text-tertiary mt-0.5 truncate">
+                {integration.namespace}
+              </div>
+            )}
           </div>
         </div>
         <StatusBadge status={integration.status} />
@@ -83,11 +93,22 @@ function IntegrationCard({
         {integration.description}
       </p>
 
-      {/* Health / hint */}
+      {/* Health / hint. Pods-ready is workload-specific — hide it
+          for ingest-based integrations (e.g. Prometheus
+          remote_write) whose Detect returns podsDesired=0 because
+          there's no in-cluster workload count to report. In that
+          case render the message on its own, no leading "0/0 pods
+          ready —" that would be misleading. */}
       {isInstalled && integration.health && (
         <div className="text-[11px] text-kb-text-secondary">
-          {integration.health.podsReady}/{integration.health.podsDesired} pods ready
-          {integration.health.message ? ` — ${integration.health.message}` : ''}
+          {integration.health.podsDesired > 0 ? (
+            <>
+              {integration.health.podsReady}/{integration.health.podsDesired} pods ready
+              {integration.health.message ? ` — ${integration.health.message}` : ''}
+            </>
+          ) : (
+            integration.health.message
+          )}
         </div>
       )}
       {integration.status === 'unknown' && integration.health?.message && (

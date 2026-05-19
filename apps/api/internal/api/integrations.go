@@ -93,6 +93,10 @@ func (h *handlers) handleGetIntegration(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusNotFound, "integration not found")
 		return
 	}
+	// Cache the installable check once — same pattern the registry's
+	// List uses. Rides on every response so the frontend can branch
+	// on `installable` without a second round-trip.
+	_, installable := provider.(integrations.Installable)
 	conn := h.manager.Connector()
 	if conn == nil {
 		// Mirror the list endpoint — surface metadata-only so the UI
@@ -101,6 +105,7 @@ func (h *handlers) handleGetIntegration(w http.ResponseWriter, r *http.Request) 
 		meta := provider.Meta()
 		meta.Status = integrations.StatusNotInstalled
 		meta.Health = &integrations.Health{Message: "No cluster connected"}
+		meta.Installable = installable
 		respondJSON(w, http.StatusOK, meta)
 		return
 	}
@@ -113,9 +118,11 @@ func (h *handlers) handleGetIntegration(w http.ResponseWriter, r *http.Request) 
 		meta := provider.Meta()
 		meta.Status = integrations.StatusUnknown
 		meta.Health = &integrations.Health{Message: err.Error()}
+		meta.Installable = installable
 		respondJSON(w, http.StatusOK, meta)
 		return
 	}
+	snap.Installable = installable
 	respondJSON(w, http.StatusOK, snap)
 }
 
