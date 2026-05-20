@@ -230,9 +230,28 @@ scrape:
     # not every cluster runs node-exporter; enable when you do.
     nodeExporter:
       enabled: false
-      # Label selector to find node-exporter pods. The default
-      # matches the prometheus-community/node-exporter chart.
-      # Override if you run a custom DaemonSet.
+      # Label selector to find node-exporter pods. Default works
+      # with the standalone prometheus-community/prometheus-node
+      # -exporter chart, which labels its pods
+      # `app.kubernetes.io/name=node-exporter`.
+      #
+      # IMPORTANT — kube-prometheus-stack uses the SAME node-
+      # exporter subchart but ships it under a different label.
+      # If you installed Prometheus via kube-prometheus-stack
+      # (which is the most common production path), override to:
+      #
+      #   labelSelector: "app.kubernetes.io/name=prometheus-node-exporter"
+      #
+      # To check what label your cluster uses, run:
+      #
+      #   kubectl get pods -A -l app.kubernetes.io/name=node-exporter -o name
+      #   kubectl get pods -A -l app.kubernetes.io/name=prometheus-node-exporter -o name
+      #
+      # The match is enforced via a vmagent relabel rule (action:
+      # keep) — a wrong selector results in ZERO scraped targets
+      # with NO error logged anywhere. If host CPU / memory /
+      # disk panels are empty in the Capacity dashboard, this is
+      # the first thing to check.
       labelSelector: "app.kubernetes.io/name=node-exporter"
       port: 9100
       path: /metrics
@@ -260,6 +279,22 @@ scrape:
     #   series counts.
     kubeStateMetrics:
       enabled: false
+      # Label selector to find the KSM pod. Default matches both
+      # the standalone prometheus-community/kube-state-metrics
+      # chart AND kube-prometheus-stack (which bundles KSM as a
+      # subchart and preserves the `kube-state-metrics` name
+      # label without prefixing it — unlike node-exporter above).
+      #
+      # If you run a custom KSM deployment with a different label,
+      # check yours with:
+      #
+      #   kubectl get pods -A -l app.kubernetes.io/name=kube-state-metrics -o name
+      #
+      # Like the node-exporter selector, a mismatch here results
+      # in ZERO scraped KSM targets with NO error logged. If
+      # workload-attribution panels (Top Consumers, Right Sizing)
+      # are empty after install, verify this selector and the
+      # annotation path above.
       labelSelector: "app.kubernetes.io/name=kube-state-metrics"
       port: 8080
       path: /metrics

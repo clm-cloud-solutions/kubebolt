@@ -47,6 +47,37 @@ RBAC tier: {{ $mode }}
   trusted private network.
 {{- end }}
 
+{{- if .Values.scrape.enabled }}
+
+Scrape sidecar (vmagent) is ENABLED.
+{{- if .Values.scrape.remoteWriteUrl }}
+Ships scraped samples to:
+  {{ .Values.scrape.remoteWriteUrl }}
+{{- else }}
+
+⚠️  scrape.remoteWriteUrl is EMPTY — vmagent will crash-loop with
+  "at least one -remoteWrite.url command-line flag must be set".
+  Typical value pointing at the KubeBolt backend's receiver:
+    scrape.remoteWriteUrl=http://<kubebolt-api-svc>.<ns>.svc.cluster.local:8080/api/v1/prom/write
+  And on the backend chart: metrics.remoteWrite.enabled=true
+{{- end }}
+
+After ~1 scrape interval ({{ default "30s" .Values.scrape.scrapeInterval }}), verify targets
+are UP via the vmagent admin UI:
+
+  POD=$(kubectl -n {{ .Release.Namespace }} get pod -l app.kubernetes.io/name={{ include "kubebolt-agent.name" . }} -o jsonpath='{.items[0].metadata.name}')
+  kubectl -n {{ .Release.Namespace }} port-forward $POD 8429:8429 -c vmagent &
+  curl -s http://localhost:8429/api/v1/targets | jq '.data.activeTargets[] | {job,health}'
+
+If a job you expected to see (node-exporter, kube-state-metrics) is
+missing from activeTargets, the most common cause is a label-selector
+mismatch. The defaults in values.yaml match standalone Prometheus
+charts; kube-prometheus-stack uses
+`app.kubernetes.io/name=prometheus-node-exporter` for node-exporter
+(NOT the default `node-exporter`). Inspect the comment block on
+scrape.discovery in values.yaml for the override pattern.
+{{- end }}
+
 Hubble flow collection is {{ if .Values.hubble.enabled }}ENABLED{{ else }}DISABLED{{ end }}.
 {{- if .Values.hubble.enabled }}
 {{- if .Values.hubble.relay.address }}
