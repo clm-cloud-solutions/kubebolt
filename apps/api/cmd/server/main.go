@@ -450,7 +450,16 @@ func main() {
 	// stamps every sample as "anonymous", so a per-tenant integration
 	// card has no signal to read — skip registration entirely.
 	if tenantsStore != nil {
-		integrationRegistry.Register(integrations.NewPrometheus(tenantsStore))
+		// Pass a closure that reads the manager's active cluster
+		// UID on every Detect. Tokens with ClusterID matching this
+		// UID (or unscoped) are the only ones the Prometheus card
+		// considers relevant signal — without it, multi-cluster
+		// installs would see other clusters' tokens inflate this
+		// cluster's "active senders" count.
+		integrationRegistry.Register(integrations.NewPrometheus(
+			tenantsStore,
+			manager.ActiveAgentProxyClusterID,
+		))
 	}
 
 	// Resolve the agent auth enforcement that the router will surface

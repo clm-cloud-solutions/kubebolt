@@ -59,6 +59,18 @@ type tenantsLister interface {
 	ListTenants() ([]auth.Tenant, error)
 }
 
+// currentClusterIDFn returns the kube-system namespace UID of the
+// currently-active cluster (or "" when the active session reaches
+// the apiserver via direct kubeconfig and we haven't resolved the
+// UID). Used to filter ingest tokens scoped to other clusters out
+// of this card's signal.
+//
+// Defined as a function rather than an interface so callers can
+// pass a method-bound closure from the cluster manager without the
+// manager having to satisfy a new interface — the dependency stays
+// one-way (integrations → cluster, never the reverse).
+type currentClusterIDFn func() string
+
 // prometheusProvider implements Provider for the customer's
 // existing Prometheus (Phase 3 remote_write receiver). Unlike the
 // agent, Prometheus is not installed by KubeBolt and lives entirely
@@ -66,15 +78,32 @@ type tenantsLister interface {
 // *evidence of activity* (ingest token usage) rather than workload
 // state. Stateless; safe to register once at startup.
 type prometheusProvider struct {
-	tenants tenantsLister
+	tenants       tenantsLister
+	currentCluster currentClusterIDFn
 }
 
 // NewPrometheus constructs the Prometheus integration provider.
 // The TenantsStore is the source of truth for which bearer tokens
 // have been issued and when each one was last used — together those
 // form the heartbeat signal Detect reads.
-func NewPrometheus(tenants tenantsLister) Provider {
-	return &prometheusProvider{tenants: tenants}
+//
+// currentCluster is called on every Detect to resolve the active
+// cluster's UID. Tokens whose ClusterID matches the active cluster
+// — OR whose ClusterID is empty ("any cluster", the legacy default)
+// — are considered relevant signal. Tokens scoped to other clusters
+// are filtered out before tier / heartbeat counts so the card
+// reflects only what's relevant to the cluster the operator is
+// currently viewing.
+//
+// Pass a nil currentCluster (or a function that returns "") to
+// disable cluster-scope filtering entirely — every token is then
+// considered relevant. Tests use this to exercise the heartbeat
+// branches in isolation.
+func NewPrometheus(tenants tenantsLister, currentCluster currentClusterIDFn) Provider {
+	if currentCluster == nil {
+		currentCluster = func() string { return "" }
+	}
+	return &prometheusProvider{tenants: tenants, currentCluster: currentCluster}
 }
 
 func (p *prometheusProvider) Meta() Integration {
@@ -122,17 +151,37 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 	workload := detectPromWorkload(ctx, cs)
 
 	// Signal B — heartbeat via ingest token usage (SECONDARY).
+	// Cluster-scope filter: a token's ClusterID must either match
+	// the active cluster's UID or be empty (legacy unscoped). When
+	// the provider has no clusterID resolution (e.g. tests injected
+	// a function returning ""), the filter passes everything —
+	// equivalent to the pre-5a.1 behaviour for tests built against
+	// the older constructor signature.
+	currentClusterID := p.currentCluster()
 	now := time.Now()
+	// Tenant-count drives source-label format below — when there's
+	// only one tenant in the store (the self-hosted single-tenant
+	// case), the "tenant_name/" prefix is pure noise and gets dropped.
+	// Multi-tenant SaaS keeps the prefix to disambiguate.
+	multiTenant := len(tenants) > 1
 	var (
-		mostRecent      time.Time
-		mostRecentLabel string
-		activeTokens    int
-		freshSenders    int
+		mostRecent       time.Time
+		mostRecentTenant string
+		mostRecentTokLab string
+		activeTokens     int
+		freshSenders     int
 	)
 	for _, tenant := range tenants {
 		for i := range tenant.IngestTokens {
 			tok := &tenant.IngestTokens[i]
 			if !tok.Active(now) {
+				continue
+			}
+			// Skip tokens scoped to a *different* cluster. Unscoped
+			// tokens (ClusterID == "") still pass — legacy
+			// backward-compat AND the explicit "match any cluster"
+			// semantic the admin can pick at issue-time.
+			if currentClusterID != "" && tok.ClusterID != "" && tok.ClusterID != currentClusterID {
 				continue
 			}
 			activeTokens++
@@ -145,19 +194,33 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 			// detect a Cold token. freshSenders only counts tokens
 			// within the stale window so the "active senders" suffix
 			// reflects who's pushing now, not historical activity.
-			if mostRecentLabel == "" || tok.LastUsedAt.After(mostRecent) {
+			if mostRecentTokLab == "" || tok.LastUsedAt.After(mostRecent) {
 				mostRecent = *tok.LastUsedAt
-				mostRecentLabel = tenant.Name + "/" + tok.Label
+				mostRecentTenant = tenant.Name
+				mostRecentTokLab = tok.Label
 			}
 			if now.Sub(*tok.LastUsedAt) < prometheusStaleWindow {
 				freshSenders++
 			}
 		}
 	}
+	// hasHeartbeat tracks whether we found any used token in the
+	// filtered set. Independent of the label string so the branching
+	// below stays correct even if an admin issues a token with an
+	// empty label (the store doesn't allow that today but defensive
+	// is cheap).
+	hasHeartbeat := mostRecentTokLab != "" || (mostRecentTenant != "" && !mostRecent.IsZero())
+	// Compose the user-facing source label. Single-tenant gets the
+	// bare token label (looks less like a K8s path, less ambiguous).
+	// Multi-tenant keeps the prefix because the same token label can
+	// exist under different tenants and the operator needs to know
+	// which one is pushing.
+	mostRecentLabel := mostRecentTokLab
+	if multiTenant && mostRecentTenant != "" {
+		mostRecentLabel = mostRecentTenant + "/" + mostRecentTokLab
+	}
 
 	hasWorkload := workload.Namespace != ""
-	hasHeartbeat := mostRecentLabel != ""
-
 	// Carry workload coords to the card regardless of status — the
 	// operator wants to see ns/version even on degraded states.
 	if hasWorkload {
@@ -184,7 +247,7 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 		meta.Health = &Health{
 			PodsReady:   workload.PodsReady,
 			PodsDesired: workload.PodsDesired,
-			Message:     formatStreamMessage(age, mostRecentLabel, freshSenders),
+			Message:     formatStreamMessage(age, mostRecentLabel, freshSenders, true /* hasWorkload */),
 		}
 
 	case hasWorkload && !hasHeartbeat:
@@ -207,13 +270,13 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 		switch {
 		case age < prometheusFreshWindow:
 			meta.Status = StatusInstalled
-			meta.Health = &Health{Message: fmt.Sprintf("Streaming from external source · last sample %s ago from %s%s", humanDuration(age), mostRecentLabel, formatSendersSuffix(freshSenders))}
+			meta.Health = &Health{Message: fmt.Sprintf("Streaming from external source · last sample %s ago from %s%s", humanDuration(age), mostRecentLabel, formatSendersSuffix(freshSenders, false))}
 		case age < prometheusStaleWindow:
 			meta.Status = StatusInstalled
-			meta.Health = &Health{Message: fmt.Sprintf("Stale · last sample %s ago from %s%s", humanDuration(age), mostRecentLabel, formatSendersSuffix(freshSenders))}
+			meta.Health = &Health{Message: fmt.Sprintf("Stale · last sample %s ago from %s%s", humanDuration(age), mostRecentLabel, formatSendersSuffix(freshSenders, false))}
 		default:
 			meta.Status = StatusDegraded
-			meta.Health = &Health{Message: fmt.Sprintf("Cold · last sample %s ago from %s — has Prom stopped pushing?%s", humanDuration(age), mostRecentLabel, formatSendersSuffix(freshSenders))}
+			meta.Health = &Health{Message: fmt.Sprintf("Cold · last sample %s ago from %s — has Prom stopped pushing?%s", humanDuration(age), mostRecentLabel, formatSendersSuffix(freshSenders, false))}
 		}
 
 	default:
@@ -236,26 +299,47 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 // formatStreamMessage builds the Health.Message for the
 // hasWorkload+hasHeartbeat case. Separated to keep Detect's
 // branches at one purpose each.
-func formatStreamMessage(age time.Duration, sourceLabel string, freshSenders int) string {
+//
+// hasWorkload toggles the "additional senders" label — when an
+// in-cluster Prom is detected, surplus senders are framed as
+// "additional" (implying "beyond the local workload"). In the
+// cross-cluster branch (!hasWorkload), every sender is "active"
+// because there's no local point of reference.
+func formatStreamMessage(age time.Duration, sourceLabel string, freshSenders int, hasWorkload bool) string {
 	switch {
 	case age < prometheusFreshWindow:
-		return fmt.Sprintf("Streaming · last sample %s ago from %s%s", humanDuration(age), sourceLabel, formatSendersSuffix(freshSenders))
+		return fmt.Sprintf("Streaming · last sample %s ago from %s%s", humanDuration(age), sourceLabel, formatSendersSuffix(freshSenders, hasWorkload))
 	case age < prometheusStaleWindow:
-		return fmt.Sprintf("Stale · last sample %s ago from %s%s", humanDuration(age), sourceLabel, formatSendersSuffix(freshSenders))
+		return fmt.Sprintf("Stale · last sample %s ago from %s%s", humanDuration(age), sourceLabel, formatSendersSuffix(freshSenders, hasWorkload))
 	default:
-		return fmt.Sprintf("Cold · last sample %s ago from %s — has Prom stopped pushing?%s", humanDuration(age), sourceLabel, formatSendersSuffix(freshSenders))
+		return fmt.Sprintf("Cold · last sample %s ago from %s — has Prom stopped pushing?%s", humanDuration(age), sourceLabel, formatSendersSuffix(freshSenders, hasWorkload))
 	}
 }
 
-// formatSendersSuffix renders the "· N active senders" suffix only
+// formatSendersSuffix renders the "· N <kind> senders" suffix only
 // when there are 2+ to count. A single sender is implied by the
 // "from <label>" portion of the message — adding "· 1 active sender"
-// would be redundant noise.
-func formatSendersSuffix(freshSenders int) string {
-	if freshSenders > 1 {
-		return fmt.Sprintf(" · %d active senders", freshSenders)
+// would be redundant noise. The label kind switches on
+// hasWorkload: "additional" when a local workload is the implicit
+// first sender, "active" otherwise (cross-cluster path).
+func formatSendersSuffix(freshSenders int, hasWorkload bool) string {
+	if freshSenders <= 1 {
+		return ""
 	}
-	return ""
+	if hasWorkload {
+		// Subtract 1 to express "additional beyond the local
+		// workload" — the local Prom counts as the first sender,
+		// so 2 freshSenders means 1 additional, not 2.
+		return fmt.Sprintf(" · %d additional sender%s", freshSenders-1, plural(freshSenders-1))
+	}
+	return fmt.Sprintf(" · %d active senders", freshSenders)
+}
+
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
 }
 
 // detectPromWorkload scans the cluster for pods that look like

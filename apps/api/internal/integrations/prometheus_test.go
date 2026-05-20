@@ -75,7 +75,7 @@ func tokenAt(label string, ageFromNow time.Duration) auth.IngestToken {
 }
 
 func TestPrometheusProvider_Meta(t *testing.T) {
-	p := NewPrometheus(&mockTenantsLister{})
+	p := NewPrometheus(&mockTenantsLister{}, nil)
 	m := p.Meta()
 	if m.ID != PrometheusID {
 		t.Errorf("Meta().ID = %q, want %q", m.ID, PrometheusID)
@@ -215,8 +215,12 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 					},
 				},
 			},
-			wantStatus:         StatusInstalled,
-			wantMessageContain: "Streaming from external source · last sample 10s ago from default/prom-local",
+			wantStatus: StatusInstalled,
+			// 5a.1.c — single-tenant store drops the "default/" prefix
+			// from the source label. Only one tenant exists in this
+			// test fixture, so the message renders "from prom-local"
+			// rather than "from default/prom-local".
+			wantMessageContain: "Streaming from external source · last sample 10s ago from prom-local",
 		},
 		{
 			// Inverse case: the most-recent token IS old. Status is
@@ -256,7 +260,7 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 				},
 			},
 		}}
-		p := NewPrometheus(lister)
+		p := NewPrometheus(lister, nil)
 		got, _ := p.Detect(context.Background(), nil)
 		if got.Health == nil {
 			t.Fatal("Health is nil")
@@ -269,7 +273,7 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			lister := &mockTenantsLister{tenants: tc.tenants, err: tc.err}
-			p := NewPrometheus(lister)
+			p := NewPrometheus(lister, nil)
 			got, err := p.Detect(context.Background(), nil /* k8s client unused */)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v (Detect should never return errors — surface them via Status=Unknown)", err)
@@ -402,7 +406,7 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 			}
 			cs := fake.NewSimpleClientset(objs...)
 			lister := &mockTenantsLister{tenants: tc.tenants}
-			p := NewPrometheus(lister)
+			p := NewPrometheus(lister, nil)
 
 			got, err := p.Detect(context.Background(), kubernetes.Interface(cs))
 			if err != nil {
@@ -428,6 +432,185 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 			}
 			if tc.wantMessageContain != "" && !strings.Contains(got.Health.Message, tc.wantMessageContain) {
 				t.Errorf("Health.Message = %q, want substring %q", got.Health.Message, tc.wantMessageContain)
+			}
+		})
+	}
+}
+
+// TestPrometheusProvider_Detect_ClusterScope exercises the
+// per-token cluster filter (5a.1.a). Tokens whose ClusterID matches
+// the active cluster pass; tokens scoped to another cluster are
+// silently dropped before the tier / freshness logic sees them;
+// unscoped tokens (ClusterID == "") always pass for backward-compat
+// with legacy issued-before-this-field tokens.
+func TestPrometheusProvider_Detect_ClusterScope(t *testing.T) {
+	const (
+		activeClusterID = "active-cluster-uid"
+		otherClusterID  = "other-cluster-uid"
+	)
+
+	tests := []struct {
+		name               string
+		tokens             []auth.IngestToken
+		currentClusterID   string
+		wantStatus         Status
+		wantMessageContain string
+		wantMessageOmits   string
+	}{
+		{
+			name: "scoped to active cluster → counted",
+			tokens: []auth.IngestToken{
+				func() auth.IngestToken {
+					tok := tokenAt("active-prom", 10*time.Second)
+					tok.ClusterID = activeClusterID
+					return tok
+				}(),
+			},
+			currentClusterID:   activeClusterID,
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "Streaming",
+		},
+		{
+			name: "scoped to other cluster → filtered out (NotInstalled)",
+			tokens: []auth.IngestToken{
+				func() auth.IngestToken {
+					tok := tokenAt("other-prom", 10*time.Second)
+					tok.ClusterID = otherClusterID
+					return tok
+				}(),
+			},
+			currentClusterID: activeClusterID,
+			wantStatus:       StatusNotInstalled,
+			wantMessageOmits: "other-prom",
+		},
+		{
+			name: "unscoped token (legacy) → passes through",
+			tokens: []auth.IngestToken{
+				tokenAt("legacy-prom", 10*time.Second), // no ClusterID set
+			},
+			currentClusterID:   activeClusterID,
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "legacy-prom",
+		},
+		{
+			name: "empty currentClusterID disables filter (every token visible)",
+			tokens: []auth.IngestToken{
+				func() auth.IngestToken {
+					tok := tokenAt("other-prom", 10*time.Second)
+					tok.ClusterID = otherClusterID
+					return tok
+				}(),
+			},
+			currentClusterID:   "",
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "other-prom",
+		},
+		{
+			name: "mixed: active + other cluster → only active counted",
+			tokens: []auth.IngestToken{
+				func() auth.IngestToken {
+					tok := tokenAt("active-prom", 5*time.Second)
+					tok.ClusterID = activeClusterID
+					return tok
+				}(),
+				func() auth.IngestToken {
+					tok := tokenAt("other-prom", 1*time.Second) // would be most-recent if not filtered
+					tok.ClusterID = otherClusterID
+					return tok
+				}(),
+			},
+			currentClusterID:   activeClusterID,
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "active-prom",
+			wantMessageOmits:   "other-prom",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lister := &mockTenantsLister{tenants: []auth.Tenant{
+				{ID: "t1", Name: "default", IngestTokens: tc.tokens},
+			}}
+			p := NewPrometheus(lister, func() string { return tc.currentClusterID })
+			got, err := p.Detect(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("Detect() returned error: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Health == nil {
+				t.Fatalf("Health is nil")
+			}
+			if tc.wantMessageContain != "" && !strings.Contains(got.Health.Message, tc.wantMessageContain) {
+				t.Errorf("Health.Message = %q, want substring %q", got.Health.Message, tc.wantMessageContain)
+			}
+			if tc.wantMessageOmits != "" && strings.Contains(got.Health.Message, tc.wantMessageOmits) {
+				t.Errorf("Health.Message = %q, must NOT contain %q (other-cluster token leaked through filter)", got.Health.Message, tc.wantMessageOmits)
+			}
+		})
+	}
+}
+
+// TestPrometheusProvider_Detect_AdaptiveSourceLabel exercises
+// 5a.1.c — the source label drops the "tenant_name/" prefix in
+// single-tenant stores (the self-hosted default case) so the
+// message doesn't read like a K8s `namespace/pod` path, but
+// keeps it in multi-tenant stores where the disambiguation
+// matters.
+func TestPrometheusProvider_Detect_AdaptiveSourceLabel(t *testing.T) {
+	tests := []struct {
+		name               string
+		tenants            []auth.Tenant
+		wantContains       string
+		wantOmits          string
+	}{
+		{
+			name: "single-tenant → bare token label",
+			tenants: []auth.Tenant{
+				{
+					ID:           "t1",
+					Name:         "default",
+					IngestTokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
+				},
+			},
+			wantContains: "from prom-local",
+			wantOmits:    "default/",
+		},
+		{
+			name: "multi-tenant → keeps tenant prefix",
+			tenants: []auth.Tenant{
+				{
+					ID:           "t1",
+					Name:         "acme",
+					IngestTokens: []auth.IngestToken{tokenAt("prom-acme", 10*time.Second)},
+				},
+				{
+					ID:           "t2",
+					Name:         "globex",
+					IngestTokens: []auth.IngestToken{tokenAt("prom-globex", 30*time.Second)},
+				},
+			},
+			wantContains: "from acme/prom-acme",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			lister := &mockTenantsLister{tenants: tc.tenants}
+			p := NewPrometheus(lister, nil)
+			got, err := p.Detect(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("Detect() returned error: %v", err)
+			}
+			if got.Health == nil {
+				t.Fatalf("Health is nil")
+			}
+			if !strings.Contains(got.Health.Message, tc.wantContains) {
+				t.Errorf("Health.Message = %q, want substring %q", got.Health.Message, tc.wantContains)
+			}
+			if tc.wantOmits != "" && strings.Contains(got.Health.Message, tc.wantOmits) {
+				t.Errorf("Health.Message = %q, must NOT contain %q", got.Health.Message, tc.wantOmits)
 			}
 		})
 	}
