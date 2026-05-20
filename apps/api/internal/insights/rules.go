@@ -6,6 +6,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 
 	"github.com/google/uuid"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -27,6 +29,8 @@ func AllRules() []Rule {
 		imagePullBackoffRule(),
 		evictedPodsRule(),
 		serviceNoEndpointsRule(),
+		networkPolicyNoMatchRule(),
+		namespaceWithoutNetworkPolicyRule(),
 	}
 }
 
@@ -50,6 +54,10 @@ func newInsight(severity, resource, title, message, suggestion string) models.In
 			category = "autoscaling"
 		case "Service":
 			category = "networking"
+		case "NetworkPolicy":
+			category = "networking"
+		case "Namespace":
+			category = "networking" // covers the "namespace without NetworkPolicy" rule
 		}
 	}
 	return models.Insight{
@@ -508,3 +516,155 @@ func evictedPodsRule() Rule {
 		},
 	}
 }
+
+// networkPolicyNoMatchRule flags NetworkPolicies whose podSelector
+// matches zero pods in their namespace. The canonical case for this
+// is a typo in matchLabels (the policy was supposed to gate the
+// `tier=db` pods but actually says `tier=database`), but it also
+// catches policies whose target workload was renamed or deleted
+// without cleaning up the matching policy.
+//
+// Empty selector ({}) is NOT a no-match — per NetworkPolicy v1
+// spec it matches EVERY pod in the namespace. We skip those
+// explicitly so the rule doesn't false-positive on catch-all
+// policies (which are intentional in many security postures).
+func networkPolicyNoMatchRule() Rule {
+	return Rule{
+		ID:       "policy-no-match",
+		Name:     "NetworkPolicy podSelector matches no pods",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			// Index pods by namespace once — N policies × M pods
+			// without the index would be O(N×M) per evaluation tick.
+			podsByNS := map[string][]*corev1.Pod{}
+			for _, p := range state.Pods {
+				podsByNS[p.Namespace] = append(podsByNS[p.Namespace], p)
+			}
+			for _, np := range state.NetworkPolicies {
+				// Empty selector = catch-all (matches everything).
+				// Intentional in deny-all defaults — don't flag.
+				if len(np.Spec.PodSelector.MatchLabels) == 0 && len(np.Spec.PodSelector.MatchExpressions) == 0 {
+					continue
+				}
+				sel, err := metav1.LabelSelectorAsSelector(&np.Spec.PodSelector)
+				if err != nil {
+					// Invalid selector — different signal than no-match;
+					// the policy itself is malformed. Skip here, the
+					// apiserver should have rejected it on create anyway.
+					continue
+				}
+				matched := 0
+				for _, p := range podsByNS[np.Namespace] {
+					if sel.Matches(labels.Set(p.Labels)) {
+						matched++
+					}
+				}
+				if matched > 0 {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("NetworkPolicy/%s/%s", np.Namespace, np.Name),
+					"NetworkPolicy podSelector matches no pods",
+					fmt.Sprintf(
+						"NetworkPolicy %s/%s declares a podSelector but no pod in its namespace matches. "+
+							"Traffic policy intent is unverifiable — either the selector has a typo or "+
+							"the target workload was renamed / deleted.",
+						np.Namespace, np.Name,
+					),
+					"Verify the podSelector matchLabels against the pods you expect this policy to gate. "+
+						"kubectl get pods -n "+np.Namespace+" --show-labels",
+				))
+			}
+			return insights
+		},
+	}
+}
+
+// namespaceWithoutNetworkPolicyRule flags namespaces that have
+// running pods but zero NetworkPolicies attached. Informational
+// severity (not warning) — many clusters legitimately run without
+// NetworkPolicies (single-tenant trust boundary), so this is a
+// nudge for operators who expected policy coverage rather than a
+// "fix this now" alert.
+//
+// System namespaces (kube-*, gke-*, etc.) are skipped — they're
+// often managed by the platform and the operator has no policy
+// authority over them.
+func namespaceWithoutNetworkPolicyRule() Rule {
+	return Rule{
+		ID:       "policy-orphan",
+		Name:     "Namespace has running pods but no NetworkPolicy",
+		Severity: "info",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			// Index policies by namespace once.
+			policiesByNS := map[string]int{}
+			for _, np := range state.NetworkPolicies {
+				policiesByNS[np.Namespace]++
+			}
+			// Group pods by namespace to surface coverage gaps
+			// where workloads exist. We only flag namespaces that
+			// have at least one pod — empty namespaces aren't
+			// actionable from a security posture standpoint.
+			runningPodsByNS := map[string]int{}
+			for _, p := range state.Pods {
+				if isSystemNamespace(p.Namespace) {
+					continue
+				}
+				if p.Status.Phase == corev1.PodRunning {
+					runningPodsByNS[p.Namespace]++
+				}
+			}
+			for ns, podCount := range runningPodsByNS {
+				if policiesByNS[ns] > 0 {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"info",
+					fmt.Sprintf("Namespace/%s/%s", ns, ns),
+					"Namespace has running pods but no NetworkPolicy",
+					fmt.Sprintf(
+						"Namespace %q has %d running pod(s) and zero NetworkPolicies. "+
+							"All pod-to-pod and pod-to-external traffic in this namespace "+
+							"is allowed by default — review whether that matches your "+
+							"intended security posture.",
+						ns, podCount,
+					),
+					"If this namespace should be isolated, start with a default-deny ingress "+
+						"policy: https://kubernetes.io/docs/concepts/services-networking/network-policies/#default-deny-all-ingress-traffic",
+				))
+			}
+			return insights
+		},
+	}
+}
+
+// isSystemNamespace returns true for namespaces operators don't
+// typically have policy authority over — built-in Kubernetes
+// system namespaces and the common managed-platform prefixes.
+// Skipping them prevents the policy-orphan rule from generating
+// false-positive nudges the operator can't action.
+func isSystemNamespace(ns string) bool {
+	switch {
+	case ns == "kubebolt", ns == "kubebolt-system", ns == "kubebolt-agent":
+		return true
+	}
+	prefixes := []string{
+		"kube-",   // kube-system, kube-public, kube-node-lease, kube-prom-stack, etc.
+		"gke-",    // gke-managed-*, gke-system-*
+		"gmp-",    // GCP Managed Prometheus
+		"aks-",    // AKS-managed
+		"eks-",    // EKS-managed
+		"cilium-", // Cilium control plane (when split out)
+		"istio-",  // istio-system if treated as platform
+	}
+	for _, p := range prefixes {
+		if strings.HasPrefix(ns, p) {
+			return true
+		}
+	}
+	return false
+}
+

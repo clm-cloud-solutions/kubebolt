@@ -329,10 +329,10 @@ quickstart + config reference.
 ## Features
 
 ### Monitoring & Observability
-- **23 resource views** — Pods, Deployments, Services, Ingresses, Gateways, HTTPRoutes, Nodes, and more
+- **23 resource views** — Pods, Deployments, Services, Ingresses, NetworkPolicies, Gateways, HTTPRoutes, Nodes, and more
 - **Cluster Map** — Interactive topology with Grid and Flow layouts, namespace grouping, resource type filters
 - **Live metrics** — CPU/Memory usage bars with request/limit markers and hover tooltips
-- **Insights Engine** — 12 built-in rules: crash loops, OOM kills, CPU throttling, HPA saturation, pending PVCs
+- **Insights Engine** — 15 built-in rules: crash loops, OOM kills, CPU throttling, HPA saturation, pending PVCs, NetworkPolicy coverage gaps
 - **Real-time updates** — WebSocket-powered live updates via K8s shared informers
 - **Configurable refresh** — Choose refresh interval from 5s to 2m, persisted across sessions
 
@@ -435,7 +435,7 @@ KUBEBOLT_AUTH_ENABLED=false go run cmd/server/main.go --kubeconfig ~/.kube/confi
 │   ├─ Shared Informers (gated)   │   │
 │   ├─ Dynamic Client (GW API)    │   ▼
 │   ├─ Metrics Collector          │ ┌──────────────────────┐
-│   ├─ Insights Engine (12 rules) │ │  VictoriaMetrics     │
+│   ├─ Insights Engine (15 rules) │ │  VictoriaMetrics     │
 │   ├─ Agent Channel (gRPC bidi)  │ │  (StatefulSet)       │
 │   ├─ SPDY Exec Bridge           │ │  TSDB for metrics    │
 │   └─ Port Forward Manager       │ │  + Hubble flows      │

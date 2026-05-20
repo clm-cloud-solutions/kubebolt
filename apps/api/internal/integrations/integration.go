@@ -132,6 +132,15 @@ type Integration struct {
 	// will not mutate workloads it didn't create.
 	// Meaningful only when Status is Installed or Degraded.
 	Managed bool `json:"managed"`
+
+	// Installable reports whether the underlying provider
+	// implements the Installable interface (Install/Uninstall via
+	// the backend). The registry sets this flag during List/Get so
+	// the frontend can render the "Manage" panel conditionally —
+	// e.g. hide the Uninstall danger zone for ingest-based
+	// integrations (Prometheus remote_write) that have no
+	// in-cluster workload KubeBolt could uninstall.
+	Installable bool `json:"installable"`
 }
 
 // Provider is what each concrete integration implements. The

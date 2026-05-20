@@ -21,6 +21,7 @@ var (
 	// initialized here so there's a single place where DB schema is defined.
 	clustersBucket         = []byte("clusters")         // uploaded kubeconfigs
 	clusterDisplayBucket   = []byte("cluster_display")  // display name overrides
+	clusterUIDBucket       = []byte("cluster_uid")      // kube-system UID per kubeconfig context (resolved at connect time)
 	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
 	agentsBucket           = []byte("agents")           // persistent agent registry records
 )
@@ -119,7 +120,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, copilotSessionsBucket, agentsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, agentsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -152,8 +153,13 @@ func CopilotSessionsBucket() []byte {
 }
 
 // ClusterBuckets returns the bucket names used for cluster management state.
-func ClusterBuckets() (configs, displayNames []byte) {
-	return clustersBucket, clusterDisplayBucket
+//
+// uidBucket is the kube-system namespace UID per context resolved at
+// connect time — persisted so the cluster selector can populate
+// ClusterID for direct-kubeconfig contexts the operator has visited
+// before, without requiring a re-connect to re-discover the UID.
+func ClusterBuckets() (configs, displayNames, uids []byte) {
+	return clustersBucket, clusterDisplayBucket, clusterUIDBucket
 }
 
 // AgentsBucket returns the bucket name used by the persistent agent

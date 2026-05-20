@@ -82,6 +82,99 @@ curl -s http://kubebolt.example.com/metrics \
 
 ---
 
+## Per-cluster labels — `cluster_id` + `cluster_name`
+
+When **the same KubeBolt instance receives samples from more than
+one cluster** — multi-cluster monitoring topologies, federation
+setups, AMP-bridge configurations — every Prometheus shipping to
+KubeBolt MUST stamp two labels so KubeBolt can attribute samples
+to the right cluster. Without them, the
+`/admin/integrations` Prometheus card can't tell sources apart,
+the Reliability tab can't scope L7 metrics by cluster, and every
+PromQL query in the UI quietly mixes data across clusters.
+
+**The two labels:**
+
+| Label | Source | Purpose |
+|---|---|---|
+| `cluster_id` | `kube-system` namespace UID of the cluster Prometheus is monitoring | Stable, unique-per-cluster identifier. KubeBolt's per-cluster query scoping joins on this label. |
+| `cluster_name` | Operator-chosen human label (kubeconfig context name is a common pick) | Display name only — shown in UI dropdowns, integration cards, error messages. Not used for scoping. |
+
+**Obtain `cluster_id` for a given cluster:**
+
+```bash
+# From a kubeconfig context that points at the cluster Prometheus monitors
+kubectl get namespace kube-system -o jsonpath='{.metadata.uid}'
+# e.g. 5368e0d2-0a38-490d-afac-04cd73bb9d04
+```
+
+The UID is immutable for the lifetime of the cluster. It's the
+same value the kubebolt-agent stamps on every sample it ships
+through the gRPC channel — using it here keeps agent-emitted and
+Prom-emitted samples joinable on a single label.
+
+**Choose `cluster_name`** — purely a display string. Recommendations:
+
+- Use the kubeconfig context name if your team's conventions
+  already encode the cluster's role (`prod-eks-us-east-1`,
+  `staging-gke-asia`).
+- Avoid generic names like `production` if you have more than one
+  production cluster — the UI surfaces this string in lists and
+  selectors where disambiguation matters.
+
+**Wire it into `prometheus.yml`** (three labels — all needed):
+
+```yaml
+global:
+  external_labels:
+    cluster_id: "5368e0d2-0a38-490d-afac-04cd73bb9d04"   # kube-system UID — required for per-cluster attribution
+    cluster_name: "prod-eks-us-east-1"                    # operator-chosen — display only
+    tenant_id: "<TENANT_ID>"                              # tenant UUID — required by the receiver's anti-spoof check
+
+remote_write:
+  - url: https://kubebolt.example.com/api/v1/prom/write
+    authorization:
+      credentials_file: /etc/prometheus/kubebolt-token
+```
+
+The three labels do distinct jobs:
+
+- `cluster_id` — joins samples to a cluster identity. Without it
+  every PromQL query in the UI quietly mixes data across clusters
+  (multi-cluster install scenario).
+- `cluster_name` — display only. Surfaces in cluster selectors,
+  integration cards, error messages. Pick something a human can
+  read at a glance.
+- `tenant_id` — security boundary. The receiver's anti-spoof
+  check (active in permissive + enforced modes) verifies this
+  label matches the bearer token's tenant. A mismatch is rejected
+  with HTTP 401 in enforced mode, logged as
+  `tenant_id_mismatch` and bucket-rejected in permissive.
+
+`external_labels` is the most-portable way to stamp these — they
+attach to every sample regardless of which scrape job emitted it,
+including any local metric Prometheus generates (`up`,
+`prometheus_tsdb_*`, etc.). If you only want to stamp a subset of
+jobs, use `write_relabel_configs` instead at the cost of more
+verbose config.
+
+**One Prometheus → one cluster pair** is the supported topology.
+If a single Prometheus federates from multiple clusters into one
+remote_write stream, the `external_labels` approach paints every
+sample with the federating Prometheus's identity rather than the
+source cluster — that's a fan-in topology KubeBolt does not yet
+disambiguate. The clean path for multi-cluster monitoring is a
+Prometheus per cluster, each shipping its own `cluster_id`.
+
+**KubeBolt admin UI shows the right `cluster_id` per cluster** —
+the cluster switcher in the topbar lists each cluster KubeBolt
+knows about along with its UID, and the Prometheus integration's
+Manage panel renders a copy-pasteable snippet pre-filled with the
+active cluster's `cluster_id` and a default `cluster_name`. Use
+that when you're not sure which UID to put in `external_labels`.
+
+---
+
 ## Endpoint
 
 | Field | Value |

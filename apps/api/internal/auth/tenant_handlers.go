@@ -299,6 +299,12 @@ func (h *TenantHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Label      string `json:"label"`
 		TTLSeconds int64  `json:"ttlSeconds,omitempty"`
+		// ClusterID scopes the token to a specific cluster
+		// (kube-system namespace UID). Empty means "any cluster" —
+		// matches the legacy issue flow that didn't capture a
+		// cluster, and any integration card that wants
+		// cross-cluster visibility.
+		ClusterID string `json:"clusterId,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
@@ -317,7 +323,7 @@ func (h *TenantHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.store.IssueToken(id, req.Label, issuer, ttl)
+	plaintext, tok, err := h.store.IssueToken(id, req.ClusterID, req.Label, issuer, ttl)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())

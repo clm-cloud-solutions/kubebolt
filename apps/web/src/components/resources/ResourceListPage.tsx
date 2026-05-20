@@ -43,6 +43,7 @@ const resourceLabels: Record<string, string> = {
   cronjobs: 'CronJobs',
   services: 'Services',
   ingresses: 'Ingresses',
+  networkpolicies: 'Network Policies',
   gateways: 'Gateways',
   httproutes: 'HTTPRoutes',
   endpoints: 'Endpoints',
@@ -332,6 +333,59 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     base.push(
       { accessorKey: 'hosts', header: 'Hosts' },
       { accessorKey: 'address', header: 'Address' }
+    )
+  }
+
+  // NetworkPolicies — the operator-actionable signal at list scope
+  // is "which pods does this policy gate (selector preview), and
+  // what traffic does it claim to cover (policyTypes + rule
+  // counts)". A typo'd / orphaned policy stands out because its
+  // selector reads as "all pods (catch-all)" but it's surrounded
+  // by zero-rule policyTypes — the insights tab will flag the
+  // detail; the list view's job is to make the gap visible at a
+  // glance.
+  if (resourceType === 'networkpolicies') {
+    base.push(
+      {
+        accessorKey: 'podSelector',
+        header: 'Pod Selector',
+        cell: (info) => {
+          const v = String(info.getValue() ?? '—')
+          // Catch-all rendered explicitly so the operator can spot
+          // namespace-wide policies without opening the detail.
+          const isCatchAll = v.startsWith('all pods')
+          return (
+            <span className={`font-mono text-[11px] ${isCatchAll ? 'text-status-warn' : 'text-kb-text-secondary'}`}>
+              {v}
+            </span>
+          )
+        },
+      },
+      {
+        accessorKey: 'policyTypes',
+        header: 'Types',
+        cell: (info) => {
+          const raw = info.getValue() as string[] | undefined
+          if (!raw || raw.length === 0) return <span className="text-[11px] text-kb-text-tertiary">—</span>
+          return (
+            <span className="font-mono text-[11px] text-kb-text-secondary">{raw.join(', ')}</span>
+          )
+        },
+      },
+      {
+        accessorKey: 'ingressRules',
+        header: 'Ingress',
+        cell: (info) => (
+          <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
+        ),
+      },
+      {
+        accessorKey: 'egressRules',
+        header: 'Egress',
+        cell: (info) => (
+          <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
+        ),
+      },
     )
   }
 

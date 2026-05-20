@@ -749,6 +749,56 @@ func (m *multiIngressLister) Ingresses(namespace string) networkinglisters.Ingre
 }
 
 // ============================================================
+// multiNetworkPolicyLister — same shape as multiIngressLister,
+// for cases where the agent's permissions probe granted
+// NetworkPolicy access per-namespace rather than cluster-wide.
+// ============================================================
+
+type multiNetworkPolicyNSLister struct {
+	nsListers []networkinglisters.NetworkPolicyNamespaceLister
+}
+
+func (m *multiNetworkPolicyNSLister) List(selector labels.Selector) ([]*networkingv1.NetworkPolicy, error) {
+	var result []*networkingv1.NetworkPolicy
+	for _, l := range m.nsListers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiNetworkPolicyNSLister) Get(name string) (*networkingv1.NetworkPolicy, error) {
+	for _, l := range m.nsListers {
+		item, err := l.Get(name)
+		if err == nil {
+			return item, nil
+		}
+	}
+	return nil, fmt.Errorf("networkpolicy %q not found", name)
+}
+
+type multiNetworkPolicyLister struct {
+	listers []networkinglisters.NetworkPolicyLister
+}
+
+func (m *multiNetworkPolicyLister) List(selector labels.Selector) ([]*networkingv1.NetworkPolicy, error) {
+	var result []*networkingv1.NetworkPolicy
+	for _, l := range m.listers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiNetworkPolicyLister) NetworkPolicies(namespace string) networkinglisters.NetworkPolicyNamespaceLister {
+	var nsListers []networkinglisters.NetworkPolicyNamespaceLister
+	for _, l := range m.listers {
+		nsListers = append(nsListers, l.NetworkPolicies(namespace))
+	}
+	return &multiNetworkPolicyNSLister{nsListers: nsListers}
+}
+
+// ============================================================
 // multiHPALister
 // ============================================================
 

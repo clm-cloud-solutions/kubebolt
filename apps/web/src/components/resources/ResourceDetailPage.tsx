@@ -4,6 +4,7 @@ import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { canonicalListRoute } from '@/utils/routes'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
@@ -249,6 +250,18 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'node-pods', label: 'Pods' },
         { id: 'events', label: 'Events' },
         { id: 'monitor', label: 'Monitor' },
+      )
+      break
+    case 'networkpolicies':
+      // matched-pods tab carries the match-status the policy
+      // actually applies to right now. The count goes in the tab
+      // label so the operator sees the "is this policy doing
+      // anything?" answer without navigating in.
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
       )
       break
     default:
@@ -3454,6 +3467,102 @@ function JobLogsTab({ namespace, name }: { namespace: string; name: string }) {
 // a dedicated handler. Limit bumped to 200 because nodes commonly carry
 // 30–110 pods and we don't want pagination chrome on a tab.
 
+// NetworkPolicyMatchedPodsTab renders the pods the policy's
+// podSelector currently matches in its namespace — the truth-
+// signal the operator needs to answer "is this policy doing
+// anything?" without running kubectl over the cluster. Reads
+// from the detail response's matchedPods field populated by the
+// backend (Phase 2 of Item 1) so there's no second round-trip.
+//
+// Three states the empty case has to differentiate:
+//
+//   - matchedPods missing / null  → backend couldn't tell (RBAC
+//     denial on pods, invalid selector). Render a "couldn't tell"
+//     message rather than a misleading "0 matches" — operator
+//     would diagnose the wrong problem.
+//   - matchedPods present but empty + catch-all selector → off-spec
+//     edge (the catch-all should match every pod; an empty
+//     response means the namespace itself has no pods). Render
+//     a soft note explaining.
+//   - matchedPods present but empty + specific selector → the
+//     policy_no_match insight scenario. Render the "selector
+//     matches no pods" message with the diagnostic hint.
+function NetworkPolicyMatchedPodsTab({ item }: { item: ResourceItem }) {
+  const matched = Array.isArray(item.matchedPods) ? (item.matchedPods as Array<{ name: string; namespace: string }>) : null
+  const selector = String(item.podSelector ?? '')
+  const isCatchAll = selector.startsWith('all pods')
+
+  if (matched === null) {
+    return (
+      <div className="text-sm text-kb-text-tertiary text-center py-12">
+        Couldn't resolve matched pods — pod list lookup failed (RBAC restricted, or invalid selector).
+      </div>
+    )
+  }
+
+  if (matched.length === 0) {
+    return (
+      <div className="text-sm py-8 px-4 rounded-lg bg-status-warn-dim border border-status-warn/30 space-y-2">
+        <div className="font-semibold text-status-warn">
+          {isCatchAll
+            ? 'Catch-all selector but the namespace has no pods'
+            : 'Selector matches no pods in this namespace'}
+        </div>
+        <p className="text-[12px] text-kb-text-secondary">
+          {isCatchAll ? (
+            <>
+              The policy's empty podSelector targets every pod in
+              its namespace, but the namespace itself currently
+              has no pods. The policy is inert until workloads are
+              deployed.
+            </>
+          ) : (
+            <>
+              The policy declares a podSelector but no pod in its
+              namespace matches it right now. Common causes: a
+              typo in <code className="font-mono text-kb-text-primary">matchLabels</code>,
+              or the target workload was renamed or deleted
+              without cleaning up the matching policy. Verify with{' '}
+              <code className="font-mono text-kb-text-primary">
+                kubectl get pods -n {String(item.namespace ?? '')} --show-labels
+              </code>
+              .
+            </>
+          )}
+        </p>
+      </div>
+    )
+  }
+
+  return (
+    <Section title={`Pods matched (${matched.length})`}>
+      <table className="w-full text-[11px]">
+        <thead>
+          <tr className="text-kb-text-tertiary text-left">
+            <th className="pb-2 font-normal">Name</th>
+            <th className="pb-2 font-normal">Namespace</th>
+          </tr>
+        </thead>
+        <tbody>
+          {matched.map((p) => (
+            <tr key={`${p.namespace}/${p.name}`} className="border-t border-kb-border">
+              <td className="py-1.5">
+                <Link
+                  to={`/pods/${p.namespace}/${p.name}`}
+                  className="text-kb-accent hover:underline font-mono"
+                >
+                  {p.name}
+                </Link>
+              </td>
+              <td className="py-1.5 text-kb-text-secondary font-mono">{p.namespace}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Section>
+  )
+}
+
 function NodePodsTab({ nodeName }: { nodeName: string }) {
   const { data, isLoading, error } = useResources('pods', { node: nodeName, limit: 200 })
 
@@ -3884,6 +3993,7 @@ export function ResourceDetailPage() {
       case 'ds-logs': return <DaemonSetLogsTab namespace={namespace} name={name} />
       case 'job-pods': return <JobPodsTab namespace={namespace} name={name} />
       case 'node-pods': return <NodePodsTab nodeName={name} />
+      case 'np-matched-pods': return <NetworkPolicyMatchedPodsTab item={item!} />
       case 'job-logs': return <JobLogsTab namespace={namespace} name={name} />
       case 'history':
         if (type === 'deployments' || type === 'statefulsets' || type === 'daemonsets') {
@@ -4462,7 +4572,12 @@ export function ResourceDetailPage() {
           onClose={() => setShowDelete(false)}
           onDeleted={() => {
             queryClient.invalidateQueries({ queryKey: ['resources'] })
-            navigate(`/${type}`)
+            // Detail pages accept both the full kind and the alias as
+            // their :type URL param, but list routes are alias-only —
+            // navigate via canonicalListRoute so a PVC opened at
+            // /persistentvolumeclaims/... still lands on /pvcs after
+            // delete instead of a 404'd /persistentvolumeclaims.
+            navigate(`/${canonicalListRoute(type)}`)
           }}
         />
       )}

@@ -96,6 +96,21 @@ type IngestToken struct {
 	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
 	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
 	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
+
+	// ClusterID is the kube-system namespace UID of the cluster this
+	// token is scoped to. Empty value means "any cluster" — applies
+	// to legacy tokens issued before this field existed AND to
+	// tokens explicitly issued without a cluster scope. Used by the
+	// Prometheus integration card to discriminate which token's
+	// activity belongs to the current cluster's view; without it,
+	// multi-cluster self-hosted installs collapse all activity under
+	// the single tenant `default` and the card can't tell sources
+	// apart.
+	//
+	// Convention matches the `cluster_id` metric label the agent
+	// stamps on every sample, so future per-cluster receiver
+	// counters can join cleanly with this field.
+	ClusterID string `json:"clusterId,omitempty"`
 }
 
 // Active reports whether the token is currently valid: not revoked and
@@ -360,7 +375,12 @@ func (s *TenantsStore) DeleteTenant(id string) error {
 // IssueToken generates a fresh ingest token, persists its hash, and returns
 // the plaintext to the caller. The plaintext is unrecoverable afterwards.
 // ttl=nil means the token never expires.
-func (s *TenantsStore) IssueToken(tenantID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
+//
+// clusterID is the kube-system namespace UID of the cluster this token
+// is scoped to. Pass "" to issue an unscoped token (matches any cluster
+// — used by integrations that aren't cluster-attributable, and by the
+// admin UI's legacy issue flow that doesn't yet collect a cluster).
+func (s *TenantsStore) IssueToken(tenantID, clusterID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
 	plaintext, err := generateTokenPlaintext()
 	if err != nil {
 		return "", nil, err
@@ -372,6 +392,7 @@ func (s *TenantsStore) IssueToken(tenantID, label, createdBy string, ttl *time.D
 		Hash:      hash,
 		Prefix:    tokenDisplayPrefix(plaintext),
 		Label:     label,
+		ClusterID: clusterID,
 		CreatedAt: now,
 		CreatedBy: createdBy,
 	}
@@ -470,7 +491,10 @@ func (s *TenantsStore) RotateToken(tenantID, tokenID, createdBy string) (string,
 		d := old.ExpiresAt.Sub(old.CreatedAt)
 		ttl = &d
 	}
-	plaintext, newTok, err := s.IssueToken(tenantID, old.Label, createdBy, ttl)
+	// Preserve the cluster scope of the rotated token — a rotation
+	// is the same logical credential with a fresh secret, so the
+	// cluster binding must carry over.
+	plaintext, newTok, err := s.IssueToken(tenantID, old.ClusterID, old.Label, createdBy, ttl)
 	if err != nil {
 		return "", nil, err
 	}

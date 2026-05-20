@@ -107,6 +107,7 @@ export default function App() {
               <Route path="/cronjobs" element={<ResourceListPage resourceType="cronjobs" />} />
               <Route path="/services" element={<ResourceListPage resourceType="services" />} />
               <Route path="/ingresses" element={<ResourceListPage resourceType="ingresses" />} />
+              <Route path="/networkpolicies" element={<ResourceListPage resourceType="networkpolicies" />} />
               <Route path="/gateways" element={<ResourceListPage resourceType="gateways" />} />
               <Route path="/httproutes" element={<ResourceListPage resourceType="httproutes" />} />
               <Route path="/endpoints" element={<ResourceListPage resourceType="endpoints" />} />

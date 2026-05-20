@@ -100,7 +100,8 @@ var resourceDefs = map[string]resourceDef{
 	"jobs":     {group: "batch", resource: "jobs"},
 	"cronjobs": {group: "batch", resource: "cronjobs"},
 	// Networking v1
-	"ingresses": {group: "networking.k8s.io", resource: "ingresses"},
+	"ingresses":       {group: "networking.k8s.io", resource: "ingresses"},
+	"networkpolicies": {group: "networking.k8s.io", resource: "networkpolicies"},
 	// Autoscaling v1
 	"hpas": {group: "autoscaling", resource: "horizontalpodautoscalers"},
 	// Storage v1

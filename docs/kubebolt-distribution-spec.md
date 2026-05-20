@@ -41,7 +41,7 @@ Output:
 ✓ Found 3 contexts: docker-desktop, staging-gke, production-eks
 ✓ Connected to docker-desktop (24 pods, 3 nodes)
 ✓ Metrics Server detected
-✓ Insights engine started (12 rules)
+✓ Insights engine started (15 rules)
 → Dashboard ready at http://localhost:3000
 ```
 
@@ -533,7 +533,7 @@ Built with Kubebuilder. The controller reconciles `KubeBolt` CRs and manages:
 1. **Deployment** — KubeBolt API + embedded frontend (single-container image)
 2. **Service** — ClusterIP service exposing port 3000
 3. **ServiceAccount** — With configurable annotations (for IRSA, Workload Identity)
-4. **ClusterRole** — Read permissions for all 22 resource types KubeBolt monitors
+4. **ClusterRole** — Read permissions for all 24 resource types KubeBolt monitors
 5. **ClusterRoleBinding** — Binds the ClusterRole to the ServiceAccount
 6. **Ingress** (optional) — When `spec.ingress.enabled: true`
 7. **Secret** (optional) — Copilot API key reference
@@ -735,7 +735,7 @@ spec:
   description: |
     KubeBolt gives you full cluster visibility in under 2 minutes.
     No agents, no Prometheus, no configuration. 23 resource views,
-    interactive cluster topology map, 12-rule insights engine,
+    interactive cluster topology map, 15-rule insights engine,
     and built-in AI copilot.
     
     Run `kubectl kubebolt` to start the dashboard on http://localhost:3000.

@@ -60,7 +60,7 @@ The reference frame for every "what do I lose if I skip X" question:
 
 | Category | Feature | Source |
 |---|---|---|
-| **A. Operational core** | Cluster Overview, all 23 resource list/detail views, YAML/describe, exec, logs, files, port-forward, Cluster Map, Insights engine (13 rules including service-no-endpoints + oomKilled), namespace count etc. | apiserver (informer state) |
+| **A. Operational core** | Cluster Overview, all 23 resource list/detail views, YAML/describe, exec, logs, files, port-forward, Cluster Map, Insights engine (15 rules including service-no-endpoints + oomKilled + NetworkPolicy coverage gaps), namespace count etc. | apiserver (informer state) |
 | **B. Live commitment** | Overview's "CPU 45% / Mem 65%" bars on cluster + node cards | Metrics Server (instant query) |
 | **C. Workload trends** | Capacity page CPU/Mem/Network/Filesystem charts, TopWorkloadsCpu, RightSizingPanel | agent gRPC (cAdvisor + kubelet) → bundled VM |
 | **D. L7 traffic** | Reliability sub-tab (error rate, top traffic, top latency, network drops, error hotspots) | agent gRPC (Hubble) → bundled VM |
@@ -402,7 +402,7 @@ helm install node-exporter prometheus-community/prometheus-node-exporter \
 ```
 
 ### What's enabled / lost — minimal install
-- ✅ A: Operational core complete (lists, details, Map, Insights with all 13 rules, exec, logs, files, port-forward).
+- ✅ A: Operational core complete (lists, details, Map, Insights with all 15 rules, exec, logs, files, port-forward).
 - ⚠️ B: Live bars depend on Metrics Server existing.
 - ✅ C: Capacity workload trends (CPU/Mem/Network/Filesystem) — the agent ships kubelet/cAdvisor pull built-in, no Prom needed.
 - ✅ D: Reliability if Cilium+Hubble is installed.
@@ -486,7 +486,7 @@ selector), and uses your local kubeconfig credentials for all
 apiserver calls.
 
 ### What's enabled
-- ✅ **A** Operational core — lists, details, Map, Insights (13 rules),
+- ✅ **A** Operational core — lists, details, Map, Insights (15 rules),
   exec / logs / port-forward / files (all run through your local
   kubeconfig).
 - ⚠️ **B** Live commitment bars — depend on Metrics Server in the

@@ -65,6 +65,11 @@ func (r *Registry) List(ctx context.Context, cs kubernetes.Interface) []Integrat
 	out := make([]Integration, 0, len(r.order))
 	for _, id := range r.order {
 		p := r.providers[id]
+		// Cache the installable check once — the type assertion is
+		// cheap but the flag rides on every Integration snapshot so
+		// the frontend can branch on `installable` without making
+		// another round-trip.
+		_, installable := p.(Installable)
 		snap, err := p.Detect(ctx, cs)
 		if err != nil {
 			// Preserve the metadata so the UI still has a card to
@@ -75,9 +80,11 @@ func (r *Registry) List(ctx context.Context, cs kubernetes.Interface) []Integrat
 				snap.Health = &Health{Message: err.Error()}
 			}
 			meta.Health = snap.Health
+			meta.Installable = installable
 			out = append(out, meta)
 			continue
 		}
+		snap.Installable = installable
 		out = append(out, snap)
 	}
 	return out

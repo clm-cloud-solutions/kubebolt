@@ -3,7 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity } from 'lucide-react'
 import { api } from '@/services/api'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
-import { useHubbleAvailable } from '@/hooks/useHubbleAvailable'
+import { useHubbleAvailable, useHubbleL7Available } from '@/hooks/useHubbleAvailable'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { MetricChart } from '@/components/shared/MetricChart'
@@ -35,6 +35,7 @@ export function ReliabilityPage() {
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
   const [rangeMinutes, setRangeMinutes] = useState(15)
   const { available: hubbleAvailable, isLoading: hubbleLoading } = useHubbleAvailable()
+  const { available: hubbleL7Available } = useHubbleL7Available()
 
   // Volume context for the chart's tooltip — req/s broken down by
   // status_class over the same time window. The chart shows error
@@ -58,7 +59,7 @@ export function ReliabilityPage() {
     },
     refetchInterval: 30_000,
     retry: false,
-    enabled: hubbleAvailable,
+    enabled: hubbleAvailable && hubbleL7Available,
   })
 
   // Build a {timestamp → ClassRates} index. Same metric exposed
@@ -87,6 +88,8 @@ export function ReliabilityPage() {
 
       {!hubbleAvailable && !hubbleLoading ? (
         <HubbleMissingPlaceholder />
+      ) : hubbleAvailable && !hubbleL7Available ? (
+        <HubbleL7UnavailablePlaceholder />
       ) : (
         <>
           {/* Cluster-wide error rate over time, split by class —
@@ -284,6 +287,77 @@ function HubbleMissingPlaceholder() {
         KubeBolt Agent. Once Cilium + Hubble are running and the agent has L7 enabled,
         the panels here populate automatically.
       </p>
+    </div>
+  )
+}
+
+// HubbleL7UnavailablePlaceholder — Hubble IS shipping flows
+// (L3/L4 detected), but HTTP / L7 metrics aren't. The cause is
+// always the same: Cilium runs without the L7 proxy enabled. The
+// distribution of WHY differs by platform — managed Kubernetes
+// (GKE managed Dataplane V2 most prominently, but also AKS / EKS
+// configurations where the operator can't toggle L7) is one bucket;
+// any cluster where the Cilium config simply doesn't have
+// `enable-l7-proxy` on is the other.
+//
+// Distinct from HubbleMissingPlaceholder because the operator's
+// next action differs sharply: there it's "install Hubble"; here
+// it's "your Cilium runs but L7 isn't on — fixable in self-managed
+// installs, structural limit in some managed ones". The empty
+// state communicates that without naming a single vendor — the
+// operator's cluster might be on any platform and the diagnosis
+// holds.
+//
+// Layout mirrors the missing-placeholder for visual consistency
+// (same rounded card, same spacing) so the operator's mental
+// model stays: "Reliability tab gave me a message instead of
+// panels." Copy + the Activity icon do the differentiation.
+function HubbleL7UnavailablePlaceholder() {
+  return (
+    <div className="rounded-lg border border-kb-border bg-kb-card p-8 text-center space-y-3">
+      <div className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-status-info-dim mb-1">
+        <Activity className="w-5 h-5 text-status-info" />
+      </div>
+      <h3 className="text-sm font-semibold text-kb-text-primary">
+        Hubble L7 metrics not available on this cluster
+      </h3>
+      <div className="text-xs text-kb-text-secondary max-w-lg mx-auto space-y-2">
+        <p>
+          Hubble is connected and shipping L3/L4 flows, but no HTTP / L7
+          telemetry is reaching KubeBolt. The cluster's Cilium install
+          is running without the L7 proxy enabled — KubeBolt has the
+          flow data, but not the HTTP layer detail this tab is
+          designed to surface.
+        </p>
+        <p>
+          On{' '}
+          <span className="text-kb-text-primary font-medium">self-managed
+          Cilium</span> (any platform — EKS, AKS, GKE Standard,
+          on-prem), enable it via{' '}
+          <code className="font-mono mx-1">enable-l7-proxy</code>
+          in your Cilium config and the panels populate automatically
+          once HTTP traffic starts flowing.
+        </p>
+        <p>
+          On{' '}
+          <span className="text-kb-text-primary font-medium">managed
+          Kubernetes where the L7 toggle isn't exposed</span> (GKE
+          managed Dataplane V2 being the canonical case), this is a
+          platform limitation outside KubeBolt's reach. The L3/L4
+          flows you have are still available in the Cluster Map
+          Traffic layout.
+        </p>
+        <p className="pt-1">
+          <a
+            href="https://github.com/clm-cloud-solutions/kubebolt/tree/main/deploy/helm/kubebolt-agent#hubble-l7"
+            target="_blank"
+            rel="noreferrer"
+            className="text-kb-accent hover:underline"
+          >
+            Agent docs — Hubble L7 caveats →
+          </a>
+        </p>
+      </div>
     </div>
   )
 }

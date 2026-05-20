@@ -74,7 +74,7 @@ func TestCreateTenant_EmptyNameRejected(t *testing.T) {
 func TestIssueToken_ReturnsPlaintextWithPrefixAndStoresHash(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plaintext, tok, err := ts.IssueToken(tn.ID, "prod-east", "admin", nil)
+	plaintext, tok, err := ts.IssueToken(tn.ID, "", "prod-east", "admin", nil)
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestIssueToken_TTLSetsExpiration(t *testing.T) {
 	ts.nowFn = func() time.Time { return fixed }
 	tn, _ := ts.CreateTenant("acme", "team")
 	ttl := 24 * time.Hour
-	_, tok, err := ts.IssueToken(tn.ID, "short", "admin", &ttl)
+	_, tok, err := ts.IssueToken(tn.ID, "", "short", "admin", &ttl)
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestIssueToken_TTLSetsExpiration(t *testing.T) {
 func TestLookupByToken_HappyPath(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plaintext, tok, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plaintext, tok, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 	gotTenant, gotTok, err := ts.LookupByToken(plaintext)
 	if err != nil {
 		t.Fatalf("LookupByToken: %v", err)
@@ -145,7 +145,7 @@ func TestLookupByToken_AfterRevoke(t *testing.T) {
 	// carries the revoked token for audit. This test pins the contract.
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plaintext, tok, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plaintext, tok, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 	if err := ts.RevokeToken(tn.ID, tok.ID); err != nil {
 		t.Fatalf("RevokeToken: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestLookupByToken_Expired(t *testing.T) {
 	ts.nowFn = func() time.Time { return fixed }
 	tn, _ := ts.CreateTenant("acme", "team")
 	ttl := time.Hour
-	plaintext, _, _ := ts.IssueToken(tn.ID, "prod", "admin", &ttl)
+	plaintext, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", &ttl)
 
 	ts.nowFn = func() time.Time { return fixed.Add(2 * time.Hour) }
 	if _, _, err := ts.LookupByToken(plaintext); !errors.Is(err, ErrTokenExpired) {
@@ -176,7 +176,7 @@ func TestLookupByToken_Expired(t *testing.T) {
 func TestLookupByToken_DisabledTenant(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plaintext, _, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plaintext, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 	if _, err := ts.UpdateTenant(tn.ID, func(t *Tenant) error { t.Disabled = true; return nil }); err != nil {
 		t.Fatalf("UpdateTenant: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestLookupByToken_DisabledTenant(t *testing.T) {
 func TestRotateToken_PreservesLabelAndIssuesNew(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain1, tok1, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain1, tok1, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 
 	plain2, tok2, err := ts.RotateToken(tn.ID, tok1.ID, "admin")
 	if err != nil {
@@ -217,7 +217,7 @@ func TestRotateToken_PreservesTTLWindow(t *testing.T) {
 	ts.nowFn = func() time.Time { return fixed }
 	tn, _ := ts.CreateTenant("acme", "team")
 	ttl := 7 * 24 * time.Hour
-	_, tok1, _ := ts.IssueToken(tn.ID, "prod", "admin", &ttl)
+	_, tok1, _ := ts.IssueToken(tn.ID, "", "prod", "admin", &ttl)
 
 	ts.nowFn = func() time.Time { return fixed.Add(time.Hour) }
 	_, tok2, err := ts.RotateToken(tn.ID, tok1.ID, "admin")
@@ -236,7 +236,7 @@ func TestRotateToken_PreservesTTLWindow(t *testing.T) {
 func TestMarkUsed_DebouncedToOncePerMinute(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	_, tok, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	_, tok, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	if err := ts.MarkUsed(tn.ID, tok.ID, base); err != nil {
@@ -272,7 +272,7 @@ func TestConcurrentTokenIssue_NoCollisions(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			p, _, err := ts.IssueToken(tn.ID, "concurrent", "admin", nil)
+			p, _, err := ts.IssueToken(tn.ID, "", "concurrent", "admin", nil)
 			plains[i] = p
 			errs[i] = err
 		}(i)
@@ -295,7 +295,7 @@ func TestConcurrentTokenIssue_NoCollisions(t *testing.T) {
 func TestDeleteTenant_ClearsBothIndexes(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 
 	if err := ts.DeleteTenant(tn.ID); err != nil {
 		t.Fatalf("DeleteTenant: %v", err)

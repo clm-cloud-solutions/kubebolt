@@ -64,8 +64,14 @@ export interface HealthCheck {
 // Cluster overview
 export interface ClusterOverview {
   clusterName?: string
+  // kube-system namespace UID — same value the agent stamps on every
+  // sample's `cluster_id` label, exposed here so the UI can render
+  // a copy-pasteable Prom `external_labels.cluster_id` snippet
+  // pre-filled for the active cluster.
+  clusterUID?: string
   kubernetesVersion?: string
   platform?: string
+  networkPolicies?: ResourceCount
   nodes?: ResourceCount
   pods?: ResourceCount
   namespaces?: ResourceCount
@@ -199,7 +205,12 @@ export interface ClusterInfo {
   status: 'connected' | 'disconnected' | 'error'
   error?: string
   displayName?: string
-  source?: 'file' | 'uploaded' | 'in-cluster'
+  source?: 'file' | 'uploaded' | 'in-cluster' | 'agent-proxy'
+  // kube-system namespace UID — same value the agent stamps on
+  // each sample's `cluster_id` label. Populated only for
+  // agent-proxy contexts (we get it via the Hello message);
+  // empty for direct-kubeconfig contexts we haven't probed.
+  clusterId?: string
 }
 
 // API params
