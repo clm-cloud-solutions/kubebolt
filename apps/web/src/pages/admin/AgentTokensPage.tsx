@@ -6,7 +6,8 @@
 // only the default tenant. A multi-tenant management UI — tenant
 // selector, billing, plans, per-tenant dashboards — lands in the
 // Enterprise edition when SaaS hospedado launches.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KeyRound, Plus, RefreshCw, Trash2, Copy, Check, AlertTriangle, ChevronDown } from 'lucide-react'
 import { api, type IngestToken, type IssuedToken } from '@/services/api'
@@ -163,7 +164,18 @@ function shortClusterName(c: ClusterInfo): string {
 }
 
 interface ClusterScopeDropdownProps {
-  clusters: ClusterInfo[]
+  // Clusters whose UID is known — selectable. These are the
+  // contexts the operator has either reached via agent-proxy
+  // (Hello message carries the UID) or visited at least once
+  // (Connector resolved + cached).
+  scopedClusters: ClusterInfo[]
+  // Clusters known by name only — the kubeconfig has them but the
+  // operator hasn't switched into them yet, so the backend
+  // doesn't have a UID to scope a token to. Rendered visible but
+  // disabled with a "switch first" hint so the operator
+  // understands why their multi-context kubeconfig only surfaces
+  // some clusters as scopeable.
+  unscopedClusters: ClusterInfo[]
   value: string
   onChange: (clusterId: string) => void
 }
@@ -171,19 +183,63 @@ interface ClusterScopeDropdownProps {
 // ClusterScopeDropdown renders a button + popup list. Each row
 // shows the short cluster name (primary text) plus the full context
 // name on a second line (muted) so the operator can verify they're
-// picking the right one. "Any cluster (advanced)" is a trailing
-// option separated by a thin rule.
-function ClusterScopeDropdown({ clusters, value, onChange }: ClusterScopeDropdownProps) {
+// picking the right one. Three sections in the popup:
+//
+//   1. Scoped clusters (selectable).
+//   2. Unscoped clusters (disabled with "switch to enable" hint).
+//   3. "Any cluster (advanced)" — escape hatch.
+//
+// The popup is rendered through a React Portal anchored to
+// document.body with position:fixed coordinates computed from the
+// trigger button's bounding rect. Without the portal the popup
+// inherits the modal's `overflow-hidden`/`max-h` constraints and
+// gets visually clipped — exactly the bug reported in the v1.11
+// in-vivo session when the cluster list grew beyond what the modal
+// could show.
+function ClusterScopeDropdown({ scopedClusters, unscopedClusters, value, onChange }: ClusterScopeDropdownProps) {
+  const clusters = scopedClusters // alias kept for the "find selected" lookup below
   const [open, setOpen] = useState(false)
   const rootRef = useRef<HTMLDivElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  // Position the popup at viewport-fixed coordinates derived from
+  // the button. Re-computed on open + on window resize/scroll so
+  // the popup tracks the button even if the user scrolls the modal
+  // backdrop or resizes the window mid-open.
+  const [popupPos, setPopupPos] = useState<{ top: number; left: number; width: number } | null>(null)
+
+  useLayoutEffect(() => {
+    if (!open || !buttonRef.current) return
+    function recompute() {
+      const rect = buttonRef.current!.getBoundingClientRect()
+      setPopupPos({
+        top: rect.bottom + 4, // 4px gap below the button
+        left: rect.left,
+        width: rect.width,
+      })
+    }
+    recompute()
+    window.addEventListener('resize', recompute)
+    window.addEventListener('scroll', recompute, true) // capture phase to catch modal-scroll
+    return () => {
+      window.removeEventListener('resize', recompute)
+      window.removeEventListener('scroll', recompute, true)
+    }
+  }, [open])
 
   // Click-outside + Escape to close. Mirror of the topbar cluster
   // switcher's interaction model so the operator's muscle memory
-  // carries over.
+  // carries over. The outside-click check has to cover BOTH the
+  // trigger button and the portaled popup — without the popup
+  // ref, clicks inside the popup look like outside clicks because
+  // the popup lives in document.body, not inside rootRef.
+  const popupRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     if (!open) return
     function onDocClick(e: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+      const target = e.target as Node
+      const insideTrigger = rootRef.current?.contains(target)
+      const insidePopup = popupRef.current?.contains(target)
+      if (!insideTrigger && !insidePopup) {
         setOpen(false)
       }
     }
@@ -203,6 +259,7 @@ function ClusterScopeDropdown({ clusters, value, onChange }: ClusterScopeDropdow
   return (
     <div ref={rootRef} className="relative">
       <button
+        ref={buttonRef}
         type="button"
         onClick={() => setOpen((v) => !v)}
         className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary hover:bg-kb-card-hover focus:outline-none focus:border-kb-accent transition-colors"
@@ -223,8 +280,24 @@ function ClusterScopeDropdown({ clusters, value, onChange }: ClusterScopeDropdow
         </div>
         <ChevronDown className={`w-3.5 h-3.5 text-kb-text-tertiary shrink-0 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
-      {open && (
-        <div className="absolute left-0 right-0 mt-1 z-10 bg-kb-card border border-kb-border rounded-lg shadow-lg max-h-72 overflow-auto">
+      {open && popupPos && createPortal(
+        <div
+          ref={popupRef}
+          // Sit above the Modal's z-[99999] stacking context.
+          // Modal docs (shared/Modal.tsx) document the backdrop at
+          // z-[99999]; we bump to z-[100000] so the popup paints
+          // ABOVE the modal panel (otherwise the portal renders
+          // outside the modal's DOM subtree but the backdrop's
+          // higher z-index hides it visually — the bug from the
+          // first portal cut).
+          className="fixed z-[100000] bg-kb-card border border-kb-border rounded-lg shadow-lg max-h-72 overflow-y-auto"
+          style={{
+            top: `${popupPos.top}px`,
+            left: `${popupPos.left}px`,
+            width: `${popupPos.width}px`,
+          }}
+        >
+          {/* Scoped clusters — selectable. The common case. */}
           {clusters.map((c) => {
             const isSel = c.clusterId === value
             return (
@@ -253,6 +326,40 @@ function ClusterScopeDropdown({ clusters, value, onChange }: ClusterScopeDropdow
               </button>
             )
           })}
+
+          {/* Unscoped clusters — visible but not selectable. The
+              UID hasn't been resolved (operator hasn't switched
+              into them yet), so binding a token to them is not
+              meaningful — backend has nothing to filter against.
+              Hint at the end of each row tells the operator what
+              to do. */}
+          {unscopedClusters.length > 0 && (
+            <div className="border-t border-kb-border">
+              <div className="px-3 py-1.5 text-[9px] uppercase tracking-wider text-kb-text-tertiary bg-kb-bg/50">
+                Not visited yet
+              </div>
+              {unscopedClusters.map((c) => (
+                <div
+                  key={c.context}
+                  className="px-3 py-2 cursor-not-allowed opacity-50"
+                  title="Switch to this cluster in the topbar first — KubeBolt resolves its cluster_id on connect, then it becomes selectable here."
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-sm text-kb-text-primary truncate">
+                      {shortClusterName(c)}
+                    </span>
+                    <span className="text-[10px] uppercase tracking-wider text-kb-text-tertiary shrink-0">
+                      switch first
+                    </span>
+                  </div>
+                  <div className="text-[10px] font-mono text-kb-text-tertiary truncate mt-0.5">
+                    {c.context}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* "Any cluster" lives at the bottom, separated by a thin
               rule. It's the escape hatch for the agent-install
               flow, not the recommended default — keep it visually
@@ -275,7 +382,8 @@ function ClusterScopeDropdown({ clusters, value, onChange }: ClusterScopeDropdow
               </div>
             </button>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   )
@@ -310,7 +418,14 @@ function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) 
     queryFn: () => api.listClusters(),
     staleTime: 60_000,
   })
-  const scopedClusters = (clusters ?? []).filter((c) => !!c.clusterId)
+  // Two partitions: clusters whose UID is known (selectable) and
+  // those that haven't been visited yet (visible but disabled,
+  // with a "visit first" hint). Showing the unvisited ones is
+  // important — without them the operator wonders why their
+  // multi-context kubeconfig only surfaces some of its clusters.
+  const allClusters = clusters ?? []
+  const scopedClusters = allClusters.filter((c) => !!c.clusterId)
+  const unscopedClusters = allClusters.filter((c) => !c.clusterId)
   // Default the picker to the active cluster (if scoped) so the
   // common case "I'm wiring up Prom in the cluster I'm looking at"
   // works out of the box. The operator can still pick "Any cluster"
@@ -388,7 +503,7 @@ function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) 
             names that are unreadable on a single line, and the
             kubeconfig context is the canonical identifier so we
             can't just hide it. */}
-        {scopedClusters.length > 0 && (
+        {allClusters.length > 0 && (
           <div className="space-y-1">
             <label className="text-[11px] font-medium text-kb-text-secondary">
               Cluster scope
@@ -397,7 +512,8 @@ function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) 
               </span>
             </label>
             <ClusterScopeDropdown
-              clusters={scopedClusters}
+              scopedClusters={scopedClusters}
+              unscopedClusters={unscopedClusters}
               value={clusterId}
               onChange={setClusterId}
             />
