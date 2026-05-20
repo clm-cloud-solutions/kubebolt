@@ -67,6 +67,7 @@ const OTHER_KINDS: { type: string; label: string }[] = [
   { type: 'daemonsets', label: 'DaemonSet' },
   { type: 'persistentvolumeclaims', label: 'PersistentVolumeClaim' },
   { type: 'horizontalpodautoscalers', label: 'HorizontalPodAutoscaler' },
+  { type: 'networkpolicies', label: 'NetworkPolicy' },
   { type: 'namespaces', label: 'Namespace' },
   { type: 'storageclasses', label: 'StorageClass' },
   { type: 'roles', label: 'Role' },
@@ -279,6 +280,70 @@ spec:
                 name: my-service
                 port:
                   number: 80
+`,
+    },
+  ],
+  // NetworkPolicy starters — three patterns ordered by how often
+  // an operator types them. "Default deny" is THE first NP most
+  // teams ship (regulated-industry default posture). "Allow same
+  // namespace" is the natural relaxation once deny is in place.
+  // "Allow from specific app" is the working illustration of the
+  // podSelector + ingress.from.podSelector pattern most newcomers
+  // get wrong on the first try.
+  networkpolicies: [
+    {
+      id: 'np-default-deny',
+      label: 'Default deny all',
+      manifest: `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+spec:
+  # Empty podSelector = applies to ALL pods in the namespace.
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+`,
+    },
+    {
+      id: 'np-allow-same-ns',
+      label: 'Allow same namespace',
+      manifest: `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+`,
+    },
+    {
+      id: 'np-allow-from-app',
+      label: 'Allow from specific app',
+      manifest: `apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-from-frontend
+spec:
+  # Pods this policy protects (the "destination" side).
+  podSelector:
+    matchLabels:
+      app: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
 `,
     },
   ],

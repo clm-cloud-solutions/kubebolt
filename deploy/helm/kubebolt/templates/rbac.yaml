@@ -17,7 +17,7 @@ rules:
     resources: ["jobs", "cronjobs"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["networking.k8s.io"]
-    resources: ["ingresses"]
+    resources: ["ingresses", "networkpolicies"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
@@ -55,6 +55,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "services", "persistentvolumeclaims"]
     verbs: ["delete", "update"]
+  # NetworkPolicies: create/update/delete for the New-resource modal
+  # (NetworkPolicy is offered as a first-class kind with starter
+  # templates as of 1.11) and for YAML-tab edits + Delete action.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["create", "update", "delete"]
   # ConfigMaps: agent install creates kubebolt-agent-config alongside the
   # DaemonSet; without create the wizard fails after the SA step.
   - apiGroups: [""]
