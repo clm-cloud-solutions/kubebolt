@@ -18,6 +18,7 @@ type ClusterOverview struct {
 	Jobs               ResourceCount       `json:"jobs"`
 	CronJobs           ResourceCount       `json:"cronJobs"`
 	Ingresses          ResourceCount       `json:"ingresses"`
+	NetworkPolicies    ResourceCount       `json:"networkPolicies"`
 	ConfigMaps         ResourceCount       `json:"configMaps"`
 	Secrets            ResourceCount       `json:"secrets"`
 	PVCs               ResourceCount       `json:"pvcs"`

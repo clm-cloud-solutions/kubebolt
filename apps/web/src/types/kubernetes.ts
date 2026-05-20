@@ -71,6 +71,7 @@ export interface ClusterOverview {
   clusterUID?: string
   kubernetesVersion?: string
   platform?: string
+  networkPolicies?: ResourceCount
   nodes?: ResourceCount
   pods?: ResourceCount
   namespaces?: ResourceCount

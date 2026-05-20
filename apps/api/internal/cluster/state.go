@@ -7,6 +7,7 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 )
 
 // GetPods returns all pods from the cache.
@@ -111,4 +112,19 @@ func (c *Connector) GetEndpointSlices() []*discoveryv1.EndpointSlice {
 		return nil
 	}
 	return slices
+}
+
+// GetNetworkPolicies returns all NetworkPolicies from the cache.
+// Used by the insights engine to evaluate policy-coverage rules
+// (policy-no-match, policy-orphan).
+func (c *Connector) GetNetworkPolicies() []*networkingv1.NetworkPolicy {
+	if c.networkPolicyLister == nil {
+		return nil
+	}
+	policies, err := c.networkPolicyLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing network policies: %v", err)
+		return nil
+	}
+	return policies
 }

@@ -810,16 +810,17 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {
 	state := &insights.ClusterState{
-		Pods:           connector.GetPods(),
-		Deployments:    connector.GetDeployments(),
-		Nodes:          connector.GetNodes(),
-		HPAs:           connector.GetHPAs(),
-		PVCs:           connector.GetPVCs(),
-		Events:         connector.GetEventsRaw(),
-		Services:       connector.GetServices(),
-		EndpointSlices: connector.GetEndpointSlices(),
-		PodMetrics:     collector.GetAllPodMetrics(),
-		NodeMetrics:    collector.GetAllNodeMetrics(),
+		Pods:            connector.GetPods(),
+		Deployments:     connector.GetDeployments(),
+		Nodes:           connector.GetNodes(),
+		HPAs:            connector.GetHPAs(),
+		PVCs:            connector.GetPVCs(),
+		Events:          connector.GetEventsRaw(),
+		Services:        connector.GetServices(),
+		EndpointSlices:  connector.GetEndpointSlices(),
+		NetworkPolicies: connector.GetNetworkPolicies(),
+		PodMetrics:      collector.GetAllPodMetrics(),
+		NodeMetrics:     collector.GetAllNodeMetrics(),
 	}
 	engine.Evaluate(state)
 }
