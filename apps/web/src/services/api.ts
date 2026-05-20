@@ -239,10 +239,14 @@ export const api = {
   listAgentTokens: (tenantID: string) =>
     fetchJSON<IngestToken[]>(`${API_BASE}/admin/tenants/${tenantID}/tokens`),
 
-  issueAgentToken: (tenantID: string, label: string, ttlSeconds?: number) =>
+  issueAgentToken: (tenantID: string, label: string, ttlSeconds?: number, clusterId?: string) =>
     postJSON<IssuedToken>(`${API_BASE}/admin/tenants/${tenantID}/tokens`, {
       label,
       ttlSeconds: ttlSeconds ?? 0,
+      // Pass through when set so the backend can scope the token
+      // to a specific cluster. Omitting (or empty) preserves the
+      // legacy "any cluster" semantic.
+      ...(clusterId ? { clusterId } : {}),
     }),
 
   rotateAgentToken: (tenantID: string, tokenID: string) =>

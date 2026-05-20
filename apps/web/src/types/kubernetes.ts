@@ -199,7 +199,12 @@ export interface ClusterInfo {
   status: 'connected' | 'disconnected' | 'error'
   error?: string
   displayName?: string
-  source?: 'file' | 'uploaded' | 'in-cluster'
+  source?: 'file' | 'uploaded' | 'in-cluster' | 'agent-proxy'
+  // kube-system namespace UID — same value the agent stamps on
+  // each sample's `cluster_id` label. Populated only for
+  // agent-proxy contexts (we get it via the Hello message);
+  // empty for direct-kubeconfig contexts we haven't probed.
+  clusterId?: string
 }
 
 // API params
