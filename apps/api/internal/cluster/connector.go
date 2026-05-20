@@ -1984,7 +1984,15 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		if err != nil {
 			return nil, err
 		}
-		return networkPolicyToMap(np), nil
+		// Enrich the detail payload with match-status — list of
+		// pods this policy's podSelector currently matches. List
+		// view skips this (would be O(N×M)); detail can afford the
+		// per-pod label-match inside the policy's namespace.
+		base := networkPolicyToMap(np)
+		matched := c.podsMatchingSelector(np.Namespace, &np.Spec.PodSelector)
+		base["matchedPods"] = matched
+		base["matchedPodCount"] = len(matched)
+		return base, nil
 	case "configmaps":
 		cm, err := c.configMapLister.ConfigMaps(namespace).Get(name)
 		if err != nil {
@@ -4101,6 +4109,54 @@ func (c *Connector) listNetworkPolicies(namespace string) []map[string]interface
 		items = append(items, networkPolicyToMap(np))
 	}
 	return items
+}
+
+// podsMatchingSelector returns a slim representation of pods in
+// `namespace` whose labels match the given LabelSelector. Used by
+// the NetworkPolicy detail handler to surface the "match status"
+// — which pods does this policy currently apply to, and is the
+// count zero (the policy_no_match insight rule's trigger).
+//
+// Returns nil when the pod lister isn't available (RBAC restricted)
+// or the selector is invalid — distinct from returning an empty
+// slice, which would mean "the selector parses fine but matches
+// zero pods" (the actionable signal). Callers treat nil as
+// "couldn't tell."
+//
+// Selector semantics:
+//   - empty selector ({}) matches EVERY pod in the namespace
+//     (NetworkPolicy v1 spec). We return all pods rather than zero
+//     — this is the catch-all case operators ABSOLUTELY need to
+//     see, since an empty selector policy gates the entire namespace.
+//   - matchLabels + matchExpressions composed via labels.Selector.
+//     Invalid expressions surface as zero matches (logged) rather
+//     than panic.
+func (c *Connector) podsMatchingSelector(namespace string, sel *metav1.LabelSelector) []map[string]string {
+	if c.podLister == nil || sel == nil {
+		return nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(sel)
+	if err != nil {
+		log.Printf("NetworkPolicy match: invalid selector in namespace %q: %v", namespace, err)
+		return nil
+	}
+	pods, err := c.podLister.Pods(namespace).List(selector)
+	if err != nil {
+		log.Printf("NetworkPolicy match: pod lookup failed in namespace %q: %v", namespace, err)
+		return nil
+	}
+	// Slim per-pod payload — just enough for the UI to render a
+	// clickable list back to /pods/<ns>/<name> detail. Full pod
+	// rendering would balloon the detail response without adding
+	// signal (the operator picks one and navigates to it).
+	out := make([]map[string]string, 0, len(pods))
+	for _, p := range pods {
+		out = append(out, map[string]string{
+			"name":      p.Name,
+			"namespace": p.Namespace,
+		})
+	}
+	return out
 }
 
 func (c *Connector) listGatewayResources(resource, namespace string) []map[string]interface{} {
