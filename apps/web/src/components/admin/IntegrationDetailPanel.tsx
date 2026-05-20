@@ -5,6 +5,7 @@ import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { api, ApiError, type Integration } from '@/services/api'
 import { StatusBadge } from '@/pages/admin/IntegrationsPage'
 import { AgentConfigureDialog } from '@/components/admin/AgentConfigureDialog'
+import { useClusterOverview } from '@/hooks/useClusterOverview'
 
 interface Props {
   integration: Integration
@@ -258,6 +259,18 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
               <ExternalLink className="w-3.5 h-3.5" />
               Documentation
             </a>
+          )}
+
+          {/* Prometheus-specific setup helper. The card surfaces
+              the cluster_id + cluster_name pair the operator needs
+              to wire into prometheus.yml's external_labels. Tied
+              to integration.id rather than a generic capability
+              because the snippet contents are Prom-specific
+              (PromQL labels, YAML shape). Other future ingest-
+              based integrations (OTLP, Pushgateway) will need
+              their own equivalents. */}
+          {integration.id === 'prometheus' && (
+            <PrometheusSetupSnippet />
           )}
 
           {/* Configure — only for managed installs. Externally
@@ -538,6 +551,118 @@ function Step({
           <div className="text-[10px] font-mono text-kb-text-tertiary mt-0.5">{hint}</div>
         )}
       </div>
+    </div>
+  )
+}
+
+// PrometheusSetupSnippet renders the per-cluster identity values
+// (cluster_id + cluster_name + tenant_id) the operator needs to
+// wire into `prometheus.yml` so KubeBolt can attribute samples
+// correctly. Resolved from the active cluster's overview + the
+// admin tenants endpoint — values change automatically as the
+// operator switches clusters, so the displayed snippet is always
+// pre-filled for the cluster currently in focus.
+//
+// Why this lives in the Prometheus integration's Manage panel and
+// not in /admin/agent-tokens: the token modal is shared between
+// agent installs (which carry their cluster_id via Hello, no
+// stamping needed) and Prom installs (which DO need stamping at
+// the source). Surfacing the snippet here scopes it to the only
+// flow that actually needs it.
+function PrometheusSetupSnippet() {
+  const { data: overview } = useClusterOverview()
+  // tenant_id is required by the receiver's enforced auth mode and
+  // recommended in every other mode (anti-spoof check uses it).
+  // OSS surfaces only the auto-seeded "default" tenant — same
+  // pattern AgentTokensPage uses. Multi-tenant SaaS adds a picker
+  // here when that flow lands.
+  const { data: tenants } = useQuery({
+    queryKey: ['tenants'],
+    queryFn: api.listTenants,
+    staleTime: 60_000,
+  })
+  const [copied, setCopied] = useState(false)
+
+  // Empty UID means the backend hasn't resolved the active cluster
+  // (e.g. cluster not connected yet, RBAC blocking kube-system read).
+  // Bail rather than render a snippet with a sentinel placeholder
+  // that the operator would copy-paste verbatim.
+  const clusterUID = overview?.clusterUID
+  if (!clusterUID) return null
+
+  // cluster_name defaults to the kubeconfig context-derived name
+  // the operator has already seen everywhere else in the UI, so
+  // the snippet "speaks" the same vocabulary they're used to.
+  // Operators are free to change this to anything readable — the
+  // value is display-only.
+  const clusterName = overview?.clusterName ?? '<your-cluster-name>'
+
+  // Pick the default tenant in OSS; multi-tenant SaaS would surface
+  // a selector here. Sentinel placeholder if the tenants endpoint
+  // failed — the operator can still see the snippet shape, just
+  // needs to fill the tenant UUID manually.
+  const tenantID = tenants?.find((t) => t.name === 'default')?.id
+    ?? tenants?.[0]?.id
+    ?? '<TENANT_ID>'
+
+  const snippet = `global:
+  external_labels:
+    cluster_id: "${clusterUID}"
+    cluster_name: "${clusterName}"
+    tenant_id: "${tenantID}"
+
+remote_write:
+  - url: http(s)://kubebolt.example.com/api/v1/prom/write
+    authorization:
+      credentials: <ingest-token>
+`
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(snippet)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard API can fail in non-https / strict-permissions
+      // contexts. Stay silent; the operator can manually select +
+      // copy from the rendered code block.
+    }
+  }
+
+  return (
+    <div className="pt-4 border-t border-kb-border space-y-2">
+      <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">
+        Prometheus setup — per-cluster labels
+      </div>
+      <p className="text-[11px] text-kb-text-secondary leading-relaxed">
+        Add the snippet below to your Prometheus config so KubeBolt
+        can attribute samples to this cluster + tenant.{' '}
+        <code className="font-mono text-kb-text-primary">cluster_id</code>{' '}
+        is this cluster's <code className="font-mono text-kb-text-primary">kube-system</code>{' '}
+        namespace UID — immutable, unique per cluster.{' '}
+        <code className="font-mono text-kb-text-primary">cluster_name</code>{' '}
+        is operator-chosen, display only.{' '}
+        <code className="font-mono text-kb-text-primary">tenant_id</code>{' '}
+        is required by the receiver's anti-spoof check — must match
+        the bearer token's tenant.
+      </p>
+      <div className="relative">
+        <pre className="bg-kb-elevated border border-kb-border rounded-lg p-3 text-[10px] font-mono text-kb-text-primary overflow-x-auto whitespace-pre">
+{snippet}
+        </pre>
+        <button
+          onClick={copy}
+          className="absolute top-2 right-2 px-2 py-1 text-[10px] font-medium rounded-md bg-kb-card border border-kb-border text-kb-text-secondary hover:bg-kb-card-hover hover:text-kb-text-primary transition-colors"
+          title="Copy snippet"
+        >
+          {copied ? 'Copied ✓' : 'Copy'}
+        </button>
+      </div>
+      <p className="text-[10px] text-kb-text-tertiary">
+        Switch clusters in the topbar to get a snippet pre-filled
+        for a different cluster. One Prometheus per cluster is the
+        supported topology.
+      </p>
     </div>
   )
 }
