@@ -18,6 +18,7 @@ import (
 	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
+	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
@@ -1044,6 +1045,26 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.NetworkPolicies.Total = len(networkPolicies)
 	overview.NetworkPolicies.Ready = len(networkPolicies)
 
+	// Gateways + HTTPRoutes — declarative resources from the Gateway
+	// API CRDs. Read via the dynamic client (not a typed lister)
+	// because the CRDs are optional; when absent, listGatewayResources
+	// returns nil and the counts stay at 0, which the sidebar
+	// renders by hiding the count chip.
+	overview.Gateways.Total = len(c.listGatewayResources("gateways", ""))
+	overview.Gateways.Ready = overview.Gateways.Total
+	overview.HTTPRoutes.Total = len(c.listGatewayResources("httproutes", ""))
+	overview.HTTPRoutes.Ready = overview.HTTPRoutes.Total
+
+	// Endpoints — count of EndpointSlice objects, matching what the
+	// list endpoint returns (KubeBolt surfaces EndpointSlices under
+	// the `endpoints` resource type — the legacy Endpoints API is
+	// deprecated and progressively dropped from KSM defaults).
+	if c.endpointSliceLister != nil {
+		slices, _ := c.endpointSliceLister.List(everythingSelector())
+		overview.Endpoints.Total = len(slices)
+		overview.Endpoints.Ready = len(slices)
+	}
+
 	// ConfigMaps
 	var configMaps []*corev1.ConfigMap
 	if c.configMapLister != nil {
@@ -1712,6 +1733,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listIngresses(namespace)
 	case "networkpolicies":
 		items = c.listNetworkPolicies(namespace)
+	case "endpoints":
+		items = c.listEndpoints(namespace)
 	case "gateways":
 		items = c.listGatewayResources("gateways", namespace)
 	case "httproutes":
@@ -3139,6 +3162,13 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"cronjobs":              {Group: "batch", Version: "v1", Resource: "cronjobs"},
 		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
 		"networkpolicies":       {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
+		// `endpoints` is the user-facing URL/type; underneath it maps
+		// to the discovery/v1 EndpointSlice API (legacy core/v1
+		// Endpoints is deprecated). Adding this entry enables the
+		// YAML view + Delete + PatchMetadata + ApplyYAML dispatchers
+		// for the resource type that the list + detail handlers
+		// already surface (via typed listers, separate code path).
+		"endpoints":             {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
 		"hpas":                  {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
 		"horizontalpodautoscalers": {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
 		"storageclasses":        {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
@@ -4109,6 +4139,63 @@ func (c *Connector) listNetworkPolicies(namespace string) []map[string]interface
 		items = append(items, networkPolicyToMap(np))
 	}
 	return items
+}
+
+// listEndpoints surfaces EndpointSlice objects under the `endpoints`
+// resource type (legacy v1.Endpoints is deprecated; we use the
+// discovery/v1 EndpointSlice API instead). One row per slice,
+// mirroring the shape the detail handler returns for individual
+// slices so navigation list → detail stays consistent.
+func (c *Connector) listEndpoints(namespace string) []map[string]interface{} {
+	if c.endpointSliceLister == nil {
+		return nil
+	}
+	list, _ := c.endpointSliceLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, es := range list {
+		if namespace != "" && es.Namespace != namespace {
+			continue
+		}
+		items = append(items, endpointSliceToMap(es))
+	}
+	return items
+}
+
+// endpointSliceToMap builds the row payload for a single EndpointSlice.
+// The shape mirrors what GetResourceDetail's "endpoints" case returns
+// so the list → detail navigation surfaces the same fields.
+func endpointSliceToMap(es *discoveryv1.EndpointSlice) map[string]interface{} {
+	var addresses []string
+	for _, ep := range es.Endpoints {
+		addresses = append(addresses, ep.Addresses...)
+	}
+	var ports []map[string]interface{}
+	for _, p := range es.Ports {
+		port := map[string]interface{}{}
+		if p.Name != nil {
+			port["name"] = *p.Name
+		}
+		if p.Port != nil {
+			port["port"] = *p.Port
+		}
+		if p.Protocol != nil {
+			port["protocol"] = string(*p.Protocol)
+		}
+		ports = append(ports, port)
+	}
+	return map[string]interface{}{
+		"name":            es.Name,
+		"namespace":       es.Namespace,
+		"status":          "Active",
+		"addresses":       addresses,
+		"addressCount":    len(addresses),
+		"ports":           ports,
+		"labels":          safeLabels(es.Labels),
+		"annotations":     safeAnnotations(es.Annotations),
+		"createdAt":       es.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(es.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(es.OwnerReferences),
+	}
 }
 
 // podsMatchingSelector returns a slim representation of pods in

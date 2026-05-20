@@ -87,9 +87,9 @@ const sections: NavSection[] = [
       { label: 'Services', path: '/services', icon: <Globe className="w-4 h-4" />, countKey: 'services', permissionKey: 'services' },
       { label: 'Ingresses', path: '/ingresses', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'ingresses', permissionKey: 'ingresses' },
       { label: 'NetworkPolicies', path: '/networkpolicies', icon: <Shield className="w-4 h-4" />, countKey: 'networkPolicies', permissionKey: 'networkpolicies' },
-      { label: 'Gateways', path: '/gateways', icon: <Globe className="w-4 h-4" /> },
-      { label: 'HTTPRoutes', path: '/httproutes', icon: <ArrowRightLeft className="w-4 h-4" /> },
-      { label: 'Endpoints', path: '/endpoints', icon: <Radio className="w-4 h-4" />, permissionKey: 'endpointslices' },
+      { label: 'Gateways', path: '/gateways', icon: <Globe className="w-4 h-4" />, countKey: 'gateways' },
+      { label: 'HTTPRoutes', path: '/httproutes', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'httpRoutes' },
+      { label: 'Endpoints', path: '/endpoints', icon: <Radio className="w-4 h-4" />, countKey: 'endpoints', permissionKey: 'endpointslices' },
     ],
   },
   {
