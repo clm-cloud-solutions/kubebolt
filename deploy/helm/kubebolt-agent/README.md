@@ -318,12 +318,30 @@ plaintext) silently fail against this setup with
 | Client cert | _(none)_ | required, in Secret `hubble-relay-client-certs` |
 | CA bundle | _(system trust)_ | `ca.crt` key of that same Secret |
 
-Two steps to make the agent talk to it:
+Two pieces have to be in place before the agent can talk to the
+relay:
+
+1. The agent's `hubble.relay` values pointing at the GKE service +
+   mTLS Secret (one helm upgrade — same shape for every path below).
+2. A copy of the relay's client-certs Secret living in **the agent's
+   release namespace**. K8s won't let a pod mount a Secret from a
+   different namespace, so something has to put it there. Pick a
+   path based on your install lifecycle:
+
+| Path | Best for | Cert rotation safe? |
+|---|---|---|
+| **A. Manual `kubectl` mirror** | One-shot demos / quick proofs | ❌ Stale after GKE rotates the certs (manual re-run needed) |
+| **B. External Secrets Operator** | Production installs where you already run ESO for other secrets | ✅ Picks up cert rotation automatically |
+| **C. Reflector** | Lightweight production installs where you want the controller as a single annotation on the source Secret | ✅ Picks up cert rotation automatically |
+
+### Path A — Manual mirror with `kubectl`
+
+The fastest path for a demo or to confirm KubeBolt can read flows
+from the relay. Re-run the mirror command if GKE rotates the certs
+on its own cadence.
 
 ```bash
 # 1. Mirror the relay client-certs Secret into the agent's namespace.
-#    GKE creates it in gke-managed-dpv2-observability; the agent's
-#    chart can only mount a Secret living in its own release namespace.
 kubectl get secret -n gke-managed-dpv2-observability hubble-relay-client-certs -o yaml \
   | sed 's/namespace: gke-managed-dpv2-observability/namespace: kubebolt-system/' \
   | sed '/uid:/d; /resourceVersion:/d; /creationTimestamp:/d; /ownerReferences:/,/^  [a-z]/d' \
@@ -338,13 +356,98 @@ helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt
   --set hubble.relay.tls.serverName=hubble-relay.gke-managed-dpv2-observability.svc
 ```
 
-> ⚠️ **The cross-namespace mirror is not Helm-stable.** If GKE rotates
-> the relay certs (it does, on its own cadence), the mirrored Secret
-> goes stale and the agent will retry-loop until you re-run step 1.
-> For long-running installs prefer a controller that watches the
-> source Secret — `External Secrets Operator` and `Reflector` both
-> work for this. A built-in chart-side mirror is on the roadmap as
-> a follow-up to this section.
+### Path B — External Secrets Operator
+
+Recommended when you already run [External Secrets Operator (ESO)](https://external-secrets.io/)
+in the cluster (most production clusters managing secrets at scale
+do). ESO's `ClusterSecretStore` pointed at the Kubernetes API as a
+source can pull the cert into the agent's namespace and keep it in
+sync with the upstream automatically.
+
+```yaml
+# 1. ClusterSecretStore — reads from the same cluster's own
+#    apiserver (no external vault needed, just RBAC).
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: in-cluster-kubernetes
+spec:
+  provider:
+    kubernetes:
+      remoteNamespace: gke-managed-dpv2-observability
+      server:
+        caProvider:
+          type: ConfigMap
+          name: kube-root-ca.crt
+          namespace: default
+          key: ca.crt
+      auth:
+        serviceAccount:
+          name: external-secrets-sa  # ESO SA, must have get/list/watch on Secrets in the source ns
+---
+# 2. ExternalSecret — declares "I want this Secret mirrored here".
+apiVersion: external-secrets.io/v1
+kind: ExternalSecret
+metadata:
+  name: hubble-relay-client-certs
+  namespace: kubebolt-system
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: in-cluster-kubernetes
+    kind: ClusterSecretStore
+  target:
+    name: hubble-relay-client-certs
+  dataFrom:
+    - extract:
+        key: hubble-relay-client-certs
+```
+
+The ESO SA needs `get / list / watch` on the `Secret`
+`hubble-relay-client-certs` in `gke-managed-dpv2-observability` —
+add a `Role` + `RoleBinding` for that namespace. The agent helm
+install is unchanged from Path A's step 2.
+
+### Path C — Reflector
+
+[Reflector](https://github.com/emberstack/kubernetes-reflector) is a
+~10MB controller that watches Secrets/ConfigMaps with specific
+annotations and pushes copies into target namespaces. Lighter than
+ESO if Hubble's relay cert is the only thing you need to mirror.
+
+```bash
+# 1. Install Reflector (one-time, cluster-wide).
+helm repo add emberstack https://emberstack.github.io/helm-charts
+helm upgrade --install reflector emberstack/reflector \
+  --namespace kube-system
+
+# 2. Annotate the source Secret so Reflector picks it up.
+#    Allowed-namespaces uses a regex; pin to the agent's ns or
+#    widen the pattern if you run the agent in multiple namespaces.
+kubectl annotate secret -n gke-managed-dpv2-observability \
+  hubble-relay-client-certs \
+  reflector.v1.k8s.emberstack.com/reflection-allowed=true \
+  reflector.v1.k8s.emberstack.com/reflection-allowed-namespaces=kubebolt-system \
+  reflector.v1.k8s.emberstack.com/reflection-auto-enabled=true \
+  reflector.v1.k8s.emberstack.com/reflection-auto-namespaces=kubebolt-system
+```
+
+The agent helm install is unchanged from Path A's step 2. Reflector
+keeps the mirrored Secret in sync with the source whenever GKE
+rotates the certs.
+
+### Picking between B and C
+
+| | ESO (Path B) | Reflector (Path C) |
+|---|---|---|
+| Already-in-cluster runtime cost | Free if ESO already runs | ~10 MB controller, single deployment |
+| Config surface | 2 YAML objects (ClusterSecretStore + ExternalSecret) | 4 annotations on the source Secret |
+| Source choice | Pluggable (Vault, AWS Secrets Manager, GCP Secret Manager, K8s itself) | Kubernetes Secrets only |
+| Best fit | You already use ESO for other workloads | Hubble cert is your only cross-namespace mirror need |
+
+For one-off Hubble mirroring without other ESO use cases, Reflector
+is the smaller lift. For environments that already have ESO running,
+Path B avoids adding a second secret-mirror controller.
 
 #### L7 visibility caveat
 
