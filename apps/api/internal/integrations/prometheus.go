@@ -71,6 +71,29 @@ type tenantsLister interface {
 // one-way (integrations → cluster, never the reverse).
 type currentClusterIDFn func() string
 
+// promSamplesProbeFn checks whether VictoriaMetrics holds any
+// Prometheus-originated samples tagged with the given cluster UID.
+// Returns (true, nil) when samples are present, (false, nil) when
+// the cluster has no Prom data flowing, and (false, err) on
+// transport errors — callers treat err as "couldn't tell" and fall
+// back to the heartbeat-only logic, so the integration card never
+// goes blank because of a transient VM hiccup.
+//
+// The probe is the truth signal that closes the gap left by the
+// token-based heartbeat: a legacy unscoped token (ClusterID == "")
+// passes the cluster-scope filter in every cluster, but only ONE
+// cluster is actually receiving its samples. Without this check,
+// the integration card would falsely report "Streaming" on every
+// cluster the operator switches to. With it, the card only claims
+// "Streaming" when VM confirms the data is actually here.
+//
+// Pass a nil promSampleProbe to disable this check entirely —
+// the provider then falls back to the token heartbeat alone (the
+// pre-check behaviour). Tests use nil; production wires the
+// closure in main.go pointing at the same VM the metrics-query
+// proxy uses.
+type promSamplesProbeFn func(ctx context.Context, clusterID string) (bool, error)
+
 // prometheusProvider implements Provider for the customer's
 // existing Prometheus (Phase 3 remote_write receiver). Unlike the
 // agent, Prometheus is not installed by KubeBolt and lives entirely
@@ -78,8 +101,9 @@ type currentClusterIDFn func() string
 // *evidence of activity* (ingest token usage) rather than workload
 // state. Stateless; safe to register once at startup.
 type prometheusProvider struct {
-	tenants       tenantsLister
-	currentCluster currentClusterIDFn
+	tenants         tenantsLister
+	currentCluster  currentClusterIDFn
+	promSampleProbe promSamplesProbeFn
 }
 
 // NewPrometheus constructs the Prometheus integration provider.
@@ -95,15 +119,29 @@ type prometheusProvider struct {
 // reflects only what's relevant to the cluster the operator is
 // currently viewing.
 //
-// Pass a nil currentCluster (or a function that returns "") to
-// disable cluster-scope filtering entirely — every token is then
-// considered relevant. Tests use this to exercise the heartbeat
+// promSampleProbe is an optional VM probe that confirms Prom-
+// originated samples are actually reaching this cluster's view.
+// Without it, a legacy unscoped token surfaces a misleading
+// "Streaming" on every cluster the operator visits. With it, the
+// card downgrades to "no samples reaching this cluster" when VM
+// confirms there's no data.
+//
+// Pass a nil currentCluster or promSampleProbe to disable each
+// check independently. Tests use nils to exercise the heartbeat
 // branches in isolation.
-func NewPrometheus(tenants tenantsLister, currentCluster currentClusterIDFn) Provider {
+func NewPrometheus(
+	tenants tenantsLister,
+	currentCluster currentClusterIDFn,
+	promSampleProbe promSamplesProbeFn,
+) Provider {
 	if currentCluster == nil {
 		currentCluster = func() string { return "" }
 	}
-	return &prometheusProvider{tenants: tenants, currentCluster: currentCluster}
+	return &prometheusProvider{
+		tenants:         tenants,
+		currentCluster:  currentCluster,
+		promSampleProbe: promSampleProbe,
+	}
 }
 
 func (p *prometheusProvider) Meta() Integration {
@@ -228,8 +266,56 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 		meta.Version = workload.Version
 	}
 
+	// Sample-presence probe — closes the gap left by legacy
+	// unscoped tokens. A token with ClusterID == "" passes the
+	// cluster-scope filter in every cluster, but only the cluster
+	// actually receiving its samples should claim "Streaming". The
+	// probe asks VM whether Prom-originated samples exist for the
+	// current cluster's UID; when the answer is "no", we override
+	// the heartbeat narrative regardless of how fresh the token's
+	// LastUsedAt looks.
+	//
+	// Skipped entirely (treated as confirmed) when there's no probe
+	// wired (tests, OSS dev without VM), or when there's no
+	// resolvable current cluster (the scope filter is already a
+	// no-op in that case so nothing to validate).
+	samplesConfirmed := true
+	if p.promSampleProbe != nil && currentClusterID != "" && hasHeartbeat {
+		ok, err := p.promSampleProbe(ctx, currentClusterID)
+		if err == nil {
+			samplesConfirmed = ok
+		}
+		// On error, leave samplesConfirmed = true so a transient VM
+		// blip doesn't downgrade a working integration. The probe is
+		// a positive signal — its absence shouldn't trump the
+		// heartbeat we already have.
+	}
+
 	// Combination matrix — see Detect's package-level comment.
 	switch {
+	case hasWorkload && hasHeartbeat && !samplesConfirmed:
+		// Legacy unscoped token matches in this cluster, but no
+		// samples are actually reaching it. Usually means the token
+		// was issued in a different cluster's session and we're
+		// inheriting the heartbeat via the "any cluster" backward-
+		// compat semantic. Tell the operator without claiming
+		// "Streaming" we can't substantiate.
+		meta.Status = StatusDegraded
+		meta.Health = &Health{
+			PodsReady:   workload.PodsReady,
+			PodsDesired: workload.PodsDesired,
+			Message:     "Prometheus running in cluster and an ingest token is active, but no samples are reaching this cluster's view. Verify the token's cluster scope and that remote_write points at this KubeBolt instance.",
+		}
+
+	case !hasWorkload && hasHeartbeat && !samplesConfirmed:
+		// No local workload, no samples for this cluster either —
+		// the token activity belongs to a different cluster's view.
+		// Card collapses to "not installed here" with a hint.
+		meta.Status = StatusNotInstalled
+		meta.Health = &Health{
+			Message: "An ingest token is active under this tenant but no Prometheus samples are reaching this cluster's view. The token may be scoped to (or used by) a different cluster.",
+		}
+
 	case hasWorkload && hasHeartbeat:
 		// Common case: Prom in this cluster, configured to push to
 		// KubeBolt. Status tier blends pod health + heartbeat

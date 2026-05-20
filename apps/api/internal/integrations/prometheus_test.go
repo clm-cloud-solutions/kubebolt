@@ -75,7 +75,7 @@ func tokenAt(label string, ageFromNow time.Duration) auth.IngestToken {
 }
 
 func TestPrometheusProvider_Meta(t *testing.T) {
-	p := NewPrometheus(&mockTenantsLister{}, nil)
+	p := NewPrometheus(&mockTenantsLister{}, nil, nil)
 	m := p.Meta()
 	if m.ID != PrometheusID {
 		t.Errorf("Meta().ID = %q, want %q", m.ID, PrometheusID)
@@ -260,7 +260,7 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 				},
 			},
 		}}
-		p := NewPrometheus(lister, nil)
+		p := NewPrometheus(lister, nil, nil)
 		got, _ := p.Detect(context.Background(), nil)
 		if got.Health == nil {
 			t.Fatal("Health is nil")
@@ -273,7 +273,7 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			lister := &mockTenantsLister{tenants: tc.tenants, err: tc.err}
-			p := NewPrometheus(lister, nil)
+			p := NewPrometheus(lister, nil, nil)
 			got, err := p.Detect(context.Background(), nil /* k8s client unused */)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v (Detect should never return errors — surface them via Status=Unknown)", err)
@@ -406,7 +406,7 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 			}
 			cs := fake.NewSimpleClientset(objs...)
 			lister := &mockTenantsLister{tenants: tc.tenants}
-			p := NewPrometheus(lister, nil)
+			p := NewPrometheus(lister, nil, nil)
 
 			got, err := p.Detect(context.Background(), kubernetes.Interface(cs))
 			if err != nil {
@@ -531,7 +531,7 @@ func TestPrometheusProvider_Detect_ClusterScope(t *testing.T) {
 			lister := &mockTenantsLister{tenants: []auth.Tenant{
 				{ID: "t1", Name: "default", IngestTokens: tc.tokens},
 			}}
-			p := NewPrometheus(lister, func() string { return tc.currentClusterID })
+			p := NewPrometheus(lister, func() string { return tc.currentClusterID }, nil)
 			got, err := p.Detect(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v", err)
@@ -598,7 +598,7 @@ func TestPrometheusProvider_Detect_AdaptiveSourceLabel(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			lister := &mockTenantsLister{tenants: tc.tenants}
-			p := NewPrometheus(lister, nil)
+			p := NewPrometheus(lister, nil, nil)
 			got, err := p.Detect(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v", err)
@@ -615,6 +615,97 @@ func TestPrometheusProvider_Detect_AdaptiveSourceLabel(t *testing.T) {
 		})
 	}
 }
+
+// TestPrometheusProvider_Detect_SampleProbe exercises the
+// sample-presence probe (5a.1.d): a legacy unscoped token passing
+// the scope filter no longer guarantees "Streaming" — the card
+// downgrades when VM confirms no Prom-originated samples are
+// tagged with the current cluster.
+func TestPrometheusProvider_Detect_SampleProbe(t *testing.T) {
+	const activeClusterID = "active-cluster-uid"
+
+	makeProbe := func(present bool, err error) promSamplesProbeFn {
+		return func(_ context.Context, _ string) (bool, error) {
+			return present, err
+		}
+	}
+
+	tests := []struct {
+		name               string
+		probe              promSamplesProbeFn
+		wantStatus         Status
+		wantMessageContain string
+	}{
+		{
+			name:               "probe confirms samples → Streaming (normal path)",
+			probe:              makeProbe(true, nil),
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "Streaming",
+		},
+		{
+			name:               "probe denies samples → NotInstalled (no false Streaming from legacy token)",
+			probe:              makeProbe(false, nil),
+			wantStatus:         StatusNotInstalled,
+			wantMessageContain: "no Prometheus samples are reaching this cluster's view",
+		},
+		{
+			name:               "probe errors → fall back to heartbeat (no downgrade on transient VM blip)",
+			probe:              makeProbe(false, errProbeUnreachable),
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "Streaming",
+		},
+		{
+			name:               "no probe wired (nil) → fall back to heartbeat (legacy behavior preserved)",
+			probe:              nil,
+			wantStatus:         StatusInstalled,
+			wantMessageContain: "Streaming",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			// Legacy unscoped token (ClusterID == "") with a fresh
+			// LastUsedAt — this is the exact shape the bug from
+			// the v1.11 in-vivo session manifested as: token passes
+			// the scope filter, heartbeat looks alive, but no
+			// samples are actually arriving for the active cluster.
+			lister := &mockTenantsLister{tenants: []auth.Tenant{
+				{
+					ID:           "t1",
+					Name:         "default",
+					IngestTokens: []auth.IngestToken{tokenAt("legacy-prom", 10*time.Second)},
+				},
+			}}
+			p := NewPrometheus(
+				lister,
+				func() string { return activeClusterID },
+				tc.probe,
+			)
+			got, err := p.Detect(context.Background(), nil)
+			if err != nil {
+				t.Fatalf("Detect() returned error: %v", err)
+			}
+			if got.Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got.Status, tc.wantStatus)
+			}
+			if got.Health == nil {
+				t.Fatalf("Health is nil")
+			}
+			if !strings.Contains(got.Health.Message, tc.wantMessageContain) {
+				t.Errorf("Health.Message = %q, want substring %q", got.Health.Message, tc.wantMessageContain)
+			}
+		})
+	}
+}
+
+// errProbeUnreachable is a sentinel error for the probe-errors
+// test case. Defined as a package-level var so the test stays
+// readable (no inline errors.New noise).
+var errProbeUnreachable = &sentinelError{msg: "probe: VM unreachable"}
+
+type sentinelError struct{ msg string }
+
+func (e *sentinelError) Error() string { return e.msg }
 
 func TestHumanDuration(t *testing.T) {
 	cases := []struct {
