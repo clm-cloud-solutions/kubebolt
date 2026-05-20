@@ -89,6 +89,7 @@ var createKindByType = map[string]string{
 	"jobs":                     "Job",
 	"cronjobs":                 "CronJob",
 	"ingresses":                "Ingress",
+	"networkpolicies":          "NetworkPolicy",
 	"hpas":                     "HorizontalPodAutoscaler",
 	"horizontalpodautoscalers": "HorizontalPodAutoscaler",
 	"storageclasses":           "StorageClass",
@@ -400,7 +401,7 @@ func expectedGroupVersionFor(resourceType string) schema.GroupVersion {
 		return schema.GroupVersion{Group: "apps", Version: "v1"}
 	case "jobs", "cronjobs":
 		return schema.GroupVersion{Group: "batch", Version: "v1"}
-	case "ingresses":
+	case "ingresses", "networkpolicies":
 		return schema.GroupVersion{Group: "networking.k8s.io", Version: "v1"}
 	case "hpas", "horizontalpodautoscalers":
 		return schema.GroupVersion{Group: "autoscaling", Version: "v1"}

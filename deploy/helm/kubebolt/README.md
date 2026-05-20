@@ -267,7 +267,7 @@ retention.
 
 KubeBolt works with any access level. The chart creates a ClusterRole with permissions for:
 
-- Read access to all 23 supported resource types
+- Read access to all 24 supported resource types
 - Pod exec (terminal) and port-forward
 - Metrics Server access
 - SelfSubjectAccessReview (permission probing)

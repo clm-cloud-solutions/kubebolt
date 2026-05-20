@@ -75,12 +75,12 @@ KubeBolt is a Kubernetes monitoring platform that provides instant cluster visib
 **Phase 1 (zero install):**
 1. User provides kubeconfig (all contexts auto-discovered for multi-cluster)
 2. Cluster Manager connects to selected K8s API Server via client-go
-3. **Permission probe** runs SelfSubjectAccessReview for 22 resource types to detect access level
+3. **Permission probe** runs SelfSubjectAccessReview for 24 resource types to detect access level
 4. Shared informer factory watches **only permitted** resource types (skips denied resources)
 5. For namespace-scoped ServiceAccounts: per-namespace informer factories with multi-lister aggregation
 6. Dynamic client discovers Gateway API resources (Gateways, HTTPRoutes)
 7. Metrics Collector polls `metrics.k8s.io/v1beta1` every 30s (per-namespace when cluster-wide denied)
-8. Insights Engine evaluates 12 rules against current state
+8. Insights Engine evaluates 15 rules against current state
 9. REST API serves resource lists, details, topology (with metrics enrichment). Returns 403 for restricted resources.
 10. WebSocket broadcasts real-time updates to frontend
 11. User can switch clusters at runtime via API
@@ -121,6 +121,7 @@ KubeBolt is a Kubernetes monitoring platform that provides instant cluster visib
 - Gateways (gateway.networking.k8s.io — class, address, listeners, status)
 - HTTPRoutes (gateway.networking.k8s.io — hostnames, gateway parent, backends)
 - EndpointSlices (addresses, ports, ready) — migrated from deprecated v1.Endpoints
+- NetworkPolicies (networking.k8s.io/v1 — podSelector, policyTypes, ingress/egress rule counts, matched-pods status)
 
 **Storage:**
 - PersistentVolumeClaims (status, volume, capacity, class)
@@ -149,10 +150,11 @@ KubeBolt covers the resource types in §3.2 end-to-end (informer, list page, det
 | `resourcequotas` | core/v1 | ❌ | ❌ | ❌ | ❌ |
 | `limitranges` | core/v1 | ❌ | ❌ | ❌ | ❌ |
 | `serviceaccounts` | core/v1 | ❌ | ❌ | ❌ | ❌ |
-| `networkpolicies` | networking.k8s.io/v1 | ❌ | ❌ | ❌ | ❌ |
 | `poddisruptionbudgets` | policy/v1 | ❌ | ❌ | ❌ | ❌ |
 | `priorityclasses` | scheduling.k8s.io/v1 | ❌ | ❌ | ❌ | ❌ |
 | `ingressclasses` | networking.k8s.io/v1 | ❌ | ❌ | ❌ | ❌ |
+
+> `networkpolicies` was promoted out of this tier in 1.11 — see §3.2 Traffic. It now has a full list/detail/sidebar surface plus two insights rules (`policy-no-match`, `policy-orphan`).
 
 **To promote a describe-only type to full UI support, the work is symmetric across every layer:**
 
@@ -199,7 +201,7 @@ KubeBolt covers the resource types in §3.2 end-to-end (informer, list page, det
 KubeBolt auto-detects the connected kubeconfig's permissions at connection time and adapts its behavior. Works with any access level — from cluster-admin to namespace-scoped read-only ServiceAccounts.
 
 **Permission probe (`permissions.go`):**
-- Uses `SelfSubjectAccessReview` API to test `list` verb for each of the 22 resource types
+- Uses `SelfSubjectAccessReview` API to test `list` verb for each of the 24 resource types
 - Two-phase probe: cluster-wide first, then namespace-level fallback for RoleBinding-based access
 - Concurrent execution (semaphore of 10), completes in ~2-5s
 - If SSAR API itself is unavailable, falls back to assume full access (preserves existing behavior)

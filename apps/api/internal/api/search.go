@@ -29,7 +29,7 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 	// Search across all resource types using existing listers
 	types := []string{
 		"pods", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs",
-		"services", "ingresses", "configmaps", "secrets", "nodes", "namespaces",
+		"services", "ingresses", "networkpolicies", "configmaps", "secrets", "nodes", "namespaces",
 		"pvcs", "pvs", "hpas", "storageclasses",
 	}
 
@@ -65,8 +65,8 @@ func resourceTypeToKind(rt string) string {
 	kinds := map[string]string{
 		"pods": "Pod", "deployments": "Deployment", "statefulsets": "StatefulSet",
 		"daemonsets": "DaemonSet", "jobs": "Job", "cronjobs": "CronJob",
-		"services": "Service", "ingresses": "Ingress", "configmaps": "ConfigMap",
-		"secrets": "Secret", "nodes": "Node", "namespaces": "Namespace",
+		"services": "Service", "ingresses": "Ingress", "networkpolicies": "NetworkPolicy",
+		"configmaps": "ConfigMap", "secrets": "Secret", "nodes": "Node", "namespaces": "Namespace",
 		"pvcs": "PVC", "pvs": "PV", "hpas": "HPA", "storageclasses": "StorageClass",
 	}
 	if k, ok := kinds[rt]; ok {
