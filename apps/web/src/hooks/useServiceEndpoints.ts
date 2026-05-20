@@ -1,24 +1,43 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
 
-// useServiceEndpoints reads kube-state-metrics' EndpointSlice counts and
+// useServiceEndpoints reads kube-state-metrics' endpoint counts and
 // reduces them to a per-Service summary. Same gated-signal pattern
 // as useNamespaceQuotas / useNodeStress: an empty cluster (no KSM)
 // returns an empty map; consumers fall back gracefully.
 //
-// KSM 2.10+ removed the legacy `kube_endpoint_*` collector in favour
-// of `kube_endpointslice_*` (the EndpointSlice API is the long-term
-// shape; legacy Endpoints is frozen). We derive the Service name by
-// stripping the controller-generated 5-char hash suffix from the
-// endpointslice name — every controller-created EndpointSlice follows
-// `<service-name>-<5-char-hash>`. Custom user-created EndpointSlices
-// that don't follow this shape fall through the strip unchanged and
-// just won't match a Service row, which is the correct behaviour.
+// Dual-collector support — KSM offers TWO ways to expose endpoint
+// data and different clusters configure different ones:
 //
-// Two VM round-trips: one for existence (info) so empty selectors
-// still register a 0/0 entry, one for counts (endpoints) grouped
-// server-side by (namespace, endpointslice, ready) to keep the
-// payload bounded as the cluster grows.
+//   1. `kube_endpointslice_*` — modern, keyed on EndpointSlice objects
+//      (one per Service after kube-controller-manager splits, named
+//      `<svc>-<5-char-hash>`). KSM enables this with
+//      `--resources=...,endpointslices,...`. Preferred when present
+//      because the EndpointSlice API is the long-term k8s shape.
+//
+//   2. `kube_endpoint_*` — legacy, keyed on the deprecated Endpoints
+//      object (one per Service, name = Service name, no hash strip).
+//      KSM enables this with `--resources=...,endpoints,...`.
+//
+// kube-prometheus-stack's bundled KSM ships with the LEGACY collector
+// in its `--resources` flag (deliberate, for backwards-compat with
+// existing Grafana dashboards) and does NOT enable endpointslices
+// by default. So a stock kube-prometheus-stack install yields only
+// `kube_endpoint_*` series, and a hook that queries only the modern
+// family returns an empty map — making every Service look "without
+// endpoints" in the UI.
+//
+// We query both and prefer modern when both exist. This makes the
+// hook work out-of-the-box on:
+//   - clusters running stock prometheus-community KSM with the
+//     endpointslices collector (modern path)
+//   - clusters running kube-prometheus-stack defaults (legacy path)
+//   - clusters that enabled both (modern wins)
+//
+// Four VM round-trips total, but they fire in parallel via
+// Promise.all so wall-clock cost is the slowest single round-trip.
+// When a collector isn't enabled, its query returns an empty result
+// set in milliseconds and contributes nothing to the merge.
 
 export interface ServiceEndpointSummary {
   ready: number
@@ -39,13 +58,20 @@ export function useServiceEndpoints() {
   const q = useQuery({
     queryKey: ['service-endpoints'],
     queryFn: async () => {
-      const [info, counts] = await Promise.all([
+      const [sliceInfo, sliceCounts, endpointInfo, endpointCounts] = await Promise.all([
+        // Modern (preferred) — EndpointSlice-keyed series.
         api.queryMetrics({ query: 'kube_endpointslice_info' }),
         api.queryMetrics({
           query: 'sum by (namespace, endpointslice, ready) (kube_endpointslice_endpoints)',
         }),
+        // Legacy fallback — Endpoints-keyed series. kube-prometheus-
+        // stack defaults emit these.
+        api.queryMetrics({ query: 'kube_endpoint_info' }),
+        api.queryMetrics({
+          query: 'sum by (namespace, endpoint, ready) (kube_endpoint_address)',
+        }),
       ])
-      return { info, counts }
+      return { sliceInfo, sliceCounts, endpointInfo, endpointCounts }
     },
     staleTime: 30_000,
     refetchInterval: 30_000,
@@ -53,10 +79,13 @@ export function useServiceEndpoints() {
   })
 
   const map: ServiceEndpointsMap = {}
-  // Pass 1: every EndpointSlice that exists registers a zero entry,
-  // so a Service whose selector matches no pods (zero endpoint rows)
-  // still surfaces as 0/0 instead of being missing from the map.
-  for (const series of q.data?.info?.data?.result ?? []) {
+  // Track which keys came from the modern collector so we don't
+  // double-count when both collectors are enabled. Modern wins;
+  // legacy fills in only for Services modern didn't cover.
+  const modernKeys = new Set<string>()
+
+  // ── Pass 1a: modern info → register zero entries (preferred).
+  for (const series of q.data?.sliceInfo?.data?.result ?? []) {
     const m = series.metric as Record<string, string>
     const ns = m.namespace
     const slice = m.endpointslice
@@ -64,9 +93,10 @@ export function useServiceEndpoints() {
     const svc = endpointSliceToService(slice)
     const key = serviceKey(ns, svc)
     if (!map[key]) map[key] = { ready: 0, notReady: 0, total: 0 }
+    modernKeys.add(key)
   }
-  // Pass 2: tally ready vs notReady from the grouped counts.
-  for (const series of q.data?.counts?.data?.result ?? []) {
+  // ── Pass 1b: modern counts → tally ready vs notReady.
+  for (const series of q.data?.sliceCounts?.data?.result ?? []) {
     const m = series.metric as Record<string, string>
     const ns = m.namespace
     const slice = m.endpointslice
@@ -82,7 +112,40 @@ export function useServiceEndpoints() {
     }
     if (m.ready === 'true') entry.ready += v
     else entry.notReady += v
+    modernKeys.add(key)
   }
+  // ── Pass 2a: legacy info → register zero entries ONLY for
+  // Services the modern pass didn't cover. Endpoint name = Service
+  // name (1:1, no hash to strip).
+  for (const series of q.data?.endpointInfo?.data?.result ?? []) {
+    const m = series.metric as Record<string, string>
+    const ns = m.namespace
+    const ep = m.endpoint
+    if (!ns || !ep) continue
+    const key = serviceKey(ns, ep)
+    if (modernKeys.has(key)) continue
+    if (!map[key]) map[key] = { ready: 0, notReady: 0, total: 0 }
+  }
+  // ── Pass 2b: legacy counts → tally ready vs notReady for keys
+  // not already populated by the modern pass.
+  for (const series of q.data?.endpointCounts?.data?.result ?? []) {
+    const m = series.metric as Record<string, string>
+    const ns = m.namespace
+    const ep = m.endpoint
+    if (!ns || !ep) continue
+    const v = parseFloat(series.value?.[1] ?? '0')
+    if (!isFinite(v)) continue
+    const key = serviceKey(ns, ep)
+    if (modernKeys.has(key)) continue
+    let entry = map[key]
+    if (!entry) {
+      entry = { ready: 0, notReady: 0, total: 0 }
+      map[key] = entry
+    }
+    if (m.ready === 'true') entry.ready += v
+    else entry.notReady += v
+  }
+
   for (const entry of Object.values(map)) {
     entry.total = entry.ready + entry.notReady
   }
