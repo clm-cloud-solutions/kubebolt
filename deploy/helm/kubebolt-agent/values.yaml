@@ -61,14 +61,36 @@ hubble:
   relay:
     # Override the relay address. Empty = use the agent default
     # (hubble-relay.kube-system.svc.cluster.local:80).
+    #
+    # Common overrides:
+    # - GKE managed Dataplane V2:
+    #     hubble-relay.gke-managed-dpv2-observability.svc.cluster.local:443
+    # See README → "Deploying on GKE managed Dataplane V2" for the
+    # full setup (relay is mTLS-only in that environment and the
+    # client-certs Secret lives in a different namespace — three
+    # mirror options documented there).
     address: ""
     tls:
       # Mount an existing Secret with keys ca.crt / tls.crt / tls.key.
       # Presence of ca.crt enables TLS; tls.crt+tls.key enable mTLS.
       # Leave empty for insecure plaintext (acceptable inside the pod
       # network).
+      #
+      # The Secret MUST live in the agent's release namespace —
+      # cross-namespace Secret mounting is a K8s no-go. When the
+      # source Secret lives elsewhere (GKE managed DPv2 is the
+      # canonical case), pick one of the three documented mirror
+      # paths in the README:
+      # 1. Manual one-shot kubectl mirror (quick start, not stable
+      #    across cert rotation).
+      # 2. External Secrets Operator (production path — clean
+      #    declarative pull from the source Secret).
+      # 3. Reflector (lightweight controller — annotation-driven
+      #    push from source to mirror).
       existingSecret: ""
       # SNI / verification hostname. Empty defaults to the dial target.
+      # For GKE managed DPv2 set to:
+      #   hubble-relay.gke-managed-dpv2-observability.svc
       serverName: ""
 
 # ─── Scrape sidecar (vmagent) ───────────────────────────────
