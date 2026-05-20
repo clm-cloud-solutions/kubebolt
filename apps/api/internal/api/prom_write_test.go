@@ -33,7 +33,7 @@ func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, string) {
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	plaintext, _, err := ts.IssueToken(tn.ID, "scrape", "admin", nil)
+	plaintext, _, err := ts.IssueToken(tn.ID, "", "scrape", "admin", nil)
 	if err != nil {
 		t.Fatalf("IssueToken: %v", err)
 	}

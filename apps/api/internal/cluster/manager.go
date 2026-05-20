@@ -323,6 +323,17 @@ type ClusterInfo struct {
 	Error       string `json:"error,omitempty"`       // connection error message
 	DisplayName string `json:"displayName,omitempty"` // optional user-defined friendly name
 	Source      string `json:"source"`                // "file" (kubeconfig on disk), "uploaded" (added via UI), "in-cluster"
+
+	// ClusterID is the kube-system namespace UID — the same value the
+	// agent stamps on every sample's `cluster_id` label. Currently
+	// known only for agent-proxy contexts (the Hello message carries
+	// it on registration). Empty for direct-kubeconfig contexts that
+	// we haven't probed at boot.
+	//
+	// Surfaced here so the admin UI can scope ingest tokens to a
+	// specific cluster at issue-time (5a.1.a — Prometheus integration
+	// per-cluster filtering).
+	ClusterID string `json:"clusterId,omitempty"`
 }
 
 // NewManager creates a new cluster manager.
@@ -444,6 +455,11 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			Error:       connErrMsg,
 			DisplayName: displayNames[ctxName],
 			Source:      source,
+			// Populated only when the cluster reached us via the
+			// agent-proxy path — the Hello message carries the UID.
+			// Empty otherwise; the admin UI treats empty as "unknown,
+			// pick Any cluster".
+			ClusterID: m.agentProxyContexts[ctxName],
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {

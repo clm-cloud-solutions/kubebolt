@@ -155,7 +155,7 @@ func TestAuthCache_Invalidate(t *testing.T) {
 func TestBearerIngestAuth_HappyPath(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -209,7 +209,7 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 	// calling InvalidateCache after a RevokeToken mutation.
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, tok, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain, tok, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -232,7 +232,7 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 func TestBearerIngestAuth_DisabledTenant(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(ts, 0) // cache disabled — every call hits store
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -250,7 +250,7 @@ func TestBearerIngestAuth_DisabledTenant(t *testing.T) {
 func TestBearerIngestAuth_TLSVerifiedFromPeer(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -269,7 +269,7 @@ func TestBearerIngestAuth_TLSVerifiedFromPeer(t *testing.T) {
 func TestBearerIngestAuth_ConcurrentAuth(t *testing.T) {
 	ts := newTestTenantsStore(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "prod", "admin", nil)
+	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
 	auth := NewBearerIngestAuth(ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 
