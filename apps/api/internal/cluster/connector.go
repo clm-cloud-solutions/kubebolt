@@ -103,6 +103,7 @@ type Connector struct {
 	jobLister            batchlisters.JobLister
 	cronJobLister        batchlisters.CronJobLister
 	ingressLister        networkinglisters.IngressLister
+	networkPolicyLister  networkinglisters.NetworkPolicyLister
 	hpaLister            autoscalinglisters.HorizontalPodAutoscalerLister
 	storageClassLister   storagelisters.StorageClassLister
 	roleLister           rbaclisters.RoleLister
@@ -466,6 +467,16 @@ func (c *Connector) setupInformers() {
 		} else {
 			c.ingressLister = c.factory.Networking().V1().Ingresses().Lister()
 			c.factory.Networking().V1().Ingresses().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("networkpolicies") {
+		if isNS("networkpolicies") {
+			var listers []networkinglisters.NetworkPolicyLister
+			for _, f := range nsFactories { listers = append(listers, f.Networking().V1().NetworkPolicies().Lister()); f.Networking().V1().NetworkPolicies().Informer().AddEventHandler(handler) }
+			c.networkPolicyLister = &multiNetworkPolicyLister{listers: listers}
+		} else {
+			c.networkPolicyLister = c.factory.Networking().V1().NetworkPolicies().Lister()
+			c.factory.Networking().V1().NetworkPolicies().Informer().AddEventHandler(handler)
 		}
 	}
 
@@ -1020,6 +1031,18 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 	overview.Ingresses.Total = len(ingresses)
 	overview.Ingresses.Ready = len(ingresses)
+
+	// NetworkPolicies — same "total = ready" shape as Ingresses
+	// (these are declarative resources, no readiness condition;
+	// rendering them as Ready=Total keeps the sidebar count
+	// honest about presence without inventing a health signal
+	// that doesn't exist for the type).
+	var networkPolicies []*networkingv1.NetworkPolicy
+	if c.networkPolicyLister != nil {
+		networkPolicies, _ = c.networkPolicyLister.List(everythingSelector())
+	}
+	overview.NetworkPolicies.Total = len(networkPolicies)
+	overview.NetworkPolicies.Ready = len(networkPolicies)
 
 	// ConfigMaps
 	var configMaps []*corev1.ConfigMap
@@ -1687,6 +1710,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listServices(namespace)
 	case "ingresses":
 		items = c.listIngresses(namespace)
+	case "networkpolicies":
+		items = c.listNetworkPolicies(namespace)
 	case "gateways":
 		items = c.listGatewayResources("gateways", namespace)
 	case "httproutes":
@@ -1951,6 +1976,15 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			return nil, err
 		}
 		return ingressToMap(ing), nil
+	case "networkpolicies":
+		if c.networkPolicyLister == nil {
+			return nil, fmt.Errorf("networkpolicies not available (RBAC restricted or informer not started)")
+		}
+		np, err := c.networkPolicyLister.NetworkPolicies(namespace).Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return networkPolicyToMap(np), nil
 	case "configmaps":
 		cm, err := c.configMapLister.ConfigMaps(namespace).Get(name)
 		if err != nil {
@@ -2614,6 +2648,87 @@ func ingressToMap(ing *networkingv1.Ingress) map[string]interface{} {
 	}
 }
 
+// networkPolicyToMap renders a NetworkPolicy in the shape the
+// generic resource list/detail handlers consume. Captures the
+// information operators scan a list for: which workloads the
+// policy targets (via the podSelector preview), what traffic
+// it gates (ingress / egress directions + rule counts), and the
+// policyTypes declared on the spec.
+//
+// Why selector preview instead of raw matchLabels: the table cell
+// has to be human-skimmable, and a label map renders as
+// `{app=foo, tier=db}` which loses its meaning the moment there
+// are 3+ labels. The preview is what the operator sees at a glance;
+// the detail view renders the full structured selector.
+func networkPolicyToMap(np *networkingv1.NetworkPolicy) map[string]interface{} {
+	// policyTypes is technically optional in the spec, but K8s
+	// always populates it on read — empty signals "use the
+	// directions present in the rules" per the v1 semantics.
+	// Surface it as-is for the operator to see what the policy
+	// claims to gate.
+	policyTypes := make([]string, 0, len(np.Spec.PolicyTypes))
+	for _, t := range np.Spec.PolicyTypes {
+		policyTypes = append(policyTypes, string(t))
+	}
+	return map[string]interface{}{
+		"name":            np.Name,
+		"namespace":       np.Namespace,
+		"status":          "Active",
+		"podSelector":     selectorPreview(&np.Spec.PodSelector),
+		"policyTypes":     policyTypes,
+		"ingressRules":    len(np.Spec.Ingress),
+		"egressRules":     len(np.Spec.Egress),
+		"labels":          safeLabels(np.Labels),
+		"annotations":     safeAnnotations(np.Annotations),
+		"createdAt":       np.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(np.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(np.OwnerReferences),
+	}
+}
+
+// selectorPreview renders a LabelSelector as a short human string.
+// Empty selector → "all pods (catch-all)" — operators reading a
+// list need to spot catch-all policies at a glance because they
+// gate every pod in the namespace, including future ones.
+//
+// Non-empty matchLabels render as `key=value,key=value` (PromQL-
+// style comma-joined) — concise enough for a table cell, and the
+// detail view shows the structured map. matchExpressions are
+// summarized as a count suffix ("+2 expressions") rather than
+// rendered verbatim because they don't compress to a one-line
+// preview cleanly.
+func selectorPreview(sel *metav1.LabelSelector) string {
+	if sel == nil {
+		return "all pods (catch-all)"
+	}
+	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
+		return "all pods (catch-all)"
+	}
+	pairs := make([]string, 0, len(sel.MatchLabels))
+	for k, v := range sel.MatchLabels {
+		pairs = append(pairs, fmt.Sprintf("%s=%s", k, v))
+	}
+	sort.Strings(pairs) // deterministic preview across calls
+	preview := strings.Join(pairs, ",")
+	if len(sel.MatchExpressions) > 0 {
+		if preview != "" {
+			preview += " "
+		}
+		preview += fmt.Sprintf("+%d expression%s", len(sel.MatchExpressions), plural(len(sel.MatchExpressions)))
+	}
+	return preview
+}
+
+// plural returns "s" when n != 1 — small helper used by
+// selectorPreview to keep the message grammatical without
+// scaffolding a dependency on a wider i18n layer.
+func plural(n int) string {
+	if n == 1 {
+		return ""
+	}
+	return "s"
+}
+
 func configMapToMap(cm *corev1.ConfigMap) map[string]interface{} {
 	keys := make([]string, 0, len(cm.Data))
 	for k := range cm.Data {
@@ -3015,6 +3130,7 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"jobs":                  {Group: "batch", Version: "v1", Resource: "jobs"},
 		"cronjobs":              {Group: "batch", Version: "v1", Resource: "cronjobs"},
 		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
+		"networkpolicies":       {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
 		"hpas":                  {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
 		"horizontalpodautoscalers": {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
 		"storageclasses":        {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
@@ -3968,6 +4084,21 @@ func (c *Connector) listIngresses(namespace string) []map[string]interface{} {
 			continue
 		}
 		items = append(items, ingressToMap(ing))
+	}
+	return items
+}
+
+func (c *Connector) listNetworkPolicies(namespace string) []map[string]interface{} {
+	if c.networkPolicyLister == nil {
+		return nil
+	}
+	list, _ := c.networkPolicyLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, np := range list {
+		if namespace != "" && np.Namespace != namespace {
+			continue
+		}
+		items = append(items, networkPolicyToMap(np))
 	}
 	return items
 }
