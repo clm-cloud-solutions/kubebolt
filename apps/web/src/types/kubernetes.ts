@@ -64,6 +64,11 @@ export interface HealthCheck {
 // Cluster overview
 export interface ClusterOverview {
   clusterName?: string
+  // kube-system namespace UID — same value the agent stamps on every
+  // sample's `cluster_id` label, exposed here so the UI can render
+  // a copy-pasteable Prom `external_labels.cluster_id` snippet
+  // pre-filled for the active cluster.
+  clusterUID?: string
   kubernetesVersion?: string
   platform?: string
   nodes?: ResourceCount

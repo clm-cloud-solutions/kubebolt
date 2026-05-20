@@ -328,8 +328,8 @@ func main() {
 
 		// Attach cluster storage (uses the same BoltDB for persistence of
 		// user-uploaded kubeconfigs and display name overrides).
-		configsBucket, displayBucket := auth.ClusterBuckets()
-		clusterStorage := cluster.NewStorage(store.DB(), configsBucket, displayBucket)
+		configsBucket, displayBucket, uidBucket := auth.ClusterBuckets()
+		clusterStorage := cluster.NewStorage(store.DB(), configsBucket, displayBucket, uidBucket)
 		if err := manager.SetStorage(clusterStorage); err != nil {
 			slog.Warn("failed to attach cluster storage, uploaded clusters won't persist",
 				slog.String("error", err.Error()))
@@ -456,9 +456,44 @@ func main() {
 		// considers relevant signal — without it, multi-cluster
 		// installs would see other clusters' tokens inflate this
 		// cluster's "active senders" count.
+		//
+		// Note on UID source: `ActiveAgentProxyClusterID` alone is
+		// insufficient — it returns "" for direct-kubeconfig
+		// clusters (EKS, GKE, AKS reached via the operator's local
+		// kubeconfig, never through the agent proxy). Those
+		// clusters DO have a UID (kube-system namespace UUID) but
+		// only the active Connector knows it. We prefer the
+		// agent-proxy value when set (it's available at boot
+		// before the Connector finishes) and fall back to the
+		// Connector's value otherwise. Same selection the
+		// handlers' `activeClusterUID()` helper uses.
+		//
+		// Sample-presence probe: a tiny VM client that confirms
+		// Prom-originated samples tagged with the current cluster's
+		// UID are actually in storage. Closes the false-positive a
+		// legacy unscoped token would otherwise create on every
+		// cluster the operator switches to. Probe shape:
+		// `count(up{cluster_id="<X>"})` — `up` is the canonical
+		// per-scrape-target gauge that the agent gRPC channel does
+		// NOT emit, so presence cleanly attributes to "Prometheus
+		// shipping for this cluster" rather than the agent.
+		vmProbeURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
+		if vmProbeURL == "" {
+			vmProbeURL = "http://localhost:8428"
+		}
+		vmProbeClient := integrations.NewVMProbeClient(vmProbeURL, nil)
 		integrationRegistry.Register(integrations.NewPrometheus(
 			tenantsStore,
-			manager.ActiveAgentProxyClusterID,
+			func() string {
+				if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
+					return uid
+				}
+				if conn := manager.Connector(); conn != nil {
+					return conn.ClusterUID()
+				}
+				return ""
+			},
+			vmProbeClient.PromSamplesForCluster,
 		))
 	}
 

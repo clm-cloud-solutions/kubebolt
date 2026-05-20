@@ -784,6 +784,15 @@ jobs:
           echo "$BODY" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
+      # Compute the version string WITHOUT the leading `v` so docker-pull
+      # commands in the release body match the tags published to GHCR.
+      # docker/metadata-action's `type=semver,pattern={{version}}` strips
+      # the v (releasing `1.10.1`, not `v1.10.1`), but $GITHUB_REF_NAME
+      # keeps it (`v1.10.1`). Using ref_name verbatim in pull commands
+      # produces install instructions that 404 against GHCR.
+      - id: image_version
+        run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - uses: softprops/action-gh-release@v2
         with:
           # Auto-mark pre-releases so the tag doesn't claim "Latest release"
@@ -831,7 +840,7 @@ jobs:
             ### Docker (single container)
             ```bash
             docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \
-              ghcr.io/${{ github.repository }}:${{ github.ref_name }}
+              ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}
             ```
 
             ### Homebrew (macOS, Linux)
@@ -853,9 +862,9 @@ jobs:
             ```
 
             ### Container Images
-            - Single container (binary + frontend): `ghcr.io/${{ github.repository }}:${{ github.ref_name }}`
-            - API only: `${{ env.API_IMAGE }}:${{ github.ref_name }}`
-            - Web only: `${{ env.WEB_IMAGE }}:${{ github.ref_name }}`
+            - Single container (binary + frontend): `ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}`
+            - API only: `${{ env.API_IMAGE }}:${{ steps.image_version.outputs.tag }}`
+            - Web only: `${{ env.WEB_IMAGE }}:${{ steps.image_version.outputs.tag }}`
 
             ## Changelog
             ${{ steps.changelog.outputs.body }}

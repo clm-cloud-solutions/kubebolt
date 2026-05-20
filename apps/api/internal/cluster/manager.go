@@ -406,9 +406,12 @@ func (m *Manager) ListClusters() []ClusterInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	// Pre-compute uploaded context names and display names (single DB read).
+	// Pre-compute uploaded context names, display names, and
+	// cached cluster UIDs (single DB read each — bulk lookup beats
+	// per-context queries in the loop below).
 	uploadedContexts := make(map[string]bool)
 	displayNames := make(map[string]string)
+	cachedUIDs := make(map[string]string)
 	if m.storage != nil {
 		if configs, err := m.storage.ListKubeconfigs(); err == nil {
 			for _, c := range configs {
@@ -417,6 +420,9 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		}
 		if names, err := m.storage.AllDisplayNames(); err == nil {
 			displayNames = names
+		}
+		if uids, err := m.storage.AllClusterUIDs(); err == nil {
+			cachedUIDs = uids
 		}
 	}
 
@@ -446,6 +452,23 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		case uploadedContexts[ctxName]:
 			source = "uploaded"
 		}
+		// Resolve ClusterID with a three-source preference:
+		//   1. agent-proxy context — UID from the Hello message,
+		//      available before any connection happens.
+		//   2. live Connector for the active context — fresh from
+		//      the kube-system namespace lookup we just did.
+		//   3. cached UID from a past connection (5a.1.e) — lets
+		//      direct-kubeconfig contexts the operator visited
+		//      previously keep their UID visible without re-connecting.
+		// Empty otherwise; the admin UI treats empty as "unknown,
+		// pick Any cluster".
+		clusterID := m.agentProxyContexts[ctxName]
+		if clusterID == "" && isActive && m.connector != nil {
+			clusterID = m.connector.ClusterUID()
+		}
+		if clusterID == "" {
+			clusterID = cachedUIDs[ctxName]
+		}
 		clusters = append(clusters, ClusterInfo{
 			Name:        ctx.Cluster,
 			Context:     ctxName,
@@ -455,11 +478,7 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			Error:       connErrMsg,
 			DisplayName: displayNames[ctxName],
 			Source:      source,
-			// Populated only when the cluster reached us via the
-			// agent-proxy path — the Hello message carries the UID.
-			// Empty otherwise; the admin UI treats empty as "unknown,
-			// pick Any cluster".
-			ClusterID: m.agentProxyContexts[ctxName],
+			ClusterID:   clusterID,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -768,6 +787,18 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	m.engine = engine
 	m.cancelFn = cancel
 	m.activeContext = contextName
+
+	// Persist the resolved kube-system UID so subsequent ListClusters
+	// (potentially after a switch to a different cluster, or after a
+	// restart) can populate ClusterID for this context without a
+	// re-connect. Empty UID means the kube-system lookup failed
+	// during NewConnectorFromAccess — skip the write rather than
+	// overwriting a previously-good value with empty.
+	if m.storage != nil {
+		if uid := connector.ClusterUID(); uid != "" {
+			_ = m.storage.SetClusterUID(contextName, uid)
+		}
+	}
 	m.connErr = nil
 
 	// Wire notification hook if one was registered before this connection

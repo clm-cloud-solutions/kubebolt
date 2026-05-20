@@ -10,10 +10,13 @@ import { useHubbleAvailable } from '@/hooks/useHubbleAvailable'
 // (topology), while these are sub-views of the same "monitoring"
 // mode.
 //
-// Reliability is conditional: surfaces only when Hubble L7 metrics
-// are flowing into VM. An empty Reliability page would be noise, so
-// we hide the tab entirely instead of showing a "needs Hubble" empty
-// state — when the data appears the tab fades in on its own.
+// Reliability is conditional: surfaces only when Hubble is shipping
+// flows into VM (L3/L4 baseline — `useHubbleAvailable` since
+// 1.11/Item 3). The tab stays visible on clusters where Hubble runs
+// but L7 isn't exposed (GKE managed Dataplane V2) so the operator
+// gets actionable copy explaining the limitation — see
+// `HubbleL7UnavailablePlaceholder` in ReliabilityPage.tsx. Hide
+// only when no Hubble at all, to avoid a tab that yields nothing.
 //
 // Visual: underline-active pattern with a small lucide icon ahead
 // of each label. Icons are 14px so they don't compete with the

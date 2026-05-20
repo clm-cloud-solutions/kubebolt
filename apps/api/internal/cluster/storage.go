@@ -24,15 +24,17 @@ type Storage struct {
 	db            *bolt.DB
 	configsBucket []byte
 	displayBucket []byte
+	uidBucket     []byte
 }
 
 // NewStorage creates a new cluster storage using an existing BoltDB instance.
 // Call ClusterBuckets() on the auth package to get the bucket names.
-func NewStorage(db *bolt.DB, configsBucket, displayBucket []byte) *Storage {
+func NewStorage(db *bolt.DB, configsBucket, displayBucket, uidBucket []byte) *Storage {
 	return &Storage{
 		db:            db,
 		configsBucket: configsBucket,
 		displayBucket: displayBucket,
+		uidBucket:     uidBucket,
 	}
 }
 
@@ -134,6 +136,61 @@ func (s *Storage) AllDisplayNames() (map[string]string, error) {
 	result := make(map[string]string)
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(s.displayBucket).ForEach(func(k, v []byte) error {
+			result[string(k)] = string(v)
+			return nil
+		})
+	})
+	return result, err
+}
+
+// --- Cluster UID cache ---
+//
+// Per-context kube-system namespace UID, persisted after the
+// Connector resolves it. Without this cache the UID is only
+// known for the *currently-connected* cluster (transient on
+// the Connector); previously-visited clusters silently drop
+// their UID until the operator switches back.
+//
+// Storing it means ListClusters() can populate ClusterID for
+// every context the operator has touched in any past session,
+// which is what the IssueToken admin UI needs to offer a
+// complete cluster picker.
+
+// SetClusterUID persists (contextName → kube-system UID). Idempotent:
+// re-writing the same UID is a no-op. Empty uid clears the entry.
+func (s *Storage) SetClusterUID(contextName, uid string) error {
+	if contextName == "" {
+		return nil
+	}
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(s.uidBucket)
+		if uid == "" {
+			return bucket.Delete([]byte(contextName))
+		}
+		return bucket.Put([]byte(contextName), []byte(uid))
+	})
+}
+
+// GetClusterUID returns the cached UID for a context, or "" when
+// the context has never been visited (and thus has no UID).
+func (s *Storage) GetClusterUID(contextName string) string {
+	var uid string
+	_ = s.db.View(func(tx *bolt.Tx) error {
+		if v := tx.Bucket(s.uidBucket).Get([]byte(contextName)); v != nil {
+			uid = string(v)
+		}
+		return nil
+	})
+	return uid
+}
+
+// AllClusterUIDs returns all cached (contextName → uid) pairs.
+// Used by ListClusters() to bulk-populate ClusterID without
+// per-context lookups.
+func (s *Storage) AllClusterUIDs() (map[string]string, error) {
+	result := make(map[string]string)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(s.uidBucket).ForEach(func(k, v []byte) error {
 			result[string(k)] = string(v)
 			return nil
 		})
