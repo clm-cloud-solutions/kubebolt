@@ -137,7 +137,12 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		issuer = "system"
 	}
 
-	plaintext, tok, err := h.tenantsStore.IssueToken(req.TenantID, label, issuer, nil)
+	// Agent-install issues the token via the agent dialog, which
+	// doesn't yet collect a cluster ID at issue time — the agent's
+	// own cluster_id ships in the Hello message after it boots.
+	// Pass "" to keep the unscoped behavior we had before
+	// per-token cluster scoping landed.
+	plaintext, tok, err := h.tenantsStore.IssueToken(req.TenantID, "", label, issuer, nil)
 	if err != nil {
 		// Tenant lookup miss → 404; everything else is a 400 from
 		// the store's own validation (label too long, etc).

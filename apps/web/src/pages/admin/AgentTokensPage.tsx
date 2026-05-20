@@ -139,8 +139,23 @@ interface IssueTokenModalProps {
 function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) {
   const [label, setLabel] = useState('')
   const [ttlDays, setTtlDays] = useState<number | ''>('')
+  // Cluster scope. Empty string = "Any cluster" (legacy unscoped
+  // behaviour, matches tokens issued before this picker existed).
+  // Populated UUIDs come from clusters whose ID is already known
+  // — currently agent-proxy contexts that registered via Hello.
+  const [clusterId, setClusterId] = useState<string>('')
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  // Load the known clusters so the operator can pick a scope.
+  // Tolerant of the empty case (no clusters or all without UID) —
+  // the dropdown simply renders "Any cluster" only.
+  const { data: clusters } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: () => api.listClusters(),
+    staleTime: 60_000,
+  })
+  const scopedClusters = (clusters ?? []).filter((c) => !!c.clusterId)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -148,7 +163,12 @@ function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) 
     setSubmitting(true)
     try {
       const ttlSeconds = ttlDays === '' ? undefined : Number(ttlDays) * 86_400
-      const issued = await api.issueAgentToken(tenantID, label, ttlSeconds)
+      const issued = await api.issueAgentToken(
+        tenantID,
+        label,
+        ttlSeconds,
+        clusterId || undefined,
+      )
       onIssued(issued)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to issue token')
@@ -178,6 +198,35 @@ function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) 
             Human-readable name. The token plaintext is independent of this.
           </p>
         </div>
+
+        {/* Cluster scope — visible only when at least one cluster
+            has a known UID. For installs where every cluster is
+            direct-kubeconfig (no agent-proxy registration yet) we
+            silently fall back to "Any cluster" without showing a
+            useless dropdown. */}
+        {scopedClusters.length > 0 && (
+          <div className="space-y-1">
+            <label className="text-[11px] font-medium text-kb-text-secondary">Cluster scope</label>
+            <select
+              value={clusterId}
+              onChange={(e) => setClusterId(e.target.value)}
+              className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors"
+            >
+              <option value="">Any cluster (legacy)</option>
+              {scopedClusters.map((c) => (
+                <option key={c.clusterId} value={c.clusterId}>
+                  {c.displayName || c.context}
+                  {c.active ? ' (active)' : ''}
+                </option>
+              ))}
+            </select>
+            <p className="text-[10px] text-kb-text-tertiary">
+              Restricts this token to a specific cluster's traffic.
+              Leave on "Any cluster" if you intend to reuse it across
+              clusters or aren't sure.
+            </p>
+          </div>
+        )}
 
         <div className="space-y-1">
           <label className="text-[11px] font-medium text-kb-text-secondary">Expires after (days)</label>
