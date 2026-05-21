@@ -234,6 +234,31 @@ export interface WorkloadMetricsResponse {
 }
 
 /**
+ * workloadMetricsHasRenderableData reports whether a parsed metrics
+ * response carries enough signal to render a meaningful chart. Returns
+ * false when:
+ *
+ *   - the response has no metrics object (defensive)
+ *   - every metric's trend is empty/null (no agent data, KSM absent,
+ *     cluster too new, podsResolved=0)
+ *
+ * In those cases the chat panel suppresses the chart card entirely —
+ * the LLM's prose already explains what's missing ("kube-state-metrics
+ * not detected", "workload has no running pods", etc.) and an empty
+ * card is visual noise. Used by CopilotPanel to filter before render.
+ */
+export function workloadMetricsHasRenderableData(data: WorkloadMetricsResponse): boolean {
+  if (!data.metrics) return false
+  for (const key of Object.keys(data.metrics) as WorkloadMetricKey[]) {
+    const entry = data.metrics[key]
+    if (entry?.trend && entry.trend.length > 0) {
+      return true
+    }
+  }
+  return false
+}
+
+/**
  * parseWorkloadMetrics extracts a typed WorkloadMetricsResponse from a
  * tool result's content string. Returns null when the content isn't a
  * workload-metrics payload — used by the chat panel to decide whether

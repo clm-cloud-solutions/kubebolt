@@ -240,8 +240,13 @@ function AgentTrendsBlock({
           icon={<Network className="w-4 h-4" />}
           unit="bytes/s"
           queries={[
-            { query: `sum(rate(node_network_receive_bytes_total[1m]))`, prefix: 'RX' },
-            { query: `sum(rate(node_network_transmit_bytes_total[1m]))`, prefix: 'TX', negate: true },
+            // device filter — physical NICs only across all nodes. See
+            // NodesPage.tsx for the full rationale: without this the cluster-
+            // wide Network Activity panel inflated 6-8× on CNIs with overlay
+            // interfaces (cilium, calico, flannel), summing virtual hops on
+            // top of the actual node-boundary throughput.
+            { query: `sum(rate(node_network_receive_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))`, prefix: 'RX' },
+            { query: `sum(rate(node_network_transmit_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))`, prefix: 'TX', negate: true },
           ]}
           seriesLabel={(_labels, prefix) => prefix ?? 'total'}
           accents={METRIC_ACCENTS.networkRxTx}

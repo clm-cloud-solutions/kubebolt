@@ -114,6 +114,16 @@ type promBuilder struct {
 // pod label but no pod_uid (only the agent's enrichment sets it). Without
 // this filter a cluster running both sources sees doubled rate values.
 func (b *promBuilder) buildCPU() string {
+	if b.isNode() {
+		// Agent's node_cpu_usage_seconds_total has labels {cluster_id, node,
+		// tenant_id} — no pod_uid, no namespace, no container. Different
+		// metric name from node-exporter's `node_cpu_seconds_total` (with
+		// mode=user|system|idle), so no name collision.
+		return fmt.Sprintf(
+			`sum(rate(node_cpu_usage_seconds_total{cluster_id=%q,node=%q}[%s]))`,
+			b.clusterUID, b.name, promDuration(b.rateWindow),
+		)
+	}
 	inner := fmt.Sprintf(
 		`rate(container_cpu_usage_seconds_total{cluster_id=%q,namespace=%q,%s,pod_uid!=""}[%s])`,
 		b.clusterUID, b.namespace, b.podSelector(), promDuration(b.rateWindow),
@@ -123,13 +133,37 @@ func (b *promBuilder) buildCPU() string {
 
 // buildMemory returns the PromQL for working-set memory. Memory is a gauge —
 // no rate() wrap. Same pod-set + pod_uid + aggregation pattern as CPU.
+// Node kind drops to a node-level selector — node_memory_working_set_bytes
+// has no equivalent at the container level for nodes themselves.
 func (b *promBuilder) buildMemory() string {
+	if b.isNode() {
+		return fmt.Sprintf(
+			`sum(node_memory_working_set_bytes{cluster_id=%q,node=%q})`,
+			b.clusterUID, b.name,
+		)
+	}
 	inner := fmt.Sprintf(
 		`container_memory_working_set_bytes{cluster_id=%q,namespace=%q,%s,pod_uid!=""}`,
 		b.clusterUID, b.namespace, b.podSelector(),
 	)
 	return b.wrapAggregation(inner)
 }
+
+// isNode is a small helper to keep the kind check terse where it appears
+// (every metric builder). The input enum value is "Node" — case-sensitive
+// match against the workload_kind label convention and the schema enum.
+func (b *promBuilder) isNode() bool {
+	return b.kind == "Node"
+}
+
+// nodeNetworkDeviceFilter whitelists physical NICs while excluding the
+// soup of virtual interfaces a CNI lays down (cilium_*, lxc*, veth*,
+// cali*, flannel*, docker0, gre*, sit*, tunl*, lo, etc). Catches eth0
+// / ens5 / eno1 / enp0s3 — every modern Linux NIC naming convention
+// used by EKS, GKE, kind, vanilla Ubuntu, RHEL. Same pattern Grafana's
+// node-exporter dashboards use. Without this the network rate would
+// double-count container veth traffic on top of the physical NIC.
+const nodeNetworkDeviceFilter = `eth.*|ens.*|en[a-z].*`
 
 // wrapAggregation applies `sum(...)` or `sum by (container) (...)` depending
 // on perContainer. Keeps the workload roll-up at one series (so the
@@ -196,12 +230,34 @@ func (b *promBuilder) podNamePattern() string {
 }
 
 
-// buildNetwork returns the PromQL for network_rx or network_tx. Pod-level
-// metric — no workload labels in the source data, so we inject a pod
-// selector from server-side resolution. perContainer is ignored on network
-// (the metric is pod-keyed, not container-keyed). pod_uid!="" filter
-// excludes external Prometheus-scraped duplicates (see buildCPU comment).
+// buildNetwork returns the PromQL for network_rx or network_tx.
+//
+// Kind branches:
+//
+//   - Node: uses node-level `node_network_*_bytes_total{device=~physical}`.
+//     The device filter is critical — without it the sum includes every
+//     veth/lxc/cilium interface, double-counting container traffic on top
+//     of the physical NIC. (We learned this the hard way comparing
+//     KubeBolt vs Grafana vs CloudWatch on yagan — Grafana was
+//     over-reporting precisely because it summed veth devices.) The
+//     emitting source can be either the agent's kubelet-stats collector
+//     OR an external node-exporter scrape; both write the same metric
+//     name. We don't filter by `job` so either source works.
+//   - Pod / workload kinds: uses container-level data filtered by the
+//     pod-name regex; perContainer is ignored because the metric is
+//     pod-keyed (no container label at this level). The pod_uid!="" filter
+//     excludes external Prometheus-scraped duplicates (see buildCPU).
 func (b *promBuilder) buildNetwork(direction MetricKind) string {
+	if b.isNode() {
+		metricName := "node_network_receive_bytes_total"
+		if direction == MetricNetworkTX {
+			metricName = "node_network_transmit_bytes_total"
+		}
+		return fmt.Sprintf(
+			`sum(rate(%s{cluster_id=%q,node=%q,device=~%q}[%s]))`,
+			metricName, b.clusterUID, b.name, nodeNetworkDeviceFilter, promDuration(b.rateWindow),
+		)
+	}
 	metricName := "container_network_receive_bytes_total"
 	if direction == MetricNetworkTX {
 		metricName = "container_network_transmit_bytes_total"
@@ -213,16 +269,40 @@ func (b *promBuilder) buildNetwork(direction MetricKind) string {
 	)
 }
 
-// buildRequestsLimits returns the instant query for total
-// requests-or-limits for a given resource (cpu/memory) across the workload's
-// pods. Used for the utilizationPercent join. We aggregate across
-// containers — `summary.max / pod-aggregate-limit` is what an operator
-// means by "at limit", not the per-container limit.
+// buildRequestsLimits returns the instant query for the
+// "request" and "limit" denominators used by the utilizationPercent join.
 //
-// Uses the same regex pattern as podSelector. KSM only exports series for
-// currently-existing pods, so a workload with no live pods produces an
-// empty result naturally — no special sentinel needed.
+// Kind branches:
+//
+//   - Node: maps to kube_node_status_allocatable (the analog of "request"
+//     — what the scheduler will actually let pods consume after system
+//     reservations) and kube_node_status_capacity (the analog of "limit"
+//     — total physical resources on the box). Allocatable ≤ capacity.
+//     Treating capacity as the saturation ceiling is the semantic an
+//     operator means by "how full is this node" — Kobi's utilizationPercent
+//     vs limit becomes "% of node capacity used", which is what
+//     dashboards like Capacity already display.
+//   - Pod / workload kinds: kube_pod_container_resource_requests /
+//     _limits, summed across containers in the pod set.
+//
+// KSM exports both shapes; missing KSM degrades gracefully (the executor's
+// attachRequestsLimits handles the empty path and omits the chip).
 func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "requests" | "limits" */) string {
+	if b.isNode() {
+		// allocatable = "request" denominator; capacity = "limit" denominator.
+		// Both have a `unit` label (core/byte) — we don't filter on it
+		// because resource=cpu|memory uniquely determines the unit anyway,
+		// and an extra filter only adds query brittleness when KSM versions
+		// disagree on label spelling.
+		metricName := "kube_node_status_allocatable"
+		if mode == "limits" {
+			metricName = "kube_node_status_capacity"
+		}
+		return fmt.Sprintf(
+			`sum(%s{cluster_id=%q,node=%q,resource=%q})`,
+			metricName, b.clusterUID, b.name, resource,
+		)
+	}
 	metricName := "kube_pod_container_resource_requests"
 	if mode == "limits" {
 		metricName = "kube_pod_container_resource_limits"

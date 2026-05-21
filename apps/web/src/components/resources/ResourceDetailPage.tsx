@@ -2682,8 +2682,11 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           title="Network traffic (RX up / TX down)"
           unit="bytes/s"
           queries={[
-            { query: `sum(rate(node_network_receive_bytes_total{${selector}}[1m]))`, prefix: 'RX' },
-            { query: `sum(rate(node_network_transmit_bytes_total{${selector}}[1m]))`, prefix: 'TX', negate: true },
+            // device filter — physical NIC only. See NodesPage.tsx for the
+            // full rationale. Without it the per-node detail panel inflated
+            // 6-8× by summing veth/cilium overlay traffic.
+            { query: `sum(rate(node_network_receive_bytes_total{${selector},device=~"eth.*|ens.*|en[a-z].*"}[1m]))`, prefix: 'RX' },
+            { query: `sum(rate(node_network_transmit_bytes_total{${selector},device=~"eth.*|ens.*|en[a-z].*"}[1m]))`, prefix: 'TX', negate: true },
           ]}
           seriesLabel={(_labels, prefix) => prefix ?? 'total'}
           accents={METRIC_ACCENTS.networkRxTx}

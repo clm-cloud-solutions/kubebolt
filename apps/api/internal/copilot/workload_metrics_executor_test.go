@@ -671,3 +671,102 @@ func TestRunMetric_CPUStableAcrossRestart(t *testing.T) {
 		t.Errorf("min should reflect the restart dip ~0.05, got %v", r.Summary.Min)
 	}
 }
+
+// ─── Node-kind end-to-end tests ──────────────────────────────────────
+
+func TestRunMetric_Node_CPU(t *testing.T) {
+	// An EKS worker node at ~2.5 cores out of an 8-core capacity. The
+	// executor must route Node through the node_* metric builders, not
+	// the pod-keyed path. Synthetic data here approximates a real node
+	// running a few CPU-bound workloads.
+	points := [][2]any{
+		{1700000000, 2.48}, {1700000060, 2.51}, {1700000120, 2.49},
+		{1700000180, 2.55}, {1700000240, 2.52}, {1700000300, 2.50},
+		{1700000360, 2.47}, {1700000420, 2.53},
+	}
+	r := runMetricForTest(t, "Node", "ip-10-0-44-188.ec2.internal", MetricCPU, points)
+	if r.Summary.Avg < 2.45 || r.Summary.Avg > 2.55 {
+		t.Errorf("Node CPU avg should be ~2.5 cores, got %v", r.Summary.Avg)
+	}
+	// Sanity: the response unit is cores (same as for workloads — the
+	// chart card relies on this to pick the right scale).
+	if r.Unit != "cores" {
+		t.Errorf("Node CPU response unit should be 'cores', got %q", r.Unit)
+	}
+}
+
+func TestRunMetric_Node_Memory(t *testing.T) {
+	// Worker node memory steady around 6 GiB used (8 GiB capacity, ~75%).
+	points := [][2]any{
+		{1700000000, 6442450944}, {1700000060, 6479478784}, {1700000120, 6451039232},
+		{1700000180, 6510350336}, {1700000240, 6479478784}, {1700000300, 6442450944},
+	}
+	r := runMetricForTest(t, "Node", "ip-10-0-44-188.ec2.internal", MetricMemory, points)
+	if r.Summary.Avg < 6_000_000_000 || r.Summary.Avg > 6_700_000_000 {
+		t.Errorf("Node memory avg should be ~6 GiB, got %v", r.Summary.Avg)
+	}
+	if r.Unit != "bytes" {
+		t.Errorf("Node memory response unit should be 'bytes', got %q", r.Unit)
+	}
+}
+
+// TestRunMetric_EmptySeries_NonNilTrend is the regression guard for the
+// "Cannot read properties of null (reading 'length')" crash the frontend
+// hit when a tool call returned no data (no agent connected, cluster
+// new, VM empty). Go marshals nil slices as JSON null which broke the
+// chart card's `.length` access; the fix initialises Trend to a non-nil
+// empty slice so JSON serialises as `[]` and the frontend's
+// empty-trend branch renders cleanly.
+func TestRunMetric_EmptySeries_NonNilTrend(t *testing.T) {
+	// Fake VM that returns the "no series" shape — what VM emits when the
+	// queried metric+labels match nothing (e.g. agent never reported).
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"status":"success","data":{"resultType":"matrix","result":[]}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	var r metricResponse
+	withFakeVM(t, srv, func() {
+		b := promBuilder{
+			kind:       "Deployment",
+			namespace:  "default",
+			name:       "ghost-app",
+			clusterUID: "uid-test",
+			rateWindow: 1 * time.Minute,
+		}
+		now := time.Unix(1700000600, 0)
+		mr, err := runMetric(context.Background(), b, MetricCPU, now.Add(-10*time.Minute), now, 60*time.Second)
+		if err != nil {
+			t.Fatalf("runMetric: %v", err)
+		}
+		r = mr
+	})
+
+	// The critical contract: Trend must be a non-nil slice even with zero
+	// underlying samples. Without this the frontend's `.length` access
+	// crashes the chat panel via ErrorBoundary.
+	if r.Trend == nil {
+		t.Errorf("Trend must be non-nil (empty slice) when VM returns no series — got nil, which marshals to JSON null and crashes the frontend chart card")
+	}
+	if len(r.Trend) != 0 {
+		t.Errorf("Trend should be empty when VM returns no series, got %d points", len(r.Trend))
+	}
+}
+
+func TestRunMetric_Node_Network(t *testing.T) {
+	// Node-level network typically sits in the MB/s range on a working
+	// EKS box. The synthetic shape mirrors the CloudWatch screenshots
+	// we saw on yagan — sustained low traffic with occasional bursts.
+	points := [][2]any{
+		{1700000000, 524288}, {1700000060, 1048576}, {1700000120, 786432},
+		{1700000180, 11534336}, {1700000240, 12582912}, // burst
+		{1700000300, 524288}, {1700000360, 655360},
+	}
+	r := runMetricForTest(t, "Node", "ip-10-0-44-188.ec2.internal", MetricNetworkRX, points)
+	if r.Summary.Max < 12_000_000 {
+		t.Errorf("Node network max should reflect the burst ~12 MB/s, got %v", r.Summary.Max)
+	}
+	if r.Unit != "bytes/sec" {
+		t.Errorf("Node network unit should be 'bytes/sec', got %q", r.Unit)
+	}
+}

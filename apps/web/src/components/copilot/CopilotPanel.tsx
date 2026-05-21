@@ -26,6 +26,7 @@ import { KobiMetricChartCard } from './KobiMetricChartCard'
 import {
   parseActionProposal,
   parseWorkloadMetrics,
+  workloadMetricsHasRenderableData,
   type CopilotMessage,
   type CopilotToolCall,
   type CopilotUsage,
@@ -407,6 +408,11 @@ export function CopilotPanel() {
           // For a given assistant turn at index `idx`, collect all
           // get_workload_metrics tool calls in this conversation block (since
           // the previous user message) that have not yet been rendered.
+          // Calls whose response carries no renderable data (no agent
+          // connected, KSM absent, podsResolved=0) are skipped — the LLM's
+          // prose covers that case, and an empty card is just visual noise.
+          // We still mark them as "rendered" so a subsequent text turn
+          // doesn't try to re-render them either.
           const collectMetricCardsForTurn = (idx: number) => {
             const cards: Array<{ id: string; data: ReturnType<typeof parseWorkloadMetrics> }> = []
             let blockStart = 0
@@ -425,9 +431,11 @@ export function CopilotPanel() {
                 const tr = resultByCallId.get(tc.id)
                 if (!tr || tr.isError) continue
                 const parsed = parseWorkloadMetrics(tr.content)
-                if (parsed) {
+                // Claim the call ID regardless of renderability so a later
+                // text turn doesn't see it as unrendered and try again.
+                if (parsed) renderedMetricCallIds.add(tc.id)
+                if (parsed && workloadMetricsHasRenderableData(parsed)) {
                   cards.push({ id: tc.id, data: parsed })
-                  renderedMetricCallIds.add(tc.id)
                 }
               }
             }
