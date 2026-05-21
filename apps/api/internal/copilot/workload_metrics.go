@@ -338,10 +338,18 @@ type vmInstantResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+// vmURLTestOverride is intended for tests only. When non-empty it wins over
+// the env var so unit tests can point queryRange/queryInstant at an
+// httptest.Server without mutating shared environment.
+var vmURLTestOverride string
+
 // metricsStorageURLForCopilot mirrors api.metricsStorageURL() but lives here
 // to keep the copilot package free of an api-package dep. The env var is the
 // single source of truth — see deploy templates.
 func metricsStorageURLForCopilot() string {
+	if vmURLTestOverride != "" {
+		return strings.TrimRight(vmURLTestOverride, "/")
+	}
 	if u := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL"); u != "" {
 		return strings.TrimRight(u, "/")
 	}
