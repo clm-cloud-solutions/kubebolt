@@ -826,6 +826,25 @@ func main() {
 		agentAuthCfg.Enforcement = agent.EnforcementDisabled
 	}
 
+	// Resolve the install's default tenant once at startup so the gRPC
+	// interceptor's disabled / permissive-fallback paths stamp it on
+	// AgentIdentity instead of leaving TenantID empty (which makes the
+	// rate limiter bypass on the empty-key branch). Same purpose as the
+	// HTTP path's resolveDefaultIngestTenant — keep all unauthenticated
+	// flows bucketed against the operator's custom overrides on the
+	// default tenant.
+	//
+	// Empty string here is intentional when tenantsStore is nil (auth
+	// disabled at the app layer) — preserves the legacy bypass.
+	if tenantsStore != nil {
+		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
+			agentAuthCfg.DefaultTenantID = dt.ID
+		} else if err != nil {
+			slog.Warn("could not resolve default tenant at startup for agent auth fallback",
+				slog.String("error", err.Error()))
+		}
+	}
+
 	// TLS (and optional mTLS) for the agent gRPC channel. Half-set env
 	// surfaces as an error here so misconfigurations fail loud at boot.
 	agentTLS, err := agent.LoadServerTLSFromEnv()
