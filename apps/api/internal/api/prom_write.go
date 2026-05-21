@@ -138,6 +138,40 @@ const (
 // without a verified tenant identity, the conservative posture is
 // to apply the system-wide limits as if the request belonged to an
 // anonymous bucket.
+// resolveDefaultIngestTenant returns the install's default tenant so
+// unauthenticated traffic in disabled/permissive modes is bucketed
+// against the operator's custom overrides (rate limit, cardinality
+// cap) instead of the synthetic "anonymous" bucket. Returns nil when
+// TenantsStore is unwired (the unusual auth-disabled install) — the
+// caller's downstream code then preserves the "anonymous" path.
+//
+// The default tenant is created by TenantsStore.ensureDefaultTenant
+// at startup, so this lookup is cheap (a single BoltDB read of an
+// indexed key) and effectively constant per process.
+func (h *handlers) resolveDefaultIngestTenant() *auth.Tenant {
+	if h.tenantsStore == nil {
+		return nil
+	}
+	t, err := h.tenantsStore.GetDefaultTenant()
+	if err != nil {
+		// Should not happen in a healthy install — the default tenant
+		// is seeded by ensureDefaultTenant at TenantsStore
+		// construction. Log once so an operator who somehow ends up
+		// in this state has a breadcrumb, then fall back to the
+		// pre-fix "anonymous" bucket so writes still flow.
+		promWriteDefaultTenantWarnOnce.Do(func() {
+			slog.Warn("prom remote_write: could not resolve default tenant; falling back to anonymous bucket",
+				slog.String("error", err.Error()))
+		})
+		return nil
+	}
+	return t
+}
+
+// promWriteDefaultTenantWarnOnce throttles the WARN emitted when the
+// default tenant lookup fails. See resolveDefaultIngestTenant.
+var promWriteDefaultTenantWarnOnce sync.Once
+
 func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request) (*auth.Tenant, bool) {
 	mode := h.promWriteAuthMode
 	if mode == "" {
@@ -146,8 +180,17 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 
 	// disabled: ignore the header entirely. No WARN (the operator
 	// asked for this mode explicitly).
+	//
+	// When TenantsStore is wired, we STILL resolve to the default
+	// tenant so the rate limiter + metric labels see a real tenant
+	// UUID rather than the "anonymous" synthetic. The operator's
+	// custom overrides on the default tenant apply to all
+	// unauthenticated traffic out of the box. Without this, custom
+	// limits set via the UI on the default tenant would be dead code
+	// in the typical OSS install (auth enabled at the user-login
+	// layer, disabled/permissive at the ingest layer).
 	if mode == promWriteAuthDisabled {
-		return nil, true
+		return h.resolveDefaultIngestTenant(), true
 	}
 
 	// Configuration sanity: enforced mode without a TenantsStore is
@@ -164,6 +207,9 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 			slog.Warn("prom remote_write permissive but TenantsStore not wired — calls allowed without validation",
 				slog.String("hint", "set KUBEBOLT_AUTH_ENABLED=true to enable token validation"))
 		})
+		// No store → cannot resolve default; preserve the
+		// "anonymous" path. This branch only fires in the unusual
+		// configuration where KUBEBOLT_AUTH_ENABLED=false.
 		return nil, true
 	}
 
@@ -172,7 +218,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	if !strings.HasPrefix(authz, prefix) {
 		if mode == promWriteAuthPermissive {
 			logPromWriteFallback("missing-bearer", r.RemoteAddr, "")
-			return nil, true
+			return h.resolveDefaultIngestTenant(), true
 		}
 		respondError(w, http.StatusUnauthorized, "missing Bearer token")
 		return nil, false
@@ -181,7 +227,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	if subtle.ConstantTimeCompare([]byte(token), []byte("")) == 1 {
 		if mode == promWriteAuthPermissive {
 			logPromWriteFallback("empty-bearer", r.RemoteAddr, "")
-			return nil, true
+			return h.resolveDefaultIngestTenant(), true
 		}
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
 		return nil, false
@@ -190,7 +236,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		if mode == promWriteAuthPermissive {
 			logPromWriteFallback("bad-bearer", r.RemoteAddr, err.Error())
-			return nil, true
+			return h.resolveDefaultIngestTenant(), true
 		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
 		return nil, false
