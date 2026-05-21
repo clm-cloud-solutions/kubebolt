@@ -15,7 +15,8 @@ import (
 
 // supportedWorkloadKinds is the input enum. Match exactly (case-sensitive)
 // against the metric labels emitted by the agent — `Deployment` lower-cased
-// would silently miss every series.
+// would silently miss every series. Node was added in spec #07 V2: same
+// tool surface, different PromQL underneath (node_* metrics).
 var supportedWorkloadKinds = map[string]bool{
 	"Pod":         true,
 	"Deployment":  true,
@@ -23,6 +24,7 @@ var supportedWorkloadKinds = map[string]bool{
 	"DaemonSet":   true,
 	"Job":         true,
 	"CronJob":     true,
+	"Node":        true,
 }
 
 // kindToConnectorType maps the input enum to the lowercase plural type the
@@ -36,6 +38,7 @@ var kindToConnectorType = map[string]string{
 	"DaemonSet":   "daemonsets",
 	"Job":         "jobs",
 	"CronJob":     "cronjobs",
+	"Node":        "nodes",
 }
 
 // workloadMetricsResponse is the JSON shape the LLM sees. Fields here are
@@ -94,11 +97,18 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 	}
 	perContainer := boolArg(args, "perContainer")
 
-	if kind == "" || namespace == "" || name == "" {
-		return "", fmt.Errorf(`{"error":"kind, namespace, and name are required"}`)
+	if kind == "" || name == "" {
+		return "", fmt.Errorf(`{"error":"kind and name are required"}`)
+	}
+	// Namespace is required for everything except Node (cluster-scoped).
+	// LLMs occasionally pass "_" or "" for cluster-scoped resources — we
+	// accept either form gracefully so Kobi doesn't have to encode that
+	// detail in its prompt logic.
+	if kind != "Node" && namespace == "" {
+		return "", fmt.Errorf(`{"error":"namespace is required for kind=%q"}`, kind)
 	}
 	if !supportedWorkloadKinds[kind] {
-		return "", fmt.Errorf(`{"error":"unsupported kind %q","valid":["Pod","Deployment","StatefulSet","DaemonSet","Job","CronJob"]}`, kind)
+		return "", fmt.Errorf(`{"error":"unsupported kind %q","valid":["Pod","Deployment","StatefulSet","DaemonSet","Job","CronJob","Node"]}`, kind)
 	}
 	metrics, err := parseMetricsArg(args["metrics"])
 	if err != nil {
@@ -125,16 +135,27 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 	// Resolve pod set. For Pod kind it's just the target. For workloads we
 	// need the pods to (a) build the network selector and (b) build the
 	// requests/limits join even when KSM doesn't carry workload labels.
-	pods, err := resolveWorkloadPods(conn, kind, namespace, name)
-	if err != nil {
-		return "", fmt.Errorf(`{"error":%q}`, err.Error())
+	// Node kind has no pod set — the node IS the target; podsResolved is
+	// reused as "target resolved" (1 if the node exists, 0 if missing).
+	var pods []string
+	if kind == "Node" {
+		// GetResourceDetail above already confirmed the node exists, so
+		// this is purely about populating podsResolved=1 for the response
+		// shape (the LLM uses it to know "this query had data behind it").
+		pods = []string{name}
+	} else {
+		pods, err = resolveWorkloadPods(conn, kind, namespace, name)
+		if err != nil {
+			return "", fmt.Errorf(`{"error":%q}`, err.Error())
+		}
 	}
 
 	// Hard cap on network roll-up. CPU/memory aggregate via workload_kind so
 	// they don't hit a regex blowup, but network needs pod=~"..." which gets
-	// expensive on huge workloads.
+	// expensive on huge workloads. Node kind skips this — node-level network
+	// is a single series per device, bounded by the (small) interface count.
 	needsNetwork := containsAny(metrics, MetricNetworkRX, MetricNetworkTX)
-	if needsNetwork && len(pods) > maxNetworkPods {
+	if kind != "Node" && needsNetwork && len(pods) > maxNetworkPods {
 		return "", fmt.Errorf(`{"error":"workload too large for network roll-up (%d pods > %d cap) — call with kind=Pod for the specific pods of interest","podsResolved":%d}`,
 			len(pods), maxNetworkPods, len(pods))
 	}
@@ -148,12 +169,24 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 		PodsResolved: len(pods),
 		Metrics:      map[string]metricResponse{},
 	}
-	if len(pods) == 0 && kind != "Pod" {
+	// Empty-target short-circuit applies to non-Pod, non-Node kinds where
+	// pod resolution yielded nothing (workload paused, scaled to 0, etc).
+	// Node kind never hits this — the existence check above already 404'd
+	// for missing nodes.
+	if len(pods) == 0 && kind != "Pod" && kind != "Node" {
 		resp.Note = "Workload has no running pods in the queried range"
 		// Still emit empty metric entries so the LLM sees the shape it
 		// expected, with zeroes — clearer than "metrics: {}".
+		// Trend MUST be a non-nil slice (Go marshals nil as JSON null
+		// which crashes the frontend's chart-card rendering on
+		// `.length`); empty slice marshals as `[]` and renders the
+		// empty-state branch cleanly.
 		for _, m := range metrics {
-			resp.Metrics[string(m)] = metricResponse{Unit: unitFor(m), Summary: metricSummary{}, Trend: nil}
+			resp.Metrics[string(m)] = metricResponse{
+				Unit:    unitFor(m),
+				Summary: metricSummary{},
+				Trend:   []metricPoint{},
+			}
 		}
 		return marshal(resp), nil
 	}
@@ -176,11 +209,12 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 		if qerr != nil {
 			// One metric's failure shouldn't kill the others — record an
 			// empty response with the error inline so the LLM can decide
-			// whether to retry or proceed.
+			// whether to retry or proceed. Trend stays a non-nil slice so
+			// the frontend's chart card render doesn't crash on `.length`.
 			resp.Metrics[string(m)] = metricResponse{
 				Unit:    unitFor(m),
 				Summary: metricSummary{},
-				Trend:   nil,
+				Trend:   []metricPoint{},
 			}
 			continue
 		}
@@ -314,7 +348,12 @@ func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time
 	if err != nil {
 		return metricResponse{}, err
 	}
-	out := metricResponse{Unit: unitFor(m)}
+	// Always initialise Trend to a non-nil slice. Go marshals nil slices
+	// as JSON null, which broke the frontend's `.length` access in chart
+	// rendering (caught by ErrorBoundary as "Cannot read properties of
+	// null (reading 'length')"). Empty slice marshals as `[]` and the
+	// frontend's chart card handles "0 points" cleanly.
+	out := metricResponse{Unit: unitFor(m), Trend: []metricPoint{}}
 	if len(series) == 0 {
 		return out, nil
 	}

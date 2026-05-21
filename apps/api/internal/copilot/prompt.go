@@ -212,15 +212,18 @@ Hard limit operators forget: Kubernetes only retains logs for the CURRENT contai
 
 Identify → Gather data → Correlate → Diagnose → Recommend. The voice layers above already require evidence before recommendation; this is the operational version of the same discipline.
 
-## Workload metrics (CPU / memory / network over time)
+## Workload + node metrics (CPU / memory / network over time)
 
-get_workload_metrics is the tool for "is this workload saturated / throttled / leaking / under-provisioned" questions. It returns a compact summary (min / avg / max / p95) plus a ~12-point sparkline per requested metric, and — when CPU or memory is requested — joins kube-state-metrics requests/limits to compute utilizationPercent automatically. Disk is NOT exposed in this version; pod-level disk IO is unreliable on EKS with VPC CNI and PVC fill needs a separate path.
+get_workload_metrics is the tool for "is this saturated / throttled / leaking / under-provisioned" questions. It returns a compact summary (min / avg / max / p95) plus a ~12-point sparkline per requested metric, and — when CPU or memory is requested — joins kube-state-metrics to compute utilizationPercent automatically. For workloads/pods the denominators are requests/limits; for nodes they are allocatable (the "request" equivalent) and capacity (the "limit" equivalent), so "% of node capacity" reads the same way as "% of pod limit". Disk is NOT exposed in this version; pod-level disk IO is unreliable on EKS with VPC CNI and PVC fill needs a separate path.
+
+Supported kinds: Pod, Deployment, StatefulSet, DaemonSet, Job, CronJob, Node. For Node the namespace argument is ignored (nodes are cluster-scoped); pass any value or omit. For Node, perContainer is also ignored — nodes don't have containers in this dimension.
 
 When to use:
 - Insight rules that talk about sustained behavior (CPU throttling, memory pressure, frequent restarts) → call with range="15m" or "1h" before sizing any propose_set_resources patch.
 - "Is X bad / saturated / overprovisioned over the last hour?" → matching range; utilizationPercent directly answers it.
 - BEFORE every propose_set_resources proposal → the summary.max and utilizationPercent are what justify the patched values in the rationale. A set_resources proposal without metric-grounded rationale is a guess; do not emit one.
 - Suspected deploy regression (Recent Deploys panel context) → range="1h" or "6h" spanning the deploy; inspect trend[] for the inflection point.
+- "Which node is hot / saturated / under memory pressure?" → call with kind=Node and the node name, range="15m" to "1h". Use this when the question is node-scoped rather than workload-scoped.
 
 When NOT to use:
 - "What is the current value" — get_resource_detail is faster and snapshot-fresh.

@@ -106,6 +106,34 @@ describe('KobiMetricChartCard', () => {
     expect(screen.getByText(/No samples in the queried range/)).toBeInTheDocument()
   })
 
+  it('does not crash when trend is null (legacy backend / agent-less cluster)', () => {
+    // Regression guard for "Cannot read properties of null (reading 'length')":
+    // a backend that emits trend:null (Go nil slice → JSON null) would crash
+    // the chart-card render via ErrorBoundary and break the whole chat panel.
+    // The current backend ships non-nil empty slices, but the frontend must
+    // stay defensive — older sessions or future regressions are protected.
+    const broken = makeResponse() as unknown as WorkloadMetricsResponse
+    // Force-cast to bypass TS: the runtime shape is what we're guarding.
+    ;(broken.metrics.cpu as unknown as { trend: null }).trend = null
+    expect(() => render(<KobiMetricChartCard data={broken} />)).not.toThrow()
+    // And it renders the empty-state note rather than a half-broken chart.
+    expect(screen.getByText(/No samples in the queried range/)).toBeInTheDocument()
+  })
+
+  it('does not crash when metrics is missing entirely', () => {
+    // Belt-and-suspenders: a backend bug or stub response could omit
+    // `metrics` entirely. The card should still render the header + empty
+    // note instead of crashing on Object.keys(undefined).
+    const minimal = {
+      workload: { kind: 'Deployment', namespace: 'default', name: 'mystery' },
+      range: '15m',
+      end: '2026-05-21T14:30:00Z',
+      podsResolved: 1,
+      // metrics deliberately absent — cast through unknown to satisfy TS.
+    } as unknown as WorkloadMetricsResponse
+    expect(() => render(<KobiMetricChartCard data={minimal} />)).not.toThrow()
+  })
+
   it('renders multiple metrics stacked (cpu + memory)', () => {
     const both = makeResponse({
       metrics: {

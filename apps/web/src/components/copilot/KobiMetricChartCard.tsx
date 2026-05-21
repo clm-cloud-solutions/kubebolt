@@ -62,14 +62,21 @@ interface Props {
 }
 
 export function KobiMetricChartCard({ data }: Props) {
-  const presentMetrics = METRIC_ORDER.filter((k) => data.metrics[k] != null)
+  // Defensive guard: data.metrics could legally be null/undefined if the
+  // backend ever changes shape; treat absent metrics as "no metrics".
+  const metrics = data.metrics ?? {}
+  const presentMetrics = METRIC_ORDER.filter((k) => metrics[k] != null)
 
   // Empty states — the header always renders so the operator sees the
   // workload the tool was called against, but no charts when there's
-  // nothing to chart.
+  // nothing to chart. Note the double `?.` on `trend` — the backend's
+  // older versions could marshal trend as null when there were zero
+  // samples (Go nil slice → JSON null); the regression sentinel test in
+  // workload_metrics_executor_test.go pins the backend's non-nil
+  // contract, but we keep the frontend defensive as belt-and-suspenders.
   const isEmpty =
     data.podsResolved === 0 ||
-    presentMetrics.every((k) => (data.metrics[k]?.trend.length ?? 0) === 0)
+    presentMetrics.every((k) => (metrics[k]?.trend?.length ?? 0) === 0)
 
   return (
     <div className="rounded-lg border border-kb-border bg-kb-bg/40 overflow-hidden">
@@ -79,10 +86,11 @@ export function KobiMetricChartCard({ data }: Props) {
         </div>
         <div className="flex-1 min-w-0">
           <div className="text-[11px] text-kb-text-tertiary font-mono uppercase tracking-wide">
-            {data.workload.kind} · {data.workload.namespace}/{data.workload.name}
+            {formatHeaderIdentity(data)}
           </div>
           <div className="text-[10px] text-kb-text-tertiary">
-            last {data.range} · {data.podsResolved} pod{data.podsResolved === 1 ? '' : 's'}
+            last {data.range}
+            {formatScopeChip(data)}
             {data.note && <span className="ml-1">· {data.note}</span>}
           </div>
         </div>
@@ -93,7 +101,7 @@ export function KobiMetricChartCard({ data }: Props) {
       ) : (
         <div className="flex flex-col">
           {presentMetrics.map((key) => {
-            const entry = data.metrics[key]
+            const entry = metrics[key]
             if (!entry) return null
             return <MetricBlock key={key} metricKey={key} entry={entry} />
           })}
@@ -105,9 +113,39 @@ export function KobiMetricChartCard({ data }: Props) {
 
 function emptyStateNote(data: WorkloadMetricsResponse): string {
   if (data.podsResolved === 0) {
-    return 'No active pods in the queried window.'
+    return data.workload.kind === 'Node'
+      ? 'Node not found in the queried window.'
+      : 'No active pods in the queried window.'
   }
   return 'No samples in the queried range.'
+}
+
+// formatHeaderIdentity prints the workload identity in the uppercase mono
+// strip at the top of the card. Nodes are cluster-scoped so we drop the
+// "namespace/" prefix; everything else keeps the conventional "ns/name".
+function formatHeaderIdentity(data: WorkloadMetricsResponse): string {
+  if (data.workload.kind === 'Node') {
+    return `Node · ${data.workload.name}`
+  }
+  return `${data.workload.kind} · ${data.workload.namespace}/${data.workload.name}`
+}
+
+// formatScopeChip renders the count + entity-type chip after the range.
+// For nodes the count is always 0 or 1 — the chip stays singular and we
+// drop the count when 1 (just "node"). For workloads/pods we keep the
+// existing "N pods" phrasing.
+function formatScopeChip(data: WorkloadMetricsResponse): React.ReactNode {
+  if (data.workload.kind === 'Node') {
+    // The header already names the node by identity; appending the count
+    // would be redundant ("Node · X · 1 node"). Skip the chip entirely.
+    return null
+  }
+  return (
+    <>
+      {' · '}
+      {data.podsResolved} pod{data.podsResolved === 1 ? '' : 's'}
+    </>
+  )
 }
 
 function EmptyState({ note }: { note: string }) {
@@ -129,30 +167,35 @@ interface MetricBlockProps {
 function MetricBlock({ metricKey, entry }: MetricBlockProps) {
   const display = METRIC_DISPLAY[metricKey]
   const unitKind = vmUnitToChartUnit(entry.unit)
+  // Trend defensively defaulted to [] so a backend that ever emits null
+  // doesn't crash the chart-card render. Same belt-and-suspenders as the
+  // empty-state check in the parent.
+  const trend = entry.trend ?? []
+  const summary = entry.summary ?? { min: 0, avg: 0, max: 0, p95: 0 }
   const scale = useMemo(() => {
     // Pick scale based on the larger of: max usage, limit (if any).
     // This keeps the y-axis in MiB when the workload is using bytes but
     // its limit is in GiB — the threshold line stays on-scale.
     const ceiling = Math.max(
-      entry.summary.max,
+      summary.max,
       entry.limit ?? 0,
       entry.request ?? 0,
     )
     return pickScale(ceiling || 1, unitKind)
-  }, [entry, unitKind])
+  }, [summary.max, entry.limit, entry.request, unitKind])
 
   return (
     <div className="border-b border-kb-border last:border-b-0">
       <MetricStrip
         label={display.label}
-        summary={entry.summary}
+        summary={summary}
         request={entry.request}
         limit={entry.limit}
         utilization={entry.utilizationPercent}
         scale={scale}
       />
       <ChartArea
-        points={entry.trend}
+        points={trend}
         accent={display.accent}
         request={entry.request}
         limit={entry.limit}
@@ -453,9 +496,13 @@ interface ContainerRowProps {
 }
 
 function ContainerRow({ name, entry, accent, scale }: ContainerRowProps) {
+  // Defensive against null trend (same null-slice → JSON null pattern as
+  // the top-level entry — KSM-less or empty containers could land here).
+  const trend = entry.trend ?? []
+  const summary = entry.summary ?? { min: 0, avg: 0, max: 0, p95: 0 }
   const data = useMemo(
-    () => entry.trend.map((p) => ({ ts: new Date(p.t).getTime(), scaled: p.v / scale.divisor })),
-    [entry.trend, scale.divisor],
+    () => trend.map((p) => ({ ts: new Date(p.t).getTime(), scaled: p.v / scale.divisor })),
+    [trend, scale.divisor],
   )
   return (
     <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-3 py-1.5 border-t border-kb-border first:border-t-0">
@@ -477,7 +524,7 @@ function ContainerRow({ name, entry, accent, scale }: ContainerRowProps) {
         </ResponsiveContainer>
       </div>
       <span className="text-[10px] text-kb-text-secondary font-mono">
-        max <span className="text-kb-text-primary">{formatValue(entry.summary.max, scale, true)}</span>
+        max <span className="text-kb-text-primary">{formatValue(summary.max, scale, true)}</span>
       </span>
     </div>
   )

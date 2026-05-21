@@ -332,6 +332,112 @@ func TestPodNamePattern_EscapesWorkloadName(t *testing.T) {
 	}
 }
 
+// ─── Node-kind golden tests ──────────────────────────────────────────
+//
+// Node queries use entirely different metric names from workload queries
+// (node_* instead of container_*) and don't carry a namespace or a pod
+// regex. These tests pin the exact PromQL shape so a refactor that
+// silently routes Node through the pod-keyed path fails loud.
+
+func TestPromBuilder_CPU_Node(t *testing.T) {
+	b := promBuilder{
+		kind:       "Node",
+		name:       "ip-10-0-44-188.ec2.internal",
+		clusterUID: "uid-abc",
+		rateWindow: 1 * time.Minute,
+	}
+	got := b.buildCPU()
+	want := `sum(rate(node_cpu_usage_seconds_total{cluster_id="uid-abc",node="ip-10-0-44-188.ec2.internal"}[1m]))`
+	if got != want {
+		t.Errorf("CPU node PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+	// Negative checks: must NOT carry pod-keyed labels.
+	if strings.Contains(got, "container_cpu_usage_seconds_total") {
+		t.Errorf("Node CPU query must use node_* metric, not container_*:\n  %s", got)
+	}
+	if strings.Contains(got, "pod_uid") {
+		t.Errorf("Node CPU query must not filter on pod_uid (no such label on node series):\n  %s", got)
+	}
+	if strings.Contains(got, "namespace=") {
+		t.Errorf("Node CPU query must not carry a namespace filter:\n  %s", got)
+	}
+}
+
+func TestPromBuilder_Memory_Node(t *testing.T) {
+	b := promBuilder{
+		kind:       "Node",
+		name:       "kubebolt-dev-worker",
+		clusterUID: "uid-abc",
+	}
+	got := b.buildMemory()
+	want := `sum(node_memory_working_set_bytes{cluster_id="uid-abc",node="kubebolt-dev-worker"})`
+	if got != want {
+		t.Errorf("memory node PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+}
+
+func TestPromBuilder_Network_Node_FiltersVirtualInterfaces(t *testing.T) {
+	// The device whitelist is critical — sum without it would include
+	// every veth/lxc/cilium interface and double-count container traffic.
+	// We learned this from the yagan/CloudWatch/Grafana comparison.
+	b := promBuilder{
+		kind:       "Node",
+		name:       "kubebolt-dev-worker",
+		clusterUID: "uid-abc",
+		rateWindow: 1 * time.Minute,
+	}
+	gotRX := b.buildNetwork(MetricNetworkRX)
+	wantRX := `sum(rate(node_network_receive_bytes_total{cluster_id="uid-abc",node="kubebolt-dev-worker",device=~"eth.*|ens.*|en[a-z].*"}[1m]))`
+	if gotRX != wantRX {
+		t.Errorf("network node RX PromQL mismatch:\n  want: %s\n  got:  %s", wantRX, gotRX)
+	}
+	gotTX := b.buildNetwork(MetricNetworkTX)
+	wantTX := `sum(rate(node_network_transmit_bytes_total{cluster_id="uid-abc",node="kubebolt-dev-worker",device=~"eth.*|ens.*|en[a-z].*"}[1m]))`
+	if gotTX != wantTX {
+		t.Errorf("network node TX PromQL mismatch:\n  want: %s\n  got:  %s", wantTX, gotTX)
+	}
+}
+
+func TestPromBuilder_RequestsLimits_Node(t *testing.T) {
+	// For nodes: allocatable plays the role of "request", capacity plays
+	// the role of "limit". This lets utilizationPercent vsLimit show "% of
+	// node capacity" — operators already know to read it that way from
+	// the Capacity dashboard's gauges.
+	b := promBuilder{
+		kind:       "Node",
+		name:       "kubebolt-dev-worker",
+		clusterUID: "uid-abc",
+	}
+	gotReq := b.buildRequestsLimits("cpu", "requests")
+	wantReq := `sum(kube_node_status_allocatable{cluster_id="uid-abc",node="kubebolt-dev-worker",resource="cpu"})`
+	if gotReq != wantReq {
+		t.Errorf("node allocatable PromQL mismatch:\n  want: %s\n  got:  %s", wantReq, gotReq)
+	}
+	gotLim := b.buildRequestsLimits("memory", "limits")
+	wantLim := `sum(kube_node_status_capacity{cluster_id="uid-abc",node="kubebolt-dev-worker",resource="memory"})`
+	if gotLim != wantLim {
+		t.Errorf("node capacity PromQL mismatch:\n  want: %s\n  got:  %s", wantLim, gotLim)
+	}
+}
+
+func TestPromBuilder_PerContainer_IgnoredForNode(t *testing.T) {
+	// Nodes don't have containers in this dimension. perContainer=true
+	// on Node must NOT produce a sum by (container) — it should stay as
+	// a single-series `sum(...)`. Otherwise the executor's per-container
+	// routing would build an empty PerContainer map and confuse Kobi.
+	b := promBuilder{
+		kind:         "Node",
+		name:         "ip-10-0-44-188.ec2.internal",
+		clusterUID:   "uid-abc",
+		perContainer: true, // requested but should be ignored
+		rateWindow:   1 * time.Minute,
+	}
+	got := b.buildCPU()
+	if strings.Contains(got, "by (container)") {
+		t.Errorf("Node CPU must NOT split by container even when perContainer=true:\n  %s", got)
+	}
+}
+
 func TestPromDuration(t *testing.T) {
 	cases := []struct {
 		in   time.Duration

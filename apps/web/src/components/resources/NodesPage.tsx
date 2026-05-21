@@ -297,8 +297,16 @@ function NodeFleetCharts() {
         title="Network activity per node (RX up / TX down)"
         unit="bytes/s"
         queries={[
-          { query: 'sum by (node) (rate(node_network_receive_bytes_total[1m]))', prefix: 'RX' },
-          { query: 'sum by (node) (rate(node_network_transmit_bytes_total[1m]))', prefix: 'TX', negate: true },
+          // device filter excludes virtual interfaces (cilium_*, lxc*,
+          // veth*, cali*, flannel*, gre*, tunl*, lo) that double/triple-count
+          // the same packet as it traverses the CNI overlay. eth0/ens5/eno1
+          // is the physical NIC — what actually crosses the node boundary.
+          // Without this filter the dashboard inflated 6-8× on kind/yagan
+          // (verified against CloudWatch ENI metrics and per-device topk).
+          // Keep in sync with apps/api/internal/copilot/workload_metrics.go's
+          // nodeNetworkDeviceFilter constant.
+          { query: 'sum by (node) (rate(node_network_receive_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))', prefix: 'RX' },
+          { query: 'sum by (node) (rate(node_network_transmit_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))', prefix: 'TX', negate: true },
         ]}
         // Multi-node clusters produce one series per (RX, node) and
         // one per (TX, node). The default seriesLabel collapses by
