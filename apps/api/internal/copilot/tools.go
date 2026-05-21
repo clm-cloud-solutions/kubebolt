@@ -451,6 +451,42 @@ func ToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
+			Name: "get_workload_metrics",
+			Description: "Query CPU, memory, and network metrics for a workload (or single pod) over a time " +
+				"range. Returns a compact summary {min, avg, max, p95} plus a downsampled sparkline " +
+				"(~12 points) per requested metric. When CPU or memory is requested, also returns the " +
+				"workload's current resource requests/limits and a derived utilizationPercent. " +
+				"Use this whenever the question is about behavior OVER TIME (saturation, throttling, " +
+				"memory pressure, deploy-correlated changes, sizing). Prefer it over get_resource_detail " +
+				"when the question is \"is X bad over time\" rather than \"what is X right now\". " +
+				"Before proposing propose_set_resources, ALWAYS call this first — the summary.max and " +
+				"utilizationPercent are what justify the patched values in the rationale; a set_resources " +
+				"proposal without metric-grounded rationale is a guess. " +
+				"Disk metrics are not exposed in this version — pod-level disk IO is unreliable on EKS " +
+				"with VPC CNI and PVC fill needs a separate tool path. Do not infer disk pressure from this tool.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"kind":      strPropEnum("Workload kind. Case-sensitive (matches the workload_kind label).", []string{"Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob"}),
+					"namespace": strProp("Workload namespace"),
+					"name":      strProp("Workload name (or pod name when kind=Pod)"),
+					"metrics": map[string]interface{}{
+						"type":        "array",
+						"description": "Which metrics to query. At least one; up to four. Each call is one VM round-trip per metric, so request only what you need.",
+						"items": map[string]interface{}{
+							"type": "string",
+							"enum": []string{"cpu", "memory", "network_rx", "network_tx"},
+						},
+						"minItems": 1,
+						"maxItems": 4,
+					},
+					"range": strPropEnum("Time range relative to now. Default 15m if omitted. Wider ranges cost more tokens (longer trend, more downsampling) — pick the smallest that answers the question.", []string{"5m", "15m", "1h", "6h", "24h"}),
+					"perContainer": boolProp("When true, split CPU/memory by container instead of aggregating to the workload. Ignored for network metrics (pod-level only). Default false. Use when the operator is asking which container is responsible for a usage pattern."),
+				},
+				"required": []string{"kind", "namespace", "name", "metrics"},
+			},
+		},
+		{
 			Name: "get_kubebolt_docs",
 			Description: "Return product documentation about KubeBolt itself (features, navigation, admin " +
 				"pages, configuration). Use this ONLY when the user asks how to do something in the KubeBolt " +
