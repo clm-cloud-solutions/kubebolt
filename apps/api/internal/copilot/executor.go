@@ -186,13 +186,101 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
+
+		// Resolve the container name BEFORE calling the apiserver.
+		// Without this, multi-container pods (gitlab-webservice has 5
+		// containers, every istio-injected pod has 2+) fail with a
+		// human-readable error the LLM has to parse to retry.
+		//
+		// Two-step flow for multi-container pods, to keep token cost
+		// in check: instead of auto-picking the first container and
+		// shipping its 20-50KB of logs (which the LLM might then
+		// supersede with a second call to a different container),
+		// we return ONLY the container list on the first call and
+		// let the LLM pick using its world-knowledge of common
+		// container-naming conventions. The LLM then re-calls with
+		// `container=<name>` and gets the logs in a single round.
+		// Net savings: ~25-50% on multi-container pods compared to
+		// the auto-fetch approach. Single-container pods are
+		// transparently auto-resolved (no extra round-trip there
+		// because there's no choice to make).
+		extraMeta := map[string]any{}
+		if detail, dErr := conn.GetResourceDetail("pods", ns, name); dErr == nil {
+			containerNames := extractPodContainerNames(detail)
+
+			if container == "" {
+				switch len(containerNames) {
+				case 0:
+					// No container info available (pod detail empty
+					// or unusual shape). Fall through to GetPodLogs
+					// and let the apiserver's error surface.
+				case 1:
+					// Single-container pod: auto-resolve. No choice
+					// to make, so no round-trip needed.
+					q.Container = containerNames[0]
+					extraMeta["containerSelected"] = containerNames[0]
+				default:
+					// Multi-container, no container specified.
+					// Return the list + nudge the LLM to pick using
+					// the container names + the symptom in the
+					// user's question. Common heuristics the LLM
+					// applies automatically: skip init-style names
+					// (`certificates`, `configure`, `dependencies`,
+					// `wait-for-x`), prefer app-named containers
+					// (`webservice`, `api`, the deployment's name),
+					// recognize sidecar patterns (`istio-proxy`,
+					// `linkerd-proxy`, `vault-agent`, `fluentbit`)
+					// and pick the app container unless the user's
+					// question is specifically about the sidecar.
+					res.Content = jsonString(map[string]any{
+						"availableContainers": containerNames,
+						"podContainerCount":   len(containerNames),
+						"hint": fmt.Sprintf(
+							"pod %s/%s has %d containers — no logs returned on this call. Pick the container whose logs match the symptom you're investigating (e.g., for HTTP errors prefer the app container, not init helpers like 'configure' / 'certificates' / 'dependencies'; for traffic policy issues, prefer 'istio-proxy' or similar sidecars). Re-call get_pod_logs with container=<name> from availableContainers to actually read the logs.",
+							ns, name, len(containerNames)),
+					})
+					return res
+				}
+			} else {
+				// User-supplied container — validate against the pod
+				// so we fail fast with a useful error instead of
+				// surfacing the apiserver's "not found" 404.
+				valid := false
+				for _, n := range containerNames {
+					if n == container {
+						valid = true
+						break
+					}
+				}
+				if !valid && len(containerNames) > 0 {
+					res.Content = jsonString(map[string]any{
+						"error":               fmt.Sprintf("container %q not found in pod %s/%s", container, ns, name),
+						"availableContainers": containerNames,
+					})
+					res.IsError = true
+					return res
+				}
+				extraMeta["containerSelected"] = container
+			}
+		}
+		// If the pod fetch failed (network blip, pod just deleted),
+		// fall through with whatever container the caller passed.
+		// GetPodLogs will surface the underlying error if any.
+
 		logs, err := conn.GetPodLogs(ns, name, q)
 		if err != nil {
-			res.Content = errJSON(err)
+			// Attach the meta we collected so the LLM still knows
+			// what containers are available even when the read
+			// failed for some other reason.
+			payload := map[string]any{"error": err.Error()}
+			for k, v := range extraMeta {
+				payload[k] = v
+			}
+			res.Content = jsonString(payload)
 			res.IsError = true
 			return res
 		}
-		res.Content = formatPodLogs(logs, grep)
+		res.Content = formatPodLogs(logs, grep, extraMeta)
 
 	case "get_workload_pods":
 		t := stringArg(args, "type")
@@ -877,7 +965,13 @@ func truncateToolResult(content, toolName string) string {
 // the NEWEST log lines (truncates from the head, not the tail) aligned on line
 // boundaries. The response always carries metadata so the LLM can decide
 // whether to request a narrower window or a specific filter.
-func formatPodLogs(raw, grep string) string {
+//
+// `extra` carries caller-supplied metadata that gets merged into the
+// response payload — used by the get_pod_logs executor case to surface
+// containerSelected / availableContainers / containerAutoSelected /
+// hint so the LLM can re-query a different container without parsing
+// human-readable error strings.
+func formatPodLogs(raw, grep string, extra map[string]any) string {
 	// Count original lines before any filtering
 	originalLines := 0
 	if raw != "" {
@@ -947,7 +1041,36 @@ func formatPodLogs(raw, grep string) string {
 		payload["bytesDropped"] = bytesDropped
 		payload["hint"] = "logs truncated to preserve context; use 'since' for a narrower window or 'grep' to filter"
 	}
+	// Merge caller meta last. If the caller also set "hint" (e.g.
+	// container auto-selected note), the truncation hint takes
+	// precedence because it's more actionable — operators care more
+	// about "your data is incomplete" than "I picked a container".
+	for k, v := range extra {
+		if _, present := payload[k]; !present {
+			payload[k] = v
+		}
+	}
 	return jsonString(payload)
+}
+
+// extractPodContainerNames returns the names of the regular containers
+// (not init/ephemeral) of a pod as exposed by the connector's
+// GetResourceDetail. Mirrors what the apiserver's "a container name
+// must be specified, choose one of: [...]" error lists — the
+// auto-selection logic in get_pod_logs uses this to pre-empt that
+// error class on multi-container pods.
+func extractPodContainerNames(detail map[string]interface{}) []string {
+	cs, ok := detail["containers"].([]map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(cs))
+	for _, c := range cs {
+		if n, ok := c["name"].(string); ok && n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // ----- helpers -----
