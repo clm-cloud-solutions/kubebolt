@@ -920,6 +920,15 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		p.Reversible = false
 		res.Content = jsonString(p)
 
+	case "get_workload_metrics":
+		out, err := e.execGetWorkloadMetrics(call, args, conn)
+		if err != nil {
+			res.Content = err.Error()
+			res.IsError = true
+			return res
+		}
+		res.Content = out
+
 	case "get_kubebolt_docs":
 		topic := stringArg(args, "topic")
 		res.Content = jsonString(map[string]string{

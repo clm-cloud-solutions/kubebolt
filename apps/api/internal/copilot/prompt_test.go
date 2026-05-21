@@ -253,6 +253,10 @@ func TestProposeToolDefinitionsRegistered(t *testing.T) {
 		"propose_set_image",
 		"propose_set_env",
 		"propose_patch_hpa",
+		// Spec #07 — metrics tool registration. Same invariant: if the
+		// system prompt mentions it but ToolDefinitions doesn't, the LLM
+		// will try to call it and crash on "unknown tool".
+		"get_workload_metrics",
 	}
 	registered := map[string]bool{}
 	for _, td := range ToolDefinitions() {
@@ -261,6 +265,39 @@ func TestProposeToolDefinitionsRegistered(t *testing.T) {
 	for _, name := range want {
 		if !registered[name] {
 			t.Errorf("tool %q not registered in ToolDefinitions()", name)
+		}
+	}
+}
+
+// TestWorkloadMetricsGuidance pins the system-prompt directives the new
+// get_workload_metrics tool depends on (spec #07). The guarantee Kobi
+// makes — "I will check the trend before proposing set_resources" — is
+// only durable as long as the prompt explicitly tells it to. A casual
+// rewrite that drops the "BEFORE every propose_set_resources" wording
+// would silently regress the LLM to point-in-time guessing.
+func TestWorkloadMetricsGuidance(t *testing.T) {
+	prompt := BuildSystemPrompt()
+	lower := strings.ToLower(prompt)
+
+	mustContain := []string{
+		// The tool itself must be named so the LLM knows it exists.
+		"get_workload_metrics",
+		// The mandatory pre-condition for set_resources proposals.
+		"before every propose_set_resources",
+		// Surface that the join-with-KSM behavior is automatic.
+		"utilizationpercent",
+		// Operators ask "is X bad over the last hour" — anchor the
+		// prompt to that exact framing so the LLM picks the right tool.
+		"saturated",
+		// Negative guidance: disk metrics are deliberately absent.
+		"disk is not exposed",
+		// Acknowledgement that we DO have historical metrics (corrects
+		// the long-standing "you don't have historical metrics" lie).
+		"historical cpu / memory / network metrics",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(lower, s) {
+			t.Errorf("system prompt missing metrics-tool guidance %q — Kobi will regress to point-in-time guessing or call a non-existent disk tool", s)
 		}
 	}
 }
