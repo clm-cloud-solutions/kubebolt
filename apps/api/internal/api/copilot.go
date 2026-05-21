@@ -283,11 +283,21 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rec := &copilot.SessionRecord{
-				Timestamp:  time.Now(),
-				UserID:     auth.ContextUserID(r),
-				Cluster:    clusterName,
-				Provider:   h.copilotConfig.Primary.Provider,
-				Model:      h.copilotConfig.Primary.Model,
+				Timestamp: time.Now(),
+				UserID:    auth.ContextUserID(r),
+				Cluster:   clusterName,
+				Provider:  h.copilotConfig.Primary.Provider,
+				// Model is resolved through copilot.ResolvedModel so the
+				// stored value reflects the model the provider ACTUALLY
+				// uses. When KUBEBOLT_AI_MODEL is unset the raw
+				// h.copilotConfig.Primary.Model is empty, but the provider
+				// applies its own default (claude-sonnet-4-6 / gpt-4o).
+				// Persisting the empty string here makes the admin Copilot
+				// Usage page lose pricing — PricingFor("anthropic", "")
+				// returns no-match → estimatedUsd=0 → "no known pricing"
+				// even though real cost was incurred. ResolvedModel
+				// centralises the same fallback the providers do.
+				Model:      copilot.ResolvedModel(h.copilotConfig.Primary.Provider, h.copilotConfig.Primary.Model),
 				Trigger:    trigger,
 				Reason:     reason,
 				Rounds:     roundsUsed,

@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"context"
+	"strings"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
@@ -59,4 +60,33 @@ func RegisterProvider(p Provider) {
 // GetProvider returns the provider with the given name, or nil if unknown.
 func GetProvider(name string) Provider {
 	return providerRegistry[name]
+}
+
+// ResolvedModel returns the model name that the provider will actually use
+// given the configured value. When `configured` is non-empty, it's returned
+// as-is. When empty, the provider's internal default is returned (mirroring
+// the `if model == ""` fallback inside each provider's Chat impl).
+//
+// Callers persisting the "model actually used" — most notably the
+// SessionRecord that drives the admin Copilot Usage page and its cost
+// estimation — should use this helper instead of reading the raw
+// `CopilotConfig.Primary.Model` (which can be empty when the operator
+// didn't set KUBEBOLT_AI_MODEL, in which case PricingFor("anthropic", "")
+// returns false and the UI renders "$0.0000 / no known pricing" even
+// though real API calls were made under the provider's default model).
+//
+// Unknown providers return "" — same as configured. This matches the
+// existing PricingFor behavior, which already handles empty model names
+// as "no pricing data" without crashing.
+func ResolvedModel(provider, configured string) string {
+	if configured != "" {
+		return configured
+	}
+	switch strings.ToLower(provider) {
+	case "anthropic":
+		return anthropicDefaultModel
+	case "openai":
+		return openaiDefaultModel
+	}
+	return ""
 }
