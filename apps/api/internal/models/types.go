@@ -19,6 +19,16 @@ type ClusterOverview struct {
 	CronJobs           ResourceCount       `json:"cronJobs"`
 	Ingresses          ResourceCount       `json:"ingresses"`
 	NetworkPolicies    ResourceCount       `json:"networkPolicies"`
+	// Gateways / HTTPRoutes — present when Gateway API CRDs are
+	// installed. Zero on clusters that haven't installed the CRDs;
+	// the sidebar hides the counter chip when the value is zero
+	// (matches the existing behavior for other declarative kinds).
+	Gateways           ResourceCount       `json:"gateways"`
+	HTTPRoutes         ResourceCount       `json:"httpRoutes"`
+	// Endpoints — backed by EndpointSlices (KubeBolt's `endpoints`
+	// resource type lists one row per EndpointSlice, not per legacy
+	// Endpoints object). Count matches what the list endpoint returns.
+	Endpoints          ResourceCount       `json:"endpoints"`
 	ConfigMaps         ResourceCount       `json:"configMaps"`
 	Secrets            ResourceCount       `json:"secrets"`
 	PVCs               ResourceCount       `json:"pvcs"`

@@ -72,14 +72,36 @@ type AuthConfig struct {
 	Authenticator auth.AgentAuthenticator
 	RequireMTLS   bool
 	RateLimiter   *auth.RateLimiter
+
+	// DefaultTenantID is the install's default tenant UUID, looked up
+	// once at startup from TenantsStore.GetDefaultTenant(). When set,
+	// disabled / permissive-fallback identities stamp this UUID on
+	// the AgentIdentity so the rate limiter (and downstream
+	// per-tenant primitives) bucket unauthenticated traffic against
+	// the operator's custom overrides on the default tenant — not
+	// against the empty-string "no tenant" bypass that previously
+	// turned the rate limiter into a no-op for permissive flows.
+	//
+	// Empty string preserves the legacy bypass behavior (used in the
+	// edge case where KUBEBOLT_AUTH_ENABLED=false and the
+	// TenantsStore isn't wired — see main.go where this field is
+	// populated only inside the auth-enabled block).
+	DefaultTenantID string
 }
 
 // dummyIdentity is the placeholder the interceptor stamps when
-// enforcement is disabled or permissive-fallback. It deliberately leaves
-// TenantID/ClusterID empty so handlers that branch on those (commit 6+)
-// see the absence and treat the call as untrusted.
-func dummyIdentity(now time.Time) *auth.AgentIdentity {
-	return &auth.AgentIdentity{Mode: auth.ModeDisabled, AuthedAt: now}
+// enforcement is disabled or permissive-fallback. When DefaultTenantID
+// is set (the typical OSS install where user-auth is enabled), the
+// identity carries the default tenant UUID so the rate limiter sees a
+// real tenant key instead of bypassing on empty TenantID. ClusterID
+// stays empty intentionally — it's learned from the agent's Hello
+// message during the gRPC stream Register, not from auth.
+func dummyIdentity(now time.Time, defaultTenantID string) *auth.AgentIdentity {
+	return &auth.AgentIdentity{
+		Mode:     auth.ModeDisabled,
+		TenantID: defaultTenantID,
+		AuthedAt: now,
+	}
 }
 
 // authenticateMD runs the authenticator against the call metadata,
@@ -88,7 +110,7 @@ func dummyIdentity(now time.Time) *auth.AgentIdentity {
 func authenticateMD(ctx context.Context, cfg AuthConfig) (*auth.AgentIdentity, error) {
 	now := time.Now().UTC()
 	if cfg.Enforcement == EnforcementDisabled {
-		return dummyIdentity(now), nil
+		return dummyIdentity(now, cfg.DefaultTenantID), nil
 	}
 	if cfg.Authenticator == nil {
 		// Misconfigured: enforcement requested but no authenticator
@@ -105,7 +127,7 @@ func authenticateMD(ctx context.Context, cfg AuthConfig) (*auth.AgentIdentity, e
 			slog.Warn("agent auth permissive-fallback",
 				slog.String("error", err.Error()),
 			)
-			return dummyIdentity(now), nil
+			return dummyIdentity(now, cfg.DefaultTenantID), nil
 		}
 		return nil, mapAuthError(err)
 	}

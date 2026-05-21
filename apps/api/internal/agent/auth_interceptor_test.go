@@ -156,6 +156,134 @@ func TestAuthenticateMD_PermissiveKeepsRealIdentityOnSuccess(t *testing.T) {
 	}
 }
 
+// ─── DefaultTenantID fallback (added after yagan rate-limit investigation) ───
+//
+// When TenantsStore is wired at the app layer, AuthConfig.DefaultTenantID
+// gets populated at startup so disabled/permissive-fallback identities
+// stamp it on the AgentIdentity. The downstream rate limiter then keys
+// against that real tenant UUID instead of bypassing on empty TenantID.
+//
+// These tests pin both halves of the matrix:
+//
+//   Enforcement | DefaultTenantID | expected identity TenantID
+//   ------------|-----------------|---------------------------
+//   disabled    | "uuid-X"        | "uuid-X" (new)
+//   disabled    | ""              | "" (legacy bypass preserved)
+//   permissive  | "uuid-X" + fail | "uuid-X" (new)
+//   permissive  | "" + fail       | "" (legacy bypass preserved)
+//   permissive  | "uuid-X" + ok   | from authenticator (regression guard)
+//   enforced    | "uuid-X" + fail | rejected (regression guard — no change)
+
+func TestAuthenticateMD_Disabled_WithDefaultTenantID_StampsIt(t *testing.T) {
+	const want = "uuid-default-tenant"
+	id, err := authenticateMD(context.Background(), AuthConfig{
+		Enforcement:     EnforcementDisabled,
+		DefaultTenantID: want,
+	})
+	if err != nil {
+		t.Fatalf("disabled mode should never error, got %v", err)
+	}
+	if id == nil {
+		t.Fatalf("expected dummy identity, got nil")
+	}
+	if id.TenantID != want {
+		t.Errorf("expected dummy identity to carry default tenant %q, got %q", want, id.TenantID)
+	}
+}
+
+func TestAuthenticateMD_Disabled_WithoutDefaultTenantID_StampsEmpty(t *testing.T) {
+	// Regression guard: when TenantsStore unwired at the app layer
+	// (KUBEBOLT_AUTH_ENABLED=false), DefaultTenantID is empty and the
+	// rate limiter bypasses on empty key — legacy behavior preserved.
+	id, err := authenticateMD(context.Background(), AuthConfig{
+		Enforcement: EnforcementDisabled,
+	})
+	if err != nil {
+		t.Fatalf("disabled mode should never error, got %v", err)
+	}
+	if id == nil {
+		t.Fatalf("expected dummy identity, got nil")
+	}
+	if id.TenantID != "" {
+		t.Errorf("expected empty TenantID for legacy bypass, got %q", id.TenantID)
+	}
+}
+
+func TestAuthenticateMD_PermissiveFallback_WithDefaultTenantID_StampsIt(t *testing.T) {
+	const want = "uuid-default-tenant"
+	a := &stubAuther{mode: auth.ModeIngestToken, err: auth.ErrTokenInvalid}
+	id, err := authenticateMD(context.Background(), AuthConfig{
+		Enforcement:     EnforcementPermissive,
+		Authenticator:   a,
+		DefaultTenantID: want,
+	})
+	if err != nil {
+		t.Fatalf("permissive should not error, got %v", err)
+	}
+	if id == nil {
+		t.Fatalf("expected dummy identity, got nil")
+	}
+	if id.TenantID != want {
+		t.Errorf("expected fallback identity to carry default tenant %q, got %q", want, id.TenantID)
+	}
+}
+
+func TestAuthenticateMD_PermissiveFallback_WithoutDefaultTenantID_StampsEmpty(t *testing.T) {
+	// Regression guard for the legacy bypass path.
+	a := &stubAuther{mode: auth.ModeIngestToken, err: auth.ErrTokenInvalid}
+	id, err := authenticateMD(context.Background(), AuthConfig{
+		Enforcement:   EnforcementPermissive,
+		Authenticator: a,
+	})
+	if err != nil {
+		t.Fatalf("permissive should not error, got %v", err)
+	}
+	if id == nil {
+		t.Fatalf("expected dummy identity, got nil")
+	}
+	if id.TenantID != "" {
+		t.Errorf("expected empty TenantID for legacy bypass, got %q", id.TenantID)
+	}
+}
+
+func TestAuthenticateMD_PermissiveSuccess_DefaultTenantIDIgnored(t *testing.T) {
+	// Regression guard: when auth succeeds, the resolved identity
+	// wins — the DefaultTenantID field MUST NOT clobber a real
+	// authenticated tenant.
+	resolved := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "real-tenant-from-token"}
+	a := &stubAuther{mode: auth.ModeIngestToken, returns: resolved}
+	id, err := authenticateMD(context.Background(), AuthConfig{
+		Enforcement:     EnforcementPermissive,
+		Authenticator:   a,
+		DefaultTenantID: "uuid-default-tenant",
+	})
+	if err != nil {
+		t.Fatalf("Authenticate: %v", err)
+	}
+	if id != resolved {
+		t.Errorf("expected forwarded identity, got %+v", id)
+	}
+}
+
+func TestAuthenticateMD_Enforced_DefaultTenantIDDoesNotRelaxRejection(t *testing.T) {
+	// Regression guard: setting DefaultTenantID MUST NOT make enforced
+	// mode accept invalid tokens. Default tenant is for unauthenticated
+	// fallback, not a bypass of enforcement.
+	a := &stubAuther{mode: auth.ModeIngestToken, err: auth.ErrTokenInvalid}
+	_, err := authenticateMD(context.Background(), AuthConfig{
+		Enforcement:     EnforcementEnforced,
+		Authenticator:   a,
+		DefaultTenantID: "uuid-default-tenant",
+	})
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected gRPC status error, got %v", err)
+	}
+	if st.Code() != codes.Unauthenticated {
+		t.Errorf("expected Unauthenticated, got %s", st.Code())
+	}
+}
+
 func TestAuthenticateMD_NilAuthenticatorInEnforcedFailsLoud(t *testing.T) {
 	_, err := authenticateMD(context.Background(), AuthConfig{Enforcement: EnforcementEnforced, Authenticator: nil})
 	st, ok := status.FromError(err)

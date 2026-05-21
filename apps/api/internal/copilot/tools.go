@@ -71,13 +71,22 @@ func ToolDefinitions() []ToolDefinition {
 				"incidents. Use 'previous=true' to read logs from the prior container instance after a " +
 				"crash/restart — this is the ONLY way to see what happened before the pod recycled. " +
 				"Results capped at 500 lines / 48KB, newest preserved; response includes a 'truncated' " +
-				"flag when cut.",
+				"flag when cut. " +
+				"MULTI-CONTAINER PODS: if you don't know whether the pod has multiple containers and " +
+				"omit `container`, the tool returns just the container list (no logs) and asks you to " +
+				"re-call with an explicit container. Use your judgment on the names to pick the right " +
+				"one: skip init-style helpers (`certificates`, `configure`, `dependencies`, `wait-for-x`); " +
+				"prefer the app container (often matches the deployment name like `webservice`, `api`, " +
+				"or the pod-name root); pick a sidecar (`istio-proxy`, `linkerd-proxy`, `vault-agent`, " +
+				"`fluentbit`) ONLY when the user's question is about that specific concern (traffic " +
+				"policy, secret refresh, log shipping). Picking right on the first try saves a 20-50KB " +
+				"round-trip vs hunting through multiple containers' logs.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
 					"namespace": strProp("Pod namespace"),
 					"name":      strProp("Pod name"),
-					"container": strProp("Container name (required for multi-container pods)"),
+					"container": strProp("Container name. REQUIRED on multi-container pods — when omitted on such pods, the tool returns only the container list (no logs) to let you pick the right one. Single-container pods auto-resolve."),
 					"tailLines": numProp("Lines from end (default 200, max 500)"),
 					"since":     strProp("Relative duration window, e.g. '15m', '1h', '2h' (optional; overridden by sinceTime when both set)"),
 					"sinceTime": strProp("Absolute lower bound, RFC3339 e.g. '2026-05-10T14:00:00Z' (optional; pair with endTime for a closed window around a past incident)"),

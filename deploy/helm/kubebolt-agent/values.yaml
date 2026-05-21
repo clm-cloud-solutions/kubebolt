@@ -55,8 +55,30 @@ cluster:
 # ─── Hubble flow collector ─────────────────────────────────
 hubble:
   # Kill-switch. Set to false to disable flow collection without
-  # uninstalling the chart. Default true; the collector silently
-  # no-ops when Cilium isn't installed.
+  # uninstalling the chart. Default true.
+  #
+  # IMPORTANT — set this explicitly to `false` on clusters that do
+  # NOT run Cilium (e.g. EKS with AWS VPC CNI, GKE without managed
+  # Dataplane V2, AKS with kubenet). Leaving it `true` makes the
+  # agent dial `hubble-relay.kube-system.svc.cluster.local:80`
+  # forever; DNS returns NXDOMAIN and the agent emits one WARN per
+  # node per ~minute indefinitely:
+  #
+  #   WARN  hubble: stream ended, will retry  relay=hubble-relay...
+  #     error="rpc error: code = Unavailable desc = name resolver
+  #     error: produced zero addresses"  backoff=1m0s
+  #
+  # The Reliability dashboard (L7 HTTP / Network Drops) is hidden
+  # automatically when no Hubble samples reach VictoriaMetrics, so
+  # disabling here loses NO user-visible feature on those clusters
+  # — only the noise.
+  #
+  # Quick check whether Cilium is present:
+  #   kubectl -n kube-system get pods -l k8s-app=cilium
+  #
+  # When Cilium IS present (or later gets installed), leave true.
+  # If you disable now and add Cilium later:
+  #   helm upgrade --reuse-values --set hubble.enabled=true
   enabled: true
   relay:
     # Override the relay address. Empty = use the agent default
