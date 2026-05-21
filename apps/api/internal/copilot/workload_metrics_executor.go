@@ -58,12 +58,22 @@ type workloadRef struct {
 }
 
 type metricResponse struct {
-	Unit               string                `json:"unit"`
-	Summary            metricSummary         `json:"summary"`
-	Trend              []metricPoint         `json:"trend"`
-	Request            *float64              `json:"request,omitempty"`
-	Limit              *float64              `json:"limit,omitempty"`
-	UtilizationPercent *utilizationPercent   `json:"utilizationPercent,omitempty"`
+	Unit               string                     `json:"unit"`
+	Summary            metricSummary              `json:"summary"`
+	Trend              []metricPoint              `json:"trend"`
+	Request            *float64                   `json:"request,omitempty"`
+	Limit              *float64                   `json:"limit,omitempty"`
+	UtilizationPercent *utilizationPercent        `json:"utilizationPercent,omitempty"`
+	// PerContainer is the per-container breakdown when the caller passed
+	// perContainer=true. The top-level Summary/Trend remain the workload
+	// (or pod) aggregate so the LLM can answer "how much does the pod use
+	// overall?" without re-aggregating. Empty unless perContainer=true.
+	PerContainer map[string]containerMetric `json:"perContainer,omitempty"`
+}
+
+type containerMetric struct {
+	Summary metricSummary `json:"summary"`
+	Trend   []metricPoint `json:"trend"`
 }
 
 type utilizationPercent struct {
@@ -281,6 +291,13 @@ func dedupStrings(in []string) []string {
 }
 
 // runMetric runs one metric's range query, summarizes, and downsamples.
+// Handles both single-series (workload aggregate) and multi-series
+// (perContainer=true → one series per container) responses.
+//
+// For perContainer mode we also compute a top-level Summary/Trend that
+// reflects the sum across containers — useful for "is the pod overall
+// hot?" follow-ups without a second query. Aggregation is point-by-point
+// merge by timestamp because all containers share the same VM step.
 func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time.Time, step time.Duration) (metricResponse, error) {
 	var query string
 	switch m {
@@ -293,16 +310,74 @@ func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time
 	default:
 		return metricResponse{}, fmt.Errorf("unknown metric: %s", m)
 	}
-	points, err := queryRange(ctx, query, start, end, step)
+	series, err := queryRange(ctx, query, start, end, step)
 	if err != nil {
 		return metricResponse{}, err
 	}
-	trend := downsample(points, trendTargetPoints)
-	return metricResponse{
-		Unit:    unitFor(m),
-		Summary: summarize(points),
-		Trend:   trend,
-	}, nil
+	out := metricResponse{Unit: unitFor(m)}
+	if len(series) == 0 {
+		return out, nil
+	}
+
+	if !b.perContainer || m == MetricNetworkRX || m == MetricNetworkTX {
+		// Single-series shape: the PromQL is `sum(...)`, network is
+		// always pod-keyed (no container split). Take the first/only
+		// series. Defensive: if VM unexpectedly returned multi-series
+		// here, we still use the first — the builder tests guarantee
+		// the query is single-series for this path.
+		points := series[0].Points
+		out.Summary = summarize(points)
+		out.Trend = downsample(points, trendTargetPoints)
+		return out, nil
+	}
+
+	// perContainer for CPU/memory: route series by container label.
+	out.PerContainer = map[string]containerMetric{}
+	for _, s := range series {
+		container := s.Labels["container"]
+		if container == "" {
+			// VM returned a series without the container label — shouldn't
+			// happen for `sum by (container)` but skip defensively so an
+			// unexpected blank doesn't shadow a real container's data.
+			continue
+		}
+		out.PerContainer[container] = containerMetric{
+			Summary: summarize(s.Points),
+			Trend:   downsample(s.Points, trendTargetPoints),
+		}
+	}
+	// Top-level aggregate: sum the per-container values at each timestamp.
+	// The LLM still sees a workload-level Summary/Trend; perContainer adds
+	// the breakdown alongside.
+	aggregate := mergeSeriesByTimestamp(series)
+	out.Summary = summarize(aggregate)
+	out.Trend = downsample(aggregate, trendTargetPoints)
+	return out, nil
+}
+
+// mergeSeriesByTimestamp sums sample values across series at matching
+// timestamps. Used to compute the pod-level aggregate from a
+// per-container response. All container series share the same VM step,
+// so the timestamp set is consistent in the happy path; we still merge
+// rather than assume so a container that started mid-window doesn't
+// break the alignment.
+func mergeSeriesByTimestamp(series []vmSeries) []metricPoint {
+	byTs := map[int64]float64{}
+	for _, s := range series {
+		for _, p := range s.Points {
+			byTs[p.T.Unix()] += p.V
+		}
+	}
+	keys := make([]int64, 0, len(byTs))
+	for k := range byTs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	out := make([]metricPoint, len(keys))
+	for i, k := range keys {
+		out[i] = metricPoint{T: time.Unix(k, 0).UTC(), V: byTs[k]}
+	}
+	return out
 }
 
 // attachRequestsLimits performs the KSM join for CPU and memory metrics.

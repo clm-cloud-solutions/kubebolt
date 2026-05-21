@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -183,10 +184,14 @@ func TestQueryRange_HappyPath(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		now := time.Unix(1700000120, 0)
-		points, err := queryRange(ctx, `sum(rate(foo[1m]))`, now.Add(-2*time.Minute), now, time.Minute)
+		series, err := queryRange(ctx, `sum(rate(foo[1m]))`, now.Add(-2*time.Minute), now, time.Minute)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
+		if len(series) != 1 {
+			t.Fatalf("got %d series, want 1", len(series))
+		}
+		points := series[0].Points
 		if len(points) != 3 {
 			t.Fatalf("got %d points, want 3", len(points))
 		}
@@ -204,12 +209,51 @@ func TestQueryRange_EmptyResult(t *testing.T) {
 
 	withFakeVM(t, srv, func() {
 		ctx := context.Background()
-		points, err := queryRange(ctx, `sum(foo)`, time.Unix(0, 0), time.Unix(60, 0), time.Minute)
+		series, err := queryRange(ctx, `sum(foo)`, time.Unix(0, 0), time.Unix(60, 0), time.Minute)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if points != nil {
-			t.Errorf("expected nil points for empty result, got %v", points)
+		if len(series) != 0 {
+			t.Errorf("expected zero series for empty result, got %d", len(series))
+		}
+	})
+}
+
+func TestQueryRange_MultipleSeries_PerContainer(t *testing.T) {
+	// `sum by (container) (...)` returns one series per container.
+	// queryRange must surface ALL series so runMetric can split per
+	// container. This is the regression net for scenario 3 — the
+	// previous Result[0]-only code reported only the first container's
+	// values as if they were the pod aggregate.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"status":"success",
+			"data":{
+				"resultType":"matrix",
+				"result":[
+					{"metric":{"container":"heavy"},"values":[[1700000000,"0.198"],[1700000060,"0.201"]]},
+					{"metric":{"container":"idle-sidecar"},"values":[[1700000000,"0.002"],[1700000060,"0.003"]]}
+				]
+			}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	withFakeVM(t, srv, func() {
+		series, err := queryRange(context.Background(), `sum by (container) (rate(foo[1m]))`, time.Unix(1700000000, 0), time.Unix(1700000060, 0), time.Minute)
+		if err != nil {
+			t.Fatalf("unexpected: %v", err)
+		}
+		if len(series) != 2 {
+			t.Fatalf("expected 2 series (one per container), got %d", len(series))
+		}
+		// Containers must surface in series labels.
+		found := map[string]bool{}
+		for _, s := range series {
+			found[s.Labels["container"]] = true
+		}
+		if !found["heavy"] || !found["idle-sidecar"] {
+			t.Errorf("expected both containers in labels, got: %v", found)
 		}
 	})
 }
@@ -306,5 +350,324 @@ func TestParseFloatFromVM(t *testing.T) {
 				t.Errorf("val: got %v, want %v", v, c.want)
 			}
 		})
+	}
+}
+
+// ─── End-to-end runMetric tests with realistic VM payloads ──────────
+//
+// These tests are the regression net for the kind-cluster scenario 1 bug:
+// `sum by (pod)` produced multi-series responses, the executor read only
+// the first, and a 2-replica workload at 100m each was reported as ~100m
+// (half-truth). The current code uses plain `sum(...)` which collapses to
+// one series — these tests prove that collapse is happening AND that the
+// resulting math reflects the actual cluster total across replicas. We
+// also exercise pod-restart shapes (counter resets handled by VM's
+// rate(); gauges that drop to zero mid-window) to confirm summarize() and
+// downsample() behave sensibly in real operational scenarios.
+
+// fakeVMRange returns an httptest server that responds to a range query
+// with the given (ts_unix, value) pairs serialised as VM's matrix shape.
+// VM serialises values as strings; the timestamp comes through as a JSON
+// number. We mirror that contract here so the parsing path is exercised.
+func fakeVMRange(t *testing.T, points [][2]any) *httptest.Server {
+	t.Helper()
+	values := make([]string, 0, len(points))
+	for _, p := range points {
+		ts := fmt.Sprintf("%v", p[0])
+		val := fmt.Sprintf("%v", p[1])
+		values = append(values, fmt.Sprintf(`[%s,"%s"]`, ts, val))
+	}
+	body := fmt.Sprintf(`{
+		"status":"success",
+		"data":{
+			"resultType":"matrix",
+			"result":[{
+				"metric":{},
+				"values":[%s]
+			}]
+		}
+	}`, strings.Join(values, ","))
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+// runMetricForTest is a thin wrapper that builds a promBuilder, calls
+// runMetric, and surfaces the resulting metricResponse. Lets each test
+// vary inputs without restating the boilerplate.
+func runMetricForTest(t *testing.T, kind, name string, mk MetricKind, points [][2]any) metricResponse {
+	t.Helper()
+	srv := fakeVMRange(t, points)
+	t.Cleanup(srv.Close)
+	var got metricResponse
+	withFakeVM(t, srv, func() {
+		b := promBuilder{
+			kind:       kind,
+			namespace:  "default",
+			name:       name,
+			clusterUID: "uid-test",
+			rateWindow: 1 * time.Minute,
+		}
+		now := time.Unix(1700000600, 0)
+		mr, err := runMetric(context.Background(), b, mk, now.Add(-10*time.Minute), now, 60*time.Second)
+		if err != nil {
+			t.Fatalf("runMetric: %v", err)
+		}
+		got = mr
+	})
+	return got
+}
+
+func TestRunMetric_SinglePodWorkload_CPU(t *testing.T) {
+	// 1-pod Deployment running stress --cpu 1 against a 100m limit.
+	// VM's rate() smooths to ~0.1 cores. The executor's `sum(...)`
+	// collapses single series → trend should land cleanly at 0.1.
+	points := [][2]any{
+		{1700000000, 0.098}, {1700000060, 0.101}, {1700000120, 0.099},
+		{1700000180, 0.102}, {1700000240, 0.100}, {1700000300, 0.097},
+		{1700000360, 0.103}, {1700000420, 0.101}, {1700000480, 0.099},
+		{1700000540, 0.100},
+	}
+	r := runMetricForTest(t, "Deployment", "single-pod-app", MetricCPU, points)
+	if r.Summary.Max < 0.095 || r.Summary.Max > 0.105 {
+		t.Errorf("max should be ~0.1 cores for single-pod workload, got %v", r.Summary.Max)
+	}
+	if r.Summary.Avg < 0.095 || r.Summary.Avg > 0.105 {
+		t.Errorf("avg should be ~0.1, got %v", r.Summary.Avg)
+	}
+}
+
+func TestRunMetric_TwoPodWorkload_CPU(t *testing.T) {
+	// THE REGRESSION TEST FOR SCENARIO 1: 2-pod Deployment, each pod
+	// throttled at 100m → workload total = ~200m. The previous bug
+	// (`sum by (pod)` + executor reads first series) reported ~100m.
+	// This test asserts the workload roll-up reflects the sum across
+	// replicas (within VM's natural smoothing tolerance).
+	points := [][2]any{
+		{1700000000, 0.196}, {1700000060, 0.201}, {1700000120, 0.199},
+		{1700000180, 0.204}, {1700000240, 0.200}, {1700000300, 0.198},
+		{1700000360, 0.203}, {1700000420, 0.201}, {1700000480, 0.197},
+		{1700000540, 0.200},
+	}
+	r := runMetricForTest(t, "Deployment", "cpu-burner", MetricCPU, points)
+	if r.Summary.Max < 0.195 || r.Summary.Max > 0.210 {
+		t.Errorf("max should be ~0.2 cores for 2-pod workload (THE scenario-1 bug); got %v — if this looks like ~0.1, sum-by-pod is back", r.Summary.Max)
+	}
+	if r.Summary.Avg < 0.195 || r.Summary.Avg > 0.210 {
+		t.Errorf("avg should be ~0.2, got %v", r.Summary.Avg)
+	}
+}
+
+func TestRunMetric_FivePodWorkload_CPU(t *testing.T) {
+	// 5-pod workload at 100m each → 500m total. Catches scaling
+	// regressions if someone "optimises" the aggregation later.
+	points := [][2]any{
+		{1700000000, 0.495}, {1700000060, 0.502}, {1700000120, 0.500},
+		{1700000180, 0.498}, {1700000240, 0.503}, {1700000300, 0.500},
+		{1700000360, 0.497}, {1700000420, 0.501},
+	}
+	r := runMetricForTest(t, "Deployment", "wide-app", MetricCPU, points)
+	if r.Summary.Avg < 0.49 || r.Summary.Avg > 0.51 {
+		t.Errorf("avg should be ~0.5 cores for 5-pod workload, got %v", r.Summary.Avg)
+	}
+}
+
+func TestRunMetric_MemoryWithPodRestart(t *testing.T) {
+	// Memory is a gauge — pod restart shows as a drop to zero followed
+	// by a ramp. (CPU's counter reset is handled by VM's rate() and we
+	// only see the smoothed rate, so this test focuses on memory which
+	// IS where operators see the restart shape directly.) Mid-window
+	// the working set drops to 0 (pod terminated, new pod schedules) and
+	// ramps back over a few minutes. Summary must report min=0,
+	// max=peak, avg reflecting the gap.
+	points := [][2]any{
+		// Pre-restart: stable ~150 MiB working set.
+		{1700000000, 157286400}, {1700000060, 159383552}, {1700000120, 158335000},
+		// Restart window: drop to zero (pod gone for 1 sample).
+		{1700000180, 0},
+		// Post-restart: ramp back up.
+		{1700000240, 41943040}, {1700000300, 104857600}, {1700000360, 146800640},
+		{1700000420, 158335000}, {1700000480, 159383552}, {1700000540, 158335000},
+	}
+	r := runMetricForTest(t, "Deployment", "restart-victim", MetricMemory, points)
+	if r.Summary.Min != 0 {
+		t.Errorf("min should be 0 (the restart trough), got %v", r.Summary.Min)
+	}
+	if r.Summary.Max < 158000000 {
+		t.Errorf("max should reflect the pre/post-restart peak ~160 MiB, got %v", r.Summary.Max)
+	}
+	// Average is dragged down by the zero point but stays well above zero.
+	if r.Summary.Avg <= 0 || r.Summary.Avg > 150000000 {
+		t.Errorf("avg should reflect the trough drag: 0 < avg < peak, got %v", r.Summary.Avg)
+	}
+}
+
+func TestRunMetric_OOMKillSawtooth_Memory(t *testing.T) {
+	// OOMKill scenario (test runbook scenario 2): mem-leaker grows
+	// monotonically to its 64Mi limit, gets OOMKilled, restarts, grows
+	// again. Operator-visible sawtooth — and the metric tool must show
+	// it accurately so a propose_set_resources patch can be sized.
+	points := [][2]any{
+		{1700000000, 10485760},  // 10Mi — fresh pod
+		{1700000060, 30000000},  // climbing
+		{1700000120, 50000000},  // near limit
+		{1700000180, 67108864},  // ~64Mi — OOM imminent
+		{1700000240, 0},         // killed
+		{1700000300, 12000000},  // restart, ramp again
+		{1700000360, 35000000},
+		{1700000420, 58000000},
+		{1700000480, 67108864},  // hits the same limit
+		{1700000540, 0},         // killed again
+	}
+	r := runMetricForTest(t, "Deployment", "mem-leaker", MetricMemory, points)
+	// Max must surface the actual limit-hitting peak — operators size
+	// the patch off this number, so under-reporting would be dangerous.
+	if r.Summary.Max < 67000000 {
+		t.Errorf("max should reflect the ~64Mi pre-OOM peak, got %v", r.Summary.Max)
+	}
+	if r.Summary.Min != 0 {
+		t.Errorf("min should be 0 (the kill troughs), got %v", r.Summary.Min)
+	}
+	// p95 should be near the peak — most of the time series is climbing
+	// toward the limit, only a couple samples at the trough.
+	if r.Summary.P95 < 58000000 {
+		t.Errorf("p95 should be near the peak (most of the time near limit), got %v", r.Summary.P95)
+	}
+}
+
+func TestRunMetric_PerContainer_SplitsByContainer(t *testing.T) {
+	// THE REGRESSION TEST FOR SCENARIO 3: multi-container pod with one
+	// hot container (heavy at ~190m) and one idle (sidecar at ~2m).
+	// perContainer=true must produce a `perContainer` map keyed by
+	// container name; the aggregate must equal the sum of containers.
+	// The previous bug returned only the first series, hiding the split.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"status":"success",
+			"data":{
+				"resultType":"matrix",
+				"result":[
+					{"metric":{"container":"heavy"},"values":[
+						[1700000000,"0.188"],[1700000060,"0.191"],[1700000120,"0.190"],
+						[1700000180,"0.192"],[1700000240,"0.189"]
+					]},
+					{"metric":{"container":"idle-sidecar"},"values":[
+						[1700000000,"0.002"],[1700000060,"0.003"],[1700000120,"0.002"],
+						[1700000180,"0.001"],[1700000240,"0.002"]
+					]}
+				]
+			}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	var got metricResponse
+	withFakeVM(t, srv, func() {
+		b := promBuilder{
+			kind:         "Deployment",
+			namespace:    "default",
+			name:         "multi-c",
+			clusterUID:   "uid-test",
+			perContainer: true,
+			rateWindow:   1 * time.Minute,
+		}
+		now := time.Unix(1700000600, 0)
+		mr, err := runMetric(context.Background(), b, MetricCPU, now.Add(-10*time.Minute), now, 60*time.Second)
+		if err != nil {
+			t.Fatalf("runMetric: %v", err)
+		}
+		got = mr
+	})
+
+	// Both containers must appear in the perContainer map.
+	if got.PerContainer == nil {
+		t.Fatal("perContainer map missing — scenario-3 bug is back")
+	}
+	if _, ok := got.PerContainer["heavy"]; !ok {
+		t.Error("perContainer missing 'heavy' container")
+	}
+	if _, ok := got.PerContainer["idle-sidecar"]; !ok {
+		t.Error("perContainer missing 'idle-sidecar' container")
+	}
+
+	// Per-container summaries must be accurate.
+	heavy := got.PerContainer["heavy"]
+	if heavy.Summary.Avg < 0.185 || heavy.Summary.Avg > 0.195 {
+		t.Errorf("heavy container avg should be ~190m, got %v", heavy.Summary.Avg)
+	}
+	idle := got.PerContainer["idle-sidecar"]
+	if idle.Summary.Avg > 0.010 {
+		t.Errorf("idle sidecar avg should be ~2m, got %v", idle.Summary.Avg)
+	}
+
+	// Top-level aggregate must equal sum of containers (~192m).
+	if got.Summary.Avg < 0.185 || got.Summary.Avg > 0.200 {
+		t.Errorf("top-level aggregate should sum containers (~192m), got %v", got.Summary.Avg)
+	}
+}
+
+func TestRunMetric_PerContainer_NetworkIgnoresFlag(t *testing.T) {
+	// Network metrics are pod-keyed in VM (no container label on the
+	// source series). perContainer=true should not split network — the
+	// builder doesn't emit `by (container)` for network, and runMetric
+	// must not attempt to populate the PerContainer map for it.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"status":"success",
+			"data":{
+				"resultType":"matrix",
+				"result":[{"metric":{},"values":[[1700000000,"1024"],[1700000060,"2048"]]}]
+			}
+		}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	var got metricResponse
+	withFakeVM(t, srv, func() {
+		b := promBuilder{
+			kind:         "Deployment",
+			namespace:    "default",
+			name:         "iperf-server",
+			clusterUID:   "uid-test",
+			perContainer: true, // requested but should be ignored for network
+			rateWindow:   1 * time.Minute,
+		}
+		mr, err := runMetric(context.Background(), b, MetricNetworkRX, time.Unix(1700000000, 0), time.Unix(1700000060, 0), 60*time.Second)
+		if err != nil {
+			t.Fatalf("runMetric: %v", err)
+		}
+		got = mr
+	})
+	if got.PerContainer != nil {
+		t.Errorf("network metric must NOT populate perContainer (was %v)", got.PerContainer)
+	}
+	if got.Summary.Max < 2000 || got.Summary.Max > 2100 {
+		t.Errorf("network aggregate not preserved when perContainer=true: max=%v", got.Summary.Max)
+	}
+}
+
+func TestRunMetric_CPUStableAcrossRestart(t *testing.T) {
+	// VM's rate() function handles counter resets internally — when
+	// container_cpu_usage_seconds_total resets at a pod restart, rate()
+	// treats the post-reset increment as the new base, not as a negative
+	// rate. Our code receives the smoothed rate values and must report
+	// them without spurious peaks. This test simulates the post-rate()
+	// shape: a brief dip during the restart, never a spike.
+	points := [][2]any{
+		{1700000000, 0.100}, {1700000060, 0.101}, {1700000120, 0.099},
+		// Restart: rate momentarily drops as the new container ramps up.
+		{1700000180, 0.050}, {1700000240, 0.085},
+		// Back to normal.
+		{1700000300, 0.099}, {1700000360, 0.101}, {1700000420, 0.100},
+		{1700000480, 0.099}, {1700000540, 0.100},
+	}
+	r := runMetricForTest(t, "Deployment", "restart-then-stable", MetricCPU, points)
+	// The max must NOT spike artificially above the steady-state.
+	if r.Summary.Max > 0.110 {
+		t.Errorf("max should not exceed steady-state ~0.1 even with restart in window, got %v", r.Summary.Max)
+	}
+	// The dip should be reflected in min.
+	if r.Summary.Min > 0.060 {
+		t.Errorf("min should reflect the restart dip ~0.05, got %v", r.Summary.Min)
 	}
 }

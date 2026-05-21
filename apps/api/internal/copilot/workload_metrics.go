@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -93,101 +94,142 @@ type promBuilder struct {
 	rateWindow   time.Duration
 }
 
-// buildCPU returns the PromQL for the CPU range query. Workload kinds use the
-// workload_kind/workload_name labels emitted by the agent (verified on yagan
-// 2026-05-21). Pod kind drops to pod="<name>".
+// buildCPU returns the PromQL for the CPU range query. Uses the regex
+// pattern from podNamePattern() to capture every pod the workload has ever
+// spawned (so a 1h range across a rolling update sees the deleted pods'
+// historical samples too).
+//
+// Aggregation:
+//   - Default: `sum(...)` — produces a SINGLE time series with the workload
+//     total. The executor only reads the first series in VM's response, so
+//     `sum by (pod)` would silently truncate to one pod's rate.
+//   - perContainer=true: `sum by (container)` — caller wants the split.
+//     Multi-series response shape still needs the executor to handle it
+//     fully (see workload_metrics_executor.go); single-container pods
+//     collapse cleanly.
+//
+// The pod_uid!="" filter excludes duplicate series being scraped by an
+// external Prometheus pointed at the same VM — kube-prometheus-stack's
+// cadvisor scrape emits container_cpu_usage_seconds_total with the same
+// pod label but no pod_uid (only the agent's enrichment sets it). Without
+// this filter a cluster running both sources sees doubled rate values.
 func (b *promBuilder) buildCPU() string {
-	groupBy := "workload_kind, workload_name"
-	if b.perContainer {
-		groupBy += ", container"
-	}
-	if strings.EqualFold(b.kind, "Pod") {
-		groupBy = "pod"
-		if b.perContainer {
-			groupBy = "pod, container"
-		}
-		return fmt.Sprintf(
-			`sum by (%s) (rate(container_cpu_usage_seconds_total{cluster_id=%q,namespace=%q,pod=%q}[%s]))`,
-			groupBy, b.clusterUID, b.namespace, b.name, promDuration(b.rateWindow),
-		)
-	}
-	return fmt.Sprintf(
-		`sum by (%s) (rate(container_cpu_usage_seconds_total{cluster_id=%q,namespace=%q,workload_kind=%q,workload_name=%q}[%s]))`,
-		groupBy, b.clusterUID, b.namespace, b.kind, b.name, promDuration(b.rateWindow),
+	inner := fmt.Sprintf(
+		`rate(container_cpu_usage_seconds_total{cluster_id=%q,namespace=%q,%s,pod_uid!=""}[%s])`,
+		b.clusterUID, b.namespace, b.podSelector(), promDuration(b.rateWindow),
 	)
+	return b.wrapAggregation(inner)
 }
 
 // buildMemory returns the PromQL for working-set memory. Memory is a gauge —
-// no rate() wrap. Same workload_kind/workload_name pattern as CPU.
+// no rate() wrap. Same pod-set + pod_uid + aggregation pattern as CPU.
 func (b *promBuilder) buildMemory() string {
-	groupBy := "workload_kind, workload_name"
-	if b.perContainer {
-		groupBy += ", container"
-	}
-	if strings.EqualFold(b.kind, "Pod") {
-		groupBy = "pod"
-		if b.perContainer {
-			groupBy = "pod, container"
-		}
-		return fmt.Sprintf(
-			`sum by (%s) (container_memory_working_set_bytes{cluster_id=%q,namespace=%q,pod=%q})`,
-			groupBy, b.clusterUID, b.namespace, b.name,
-		)
-	}
-	return fmt.Sprintf(
-		`sum by (%s) (container_memory_working_set_bytes{cluster_id=%q,namespace=%q,workload_kind=%q,workload_name=%q})`,
-		groupBy, b.clusterUID, b.namespace, b.kind, b.name,
+	inner := fmt.Sprintf(
+		`container_memory_working_set_bytes{cluster_id=%q,namespace=%q,%s,pod_uid!=""}`,
+		b.clusterUID, b.namespace, b.podSelector(),
 	)
+	return b.wrapAggregation(inner)
 }
 
+// wrapAggregation applies `sum(...)` or `sum by (container) (...)` depending
+// on perContainer. Keeps the workload roll-up at one series (so the
+// executor's single-series read returns the workload total, not just one
+// pod's rate).
+func (b *promBuilder) wrapAggregation(inner string) string {
+	if b.perContainer {
+		return fmt.Sprintf(`sum by (container) (%s)`, inner)
+	}
+	return fmt.Sprintf(`sum(%s)`, inner)
+}
+
+// podSelector returns the PromQL label-selector fragment that targets the
+// pods owned by the workload. For Pod kind it's a literal `pod="<name>"`.
+// For workload kinds it's a regex matching every pod the controller has
+// ever spawned — current AND historically deleted — via the stable K8s
+// pod-naming conventions (see podNamePattern). The historical match is
+// the semantic the operator means by "metrics for this Deployment over
+// 1h": if there was a rolling update 30 min ago, the previous RS's pods
+// MUST show up in the trend, not just the survivors.
+//
+// We could pass the live pod list as `pod=~"a|b|c"`, but that under-reports
+// after any rotation (deleted pods don't match) and is fragile to dump
+// staleness in the lister. The regex pattern is robust to both.
+func (b *promBuilder) podSelector() string {
+	if strings.EqualFold(b.kind, "Pod") {
+		return fmt.Sprintf(`pod=%q`, b.name)
+	}
+	return fmt.Sprintf(`pod=~%q`, b.podNamePattern())
+}
+
+// podNamePattern returns the regex (RE2, anchored full-match by VM) that
+// matches every pod name a controller of this kind+name has ever produced.
+// Each controller has a deterministic pod-naming convention:
+//
+//   - Deployment   <name>-<rs-hash>-<pod-suffix>          (two random groups)
+//   - StatefulSet  <name>-<ordinal>                       (numeric ordinal)
+//   - DaemonSet    <name>-<pod-suffix>                    (one random group)
+//   - Job          <name>-<pod-suffix>                    (one random group)
+//   - CronJob      <name>-<job-timestamp>-<pod-suffix>    (two groups, first numeric)
+//
+// The patterns are strict enough to avoid prefix collisions: a Deployment
+// "api" pattern won't match "api-cache" pods because the `[a-z0-9]+` group
+// can't span across `-` boundaries.
+//
+// Workload name is regex-escaped — K8s names are RFC1123 (no metachars in
+// practice) but we don't trust the input shape.
+func (b *promBuilder) podNamePattern() string {
+	name := regexp.QuoteMeta(b.name)
+	switch b.kind {
+	case "Deployment":
+		return name + "-[a-z0-9]+-[a-z0-9]+"
+	case "StatefulSet":
+		return name + "-[0-9]+"
+	case "DaemonSet", "Job":
+		return name + "-[a-z0-9]+"
+	case "CronJob":
+		return name + "-[0-9]+-[a-z0-9]+"
+	}
+	// Defensive fallback: should never be reached because supportedWorkloadKinds
+	// gates the inputs. Permissive `.*` so a future kind isn't silently filtered
+	// to zero before the validator catches it.
+	return name + ".*"
+}
+
+
 // buildNetwork returns the PromQL for network_rx or network_tx. Pod-level
-// metric — no workload labels in the source data, so we have to inject a
-// pod=~"..." selector from server-side pod resolution. perContainer is
-// ignored on network (the metric is pod-keyed, not container-keyed).
+// metric — no workload labels in the source data, so we inject a pod
+// selector from server-side resolution. perContainer is ignored on network
+// (the metric is pod-keyed, not container-keyed). pod_uid!="" filter
+// excludes external Prometheus-scraped duplicates (see buildCPU comment).
 func (b *promBuilder) buildNetwork(direction MetricKind) string {
 	metricName := "container_network_receive_bytes_total"
 	if direction == MetricNetworkTX {
 		metricName = "container_network_transmit_bytes_total"
 	}
-	if strings.EqualFold(b.kind, "Pod") {
-		return fmt.Sprintf(
-			`sum(rate(%s{cluster_id=%q,namespace=%q,pod=%q}[%s]))`,
-			metricName, b.clusterUID, b.namespace, b.name, promDuration(b.rateWindow),
-		)
-	}
-	// Workload roll-up: regex-OR the resolved pod set.
+	selector := b.podSelector()
 	return fmt.Sprintf(
-		`sum(rate(%s{cluster_id=%q,namespace=%q,pod=~%q}[%s]))`,
-		metricName, b.clusterUID, b.namespace, podRegex(b.pods), promDuration(b.rateWindow),
+		`sum(rate(%s{cluster_id=%q,namespace=%q,%s,pod_uid!=""}[%s]))`,
+		metricName, b.clusterUID, b.namespace, selector, promDuration(b.rateWindow),
 	)
 }
 
 // buildRequestsLimits returns the instant query for total
-// requests-or-limits for a given resource (cpu/memory) across the resolved
-// pods. Used for the utilizationPercent join. We aggregate across containers
-// — `summary.max / pod-aggregate-limit` is what an operator means by "at
-// limit", not the per-container limit.
+// requests-or-limits for a given resource (cpu/memory) across the workload's
+// pods. Used for the utilizationPercent join. We aggregate across
+// containers — `summary.max / pod-aggregate-limit` is what an operator
+// means by "at limit", not the per-container limit.
+//
+// Uses the same regex pattern as podSelector. KSM only exports series for
+// currently-existing pods, so a workload with no live pods produces an
+// empty result naturally — no special sentinel needed.
 func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "requests" | "limits" */) string {
 	metricName := "kube_pod_container_resource_requests"
 	if mode == "limits" {
 		metricName = "kube_pod_container_resource_limits"
 	}
-	if strings.EqualFold(b.kind, "Pod") {
-		return fmt.Sprintf(
-			`sum(%s{cluster_id=%q,namespace=%q,pod=%q,resource=%q})`,
-			metricName, b.clusterUID, b.namespace, b.name, resource,
-		)
-	}
-	if len(b.pods) == 0 {
-		// No pods → no series → KSM join returns empty. Caller treats as absent.
-		return fmt.Sprintf(
-			`sum(%s{cluster_id=%q,namespace=%q,pod=~"__no_pods__",resource=%q})`,
-			metricName, b.clusterUID, b.namespace, resource,
-		)
-	}
 	return fmt.Sprintf(
-		`sum(%s{cluster_id=%q,namespace=%q,pod=~%q,resource=%q})`,
-		metricName, b.clusterUID, b.namespace, podRegex(b.pods), resource,
+		`sum(%s{cluster_id=%q,namespace=%q,%s,resource=%q})`,
+		metricName, b.clusterUID, b.namespace, b.podSelector(), resource,
 	)
 }
 
@@ -202,18 +244,6 @@ func promDuration(d time.Duration) string {
 		return fmt.Sprintf("%dm", int(d/time.Minute))
 	}
 	return fmt.Sprintf("%ds", int(d/time.Second))
-}
-
-// podRegex builds the `a|b|c` body for a pod=~"..." selector. Anchors are
-// implicit on either side because PromQL matches against the full label
-// value. Names are escaped for regex metachars — pod names are RFC1123
-// (letters, digits, `-`, `.`) so only `.` needs escaping.
-func podRegex(pods []string) string {
-	escaped := make([]string, 0, len(pods))
-	for _, p := range pods {
-		escaped = append(escaped, strings.ReplaceAll(p, ".", `\.`))
-	}
-	return strings.Join(escaped, "|")
 }
 
 // metricPoint is one (timestamp, value) sample from VM.
@@ -361,11 +391,27 @@ func metricsStorageURLForCopilot() string {
 // over 24h windows, short enough to fail loud when VM is wedged.
 var vmHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
-// queryRange runs a /api/v1/query_range against VM and returns the first
-// series' points. The PromQL builders above intentionally produce
-// single-series outputs (workload-aggregated via `sum`); multi-series
-// responses indicate a bug in the builder and we surface the first only.
-func queryRange(ctx context.Context, promQL string, start, end time.Time, step time.Duration) ([]metricPoint, error) {
+// vmSeries is one labelled time-series from a VM range response. We
+// return the full set (not just the first) so callers can route by
+// labels — specifically the `container` label when perContainer=true
+// produces a `sum by (container)` query with N results.
+type vmSeries struct {
+	Labels map[string]string
+	Points []metricPoint
+}
+
+// queryRange runs a /api/v1/query_range against VM and returns ALL series
+// in the response. The PromQL builders produce:
+//
+//   - `sum(...)` → one series (workload-aggregated)
+//   - `sum by (container) (...)` → N series (per-container split)
+//
+// The earlier implementation returned only the first series, which
+// silently truncated the per-container case to one container's data (the
+// bug scenario 3 surfaced). Callers that expect one series check
+// `len(result) == 1` themselves now; multi-series callers route by
+// `result[i].Labels[<label>]`.
+func queryRange(ctx context.Context, promQL string, start, end time.Time, step time.Duration) ([]vmSeries, error) {
 	u, err := url.Parse(metricsStorageURLForCopilot() + "/api/v1/query_range")
 	if err != nil {
 		return nil, fmt.Errorf("vm url: %w", err)
@@ -404,10 +450,14 @@ func queryRange(ctx context.Context, promQL string, start, end time.Time, step t
 	if parsed.Status != "success" {
 		return nil, fmt.Errorf("vm error: %s", parsed.Error)
 	}
-	if len(parsed.Data.Result) == 0 {
-		return nil, nil
+	out := make([]vmSeries, 0, len(parsed.Data.Result))
+	for _, r := range parsed.Data.Result {
+		out = append(out, vmSeries{
+			Labels: r.Metric,
+			Points: convertVMValues(r.Values),
+		})
 	}
-	return convertVMValues(parsed.Data.Result[0].Values), nil
+	return out, nil
 }
 
 // queryInstant runs a /api/v1/query for a single value at `at`. Used for the

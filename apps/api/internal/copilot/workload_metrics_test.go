@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"math"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -73,7 +74,7 @@ func TestPromBuilder_CPU_Workload(t *testing.T) {
 		rateWindow: 1 * time.Minute,
 	}
 	got := b.buildCPU()
-	want := `sum by (workload_kind, workload_name) (rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",workload_kind="Deployment",workload_name="api"}[1m]))`
+	want := `sum(rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
 	if got != want {
 		t.Errorf("CPU workload PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
@@ -89,7 +90,7 @@ func TestPromBuilder_CPU_Workload_PerContainer(t *testing.T) {
 		rateWindow:   1 * time.Minute,
 	}
 	got := b.buildCPU()
-	want := `sum by (workload_kind, workload_name, container) (rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="argocd",workload_kind="StatefulSet",workload_name="argo-argocd-application-controller"}[1m]))`
+	want := `sum by (container) (rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="argocd",pod=~"argo-argocd-application-controller-[0-9]+",pod_uid!=""}[1m]))`
 	if got != want {
 		t.Errorf("CPU per-container PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
@@ -104,7 +105,7 @@ func TestPromBuilder_CPU_Pod(t *testing.T) {
 		rateWindow: 5 * time.Minute,
 	}
 	got := b.buildCPU()
-	want := `sum by (pod) (rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod="api-7c5d-abcd1"}[5m]))`
+	want := `sum(rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod="api-7c5d-abcd1",pod_uid!=""}[5m]))`
 	if got != want {
 		t.Errorf("CPU pod PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
@@ -118,7 +119,7 @@ func TestPromBuilder_Memory_Workload(t *testing.T) {
 		clusterUID: "uid-abc",
 	}
 	got := b.buildMemory()
-	want := `sum by (workload_kind, workload_name) (container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",workload_kind="Deployment",workload_name="api"})`
+	want := `sum(container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""})`
 	if got != want {
 		t.Errorf("memory workload PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
 	}
@@ -133,9 +134,34 @@ func TestPromBuilder_Memory_Pod_PerContainer(t *testing.T) {
 		perContainer: true,
 	}
 	got := b.buildMemory()
-	want := `sum by (pod, container) (container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",pod="multi-container-pod"})`
+	want := `sum by (container) (container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",pod="multi-container-pod",pod_uid!=""})`
 	if got != want {
 		t.Errorf("memory pod per-container PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+}
+
+// TestPromBuilder_WorkloadRollup_SingleSeries is the regression guard for the
+// kind-cluster bug discovered in vivo on scenario 1: `sum by (pod)` produces
+// N series (one per pod). The executor only reads VM's first series, so the
+// reported total was just one pod's rate (half the truth for a 2-replica
+// workload at the same usage). The workload roll-up MUST collapse to one
+// series — verified here by asserting the query starts with `sum(` not
+// `sum by`.
+func TestPromBuilder_WorkloadRollup_SingleSeries(t *testing.T) {
+	b := promBuilder{
+		kind:       "Deployment",
+		namespace:  "default",
+		name:       "cpu-burner",
+		clusterUID: "uid-abc",
+		rateWindow: 1 * time.Minute,
+	}
+	for label, q := range map[string]string{"cpu": b.buildCPU(), "memory": b.buildMemory()} {
+		if strings.HasPrefix(q, "sum by") {
+			t.Errorf("%s workload rollup must produce a single series (sum(...) not sum by ...):\n  %s", label, q)
+		}
+		if !strings.HasPrefix(q, "sum(") {
+			t.Errorf("%s query should start with sum(:\n  %s", label, q)
+		}
 	}
 }
 
@@ -145,16 +171,15 @@ func TestPromBuilder_Network_Workload(t *testing.T) {
 		namespace:  "default",
 		name:       "api",
 		clusterUID: "uid-abc",
-		pods:       []string{"api-7c5d-abcd1", "api-7c5d-efgh2"},
 		rateWindow: 1 * time.Minute,
 	}
 	gotRX := b.buildNetwork(MetricNetworkRX)
-	wantRX := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-7c5d-abcd1|api-7c5d-efgh2"}[1m]))`
+	wantRX := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
 	if gotRX != wantRX {
 		t.Errorf("network RX PromQL mismatch:\n  want: %s\n  got:  %s", wantRX, gotRX)
 	}
 	gotTX := b.buildNetwork(MetricNetworkTX)
-	wantTX := `sum(rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-7c5d-abcd1|api-7c5d-efgh2"}[1m]))`
+	wantTX := `sum(rate(container_network_transmit_bytes_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
 	if gotTX != wantTX {
 		t.Errorf("network TX PromQL mismatch:\n  want: %s\n  got:  %s", wantTX, gotTX)
 	}
@@ -169,9 +194,35 @@ func TestPromBuilder_Network_Pod(t *testing.T) {
 		rateWindow: 1 * time.Minute,
 	}
 	got := b.buildNetwork(MetricNetworkRX)
-	want := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod"}[1m]))`
+	want := `sum(rate(container_network_receive_bytes_total{cluster_id="uid-abc",namespace="default",pod="single-pod",pod_uid!=""}[1m]))`
 	if got != want {
 		t.Errorf("network pod PromQL mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+}
+
+// TestPromBuilder_CPU_Deployment_NotByWorkloadLabel is the regression guard
+// for the kind-cluster bug discovered in vivo: agent emits
+// workload_kind=ReplicaSet for Deployment-owned pods (only walks the direct
+// ownerRef), so the prior query that filtered on workload_kind="Deployment"
+// matched ZERO series and the tool reported 0 cores on a hot deployment.
+// Lock in that the builder no longer emits the workload_kind label at all.
+func TestPromBuilder_CPU_Deployment_NotByWorkloadLabel(t *testing.T) {
+	b := promBuilder{
+		kind:       "Deployment",
+		namespace:  "default",
+		name:       "cpu-burner",
+		clusterUID: "uid-abc",
+		rateWindow: 1 * time.Minute,
+	}
+	got := b.buildCPU()
+	if strings.Contains(got, "workload_kind") {
+		t.Errorf("builder still references workload_kind — Deployment query will return 0 series:\n  %s", got)
+	}
+	if strings.Contains(got, "workload_name") {
+		t.Errorf("builder still references workload_name:\n  %s", got)
+	}
+	if !strings.Contains(got, `pod_uid!=""`) {
+		t.Errorf("builder missing pod_uid!=\"\" guard against duplicate Prometheus-scraped series:\n  %s", got)
 	}
 }
 
@@ -181,22 +232,21 @@ func TestPromBuilder_RequestsLimits(t *testing.T) {
 		namespace:  "default",
 		name:       "api",
 		clusterUID: "uid-abc",
-		pods:       []string{"api-7c5d-abcd1", "api-7c5d-efgh2"},
 	}
 	gotReq := b.buildRequestsLimits("cpu", "requests")
-	wantReq := `sum(kube_pod_container_resource_requests{cluster_id="uid-abc",namespace="default",pod=~"api-7c5d-abcd1|api-7c5d-efgh2",resource="cpu"})`
+	wantReq := `sum(kube_pod_container_resource_requests{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",resource="cpu"})`
 	if gotReq != wantReq {
 		t.Errorf("requests PromQL mismatch:\n  want: %s\n  got:  %s", wantReq, gotReq)
 	}
 	gotLim := b.buildRequestsLimits("memory", "limits")
-	wantLim := `sum(kube_pod_container_resource_limits{cluster_id="uid-abc",namespace="default",pod=~"api-7c5d-abcd1|api-7c5d-efgh2",resource="memory"})`
+	wantLim := `sum(kube_pod_container_resource_limits{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",resource="memory"})`
 	if gotLim != wantLim {
 		t.Errorf("limits PromQL mismatch:\n  want: %s\n  got:  %s", wantLim, gotLim)
 	}
 }
 
 func TestPromBuilder_RequestsLimits_Pod(t *testing.T) {
-	// Pod-kind ignores the pods slice — uses pod="<name>" directly.
+	// Pod-kind uses literal pod="<name>" (no regex needed — pods don't rotate).
 	b := promBuilder{
 		kind:       "Pod",
 		namespace:  "default",
@@ -210,31 +260,75 @@ func TestPromBuilder_RequestsLimits_Pod(t *testing.T) {
 	}
 }
 
-func TestPromBuilder_RequestsLimits_NoPodsFallback(t *testing.T) {
-	// Workload with zero resolved pods must produce a query that returns
-	// nothing rather than crash or skip the join — the spec says the tool
-	// still answers, just without utilizationPercent.
-	b := promBuilder{
-		kind:       "Deployment",
-		namespace:  "default",
-		name:       "api",
-		clusterUID: "uid-abc",
-		pods:       nil,
+func TestPodNamePattern_PerKind(t *testing.T) {
+	// Pins the controller-specific naming conventions. If kubelet/kube
+	// changes a naming scheme upstream (rare but happened with the
+	// rs-template-hash format change), update these AND verify in vivo.
+	cases := []struct {
+		kind string
+		name string
+		want string
+	}{
+		{"Deployment", "api", `api-[a-z0-9]+-[a-z0-9]+`},
+		{"Deployment", "cpu-burner", `cpu-burner-[a-z0-9]+-[a-z0-9]+`},
+		{"StatefulSet", "redis", `redis-[0-9]+`},
+		{"DaemonSet", "kubebolt-agent", `kubebolt-agent-[a-z0-9]+`},
+		{"Job", "backup-1700000000", `backup-1700000000-[a-z0-9]+`},
+		{"CronJob", "backup", `backup-[0-9]+-[a-z0-9]+`},
 	}
-	got := b.buildRequestsLimits("cpu", "requests")
-	if !strings.Contains(got, "__no_pods__") {
-		t.Errorf("zero-pod query must use the no-match sentinel:\n  got: %s", got)
+	for _, c := range cases {
+		t.Run(c.kind+"/"+c.name, func(t *testing.T) {
+			b := promBuilder{kind: c.kind, name: c.name}
+			got := b.podNamePattern()
+			if got != c.want {
+				t.Errorf("pattern mismatch for %s %q:\n  want: %s\n  got:  %s", c.kind, c.name, c.want, got)
+			}
+		})
 	}
 }
 
-func TestPodRegex_Escapes_Dots(t *testing.T) {
-	// Pod names with dots (StatefulSet headless service style) must not be
-	// treated as regex wildcards. RFC1123 names don't include other
-	// metachars, so dot is the only one that matters in practice.
-	got := podRegex([]string{"pod-a.cluster.local", "pod-b"})
-	want := `pod-a\.cluster\.local|pod-b`
-	if got != want {
-		t.Errorf("regex escape mismatch:\n  want: %s\n  got:  %s", want, got)
+func TestPodNamePattern_CapturesAllGenerations(t *testing.T) {
+	// The whole point of the pattern approach: a 1h range query on a
+	// Deployment that rolled 30 min ago must capture pods from BOTH the
+	// old ReplicaSet (since deleted) and the new one. Pattern-match it
+	// regex-side rather than asking the connector to time-travel.
+	b := promBuilder{kind: "Deployment", name: "cpu-burner"}
+	pattern := b.podNamePattern()
+	matches := []string{
+		"cpu-burner-596b7dc5f9-95nx9", // RS 1
+		"cpu-burner-596b7dc5f9-bkdr8", // RS 1
+		"cpu-burner-7d8f4cab2e-abcd1", // RS 2 (after rolling update)
+	}
+	// Anchored full-match matches VM/RE2's implicit-anchor semantics.
+	re, err := regexp.Compile(`^` + pattern + `$`)
+	if err != nil {
+		t.Fatalf("pattern compile: %v", err)
+	}
+	for _, p := range matches {
+		if !re.MatchString(p) {
+			t.Errorf("pattern %q should match pod name %q (cross-generation requirement)", pattern, p)
+		}
+	}
+	// Prefix collisions must NOT match.
+	nonMatches := []string{
+		"cpu-burner2-596b7dc5f9-95nx9", // different deployment "cpu-burner2"
+		"other-cpu-burner-596b-abcd1",  // would only collide if anchors were missing
+	}
+	for _, p := range nonMatches {
+		if re.MatchString(p) {
+			t.Errorf("pattern %q must NOT match unrelated pod name %q", pattern, p)
+		}
+	}
+}
+
+func TestPodNamePattern_EscapesWorkloadName(t *testing.T) {
+	// K8s names are RFC1123 (no regex metachars in practice), but the
+	// builder must not trust that — a future kind or admin tool could
+	// emit a name with `.` or similar. regexp.QuoteMeta guards us.
+	b := promBuilder{kind: "Deployment", name: "weird.name"}
+	pattern := b.podNamePattern()
+	if !strings.Contains(pattern, `weird\.name`) {
+		t.Errorf("pattern must escape regex metachars in name:\n  %s", pattern)
 	}
 }
 
