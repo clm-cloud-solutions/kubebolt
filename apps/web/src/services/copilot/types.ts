@@ -175,6 +175,98 @@ export function parseActionProposal(content: string): ActionProposal | null {
   return null
 }
 
+// ─── Workload metrics tool (spec #07 + chart card spec #08) ──────────
+//
+// `get_workload_metrics` tool result content. The Copilot panel detects
+// these and renders an inline KobiMetricChartCard alongside the assistant
+// text. Mirrors the Go `workloadMetricsResponse` shape in
+// apps/api/internal/copilot/workload_metrics_executor.go.
+//
+// Empty / error cases the parser tolerates:
+//   - `{"error": "..."}` → not a metrics response, ignored
+//   - `podsResolved: 0` → valid response, card renders empty-state note
+//   - missing `request`/`limit`/`utilizationPercent` → KSM absent path,
+//     card renders without threshold lines
+
+export type WorkloadMetricKey = 'cpu' | 'memory' | 'network_rx' | 'network_tx'
+
+export type WorkloadMetricUnit = 'cores' | 'bytes' | 'bytes/sec'
+
+export interface WorkloadMetricsSummary {
+  min: number
+  avg: number
+  max: number
+  p95: number
+}
+
+export interface WorkloadMetricsTrendPoint {
+  t: string // RFC3339
+  v: number
+}
+
+export interface WorkloadMetricsUtilization {
+  vsRequest?: number
+  vsLimit?: number
+}
+
+export interface WorkloadMetricsContainerEntry {
+  summary: WorkloadMetricsSummary
+  trend: WorkloadMetricsTrendPoint[]
+}
+
+export interface WorkloadMetricsEntry {
+  unit: WorkloadMetricUnit
+  summary: WorkloadMetricsSummary
+  trend: WorkloadMetricsTrendPoint[]
+  request?: number
+  limit?: number
+  utilizationPercent?: WorkloadMetricsUtilization
+  perContainer?: Record<string, WorkloadMetricsContainerEntry>
+}
+
+export interface WorkloadMetricsResponse {
+  workload: { kind: string; namespace: string; name: string }
+  range: string
+  end: string
+  podsResolved: number
+  metrics: Partial<Record<WorkloadMetricKey, WorkloadMetricsEntry>>
+  note?: string
+}
+
+/**
+ * parseWorkloadMetrics extracts a typed WorkloadMetricsResponse from a
+ * tool result's content string. Returns null when the content isn't a
+ * workload-metrics payload — used by the chat panel to decide whether
+ * to render the inline chart card without crashing on unrelated tool
+ * outputs (error JSON, get_resource_detail, etc).
+ *
+ * Detection rule: parsed object has `workload` (with kind/namespace/name)
+ * AND `metrics` as an object. Narrower than just "has metrics" so we
+ * don't false-positive on other tools that might use the word.
+ */
+export function parseWorkloadMetrics(content: string): WorkloadMetricsResponse | null {
+  if (!content) return null
+  try {
+    const parsed = JSON.parse(content)
+    if (
+      parsed &&
+      typeof parsed === 'object' &&
+      parsed.workload &&
+      typeof parsed.workload === 'object' &&
+      typeof parsed.workload.kind === 'string' &&
+      typeof parsed.workload.namespace === 'string' &&
+      typeof parsed.workload.name === 'string' &&
+      parsed.metrics &&
+      typeof parsed.metrics === 'object'
+    ) {
+      return parsed as WorkloadMetricsResponse
+    }
+  } catch {
+    // Not JSON or malformed — definitely not a metrics response.
+  }
+  return null
+}
+
 export interface CopilotConfig {
   enabled: boolean
   provider: string

@@ -22,7 +22,14 @@ import { KobiSigil, type KobiSigilState } from '@/components/kobi'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
-import { parseActionProposal, type CopilotMessage, type CopilotToolCall, type CopilotUsage } from '@/services/copilot/types'
+import { KobiMetricChartCard } from './KobiMetricChartCard'
+import {
+  parseActionProposal,
+  parseWorkloadMetrics,
+  type CopilotMessage,
+  type CopilotToolCall,
+  type CopilotUsage,
+} from '@/services/copilot/types'
 
 // Compact number formatter: 1234 → "1.2k", 15000000 → "15M"
 function formatTokens(n: number): string {
@@ -387,7 +394,47 @@ export function CopilotPanel() {
             }
           }
 
-          return messages.map((m) => {
+          // Spec #08 — track which get_workload_metrics call IDs have already
+          // been rendered as a chart card so multiple text turns within the
+          // same conversation block don't show duplicate charts.
+          // We attach the chart to the FIRST text-bearing assistant turn that
+          // FOLLOWS the metric tool call, not to the turn that issued the call.
+          // The LLM typically splits "I'll check this" + tool_call into one
+          // turn and the analysis text into a separate later turn; the chart
+          // belongs WITH the analysis (so prose and evidence sit together).
+          const renderedMetricCallIds = new Set<string>()
+
+          // For a given assistant turn at index `idx`, collect all
+          // get_workload_metrics tool calls in this conversation block (since
+          // the previous user message) that have not yet been rendered.
+          const collectMetricCardsForTurn = (idx: number) => {
+            const cards: Array<{ id: string; data: ReturnType<typeof parseWorkloadMetrics> }> = []
+            let blockStart = 0
+            for (let i = idx - 1; i >= 0; i--) {
+              if (messages[i].role === 'user' && messages[i].content) {
+                blockStart = i + 1
+                break
+              }
+            }
+            for (let i = blockStart; i <= idx; i++) {
+              const msg = messages[i]
+              if (msg.role !== 'assistant' || !msg.toolCalls) continue
+              for (const tc of msg.toolCalls) {
+                if (tc.name !== 'get_workload_metrics') continue
+                if (renderedMetricCallIds.has(tc.id)) continue
+                const tr = resultByCallId.get(tc.id)
+                if (!tr || tr.isError) continue
+                const parsed = parseWorkloadMetrics(tr.content)
+                if (parsed) {
+                  cards.push({ id: tc.id, data: parsed })
+                  renderedMetricCallIds.add(tc.id)
+                }
+              }
+            }
+            return cards
+          }
+
+          return messages.map((m, idx) => {
             // User turns whose tool results include proposals → interactive
             // ActionProposalCard (the LLM never executes; the operator clicks
             // Execute). This path is independent of showToolCalls.
@@ -427,13 +474,35 @@ export function CopilotPanel() {
               const visibleCalls = showToolCalls
                 ? toolCalls.filter((tc) => !tc.name.startsWith('propose_'))
                 : []
-              if (!hasText && visibleCalls.length === 0) {
+              // Spec #08 — chart cards attach to the FIRST text-bearing
+              // assistant turn after the tool call (not the tool-call turn
+              // itself). Reading order: question → "I'll check this" →
+              // tool chip → chart (evidence) → analysis text. This keeps
+              // the chart visually next to the prose that interprets it.
+              const metricCards = hasText ? collectMetricCardsForTurn(idx) : []
+              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0) {
                 // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
                 // don't render at all; the bottom indicator covers them.
                 return null
               }
               return (
                 <div key={m.id} className="flex flex-col gap-2">
+                  {metricCards.map((mc) => (
+                    // Same outer lane as MessageBubble (max-w-[95%], avatar
+                    // + gap-2 on the left). The avatar slot stays empty here
+                    // so the chart's content aligns horizontally with the
+                    // text bubble's content below, but only the text bubble
+                    // shows the Kobi sigil — one avatar per response block.
+                    <div
+                      key={`chart-${mc.id}`}
+                      className="flex justify-start gap-2 max-w-[95%] min-w-0"
+                    >
+                      <div className="w-6 shrink-0" aria-hidden />
+                      <div className="flex-1 min-w-0">
+                        <KobiMetricChartCard data={mc.data!} />
+                      </div>
+                    </div>
+                  ))}
                   {hasText && <MessageBubble message={m} />}
                   {visibleCalls.length > 0 && (
                     <ToolCardLane>

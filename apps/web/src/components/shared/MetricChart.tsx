@@ -19,7 +19,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
+export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
 
 interface QuerySpec {
   query: string
@@ -174,12 +174,15 @@ export const METRIC_ACCENTS = {
 
 // ─── Formatting helpers ─────────────────────────────────────────────────────
 
-interface UnitScale {
+export interface UnitScale {
   divisor: number
   label: string
 }
 
-function pickScale(absMax: number, unit?: UnitKind): UnitScale {
+// pickScale and formatValue are exported so other surfaces (e.g. Kobi's
+// inline metric chart card) can reuse the exact same unit conventions
+// the dashboards use, instead of reinventing scale logic per component.
+export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
   if (unit === 'bytes' || unit === 'bytes/s') {
     const suffix = unit === 'bytes/s' ? '/s' : ''
     if (absMax < 1024) return { divisor: 1, label: 'B' + suffix }
@@ -201,7 +204,7 @@ function pickScale(absMax: number, unit?: UnitKind): UnitScale {
   return { divisor: 1, label: '' }
 }
 
-function formatValue(v: number | null | undefined, scale: UnitScale, useAbs = false): string {
+export function formatValue(v: number | null | undefined, scale: UnitScale, useAbs = false): string {
   if (v == null || Number.isNaN(v)) return '—'
   const scaled = (useAbs ? Math.abs(v) : v) / scale.divisor
   const absScaled = Math.abs(scaled)
