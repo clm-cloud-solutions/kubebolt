@@ -937,6 +937,119 @@ export const api = {
   // for the operator to manage manually.
   issueAgentTokenAndMaterializeSecret: (body: AgentIssueTokenRequest) =>
     postJSON<AgentIssueTokenResponse>(`${API_BASE}/integrations/agent/issue-token`, body),
+
+  // ─── Admin → Settings (spec #09) ──────────────────────────────────
+  //
+  // Runtime configuration of things that used to be env-only. Every
+  // domain has GET (masked view + env baseline for "what would I get if
+  // I cleared this"), PUT (partial patch with secret encryption
+  // happening server-side), and a reset endpoint that drops the
+  // BoltDB row entirely.
+
+  // Copilot config. GET returns the masked Copilot settings shape; PUT
+  // accepts a partial patch with secrets in dedicated top-level fields
+  // (kept out of the patch struct so payload logs never accidentally
+  // capture a real key). Reset clears the override and falls back to
+  // env-driven defaults.
+  getSettingsCopilot: () =>
+    fetchJSON<CopilotSettingsResponse>(`${API_BASE}/admin/settings/copilot`),
+
+  putSettingsCopilot: (body: CopilotSettingsPutRequest) =>
+    putJSON<CopilotSettingsResponse>(`${API_BASE}/admin/settings/copilot`, body),
+
+  resetSettingsCopilot: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/copilot/reset`, {}),
+}
+
+// ─── Admin → Settings types ──────────────────────────────────────────
+//
+// Mirror the Go shapes in apps/api/internal/settings/copilot.go. The
+// frontend reads `effective` for "what's in effect right now" and
+// `stored` for per-field "configured here vs inherits from env" badges.
+// Secrets never round-trip — the API returns only masked previews.
+
+export interface CopilotSettingsResponse {
+  effective: {
+    enabled: boolean
+    provider: string
+    model: string
+    apiKeyMasked: string
+    baseURL?: string
+    hasFallback: boolean
+    fallbackProvider?: string
+    fallbackModel?: string
+    fallbackApiKeyMasked?: string
+    fallbackBaseURL?: string
+    maxTokens: number
+    autoCompact: boolean
+    showToolCalls: boolean
+    // Auto-compact tunables surfaced by the backend so the UI shows
+    // "what's in effect right now" without a second round-trip. The
+    // server emits these with `omitempty` semantics, so they may be
+    // absent on a fresh install with no overrides and a model whose
+    // defaults haven't materialised yet.
+    sessionBudgetTokens?: number
+    autoCompactThreshold?: number
+    compactModel?: string
+    compactPreserveTurns?: number
+  }
+  stored: {
+    hasPrimaryOverride: boolean
+    hasFallbackOverride: boolean
+    primary?: {
+      provider?: string
+      apiKeyMasked?: string
+      apiKeyConfigured: boolean
+      model?: string
+      baseURL?: string
+    }
+    fallback?: {
+      provider?: string
+      apiKeyMasked?: string
+      apiKeyConfigured: boolean
+      model?: string
+      baseURL?: string
+    }
+    otherFields?: {
+      maxTokens?: number
+      autoCompact?: boolean
+      sessionBudgetTokens?: number
+      autoCompactThreshold?: number
+      compactModel?: string
+      compactPreserveTurns?: number
+      showToolCalls?: boolean
+    }
+  }
+  secretsReadable: boolean
+}
+
+// CopilotSettingsPutRequest mirrors the backend putCopilotRequest. All
+// fields are optional. `patch.*` carries non-secret config; the
+// `plaintextAPIKey` fields sit at the top level so the on-wire shape
+// keeps secrets out of the nested patch object that error responses
+// and logs may echo.
+export interface CopilotSettingsPutRequest {
+  patch?: {
+    primary?: {
+      provider?: string
+      model?: string
+      baseURL?: string
+    }
+    fallback?: {
+      provider?: string
+      model?: string
+      baseURL?: string
+    }
+    maxTokens?: number
+    autoCompact?: boolean
+    sessionBudgetTokens?: number
+    autoCompactThreshold?: number
+    compactModel?: string
+    compactPreserveTurns?: number
+    showToolCalls?: boolean
+  }
+  plaintextAPIKey?: string
+  plaintextFallbackAPIKey?: string
 }
 
 // Backend agent auth posture. The UI uses `enforcement` to decide

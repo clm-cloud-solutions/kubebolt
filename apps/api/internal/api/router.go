@@ -13,6 +13,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -38,6 +39,11 @@ func NewRouter(
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
 	promWriteMetrics *PromWriteMetrics,
+	// settingsRuntime is the BoltDB-first config resolver introduced by
+	// spec #09. Optional — nil when auth/persistence is disabled (the
+	// /settings/* admin endpoints simply 503 in that mode, and the
+	// Copilot chat handler keeps reading env-only copilotCfg).
+	settingsRuntime *settings.Runtime,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -53,6 +59,7 @@ func NewRouter(
 		pfManager:            NewPortForwardManager(),
 		drainManager:         newDrainSessionManager(),
 		copilotConfig:        copilotCfg,
+		settingsRuntime:      settingsRuntime,
 		copilotUsage:         copilotUsage,
 		authHandlers:         authHandlers,
 		notifications:        notifManager,
@@ -170,6 +177,20 @@ func NewRouter(
 				r.Route("/admin/tenants", func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
 					tenantHandlers.RegisterRoutes(r)
+				})
+			}
+
+			// Runtime settings — admin only. Spec #09 introduces UI-edited
+			// overrides of what was previously env-only config. The
+			// settingsRuntime gate is the same auth/persistence gate the
+			// rest of the admin surface uses (when BoltDB is disabled the
+			// whole admin surface is unavailable anyway).
+			if settingsRuntime != nil {
+				r.Route("/admin/settings", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/copilot", h.handleGetSettingsCopilot)
+					r.Put("/copilot", h.handlePutSettingsCopilot)
+					r.Post("/copilot/reset", h.handleResetSettingsCopilot)
 				})
 			}
 

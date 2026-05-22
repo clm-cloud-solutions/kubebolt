@@ -16,6 +16,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -24,9 +25,16 @@ type handlers struct {
 	wsHub         *websocket.Hub
 	pfManager     *PortForwardManager
 	drainManager  *drainSessionManager
-	copilotConfig config.CopilotConfig
-	copilotUsage  *copilot.UsageStore // nil when auth/persistence disabled
-	authHandlers  *auth.Handlers
+	// copilotConfig holds the env-driven baseline computed once at boot.
+	// Spec #09 introduced UI-edited overrides — at request time, prefer
+	// settingsRuntime.Copilot() which merges BoltDB overrides onto this
+	// baseline. The raw copilotConfig is still used for things bound
+	// at startup (USAGE accounting cache sizing, etc.) where hot-reload
+	// isn't valuable.
+	copilotConfig    config.CopilotConfig
+	settingsRuntime  *settings.Runtime   // nil when auth/persistence disabled — same gate as copilotUsage
+	copilotUsage     *copilot.UsageStore // nil when auth/persistence disabled
+	authHandlers     *auth.Handlers
 	notifications *notifications.Manager // nil when no webhook URLs configured
 	integrations  *integrations.Registry
 	// agentAuthEnforcement mirrors the agent gRPC server's
@@ -77,6 +85,26 @@ type handlers struct {
 	// disabled — increments become no-ops (the metrics methods
 	// nil-guard). Test fixtures pass nil; production wires it.
 	promWriteMetrics *PromWriteMetrics
+}
+
+// liveCopilotConfig resolves the runtime Copilot config: BoltDB override
+// merged onto the env baseline when settingsRuntime is wired, the raw
+// env baseline otherwise. Call this at the START of every Copilot
+// entry-point handler (HandleCopilotConfig, HandleCopilotChat,
+// HandleCopilotCompact) so they all pick up UI changes within the
+// resolver's cache — invalidated immediately on PUT, never expired
+// otherwise, so the worst-case staleness is a single in-flight request
+// that already snapshotted the previous value.
+//
+// Subsystem reads INSIDE a single handler call should resolve once into
+// a local and use that throughout. Re-reading mid-handler can pick up a
+// concurrent admin PUT and produce inconsistent provider/model across
+// the request's logging / accounting / chat fields.
+func (h *handlers) liveCopilotConfig() config.CopilotConfig {
+	if h.settingsRuntime != nil {
+		return h.settingsRuntime.Copilot()
+	}
+	return h.copilotConfig
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {

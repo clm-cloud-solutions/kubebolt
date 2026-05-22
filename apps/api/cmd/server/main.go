@@ -36,6 +36,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -243,6 +244,11 @@ func main() {
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
+	// is disabled — same gate as the rest of the admin surface, since
+	// persistence requires BoltDB to be open. Constructed inside the
+	// authCfg.Enabled block where `store` and the JWT secret exist.
+	var settingsRuntime *settings.Runtime
 	// Hoisted out of the auth-enabled scope so the API router can see
 	// it for the agent integration's "issue token + create Secret"
 	// flow (router-level handler talks to the same store the agent
@@ -375,6 +381,21 @@ func main() {
 		}
 		agentAuthBundle = bundle
 		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
+
+		// Spec #09 — RuntimeConfig wired against the same store + JWT
+		// secret already established. The env-driven copilot baseline
+		// becomes the fallback layer; UI-set overrides win on top.
+		// Failure to construct (e.g. JWT secret somehow too short)
+		// disables the runtime feature gracefully rather than crashing
+		// the whole process — admins lose UI settings but the cluster
+		// keeps working with env-only config.
+		if rt, err := settings.NewRuntime(store, copilotCfg, authCfg.JWTSecret); err != nil {
+			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
+				slog.String("error", err.Error()))
+		} else {
+			settingsRuntime = rt
+			slog.Info("settings runtime initialised — admin UI can override env config")
+		}
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
@@ -573,7 +594,7 @@ func main() {
 	}
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
