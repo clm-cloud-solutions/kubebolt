@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { Settings, Bot, Gauge, Bell, KeyRound, SlidersHorizontal } from 'lucide-react'
+import { Settings, Bot, Gauge, Bell, KeyRound, SlidersHorizontal, ScrollText } from 'lucide-react'
 import { CopilotSettingsTab } from './settings/CopilotSettingsTab'
 import { IngestSettingsTab } from './settings/IngestSettingsTab'
 import { NotificationsSettingsTab } from './settings/NotificationsSettingsTab'
 import { AuthSettingsTab } from './settings/AuthSettingsTab'
 import { GeneralSettingsTab } from './settings/GeneralSettingsTab'
+import { BootedWithModal } from './settings/BootedWithModal'
 
 // Admin → Settings page (spec #09). Tabbed layout so additional
 // runtime-configurable domains (Notifications, Ingest fleet defaults,
@@ -56,10 +57,11 @@ const TABS: TabDef[] = [
 
 export function SettingsPage() {
   const [active, setActive] = useState<TabKey>('general')
+  const [bootedWithOpen, setBootedWithOpen] = useState(false)
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 gap-4">
         <div>
           <h1 className="text-lg font-semibold text-kb-text-primary flex items-center gap-2">
             <Settings className="w-5 h-5" />
@@ -69,6 +71,15 @@ export function SettingsPage() {
             Configure KubeBolt at runtime. Values set here override environment variables on the next read; reset any tab to fall back to env defaults.
           </p>
         </div>
+        <button
+          type="button"
+          onClick={() => setBootedWithOpen(true)}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border shrink-0"
+          title="Inspect the KUBEBOLT_* env vars the process saw at boot"
+        >
+          <ScrollText className="w-3.5 h-3.5" />
+          Boot snapshot
+        </button>
       </div>
 
       <div className="border-b border-kb-border mb-5 flex items-center gap-1">
@@ -99,6 +110,8 @@ export function SettingsPage() {
         {active === 'notifications' && <NotificationsSettingsTab />}
         {active === 'auth' && <AuthSettingsTab />}
       </div>
+
+      {bootedWithOpen && <BootedWithModal onClose={() => setBootedWithOpen(false)} />}
     </div>
   )
 }

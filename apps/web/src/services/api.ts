@@ -1010,6 +1010,12 @@ export const api = {
   // before any authenticated query fires.
   getUIConfig: () =>
     fetchJSON<UIConfigResponse>(`${API_BASE}/config/ui`),
+
+  // /admin/settings/booted-with — read-only snapshot of KUBEBOLT_* env
+  // vars at process start. Operators use it to debug "is my Helm value
+  // making it into the container?" without kubectl-exec.
+  getBootedWith: () =>
+    fetchJSON<BootedWithResponse>(`${API_BASE}/admin/settings/booted-with`),
 }
 
 // ─── Admin → Settings types ──────────────────────────────────────────
@@ -1272,6 +1278,21 @@ export interface GeneralSettingsPutRequest {
 export interface UIConfigResponse {
   displayName: string
   defaultRefreshIntervalSeconds: number
+}
+
+// /admin/settings/booted-with shape — env var snapshot from process
+// start. `sensitive=true` means the value is the placeholder string
+// "(set)" rather than the cleartext; the UI renders it differently
+// to make it obvious which entries are redacted.
+export interface BootedWithEntry {
+  name: string
+  value: string
+  sensitive: boolean
+}
+
+export interface BootedWithResponse {
+  env: BootedWithEntry[]
+  count: number
 }
 
 // Backend agent auth posture. The UI uses `enforcement` to decide

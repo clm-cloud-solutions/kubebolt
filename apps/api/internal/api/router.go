@@ -44,6 +44,11 @@ func NewRouter(
 	// /settings/* admin endpoints simply 503 in that mode, and the
 	// Copilot chat handler keeps reading env-only copilotCfg).
 	settingsRuntime *settings.Runtime,
+	// bootEnv is the snapshot of KUBEBOLT_* env vars captured at
+	// process start (via SnapshotKubeboltEnv from main.go). Exposed
+	// read-only via /admin/settings/booted-with so operators can
+	// see what the Helm/env baseline actually was.
+	bootEnv map[string]string,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -60,6 +65,7 @@ func NewRouter(
 		drainManager:         newDrainSessionManager(),
 		copilotConfig:        copilotCfg,
 		settingsRuntime:      settingsRuntime,
+		bootEnv:              bootEnv,
 		copilotUsage:         copilotUsage,
 		authHandlers:         authHandlers,
 		notifications:        notifManager,
@@ -206,6 +212,7 @@ func NewRouter(
 					r.Get("/general", h.handleGetSettingsGeneral)
 					r.Put("/general", h.handlePutSettingsGeneral)
 					r.Post("/general/reset", h.handleResetSettingsGeneral)
+					r.Get("/booted-with", h.handleGetBootedWith)
 				})
 				// /admin/system — destructive process-level actions that
 				// don't belong under /settings. Restart is admin-only via

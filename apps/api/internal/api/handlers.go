@@ -33,6 +33,7 @@ type handlers struct {
 	// isn't valuable.
 	copilotConfig    config.CopilotConfig
 	settingsRuntime  *settings.Runtime   // nil when auth/persistence disabled — same gate as copilotUsage
+	bootEnv          map[string]string   // snapshot of KUBEBOLT_* env vars captured at process start
 	copilotUsage     *copilot.UsageStore // nil when auth/persistence disabled
 	authHandlers     *auth.Handlers
 	notifications *notifications.Manager // nil when no webhook URLs configured

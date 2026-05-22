@@ -115,6 +115,13 @@ func fatal(msg string, args ...any) {
 }
 
 func main() {
+	// Capture every KUBEBOLT_* env var as the FIRST thing main() does,
+	// before any flag parsing or subsystem init can mutate the process
+	// environment. Surfaced via /admin/settings/booted-with so operators
+	// can answer "what did Helm wire into this container?" without
+	// kubectl-exec to inspect /proc/1/environ.
+	bootEnv := api.SnapshotKubeboltEnv(os.Environ())
+
 	cfg := config.DefaultConfig()
 
 	var host string
@@ -611,7 +618,7 @@ func main() {
 	}
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
