@@ -490,6 +490,57 @@ func (h *handlers) handleResetSettingsGeneral(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ─── Setup wizard ─────────────────────────────────────────────────────
+//
+// First-login wizard tracking. The wizard itself reuses existing
+// per-domain PUT endpoints (auth/me/password, settings/copilot,
+// settings/notifications). All we add here is a boolean flag the UI
+// reads to decide whether to show the welcome overlay, plus an
+// admin-only "I'm done" endpoint.
+
+func (h *handlers) handleGetSetupStatus(w http.ResponseWriter, r *http.Request) {
+	complete := false
+	if h.settingsRuntime != nil {
+		complete = h.settingsRuntime.IsSetupComplete()
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"complete": complete,
+	})
+}
+
+// handlePostSetupComplete marks the wizard done. Idempotent. Pass
+// `?reset=true` to clear the flag (re-show wizard) — useful for
+// re-onboarding new clusters that share a BoltDB or for docs demos.
+func (h *handlers) handlePostSetupComplete(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	reset := r.URL.Query().Get("reset") == "true"
+	var err error
+	if reset {
+		err = h.settingsRuntime.ResetSetup()
+	} else {
+		err = h.settingsRuntime.MarkSetupComplete()
+	}
+	if err != nil {
+		slog.Error("setup status write failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to update setup status")
+		return
+	}
+	if uid := auth.ContextUserID(r); uid != "" {
+		action := "completed"
+		if reset {
+			action = "reset"
+		}
+		slog.Info("admin setup wizard "+action,
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleGetUIConfig is the PUBLIC endpoint the frontend reads to render
 // chrome (topbar display name) + initialise the RefreshContext default.
 // Open to all authenticated users (auth middleware applies at the route

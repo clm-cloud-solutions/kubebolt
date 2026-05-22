@@ -148,6 +148,19 @@ async function deleteRequest<T>(url: string, headers?: Record<string, string>): 
   return res.json()
 }
 
+// parseJSONOrEmpty safely handles the "200/204 with no body" case that
+// trips res.json() with SyntaxError. Endpoints like /admin/setup/
+// complete return 204 No Content; their callers type the return as
+// `void`, so we just resolve to undefined instead of throwing.
+async function parseJSONOrEmpty<T>(res: Response): Promise<T> {
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as T
+  }
+  const text = await res.text()
+  if (!text) return undefined as T
+  return JSON.parse(text) as T
+}
+
 async function postJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
   const res = await fetchWithAuth(url, {
     method: 'POST',
@@ -158,7 +171,7 @@ async function postJSON<T>(url: string, body: unknown, headers?: Record<string, 
     const { message, payload } = await extractErrorPayload(res)
     throw new ApiError(res.status, message, payload)
   }
-  return res.json()
+  return parseJSONOrEmpty<T>(res)
 }
 
 async function putJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
@@ -171,7 +184,7 @@ async function putJSON<T>(url: string, body: unknown, headers?: Record<string, s
     const { message, payload } = await extractErrorPayload(res)
     throw new ApiError(res.status, message, payload)
   }
-  return res.json()
+  return parseJSONOrEmpty<T>(res)
 }
 
 // putJSONWithWarnings is the variant for endpoints that surface soft
@@ -1016,6 +1029,17 @@ export const api = {
   // making it into the container?" without kubectl-exec.
   getBootedWith: () =>
     fetchJSON<BootedWithResponse>(`${API_BASE}/admin/settings/booted-with`),
+
+  // First-login wizard status. The whole wizard is just a guided pass
+  // over existing per-domain PUT endpoints (auth/me/password,
+  // settings/copilot, settings/notifications) plus this completion
+  // flag the UI reads to decide whether to show the welcome overlay.
+  getSetupStatus: () =>
+    fetchJSON<{ complete: boolean }>(`${API_BASE}/admin/setup/status`),
+  completeSetup: () =>
+    postJSON<void>(`${API_BASE}/admin/setup/complete`, {}),
+  resetSetup: () =>
+    postJSON<void>(`${API_BASE}/admin/setup/complete?reset=true`, {}),
 }
 
 // ─── Admin → Settings types ──────────────────────────────────────────

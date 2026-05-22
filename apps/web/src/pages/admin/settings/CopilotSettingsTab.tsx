@@ -4,6 +4,7 @@ import { Bot, Eye, EyeOff, AlertTriangle, CheckCircle2, RotateCcw, Save, Loader2
 import { api } from '@/services/api'
 import type { CopilotSettingsPutRequest, CopilotSettingsResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
+import { ConfirmDialog } from './ConfirmDialog'
 import {
   CUSTOM_MODEL_VALUE,
   findModelOption,
@@ -163,6 +164,7 @@ function CopilotSettingsForm({
   const [revealAPIKey, setRevealAPIKey] = useState(false)
   const [revealFallbackKey, setRevealFallbackKey] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
   const queryClient = useQueryClient()
 
   // Per-field dirty map. Drives the inline "UNSAVED" chips next to each
@@ -544,11 +546,7 @@ function CopilotSettingsForm({
         <div className="p-3 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => {
-              if (confirm('Reset Copilot settings to environment defaults? This clears all UI-configured values.')) {
-                resetMutation.mutate()
-              }
-            }}
+            onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
           >
@@ -601,6 +599,23 @@ function CopilotSettingsForm({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        badge="Reset"
+        variant="danger"
+        title="Reset Copilot to env defaults?"
+        description={
+          <>Clears every UI-configured value including the stored <strong className="text-kb-text-primary">API key</strong> (and fallback key, if any). The next read falls back to env vars only. You'll need to re-paste the key to restore Kobi.</>
+        }
+        confirmLabel="Reset"
+        onConfirm={() => {
+          setResetConfirmOpen(false)
+          resetMutation.mutate()
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
+        busy={resetMutation.isPending}
+      />
     </form>
   )
 }

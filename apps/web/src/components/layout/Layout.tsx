@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { useIsMutating, useQuery } from '@tanstack/react-query'
+import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Unplug, ShieldAlert, Loader2, Cable } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { resolveDocumentTitle } from '@/utils/pageTitles'
@@ -12,6 +12,7 @@ import { useAuth } from '@/contexts/AuthContext'
 import { CopilotPanel } from '@/components/copilot/CopilotPanel'
 import { CopilotToggle } from '@/components/copilot/CopilotToggle'
 import { useCopilot } from '@/contexts/CopilotContext'
+import { SetupWizard } from '@/components/setup/SetupWizard'
 
 const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
 
@@ -20,9 +21,24 @@ export function Layout() {
   const isSwitching = useIsMutating({ mutationKey: ['switch-cluster'] }) > 0
   const location = useLocation()
   const navigate = useNavigate()
-  const { hasRole } = useAuth()
+  const { hasRole, isAuthEnabled } = useAuth()
   const isAdmin = hasRole('admin')
+  const queryClient = useQueryClient()
   useWebSocket(WS_RESOURCES)
+
+  // First-login wizard gate. Fires only for admins on installs where
+  // auth is on (the wizard's step 1 is password rotation; meaningless
+  // when auth is off). Single fetch — staleTime infinite after a
+  // result because the flag only flips once. Errors fail-soft: if
+  // we can't read the status, just don't show the wizard.
+  const { data: setupStatus } = useQuery({
+    queryKey: ['setup-status'],
+    queryFn: api.getSetupStatus,
+    enabled: isAdmin && isAuthEnabled,
+    staleTime: Infinity,
+    retry: false,
+  })
+  const showWizard = isAdmin && isAuthEnabled && setupStatus?.complete === false
 
   // Browser tab title — updates on every route change so a row of tabs
   // reads as distinct pages rather than 12 copies of the same string.
@@ -188,6 +204,14 @@ export function Layout() {
       </div>
       <CopilotToggle />
       <CopilotPanel />
+      {showWizard && (
+        <SetupWizard
+          onDone={() => {
+            queryClient.invalidateQueries({ queryKey: ['setup-status'] })
+            queryClient.invalidateQueries({ queryKey: ['ui-config'] })
+          }}
+        />
+      )}
     </div>
   )
 }

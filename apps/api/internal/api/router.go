@@ -214,6 +214,14 @@ func NewRouter(
 					r.Post("/general/reset", h.handleResetSettingsGeneral)
 					r.Get("/booted-with", h.handleGetBootedWith)
 				})
+				// First-login wizard status. Separate from /settings/*
+				// because it's not a domain — just a one-bit flag tracking
+				// whether the wizard has been run at least once.
+				r.Route("/admin/setup", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/status", h.handleGetSetupStatus)
+					r.Post("/complete", h.handlePostSetupComplete)
+				})
 				// /admin/system — destructive process-level actions that
 				// don't belong under /settings. Restart is admin-only via
 				// the route group below; same gating as Settings.

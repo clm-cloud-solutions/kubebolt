@@ -4,17 +4,22 @@ import {
   AlertTriangle,
   CheckCircle2,
   Loader2,
+  Moon,
   RotateCcw,
   Save,
   Settings,
+  Sparkles,
+  Sun,
   X,
 } from 'lucide-react'
 import { api } from '@/services/api'
+import { useTheme } from '@/contexts/ThemeContext'
 import type {
   GeneralSettingsPutRequest,
   GeneralSettingsResponse,
 } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
+import { ConfirmDialog } from './ConfirmDialog'
 
 // GeneralSettingsTab — display name + team-default refresh interval.
 // Smallest of the Settings domains in terms of edit surface; meant to
@@ -101,6 +106,11 @@ function GeneralSettingsForm({
   const [initial, setInitial] = useState<FormState>(() => stateFromResponse(data))
   const [form, setForm] = useState<FormState>(() => stateFromResponse(data))
   const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
+  const [rerunWizardConfirmOpen, setRerunWizardConfirmOpen] = useState(false)
+  const [rerunWizardBusy, setRerunWizardBusy] = useState(false)
+  const [rerunWizardError, setRerunWizardError] = useState<string | null>(null)
+  const { theme, toggleTheme } = useTheme()
 
   const dirtyMap = {
     displayName: form.displayName !== initial.displayName,
@@ -132,6 +142,44 @@ function GeneralSettingsForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+      {/* Appearance is a per-USER preference (stored in localStorage),
+          distinct from the cluster-wide settings below. Surfaced here
+          for discoverability — the Topbar's sun/moon icon does the
+          same thing in one click. */}
+      <SectionCard
+        icon={theme === 'dark' ? <Moon className="w-4 h-4 text-kb-text-secondary" /> : <Sun className="w-4 h-4 text-status-info" />}
+        title="Appearance"
+        subtitle="Theme preference for your browser. Each user picks their own; not shared across the team."
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="text-xs text-kb-text-primary">
+              {theme === 'dark' ? 'Dark mode' : 'Light mode'}
+            </div>
+            <p className="text-[11px] text-kb-text-tertiary mt-0.5 leading-relaxed">
+              Saved to <code className="font-mono text-kb-accent">localStorage</code> in this browser. Clearing site data resets it.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border shrink-0"
+          >
+            {theme === 'dark' ? (
+              <>
+                <Sun className="w-3.5 h-3.5" />
+                Switch to light
+              </>
+            ) : (
+              <>
+                <Moon className="w-3.5 h-3.5" />
+                Switch to dark
+              </>
+            )}
+          </button>
+        </div>
+      </SectionCard>
+
       <SectionCard
         icon={<Settings className="w-4 h-4 text-kb-accent" />}
         title="Branding"
@@ -151,6 +199,30 @@ function GeneralSettingsForm({
             onChange={(e) => setForm({ ...form, displayName: e.target.value })}
           />
         </Field>
+      </SectionCard>
+
+      <SectionCard
+        icon={<Sparkles className="w-4 h-4 text-kb-text-tertiary" />}
+        title="Setup wizard"
+        subtitle="Re-run the welcome flow — useful for onboarding videos and per-cluster demos."
+      >
+        <button
+          type="button"
+          onClick={() => {
+            setRerunWizardError(null)
+            setRerunWizardConfirmOpen(true)
+          }}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border"
+        >
+          <Sparkles className="w-3.5 h-3.5" />
+          Re-run setup wizard
+        </button>
+        {rerunWizardError && (
+          <div className="mt-2 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>{rerunWizardError}</div>
+          </div>
+        )}
       </SectionCard>
 
       <SectionCard
@@ -182,11 +254,7 @@ function GeneralSettingsForm({
         <div className="p-3 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => {
-              if (confirm('Reset General settings to environment defaults?')) {
-                resetMutation.mutate()
-              }
-            }}
+            onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
           >
@@ -229,6 +297,45 @@ function GeneralSettingsForm({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        badge="Reset"
+        variant="danger"
+        title="Reset General settings to env defaults?"
+        description={
+          <>Clears the UI-set <strong className="text-kb-text-primary">Display name</strong> and <strong className="text-kb-text-primary">Default refresh interval</strong> overrides. The next read falls back to the values from <code className="font-mono text-kb-accent">KUBEBOLT_*</code> env vars. Theme is per-browser and not affected.</>
+        }
+        confirmLabel="Reset"
+        onConfirm={() => {
+          setResetConfirmOpen(false)
+          resetMutation.mutate()
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
+        busy={resetMutation.isPending}
+      />
+
+      <ConfirmDialog
+        open={rerunWizardConfirmOpen}
+        badge="Wizard"
+        title="Re-run setup wizard on next page load?"
+        description="The welcome overlay will appear again. You can dismiss it from any step — nothing is forced."
+        confirmLabel="Re-run wizard"
+        busy={rerunWizardBusy}
+        onConfirm={async () => {
+          setRerunWizardBusy(true)
+          setRerunWizardError(null)
+          try {
+            await api.resetSetup()
+            window.location.reload()
+          } catch (e) {
+            setRerunWizardError((e as Error).message || 'Failed to reset wizard state')
+            setRerunWizardBusy(false)
+            setRerunWizardConfirmOpen(false)
+          }
+        }}
+        onCancel={() => setRerunWizardConfirmOpen(false)}
+      />
     </form>
   )
 }

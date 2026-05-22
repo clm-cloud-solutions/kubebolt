@@ -22,7 +22,6 @@ import {
   FolderOpen,
   Shield,
   Activity,
-  Settings,
   SlidersHorizontal,
   ShieldOff,
   Users,
@@ -335,22 +334,8 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
         )}
       </nav>
 
-      {/* Settings + About */}
+      {/* About */}
       <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
-        <NavLink
-          to="/settings"
-          title={collapsed ? 'Settings' : undefined}
-          className={({ isActive }) =>
-            `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors ${
-              isActive
-                ? 'bg-kb-accent-light text-kb-accent'
-                : 'text-kb-text-primary hover:bg-kb-card'
-            }`
-          }
-        >
-          <Settings className="w-4 h-4 shrink-0" />
-          {!collapsed && <span>Settings</span>}
-        </NavLink>
         <button
           type="button"
           onClick={() => setAboutOpen(true)}

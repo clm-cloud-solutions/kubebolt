@@ -17,6 +17,7 @@ import {
 import { api } from '@/services/api'
 import type { NotificationsSettingsPutRequest, NotificationsSettingsResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
+import { ConfirmDialog } from './ConfirmDialog'
 
 // NotificationsSettingsTab is the editable Settings → Notifications
 // surface introduced by spec #09. Replaces the previously read-only
@@ -174,6 +175,7 @@ function NotificationsSettingsForm({
   const [revealDiscord, setRevealDiscord] = useState(false)
   const [revealSMTPPassword, setRevealSMTPPassword] = useState(false)
   const [savedAt, setSavedAt] = useState<number | null>(null)
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
 
   const dirtyMap = {
     masterEnabled: form.masterEnabled !== initial.masterEnabled,
@@ -196,6 +198,7 @@ function NotificationsSettingsForm({
   }
   const isDirty = Object.values(dirtyMap).some(Boolean)
 
+  const queryClient = useQueryClient()
   const saveMutation = useMutation({
     mutationFn: () => api.putSettingsNotifications(buildPatch(initial, form)),
     onSuccess: (newData) => {
@@ -206,6 +209,12 @@ function NotificationsSettingsForm({
       setRevealSlack(false)
       setRevealDiscord(false)
       setRevealSMTPPassword(false)
+      // Bypass the invalidate→refetch round-trip: the PUT response IS
+      // the new server state, so seed the cache directly. Without
+      // this, `eff` in this component lags by one refetch — visible
+      // as test-button gating that stays stale until the network
+      // round-trip lands.
+      queryClient.setQueryData(['admin', 'settings', 'notifications'], newData)
       onSaved()
     },
   })
@@ -332,7 +341,12 @@ function NotificationsSettingsForm({
         enabled={form.slackEnabled}
         enabledDirty={dirtyMap.slackEnabled}
         onToggleEnabled={(v) => setForm({ ...form, slackEnabled: v })}
-        canTest={eff.slackActive && !isDirty}
+        // Gate derives from FORM state so chip + button always agree.
+        // !isDirty ensures the form matches the saved state — when
+        // that holds, form.slackEnabled IS what the live notifier
+        // respects. Reading server state (eff.slackActive) was racy:
+        // it lags behind by one query refetch after save.
+        canTest={form.slackEnabled && eff.slackConfigured && !isDirty}
         onTest={() => api.testNotification('slack').then(() => undefined)}
       >
         <Field
@@ -362,7 +376,7 @@ function NotificationsSettingsForm({
         enabled={form.discordEnabled}
         enabledDirty={dirtyMap.discordEnabled}
         onToggleEnabled={(v) => setForm({ ...form, discordEnabled: v })}
-        canTest={eff.discordActive && !isDirty}
+        canTest={form.discordEnabled && eff.discordConfigured && !isDirty}
         onTest={() => api.testNotification('discord').then(() => undefined)}
       >
         <Field
@@ -392,7 +406,7 @@ function NotificationsSettingsForm({
         enabled={form.emailEnabled}
         enabledDirty={dirtyMap.emailEnabled}
         onToggleEnabled={(v) => setForm({ ...form, emailEnabled: v })}
-        canTest={eff.emailActive && !isDirty}
+        canTest={form.emailEnabled && eff.emailConfigured && !isDirty}
         onTest={() => api.testNotification('email').then(() => undefined)}
       >
         <div className="grid grid-cols-2 gap-4">
@@ -503,11 +517,7 @@ function NotificationsSettingsForm({
         <div className="p-3 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => {
-              if (confirm('Reset Notifications settings to environment defaults? This clears all UI-configured values and webhook URLs.')) {
-                resetMutation.mutate()
-              }
-            }}
+            onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
           >
@@ -555,6 +565,23 @@ function NotificationsSettingsForm({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        badge="Reset"
+        variant="danger"
+        title="Reset Notifications to env defaults?"
+        description={
+          <>Clears every UI-configured value, <strong className="text-kb-text-primary">including the Slack and Discord webhook URLs and the SMTP password</strong>. The next read falls back to env vars only. You'll need to re-paste secrets to restore delivery.</>
+        }
+        confirmLabel="Reset"
+        onConfirm={() => {
+          setResetConfirmOpen(false)
+          resetMutation.mutate()
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
+        busy={resetMutation.isPending}
+      />
     </form>
   )
 }

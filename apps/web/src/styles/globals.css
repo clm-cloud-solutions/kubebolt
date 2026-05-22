@@ -142,6 +142,36 @@ body,
   animation: fade-up 0.4s ease both;
 }
 
+/* Wizard step transitions — slide-in feels like "advancing through a
+   flow" rather than the more static fade-up that pages use. Same
+   keyframe handles forward and backward navigation; the small
+   distance keeps direction-mismatch unnoticeable. Short duration
+   (220ms) so operators never wait on the animation between clicks. */
+@keyframes wizard-step-enter {
+  from {
+    opacity: 0;
+    transform: translateX(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+.animate-wizard-step {
+  animation: wizard-step-enter 0.22s cubic-bezier(0.22, 0.61, 0.36, 1) both;
+}
+
+/* Step chips ticking complete — a tiny pop so the "Password ✓" green
+   state feels rewarding rather than silent. */
+@keyframes wizard-chip-pop {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.08); }
+  100% { transform: scale(1); }
+}
+.animate-wizard-chip-pop {
+  animation: wizard-chip-pop 0.32s ease-out both;
+}
+
 /* Easter egg celebration */
 @keyframes celebrate {
   0% {

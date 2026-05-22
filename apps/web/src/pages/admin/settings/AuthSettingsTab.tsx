@@ -20,6 +20,7 @@ import type {
 } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { Modal } from '@/components/shared/Modal'
+import { ConfirmDialog } from './ConfirmDialog'
 
 // AuthSettingsTab is the spec #09 "restart required" domain. Unlike
 // every other Settings tab — which hot-reloads — auth changes only
@@ -113,6 +114,7 @@ function AuthSettingsForm({
   const [form, setForm] = useState<FormState>(() => stateFromResponse(data))
   const [savedAt, setSavedAt] = useState<number | null>(null)
   const [restartConfirm, setRestartConfirm] = useState(false)
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false)
 
   const dirtyMap = {
     accessTokenSeconds: form.accessTokenSeconds !== initial.accessTokenSeconds,
@@ -299,11 +301,7 @@ function AuthSettingsForm({
         <div className="p-3 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => {
-              if (confirm('Reset Auth settings to environment defaults? Stored TTL overrides will be cleared on next save read.')) {
-                resetMutation.mutate()
-              }
-            }}
+            onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
           >
@@ -353,6 +351,21 @@ function AuthSettingsForm({
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={resetConfirmOpen}
+        badge="Reset"
+        variant="danger"
+        title="Reset Auth settings to env defaults?"
+        description="Clears the stored TTL overrides. The next process start uses the values from the KUBEBOLT_JWT_EXPIRY / KUBEBOLT_JWT_REFRESH_EXPIRY env vars (or built-in defaults). Takes effect on next restart."
+        confirmLabel="Reset"
+        onConfirm={() => {
+          setResetConfirmOpen(false)
+          resetMutation.mutate()
+        }}
+        onCancel={() => setResetConfirmOpen(false)}
+        busy={resetMutation.isPending}
+      />
 
       {restartConfirm && (
         <RestartConfirmDialog

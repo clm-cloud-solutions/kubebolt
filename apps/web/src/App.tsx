@@ -16,7 +16,6 @@ import { NodesPage } from '@/components/resources/NodesPage'
 import { EventsPage } from '@/components/resources/EventsPage'
 import { NamespacesPage } from '@/components/resources/NamespacesPage'
 import { RBACPage } from '@/components/resources/RBACPage'
-import { SettingsPage } from '@/components/resources/SettingsPage'
 import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { InsightsList } from '@/components/insights/InsightsList'
 import { ClusterMap } from '@/components/map/ClusterMap'
@@ -121,7 +120,6 @@ export default function App() {
               <Route path="/namespaces" element={<NamespacesPage />} />
               <Route path="/events" element={<EventsPage />} />
               <Route path="/rbac" element={<RBACPage />} />
-              <Route path="/settings" element={<SettingsPage />} />
 
               {/* Admin routes */}
               <Route path="/admin/settings" element={<RequireRole role="admin"><AdminSettingsPage /></RequireRole>} />
