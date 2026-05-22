@@ -191,6 +191,9 @@ func NewRouter(
 					r.Get("/copilot", h.handleGetSettingsCopilot)
 					r.Put("/copilot", h.handlePutSettingsCopilot)
 					r.Post("/copilot/reset", h.handleResetSettingsCopilot)
+					r.Get("/notifications", h.handleGetSettingsNotifications)
+					r.Put("/notifications", h.handlePutSettingsNotifications)
+					r.Post("/notifications/reset", h.handleResetSettingsNotifications)
 				})
 			}
 

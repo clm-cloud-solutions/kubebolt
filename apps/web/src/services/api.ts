@@ -959,6 +959,22 @@ export const api = {
 
   resetSettingsCopilot: () =>
     postJSON<{ status: string }>(`${API_BASE}/admin/settings/copilot/reset`, {}),
+
+  // --- Settings → Notifications (spec #09) ---
+  //
+  // Mirrors the Copilot pattern: GET returns masked effective + stored
+  // view, PUT accepts a partial patch with secrets in top-level fields,
+  // RESET wipes the BoltDB override entirely. PUT hot-reloads the
+  // live notifications manager — channel additions/removals take
+  // effect on the next insight without a process restart.
+  getSettingsNotifications: () =>
+    fetchJSON<NotificationsSettingsResponse>(`${API_BASE}/admin/settings/notifications`),
+
+  putSettingsNotifications: (body: NotificationsSettingsPutRequest) =>
+    putJSON<NotificationsSettingsResponse>(`${API_BASE}/admin/settings/notifications`, body),
+
+  resetSettingsNotifications: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/notifications/reset`, {}),
 }
 
 // ─── Admin → Settings types ──────────────────────────────────────────
@@ -1050,6 +1066,112 @@ export interface CopilotSettingsPutRequest {
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string
+}
+
+// ─── Admin → Settings → Notifications types ───────────────────────────
+//
+// Mirror the Go shapes in apps/api/internal/settings/notifications.go.
+// Same layering convention as Copilot: `effective` = what's live now,
+// `stored` = per-field "which fields are coming from BoltDB" markers
+// for the source badge. Webhook URLs and SMTP password never round-
+// trip plaintext; only masked previews on the way out, plaintext on
+// the way in via dedicated top-level fields.
+
+export interface NotificationsSettingsResponse {
+  effective: {
+    masterEnabled: boolean
+    minSeverity: string // 'critical' | 'warning' | 'info'
+    cooldownSeconds: number
+    baseURL?: string
+    includeResolved: boolean
+
+    // Tri-state per channel:
+    //   configured = required fields are filled
+    //   enabled    = operator's toggle is on
+    //   active     = configured && enabled (= what BuildNotifiers gates on)
+    slackConfigured: boolean
+    slackEnabled: boolean
+    slackActive: boolean
+    slackWebhookMasked?: string
+
+    discordConfigured: boolean
+    discordEnabled: boolean
+    discordActive: boolean
+    discordWebhookMasked?: string
+
+    emailConfigured: boolean
+    emailEnabled: boolean
+    emailActive: boolean
+    emailHost?: string
+    emailPort?: number
+    emailUsername?: string
+    emailPasswordMasked?: string
+    emailFrom?: string
+    emailTo?: string[]
+    emailDigestMode?: string
+  }
+  stored: {
+    hasGlobalOverride: boolean
+    hasSlackOverride: boolean
+    hasDiscordOverride: boolean
+    hasEmailOverride: boolean
+    global?: {
+      masterEnabled?: boolean
+      minSeverity?: string
+      cooldownSeconds?: number
+      baseURL?: string
+      includeResolved?: boolean
+    }
+    slack?: {
+      webhookConfigured: boolean
+      webhookMasked?: string
+    }
+    discord?: {
+      webhookConfigured: boolean
+      webhookMasked?: string
+    }
+    email?: {
+      host?: string
+      port?: number
+      username?: string
+      passwordConfigured: boolean
+      passwordMasked?: string
+      from?: string
+      to?: string[]
+      digestMode?: string
+    }
+  }
+  secretsReadable: boolean
+}
+
+export interface NotificationsSettingsPutRequest {
+  patch?: {
+    global?: {
+      masterEnabled?: boolean
+      minSeverity?: string
+      cooldownSeconds?: number
+      baseURL?: string
+      includeResolved?: boolean
+    }
+    slack?: {
+      enabled?: boolean
+    }
+    discord?: {
+      enabled?: boolean
+    }
+    email?: {
+      enabled?: boolean
+      host?: string
+      port?: number
+      username?: string
+      from?: string
+      to?: string[]
+      digestMode?: string
+    }
+  }
+  plaintextSlackWebhookURL?: string
+  plaintextDiscordWebhookURL?: string
+  plaintextSMTPPassword?: string
 }
 
 // Backend agent auth posture. The UI uses `enforcement` to decide

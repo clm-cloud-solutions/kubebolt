@@ -47,7 +47,7 @@ func newTestRuntime(t *testing.T) *Runtime {
 	// across the test run.
 	jwt := []byte("test-jwt-secret-32-bytes-padding-")
 
-	rt, err := NewRuntime(store, envBase, jwt)
+	rt, err := NewRuntime(store, envBase, config.NotificationsConfig{}, jwt)
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 )
 
@@ -145,3 +146,153 @@ func (h *handlers) handleResetSettingsCopilot(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ─── Notifications ────────────────────────────────────────────────────
+//
+// Spec #09 — admin-editable notifications (webhooks, SMTP, global
+// thresholds). PUT goes through settingsRuntime.PutNotifications to
+// persist + crypto.encrypt secrets, then nudges the live manager via
+// SetConfig + SetNotifiers so the change takes effect on the very
+// next insight without a process restart. The test-notification
+// endpoint stays under /admin/notifications/test (existing) and reads
+// from the live manager — so a hot-reloaded webhook is testable
+// immediately after save.
+
+// putNotificationsRequest is the wire shape for PUT /admin/settings/
+// notifications. plaintext* fields are top-level for the same reason
+// as the Copilot handler — keep the secrets out of any structured
+// "stored record" object that might end up in logs.
+type putNotificationsRequest struct {
+	Patch                  *settings.StoredNotificationsSettings `json:"patch,omitempty"`
+	PlaintextSlackURL      *string                               `json:"plaintextSlackWebhookURL,omitempty"`
+	PlaintextDiscordURL    *string                               `json:"plaintextDiscordWebhookURL,omitempty"`
+	PlaintextSMTPPassword  *string                               `json:"plaintextSMTPPassword,omitempty"`
+}
+
+func (h *handlers) handleGetSettingsNotifications(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	masked, err := h.settingsRuntime.RenderMaskedNotifications()
+	if err != nil {
+		slog.Error("settings notifications get failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to read notifications settings")
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handlePutSettingsNotifications(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	var req putNotificationsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.Patch == nil {
+		req.Patch = &settings.StoredNotificationsSettings{}
+	}
+
+	// Webhook URL format sanity-check happens BEFORE encryption so we
+	// don't persist an invalid URL — the BoltDB record stays clean and
+	// the UI gets a structured 400.
+	if req.PlaintextSlackURL != nil && *req.PlaintextSlackURL != "" {
+		if err := settings.ValidateWebhookURL(*req.PlaintextSlackURL); err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "validation failed",
+				"field":   "slack.webhookURL",
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+	if req.PlaintextDiscordURL != nil && *req.PlaintextDiscordURL != "" {
+		if err := settings.ValidateWebhookURL(*req.PlaintextDiscordURL); err != nil {
+			respondJSON(w, http.StatusBadRequest, map[string]any{
+				"error":   "validation failed",
+				"field":   "discord.webhookURL",
+				"message": err.Error(),
+			})
+			return
+		}
+	}
+
+	if err := h.settingsRuntime.PutNotifications(req.Patch, req.PlaintextSlackURL, req.PlaintextDiscordURL, req.PlaintextSMTPPassword); err != nil {
+		if settings.IsValidation(err) {
+			var ve *settings.ValidationError
+			if errors.As(err, &ve) {
+				respondJSON(w, http.StatusBadRequest, map[string]any{
+					"error":   "validation failed",
+					"field":   ve.Field,
+					"message": ve.Message,
+				})
+				return
+			}
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slog.Error("settings notifications put failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to persist notifications settings")
+		return
+	}
+
+	h.applyNotificationsHotReload()
+
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings change",
+			slog.String("domain", "notifications"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+
+	masked, err := h.settingsRuntime.RenderMaskedNotifications()
+	if err != nil {
+		slog.Warn("settings notifications post-write render failed", slog.String("error", err.Error()))
+		respondJSON(w, http.StatusOK, map[string]any{"status": "saved"})
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handleResetSettingsNotifications(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	if err := h.settingsRuntime.ResetNotifications(); err != nil {
+		slog.Error("settings notifications reset failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to reset notifications settings")
+		return
+	}
+	h.applyNotificationsHotReload()
+
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings reset",
+			slog.String("domain", "notifications"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// applyNotificationsHotReload pushes the freshly-resolved settings
+// runtime view into the live notifications.Manager. Idempotent and
+// safe to call from any handler. Without this, persistent settings
+// changes would only take effect on the next process restart — the
+// whole point of UI-edited settings is to avoid that.
+//
+// SetNotifiers stops any prior notifier that exposes Stop(), so the
+// email digest flusher's goroutine doesn't leak across rebuilds.
+func (h *handlers) applyNotificationsHotReload() {
+	if h.settingsRuntime == nil || h.notifications == nil {
+		return
+	}
+	resolved := h.settingsRuntime.Notifications()
+	h.notifications.SetConfig(notifications.ConfigFromNotifications(resolved))
+	h.notifications.SetNotifiers(notifications.BuildNotifiers(resolved))
+}

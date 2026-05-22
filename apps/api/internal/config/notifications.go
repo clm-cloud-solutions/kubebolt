@@ -35,7 +35,16 @@ type NotificationsConfig struct {
 	// MasterEnabled is a global kill switch. When false, no notifications are
 	// sent regardless of which channels are configured. Useful for maintenance
 	// windows or temporarily silencing alerts without un-configuring channels.
-	MasterEnabled   bool
+	MasterEnabled bool
+	// Per-channel enable flags. Distinct from "has the channel been
+	// configured" (which is implied by webhook URL / SMTP fields) — these
+	// let an operator pause one channel during a maintenance window
+	// without clearing the destination. Default to true at load time when
+	// the channel is otherwise configured; KUBEBOLT_<CHANNEL>_ENABLED=false
+	// explicitly pauses without un-configuring.
+	SlackEnabled    bool
+	DiscordEnabled  bool
+	EmailEnabled    bool
 	MinSeverity     string        // "critical" | "warning" | "info"
 	Cooldown        time.Duration // dedup window for the same insight
 	BaseURL         string        // optional — included as a link in messages
@@ -59,6 +68,13 @@ func LoadNotificationsConfig() NotificationsConfig {
 		BaseURL:           os.Getenv("KUBEBOLT_NOTIFICATIONS_BASE_URL"),
 		IncludeResolved:   parseBoolDefault(os.Getenv("KUBEBOLT_NOTIFICATIONS_INCLUDE_RESOLVED"), false),
 	}
+
+	// Per-channel enable flags. Default to true so existing
+	// env-only deployments behave identically; explicit `=false`
+	// pauses a channel while keeping its config intact.
+	cfg.SlackEnabled = parseBoolDefault(os.Getenv("KUBEBOLT_SLACK_ENABLED"), true)
+	cfg.DiscordEnabled = parseBoolDefault(os.Getenv("KUBEBOLT_DISCORD_ENABLED"), true)
+	cfg.EmailEnabled = parseBoolDefault(os.Getenv("KUBEBOLT_EMAIL_ENABLED"), true)
 
 	// Default to warning if unset or invalid
 	switch cfg.MinSeverity {

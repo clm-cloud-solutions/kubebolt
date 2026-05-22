@@ -275,6 +275,13 @@ func main() {
 		MaxActiveSeries:    promLimitsCfg.MaxActiveSeries,
 	}
 
+	// Notifications env baseline. Loaded here (before authCfg.Enabled
+	// block) so both the settings runtime and the boot-time notifier
+	// wiring below see the same config snapshot. Hot-reload via the
+	// admin Settings PUT handler swaps the live manager state at runtime;
+	// this remains the fallback layer for any field not overridden.
+	envNotifCfg := config.LoadNotificationsConfig()
+
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -383,13 +390,14 @@ func main() {
 		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
 
 		// Spec #09 — RuntimeConfig wired against the same store + JWT
-		// secret already established. The env-driven copilot baseline
-		// becomes the fallback layer; UI-set overrides win on top.
+		// secret already established. The env-driven copilot AND
+		// notifications baselines become the fallback layer; UI-set
+		// overrides win on top.
 		// Failure to construct (e.g. JWT secret somehow too short)
 		// disables the runtime feature gracefully rather than crashing
 		// the whole process — admins lose UI settings but the cluster
 		// keeps working with env-only config.
-		if rt, err := settings.NewRuntime(store, copilotCfg, authCfg.JWTSecret); err != nil {
+		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg.JWTSecret); err != nil {
 			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
 				slog.String("error", err.Error()))
 		} else {
@@ -401,42 +409,34 @@ func main() {
 		authHandlers = auth.NewNoOpHandlers()
 	}
 
-	// Load notifications config and wire up Slack/Discord notifiers if webhooks are set
-	notifCfg := config.LoadNotificationsConfig()
+	// Wire up Slack/Discord/Email notifiers from the env baseline loaded
+	// above. BuildNotifiers + ConfigFromNotifications are shared with the
+	// admin Settings → Notifications PUT handler so boot-time and hot-
+	// reload produce the same notifier composition.
 	var notifManager *notifications.Manager
 	{
-		var notifiers []notifications.Notifier
-		if notifCfg.SlackWebhookURL != "" {
-			notifiers = append(notifiers, notifications.NewSlackNotifier(notifCfg.SlackWebhookURL))
+		// Resolved config = env baseline + any persisted UI overrides.
+		// At boot we read settingsRuntime so admins keep their saved
+		// notifications config across process restarts. When auth is
+		// disabled (no settingsRuntime), env is the only layer.
+		bootNotifCfg := envNotifCfg
+		if settingsRuntime != nil {
+			bootNotifCfg = settingsRuntime.Notifications()
+		}
+		notifiers := notifications.BuildNotifiers(bootNotifCfg)
+		if bootNotifCfg.SlackWebhookURL != "" {
 			slog.Info("slack notifications enabled")
 		}
-		if notifCfg.DiscordWebhookURL != "" {
-			notifiers = append(notifiers, notifications.NewDiscordNotifier(notifCfg.DiscordWebhookURL))
+		if bootNotifCfg.DiscordWebhookURL != "" {
 			slog.Info("discord notifications enabled")
 		}
-		if notifCfg.Email.Enabled() {
-			email := notifications.NewEmailNotifier(notifications.EmailConfig{
-				Host:       notifCfg.Email.Host,
-				Port:       notifCfg.Email.Port,
-				Username:   notifCfg.Email.Username,
-				Password:   notifCfg.Email.Password,
-				From:       notifCfg.Email.From,
-				To:         notifCfg.Email.To,
-				DigestMode: notifications.DigestMode(notifCfg.Email.DigestMode),
-			})
-			notifiers = append(notifiers, email)
+		if bootNotifCfg.Email.Enabled() {
 			slog.Info("email notifications enabled",
-				slog.String("mode", notifCfg.Email.DigestMode),
-				slog.Int("recipients", len(notifCfg.Email.To)),
+				slog.String("mode", bootNotifCfg.Email.DigestMode),
+				slog.Int("recipients", len(bootNotifCfg.Email.To)),
 			)
 		}
-		notifManager = notifications.NewManager(notifiers, notifications.Config{
-			MasterEnabled:   notifCfg.MasterEnabled,
-			MinSeverity:     notifCfg.MinSeverity,
-			Cooldown:        notifCfg.Cooldown,
-			BaseURL:         notifCfg.BaseURL,
-			IncludeResolved: notifCfg.IncludeResolved,
-		})
+		notifManager = notifications.NewManager(notifiers, notifications.ConfigFromNotifications(bootNotifCfg))
 		switch {
 		case !notifManager.MasterEnabled():
 			slog.Info("notifications master-disabled (KUBEBOLT_NOTIFICATIONS_ENABLED=false)")

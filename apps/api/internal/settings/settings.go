@@ -35,10 +35,11 @@ import (
 type Runtime struct {
 	store *auth.Store
 
-	// envBase is the env-driven Copilot configuration computed once at
-	// boot. Override values from BoltDB merge onto this baseline at
-	// resolve time.
-	envBase config.CopilotConfig
+	// envBase / envNotifications are the env-driven baselines computed
+	// once at boot. Override values from BoltDB merge onto these at
+	// resolve time, field by field.
+	envBase          config.CopilotConfig
+	envNotifications config.NotificationsConfig
 
 	// crypto handles encryption of sensitive fields at rest (API keys,
 	// webhook secrets). Derived from the JWT secret at boot so the same
@@ -50,20 +51,22 @@ type Runtime struct {
 	// the matching `<Domain>Valid` flag toggles to false on PUT so the
 	// next read re-resolves from BoltDB. Plain mutex over a sync.Map is
 	// fine — read concurrency is high but cache invalidation is rare.
-	mu           sync.RWMutex
-	copilot      config.CopilotConfig
-	copilotValid bool
+	mu                 sync.RWMutex
+	copilot            config.CopilotConfig
+	copilotValid       bool
+	notifications      config.NotificationsConfig
+	notificationsValid bool
 }
 
-// NewRuntime wires the Runtime against an auth.Store and the env Copilot
-// baseline. The jwtSecret feeds the at-rest secret encryption — it must be
-// the same value used to sign tokens, so rotation rules are understood as
-// a single concern by operators.
+// NewRuntime wires the Runtime against an auth.Store and the env-driven
+// baselines for each domain. The jwtSecret feeds the at-rest secret
+// encryption — it must be the same value used to sign tokens, so
+// rotation rules are understood as a single concern by operators.
 //
 // Returns an error if the JWT secret is too short to derive a key from
 // (must be at least 16 bytes — anything shorter is a misconfiguration we
 // fail loud about rather than silently accept).
-func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, jwtSecret []byte) (*Runtime, error) {
+func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, jwtSecret []byte) (*Runtime, error) {
 	if store == nil {
 		return nil, errors.New("settings: store is required")
 	}
@@ -72,9 +75,10 @@ func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, jwtSecret []
 		return nil, err
 	}
 	return &Runtime{
-		store:   store,
-		envBase: envCopilot,
-		crypto:  crypto,
+		store:            store,
+		envBase:          envCopilot,
+		envNotifications: envNotifications,
+		crypto:           crypto,
 	}, nil
 }
 
