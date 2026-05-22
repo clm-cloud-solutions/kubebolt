@@ -994,6 +994,22 @@ export const api = {
   // fresh container with the persisted Auth values applied.
   systemRestart: () =>
     postJSON<{ status: string; message: string }>(`${API_BASE}/admin/system/restart`, {}),
+
+  // --- Settings → General (spec #09) ---
+  getSettingsGeneral: () =>
+    fetchJSON<GeneralSettingsResponse>(`${API_BASE}/admin/settings/general`),
+
+  putSettingsGeneral: (body: GeneralSettingsPutRequest) =>
+    putJSON<GeneralSettingsResponse>(`${API_BASE}/admin/settings/general`, body),
+
+  resetSettingsGeneral: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/general/reset`, {}),
+
+  // Public UI config — fetched once at app boot so the topbar shows the
+  // operator-set display name and RefreshContext picks the right default
+  // before any authenticated query fires.
+  getUIConfig: () =>
+    fetchJSON<UIConfigResponse>(`${API_BASE}/config/ui`),
 }
 
 // ─── Admin → Settings types ──────────────────────────────────────────
@@ -1227,6 +1243,35 @@ export interface AuthSettingsPutRequest {
     accessTokenExpirySeconds?: number
     refreshTokenExpirySeconds?: number
   }
+}
+
+// ─── Admin → Settings → General types ─────────────────────────────────
+
+export interface GeneralSettingsResponse {
+  effective: {
+    displayName: string
+    defaultRefreshIntervalSeconds: number
+  }
+  stored: {
+    hasOverride: boolean
+    displayName?: string
+    defaultRefreshIntervalSeconds?: number
+  }
+}
+
+export interface GeneralSettingsPutRequest {
+  patch?: {
+    displayName?: string
+    defaultRefreshIntervalSeconds?: number
+  }
+}
+
+// Public UI config — readable by every authenticated user (and by
+// unauthenticated requests when auth is disabled). Frontend boots up
+// with this before issuing any other query.
+export interface UIConfigResponse {
+  displayName: string
+  defaultRefreshIntervalSeconds: number
 }
 
 // Backend agent auth posture. The UI uses `enforcement` to decide

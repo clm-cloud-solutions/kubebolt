@@ -1,9 +1,10 @@
 import { useState } from 'react'
-import { Settings, Bot, Gauge, Bell, KeyRound } from 'lucide-react'
+import { Settings, Bot, Gauge, Bell, KeyRound, SlidersHorizontal } from 'lucide-react'
 import { CopilotSettingsTab } from './settings/CopilotSettingsTab'
 import { IngestSettingsTab } from './settings/IngestSettingsTab'
 import { NotificationsSettingsTab } from './settings/NotificationsSettingsTab'
 import { AuthSettingsTab } from './settings/AuthSettingsTab'
+import { GeneralSettingsTab } from './settings/GeneralSettingsTab'
 
 // Admin → Settings page (spec #09). Tabbed layout so additional
 // runtime-configurable domains (Notifications, Ingest fleet defaults,
@@ -17,7 +18,7 @@ import { AuthSettingsTab } from './settings/AuthSettingsTab'
 // Layout follows NotificationsPage conventions: no outer padding (the
 // Layout's <main> already supplies it), header on top, then content.
 
-type TabKey = 'copilot' | 'ingest' | 'notifications' | 'auth'
+type TabKey = 'general' | 'copilot' | 'ingest' | 'notifications' | 'auth'
 
 interface TabDef {
   key: TabKey
@@ -26,6 +27,11 @@ interface TabDef {
 }
 
 const TABS: TabDef[] = [
+  {
+    key: 'general',
+    label: 'General',
+    Icon: SlidersHorizontal,
+  },
   {
     key: 'copilot',
     label: 'AI Copilot',
@@ -49,7 +55,7 @@ const TABS: TabDef[] = [
 ]
 
 export function SettingsPage() {
-  const [active, setActive] = useState<TabKey>('copilot')
+  const [active, setActive] = useState<TabKey>('general')
 
   return (
     <div>
@@ -87,6 +93,7 @@ export function SettingsPage() {
       </div>
 
       <div className="max-w-3xl">
+        {active === 'general' && <GeneralSettingsTab />}
         {active === 'copilot' && <CopilotSettingsTab />}
         {active === 'ingest' && <IngestSettingsTab />}
         {active === 'notifications' && <NotificationsSettingsTab />}

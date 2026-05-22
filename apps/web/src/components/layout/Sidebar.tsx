@@ -34,6 +34,7 @@ import {
   Info,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useUIConfig } from '@/hooks/useUIConfig'
 import { VERSION } from '@/version'
 import { AboutModal } from '@/components/layout/AboutModal'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
@@ -149,6 +150,8 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
   const [aboutOpen, setAboutOpen] = useState(false)
   const { hasRole, isAuthEnabled } = useAuth()
   const location = useLocation()
+  const uiConfig = useUIConfig()
+  const brandLabel = uiConfig.displayName?.trim() || 'KubeBolt'
   // Overview is the entry point for the whole dashboard surface
   // (Overview / Capacity / Reliability sub-tabs). All three should
   // light up this nav item — the user is "on the dashboard"
@@ -210,7 +213,12 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
         </div>
         {!collapsed && (
           <div onClick={handleLogoClick} className="flex flex-col min-w-0 cursor-pointer">
-            <span className="text-sm font-semibold text-kb-text-primary leading-tight truncate">KubeBolt</span>
+            <span
+              className="text-sm font-semibold text-kb-text-primary leading-tight truncate"
+              title={brandLabel === 'KubeBolt' ? undefined : brandLabel}
+            >
+              {brandLabel}
+            </span>
             <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v{VERSION}</span>
           </div>
         )}

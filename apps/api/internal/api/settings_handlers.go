@@ -399,6 +399,120 @@ func (h *handlers) handleResetSettingsAuth(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// ─── General ──────────────────────────────────────────────────────────
+//
+// Display name + default refresh interval. No secrets, no hot-reload
+// plumbing — the UI reads these per request via /config/ui (public)
+// so the topbar / RefreshContext just pick up the latest on next render.
+
+type putGeneralRequest struct {
+	Patch *settings.StoredGeneralSettings `json:"patch,omitempty"`
+}
+
+func (h *handlers) handleGetSettingsGeneral(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	masked, err := h.settingsRuntime.RenderMaskedGeneral()
+	if err != nil {
+		slog.Error("settings general get failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to read general settings")
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handlePutSettingsGeneral(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	var req putGeneralRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.Patch == nil {
+		req.Patch = &settings.StoredGeneralSettings{}
+	}
+	if err := h.settingsRuntime.PutGeneral(req.Patch); err != nil {
+		if settings.IsValidation(err) {
+			var ve *settings.ValidationError
+			if errors.As(err, &ve) {
+				respondJSON(w, http.StatusBadRequest, map[string]any{
+					"error":   "validation failed",
+					"field":   ve.Field,
+					"message": ve.Message,
+				})
+				return
+			}
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slog.Error("settings general put failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to persist general settings")
+		return
+	}
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings change",
+			slog.String("domain", "general"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+	masked, err := h.settingsRuntime.RenderMaskedGeneral()
+	if err != nil {
+		slog.Warn("settings general post-write render failed", slog.String("error", err.Error()))
+		respondJSON(w, http.StatusOK, map[string]any{"status": "saved"})
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handleResetSettingsGeneral(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	if err := h.settingsRuntime.ResetGeneral(); err != nil {
+		slog.Error("settings general reset failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to reset general settings")
+		return
+	}
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings reset",
+			slog.String("domain", "general"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleGetUIConfig is the PUBLIC endpoint the frontend reads to render
+// chrome (topbar display name) + initialise the RefreshContext default.
+// Open to all authenticated users (auth middleware applies at the route
+// group level) — these aren't admin-only concerns; every user sees the
+// display name in their topbar.
+//
+// Falls back to the env baseline when the settings runtime isn't wired
+// (auth disabled). The frontend then sees DisplayName="" + the env
+// default refresh interval — same posture as a fresh install.
+func (h *handlers) handleGetUIConfig(w http.ResponseWriter, r *http.Request) {
+	var displayName string
+	refresh := 30
+	if h.settingsRuntime != nil {
+		cfg := h.settingsRuntime.General()
+		displayName = cfg.DisplayName
+		refresh = cfg.DefaultRefreshIntervalSeconds
+	}
+	respondJSON(w, http.StatusOK, map[string]any{
+		"displayName":                   displayName,
+		"defaultRefreshIntervalSeconds": refresh,
+	})
+}
+
 // handleSystemRestart triggers a clean process exit so Kubernetes (with
 // restartPolicy:Always, which is the Deployment / StatefulSet default)
 // brings up a fresh container with the persisted settings applied. The

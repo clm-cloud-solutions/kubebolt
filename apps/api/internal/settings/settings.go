@@ -35,12 +35,13 @@ import (
 type Runtime struct {
 	store *auth.Store
 
-	// envBase / envNotifications / envAuth are the env-driven baselines
-	// computed once at boot. Override values from BoltDB merge onto these
-	// at resolve time, field by field.
+	// envBase / envNotifications / envAuth / envGeneral are the
+	// env-driven baselines computed once at boot. Override values from
+	// BoltDB merge onto these at resolve time, field by field.
 	envBase          config.CopilotConfig
 	envNotifications config.NotificationsConfig
 	envAuth          config.AuthConfig
+	envGeneral       config.GeneralConfig
 
 	// crypto handles encryption of sensitive fields at rest (API keys,
 	// webhook secrets). Derived from the JWT secret at boot so the same
@@ -59,6 +60,8 @@ type Runtime struct {
 	notificationsValid bool
 	auth               config.AuthConfig
 	authValid          bool
+	general            config.GeneralConfig
+	generalValid       bool
 	// authBootSnapshot is the resolved Auth config the running process
 	// was actually built from. Set once at boot via
 	// CaptureAuthBootSnapshot(); compared against Auth() to compute
@@ -75,7 +78,7 @@ type Runtime struct {
 // Returns an error if the JWT secret is too short to derive a key from
 // (must be at least 16 bytes — anything shorter is a misconfiguration we
 // fail loud about rather than silently accept).
-func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, envAuth config.AuthConfig, jwtSecret []byte) (*Runtime, error) {
+func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, envAuth config.AuthConfig, envGeneral config.GeneralConfig, jwtSecret []byte) (*Runtime, error) {
 	if store == nil {
 		return nil, errors.New("settings: store is required")
 	}
@@ -88,6 +91,7 @@ func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotificat
 		envBase:          envCopilot,
 		envNotifications: envNotifications,
 		envAuth:          envAuth,
+		envGeneral:       envGeneral,
 		crypto:           crypto,
 	}, nil
 }

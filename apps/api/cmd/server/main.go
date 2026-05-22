@@ -282,6 +282,11 @@ func main() {
 	// this remains the fallback layer for any field not overridden.
 	envNotifCfg := config.LoadNotificationsConfig()
 
+	// General settings env baseline (display name, default refresh
+	// interval). Trivially hot-reloadable — no live subsystem caches
+	// these values; the UI reads them per request.
+	envGeneralCfg := config.LoadGeneralConfig()
+
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
@@ -341,7 +346,7 @@ func main() {
 		// override) feeds the JWT service's TTLs. Without this order
 		// the JWT service would always use env TTLs and ignore any
 		// previously-saved UI override across restarts.
-		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, authCfg.JWTSecret); err != nil {
+		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, authCfg.JWTSecret); err != nil {
 			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
 				slog.String("error", err.Error()))
 		} else {

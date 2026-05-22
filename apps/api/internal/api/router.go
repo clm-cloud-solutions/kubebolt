@@ -98,6 +98,12 @@ func NewRouter(
 		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
 		r.Get("/copilot/config", h.HandleCopilotConfig)
 
+		// UI config (display name, default refresh interval) is public —
+		// the login page renders the display name, and the
+		// RefreshContext seeds itself before any authenticated query
+		// fires. No secrets here, just chrome / UX defaults.
+		r.Get("/config/ui", h.handleGetUIConfig)
+
 		// Prom remote_write receiver. PUBLIC because vmagent doesn't
 		// carry a JWT; gating is via the dedicated
 		// KUBEBOLT_REMOTE_WRITE_ENABLED env var (default false). The
@@ -197,6 +203,9 @@ func NewRouter(
 					r.Get("/auth", h.handleGetSettingsAuth)
 					r.Put("/auth", h.handlePutSettingsAuth)
 					r.Post("/auth/reset", h.handleResetSettingsAuth)
+					r.Get("/general", h.handleGetSettingsGeneral)
+					r.Put("/general", h.handlePutSettingsGeneral)
+					r.Post("/general/reset", h.handleResetSettingsGeneral)
 				})
 				// /admin/system — destructive process-level actions that
 				// don't belong under /settings. Restart is admin-only via
