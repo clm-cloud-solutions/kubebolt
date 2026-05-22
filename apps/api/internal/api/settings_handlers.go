@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"os"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -295,4 +297,142 @@ func (h *handlers) applyNotificationsHotReload() {
 	resolved := h.settingsRuntime.Notifications()
 	h.notifications.SetConfig(notifications.ConfigFromNotifications(resolved))
 	h.notifications.SetNotifiers(notifications.BuildNotifiers(resolved))
+}
+
+// ─── Auth ─────────────────────────────────────────────────────────────
+//
+// Spec #09 — Auth is the only domain that does NOT hot-reload. The
+// JWT service is wired at boot into every authenticated route's
+// middleware; rebuilding it mid-process would invalidate every
+// in-flight session and leak the prior service's state. PUT persists
+// the new values to BoltDB; the next process boot picks them up.
+//
+// pendingRestart is the diff between the running process's
+// authBootSnapshot (recorded at boot in main.go) and the live resolved
+// Auth() config. UI surfaces a banner + a "Restart now" button when
+// pendingRestart=true.
+
+type putAuthRequest struct {
+	Patch *settings.StoredAuthSettings `json:"patch,omitempty"`
+}
+
+func (h *handlers) handleGetSettingsAuth(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	masked, err := h.settingsRuntime.RenderMaskedAuth()
+	if err != nil {
+		slog.Error("settings auth get failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to read auth settings")
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handlePutSettingsAuth(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	var req putAuthRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.Patch == nil {
+		req.Patch = &settings.StoredAuthSettings{}
+	}
+	if err := h.settingsRuntime.PutAuth(req.Patch); err != nil {
+		if settings.IsValidation(err) {
+			var ve *settings.ValidationError
+			if errors.As(err, &ve) {
+				respondJSON(w, http.StatusBadRequest, map[string]any{
+					"error":   "validation failed",
+					"field":   ve.Field,
+					"message": ve.Message,
+				})
+				return
+			}
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slog.Error("settings auth put failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to persist auth settings")
+		return
+	}
+
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings change",
+			slog.String("domain", "auth"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+
+	masked, err := h.settingsRuntime.RenderMaskedAuth()
+	if err != nil {
+		slog.Warn("settings auth post-write render failed", slog.String("error", err.Error()))
+		respondJSON(w, http.StatusOK, map[string]any{"status": "saved"})
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handleResetSettingsAuth(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	if err := h.settingsRuntime.ResetAuth(); err != nil {
+		slog.Error("settings auth reset failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to reset auth settings")
+		return
+	}
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings reset",
+			slog.String("domain", "auth"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleSystemRestart triggers a clean process exit so Kubernetes (with
+// restartPolicy:Always, which is the Deployment / StatefulSet default)
+// brings up a fresh container with the persisted settings applied. The
+// HTTP response is fired BEFORE the exit goroutine so the client gets
+// a 202 instead of a torn connection.
+//
+// Outside Kubernetes (e.g. `go run`) this just exits the process; the
+// operator restarts it manually. The endpoint documents that in the
+// banner copy.
+//
+// Admin-only via the route group middleware. No payload required —
+// the act of POSTing is the operator's "I confirm" signal.
+func (h *handlers) handleSystemRestart(w http.ResponseWriter, r *http.Request) {
+	uid := auth.ContextUserID(r)
+	slog.Warn("admin-triggered process restart",
+		slog.String("actor_id", uid),
+		slog.String("source", "admin_settings_ui"),
+	)
+	respondJSON(w, http.StatusAccepted, map[string]any{
+		"status":  "restarting",
+		"message": "Process will exit in ~1s. Kubernetes restartPolicy:Always restarts the container; outside K8s the operator restarts manually.",
+	})
+	// Delay just enough for the response to flush over the connection
+	// before we yank the process out from under it. 1s is generous —
+	// the body is tiny — but cheap insurance against TCP-level reset
+	// before the client got the bytes.
+	go func() {
+		time.Sleep(time.Second)
+		// Use os.Exit so deferred cleanups (which would normally include
+		// store.Close, notifManager.Stop) are SKIPPED — they'd block on
+		// in-flight operations and stretch the restart window. The store
+		// is BoltDB which handles abrupt exit fine (no torn writes
+		// because we're not mid-write here), and notifManager is
+		// fire-and-forget.
+		os.Exit(0)
+	}()
 }

@@ -194,6 +194,16 @@ func NewRouter(
 					r.Get("/notifications", h.handleGetSettingsNotifications)
 					r.Put("/notifications", h.handlePutSettingsNotifications)
 					r.Post("/notifications/reset", h.handleResetSettingsNotifications)
+					r.Get("/auth", h.handleGetSettingsAuth)
+					r.Put("/auth", h.handlePutSettingsAuth)
+					r.Post("/auth/reset", h.handleResetSettingsAuth)
+				})
+				// /admin/system — destructive process-level actions that
+				// don't belong under /settings. Restart is admin-only via
+				// the route group below; same gating as Settings.
+				r.Route("/admin/system", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Post("/restart", h.handleSystemRestart)
 				})
 			}
 

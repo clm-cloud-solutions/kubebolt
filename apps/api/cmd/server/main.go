@@ -336,6 +336,26 @@ func main() {
 			}
 		}
 
+		// Settings runtime is built HERE — before the JWT service —
+		// because the resolved Auth() config (env baseline + BoltDB
+		// override) feeds the JWT service's TTLs. Without this order
+		// the JWT service would always use env TTLs and ignore any
+		// previously-saved UI override across restarts.
+		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, authCfg.JWTSecret); err != nil {
+			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
+				slog.String("error", err.Error()))
+		} else {
+			settingsRuntime = rt
+			// Apply persisted Auth overrides onto the live authCfg so the
+			// JWT service + handlers below pick up the resolved TTLs.
+			// JWTSecret stays from the env/DB path above; only the
+			// UI-editable subset of AuthConfig gets merged.
+			resolvedAuth := rt.Auth()
+			authCfg.AccessTokenExpiry = resolvedAuth.AccessTokenExpiry
+			authCfg.RefreshTokenExpiry = resolvedAuth.RefreshTokenExpiry
+			slog.Info("settings runtime initialised — admin UI can override env config")
+		}
+
 		jwtSvc := auth.NewJWTService(authCfg)
 		authHandlers = auth.NewHandlers(store, jwtSvc, authCfg)
 
@@ -389,20 +409,12 @@ func main() {
 		agentAuthBundle = bundle
 		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
 
-		// Spec #09 — RuntimeConfig wired against the same store + JWT
-		// secret already established. The env-driven copilot AND
-		// notifications baselines become the fallback layer; UI-set
-		// overrides win on top.
-		// Failure to construct (e.g. JWT secret somehow too short)
-		// disables the runtime feature gracefully rather than crashing
-		// the whole process — admins lose UI settings but the cluster
-		// keeps working with env-only config.
-		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg.JWTSecret); err != nil {
-			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
-				slog.String("error", err.Error()))
-		} else {
-			settingsRuntime = rt
-			slog.Info("settings runtime initialised — admin UI can override env config")
+		// Now that the JWT service + admin handlers are wired with the
+		// resolved authCfg, snapshot what the running process was built
+		// from. Subsequent PUTs to /admin/settings/auth compare against
+		// this baseline to compute pendingRestart.
+		if settingsRuntime != nil {
+			settingsRuntime.CaptureAuthBootSnapshot()
 		}
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")

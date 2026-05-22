@@ -116,11 +116,36 @@ func IsSecretUnreadable(err error) bool {
 	return errors.Is(err, errSecretUnreadable)
 }
 
+// maskRandomSecret is the right mask for SECRETS WITH NO PROVENANCE
+// INFO IN THEIR SUFFIX — JWT secrets, generated webhook tokens, etc.
+// The suffix is just as random as the prefix, so leaking it doubles
+// the brute-force surface for zero operator benefit.
+//
+// Format: "f3a8b1c…" — first 7 chars + ellipsis, no suffix. Matches
+// auth.tokenDisplayPrefix's convention (auth/tenants_store.go:606)
+// which is how agent tokens are previewed in AgentTokensPage. Reuses
+// the same visual idiom so operators learn one masking pattern across
+// the admin surface.
+func maskRandomSecret(value string) string {
+	if value == "" {
+		return ""
+	}
+	const prefixLen = 7
+	if len(value) <= prefixLen {
+		return "•••"
+	}
+	return value[:prefixLen] + "…"
+}
+
 // maskSecret produces a UI-safe preview of a secret value, showing
 // roughly its provenance without leaking it. Used by GET /settings to
 // confirm "yes a key is set" while never round-tripping the cleartext.
 // Format: "sk-ant-***6OdZ" — keeps a recognisable prefix and a 4-char
 // tail so operators can verify they typed the right key.
+//
+// Reserve this for secrets whose suffix carries identity information
+// (provider API keys, where the operator copy-pastes the last 4 chars
+// to confirm). For random tokens use maskRandomSecret instead.
 func maskSecret(value string) string {
 	if value == "" {
 		return ""

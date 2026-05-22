@@ -975,6 +975,25 @@ export const api = {
 
   resetSettingsNotifications: () =>
     postJSON<{ status: string }>(`${API_BASE}/admin/settings/notifications/reset`, {}),
+
+  // --- Settings → Auth (spec #09) ---
+  //
+  // Special domain: no hot-reload. PUT persists; pendingRestart in the
+  // response tells the UI to show a "Restart now" banner.
+  getSettingsAuth: () =>
+    fetchJSON<AuthSettingsResponse>(`${API_BASE}/admin/settings/auth`),
+
+  putSettingsAuth: (body: AuthSettingsPutRequest) =>
+    putJSON<AuthSettingsResponse>(`${API_BASE}/admin/settings/auth`, body),
+
+  resetSettingsAuth: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/auth/reset`, {}),
+
+  // System actions. Restart triggers os.Exit(0) on the backend after a
+  // ~1s grace period so Kubernetes (restartPolicy:Always) brings up a
+  // fresh container with the persisted Auth values applied.
+  systemRestart: () =>
+    postJSON<{ status: string; message: string }>(`${API_BASE}/admin/system/restart`, {}),
 }
 
 // ─── Admin → Settings types ──────────────────────────────────────────
@@ -1172,6 +1191,42 @@ export interface NotificationsSettingsPutRequest {
   plaintextSlackWebhookURL?: string
   plaintextDiscordWebhookURL?: string
   plaintextSMTPPassword?: string
+}
+
+// ─── Admin → Settings → Auth types ────────────────────────────────────
+//
+// Mirrors apps/api/internal/settings/auth.go. UI exposes only the
+// safe-to-change subset (TTLs + read-only enabled state); JWT secret /
+// data dir / admin password stay out of UI editing because they're
+// either security-critical (key rotation blows up every encrypted blob)
+// or filesystem-bound (data dir).
+
+export interface AuthSettingsEffective {
+  enabled: boolean
+  accessTokenExpirySeconds: number
+  refreshTokenExpirySeconds: number
+}
+
+export interface AuthSettingsResponse {
+  effective: AuthSettingsEffective
+  bootSnapshot: AuthSettingsEffective
+  stored: {
+    hasOverride: boolean
+    enabled?: boolean
+    accessTokenExpirySeconds?: number
+    refreshTokenExpirySeconds?: number
+  }
+  pendingRestart: boolean
+  jwtSecretFromEnv: boolean
+  jwtSecretMasked?: string
+}
+
+export interface AuthSettingsPutRequest {
+  patch?: {
+    enabled?: boolean
+    accessTokenExpirySeconds?: number
+    refreshTokenExpirySeconds?: number
+  }
 }
 
 // Backend agent auth posture. The UI uses `enforcement` to decide
