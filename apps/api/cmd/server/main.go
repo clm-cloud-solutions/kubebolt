@@ -893,7 +893,23 @@ func main() {
 	// in ListClusters automatically. Off by default — single-cluster
 	// self-hosted setups don't need it, and surprise discovery would
 	// be hard to undo. Multi-cluster SaaS / fleet operators flip it on.
-	autoRegisterClusters := parseAutoRegisterFlag(os.Getenv("KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS"))
+	// Spec #09 V2 — wrapped in a closure so the agent server reads the
+	// live value on every registration. UI flips the toggle without
+	// needing a restart: the next agent that connects sees the new
+	// posture (currently-connected agents stay registered until they
+	// reconnect). Falls back to the env-only value when the settings
+	// runtime isn't wired (auth-disabled boot path).
+	envAutoRegister := parseAutoRegisterFlag(os.Getenv("KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS"))
+	autoRegisterFn := func() bool {
+		if settingsRuntime != nil {
+			return settingsRuntime.IngestChannel().AgentAutoRegisterClusters
+		}
+		return envAutoRegister
+	}
+	// Capture once for any boot-time decisions that depend on the
+	// resolved value at startup (e.g., the boot-restore log line below
+	// that mentions "autoregister=true").
+	autoRegisterClusters := autoRegisterFn()
 	if autoRegisterClusters {
 		slog.Info("agent-proxy cluster auto-register enabled")
 	}
@@ -904,7 +920,7 @@ func main() {
 	ingestSrv := agent.NewServer(writer,
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
-		agent.WithAutoRegisterClusters(autoRegisterClusters),
+		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
 		agent.WithSelfClusterID(selfClusterID),
 	)
 
