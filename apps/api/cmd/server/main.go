@@ -413,6 +413,13 @@ func main() {
 		// e.g. via `go run`) the bundle still includes BearerIngestAuth
 		// for SaaS / cross-cluster ingest tokens.
 		factoryOpts := agent.LoadAuthenticatorOptionsFromEnv()
+		// Spec #09 V2 — BoltDB override wins over the env-derived value
+		// the Load function picked up. Restart-required field, so
+		// pendingRestart will surface in the UI if this diverges from
+		// what's been captured in the boot snapshot.
+		if settingsRuntime != nil {
+			factoryOpts.TokenReviewAudience = settingsRuntime.IngestChannel().AgentTokenAudience
+		}
 		factoryOpts.TenantsStore = tenantsStore
 		if c, err := agent.NewInClusterKubeClient(); err == nil {
 			factoryOpts.KubeClient = c
@@ -555,9 +562,18 @@ func main() {
 	// further down: env says X, but if app auth is disabled (no
 	// agentAuthBundle), the agent gRPC server forces "disabled" — the
 	// UI must reflect the EFFECTIVE mode, not the requested one.
+	//
+	// Spec #09 V2 — read the resolved value (env + BoltDB override)
+	// via the settings runtime so UI changes take effect on next boot.
+	// Falls back to env-only when the runtime isn't available (auth
+	// disabled at app level → no persistent store).
 	resolvedEnforcement := string(agent.EnforcementDisabled)
-	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
-		if parsed, ok := agent.ParseEnforcement(v); ok {
+	authModeSource := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE")
+	if settingsRuntime != nil {
+		authModeSource = settingsRuntime.IngestChannel().AgentAuthMode
+	}
+	if authModeSource != "" {
+		if parsed, ok := agent.ParseEnforcement(authModeSource); ok {
 			resolvedEnforcement = string(parsed)
 		}
 	}
@@ -852,15 +868,25 @@ func main() {
 	// Sprint A migration window: enforcement defaults to "disabled" so
 	// existing fleets without auth credentials keep working. Operators
 	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials.
+	//
+	// Spec #09 V2 — read the resolved auth mode (env + BoltDB) via the
+	// settings runtime so UI overrides win. Restart-required: the
+	// running interceptor is wired with whatever this resolves to at
+	// boot; subsequent UI changes flip pendingRestart in the masked
+	// render and apply on the next restart.
 	agentAuthCfg := agent.AuthConfig{
 		Enforcement: agent.EnforcementDisabled,
 	}
-	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
-		if parsed, ok := agent.ParseEnforcement(v); ok {
+	agentAuthModeRaw := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE")
+	if settingsRuntime != nil {
+		agentAuthModeRaw = settingsRuntime.IngestChannel().AgentAuthMode
+	}
+	if agentAuthModeRaw != "" {
+		if parsed, ok := agent.ParseEnforcement(agentAuthModeRaw); ok {
 			agentAuthCfg.Enforcement = parsed
 		} else {
-			slog.Warn("KUBEBOLT_AGENT_AUTH_MODE has unknown value, defaulting to disabled",
-				slog.String("requested", v),
+			slog.Warn("agent auth mode has unknown value, defaulting to disabled",
+				slog.String("requested", agentAuthModeRaw),
 			)
 		}
 	}
@@ -899,9 +925,21 @@ func main() {
 
 	// TLS (and optional mTLS) for the agent gRPC channel. Half-set env
 	// surfaces as an error here so misconfigurations fail loud at boot.
+	//
+	// Spec #09 V2 — cert / key / clientCA file paths stay in env
+	// (Bucket A — filesystem paths read at boot, not safely editable
+	// from UI). RequireMTLS is the one knob in this section that the
+	// UI can flip; we override the env-derived value with whatever the
+	// settings runtime resolves (BoltDB wins over env). The CA bundle
+	// must still be present in the filesystem for mTLS to make sense;
+	// if RequireMTLS=true and no clientCA is loaded, LoadServerTLSFromEnv
+	// already fails loud earlier.
 	agentTLS, err := agent.LoadServerTLSFromEnv()
 	if err != nil {
 		fatal("agent TLS configuration invalid", slog.String("error", err.Error()))
+	}
+	if settingsRuntime != nil && agentTLS != nil {
+		agentTLS.RequireMTLS = settingsRuntime.IngestChannel().AgentRequireMTLS
 	}
 	if agentTLS != nil && agentTLS.RequireMTLS {
 		// Mirror to the auth interceptor so identity.TLSVerified is
@@ -921,6 +959,16 @@ func main() {
 			slog.Float64("requests_per_sec", rateLimitCfg.RequestsPerSec),
 			slog.Float64("burst", rateLimitCfg.Burst),
 		)
+	}
+
+	// Spec #09 V2 — capture the IngestChannel boot snapshot now that the
+	// gRPC interceptor + TLS are wired with their resolved values.
+	// Subsequent PUTs to /admin/settings/ingest-channel compare against
+	// this baseline to compute pendingRestart for the three
+	// restart-required fields (AgentAuthMode, AgentTokenAudience,
+	// AgentRequireMTLS).
+	if settingsRuntime != nil {
+		settingsRuntime.CaptureIngestChannelBootSnapshot()
 	}
 
 	go func() {
