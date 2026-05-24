@@ -2323,7 +2323,51 @@ func containerSpecs(pod *corev1.Pod) []map[string]interface{} {
 			"ready":           isReady,
 		})
 	}
+	// Append ephemeral containers (spec #09 V2 Item 4 / C1). The Terminal
+	// tab + Logs viewer iterate `item.containers` for their dropdowns;
+	// surfacing ephemerals here means the operator can immediately reach
+	// the debug container they just spawned without separate UI plumbing.
+	// `ephemeral: true` lets the frontend tag them so the UI can render a
+	// distinguishing badge ("debugger" pill) in the dropdown when it
+	// wants — for bare minimum, the name alone is enough.
+	for _, ec := range pod.Spec.EphemeralContainers {
+		// Ephemeral containers report state under EphemeralContainerStatuses
+		// (separate slice from ContainerStatuses); state can be Waiting /
+		// Running / Terminated like regular containers.
+		stateInfo := ephemeralContainerStateFromStatus(ec.Name, pod.Status.EphemeralContainerStatuses)
+		isReady, _ := stateInfo["ready"].(bool)
+		containers = append(containers, map[string]interface{}{
+			"name":            ec.Name,
+			"image":           ec.Image,
+			"ports":           nil, // ephemeral containers can't expose ports
+			"imagePullPolicy": string(ec.ImagePullPolicy),
+			"resources":       containerResourcesToMap(ec.Resources),
+			"volumeMounts":    volumeMountsToSlice(ec.VolumeMounts),
+			"state":           stateInfo,
+			"ready":           isReady,
+			"ephemeral":       true,
+			"targetContainer": ec.TargetContainerName,
+		})
+	}
 	return containers
+}
+
+// ephemeralContainerStateFromStatus mirrors containerStateFromStatus
+// but reads the ephemeral-container status slice. Shape is identical
+// to ContainerStatus — same Waiting/Running/Terminated unions.
+func ephemeralContainerStateFromStatus(name string, statuses []corev1.ContainerStatus) map[string]interface{} {
+	for _, s := range statuses {
+		if s.Name == name {
+			return containerStateFromStatus(s.Name, []corev1.ContainerStatus{s})
+		}
+	}
+	// Status not yet populated by kubelet — surface a placeholder so
+	// the frontend renders "Pending" instead of an empty cell during
+	// the brief window between spawn and first status reconcile.
+	return map[string]interface{}{
+		"phase": "Pending",
+		"ready": false,
+	}
 }
 
 func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {

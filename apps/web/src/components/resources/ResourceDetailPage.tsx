@@ -5,11 +5,12 @@ import { yaml } from '@codemirror/lang-yaml'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
-import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut } from 'lucide-react'
+import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut, Bug } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
 import { SetEnvModal } from '@/components/resources/SetEnvModal'
 import { EditMetadataModal } from '@/components/resources/EditMetadataModal'
+import { DebugPodModal } from '@/components/resources/DebugPodModal'
 import { SecretRevealModal } from '@/components/resources/SecretRevealModal'
 import { ScaleModal } from '@/components/resources/ScaleModal'
 import { ResourceActionsMenu, type ActionItem } from '@/components/resources/ResourceActionsMenu'
@@ -3806,6 +3807,7 @@ export function ResourceDetailPage() {
   // policy/v1 Eviction API. Mounted at this level so the dialog
   // sits on top of the toolbar regardless of which tab is active.
   const [showEvict, setShowEvict] = useState(false)
+  const [showDebug, setShowDebug] = useState(false)
   // Surfaced when a cluster-mutation action returns 4xx/5xx — replaces
   // the bare alert() that used to dump raw apiserver text. The toast
   // detects agentRbacForbidden and offers a 1-click jump to the
@@ -3958,6 +3960,20 @@ export function ResourceDetailPage() {
       disabled: !canEdit,
       hint: !canEdit ? 'Editor role required' : 'Evict respects PodDisruptionBudgets (policy/v1 Eviction API)',
       onClick: () => setShowEvict(true),
+    })
+    // Debug — Item 4 / C1 from the pod-actions audit. Sits next to
+    // Evict in the menu because both are "operate on the running pod
+    // without restarting it"; Restart already lives inline in the
+    // toolbar so the menu is reserved for the less-frequent verbs.
+    menuItems.push({
+      id: 'debug-pod',
+      label: 'Debug',
+      icon: Bug,
+      disabled: !canEdit,
+      hint: !canEdit
+        ? 'Editor role required'
+        : 'Spawn an ephemeral debug container. Useful for distroless / scratch images where exec has no shell.',
+      onClick: () => setShowDebug(true),
     })
   }
   // Edit metadata — universal across all kinds, always last in the
@@ -4562,6 +4578,33 @@ export function ResourceDetailPage() {
             // After eviction the pod is gone — navigate to the pods
             // list rather than 404 on the now-deleted detail page.
             navigate('/pods')
+          }}
+        />
+      )}
+
+      {/* Pod debug modal — Item 4 / C1. Spawns an ephemeral container
+          and routes to the Terminal tab with the new container
+          pre-selected via URL param (`?tab=terminal&container=…`).
+          The Terminal tab reads `container` from useSearchParams to
+          override its default first-container selection on mount. */}
+      {showDebug && type === 'pods' && item && (
+        <DebugPodModal
+          namespace={namespace}
+          name={name}
+          item={item}
+          onClose={() => setShowDebug(false)}
+          onSpawned={(ephemeralName) => {
+            setShowDebug(false)
+            // Invalidate the detail query so item.containers refetches
+            // with the new ephemeral container appended (backend
+            // surfaces it via containerSpecs() per spec #09 V2 / C1).
+            queryClient.invalidateQueries({ queryKey: ['resource', type, namespace, name] })
+            // Navigate to Terminal tab; the URL param tells the
+            // Terminal tab which container to pre-select on mount.
+            const next = new URLSearchParams(searchParams)
+            next.set('tab', 'terminal')
+            next.set('container', ephemeralName)
+            setSearchParams(next, { replace: false })
           }}
         />
       )}

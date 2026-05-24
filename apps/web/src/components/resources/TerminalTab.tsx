@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -60,7 +61,36 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
   const containers = Array.isArray(item.containers)
     ? (item.containers as Array<Record<string, unknown>>).map(c => String(c.name ?? ''))
     : []
-  const [selectedContainer, setSelectedContainer] = useState(containers[0] ?? '')
+
+  // The Debug-pod flow (spec #09 V2 / Item 4 / C1) navigates here with
+  // `?tab=terminal&container=<ephemeralName>` after spawning a debug
+  // container so the operator lands on the terminal pre-selected on the
+  // new container. We pick the URL param FIRST if it matches a known
+  // container; fall back to containers[0] otherwise. Unknown params
+  // (stale URL after a delete, copy-paste from elsewhere) gracefully
+  // degrade to the default selection rather than erroring.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const initialContainer = (() => {
+    const fromUrl = searchParams.get('container')
+    if (fromUrl && containers.includes(fromUrl)) return fromUrl
+    return containers[0] ?? ''
+  })()
+  const [selectedContainer, setSelectedContainer] = useState(initialContainer)
+
+  // If a `container` URL param was used to drive the initial selection,
+  // drop it from the URL once mounted so a manual container change
+  // (operator switches via the dropdown after landing) doesn't leave
+  // a confusing-stale ?container= in the address bar.
+  useEffect(() => {
+    if (searchParams.get('container')) {
+      const next = new URLSearchParams(searchParams)
+      next.delete('container')
+      setSearchParams(next, { replace: true })
+    }
+    // Intentionally empty deps — runs once on mount after the URL param
+    // has been consumed for the initial selection.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
   const [selectedShell, setSelectedShell] = useState('')
   const [sessionActive, setSessionActive] = useState(false)
   const [sessionKey, setSessionKey] = useState(0)
