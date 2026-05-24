@@ -212,6 +212,14 @@ func NewRouter(
 					r.Get("/general", h.handleGetSettingsGeneral)
 					r.Put("/general", h.handlePutSettingsGeneral)
 					r.Post("/general/reset", h.handleResetSettingsGeneral)
+					// Spec #09 V2 — ingest-channel covers the
+					// kubebolt-agent ↔ kubebolt comms plane (auth
+					// modes, rate limits, autoregister, remote_write,
+					// tunnels). Restart-required for the auth subset;
+					// hot-reload for the rest.
+					r.Get("/ingest-channel", h.handleGetSettingsIngestChannel)
+					r.Put("/ingest-channel", h.handlePutSettingsIngestChannel)
+					r.Post("/ingest-channel/reset", h.handleResetSettingsIngestChannel)
 					r.Get("/booted-with", h.handleGetBootedWith)
 				})
 				// First-login wizard status. Separate from /settings/*
