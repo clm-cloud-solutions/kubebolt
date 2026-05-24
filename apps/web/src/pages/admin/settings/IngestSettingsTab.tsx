@@ -29,23 +29,27 @@ import { ConfirmDialog } from './ConfirmDialog'
 import { Field } from './SettingsField'
 import { PerTenantLimitsSection } from './PerTenantLimitsSection'
 
-// IngestSettingsTab is the spec #09 V2 "kubebolt-agent ↔ kubebolt
-// communication plane" surface. Five sub-section cards cover all the
-// env vars that used to require a redeploy:
+// IngestSettingsTab (Settings → Agents & Ingest) is the spec #09 V2
+// surface for everything on the kubebolt-agent ↔ kubebolt data plane.
+// Six sections in operator-setup order:
 //
-//   1. Channel security    — agent auth mode + token audience + mTLS  (RESTART-REQUIRED)
-//   2. Rate limiting        — fleet-wide agent ingest token bucket    (hot-reload)
-//   3. Cluster auto-register — agent-proxy peers in the switcher       (hot-reload)
-//   4. Remote write receiver — Prom remote_write gate + auth + caps    (mostly hot)
-//   5. SPDY tunnels         — idle watchdog for exec/portforward       (hot-reload)
+//   1. Channel security      — agent auth mode + token audience + mTLS  (RESTART-REQUIRED)
+//   2. Cluster auto-register  — agent-proxy peers in the switcher        (hot-reload)
+//   3. Rate limiting          — fleet-wide gRPC ingest token bucket     (hot-reload)
+//   4. Remote write receiver  — Prom remote_write gate + auth + defaults (mostly hot)
+//   5. Per-tenant overrides   — runtime overrides on the limits above    (hot-reload, per-row save)
+//   6. SPDY tunnels           — idle watchdog for exec/portforward       (hot-reload)
 //
-// Plus the existing per-tenant overrides section at the bottom (lives
-// outside the IngestChannel domain because per-tenant records are
-// stored under the tenants bucket, not settings).
+// Cards 1+3+4+6 are channel-wide and share the form's single Save
+// button at the bottom. Per-tenant overrides (card 5) has its own
+// per-row save because each tenant is an independent record — the
+// visual chrome matches, but the save semantics differ. The pendingRestart
+// banner only flips on the three restart-required fields in Channel
+// security; hot-reload toggles never trigger it.
 //
-// pendingRestart only flips on the three restart-required fields in
-// Channel security; flipping a hot-reload toggle does NOT trigger the
-// banner. Mirrors AuthSettingsTab's pattern.
+// Layout: each card's content is a 2-column grid on md+ so the
+// form doesn't sprawl vertically. Tall-helper fields (auth mode
+// with dynamic description, cross-field warnings) span both columns.
 
 interface FormState {
   agentAuthMode: string
@@ -189,26 +193,30 @@ export function IngestSettingsTab() {
 
   if (isLoading) return <LoadingSpinner />
   if (error || !data) {
+    // Per-tenant section is independent and still useful even when
+    // the channel-wide GET fails. Render the error inline at the
+    // position the channel form would have taken, and let per-tenant
+    // fall in its natural slot.
     return (
       <div className="space-y-5">
         <div className="rounded-lg border border-status-error-dim bg-status-error-dim/30 p-4 text-xs text-status-error">
-          Failed to load Ingest channel settings. Refresh the page or check that the backend has BoltDB persistence enabled.
+          Failed to load channel-wide settings. Refresh the page or check that the backend has BoltDB persistence enabled. Per-tenant overrides below still work.
         </div>
         <PerTenantLimitsSection />
       </div>
     )
   }
 
+  // Channel form owns the cards + the bottom Save bar; per-tenant
+  // overrides is slotted in BETWEEN remote write and SPDY tunnels via
+  // a render prop, so the whole page reads as one continuous list of
+  // sections without a "this is the new bit / this is the old bit"
+  // visual divider.
   return (
-    <div className="space-y-5">
-      <IngestChannelForm
-        data={data}
-        onSaved={() => queryClient.invalidateQueries({ queryKey: ['admin', 'settings', 'ingest-channel'] })}
-      />
-      <div className="border-t border-kb-border pt-5">
-        <PerTenantLimitsSection />
-      </div>
-    </div>
+    <IngestChannelForm
+      data={data}
+      onSaved={() => queryClient.invalidateQueries({ queryKey: ['admin', 'settings', 'ingest-channel'] })}
+    />
   )
 }
 
@@ -362,270 +370,316 @@ function IngestChannelForm({
         </div>
       )}
 
-      {/* ─── Channel security (restart-required) ──────────────────────── */}
+      {/* ─── 1. Channel security (restart-required) ──────────────────── */}
       <SectionCard
         icon={<ShieldCheck className="w-4 h-4 text-kb-accent" />}
         title="Channel security"
         subtitle="How kubebolt-agent authenticates to this backend over gRPC. Changes require a restart."
       >
-        <Field
-          label="Agent auth mode"
-          dirty={dirtyMap.agentAuthMode}
-          helper="Three-tier enforcement on the gRPC channel. Default disabled — agents connect without credentials."
-        >
-          <select
-            value={form.agentAuthMode}
-            onChange={(e) => setForm({ ...form, agentAuthMode: e.target.value })}
-            className="w-48 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+          {/* Auth mode spans both columns because its dynamic description
+              text wraps below the select and benefits from full width. */}
+          <div className="md:col-span-2">
+            <Field
+              stacked
+              label="Agent auth mode"
+              dirty={dirtyMap.agentAuthMode}
+              helper={
+                AUTH_MODE_OPTIONS.find((o) => o.value === form.agentAuthMode)?.desc ||
+                'Three-tier enforcement on the gRPC channel.'
+              }
+            >
+              <select
+                value={form.agentAuthMode}
+                onChange={(e) => setForm({ ...form, agentAuthMode: e.target.value })}
+                className="w-48 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+              >
+                {AUTH_MODE_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          </div>
+
+          <Field
+            stacked
+            label="Token audience"
+            dirty={dirtyMap.agentTokenAudience}
+            helper="Must match the agent helm chart's auth.tokenReview.audience value."
           >
-            {AUTH_MODE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-          <p className="text-[11px] text-kb-text-tertiary mt-1 leading-relaxed">
-            {AUTH_MODE_OPTIONS.find((o) => o.value === form.agentAuthMode)?.desc}
-          </p>
-        </Field>
+            <input
+              type="text"
+              placeholder="kubebolt-backend"
+              value={form.agentTokenAudience}
+              onChange={(e) => setForm({ ...form, agentTokenAudience: e.target.value })}
+              className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
+            />
+          </Field>
 
-        <Field
-          label="Token audience"
-          dirty={dirtyMap.agentTokenAudience}
-          helper="Audience the apiserver-issued projected SA token must carry when an agent uses auth.mode=tokenreview. Must match the agent helm chart's auth.tokenReview.audience value."
-        >
-          <input
-            type="text"
-            placeholder="kubebolt-backend"
-            value={form.agentTokenAudience}
-            onChange={(e) => setForm({ ...form, agentTokenAudience: e.target.value })}
-            className="w-64 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
-          />
-        </Field>
-
-        <Field
-          label="Require mTLS"
-          dirty={dirtyMap.agentRequireMTLS}
-          helper="When true, the gRPC server rejects clients without a verified TLS client certificate. Requires KUBEBOLT_AGENT_TLS_CLIENT_CA to be set in env — file paths stay env-only."
-        >
-          <ToggleSwitch
-            checked={form.agentRequireMTLS}
-            onChange={(checked) => setForm({ ...form, agentRequireMTLS: checked })}
-          />
-        </Field>
+          <Field
+            stacked
+            label="Require mTLS"
+            dirty={dirtyMap.agentRequireMTLS}
+            helper="Rejects clients without a verified TLS client cert. Requires KUBEBOLT_AGENT_TLS_CLIENT_CA in env."
+          >
+            <ToggleSwitch
+              checked={form.agentRequireMTLS}
+              onChange={(checked) => setForm({ ...form, agentRequireMTLS: checked })}
+            />
+          </Field>
+        </div>
       </SectionCard>
 
-      {/* ─── Rate limiting ─────────────────────────────────────────────── */}
-      <SectionCard
-        icon={<Gauge className="w-4 h-4 text-kb-accent" />}
-        title="Rate limiting"
-        subtitle="Fleet-wide token bucket for the agent gRPC ingest. Per-tenant overrides below this section win when set."
-      >
-        <Field
-          label="Enabled"
-          dirty={dirtyMap.agentRateLimitEnabled}
-          helper="Off by default — V1 OSS hands every tenant the same global config. Per-tenant plan-aware policies live in Enterprise."
-        >
-          <ToggleSwitch
-            checked={form.agentRateLimitEnabled}
-            onChange={(checked) => setForm({ ...form, agentRateLimitEnabled: checked })}
-          />
-        </Field>
-
-        <Field
-          label="Requests per second"
-          dirty={dirtyMap.agentRateLimitRPS}
-          helper="Sustained rate the bucket refills at. Default 1000. Must be > 0."
-        >
-          <input
-            type="number"
-            min={1}
-            disabled={!form.agentRateLimitEnabled}
-            value={form.agentRateLimitRPS}
-            onChange={(e) => setForm({ ...form, agentRateLimitRPS: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
-          />
-        </Field>
-
-        <Field
-          label="Burst"
-          dirty={dirtyMap.agentRateLimitBurst}
-          helper="Bucket capacity — peak burst the limiter tolerates before rate-limiting. Default 2000."
-        >
-          <input
-            type="number"
-            min={1}
-            disabled={!form.agentRateLimitEnabled}
-            value={form.agentRateLimitBurst}
-            onChange={(e) => setForm({ ...form, agentRateLimitBurst: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
-          />
-        </Field>
-      </SectionCard>
-
-      {/* ─── Cluster auto-registration ─────────────────────────────────── */}
+      {/* ─── 2. Cluster auto-registration ──────────────────────────────── */}
       <SectionCard
         icon={<Sparkles className="w-4 h-4 text-kb-accent" />}
         title="Cluster auto-registration"
-        subtitle="When on, every agent advertising the kube-proxy capability surfaces its cluster in the switcher without operator action."
+        subtitle="When on, every agent advertising kube-proxy surfaces its cluster in the switcher without operator action."
       >
-        <Field
-          label="Auto-register agent-proxy clusters"
-          dirty={dirtyMap.agentAutoRegisterClusters}
-          helper="Off for single-cluster self-hosted setups (you already have a kubeconfig context). On for multi-cluster fleet operators so new agent installs appear automatically."
-        >
-          <ToggleSwitch
-            checked={form.agentAutoRegisterClusters}
-            onChange={(checked) => setForm({ ...form, agentAutoRegisterClusters: checked })}
-          />
-        </Field>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+          <Field
+            stacked
+            label="Auto-register agent-proxy clusters"
+            dirty={dirtyMap.agentAutoRegisterClusters}
+            helper="Off for single-cluster setups. On for multi-cluster fleet operators."
+          >
+            <ToggleSwitch
+              checked={form.agentAutoRegisterClusters}
+              onChange={(checked) => setForm({ ...form, agentAutoRegisterClusters: checked })}
+            />
+          </Field>
 
-        <Field
-          label="Registry prune horizon (seconds)"
-          dirty={dirtyMap.agentRegistryPruneHorizonSecs}
-          helper={`Records whose agent disconnected more than this long ago are pruned hourly. Currently-connected agents never expire. Default 86400 (24h). Current: ${fmtSeconds(parseInt(form.agentRegistryPruneHorizonSecs, 10) || 0)}.`}
-        >
-          <input
-            type="number"
-            min={1}
-            value={form.agentRegistryPruneHorizonSecs}
-            onChange={(e) => setForm({ ...form, agentRegistryPruneHorizonSecs: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
-          />
-        </Field>
+          <Field
+            stacked
+            label="Registry prune horizon (seconds)"
+            dirty={dirtyMap.agentRegistryPruneHorizonSecs}
+            helper={`Disconnected records older than this are pruned hourly. Currently: ${fmtSeconds(parseInt(form.agentRegistryPruneHorizonSecs, 10) || 0)}.`}
+          >
+            <input
+              type="number"
+              min={1}
+              value={form.agentRegistryPruneHorizonSecs}
+              onChange={(e) =>
+                setForm({ ...form, agentRegistryPruneHorizonSecs: e.target.value })
+              }
+              className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            />
+          </Field>
+        </div>
       </SectionCard>
 
-      {/* ─── Remote write receiver ─────────────────────────────────────── */}
+      {/* ─── 3. Rate limiting (gRPC fleet-wide) ────────────────────────── */}
+      <SectionCard
+        icon={<Gauge className="w-4 h-4 text-kb-accent" />}
+        title="Rate limiting"
+        subtitle="Fleet-wide token bucket for the gRPC ingest. Per-tenant overrides below win when set."
+      >
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-x-5 gap-y-4">
+          <Field
+            stacked
+            label="Enabled"
+            dirty={dirtyMap.agentRateLimitEnabled}
+            helper="Off by default — V1 OSS shares the same limit across tenants."
+          >
+            <ToggleSwitch
+              checked={form.agentRateLimitEnabled}
+              onChange={(checked) => setForm({ ...form, agentRateLimitEnabled: checked })}
+            />
+          </Field>
+
+          <Field
+            stacked
+            label="Requests per second"
+            dirty={dirtyMap.agentRateLimitRPS}
+            helper="Sustained rate. Default 1000."
+          >
+            <input
+              type="number"
+              min={1}
+              disabled={!form.agentRateLimitEnabled}
+              value={form.agentRateLimitRPS}
+              onChange={(e) => setForm({ ...form, agentRateLimitRPS: e.target.value })}
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            />
+          </Field>
+
+          <Field
+            stacked
+            label="Burst"
+            dirty={dirtyMap.agentRateLimitBurst}
+            helper="Peak burst before rate-limiting kicks in. Default 2000."
+          >
+            <input
+              type="number"
+              min={1}
+              disabled={!form.agentRateLimitEnabled}
+              value={form.agentRateLimitBurst}
+              onChange={(e) => setForm({ ...form, agentRateLimitBurst: e.target.value })}
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            />
+          </Field>
+        </div>
+      </SectionCard>
+
+      {/* ─── 4. Remote write receiver ──────────────────────────────────── */}
       <SectionCard
         icon={<Network className="w-4 h-4 text-kb-accent" />}
         title="Remote write receiver"
         subtitle="HTTP endpoint that accepts Prometheus remote_write payloads from vmagent / external Prom installs."
       >
-        <Field
-          label="Enabled"
-          dirty={dirtyMap.remoteWriteEnabled}
-          helper="Off by default. When on, POST /api/v1/prom/write is mounted. Combined with auth mode disabled below, you expose an unauthenticated ingest path — see the warning below."
-        >
-          <ToggleSwitch
-            checked={form.remoteWriteEnabled}
-            onChange={(checked) => setForm({ ...form, remoteWriteEnabled: checked })}
-          />
-        </Field>
-
-        <Field
-          label="Auth mode"
-          dirty={dirtyMap.remoteWriteAuthMode}
-          helper="Same three-tier semantics as the agent gRPC channel — applied to the bearer-token check on POST /api/v1/prom/write."
-        >
-          <select
-            disabled={!form.remoteWriteEnabled}
-            value={form.remoteWriteAuthMode}
-            onChange={(e) => setForm({ ...form, remoteWriteAuthMode: e.target.value })}
-            className="w-48 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+          <Field
+            stacked
+            label="Enabled"
+            dirty={dirtyMap.remoteWriteEnabled}
+            helper="Mounts POST /api/v1/prom/write. Off by default."
           >
-            {AUTH_MODE_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
-        </Field>
+            <ToggleSwitch
+              checked={form.remoteWriteEnabled}
+              onChange={(checked) => setForm({ ...form, remoteWriteEnabled: checked })}
+            />
+          </Field>
 
-        <Field
-          label="Default samples/sec per tenant"
-          dirty={dirtyMap.promWriteDefaultSamplesPerSec}
-          helper="Fleet-wide default rate limit applied to tenants without a per-tenant override. Default 10000. Note: fleet-wide defaults are captured at boot — change takes effect on next restart. Per-tenant overrides below this section hot-reload."
-        >
-          <input
-            type="number"
-            min={1}
-            disabled={!form.remoteWriteEnabled}
-            value={form.promWriteDefaultSamplesPerSec}
-            onChange={(e) => setForm({ ...form, promWriteDefaultSamplesPerSec: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
-          />
-        </Field>
+          <Field
+            stacked
+            label="Auth mode"
+            dirty={dirtyMap.remoteWriteAuthMode}
+            helper="Bearer-token check on the receiver endpoint."
+          >
+            <select
+              disabled={!form.remoteWriteEnabled}
+              value={form.remoteWriteAuthMode}
+              onChange={(e) => setForm({ ...form, remoteWriteAuthMode: e.target.value })}
+              className="w-48 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            >
+              {AUTH_MODE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </Field>
 
-        <Field
-          label="Default burst per tenant"
-          dirty={dirtyMap.promWriteDefaultBurstSamples}
-          helper="Token bucket size. Covers ~10s of full scrape cycles at the steady rate. Default 100000."
-        >
-          <input
-            type="number"
-            min={1}
-            disabled={!form.remoteWriteEnabled}
-            value={form.promWriteDefaultBurstSamples}
-            onChange={(e) => setForm({ ...form, promWriteDefaultBurstSamples: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
-          />
-        </Field>
+          <Field
+            stacked
+            label="Default samples/sec per tenant"
+            dirty={dirtyMap.promWriteDefaultSamplesPerSec}
+            helper="Fleet default for tenants without per-tenant override. Default 10000. Captured at boot — applies on next restart."
+          >
+            <input
+              type="number"
+              min={1}
+              disabled={!form.remoteWriteEnabled}
+              value={form.promWriteDefaultSamplesPerSec}
+              onChange={(e) =>
+                setForm({ ...form, promWriteDefaultSamplesPerSec: e.target.value })
+              }
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            />
+          </Field>
 
-        <Field
-          label="Default max active series per tenant"
-          dirty={dirtyMap.promWriteDefaultMaxActiveSeries}
-          helper="Cap on active time series for a single tenant. Above the cap, POST returns 413 + Retry-After: 3600. Default 1000000."
-        >
-          <input
-            type="number"
-            min={1}
-            disabled={!form.remoteWriteEnabled}
-            value={form.promWriteDefaultMaxActiveSeries}
-            onChange={(e) => setForm({ ...form, promWriteDefaultMaxActiveSeries: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
-          />
-        </Field>
+          <Field
+            stacked
+            label="Default burst per tenant"
+            dirty={dirtyMap.promWriteDefaultBurstSamples}
+            helper="Token bucket size. Default 100000."
+          >
+            <input
+              type="number"
+              min={1}
+              disabled={!form.remoteWriteEnabled}
+              value={form.promWriteDefaultBurstSamples}
+              onChange={(e) =>
+                setForm({ ...form, promWriteDefaultBurstSamples: e.target.value })
+              }
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            />
+          </Field>
 
-        <Field
-          label="Global active-series cap"
-          dirty={dirtyMap.promWriteDefaultMaxActiveSeriesGlobal}
-          helper="When > 0, also rejects samples that would push total active series past this number — regardless of per-tenant headroom. 0 = disabled (per-tenant caps only)."
-        >
-          <input
-            type="number"
-            min={0}
-            disabled={!form.remoteWriteEnabled}
-            value={form.promWriteDefaultMaxActiveSeriesGlobal}
-            onChange={(e) =>
-              setForm({ ...form, promWriteDefaultMaxActiveSeriesGlobal: e.target.value })
-            }
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
-          />
-        </Field>
+          <Field
+            stacked
+            label="Default max active series per tenant"
+            dirty={dirtyMap.promWriteDefaultMaxActiveSeries}
+            helper="Above the cap → 413 + Retry-After. Default 1000000."
+          >
+            <input
+              type="number"
+              min={1}
+              disabled={!form.remoteWriteEnabled}
+              value={form.promWriteDefaultMaxActiveSeries}
+              onChange={(e) =>
+                setForm({ ...form, promWriteDefaultMaxActiveSeries: e.target.value })
+              }
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            />
+          </Field>
 
-        {remoteWriteUnauth && (
-          <div className="flex items-start gap-2 rounded-md bg-status-warn-dim/40 border border-status-warn-dim p-2 text-[11px] text-status-warn leading-relaxed">
-            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-            <div>
-              Remote write is on AND auth mode is <code className="font-mono">disabled</code>. Any
-              network-reachable client can POST samples to{' '}
-              <code className="font-mono">/api/v1/prom/write</code>. Set auth mode to{' '}
-              <code className="font-mono">permissive</code> or{' '}
-              <code className="font-mono">enforced</code> for production.
+          <Field
+            stacked
+            label="Global active-series cap"
+            dirty={dirtyMap.promWriteDefaultMaxActiveSeriesGlobal}
+            helper="Hard cap across all tenants. 0 = disabled (per-tenant caps only)."
+          >
+            <input
+              type="number"
+              min={0}
+              disabled={!form.remoteWriteEnabled}
+              value={form.promWriteDefaultMaxActiveSeriesGlobal}
+              onChange={(e) =>
+                setForm({ ...form, promWriteDefaultMaxActiveSeriesGlobal: e.target.value })
+              }
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent disabled:opacity-40"
+            />
+          </Field>
+
+          {remoteWriteUnauth && (
+            <div className="md:col-span-2 flex items-start gap-2 rounded-md bg-status-warn-dim/40 border border-status-warn-dim p-2 text-[11px] text-status-warn leading-relaxed">
+              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <div>
+                Remote write is on AND auth mode is <code className="font-mono">disabled</code>.
+                Any network-reachable client can POST samples to{' '}
+                <code className="font-mono">/api/v1/prom/write</code>. Set auth mode to{' '}
+                <code className="font-mono">permissive</code> or{' '}
+                <code className="font-mono">enforced</code> for production.
+              </div>
             </div>
-          </div>
-        )}
+          )}
+        </div>
       </SectionCard>
 
-      {/* ─── SPDY tunnels ──────────────────────────────────────────────── */}
+      {/* ─── 5. Per-tenant overrides (independent save semantics) ──────── */}
+      {/* Slotted INLINE between Remote write and SPDY tunnels so the
+          page reads as one continuous list — no "new vs old" divider.
+          Per-tenant has its own per-row save buttons; the bottom Save
+          bar of this form covers only the channel-wide settings. */}
+      <PerTenantLimitsSection />
+
+      {/* ─── 6. SPDY tunnels ───────────────────────────────────────────── */}
       <SectionCard
         icon={<Timer className="w-4 h-4 text-kb-accent" />}
         title="SPDY tunnels"
         subtitle="Idle watchdog for exec / port-forward / file browser sessions routed through agent-proxy."
       >
-        <Field
-          label="Idle timeout (seconds)"
-          dirty={dirtyMap.agentTunnelIdleTimeoutSecs}
-          helper={`Tunnels with no activity for this duration are closed. Catches orphan sessions from crashed agents. 0 disables the watchdog (tests only). Default 300 (5m). Current: ${fmtSeconds(parseInt(form.agentTunnelIdleTimeoutSecs, 10) || 0)}. Applies to new tunnels; in-flight sessions keep their captured timeout.`}
-        >
-          <input
-            type="number"
-            min={0}
-            value={form.agentTunnelIdleTimeoutSecs}
-            onChange={(e) => setForm({ ...form, agentTunnelIdleTimeoutSecs: e.target.value })}
-            className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
-          />
-        </Field>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+          <Field
+            stacked
+            label="Idle timeout (seconds)"
+            dirty={dirtyMap.agentTunnelIdleTimeoutSecs}
+            helper={`Closes inactive tunnels. 0 disables (tests only). Default 300 (5m). Currently: ${fmtSeconds(parseInt(form.agentTunnelIdleTimeoutSecs, 10) || 0)}. Applies to new tunnels.`}
+          >
+            <input
+              type="number"
+              min={0}
+              value={form.agentTunnelIdleTimeoutSecs}
+              onChange={(e) =>
+                setForm({ ...form, agentTunnelIdleTimeoutSecs: e.target.value })
+              }
+              className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            />
+          </Field>
+        </div>
       </SectionCard>
 
       {/* Action bar */}
@@ -676,7 +730,7 @@ function IngestChannelForm({
         {savedAt && !isDirty && !saveMutation.isPending && !pendingRestart && (
           <div className="mx-3 mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">
             <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-            <div>Ingest channel saved. Hot-reload fields are already in effect.</div>
+            <div>Saved. Hot-reload fields are already in effect.</div>
           </div>
         )}
 
@@ -694,8 +748,8 @@ function IngestChannelForm({
         open={resetConfirmOpen}
         badge="Reset"
         variant="danger"
-        title="Reset Ingest channel settings to env defaults?"
-        description="Clears every stored override in this domain. The next process start uses the values from the KUBEBOLT_AGENT_* / KUBEBOLT_REMOTE_WRITE_* / KUBEBOLT_PROM_WRITE_DEFAULT_* env vars (or built-in defaults). Channel-security fields take effect on next restart; everything else applies on the next request."
+        title="Reset Agents & Ingest settings to env defaults?"
+        description="Clears every stored override in this domain. The next process start uses the values from the KUBEBOLT_AGENT_* / KUBEBOLT_REMOTE_WRITE_* / KUBEBOLT_PROM_WRITE_DEFAULT_* env vars (or built-in defaults). Channel-security fields take effect on next restart; everything else applies on the next request. Per-tenant overrides are not affected by this reset — use the per-tenant card's own reset action."
         confirmLabel="Reset"
         onConfirm={() => {
           setResetConfirmOpen(false)
