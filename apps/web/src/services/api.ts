@@ -1002,6 +1002,16 @@ export const api = {
   resetSettingsAuth: () =>
     postJSON<{ status: string }>(`${API_BASE}/admin/settings/auth/reset`, {}),
 
+  // --- Settings → Ingest channel (spec #09 V2) ---
+  getSettingsIngestChannel: () =>
+    fetchJSON<IngestChannelSettingsResponse>(`${API_BASE}/admin/settings/ingest-channel`),
+
+  putSettingsIngestChannel: (body: IngestChannelSettingsPutRequest) =>
+    putJSON<IngestChannelSettingsResponse>(`${API_BASE}/admin/settings/ingest-channel`, body),
+
+  resetSettingsIngestChannel: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/ingest-channel/reset`, {}),
+
   // System actions. Restart triggers os.Exit(0) on the backend after a
   // ~1s grace period so Kubernetes (restartPolicy:Always) brings up a
   // fresh container with the persisted Auth values applied.
@@ -1281,11 +1291,13 @@ export interface GeneralSettingsResponse {
   effective: {
     displayName: string
     defaultRefreshIntervalSeconds: number
+    prodNamespacePattern: string
   }
   stored: {
     hasOverride: boolean
     displayName?: string
     defaultRefreshIntervalSeconds?: number
+    prodNamespacePattern?: string
   }
 }
 
@@ -1293,7 +1305,68 @@ export interface GeneralSettingsPutRequest {
   patch?: {
     displayName?: string
     defaultRefreshIntervalSeconds?: number
+    prodNamespacePattern?: string
   }
+}
+
+// ─── Admin → Settings → Ingest channel types (spec #09 V2) ────────────
+//
+// Mirrors apps/api/internal/settings/ingest_channel.go. Three of the
+// fifteen fields require a restart to apply (auth mode + audience +
+// mTLS); the rest hot-reload. pendingRestart only flips on the
+// restart-required subset diffing against bootSnapshot.
+
+export interface IngestChannelEffective {
+  // Channel security (restart-required).
+  agentAuthMode: string
+  agentTokenAudience: string
+  agentRequireMTLS: boolean
+  // Rate limiting.
+  agentRateLimitEnabled: boolean
+  agentRateLimitRPS: number
+  agentRateLimitBurst: number
+  // Cluster auto-registration.
+  agentAutoRegisterClusters: boolean
+  agentRegistryPruneHorizonSecs: number
+  // Prom remote_write.
+  remoteWriteEnabled: boolean
+  remoteWriteAuthMode: string
+  promWriteDefaultSamplesPerSec: number
+  promWriteDefaultBurstSamples: number
+  promWriteDefaultMaxActiveSeries: number
+  promWriteDefaultMaxActiveSeriesGlobal: number
+  // Tunnels.
+  agentTunnelIdleTimeoutSecs: number
+}
+
+export interface IngestChannelStored {
+  hasOverride: boolean
+  agentAuthMode?: string
+  agentTokenAudience?: string
+  agentRequireMTLS?: boolean
+  agentRateLimitEnabled?: boolean
+  agentRateLimitRPS?: number
+  agentRateLimitBurst?: number
+  agentAutoRegisterClusters?: boolean
+  agentRegistryPruneHorizonSecs?: number
+  remoteWriteEnabled?: boolean
+  remoteWriteAuthMode?: string
+  promWriteDefaultSamplesPerSec?: number
+  promWriteDefaultBurstSamples?: number
+  promWriteDefaultMaxActiveSeries?: number
+  promWriteDefaultMaxActiveSeriesGlobal?: number
+  agentTunnelIdleTimeoutSecs?: number
+}
+
+export interface IngestChannelSettingsResponse {
+  effective: IngestChannelEffective
+  bootSnapshot: IngestChannelEffective
+  stored: IngestChannelStored
+  pendingRestart: boolean
+}
+
+export interface IngestChannelSettingsPutRequest {
+  patch?: Partial<Omit<IngestChannelStored, 'hasOverride'>>
 }
 
 // Public UI config — readable by every authenticated user (and by
