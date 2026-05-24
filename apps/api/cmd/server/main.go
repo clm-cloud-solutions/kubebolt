@@ -585,13 +585,25 @@ func main() {
 	// the agent gRPC enforced while keeping remote_write disabled, or
 	// vice-versa). Same three-tier semantics. Default mirrors the gRPC
 	// channel: disabled for Sprint A migration.
+	// Spec #09 V2 — read via the settings runtime so BoltDB override
+	// wins over env baseline. Captured at boot for the router (the
+	// h.promWriteAuthMode field). Note: this is currently a boot-time
+	// capture; flipping the mode in the UI requires a restart for the
+	// handler to pick up the change. A future iteration could move the
+	// mode read into the handler per-request like the enabled flag —
+	// for now V2 ships the simpler "set at boot" semantic, surfaced
+	// via pendingRestart in the masked render.
 	resolvedPromWriteEnforcement := string(agent.EnforcementDisabled)
-	if v := os.Getenv("KUBEBOLT_REMOTE_WRITE_AUTH_MODE"); v != "" {
-		if parsed, ok := agent.ParseEnforcement(v); ok {
+	promWriteAuthModeSource := os.Getenv("KUBEBOLT_REMOTE_WRITE_AUTH_MODE")
+	if settingsRuntime != nil {
+		promWriteAuthModeSource = settingsRuntime.IngestChannel().RemoteWriteAuthMode
+	}
+	if promWriteAuthModeSource != "" {
+		if parsed, ok := agent.ParseEnforcement(promWriteAuthModeSource); ok {
 			resolvedPromWriteEnforcement = string(parsed)
 		} else {
-			slog.Warn("KUBEBOLT_REMOTE_WRITE_AUTH_MODE has unknown value, defaulting to disabled",
-				slog.String("value", v))
+			slog.Warn("remote_write auth mode has unknown value, defaulting to disabled",
+				slog.String("value", promWriteAuthModeSource))
 		}
 	}
 	// Same defense-in-depth as the gRPC path: if there's no
