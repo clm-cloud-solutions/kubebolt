@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
@@ -27,7 +27,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { Modal } from '@/components/shared/Modal'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Field } from './SettingsField'
-import { PerTenantLimitsSection } from './PerTenantLimitsSection'
+import { PerTenantLimitsSection, type PerTenantLimitsHandle } from './PerTenantLimitsSection'
 
 // IngestSettingsTab (Settings → Agents & Ingest) is the spec #09 V2
 // surface for everything on the kubebolt-agent ↔ kubebolt data plane.
@@ -237,6 +237,21 @@ function IngestChannelForm({
   // the next restart.
   const [enforcedConfirmOpen, setEnforcedConfirmOpen] = useState(false)
 
+  // V2 polish — unified save / reset across channel-wide + per-tenant
+  // sections. Per-tenant is its own component with its own state and
+  // its own API endpoint; we drive it imperatively via this ref so
+  // the operator sees ONE Save button at the bottom that covers both.
+  const perTenantRef = useRef<PerTenantLimitsHandle>(null)
+  const [perTenantState, setPerTenantState] = useState<{ isDirty: boolean; hasCustom: boolean }>({
+    isDirty: false,
+    hasCustom: false,
+  })
+  // Combined error / warnings bubbled up from the per-tenant save so
+  // the parent's status banners can surface them in the unified bottom
+  // bar instead of the per-tenant section rendering its own.
+  const [perTenantError, setPerTenantError] = useState<string | null>(null)
+  const [perTenantWarnings, setPerTenantWarnings] = useState<string[]>([])
+
   const dirtyMap = {
     agentAuthMode: form.agentAuthMode !== initial.agentAuthMode,
     agentTokenAudience: form.agentTokenAudience !== initial.agentTokenAudience,
@@ -260,21 +275,69 @@ function IngestChannelForm({
     agentTunnelIdleTimeoutSecs:
       form.agentTunnelIdleTimeoutSecs !== initial.agentTunnelIdleTimeoutSecs,
   }
-  const isDirty = Object.values(dirtyMap).some(Boolean)
+  // Channel-wide dirty (the 15 fields above) OR per-tenant dirty
+  // (the 3 fields inside PerTenantLimitsSection). Save button at the
+  // bottom is enabled when EITHER side has changes.
+  const channelDirty = Object.values(dirtyMap).some(Boolean)
+  const isDirty = channelDirty || perTenantState.isDirty
 
   const saveMutation = useMutation({
-    mutationFn: () => api.putSettingsIngestChannel(buildPatch(initial, form)),
-    onSuccess: (newData) => {
-      const next = stateFromResponse(newData)
-      setInitial(next)
-      setForm(next)
+    // Combines channel save (when channelDirty) + per-tenant save
+    // (when perTenantState.isDirty) into one operator-facing action.
+    // Each is independent at the API level; we await both and
+    // aggregate the warnings. Errors from either propagate to
+    // saveMutation.error so the bottom-bar status banner picks them up.
+    mutationFn: async () => {
+      setPerTenantError(null)
+      setPerTenantWarnings([])
+      let newChannelData: IngestChannelSettingsResponse | null = null
+      let perTenantWarns: string[] = []
+
+      if (channelDirty) {
+        newChannelData = await api.putSettingsIngestChannel(buildPatch(initial, form))
+      }
+      if (perTenantState.isDirty && perTenantRef.current) {
+        try {
+          const result = await perTenantRef.current.save()
+          perTenantWarns = result.warnings
+        } catch (err) {
+          // Surface in the bottom-bar status panel and re-throw so the
+          // mutation registers as failed (banner stays red).
+          setPerTenantError(err instanceof Error ? err.message : 'Failed to save per-tenant limits')
+          throw err
+        }
+      }
+      return { newChannelData, perTenantWarns }
+    },
+    onSuccess: ({ newChannelData, perTenantWarns }) => {
+      if (newChannelData) {
+        const next = stateFromResponse(newChannelData)
+        setInitial(next)
+        setForm(next)
+      }
+      setPerTenantWarnings(perTenantWarns)
       setSavedAt(Date.now())
       onSaved()
     },
   })
 
   const resetMutation = useMutation({
-    mutationFn: () => api.resetSettingsIngestChannel(),
+    // Mirrors saveMutation — clears BOTH the channel-wide BoltDB row
+    // AND the per-tenant overrides (when hasCustom). The unified
+    // confirm modal warns the operator that both are wiped.
+    mutationFn: async () => {
+      setPerTenantError(null)
+      setPerTenantWarnings([])
+      await api.resetSettingsIngestChannel()
+      if (perTenantState.hasCustom && perTenantRef.current) {
+        try {
+          await perTenantRef.current.reset()
+        } catch (err) {
+          setPerTenantError(err instanceof Error ? err.message : 'Failed to reset per-tenant limits')
+          throw err
+        }
+      }
+    },
     onSuccess: () => onSaved(),
   })
 
@@ -649,12 +712,17 @@ function IngestChannelForm({
         </div>
       </SectionCard>
 
-      {/* ─── 5. Per-tenant overrides (independent save semantics) ──────── */}
+      {/* ─── 5. Per-tenant overrides ──────────────────────────────────── */}
       {/* Slotted INLINE between Remote write and SPDY tunnels so the
-          page reads as one continuous list — no "new vs old" divider.
-          Per-tenant has its own per-row save buttons; the bottom Save
-          bar of this form covers only the channel-wide settings. */}
-      <PerTenantLimitsSection />
+          page reads as one continuous list. Embedded mode hides the
+          per-tenant card's own action bar + banners; the bottom Save
+          bar of this form covers BOTH channel-wide AND per-tenant
+          changes in a single operator-facing action. */}
+      <PerTenantLimitsSection
+        ref={perTenantRef}
+        embedded
+        onStateChange={setPerTenantState}
+      />
 
       {/* ─── 6. SPDY tunnels ───────────────────────────────────────────── */}
       <SectionCard
@@ -695,11 +763,12 @@ function IngestChannelForm({
             {resetMutation.isPending ? 'Resetting…' : 'Reset to env defaults'}
           </button>
           <div className="flex items-center gap-2">
-            {isDirty && !saveMutation.isPending && (
+            {channelDirty && !saveMutation.isPending && (
               <button
                 type="button"
                 onClick={() => setForm(initial)}
                 className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
+                title="Revert channel-wide changes. Per-tenant overrides keep their edits — clear them individually in the per-tenant card."
               >
                 <X className="w-3.5 h-3.5" />
                 Cancel
@@ -723,7 +792,7 @@ function IngestChannelForm({
         {saveMutation.isError && (
           <div className="mx-3 mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">
             <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <div>{(saveMutation.error as Error)?.message || 'Failed to save.'}</div>
+            <div>{perTenantError || (saveMutation.error as Error)?.message || 'Failed to save.'}</div>
           </div>
         )}
 
@@ -731,6 +800,17 @@ function IngestChannelForm({
           <div className="mx-3 mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">
             <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
             <div>Saved. Hot-reload fields are already in effect.</div>
+          </div>
+        )}
+
+        {perTenantWarnings.length > 0 && !saveMutation.isPending && (
+          <div className="mx-3 mb-3 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-warn-dim text-status-warn text-xs">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <div className="space-y-0.5">
+              {perTenantWarnings.map((w, i) => (
+                <div key={i}>{w}</div>
+              ))}
+            </div>
           </div>
         )}
 
@@ -749,7 +829,11 @@ function IngestChannelForm({
         badge="Reset"
         variant="danger"
         title="Reset Agents & Ingest settings to env defaults?"
-        description="Clears every stored override in this domain. The next process start uses the values from the KUBEBOLT_AGENT_* / KUBEBOLT_REMOTE_WRITE_* / KUBEBOLT_PROM_WRITE_DEFAULT_* env vars (or built-in defaults). Channel-security fields take effect on next restart; everything else applies on the next request. Per-tenant overrides are not affected by this reset — use the per-tenant card's own reset action."
+        description={
+          perTenantState.hasCustom
+            ? 'Clears every stored override in this domain — channel-wide settings AND per-tenant overrides. The next process start uses the values from the KUBEBOLT_AGENT_* / KUBEBOLT_REMOTE_WRITE_* / KUBEBOLT_PROM_WRITE_DEFAULT_* env vars (or built-in defaults). Channel-security fields take effect on next restart; everything else applies on the next request.'
+            : 'Clears every stored override in this domain. The next process start uses the values from the KUBEBOLT_AGENT_* / KUBEBOLT_REMOTE_WRITE_* / KUBEBOLT_PROM_WRITE_DEFAULT_* env vars (or built-in defaults). Channel-security fields take effect on next restart; everything else applies on the next request.'
+        }
         confirmLabel="Reset"
         onConfirm={() => {
           setResetConfirmOpen(false)
