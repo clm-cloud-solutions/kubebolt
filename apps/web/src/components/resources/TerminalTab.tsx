@@ -57,47 +57,96 @@ interface TerminalTabProps {
   item: ResourceItem
 }
 
+// ContainerInfo carries the dropdown-needed view of an item.containers
+// entry. Spec #09 V2 / Item 4 polish — we need more than just the name
+// so the dropdown can mark terminated ephemerals (ephemerals are
+// append-only at the apiserver, so the operator's "exit" turns them
+// into permanent Terminated entries until the pod restarts) and the
+// Connect button can refuse to attach to a dead container.
+interface ContainerInfo {
+  name: string
+  ephemeral: boolean
+  terminated: boolean
+}
+
+function readContainerInfo(item: ResourceItem): ContainerInfo[] {
+  if (!Array.isArray(item.containers)) return []
+  return (item.containers as Array<Record<string, unknown>>).map((c) => {
+    const state = (c.state as Record<string, unknown> | undefined) ?? {}
+    return {
+      name: String(c.name ?? ''),
+      ephemeral: !!c.ephemeral,
+      terminated: state.state === 'terminated',
+    }
+  })
+}
+
 export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
-  const containers = Array.isArray(item.containers)
-    ? (item.containers as Array<Record<string, unknown>>).map(c => String(c.name ?? ''))
-    : []
+  const containerInfo = readContainerInfo(item)
+  const containers = containerInfo.map((c) => c.name)
 
   // The Debug-pod flow (spec #09 V2 / Item 4 / C1) navigates here with
   // `?tab=terminal&container=<ephemeralName>` after spawning a debug
   // container so the operator lands on the terminal pre-selected on the
-  // new container. We pick the URL param FIRST if it matches a known
-  // container; fall back to containers[0] otherwise. Unknown params
-  // (stale URL after a delete, copy-paste from elsewhere) gracefully
-  // degrade to the default selection rather than erroring.
+  // new container. Race condition we hit in vivo: the navigation fires
+  // BEFORE the parent's resource-detail refetch completes, so the first
+  // render's `containers` prop is stale (old list without the new
+  // ephemeral). Initial useState pick fails the `containers.includes`
+  // check, falls to `containers[0]`, and the URL param looks "consumed"
+  // even though it never matched.
+  //
+  // Fix: keep the URL param on the URL until `containers` actually
+  // contains the target name, then atomically (a) update the selection
+  // and (b) drop the param. The useEffect runs every render the
+  // containers array shifts, so a late-arriving ephemeral is picked up
+  // automatically when the prop finally updates.
   const [searchParams, setSearchParams] = useSearchParams()
-  const initialContainer = (() => {
+  const [selectedContainer, setSelectedContainer] = useState(() => {
     const fromUrl = searchParams.get('container')
     if (fromUrl && containers.includes(fromUrl)) return fromUrl
     return containers[0] ?? ''
-  })()
-  const [selectedContainer, setSelectedContainer] = useState(initialContainer)
+  })
 
-  // If a `container` URL param was used to drive the initial selection,
-  // drop it from the URL once mounted so a manual container change
-  // (operator switches via the dropdown after landing) doesn't leave
-  // a confusing-stale ?container= in the address bar.
   useEffect(() => {
-    if (searchParams.get('container')) {
+    const fromUrl = searchParams.get('container')
+    if (!fromUrl) return // no param to consume
+    if (containers.includes(fromUrl)) {
+      // Target container is now in the list (refetch landed) — apply it
+      // and clean the URL so a later manual dropdown change doesn't
+      // leave a stale `?container=` in the address bar.
+      if (selectedContainer !== fromUrl) {
+        setSelectedContainer(fromUrl)
+      }
       const next = new URLSearchParams(searchParams)
       next.delete('container')
       setSearchParams(next, { replace: true })
     }
-    // Intentionally empty deps — runs once on mount after the URL param
-    // has been consumed for the initial selection.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+    // If the URL param is set but the target container hasn't appeared
+    // yet (refetch still in flight, or the spawn failed silently),
+    // intentionally do nothing — leave the param on the URL so the
+    // next containers change re-evaluates. Worst case: never matches
+    // (e.g. operator hand-edited a bogus URL), in which case the param
+    // lingers harmlessly until they navigate away.
+  }, [containers, searchParams, setSearchParams, selectedContainer])
   const [selectedShell, setSelectedShell] = useState('')
   const [sessionActive, setSessionActive] = useState(false)
   const [sessionKey, setSessionKey] = useState(0)
 
   const { hasRole } = useAuth()
   const podStatus = String(item.status ?? '').toLowerCase()
-  const canExec = podStatus === 'running' && hasRole('editor')
+  // Block Connect when the selected container is in the Terminated
+  // state. Spec #09 V2 / Item 4 polish — ephemerals can't be removed
+  // from the pod spec by design (K8s API constraint). They typically
+  // STAY Running because KubeBolt's terminal uses exec (not attach),
+  // so closing the shell session doesn't kill PID 1; this defensive
+  // check covers the rare case where the container did terminate
+  // (image pull error, OOM, or a future attach-based debug flow).
+  // Letting Connect proceed against a terminated container would
+  // hand the operator a confusing error from the SPDY bridge; we'd
+  // rather refuse upfront and point at "Restart pod" instead.
+  const selectedInfo = containerInfo.find((c) => c.name === selectedContainer)
+  const isSelectedTerminated = !!selectedInfo?.terminated
+  const canExec = podStatus === 'running' && hasRole('editor') && !isSelectedTerminated
 
   function handleConnect() {
     setSessionKey(k => k + 1)
@@ -119,9 +168,20 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
             disabled={sessionActive}
             className="px-2 py-1.5 text-xs bg-kb-card border border-kb-border rounded-lg text-kb-text-primary disabled:opacity-50"
           >
-            {containers.map(cn => (
-              <option key={cn} value={cn}>{cn}</option>
-            ))}
+            {containerInfo.map((c) => {
+              // Terminated ephemerals can't be removed from the pod
+              // spec (apiserver limitation — append-only field). Suffix
+              // the label so the operator doesn't try to reconnect to
+              // a dead container; the disabled flag would silently
+              // hide the option entirely which is worse UX (looks like
+              // KubeBolt "lost" the container).
+              const suffix = c.terminated ? ' (terminated)' : c.ephemeral ? ' (debug)' : ''
+              return (
+                <option key={c.name} value={c.name}>
+                  {c.name}{suffix}
+                </option>
+              )
+            })}
           </select>
         )}
         {containers.length === 1 && (
@@ -158,7 +218,11 @@ export function TerminalTab({ namespace, name, item }: TerminalTabProps) {
 
         {!canExec && (
           <span className="text-[10px] font-mono text-status-warn">
-            {!hasRole('editor') ? 'Editor role required for terminal access' : 'Pod is not running'}
+            {!hasRole('editor')
+              ? 'Editor role required for terminal access'
+              : isSelectedTerminated
+                ? 'Container terminated — use Restart pod to clear from spec'
+                : 'Pod is not running'}
           </span>
         )}
 

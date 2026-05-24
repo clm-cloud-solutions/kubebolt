@@ -2364,9 +2364,12 @@ func ephemeralContainerStateFromStatus(name string, statuses []corev1.ContainerS
 	// Status not yet populated by kubelet — surface a placeholder so
 	// the frontend renders "Pending" instead of an empty cell during
 	// the brief window between spawn and first status reconcile.
+	// Shape matches containerStateFromStatus so the frontend can read
+	// state.state uniformly across regular and ephemeral containers.
 	return map[string]interface{}{
-		"phase": "Pending",
-		"ready": false,
+		"state":  "waiting",
+		"reason": "Pending",
+		"ready":  false,
 	}
 }
 

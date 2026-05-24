@@ -299,6 +299,26 @@ export function DebugPodModal({ namespace, name, item, onClose, onSpawned }: Deb
               <div className="break-words">{error}</div>
             </div>
           )}
+
+          {/* Lifecycle note. Two K8s API constraints to surface upfront:
+              (1) ephemerals are append-only — can't be removed via
+              PATCH/DELETE; (2) our Terminal tab uses exec (not attach),
+              so the shell session and the ephemeral's PID 1 are
+              separate process trees. Closing the terminal exits the
+              EXEC process, not PID 1. The ephemeral keeps running until
+              the pod restarts. Important to be explicit because the
+              expectation from `kubectl debug` (which uses attach) is
+              the opposite — operators coming from that background
+              expect exit-to-terminate. */}
+          <div className="text-[10px] text-kb-text-tertiary leading-relaxed border-t border-kb-border pt-3">
+            <strong className="text-kb-text-secondary">Lifecycle:</strong> ephemeral containers
+            stay <code className="font-mono">Running</code> in the pod spec until the pod is
+            restarted — Kubernetes doesn't expose a "remove ephemeral" API. Closing your terminal
+            session ends YOUR interaction (KubeBolt's terminal uses exec, not attach), but the
+            container's PID 1 keeps running. To clear it, use the toolbar's{' '}
+            <strong className="text-kb-text-secondary">Restart</strong> action which recreates
+            the pod from scratch.
+          </div>
         </div>
 
         {/* Actions */}
