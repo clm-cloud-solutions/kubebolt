@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Bot, Eye, EyeOff, AlertTriangle, CheckCircle2, RotateCcw, Save, Loader2, X } from 'lucide-react'
+import { Bot, Eye, EyeOff, AlertTriangle, CheckCircle2, LifeBuoy, RotateCcw, Save, SlidersHorizontal, Loader2, X } from 'lucide-react'
 import { api } from '@/services/api'
 import type { CopilotSettingsPutRequest, CopilotSettingsResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Field, UnsavedChip } from './SettingsField'
 import {
   CUSTOM_MODEL_VALUE,
   findModelOption,
@@ -125,6 +126,14 @@ function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutR
   if (current.apiKey.trim() !== '') req.plaintextAPIKey = current.apiKey
   if (current.hasFallback && current.fallbackApiKey.trim() !== '') {
     req.plaintextFallbackAPIKey = current.fallbackApiKey
+  }
+  // Explicit "disable fallback": when the operator toggles hasFallback
+  // off (was on initially, now off), send an empty plaintext key so
+  // the backend drops the stored fallback override entirely. Without
+  // this the toggle would visually flip back on after refetch because
+  // the underlying fallback config persists untouched.
+  if (initial.hasFallback && !current.hasFallback) {
+    req.plaintextFallbackAPIKey = ''
   }
   return req
 }
@@ -247,6 +256,14 @@ function CopilotSettingsForm({
         </div>
       )}
 
+      {/* Row-aligned 2-col grid (no items-start). Primary on the left,
+          Fallback on the right; cards stretch to the row's max height
+          so their bottom edges line up. When Fallback is disabled its
+          body is just a one-line italic message that floats at the top
+          of the stretched card — a small price for visual alignment
+          with the much taller Primary card next to it. Behavior card
+          below the grid is full-width. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
       {/* Primary provider — white card with all primary controls */}
       <SectionCard
         icon={<Bot className="w-4 h-4 text-kb-accent" />}
@@ -259,7 +276,7 @@ function CopilotSettingsForm({
           helper="Anthropic uses the native Claude API. OpenAI is the umbrella for OpenAI's own models plus any OpenAI-compatible provider (xAI Grok, Alibaba Qwen, DeepSeek, Meta Llama via Groq, Mistral)."
         >
           <select
-            className="w-full max-w-md px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             value={form.provider}
             onChange={(e) => {
               const nextProvider = e.target.value as ProviderName
@@ -333,8 +350,9 @@ function CopilotSettingsForm({
           the body. Saves vertical space when fallback is off (typical
           case for fresh installs). */}
       <SectionCard
+        icon={<LifeBuoy className="w-4 h-4 text-kb-text-tertiary" />}
         title="Fallback provider"
-        subtitle="Optional secondary model Kobi tries when the primary returns a recoverable error (rate limit, 5xx)."
+        subtitle="Secondary model tried when the primary returns a recoverable error."
         headerRight={
           <label className="flex items-center gap-2 text-xs text-kb-text-secondary cursor-pointer">
             <input
@@ -352,7 +370,7 @@ function CopilotSettingsForm({
           <div className="space-y-3">
             <Field label="Provider" dirty={dirtyMap.fallbackProvider}>
               <select
-                className="w-full max-w-md px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+                className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
                 value={form.fallbackProvider}
                 onChange={(e) => {
                   const nextProvider = e.target.value as ProviderName
@@ -420,8 +438,11 @@ function CopilotSettingsForm({
         )}
       </SectionCard>
 
+      </div>{/* /grid (Primary + Fallback) */}
+
       {/* Behavior — knobs that don't fit under primary/fallback */}
       <SectionCard
+        icon={<SlidersHorizontal className="w-4 h-4 text-kb-accent" />}
         title="Behavior"
         subtitle="Output, session, and auto-compaction defaults."
       >
@@ -435,41 +456,37 @@ function CopilotSettingsForm({
           />
         </Field>
 
-        <label className="flex items-start gap-2 text-xs text-kb-text-secondary cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.showToolCalls}
-            onChange={(e) => setForm({ ...form, showToolCalls: e.target.checked })}
-            className="accent-kb-accent mt-0.5"
-          />
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="text-kb-text-primary">Show tool call cards in chat</div>
-              {dirtyMap.showToolCalls && <UnsavedChip />}
-            </div>
-            <div className="text-kb-text-tertiary">
-              Persistent expandable cards for each tool Kobi invokes. Off: only the final assistant text remains visible.
-            </div>
-          </div>
-        </label>
+        <Field
+          label="Tool calls"
+          dirty={dirtyMap.showToolCalls}
+          helper="Persistent expandable cards for each tool Kobi invokes. Off: only the final assistant text remains visible."
+        >
+          <label className="inline-flex items-center gap-2 text-xs text-kb-text-primary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.showToolCalls}
+              onChange={(e) => setForm({ ...form, showToolCalls: e.target.checked })}
+              className="accent-kb-accent"
+            />
+            Show tool call cards in chat
+          </label>
+        </Field>
 
-        <label className="flex items-start gap-2 text-xs text-kb-text-secondary cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.autoCompact}
-            onChange={(e) => setForm({ ...form, autoCompact: e.target.checked })}
-            className="accent-kb-accent mt-0.5"
-          />
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="text-kb-text-primary">Auto-compact long sessions</div>
-              {dirtyMap.autoCompact && <UnsavedChip />}
-            </div>
-            <div className="text-kb-text-tertiary">
-              Summarize older turns automatically when the session approaches the model's context window. Off: long sessions hit the budget and fail.
-            </div>
-          </div>
-        </label>
+        <Field
+          label="Auto-compact"
+          dirty={dirtyMap.autoCompact}
+          helper="Summarize older turns automatically when the session approaches the model's context window. Off: long sessions hit the budget and fail."
+        >
+          <label className="inline-flex items-center gap-2 text-xs text-kb-text-primary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.autoCompact}
+              onChange={(e) => setForm({ ...form, autoCompact: e.target.checked })}
+              className="accent-kb-accent"
+            />
+            Auto-compact long sessions
+          </label>
+        </Field>
 
         {form.autoCompact && (
           // Tunables only matter when auto-compact is on. Group them
@@ -479,6 +496,7 @@ function CopilotSettingsForm({
           <div className="grid grid-cols-2 gap-4 pt-1 pl-6 border-l-2 border-kb-border ml-2">
             <Field
               label="Session budget"
+              stacked
               dirty={dirtyMap.sessionBudgetTokens}
               helper="Tokens of context Kobi keeps in flight before compaction kicks in. Blank = auto from the model's context window."
             >
@@ -493,6 +511,7 @@ function CopilotSettingsForm({
             </Field>
             <Field
               label="Compact threshold"
+              stacked
               dirty={dirtyMap.autoCompactThreshold}
               helper="Fraction of budget that triggers compaction (0–1). 0.80 = compact when 80% full."
             >
@@ -509,6 +528,7 @@ function CopilotSettingsForm({
             </Field>
             <Field
               label="Compact model"
+              stacked
               dirty={dirtyMap.compactModel}
               helper="Cheaper model used to run the compaction itself. Blank = auto-pick a cheap model for the primary provider (e.g. claude-haiku-4-5)."
             >
@@ -522,6 +542,7 @@ function CopilotSettingsForm({
             </Field>
             <Field
               label="Preserve turns"
+              stacked
               dirty={dirtyMap.compactPreserveTurns}
               helper="How many recent turns to keep INTACT after compaction (older ones get summarized)."
             >
@@ -548,7 +569,7 @@ function CopilotSettingsForm({
             type="button"
             onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             {resetMutation.isPending ? 'Resetting…' : 'Reset to env defaults'}
@@ -568,7 +589,7 @@ function CopilotSettingsForm({
                   setRevealAPIKey(false)
                   setRevealFallbackKey(false)
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
               >
                 <X className="w-3.5 h-3.5" />
                 Cancel
@@ -577,7 +598,7 @@ function CopilotSettingsForm({
             <button
               type="submit"
               disabled={!isDirty || saveMutation.isPending}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium bg-kb-accent text-kb-bg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {saveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
               {saveMutation.isPending ? 'Saving…' : 'Save changes'}
@@ -617,53 +638,6 @@ function CopilotSettingsForm({
         busy={resetMutation.isPending}
       />
     </form>
-  )
-}
-
-function Field({
-  label,
-  helper,
-  dirty,
-  children,
-}: {
-  label: string
-  helper?: string
-  dirty?: boolean
-  children: React.ReactNode
-}) {
-  // Label hierarchy: distinct from the control beneath it via (a) a
-  // tangible vertical gap so the eye reads "title → input", and (b)
-  // a primary text color + slightly larger size so the label out-weights
-  // the helper line. The uppercase + tracking convention stays — it's
-  // the design system's marker for field captions, used consistently
-  // across admin pages.
-  //
-  // `dirty` renders an inline UNSAVED chip next to the label — same
-  // convention as PerTenantLimitsSection so operators can see which
-  // individual controls they touched without scanning the whole form.
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
-        <label className="block text-[11px] font-semibold text-kb-text-primary uppercase tracking-wider">
-          {label}
-        </label>
-        {dirty && <UnsavedChip />}
-      </div>
-      {children}
-      {helper && <p className="text-[11px] text-kb-text-tertiary leading-relaxed">{helper}</p>}
-    </div>
-  )
-}
-
-// UnsavedChip is the per-field "you have a pending edit" marker. Shared
-// between Field-wrapped inputs and inline labels (checkboxes, fallback
-// enable toggle) so every Settings page renders the same chip in the
-// same place.
-function UnsavedChip() {
-  return (
-    <span className="text-[10px] font-mono font-medium uppercase tracking-wider text-status-warn">
-      Unsaved
-    </span>
   )
 }
 
@@ -731,7 +705,7 @@ function ModelPicker({
   const selectValue = isCustom ? CUSTOM_MODEL_VALUE : value
 
   return (
-    <div className="space-y-1.5">
+    <div className="space-y-1">
       <select
         className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
         value={selectValue}
@@ -774,19 +748,18 @@ function ModelPicker({
       )}
 
       {matched && (
-        // Borderless descriptor: distinct from an input visually. Mono
-        // chip for the model ID, plain text below for the trade-off.
-        // Sits flush with the field's left edge so the eye reads it as
-        // a continuation of the select, not a separate input.
-        <div className="px-0.5 pt-1">
+        // Borderless descriptor sits flush under the select, with
+        // tight spacing so the eye reads it as a continuation of the
+        // select rather than a separate paragraph.
+        <div className="px-0.5">
           <code className="text-[10px] font-mono text-kb-text-tertiary">{matched.id}</code>
-          <p className="text-[11px] text-kb-text-secondary leading-snug mt-1">
+          <p className="text-[11px] text-kb-text-secondary leading-snug">
             {matched.description}
           </p>
         </div>
       )}
       {isCustom && (
-        <p className="text-[10px] text-kb-text-tertiary px-0.5 pt-1">
+        <p className="text-[10px] text-kb-text-tertiary px-0.5">
           Custom model ID. Make sure your provider (or compatible gateway) recognises this name and that the base URL points to the right endpoint.
         </p>
       )}

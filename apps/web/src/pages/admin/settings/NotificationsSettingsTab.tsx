@@ -18,6 +18,7 @@ import { api } from '@/services/api'
 import type { NotificationsSettingsPutRequest, NotificationsSettingsResponse } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Field, UnsavedChip } from './SettingsField'
 
 // NotificationsSettingsTab is the editable Settings → Notifications
 // surface introduced by spec #09. Replaces the previously read-only
@@ -246,29 +247,33 @@ function NotificationsSettingsForm({
         </div>
       )}
 
+      {/* Two-column layout on md+: Global on the left (low-density,
+          severity + cooldown + base URL + resolved toggle), channel
+          cards stacked on the right. On narrow screens everything
+          collapses to a single column. items-start so unequal-height
+          columns don't stretch each other. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5 items-start">
       {/* Global */}
       <SectionCard
         icon={<Bell className="w-4 h-4 text-kb-accent" />}
         title="Global"
-        subtitle="Master toggle, severity threshold, and dedup window applied to every channel."
+        subtitle="Master toggle and dispatch rules applied to every channel."
       >
-        <label className="flex items-start gap-2 text-xs text-kb-text-secondary cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.masterEnabled}
-            onChange={(e) => setForm({ ...form, masterEnabled: e.target.checked })}
-            className="accent-kb-accent mt-0.5"
-          />
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="text-kb-text-primary">Notifications enabled</div>
-              {dirtyMap.masterEnabled && <UnsavedChip />}
-            </div>
-            <div className="text-kb-text-tertiary">
-              Master kill switch. Off: no channel receives anything regardless of configuration — useful for maintenance windows.
-            </div>
-          </div>
-        </label>
+        <Field
+          label="Master toggle"
+          dirty={dirtyMap.masterEnabled}
+          helper="Master kill switch. Off: no channel receives anything regardless of configuration — useful for maintenance windows."
+        >
+          <label className="inline-flex items-center gap-2 text-xs text-kb-text-primary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.masterEnabled}
+              onChange={(e) => setForm({ ...form, masterEnabled: e.target.checked })}
+              className="accent-kb-accent"
+            />
+            Notifications enabled
+          </label>
+        </Field>
 
         <Field
           label="Minimum severity"
@@ -276,7 +281,7 @@ function NotificationsSettingsForm({
           helper="Insights below this level are dropped before dispatch. 'Warning' is a sensible default for most clusters."
         >
           <select
-            className="w-full max-w-md px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             value={form.minSeverity}
             onChange={(e) => setForm({ ...form, minSeverity: e.target.value })}
           >
@@ -314,25 +319,27 @@ function NotificationsSettingsForm({
           />
         </Field>
 
-        <label className="flex items-start gap-2 text-xs text-kb-text-secondary cursor-pointer">
-          <input
-            type="checkbox"
-            checked={form.includeResolved}
-            onChange={(e) => setForm({ ...form, includeResolved: e.target.checked })}
-            className="accent-kb-accent mt-0.5"
-          />
-          <div>
-            <div className="flex items-center gap-2">
-              <div className="text-kb-text-primary">Notify on resolved insights</div>
-              {dirtyMap.includeResolved && <UnsavedChip />}
-            </div>
-            <div className="text-kb-text-tertiary">
-              Also send a message when an active insight clears. Off: only new detections trigger.
-            </div>
-          </div>
-        </label>
+        <Field
+          label="Resolved insights"
+          dirty={dirtyMap.includeResolved}
+          helper="Also send a message when an active insight clears. Off: only new detections trigger."
+        >
+          <label className="inline-flex items-center gap-2 text-xs text-kb-text-primary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.includeResolved}
+              onChange={(e) => setForm({ ...form, includeResolved: e.target.checked })}
+              className="accent-kb-accent"
+            />
+            Notify when an insight clears
+          </label>
+        </Field>
       </SectionCard>
 
+      {/* Channels stack — sits in the right column on md+, falls in
+          line below Global on narrow. Stacked space-y-5 mirrors the
+          outer grid's gap so the rhythm is consistent. */}
+      <div className="space-y-5">
       {/* Slack */}
       <ChannelCard
         title="Slack"
@@ -410,7 +417,7 @@ function NotificationsSettingsForm({
         onTest={() => api.testNotification('email').then(() => undefined)}
       >
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Host" dirty={dirtyMap.emailHost} helper="SMTP server hostname.">
+          <Field label="Host" stacked dirty={dirtyMap.emailHost} helper="SMTP server hostname.">
             <input
               type="text"
               placeholder="smtp.example.com"
@@ -419,7 +426,7 @@ function NotificationsSettingsForm({
               onChange={(e) => setForm({ ...form, emailHost: e.target.value })}
             />
           </Field>
-          <Field label="Port" dirty={dirtyMap.emailPort} helper="587 (STARTTLS) is the typical default.">
+          <Field label="Port" stacked dirty={dirtyMap.emailPort} helper="587 (STARTTLS) is the typical default.">
             <input
               type="number"
               min={1}
@@ -432,7 +439,7 @@ function NotificationsSettingsForm({
         </div>
 
         <div className="grid grid-cols-2 gap-4">
-          <Field label="Username" dirty={dirtyMap.emailUsername} helper="SMTP-AUTH username. Optional if your SMTP allows unauthenticated relay.">
+          <Field label="Username" stacked dirty={dirtyMap.emailUsername} helper="SMTP-AUTH username. Optional if your SMTP allows unauthenticated relay.">
             <input
               type="text"
               className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
@@ -442,6 +449,7 @@ function NotificationsSettingsForm({
           </Field>
           <Field
             label="Password"
+            stacked
             dirty={dirtyMap.emailPassword}
             helper={
               eff.emailPasswordMasked
@@ -501,7 +509,7 @@ function NotificationsSettingsForm({
           helper="Instant: one email per insight. Hourly/daily: insights are buffered and sent as a single summary email."
         >
           <select
-            className="w-full max-w-md px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             value={form.emailDigestMode}
             onChange={(e) => setForm({ ...form, emailDigestMode: e.target.value })}
           >
@@ -511,6 +519,8 @@ function NotificationsSettingsForm({
           </select>
         </Field>
       </ChannelCard>
+      </div>{/* /channels stack */}
+      </div>{/* /grid */}
 
       {/* Action card with banners */}
       <div className="bg-kb-card border border-kb-border rounded-xl">
@@ -519,7 +529,7 @@ function NotificationsSettingsForm({
             type="button"
             onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             {resetMutation.isPending ? 'Resetting…' : 'Reset to env defaults'}
@@ -534,7 +544,7 @@ function NotificationsSettingsForm({
                   setRevealDiscord(false)
                   setRevealSMTPPassword(false)
                 }}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
               >
                 <X className="w-3.5 h-3.5" />
                 Cancel
@@ -543,7 +553,7 @@ function NotificationsSettingsForm({
             <button
               type="submit"
               disabled={!isDirty || saveMutation.isPending}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium bg-kb-accent text-kb-bg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {saveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
               {saveMutation.isPending ? 'Saving…' : 'Save changes'}
@@ -587,39 +597,6 @@ function NotificationsSettingsForm({
 }
 
 // ─── Shared form primitives ────────────────────────────────────────────
-
-function Field({
-  label,
-  helper,
-  dirty,
-  children,
-}: {
-  label: string
-  helper?: string
-  dirty?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
-        <label className="block text-[11px] font-semibold text-kb-text-primary uppercase tracking-wider">
-          {label}
-        </label>
-        {dirty && <UnsavedChip />}
-      </div>
-      {children}
-      {helper && <p className="text-[11px] text-kb-text-tertiary leading-relaxed">{helper}</p>}
-    </div>
-  )
-}
-
-function UnsavedChip() {
-  return (
-    <span className="text-[10px] font-mono font-medium uppercase tracking-wider text-status-warn">
-      Unsaved
-    </span>
-  )
-}
 
 function SecretInput({
   value,
@@ -786,7 +763,7 @@ function ChannelCard({
               ? 'Save your changes first — testing uses the live notifier, not the unsaved form values.'
               : 'Send a synthetic test notification through this channel.'
           }
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {status === 'sending' ? (
             <>

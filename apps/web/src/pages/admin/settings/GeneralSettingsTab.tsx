@@ -8,6 +8,7 @@ import {
   RotateCcw,
   Save,
   Settings,
+  SlidersHorizontal,
   Sparkles,
   Sun,
   X,
@@ -20,6 +21,7 @@ import type {
 } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Field } from './SettingsField'
 
 // GeneralSettingsTab — display name + team-default refresh interval.
 // Smallest of the Settings domains in terms of edit surface; meant to
@@ -142,6 +144,14 @@ function GeneralSettingsForm({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
+      {/* Row-aligned 2-col grid. Source order flows row-by-row so the
+          pairing reads as: row 1 = Appearance | Branding (per-user
+          theme + per-install branding), row 2 = Setup wizard |
+          Defaults (onboarding tooling). Cards in each row stretch
+          to the row's max height — content was trimmed (1-line
+          subtitles + concise helpers) so leftover dead space inside
+          a shorter card is small enough to not read as imbalance. */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
       {/* Appearance is a per-USER preference (stored in localStorage),
           distinct from the cluster-wide settings below. Surfaced here
           for discoverability — the Topbar's sun/moon icon does the
@@ -149,21 +159,20 @@ function GeneralSettingsForm({
       <SectionCard
         icon={theme === 'dark' ? <Moon className="w-4 h-4 text-kb-text-secondary" /> : <Sun className="w-4 h-4 text-status-info" />}
         title="Appearance"
-        subtitle="Theme preference for your browser. Each user picks their own; not shared across the team."
+        subtitle="Per-user theme preference for this browser."
       >
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="text-xs text-kb-text-primary">
-              {theme === 'dark' ? 'Dark mode' : 'Light mode'}
-            </div>
-            <p className="text-[11px] text-kb-text-tertiary mt-0.5 leading-relaxed">
-              Saved to <code className="font-mono text-kb-accent">localStorage</code> in this browser. Clearing site data resets it.
-            </p>
-          </div>
+        <Field
+          label="Theme"
+          helper={
+            <>
+              Saved to <code className="font-mono text-kb-accent">localStorage</code> in this browser. The Topbar's sun/moon icon does the same in one click.
+            </>
+          }
+        >
           <button
             type="button"
             onClick={toggleTheme}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border shrink-0"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-primary hover:bg-kb-elevated border border-kb-border"
           >
             {theme === 'dark' ? (
               <>
@@ -177,7 +186,7 @@ function GeneralSettingsForm({
               </>
             )}
           </button>
-        </div>
+        </Field>
       </SectionCard>
 
       <SectionCard
@@ -188,13 +197,13 @@ function GeneralSettingsForm({
         <Field
           label="Display name"
           dirty={dirtyMap.displayName}
-          helper="Shown in the sidebar logo area and (later) the browser tab title. Leave blank to fall back to 'KubeBolt'. Max 64 characters."
+          helper="Shown in the sidebar and browser tab. Leave blank to fall back to 'KubeBolt'. Max 64 characters."
         >
           <input
             type="text"
             placeholder="KubeBolt"
             maxLength={64}
-            className="w-full max-w-md px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             value={form.displayName}
             onChange={(e) => setForm({ ...form, displayName: e.target.value })}
           />
@@ -204,38 +213,46 @@ function GeneralSettingsForm({
       <SectionCard
         icon={<Sparkles className="w-4 h-4 text-kb-text-tertiary" />}
         title="Setup wizard"
-        subtitle="Re-run the welcome flow — useful for onboarding videos and per-cluster demos."
+        subtitle="Re-run the welcome flow for onboarding demos."
       >
-        <button
-          type="button"
-          onClick={() => {
-            setRerunWizardError(null)
-            setRerunWizardConfirmOpen(true)
-          }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border"
+        <Field
+          label="Welcome flow"
+          helper="The wizard reappears on next page load. Every step is optional and can be skipped."
         >
-          <Sparkles className="w-3.5 h-3.5" />
-          Re-run setup wizard
-        </button>
-        {rerunWizardError && (
-          <div className="mt-2 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">
-            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-            <div>{rerunWizardError}</div>
+          <div>
+            <button
+              type="button"
+              onClick={() => {
+                setRerunWizardError(null)
+                setRerunWizardConfirmOpen(true)
+              }}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
+            >
+              <Sparkles className="w-3.5 h-3.5" />
+              Re-run setup wizard
+            </button>
+            {rerunWizardError && (
+              <div className="mt-2 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">
+                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div>{rerunWizardError}</div>
+              </div>
+            )}
           </div>
-        )}
+        </Field>
       </SectionCard>
 
       <SectionCard
+        icon={<SlidersHorizontal className="w-4 h-4 text-kb-accent" />}
         title="Defaults"
-        subtitle="Baseline UX values applied when a user has no personal preference yet."
+        subtitle="Baseline UX values for users with no preference yet."
       >
         <Field
-          label="Default refresh interval"
+          label="Refresh interval"
           dirty={dirtyMap.defaultRefreshIntervalSeconds}
-          helper="Seeds the polling cadence for new users. Per-user choices via the freshness dropdown still win over this default."
+          helper="Initial polling cadence for new users. Per-user choices override this."
         >
           <select
-            className="w-full max-w-xs px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             value={form.defaultRefreshIntervalSeconds}
             onChange={(e) =>
               setForm({ ...form, defaultRefreshIntervalSeconds: e.target.value })
@@ -249,6 +266,7 @@ function GeneralSettingsForm({
           </select>
         </Field>
       </SectionCard>
+      </div>{/* /grid */}
 
       <div className="bg-kb-card border border-kb-border rounded-xl">
         <div className="p-3 flex items-center justify-between gap-3">
@@ -256,7 +274,7 @@ function GeneralSettingsForm({
             type="button"
             onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             {resetMutation.isPending ? 'Resetting…' : 'Reset to env defaults'}
@@ -266,7 +284,7 @@ function GeneralSettingsForm({
               <button
                 type="button"
                 onClick={() => setForm(initial)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
               >
                 <X className="w-3.5 h-3.5" />
                 Cancel
@@ -275,7 +293,7 @@ function GeneralSettingsForm({
             <button
               type="submit"
               disabled={!isDirty || saveMutation.isPending}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium bg-kb-accent text-kb-bg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {saveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
               {saveMutation.isPending ? 'Saving…' : 'Save changes'}
@@ -337,39 +355,6 @@ function GeneralSettingsForm({
         onCancel={() => setRerunWizardConfirmOpen(false)}
       />
     </form>
-  )
-}
-
-function Field({
-  label,
-  helper,
-  dirty,
-  children,
-}: {
-  label: string
-  helper?: string
-  dirty?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
-        <label className="block text-[11px] font-semibold text-kb-text-primary uppercase tracking-wider">
-          {label}
-        </label>
-        {dirty && <UnsavedChip />}
-      </div>
-      {children}
-      {helper && <p className="text-[11px] text-kb-text-tertiary leading-relaxed">{helper}</p>}
-    </div>
-  )
-}
-
-function UnsavedChip() {
-  return (
-    <span className="text-[10px] font-mono font-medium uppercase tracking-wider text-status-warn">
-      Unsaved
-    </span>
   )
 }
 

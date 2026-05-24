@@ -117,10 +117,16 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 			cfg.Fallback = &fb
 		}
 		applyStoredProvider(cfg.Fallback, stored.Fallback, crypto)
-		// If after merging the fallback has no API key, drop it — same
-		// rule the env loader uses ("fallback is enabled only when key
-		// is present").
-		if cfg.Fallback.APIKey == "" {
+		// Drop the fallback only when the stored override never had an
+		// encrypted key (legitimate "no fallback configured" state). If
+		// the stored key EXISTS but decryption failed (JWT secret was
+		// rotated mid-life), keep cfg.Fallback visible — secretsReadable
+		// flips false elsewhere so the UI can show the "re-enter key"
+		// prompt. Previously this branch dropped the fallback in BOTH
+		// cases, making a rotated install look identical to a fresh one
+		// and the operator's config silently disappeared.
+		storedHadKey := stored.Fallback.APIKeyEncoded != nil && *stored.Fallback.APIKeyEncoded != ""
+		if cfg.Fallback.APIKey == "" && !storedHadKey {
 			cfg.Fallback = nil
 		}
 	}
@@ -193,26 +199,40 @@ func (r *Runtime) PutCopilot(patch *StoredCopilotSettings, plaintextAPIKey, plai
 		return err
 	}
 	// Encrypt the API keys if the caller is updating them. nil pointer =
-	// don't touch the field; non-nil with empty string = clear it.
+	// don't touch the field; non-nil with empty string = explicit clear
+	// (used by the UI's "disable fallback" toggle — we set the encoded
+	// envelope to the literal empty string, which mergeProvider treats
+	// as "drop this override" and applyStoredCopilot then drops the
+	// whole fallback section since cfg.Fallback.APIKey ends up empty).
 	if plaintextAPIKey != nil {
 		if patch.Primary == nil {
 			patch.Primary = &StoredProviderSettings{}
 		}
-		enc, err := r.crypto.encrypt(*plaintextAPIKey)
-		if err != nil {
-			return fmt.Errorf("encrypt primary key: %w", err)
+		if *plaintextAPIKey == "" {
+			empty := ""
+			patch.Primary.APIKeyEncoded = &empty
+		} else {
+			enc, err := r.crypto.encrypt(*plaintextAPIKey)
+			if err != nil {
+				return fmt.Errorf("encrypt primary key: %w", err)
+			}
+			patch.Primary.APIKeyEncoded = &enc
 		}
-		patch.Primary.APIKeyEncoded = &enc
 	}
 	if plaintextFallbackAPIKey != nil {
 		if patch.Fallback == nil {
 			patch.Fallback = &StoredProviderSettings{}
 		}
-		enc, err := r.crypto.encrypt(*plaintextFallbackAPIKey)
-		if err != nil {
-			return fmt.Errorf("encrypt fallback key: %w", err)
+		if *plaintextFallbackAPIKey == "" {
+			empty := ""
+			patch.Fallback.APIKeyEncoded = &empty
+		} else {
+			enc, err := r.crypto.encrypt(*plaintextFallbackAPIKey)
+			if err != nil {
+				return fmt.Errorf("encrypt fallback key: %w", err)
+			}
+			patch.Fallback.APIKeyEncoded = &enc
 		}
-		patch.Fallback.APIKeyEncoded = &enc
 	}
 
 	// Read existing record (if any) so we MERGE the patch instead of
@@ -259,9 +279,17 @@ func (r *Runtime) GetCopilot() (stored StoredCopilotSettings, baseline config.Co
 	}
 	// Probe whether the encrypted secrets are readable with the current
 	// crypto key. If not, the UI shows a "re-enter your key" prompt.
+	// Probe BOTH primary and fallback — a rotated JWT secret invalidates
+	// every encrypted blob, and the prior code only checked Primary so
+	// Fallback failures slipped through silently.
 	secretReadable = true
 	if stored.Primary != nil && stored.Primary.APIKeyEncoded != nil && *stored.Primary.APIKeyEncoded != "" {
 		if _, decErr := r.crypto.decrypt(*stored.Primary.APIKeyEncoded); decErr != nil {
+			secretReadable = false
+		}
+	}
+	if stored.Fallback != nil && stored.Fallback.APIKeyEncoded != nil && *stored.Fallback.APIKeyEncoded != "" {
+		if _, decErr := r.crypto.decrypt(*stored.Fallback.APIKeyEncoded); decErr != nil {
 			secretReadable = false
 		}
 	}
@@ -525,10 +553,20 @@ func mergeCopilot(base, patch StoredCopilotSettings) StoredCopilotSettings {
 		mergeProvider(out.Primary, patch.Primary)
 	}
 	if patch.Fallback != nil {
-		if out.Fallback == nil {
-			out.Fallback = &StoredProviderSettings{}
+		// Same drop-on-empty-key semantics as Primary. This is what
+		// the UI's "Enable" toggle uses: when the operator flips
+		// fallback off, the frontend sends plaintextFallbackAPIKey=""
+		// → PutCopilot encodes that as APIKeyEncoded=&"" → we drop the
+		// whole Fallback section here so provider/model don't survive
+		// as ghost fields that re-enable themselves on next reload.
+		if patch.Fallback.APIKeyEncoded != nil && *patch.Fallback.APIKeyEncoded == "" {
+			out.Fallback = nil
+		} else {
+			if out.Fallback == nil {
+				out.Fallback = &StoredProviderSettings{}
+			}
+			mergeProvider(out.Fallback, patch.Fallback)
 		}
-		mergeProvider(out.Fallback, patch.Fallback)
 	}
 	if patch.MaxTokens != nil {
 		out.MaxTokens = patch.MaxTokens

@@ -60,7 +60,12 @@ export function SettingsPage() {
   const [bootedWithOpen, setBootedWithOpen] = useState(false)
 
   return (
-    <div>
+    // pb-24 leaves a comfortable gutter at the bottom of the page so
+    // the form's action bar (Reset / Cancel / Save) doesn't sit under
+    // the floating Copilot toggle in tall forms. Without this the
+    // buttons end up at the same screen position as the toggle and
+    // become unclickable.
+    <div className="pb-24">
       <div className="flex items-center justify-between mb-6 gap-4">
         <div>
           <h1 className="text-lg font-semibold text-kb-text-primary flex items-center gap-2">
@@ -103,7 +108,7 @@ export function SettingsPage() {
         })}
       </div>
 
-      <div className="max-w-3xl">
+      <div>
         {active === 'general' && <GeneralSettingsTab />}
         {active === 'copilot' && <CopilotSettingsTab />}
         {active === 'ingest' && <IngestSettingsTab />}

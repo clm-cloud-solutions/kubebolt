@@ -10,6 +10,7 @@ import {
   RefreshCw,
   RotateCcw,
   Save,
+  Timer,
   X,
 } from 'lucide-react'
 import { api } from '@/services/api'
@@ -21,6 +22,7 @@ import type {
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { Modal } from '@/components/shared/Modal'
 import { ConfirmDialog } from './ConfirmDialog'
+import { Field } from './SettingsField'
 
 // AuthSettingsTab is the spec #09 "restart required" domain. Unlike
 // every other Settings tab — which hot-reloads — auth changes only
@@ -229,11 +231,16 @@ function AuthSettingsForm({
         </div>
       )}
 
+      {/* Two-column on lg+: read-only "Current state" on the left,
+          editable TTLs on the right so operators see "what's running"
+          next to "what they're about to change". On md the cards
+          still stack — they don't compress well below ~480px wide. */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
       {/* Current state (read-only) */}
       <SectionCard
         icon={<KeyRound className="w-4 h-4 text-kb-accent" />}
         title="Current state"
-        subtitle="The values the running process is using right now. Edit below — changes apply on next restart."
+        subtitle="Values the running process is using right now."
       >
         <div className="grid grid-cols-2 gap-4 text-xs">
           <ReadField
@@ -262,8 +269,9 @@ function AuthSettingsForm({
 
       {/* Editable TTLs */}
       <SectionCard
+        icon={<Timer className="w-4 h-4 text-kb-accent" />}
         title="Token TTLs"
-        subtitle="Shorter access TTLs reduce blast radius if a token leaks; longer refresh TTLs reduce login frequency."
+        subtitle="Shorter access tokens limit leak blast radius; longer refresh reduces login frequency."
       >
         <Field
           label="Access token TTL (seconds)"
@@ -295,6 +303,7 @@ function AuthSettingsForm({
           />
         </Field>
       </SectionCard>
+      </div>{/* /grid */}
 
       {/* Action card with banners */}
       <div className="bg-kb-card border border-kb-border rounded-xl">
@@ -303,7 +312,7 @@ function AuthSettingsForm({
             type="button"
             onClick={() => setResetConfirmOpen(true)}
             disabled={resetMutation.isPending}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
             {resetMutation.isPending ? 'Resetting…' : 'Reset to env defaults'}
@@ -313,7 +322,7 @@ function AuthSettingsForm({
               <button
                 type="button"
                 onClick={() => setForm(initial)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs text-kb-text-secondary hover:bg-kb-elevated border border-kb-border"
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors"
               >
                 <X className="w-3.5 h-3.5" />
                 Cancel
@@ -322,7 +331,7 @@ function AuthSettingsForm({
             <button
               type="submit"
               disabled={!isDirty || saveMutation.isPending}
-              className="flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-medium bg-kb-accent text-kb-bg disabled:opacity-50 disabled:cursor-not-allowed"
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {saveMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
               {saveMutation.isPending ? 'Saving…' : 'Save changes'}
@@ -454,39 +463,6 @@ function ReadField({
       )}
       <p className="text-[11px] text-kb-text-tertiary leading-relaxed">{helper}</p>
     </div>
-  )
-}
-
-function Field({
-  label,
-  helper,
-  dirty,
-  children,
-}: {
-  label: string
-  helper?: string
-  dirty?: boolean
-  children: React.ReactNode
-}) {
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center gap-2">
-        <label className="block text-[11px] font-semibold text-kb-text-primary uppercase tracking-wider">
-          {label}
-        </label>
-        {dirty && <UnsavedChip />}
-      </div>
-      {children}
-      {helper && <p className="text-[11px] text-kb-text-tertiary leading-relaxed">{helper}</p>}
-    </div>
-  )
-}
-
-function UnsavedChip() {
-  return (
-    <span className="text-[10px] font-mono font-medium uppercase tracking-wider text-status-warn">
-      Unsaved
-    </span>
   )
 }
 

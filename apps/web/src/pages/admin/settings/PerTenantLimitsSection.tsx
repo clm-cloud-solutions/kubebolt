@@ -19,7 +19,7 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, CheckCircle2, RotateCcw, Save } from 'lucide-react'
+import { AlertTriangle, CheckCircle2, Gauge, RotateCcw, Save } from 'lucide-react'
 import { api, type EffectiveLimits, type LimitsResponse, type TenantLimits } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -201,14 +201,19 @@ export function PerTenantLimitsSection() {
 
   return (
     <section className="bg-kb-card border border-kb-border rounded-xl overflow-hidden">
-      <header className="px-5 py-4 border-b border-kb-border">
-        <h2 className="text-sm font-semibold text-kb-text-primary">Per-tenant overrides</h2>
-        <p className="text-[11px] text-kb-text-tertiary mt-0.5 leading-snug">
-          Caps that win over the fleet defaults above for a specific tenant. Per-tenant overrides apply
-          to the default tenant (the only one surfaced in OSS); clearing them returns each field to the
-          fleet default.
-        </p>
-        <p className="text-[10px] text-kb-text-tertiary mt-2 font-mono">tenant: {defaultTenant.id}</p>
+      <header className="flex items-start justify-between gap-3 px-5 py-4 border-b border-kb-border">
+        <div className="flex items-start gap-2 min-w-0">
+          <Gauge className="w-4 h-4 text-kb-accent mt-0.5 shrink-0" />
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-kb-text-primary">Per-tenant overrides</h2>
+            <p className="text-[11px] text-kb-text-tertiary mt-0.5 leading-snug">
+              Caps for the default tenant. Clearing them returns each field to the fleet default.
+            </p>
+          </div>
+        </div>
+        <span className="text-[10px] text-kb-text-tertiary font-mono shrink-0" title={`tenant: ${defaultTenant.id}`}>
+          {defaultTenant.id.slice(0, 8)}…
+        </span>
       </header>
 
       <div className="divide-y divide-kb-border">
