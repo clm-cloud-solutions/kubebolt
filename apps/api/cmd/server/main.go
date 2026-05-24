@@ -711,6 +711,29 @@ func main() {
 			)
 		}
 	}
+	// Spec #09 V2 — hot-reload the tunnel idle timeout from the
+	// settings runtime. A 30s ticker re-reads the value and rewrites
+	// the package-level default; subsequent tunnel constructions pick
+	// up the new value, in-flight tunnels keep their captured value
+	// (you can't retroactively shorten the watchdog of a running
+	// session). Race-tolerant — concurrent reads of a Duration are
+	// safe on the platforms KubeBolt supports (atomic word write),
+	// and either old/new value is a valid config. Tied to agentCtx so
+	// the ticker stops cleanly on shutdown alongside the gRPC server.
+	if settingsRuntime != nil {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-agentCtx.Done():
+					return
+				case <-ticker.C:
+					channel.DefaultTunnelIdleTimeout = settingsRuntime.IngestChannel().AgentTunnelIdleTimeout
+				}
+			}
+		}()
+	}
 
 	// Discover the cluster_id the backend itself runs in (the
 	// kube-system namespace UID), best-effort. Hoisted ABOVE the
@@ -813,32 +836,40 @@ func main() {
 		// for agents currently connected (DisconnectedAt zero) never
 		// expire. The horizon is configurable so SaaS operators can
 		// shorten it if they don't want stale orgs in their data set.
-		pruneHorizon := 24 * time.Hour
-		if v := os.Getenv("KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON"); v != "" {
-			if d, err := time.ParseDuration(v); err == nil && d > 0 {
-				pruneHorizon = d
-			} else {
-				slog.Warn("invalid KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON, using default",
-					slog.String("requested", v),
-					slog.Duration("default", pruneHorizon),
-				)
-			}
-		}
+		//
+		// Spec #09 V2 — the horizon is hot-reloadable. The ticker
+		// re-reads `settingsRuntime.IngestChannel().AgentRegistryPruneHorizon`
+		// on every tick, so UI changes take effect on the next hourly
+		// pass without a restart. Falls back to the env-only baseline
+		// when the runtime isn't available (auth-disabled mode).
 		go func() {
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
+			fallbackHorizon := config.DefaultAgentRegistryPruneHorizon
+			if v := os.Getenv("KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON"); v != "" {
+				if d, err := time.ParseDuration(v); err == nil && d > 0 {
+					fallbackHorizon = d
+				}
+			}
 			for {
 				select {
 				case <-agentCtx.Done():
 					return
 				case <-ticker.C:
-					removed, err := agentStore.Prune(time.Now().UTC().Add(-pruneHorizon))
+					horizon := fallbackHorizon
+					if settingsRuntime != nil {
+						horizon = settingsRuntime.IngestChannel().AgentRegistryPruneHorizon
+					}
+					removed, err := agentStore.Prune(time.Now().UTC().Add(-horizon))
 					if err != nil {
 						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
 						continue
 					}
 					if removed > 0 {
-						slog.Info("agent registry pruned", slog.Int("removed", removed))
+						slog.Info("agent registry pruned",
+							slog.Int("removed", removed),
+							slog.Duration("horizon", horizon),
+						)
 					}
 				}
 			}
