@@ -654,8 +654,71 @@ function WizardModelPicker({
 function StepAgent() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
-  const helmCmd = `helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\
+  // Spec #09 V2 — when the backend's gRPC channel runs `enforced` (or
+  // `permissive`), the agent needs an ingest token Secret mounted into
+  // its pod. Pull the current channel auth mode + tenant list so the
+  // wizard can offer one-click token issuance, and tailor the helm
+  // command with the Secret reference.
+  const { data: channel } = useQuery({
+    queryKey: ['admin', 'settings', 'ingest-channel'],
+    queryFn: api.getSettingsIngestChannel,
+    // Mid-wizard the channel mode shouldn't change under us, but
+    // refetch on focus catches the "operator opened another tab,
+    // flipped to enforced, came back here" case.
+    staleTime: 30_000,
+  })
+  const { data: authInfo } = useQuery({
+    queryKey: ['agent-auth-info'],
+    queryFn: () => api.getAgentAuthInfo(),
+    staleTime: 30_000,
+  })
+
+  const channelAuthMode = channel?.effective.agentAuthMode ?? 'disabled'
+  const needsToken = channelAuthMode === 'enforced' || channelAuthMode === 'permissive'
+
+  const [issuedSecret, setIssuedSecret] = useState<{ secretName: string; namespace: string; tokenPrefix: string } | null>(null)
+  const issueToken = useMutation({
+    mutationFn: () => {
+      const firstActive = authInfo?.tenants?.find((t) => !t.disabled)
+      const tenantId = firstActive?.id || ''
+      if (!tenantId) {
+        throw new Error('No active tenant available — issue tokens from Admin → Agent Tokens')
+      }
+      return api.issueAgentTokenAndMaterializeSecret({
+        tenantId,
+        namespace: 'kubebolt',
+        secretName: 'kubebolt-agent-token',
+        label: `wizard ${new Date().toISOString().slice(0, 10)}`,
+      })
+    },
+    onSuccess: (resp) => {
+      // Backend already wrote the plaintext into the K8s Secret —
+      // it never round-trips back to the UI. The helm chart's
+      // projected volume reads the Secret on agent pod start. We
+      // only need name + namespace + the tokenPrefix to display the
+      // operator-facing identity ("you issued token kbat_a1b2…").
+      setIssuedSecret({
+        secretName: resp.secretName,
+        namespace: resp.namespace,
+        tokenPrefix: resp.tokenPrefix,
+      })
+    },
+  })
+
+  // Helm command tailored to the auth posture. Without a token: bare
+  // install. With a token (after issueToken success): add auth.mode +
+  // auth.ingestTokenSecret so the Helm chart wires the Secret into the
+  // agent DaemonSet's projected volume.
+  const helmCmd = (() => {
+    const base = `helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\
   --namespace kubebolt --create-namespace`
+    if (issuedSecret) {
+      return `${base} \\
+  --set auth.mode=ingest-token \\
+  --set auth.ingestTokenSecret=${issuedSecret.secretName}`
+    }
+    return base
+  })()
 
   function copy(key: string, text: string) {
     navigator.clipboard.writeText(text)
@@ -671,6 +734,73 @@ function StepAgent() {
           The agent is a DaemonSet that ships kubelet metrics + Cilium flow events from each node into KubeBolt. The UI works without it but you'll miss network telemetry and per-node breakdowns.
         </p>
       </div>
+
+      {/* Auth posture banner — only renders when the channel is in
+          enforced/permissive. Tells the operator they need a token
+          BEFORE they paste the helm command, and offers the one-click
+          issue button so they don't have to leave the wizard. */}
+      {needsToken && !issuedSecret && (
+        <div className="rounded-md border border-status-info-dim bg-status-info-dim/30 p-3 text-xs space-y-2">
+          <div className="flex items-start gap-2 text-status-info">
+            <KeyRound className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold">
+                Channel auth: <code className="font-mono">{channelAuthMode}</code>
+              </div>
+              <div className="text-kb-text-secondary mt-0.5 leading-relaxed">
+                The backend is configured to require credentials. Generate an ingest token now
+                — the wizard will materialize a Kubernetes Secret in the{' '}
+                <code className="font-mono">kubebolt</code> namespace and add the right flags to
+                the helm command below.
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => issueToken.mutate()}
+              disabled={issueToken.isPending}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium bg-kb-accent text-white hover:opacity-90 disabled:opacity-40"
+            >
+              {issueToken.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <KeyRound className="w-3.5 h-3.5" />
+              )}
+              Generate token + create Secret
+            </button>
+            {issueToken.isError && (
+              <span className="text-[11px] text-status-error">
+                {(issueToken.error as Error).message}
+              </span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Post-issuance card. The plaintext token NEVER round-trips
+          to the UI — the backend wrote it straight into a K8s Secret
+          which the agent pod will read via projected volume. We only
+          surface the secret name (for the helm flag) and the
+          tokenPrefix so the operator can later identify the token in
+          Admin → Agent Tokens if they need to revoke it. */}
+      {issuedSecret && (
+        <div className="rounded-md border border-status-ok-dim bg-status-ok-dim/30 p-3 text-xs space-y-2">
+          <div className="flex items-start gap-2 text-status-ok">
+            <Check className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold">
+                Secret <code className="font-mono">{issuedSecret.namespace}/{issuedSecret.secretName}</code> created
+              </div>
+              <div className="text-kb-text-secondary mt-0.5 leading-relaxed">
+                Token prefix <code className="font-mono">{issuedSecret.tokenPrefix}</code> — find
+                it in Admin → Agent Tokens to rotate or revoke. The helm command below already
+                references the Secret by name.
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -701,8 +831,9 @@ function StepAgent() {
       </div>
 
       <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
-        For multi-cluster fleets, the agent needs an ingest token. Generate one
-        from Admin → Agent Tokens after finishing the wizard.
+        {needsToken
+          ? 'Run the command above after the Secret has been created. Need more tokens or a different tenant? Admin → Agent Tokens.'
+          : 'Channel auth is on disabled — no token needed. For multi-cluster fleets, switch the channel to enforced via Settings → Agents & Ingest and re-run this wizard for token issuance.'}
       </p>
     </div>
   )
