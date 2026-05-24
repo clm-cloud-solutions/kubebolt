@@ -353,7 +353,14 @@ func main() {
 		// override) feeds the JWT service's TTLs. Without this order
 		// the JWT service would always use env TTLs and ignore any
 		// previously-saved UI override across restarts.
-		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, authCfg.JWTSecret); err != nil {
+		// Spec #09 V2 — the IngestChannel domain centralizes the env
+		// baseline for the agent ↔ backend communication plane (auth
+		// mode, rate limits, auto-registration, remote_write receiver,
+		// tunnel timeouts). Consumer subsystems read live values via
+		// settingsRuntime.IngestChannel() instead of os.Getenv directly.
+		envIngestChannelCfg := config.LoadIngestChannelConfig()
+
+		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
 			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
 				slog.String("error", err.Error()))
 		} else {

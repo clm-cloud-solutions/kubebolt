@@ -35,13 +35,14 @@ import (
 type Runtime struct {
 	store *auth.Store
 
-	// envBase / envNotifications / envAuth / envGeneral are the
-	// env-driven baselines computed once at boot. Override values from
-	// BoltDB merge onto these at resolve time, field by field.
-	envBase          config.CopilotConfig
-	envNotifications config.NotificationsConfig
-	envAuth          config.AuthConfig
-	envGeneral       config.GeneralConfig
+	// envBase / envNotifications / envAuth / envGeneral / envIngestChannel
+	// are the env-driven baselines computed once at boot. Override values
+	// from BoltDB merge onto these at resolve time, field by field.
+	envBase           config.CopilotConfig
+	envNotifications  config.NotificationsConfig
+	envAuth           config.AuthConfig
+	envGeneral        config.GeneralConfig
+	envIngestChannel  config.IngestChannelConfig
 
 	// crypto handles encryption of sensitive fields at rest (API keys,
 	// webhook secrets). Derived from the JWT secret at boot so the same
@@ -68,6 +69,15 @@ type Runtime struct {
 	// pendingRestart.
 	authBootSnapshot config.AuthConfig
 	authBootCaptured bool
+
+	// IngestChannel cache + boot snapshot. Mirrors the Auth pattern:
+	// the resolved struct is always available via IngestChannel(), and
+	// the boot snapshot lets the UI compute pendingRestart for the
+	// restart-required subset (agent auth mode, token audience, mTLS).
+	ingestChannel             config.IngestChannelConfig
+	ingestChannelValid        bool
+	ingestChannelBootSnapshot config.IngestChannelConfig
+	ingestChannelBootCaptured bool
 }
 
 // NewRuntime wires the Runtime against an auth.Store and the env-driven
@@ -78,7 +88,7 @@ type Runtime struct {
 // Returns an error if the JWT secret is too short to derive a key from
 // (must be at least 16 bytes — anything shorter is a misconfiguration we
 // fail loud about rather than silently accept).
-func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, envAuth config.AuthConfig, envGeneral config.GeneralConfig, jwtSecret []byte) (*Runtime, error) {
+func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, envAuth config.AuthConfig, envGeneral config.GeneralConfig, envIngestChannel config.IngestChannelConfig, jwtSecret []byte) (*Runtime, error) {
 	if store == nil {
 		return nil, errors.New("settings: store is required")
 	}
@@ -92,6 +102,7 @@ func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotificat
 		envNotifications: envNotifications,
 		envAuth:          envAuth,
 		envGeneral:       envGeneral,
+		envIngestChannel: envIngestChannel,
 		crypto:           crypto,
 	}, nil
 }
