@@ -36,6 +36,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -114,6 +115,13 @@ func fatal(msg string, args ...any) {
 }
 
 func main() {
+	// Capture every KUBEBOLT_* env var as the FIRST thing main() does,
+	// before any flag parsing or subsystem init can mutate the process
+	// environment. Surfaced via /admin/settings/booted-with so operators
+	// can answer "what did Helm wire into this container?" without
+	// kubectl-exec to inspect /proc/1/environ.
+	bootEnv := api.SnapshotKubeboltEnv(os.Environ())
+
 	cfg := config.DefaultConfig()
 
 	var host string
@@ -243,6 +251,11 @@ func main() {
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
+	// is disabled — same gate as the rest of the admin surface, since
+	// persistence requires BoltDB to be open. Constructed inside the
+	// authCfg.Enabled block where `store` and the JWT secret exist.
+	var settingsRuntime *settings.Runtime
 	// Hoisted out of the auth-enabled scope so the API router can see
 	// it for the agent integration's "issue token + create Secret"
 	// flow (router-level handler talks to the same store the agent
@@ -268,6 +281,18 @@ func main() {
 		WriteBurstSamples:  promLimitsCfg.WriteBurstSamples,
 		MaxActiveSeries:    promLimitsCfg.MaxActiveSeries,
 	}
+
+	// Notifications env baseline. Loaded here (before authCfg.Enabled
+	// block) so both the settings runtime and the boot-time notifier
+	// wiring below see the same config snapshot. Hot-reload via the
+	// admin Settings PUT handler swaps the live manager state at runtime;
+	// this remains the fallback layer for any field not overridden.
+	envNotifCfg := config.LoadNotificationsConfig()
+
+	// General settings env baseline (display name, default refresh
+	// interval). Trivially hot-reloadable — no live subsystem caches
+	// these values; the UI reads them per request.
+	envGeneralCfg := config.LoadGeneralConfig()
 
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
@@ -323,6 +348,26 @@ func main() {
 			}
 		}
 
+		// Settings runtime is built HERE — before the JWT service —
+		// because the resolved Auth() config (env baseline + BoltDB
+		// override) feeds the JWT service's TTLs. Without this order
+		// the JWT service would always use env TTLs and ignore any
+		// previously-saved UI override across restarts.
+		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, authCfg.JWTSecret); err != nil {
+			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
+				slog.String("error", err.Error()))
+		} else {
+			settingsRuntime = rt
+			// Apply persisted Auth overrides onto the live authCfg so the
+			// JWT service + handlers below pick up the resolved TTLs.
+			// JWTSecret stays from the env/DB path above; only the
+			// UI-editable subset of AuthConfig gets merged.
+			resolvedAuth := rt.Auth()
+			authCfg.AccessTokenExpiry = resolvedAuth.AccessTokenExpiry
+			authCfg.RefreshTokenExpiry = resolvedAuth.RefreshTokenExpiry
+			slog.Info("settings runtime initialised — admin UI can override env config")
+		}
+
 		jwtSvc := auth.NewJWTService(authCfg)
 		authHandlers = auth.NewHandlers(store, jwtSvc, authCfg)
 
@@ -375,47 +420,47 @@ func main() {
 		}
 		agentAuthBundle = bundle
 		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
+
+		// Now that the JWT service + admin handlers are wired with the
+		// resolved authCfg, snapshot what the running process was built
+		// from. Subsequent PUTs to /admin/settings/auth compare against
+		// this baseline to compute pendingRestart.
+		if settingsRuntime != nil {
+			settingsRuntime.CaptureAuthBootSnapshot()
+		}
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
 	}
 
-	// Load notifications config and wire up Slack/Discord notifiers if webhooks are set
-	notifCfg := config.LoadNotificationsConfig()
+	// Wire up Slack/Discord/Email notifiers from the env baseline loaded
+	// above. BuildNotifiers + ConfigFromNotifications are shared with the
+	// admin Settings → Notifications PUT handler so boot-time and hot-
+	// reload produce the same notifier composition.
 	var notifManager *notifications.Manager
 	{
-		var notifiers []notifications.Notifier
-		if notifCfg.SlackWebhookURL != "" {
-			notifiers = append(notifiers, notifications.NewSlackNotifier(notifCfg.SlackWebhookURL))
+		// Resolved config = env baseline + any persisted UI overrides.
+		// At boot we read settingsRuntime so admins keep their saved
+		// notifications config across process restarts. When auth is
+		// disabled (no settingsRuntime), env is the only layer.
+		bootNotifCfg := envNotifCfg
+		if settingsRuntime != nil {
+			bootNotifCfg = settingsRuntime.Notifications()
+		}
+		notifiers := notifications.BuildNotifiers(bootNotifCfg)
+		if bootNotifCfg.SlackWebhookURL != "" {
 			slog.Info("slack notifications enabled")
 		}
-		if notifCfg.DiscordWebhookURL != "" {
-			notifiers = append(notifiers, notifications.NewDiscordNotifier(notifCfg.DiscordWebhookURL))
+		if bootNotifCfg.DiscordWebhookURL != "" {
 			slog.Info("discord notifications enabled")
 		}
-		if notifCfg.Email.Enabled() {
-			email := notifications.NewEmailNotifier(notifications.EmailConfig{
-				Host:       notifCfg.Email.Host,
-				Port:       notifCfg.Email.Port,
-				Username:   notifCfg.Email.Username,
-				Password:   notifCfg.Email.Password,
-				From:       notifCfg.Email.From,
-				To:         notifCfg.Email.To,
-				DigestMode: notifications.DigestMode(notifCfg.Email.DigestMode),
-			})
-			notifiers = append(notifiers, email)
+		if bootNotifCfg.Email.Enabled() {
 			slog.Info("email notifications enabled",
-				slog.String("mode", notifCfg.Email.DigestMode),
-				slog.Int("recipients", len(notifCfg.Email.To)),
+				slog.String("mode", bootNotifCfg.Email.DigestMode),
+				slog.Int("recipients", len(bootNotifCfg.Email.To)),
 			)
 		}
-		notifManager = notifications.NewManager(notifiers, notifications.Config{
-			MasterEnabled:   notifCfg.MasterEnabled,
-			MinSeverity:     notifCfg.MinSeverity,
-			Cooldown:        notifCfg.Cooldown,
-			BaseURL:         notifCfg.BaseURL,
-			IncludeResolved: notifCfg.IncludeResolved,
-		})
+		notifManager = notifications.NewManager(notifiers, notifications.ConfigFromNotifications(bootNotifCfg))
 		switch {
 		case !notifManager.MasterEnabled():
 			slog.Info("notifications master-disabled (KUBEBOLT_NOTIFICATIONS_ENABLED=false)")
@@ -573,7 +618,7 @@ func main() {
 	}
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {

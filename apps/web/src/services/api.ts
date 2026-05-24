@@ -148,6 +148,19 @@ async function deleteRequest<T>(url: string, headers?: Record<string, string>): 
   return res.json()
 }
 
+// parseJSONOrEmpty safely handles the "200/204 with no body" case that
+// trips res.json() with SyntaxError. Endpoints like /admin/setup/
+// complete return 204 No Content; their callers type the return as
+// `void`, so we just resolve to undefined instead of throwing.
+async function parseJSONOrEmpty<T>(res: Response): Promise<T> {
+  if (res.status === 204 || res.headers.get('content-length') === '0') {
+    return undefined as T
+  }
+  const text = await res.text()
+  if (!text) return undefined as T
+  return JSON.parse(text) as T
+}
+
 async function postJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
   const res = await fetchWithAuth(url, {
     method: 'POST',
@@ -158,7 +171,7 @@ async function postJSON<T>(url: string, body: unknown, headers?: Record<string, 
     const { message, payload } = await extractErrorPayload(res)
     throw new ApiError(res.status, message, payload)
   }
-  return res.json()
+  return parseJSONOrEmpty<T>(res)
 }
 
 async function putJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
@@ -171,7 +184,7 @@ async function putJSON<T>(url: string, body: unknown, headers?: Record<string, s
     const { message, payload } = await extractErrorPayload(res)
     throw new ApiError(res.status, message, payload)
   }
-  return res.json()
+  return parseJSONOrEmpty<T>(res)
 }
 
 // putJSONWithWarnings is the variant for endpoints that surface soft
@@ -937,6 +950,373 @@ export const api = {
   // for the operator to manage manually.
   issueAgentTokenAndMaterializeSecret: (body: AgentIssueTokenRequest) =>
     postJSON<AgentIssueTokenResponse>(`${API_BASE}/integrations/agent/issue-token`, body),
+
+  // ─── Admin → Settings (spec #09) ──────────────────────────────────
+  //
+  // Runtime configuration of things that used to be env-only. Every
+  // domain has GET (masked view + env baseline for "what would I get if
+  // I cleared this"), PUT (partial patch with secret encryption
+  // happening server-side), and a reset endpoint that drops the
+  // BoltDB row entirely.
+
+  // Copilot config. GET returns the masked Copilot settings shape; PUT
+  // accepts a partial patch with secrets in dedicated top-level fields
+  // (kept out of the patch struct so payload logs never accidentally
+  // capture a real key). Reset clears the override and falls back to
+  // env-driven defaults.
+  getSettingsCopilot: () =>
+    fetchJSON<CopilotSettingsResponse>(`${API_BASE}/admin/settings/copilot`),
+
+  putSettingsCopilot: (body: CopilotSettingsPutRequest) =>
+    putJSON<CopilotSettingsResponse>(`${API_BASE}/admin/settings/copilot`, body),
+
+  resetSettingsCopilot: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/copilot/reset`, {}),
+
+  // --- Settings → Notifications (spec #09) ---
+  //
+  // Mirrors the Copilot pattern: GET returns masked effective + stored
+  // view, PUT accepts a partial patch with secrets in top-level fields,
+  // RESET wipes the BoltDB override entirely. PUT hot-reloads the
+  // live notifications manager — channel additions/removals take
+  // effect on the next insight without a process restart.
+  getSettingsNotifications: () =>
+    fetchJSON<NotificationsSettingsResponse>(`${API_BASE}/admin/settings/notifications`),
+
+  putSettingsNotifications: (body: NotificationsSettingsPutRequest) =>
+    putJSON<NotificationsSettingsResponse>(`${API_BASE}/admin/settings/notifications`, body),
+
+  resetSettingsNotifications: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/notifications/reset`, {}),
+
+  // --- Settings → Auth (spec #09) ---
+  //
+  // Special domain: no hot-reload. PUT persists; pendingRestart in the
+  // response tells the UI to show a "Restart now" banner.
+  getSettingsAuth: () =>
+    fetchJSON<AuthSettingsResponse>(`${API_BASE}/admin/settings/auth`),
+
+  putSettingsAuth: (body: AuthSettingsPutRequest) =>
+    putJSON<AuthSettingsResponse>(`${API_BASE}/admin/settings/auth`, body),
+
+  resetSettingsAuth: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/auth/reset`, {}),
+
+  // System actions. Restart triggers os.Exit(0) on the backend after a
+  // ~1s grace period so Kubernetes (restartPolicy:Always) brings up a
+  // fresh container with the persisted Auth values applied.
+  systemRestart: () =>
+    postJSON<{ status: string; message: string }>(`${API_BASE}/admin/system/restart`, {}),
+
+  // --- Settings → General (spec #09) ---
+  getSettingsGeneral: () =>
+    fetchJSON<GeneralSettingsResponse>(`${API_BASE}/admin/settings/general`),
+
+  putSettingsGeneral: (body: GeneralSettingsPutRequest) =>
+    putJSON<GeneralSettingsResponse>(`${API_BASE}/admin/settings/general`, body),
+
+  resetSettingsGeneral: () =>
+    postJSON<{ status: string }>(`${API_BASE}/admin/settings/general/reset`, {}),
+
+  // Public UI config — fetched once at app boot so the topbar shows the
+  // operator-set display name and RefreshContext picks the right default
+  // before any authenticated query fires.
+  getUIConfig: () =>
+    fetchJSON<UIConfigResponse>(`${API_BASE}/config/ui`),
+
+  // /admin/settings/booted-with — read-only snapshot of KUBEBOLT_* env
+  // vars at process start. Operators use it to debug "is my Helm value
+  // making it into the container?" without kubectl-exec.
+  getBootedWith: () =>
+    fetchJSON<BootedWithResponse>(`${API_BASE}/admin/settings/booted-with`),
+
+  // First-login wizard status. The whole wizard is just a guided pass
+  // over existing per-domain PUT endpoints (auth/me/password,
+  // settings/copilot, settings/notifications) plus this completion
+  // flag the UI reads to decide whether to show the welcome overlay.
+  getSetupStatus: () =>
+    fetchJSON<{ complete: boolean }>(`${API_BASE}/admin/setup/status`),
+  completeSetup: () =>
+    postJSON<void>(`${API_BASE}/admin/setup/complete`, {}),
+  resetSetup: () =>
+    postJSON<void>(`${API_BASE}/admin/setup/complete?reset=true`, {}),
+}
+
+// ─── Admin → Settings types ──────────────────────────────────────────
+//
+// Mirror the Go shapes in apps/api/internal/settings/copilot.go. The
+// frontend reads `effective` for "what's in effect right now" and
+// `stored` for per-field "configured here vs inherits from env" badges.
+// Secrets never round-trip — the API returns only masked previews.
+
+export interface CopilotSettingsResponse {
+  effective: {
+    enabled: boolean
+    provider: string
+    model: string
+    apiKeyMasked: string
+    baseURL?: string
+    hasFallback: boolean
+    fallbackProvider?: string
+    fallbackModel?: string
+    fallbackApiKeyMasked?: string
+    fallbackBaseURL?: string
+    maxTokens: number
+    autoCompact: boolean
+    showToolCalls: boolean
+    // Auto-compact tunables surfaced by the backend so the UI shows
+    // "what's in effect right now" without a second round-trip. The
+    // server emits these with `omitempty` semantics, so they may be
+    // absent on a fresh install with no overrides and a model whose
+    // defaults haven't materialised yet.
+    sessionBudgetTokens?: number
+    autoCompactThreshold?: number
+    compactModel?: string
+    compactPreserveTurns?: number
+  }
+  stored: {
+    hasPrimaryOverride: boolean
+    hasFallbackOverride: boolean
+    primary?: {
+      provider?: string
+      apiKeyMasked?: string
+      apiKeyConfigured: boolean
+      model?: string
+      baseURL?: string
+    }
+    fallback?: {
+      provider?: string
+      apiKeyMasked?: string
+      apiKeyConfigured: boolean
+      model?: string
+      baseURL?: string
+    }
+    otherFields?: {
+      maxTokens?: number
+      autoCompact?: boolean
+      sessionBudgetTokens?: number
+      autoCompactThreshold?: number
+      compactModel?: string
+      compactPreserveTurns?: number
+      showToolCalls?: boolean
+    }
+  }
+  secretsReadable: boolean
+}
+
+// CopilotSettingsPutRequest mirrors the backend putCopilotRequest. All
+// fields are optional. `patch.*` carries non-secret config; the
+// `plaintextAPIKey` fields sit at the top level so the on-wire shape
+// keeps secrets out of the nested patch object that error responses
+// and logs may echo.
+export interface CopilotSettingsPutRequest {
+  patch?: {
+    primary?: {
+      provider?: string
+      model?: string
+      baseURL?: string
+    }
+    fallback?: {
+      provider?: string
+      model?: string
+      baseURL?: string
+    }
+    maxTokens?: number
+    autoCompact?: boolean
+    sessionBudgetTokens?: number
+    autoCompactThreshold?: number
+    compactModel?: string
+    compactPreserveTurns?: number
+    showToolCalls?: boolean
+  }
+  plaintextAPIKey?: string
+  plaintextFallbackAPIKey?: string
+}
+
+// ─── Admin → Settings → Notifications types ───────────────────────────
+//
+// Mirror the Go shapes in apps/api/internal/settings/notifications.go.
+// Same layering convention as Copilot: `effective` = what's live now,
+// `stored` = per-field "which fields are coming from BoltDB" markers
+// for the source badge. Webhook URLs and SMTP password never round-
+// trip plaintext; only masked previews on the way out, plaintext on
+// the way in via dedicated top-level fields.
+
+export interface NotificationsSettingsResponse {
+  effective: {
+    masterEnabled: boolean
+    minSeverity: string // 'critical' | 'warning' | 'info'
+    cooldownSeconds: number
+    baseURL?: string
+    includeResolved: boolean
+
+    // Tri-state per channel:
+    //   configured = required fields are filled
+    //   enabled    = operator's toggle is on
+    //   active     = configured && enabled (= what BuildNotifiers gates on)
+    slackConfigured: boolean
+    slackEnabled: boolean
+    slackActive: boolean
+    slackWebhookMasked?: string
+
+    discordConfigured: boolean
+    discordEnabled: boolean
+    discordActive: boolean
+    discordWebhookMasked?: string
+
+    emailConfigured: boolean
+    emailEnabled: boolean
+    emailActive: boolean
+    emailHost?: string
+    emailPort?: number
+    emailUsername?: string
+    emailPasswordMasked?: string
+    emailFrom?: string
+    emailTo?: string[]
+    emailDigestMode?: string
+  }
+  stored: {
+    hasGlobalOverride: boolean
+    hasSlackOverride: boolean
+    hasDiscordOverride: boolean
+    hasEmailOverride: boolean
+    global?: {
+      masterEnabled?: boolean
+      minSeverity?: string
+      cooldownSeconds?: number
+      baseURL?: string
+      includeResolved?: boolean
+    }
+    slack?: {
+      webhookConfigured: boolean
+      webhookMasked?: string
+    }
+    discord?: {
+      webhookConfigured: boolean
+      webhookMasked?: string
+    }
+    email?: {
+      host?: string
+      port?: number
+      username?: string
+      passwordConfigured: boolean
+      passwordMasked?: string
+      from?: string
+      to?: string[]
+      digestMode?: string
+    }
+  }
+  secretsReadable: boolean
+}
+
+export interface NotificationsSettingsPutRequest {
+  patch?: {
+    global?: {
+      masterEnabled?: boolean
+      minSeverity?: string
+      cooldownSeconds?: number
+      baseURL?: string
+      includeResolved?: boolean
+    }
+    slack?: {
+      enabled?: boolean
+    }
+    discord?: {
+      enabled?: boolean
+    }
+    email?: {
+      enabled?: boolean
+      host?: string
+      port?: number
+      username?: string
+      from?: string
+      to?: string[]
+      digestMode?: string
+    }
+  }
+  plaintextSlackWebhookURL?: string
+  plaintextDiscordWebhookURL?: string
+  plaintextSMTPPassword?: string
+}
+
+// ─── Admin → Settings → Auth types ────────────────────────────────────
+//
+// Mirrors apps/api/internal/settings/auth.go. UI exposes only the
+// safe-to-change subset (TTLs + read-only enabled state); JWT secret /
+// data dir / admin password stay out of UI editing because they're
+// either security-critical (key rotation blows up every encrypted blob)
+// or filesystem-bound (data dir).
+
+export interface AuthSettingsEffective {
+  enabled: boolean
+  accessTokenExpirySeconds: number
+  refreshTokenExpirySeconds: number
+}
+
+export interface AuthSettingsResponse {
+  effective: AuthSettingsEffective
+  bootSnapshot: AuthSettingsEffective
+  stored: {
+    hasOverride: boolean
+    enabled?: boolean
+    accessTokenExpirySeconds?: number
+    refreshTokenExpirySeconds?: number
+  }
+  pendingRestart: boolean
+  jwtSecretFromEnv: boolean
+  jwtSecretMasked?: string
+}
+
+export interface AuthSettingsPutRequest {
+  patch?: {
+    enabled?: boolean
+    accessTokenExpirySeconds?: number
+    refreshTokenExpirySeconds?: number
+  }
+}
+
+// ─── Admin → Settings → General types ─────────────────────────────────
+
+export interface GeneralSettingsResponse {
+  effective: {
+    displayName: string
+    defaultRefreshIntervalSeconds: number
+  }
+  stored: {
+    hasOverride: boolean
+    displayName?: string
+    defaultRefreshIntervalSeconds?: number
+  }
+}
+
+export interface GeneralSettingsPutRequest {
+  patch?: {
+    displayName?: string
+    defaultRefreshIntervalSeconds?: number
+  }
+}
+
+// Public UI config — readable by every authenticated user (and by
+// unauthenticated requests when auth is disabled). Frontend boots up
+// with this before issuing any other query.
+export interface UIConfigResponse {
+  displayName: string
+  defaultRefreshIntervalSeconds: number
+}
+
+// /admin/settings/booted-with shape — env var snapshot from process
+// start. `sensitive=true` means the value is the placeholder string
+// "(set)" rather than the cleartext; the UI renders it differently
+// to make it obvious which entries are redacted.
+export interface BootedWithEntry {
+  name: string
+  value: string
+  sensitive: boolean
+}
+
+export interface BootedWithResponse {
+  env: BootedWithEntry[]
+  count: number
 }
 
 // Backend agent auth posture. The UI uses `enforcement` to decide

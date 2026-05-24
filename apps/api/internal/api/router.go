@@ -13,6 +13,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -38,6 +39,16 @@ func NewRouter(
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
 	promWriteMetrics *PromWriteMetrics,
+	// settingsRuntime is the BoltDB-first config resolver introduced by
+	// spec #09. Optional — nil when auth/persistence is disabled (the
+	// /settings/* admin endpoints simply 503 in that mode, and the
+	// Copilot chat handler keeps reading env-only copilotCfg).
+	settingsRuntime *settings.Runtime,
+	// bootEnv is the snapshot of KUBEBOLT_* env vars captured at
+	// process start (via SnapshotKubeboltEnv from main.go). Exposed
+	// read-only via /admin/settings/booted-with so operators can
+	// see what the Helm/env baseline actually was.
+	bootEnv map[string]string,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -53,6 +64,8 @@ func NewRouter(
 		pfManager:            NewPortForwardManager(),
 		drainManager:         newDrainSessionManager(),
 		copilotConfig:        copilotCfg,
+		settingsRuntime:      settingsRuntime,
+		bootEnv:              bootEnv,
 		copilotUsage:         copilotUsage,
 		authHandlers:         authHandlers,
 		notifications:        notifManager,
@@ -90,6 +103,12 @@ func NewRouter(
 		r.Post("/auth/refresh", authHandlers.Refresh)
 		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
 		r.Get("/copilot/config", h.HandleCopilotConfig)
+
+		// UI config (display name, default refresh interval) is public —
+		// the login page renders the display name, and the
+		// RefreshContext seeds itself before any authenticated query
+		// fires. No secrets here, just chrome / UX defaults.
+		r.Get("/config/ui", h.handleGetUIConfig)
 
 		// Prom remote_write receiver. PUBLIC because vmagent doesn't
 		// carry a JWT; gating is via the dedicated
@@ -170,6 +189,45 @@ func NewRouter(
 				r.Route("/admin/tenants", func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
 					tenantHandlers.RegisterRoutes(r)
+				})
+			}
+
+			// Runtime settings — admin only. Spec #09 introduces UI-edited
+			// overrides of what was previously env-only config. The
+			// settingsRuntime gate is the same auth/persistence gate the
+			// rest of the admin surface uses (when BoltDB is disabled the
+			// whole admin surface is unavailable anyway).
+			if settingsRuntime != nil {
+				r.Route("/admin/settings", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/copilot", h.handleGetSettingsCopilot)
+					r.Put("/copilot", h.handlePutSettingsCopilot)
+					r.Post("/copilot/reset", h.handleResetSettingsCopilot)
+					r.Get("/notifications", h.handleGetSettingsNotifications)
+					r.Put("/notifications", h.handlePutSettingsNotifications)
+					r.Post("/notifications/reset", h.handleResetSettingsNotifications)
+					r.Get("/auth", h.handleGetSettingsAuth)
+					r.Put("/auth", h.handlePutSettingsAuth)
+					r.Post("/auth/reset", h.handleResetSettingsAuth)
+					r.Get("/general", h.handleGetSettingsGeneral)
+					r.Put("/general", h.handlePutSettingsGeneral)
+					r.Post("/general/reset", h.handleResetSettingsGeneral)
+					r.Get("/booted-with", h.handleGetBootedWith)
+				})
+				// First-login wizard status. Separate from /settings/*
+				// because it's not a domain — just a one-bit flag tracking
+				// whether the wizard has been run at least once.
+				r.Route("/admin/setup", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/status", h.handleGetSetupStatus)
+					r.Post("/complete", h.handlePostSetupComplete)
+				})
+				// /admin/system — destructive process-level actions that
+				// don't belong under /settings. Restart is admin-only via
+				// the route group below; same gating as Settings.
+				r.Route("/admin/system", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Post("/restart", h.handleSystemRestart)
 				})
 			}
 

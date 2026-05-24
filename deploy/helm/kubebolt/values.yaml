@@ -1,4 +1,29 @@
 # KubeBolt Helm Chart Values
+#
+# ─── UI-first config model (spec #09) ────────────────────────────────
+# KubeBolt now ships an admin Settings UI that edits AI Copilot,
+# Notifications (Slack / Discord / SMTP), Auth TTLs, and General
+# (display name, refresh defaults) at runtime — no redeploy needed.
+# Values stored via the UI override the env baseline this chart sets
+# on every read.
+#
+# What you STILL set here (boot-time / infra-bound concerns):
+#   - api/web image, resources, networking
+#   - service / ingress
+#   - serviceAccount / RBAC
+#   - agentIngest (gRPC port, TLS, RBAC binding)
+#   - metrics.storage (PVC, image, retention)
+#   - auth.adminPassword + auth.jwtSecret + auth.persistence
+#     (first-boot seed + signing key + data dir)
+#
+# What you CAN still set here but is BETTER managed via the UI:
+#   - copilot.* (Settings → AI Copilot)
+#   - notifications via extraEnv (Settings → Notifications)
+#   - access/refresh token TTLs via extraEnv (Settings → Auth)
+#   - display name + refresh defaults via extraEnv (Settings → General)
+#
+# To inspect what env vars THIS chart actually wires into the container,
+# log into the UI as admin and open Settings → "Boot snapshot".
 
 # API backend
 api:
@@ -232,9 +257,16 @@ auth:
       - ReadWriteOnce
 
 # AI Copilot configuration
-# The copilot uses the user's own LLM provider API key — no KubeBolt-managed
-# AI service. Leave apiKey empty to disable the copilot entirely. KubeBolt
-# itself works fully without the copilot.
+#
+# DEPRECATED — prefer Settings → AI Copilot in the UI. The fields below
+# still work as a boot-time baseline (useful for GitOps / config-as-code
+# workflows that want to seed an install without manual UI steps), but
+# every value here is editable at runtime from the admin UI without a
+# redeploy. UI overrides win over these values on every read.
+#
+# The copilot uses the user's own LLM provider API key — no
+# KubeBolt-managed AI service. Leave apiKey empty to disable the
+# copilot entirely. KubeBolt itself works fully without the copilot.
 copilot:
   enabled: false
   provider: anthropic     # anthropic | openai | custom
