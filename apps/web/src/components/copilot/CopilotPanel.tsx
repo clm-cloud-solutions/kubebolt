@@ -23,10 +23,9 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
 import { KobiMetricChartCard } from './KobiMetricChartCard'
+import { computeMetricChartAttachments } from './metricChartAttachment'
 import {
   parseActionProposal,
-  parseWorkloadMetrics,
-  workloadMetricsHasRenderableData,
   type CopilotMessage,
   type CopilotToolCall,
   type CopilotUsage,
@@ -395,54 +394,15 @@ export function CopilotPanel() {
             }
           }
 
-          // Spec #08 — track which get_workload_metrics call IDs have already
-          // been rendered as a chart card so multiple text turns within the
-          // same conversation block don't show duplicate charts.
-          // We attach the chart to the FIRST text-bearing assistant turn that
-          // FOLLOWS the metric tool call, not to the turn that issued the call.
-          // The LLM typically splits "I'll check this" + tool_call into one
-          // turn and the analysis text into a separate later turn; the chart
-          // belongs WITH the analysis (so prose and evidence sit together).
-          const renderedMetricCallIds = new Set<string>()
+          // Spec #08 — compute chart attachments once per render. The helper
+          // enforces "attach to the FIRST text-bearing assistant turn that
+          // STRICTLY FOLLOWS the metric tool call" so the chart sits next to
+          // the analysis prose, not above the "I'll check this" preamble that
+          // typically ships with the tool_call in the same Claude message.
+          // See `metricChartAttachment.ts` for the attachment rule details.
+          const metricChartAttachments = computeMetricChartAttachments(messages)
 
-          // For a given assistant turn at index `idx`, collect all
-          // get_workload_metrics tool calls in this conversation block (since
-          // the previous user message) that have not yet been rendered.
-          // Calls whose response carries no renderable data (no agent
-          // connected, KSM absent, podsResolved=0) are skipped — the LLM's
-          // prose covers that case, and an empty card is just visual noise.
-          // We still mark them as "rendered" so a subsequent text turn
-          // doesn't try to re-render them either.
-          const collectMetricCardsForTurn = (idx: number) => {
-            const cards: Array<{ id: string; data: ReturnType<typeof parseWorkloadMetrics> }> = []
-            let blockStart = 0
-            for (let i = idx - 1; i >= 0; i--) {
-              if (messages[i].role === 'user' && messages[i].content) {
-                blockStart = i + 1
-                break
-              }
-            }
-            for (let i = blockStart; i <= idx; i++) {
-              const msg = messages[i]
-              if (msg.role !== 'assistant' || !msg.toolCalls) continue
-              for (const tc of msg.toolCalls) {
-                if (tc.name !== 'get_workload_metrics') continue
-                if (renderedMetricCallIds.has(tc.id)) continue
-                const tr = resultByCallId.get(tc.id)
-                if (!tr || tr.isError) continue
-                const parsed = parseWorkloadMetrics(tr.content)
-                // Claim the call ID regardless of renderability so a later
-                // text turn doesn't see it as unrendered and try again.
-                if (parsed) renderedMetricCallIds.add(tc.id)
-                if (parsed && workloadMetricsHasRenderableData(parsed)) {
-                  cards.push({ id: tc.id, data: parsed })
-                }
-              }
-            }
-            return cards
-          }
-
-          return messages.map((m, idx) => {
+          return messages.map((m) => {
             // User turns whose tool results include proposals → interactive
             // ActionProposalCard (the LLM never executes; the operator clicks
             // Execute). This path is independent of showToolCalls.
@@ -487,7 +447,7 @@ export function CopilotPanel() {
               // itself). Reading order: question → "I'll check this" →
               // tool chip → chart (evidence) → analysis text. This keeps
               // the chart visually next to the prose that interprets it.
-              const metricCards = hasText ? collectMetricCardsForTurn(idx) : []
+              const metricCards = hasText ? (metricChartAttachments.get(m.id) ?? []) : []
               if (!hasText && visibleCalls.length === 0 && metricCards.length === 0) {
                 // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
                 // don't render at all; the bottom indicator covers them.
