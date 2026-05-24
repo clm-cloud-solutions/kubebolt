@@ -1,10 +1,10 @@
 // PerTenantLimitsSection is the per-tenant ingest-overrides surface,
 // migrated from the now-removed /admin/ingest-limits page into the
-// Settings → Ingest tab. Spec #09 V1.5 — fleet defaults and per-tenant
-// overrides belong on the same page because operators reason about
-// them together ("does this tenant inherit, or does it have its own
-// cap?"), and they share the same enforcement substrate (rate limiter +
-// cardinality tracker).
+// Settings → Agents & Ingest tab. Spec #09 V1.5 — fleet defaults and
+// per-tenant overrides belong on the same page because operators
+// reason about them together ("does this tenant inherit, or does it
+// have its own cap?"), and they share the same enforcement substrate
+// (rate limiter + cardinality tracker).
 //
 // Behavior unchanged from TenantLimitsPage:
 //   - Operates on the auto-seeded "default" tenant only. Per-tenant
@@ -13,16 +13,43 @@
 //   - Edits the three Prom remote_write knobs: writeSamplesPerSec,
 //     writeBurstSamples, maxActiveSeries.
 //   - "Save" sends only dirty fields (merge semantics).
-//   - "Reset to defaults" clears ALL custom overrides via DELETE; the
-//     single-field clear verb is a server-side gap acknowledged in the
-//     original page's copy.
+//
+// V2 polish (spec #09 V2): when rendered inside IngestSettingsTab,
+// the parent provides the action bar — both Save (per-tenant + channel
+// combined) and Reset (clears channel + per-tenant in one confirm) live
+// at the bottom of the page. To support that, this section accepts an
+// `embedded` prop that hides its own action bar + status banners, plus
+// a ref handle that exposes `save()`/`reset()`/`isDirty()`/`hasCustom()`
+// so the parent can coordinate the multi-mutation save flow.
+//
+// When `embedded` is false (legacy direct render, kept for backward
+// compatibility), the section renders its own action bar + banners
+// as it did pre-V2.
 
-import { useEffect, useMemo, useState } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, CheckCircle2, Gauge, RotateCcw, Save } from 'lucide-react'
 import { api, type EffectiveLimits, type LimitsResponse, type TenantLimits } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
+
+// Imperative handle the parent uses to drive save/reset when embedded.
+// Returns from save/reset surface non-fatal warnings back to the parent
+// for inclusion in the unified status banner.
+export interface PerTenantLimitsHandle {
+  save: () => Promise<{ warnings: string[] }>
+  reset: () => Promise<void>
+}
+
+interface PerTenantLimitsProps {
+  // When true, hides the internal action bar + status banners. The
+  // parent (IngestSettingsTab) is expected to render its own unified
+  // bottom action bar that calls back into save()/reset() via ref.
+  embedded?: boolean
+  // Bubbles up the dirty / has-custom state so the parent can wire
+  // its Save and Reset buttons' enabled state without poking the ref.
+  onStateChange?: (state: { isDirty: boolean; hasCustom: boolean }) => void
+}
 
 const DEFAULT_TENANT_NAME = 'default'
 
@@ -79,7 +106,8 @@ function sourceOf(limits: LimitsResponse, key: keyof EffectiveLimits): 'default'
   return c[key] !== undefined ? 'custom' : 'default'
 }
 
-export function PerTenantLimitsSection() {
+export const PerTenantLimitsSection = forwardRef<PerTenantLimitsHandle, PerTenantLimitsProps>(
+  function PerTenantLimitsSection({ embedded = false, onStateChange }, ref) {
   const queryClient = useQueryClient()
 
   const { data: tenants, isLoading: tenantsLoading, error: tenantsError } = useQuery({
@@ -127,8 +155,16 @@ export function PerTenantLimitsSection() {
   const anyDirty = dirty.writeSamplesPerSec || dirty.writeBurstSamples || dirty.maxActiveSeries
   const hasCustom = !!limits?.custom
 
-  async function handleSave() {
-    if (!defaultTenant || !anyDirty) return
+  // Bubble dirty / has-custom state to the parent when embedded so the
+  // parent's unified Save / Reset buttons can derive their enabled
+  // state without poking the imperative handle. Fires only when the
+  // computed signal actually changes.
+  useEffect(() => {
+    onStateChange?.({ isDirty: anyDirty, hasCustom })
+  }, [anyDirty, hasCustom, onStateChange])
+
+  async function handleSave(): Promise<{ warnings: string[] }> {
+    if (!defaultTenant || !anyDirty) return { warnings: [] }
     setError(null)
     setWarnings([])
     setSavedAt(null)
@@ -142,14 +178,20 @@ export function PerTenantLimitsSection() {
       setWarnings(w)
       setSavedAt(Date.now())
       queryClient.invalidateQueries({ queryKey: ['admin-tenant-limits', defaultTenant.id] })
+      return { warnings: w }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to save limits')
+      const msg = err instanceof Error ? err.message : 'Failed to save limits'
+      setError(msg)
+      // Embedded mode: the parent's status display handles the error;
+      // we still re-throw so the parent's mutation flow knows it failed.
+      if (embedded) throw err
+      return { warnings: [] }
     } finally {
       setSaving(false)
     }
   }
 
-  async function handleReset() {
+  async function handleReset(): Promise<void> {
     if (!defaultTenant || !hasCustom) return
     setError(null)
     setWarnings([])
@@ -159,11 +201,18 @@ export function PerTenantLimitsSection() {
       await api.resetTenantLimits(defaultTenant.id)
       queryClient.invalidateQueries({ queryKey: ['admin-tenant-limits', defaultTenant.id] })
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to reset limits')
+      const msg = err instanceof Error ? err.message : 'Failed to reset limits'
+      setError(msg)
+      if (embedded) throw err
     } finally {
       setResetting(false)
     }
   }
+
+  // Imperative handle for the embedded mode. The parent's Save / Reset
+  // buttons call save()/reset() here and the implementation routes
+  // through the same handlers as the (legacy) internal buttons.
+  useImperativeHandle(ref, () => ({ save: handleSave, reset: handleReset }))
 
   // Renderer falls back to a compact loader / error inside the section
   // — the parent (IngestSettingsTab) already has the page chrome and
@@ -260,58 +309,67 @@ export function PerTenantLimitsSection() {
         })}
       </div>
 
-      <div className="px-5 py-4 border-t border-kb-border flex items-center justify-between gap-4 flex-wrap">
-        <div className="text-[11px] text-kb-text-tertiary max-w-md">
-          To drop a single override, click <strong className="text-kb-text-secondary">Reset to defaults</strong> and
-          re-apply only the values you want to customize.
-        </div>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={handleReset}
-            disabled={!hasCustom || resetting || saving}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-            title={hasCustom ? 'Clear every per-tenant override' : 'Nothing to reset — all fields use fleet defaults'}
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            {resetting ? 'Resetting…' : 'Reset to defaults'}
-          </button>
-          <button
-            type="button"
-            onClick={handleSave}
-            disabled={!anyDirty || saving || resetting}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            <Save className="w-3.5 h-3.5" />
-            {saving ? 'Saving…' : 'Save'}
-          </button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-          <div>{error}</div>
-        </div>
-      )}
-
-      {savedAt !== null && !error && (
-        <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">
-          <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
-          <div>Limits saved. Rate &amp; cardinality enforcement picks up the new values on the next request.</div>
-        </div>
-      )}
-
-      {warnings.length > 0 && (
-        <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-warn-dim text-status-warn text-xs">
-          <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
-          <div className="space-y-0.5">
-            {warnings.map((w, i) => (
-              <div key={i}>{w}</div>
-            ))}
+      {/* Internal action bar + status banners — rendered ONLY in
+          legacy non-embedded mode. When embedded inside IngestSettingsTab,
+          the parent owns the bottom save/reset bar and the unified
+          status display. */}
+      {!embedded && (
+        <>
+          <div className="px-5 py-4 border-t border-kb-border flex items-center justify-between gap-4 flex-wrap">
+            <div className="text-[11px] text-kb-text-tertiary max-w-md">
+              To drop a single override, click <strong className="text-kb-text-secondary">Reset to defaults</strong> and
+              re-apply only the values you want to customize.
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleReset}
+                disabled={!hasCustom || resetting || saving}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                title={hasCustom ? 'Clear every per-tenant override' : 'Nothing to reset — all fields use fleet defaults'}
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                {resetting ? 'Resetting…' : 'Reset to defaults'}
+              </button>
+              <button
+                type="button"
+                onClick={handleSave}
+                disabled={!anyDirty || saving || resetting}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
           </div>
-        </div>
+
+          {error && (
+            <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <div>{error}</div>
+            </div>
+          )}
+
+          {savedAt !== null && !error && (
+            <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">
+              <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+              <div>Limits saved. Rate &amp; cardinality enforcement picks up the new values on the next request.</div>
+            </div>
+          )}
+
+          {warnings.length > 0 && (
+            <div className="mx-5 mb-4 flex items-start gap-2 px-3 py-2 rounded-lg bg-status-warn-dim text-status-warn text-xs">
+              <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+              <div className="space-y-0.5">
+                {warnings.map((w, i) => (
+                  <div key={i}>{w}</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </section>
   )
-}
+  },
+)

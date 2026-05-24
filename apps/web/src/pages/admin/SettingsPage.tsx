@@ -40,7 +40,7 @@ const TABS: TabDef[] = [
   },
   {
     key: 'ingest',
-    label: 'Ingest',
+    label: 'Agents & Ingest',
     Icon: Gauge,
   },
   {

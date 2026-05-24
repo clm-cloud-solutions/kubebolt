@@ -3,6 +3,7 @@ package settings
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
@@ -15,6 +16,10 @@ const generalSettingsKey = "general"
 type StoredGeneralSettings struct {
 	DisplayName                   *string `json:"displayName,omitempty"`
 	DefaultRefreshIntervalSeconds *int    `json:"defaultRefreshIntervalSeconds,omitempty"`
+	// ProdNamespacePattern is a regex (RE2 syntax) that classifies a
+	// namespace as "production" for the Secret Reveal role-escalation
+	// rule. Validated at PUT — invalid regex returns 400.
+	ProdNamespacePattern *string `json:"prodNamespacePattern,omitempty"`
 }
 
 // General returns the resolved GeneralConfig (env + BoltDB override).
@@ -65,6 +70,9 @@ func applyStoredGeneral(cfg *config.GeneralConfig, stored *StoredGeneralSettings
 	}
 	if stored.DefaultRefreshIntervalSeconds != nil {
 		cfg.DefaultRefreshIntervalSeconds = *stored.DefaultRefreshIntervalSeconds
+	}
+	if stored.ProdNamespacePattern != nil {
+		cfg.ProdNamespacePattern = *stored.ProdNamespacePattern
 	}
 }
 
@@ -118,12 +126,14 @@ type MaskedGeneral struct {
 type MaskedEffectiveGeneral struct {
 	DisplayName                   string `json:"displayName"`
 	DefaultRefreshIntervalSeconds int    `json:"defaultRefreshIntervalSeconds"`
+	ProdNamespacePattern          string `json:"prodNamespacePattern"`
 }
 
 type MaskedStoredGeneral struct {
 	HasOverride                   bool    `json:"hasOverride"`
 	DisplayName                   *string `json:"displayName,omitempty"`
 	DefaultRefreshIntervalSeconds *int    `json:"defaultRefreshIntervalSeconds,omitempty"`
+	ProdNamespacePattern          *string `json:"prodNamespacePattern,omitempty"`
 }
 
 func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
@@ -136,11 +146,15 @@ func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
 		Effective: MaskedEffectiveGeneral{
 			DisplayName:                   resolved.DisplayName,
 			DefaultRefreshIntervalSeconds: resolved.DefaultRefreshIntervalSeconds,
+			ProdNamespacePattern:          resolved.ProdNamespacePattern,
 		},
 		Stored: MaskedStoredGeneral{
-			HasOverride:                   stored.DisplayName != nil || stored.DefaultRefreshIntervalSeconds != nil,
+			HasOverride: stored.DisplayName != nil ||
+				stored.DefaultRefreshIntervalSeconds != nil ||
+				stored.ProdNamespacePattern != nil,
 			DisplayName:                   stored.DisplayName,
 			DefaultRefreshIntervalSeconds: stored.DefaultRefreshIntervalSeconds,
+			ProdNamespacePattern:          stored.ProdNamespacePattern,
 		},
 	}
 	return out, nil
@@ -171,6 +185,21 @@ func validateGeneralPatch(p *StoredGeneralSettings) error {
 			return &ValidationError{Field: "defaultRefreshIntervalSeconds", Message: "must be one of 5, 10, 15, 30, 60, 120"}
 		}
 	}
+	if p.ProdNamespacePattern != nil {
+		// Empty string is intentional ("fall back to default pattern")
+		// and bypasses compile check.
+		if *p.ProdNamespacePattern != "" {
+			if len(*p.ProdNamespacePattern) > 512 {
+				return &ValidationError{Field: "prodNamespacePattern", Message: "must be 512 characters or fewer"}
+			}
+			if _, err := regexp.Compile(*p.ProdNamespacePattern); err != nil {
+				return &ValidationError{
+					Field:   "prodNamespacePattern",
+					Message: "regex does not compile: " + err.Error(),
+				}
+			}
+		}
+	}
 	return nil
 }
 
@@ -181,6 +210,9 @@ func mergeGeneral(base, patch StoredGeneralSettings) StoredGeneralSettings {
 	}
 	if patch.DefaultRefreshIntervalSeconds != nil {
 		out.DefaultRefreshIntervalSeconds = patch.DefaultRefreshIntervalSeconds
+	}
+	if patch.ProdNamespacePattern != nil {
+		out.ProdNamespacePattern = patch.ProdNamespacePattern
 	}
 	return out
 }

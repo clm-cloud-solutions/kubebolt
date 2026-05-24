@@ -24,9 +24,24 @@ import (
 // the path without auth and we don't want to expose an unauthenticated
 // metrics ingest port by accident on existing installs. Phase 3 will
 // remove the gate and add bearer-token auth + rate limiting.
+//
+// Retained as a free function for tests + the fallback path in
+// promWriteEnabledNow when the settings runtime isn't available.
 func promWriteEnabled() bool {
 	v := strings.ToLower(strings.TrimSpace(os.Getenv("KUBEBOLT_REMOTE_WRITE_ENABLED")))
 	return v == "1" || v == "true" || v == "yes"
+}
+
+// promWriteEnabledNow is the per-request gate that prefers the
+// settings runtime (UI-editable) over the env-only baseline. Spec
+// #09 V2 — operators can flip the receiver on/off without redeploying
+// the API. The runtime-resolved value already merged env baseline +
+// BoltDB override at construction; we just read it here.
+func (h *handlers) promWriteEnabledNow() bool {
+	if h.settingsRuntime != nil {
+		return h.settingsRuntime.IngestChannel().RemoteWriteEnabled
+	}
+	return promWriteEnabled()
 }
 
 // promWriteUpstreamPath is the relative path on the metrics storage
@@ -281,8 +296,12 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !promWriteEnabled() {
-		respondError(w, http.StatusNotFound, "remote_write receiver disabled — set KUBEBOLT_REMOTE_WRITE_ENABLED=true")
+	// Spec #09 V2 — UI override wins over env. When the settings
+	// runtime is wired, it returns the resolved enabled flag (env
+	// baseline + BoltDB override). Falls back to the free-function
+	// env-only read when the runtime isn't available (auth disabled).
+	if !h.promWriteEnabledNow() {
+		respondError(w, http.StatusNotFound, "remote_write receiver disabled — enable it via Settings → Ingest, or set KUBEBOLT_REMOTE_WRITE_ENABLED=true")
 		return
 	}
 

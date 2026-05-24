@@ -27,6 +27,14 @@ type GeneralConfig struct {
 	// back to 30 — same set the RefreshContext on the frontend
 	// considers valid.
 	DefaultRefreshIntervalSeconds int
+
+	// ProdNamespacePattern is the regex used to classify a namespace
+	// as "production" for the Secret Reveal role-escalation rule
+	// (admin required in prod, editor elsewhere). Empty string falls
+	// back to the actions_secret.go default
+	// `^(prod|production|prd)([-_].+)?$`. UI-editable via
+	// Settings → General; regex compile is validated server-side.
+	ProdNamespacePattern string
 }
 
 // LoadGeneralConfig reads general settings from env vars. All optional.
@@ -34,6 +42,7 @@ func LoadGeneralConfig() GeneralConfig {
 	cfg := GeneralConfig{
 		DisplayName:                   os.Getenv("KUBEBOLT_DISPLAY_NAME"),
 		DefaultRefreshIntervalSeconds: 30, // matches RefreshContext fallback
+		ProdNamespacePattern:          os.Getenv("KUBEBOLT_PROD_NAMESPACE_PATTERN"),
 	}
 	if v := os.Getenv("KUBEBOLT_DEFAULT_REFRESH_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && isValidRefreshInterval(n) {

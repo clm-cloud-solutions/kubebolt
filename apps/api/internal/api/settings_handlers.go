@@ -38,6 +38,97 @@ type putCopilotRequest struct {
 	PlaintextFallbackAPIKey *string                         `json:"plaintextFallbackAPIKey,omitempty"`
 }
 
+// putIngestChannelRequest is the wire shape for PUT
+// /admin/settings/ingest-channel. Wraps the storage patch so future
+// additions (e.g., a `dryRunHours` field for permissive-soak before
+// enforced rollouts) slot in without breaking the JSON contract.
+type putIngestChannelRequest struct {
+	Patch *settings.StoredIngestChannelSettings `json:"patch,omitempty"`
+}
+
+func (h *handlers) handleGetSettingsIngestChannel(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	masked, err := h.settingsRuntime.RenderMaskedIngestChannel()
+	if err != nil {
+		slog.Error("settings ingest-channel get failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to read ingest-channel settings")
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handlePutSettingsIngestChannel(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	var req putIngestChannelRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		respondError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if req.Patch == nil {
+		req.Patch = &settings.StoredIngestChannelSettings{}
+	}
+	if err := h.settingsRuntime.PutIngestChannel(req.Patch); err != nil {
+		if settings.IsValidation(err) {
+			var ve *settings.ValidationError
+			if errors.As(err, &ve) {
+				respondJSON(w, http.StatusBadRequest, map[string]any{
+					"error":   "validation failed",
+					"field":   ve.Field,
+					"message": ve.Message,
+				})
+				return
+			}
+			respondError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		slog.Error("settings ingest-channel put failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to persist ingest-channel settings")
+		return
+	}
+
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings change",
+			slog.String("domain", "ingest_channel"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+
+	masked, err := h.settingsRuntime.RenderMaskedIngestChannel()
+	if err != nil {
+		slog.Warn("settings ingest-channel post-write render failed", slog.String("error", err.Error()))
+		respondJSON(w, http.StatusOK, map[string]any{"status": "saved"})
+		return
+	}
+	respondJSON(w, http.StatusOK, masked)
+}
+
+func (h *handlers) handleResetSettingsIngestChannel(w http.ResponseWriter, r *http.Request) {
+	if h.settingsRuntime == nil {
+		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
+		return
+	}
+	if err := h.settingsRuntime.ResetIngestChannel(); err != nil {
+		slog.Error("settings ingest-channel reset failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusInternalServerError, "failed to reset ingest-channel settings")
+		return
+	}
+	if uid := auth.ContextUserID(r); uid != "" {
+		slog.Info("admin settings reset",
+			slog.String("domain", "ingest_channel"),
+			slog.String("actor_id", uid),
+			slog.String("source", "admin_settings_ui"),
+		)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // handleGetSettingsCopilot returns the masked Copilot settings view.
 // Secrets never round-trip to the client — only their masked previews.
 // The response carries `secretsReadable=false` when the encrypted key

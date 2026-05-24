@@ -68,7 +68,12 @@ type Server struct {
 	// autoRegisterClusters gates the auto-register behavior. Defaults
 	// to false so single-cluster self-hosted setups don't surprise
 	// operators with extra clusters appearing in the UI.
-	autoRegisterClusters bool
+	//
+	// Spec #09 V2 — wrapped in a getter func so the value can be
+	// resolved per-registration (hot-reload from the settings runtime).
+	// nil means "fall back to false"; main.go plugs in a closure that
+	// reads `settingsRuntime.IngestChannel().AgentAutoRegisterClusters`.
+	autoRegisterClusters func() bool
 	// selfClusterID is the kube-system namespace UID of the cluster
 	// the backend itself runs in (when running in-cluster), as
 	// discovered by DiscoverClusterID at boot. Empty when running
@@ -104,8 +109,32 @@ func WithClusterRegistrar(r ClusterRegistrar) Option {
 // capability connects but its cluster does NOT appear in the manager
 // — the operator must register it explicitly. true means every
 // kube-proxy capable Hello triggers AddAgentProxyCluster.
+//
+// Static variant — boot-time decision. For hot-reload from a settings
+// runtime, use WithAutoRegisterClustersFunc instead.
 func WithAutoRegisterClusters(enabled bool) Option {
-	return func(s *Server) { s.autoRegisterClusters = enabled }
+	return func(s *Server) {
+		s.autoRegisterClusters = func() bool { return enabled }
+	}
+}
+
+// WithAutoRegisterClustersFunc plugs a getter func that resolves the
+// flag at each agent-registration call. Spec #09 V2 — lets main.go
+// route the read through `settingsRuntime.IngestChannel()` so the
+// UI can flip the toggle without restart. Operators can switch from
+// "manual register" to "auto" the moment a fleet rollout starts.
+func WithAutoRegisterClustersFunc(getter func() bool) Option {
+	return func(s *Server) { s.autoRegisterClusters = getter }
+}
+
+// resolveAutoRegister centralizes the "is the flag enabled right now"
+// check. nil getter → false (the safe default for the option-not-set
+// case in tests + the auth-disabled boot path).
+func (s *Server) resolveAutoRegister() bool {
+	if s.autoRegisterClusters == nil {
+		return false
+	}
+	return s.autoRegisterClusters()
 }
 
 // WithSelfClusterID configures the cluster_id the backend itself runs
@@ -234,7 +263,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	//   3. RemoveAgentProxyCluster(...)  — only if no peers remain (count == 0)
 	// To get that order we register them in reverse: cluster cleanup
 	// FIRST (runs last), then Close, then Unregister.
-	if maybeAutoRegisterCluster(s.clusterRegistrar, s.registry, s.autoRegisterClusters,
+	if maybeAutoRegisterCluster(s.clusterRegistrar, s.registry, s.resolveAutoRegister(),
 		clusterID, autoRegisterDisplayName(hello, clusterID), hello.GetCapabilities(), s.selfClusterID) {
 		defer maybeAutoUnregisterCluster(s.clusterRegistrar, s.registry, clusterID)
 	}
