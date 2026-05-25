@@ -7,6 +7,7 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
@@ -49,6 +50,10 @@ func NewRouter(
 	// read-only via /admin/settings/booted-with so operators can
 	// see what the Helm/env baseline actually was.
 	bootEnv map[string]string,
+	// agentRegistry is the in-memory agent directory. nil-safe — when
+	// no agents are wired (test fixtures, sub-1.0 deployments), the
+	// /admin/agents endpoint returns an empty list rather than 500.
+	agentRegistry *channel.AgentRegistry,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -76,6 +81,7 @@ func NewRouter(
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
 		promWriteMetrics:     promWriteMetrics,
+		agentRegistry:        agentRegistry,
 	}
 
 	// Health check endpoint
@@ -238,6 +244,19 @@ func NewRouter(
 					r.Post("/restart", h.handleSystemRestart)
 				})
 			}
+
+			// Spec #09 V2 Item 5b — /admin/agents reads the live agent
+			// registry (in-memory directory of currently-connected
+			// gRPC streams). Powers the heartbeat list in the
+			// /admin/ingest-activity panel. Lives OUTSIDE the
+			// settingsRuntime gate because the registry is wired
+			// independently of BoltDB persistence — even in
+			// auth-disabled mode, agents can still connect via the
+			// disabled-auth path, and operators want to see them.
+			r.Route("/admin/agents", func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/", h.handleAdminListAgents)
+			})
 
 			// Integrations catalog — list + read are deliberately OUTSIDE
 			// requireConnector so the page works on a fresh install with

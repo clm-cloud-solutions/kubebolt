@@ -658,7 +658,15 @@ func main() {
 	}
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv)
+	// AgentRegistry is hoisted ABOVE NewRouter (vs the original
+	// position after VMWriter creation below) because spec #09 V2
+	// Item 5b adds /admin/agents which needs the registry threaded
+	// through the router. The registry has no init-order dependencies
+	// — it's a plain in-memory directory — so creating it early is
+	// safe. SetAgentRegistry + SetStore wiring still runs further
+	// down where the manager + Bolt store are available.
+	agentRegistry := channel.NewAgentRegistry()
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
@@ -703,12 +711,11 @@ func main() {
 	}
 
 	writer := agent.NewVMWriter(vmURL)
-	// AgentRegistry indexes connected agents by (cluster_id, agent_id).
-	// The AgentProxyTransport (Sprint A.5 commit 5) consumes it via the
-	// cluster.Manager; admin handlers will too (commit 8). The manager
-	// also gets a reference so AddAgentProxyCluster can later resolve
-	// reachability via the live registry.
-	agentRegistry := channel.NewAgentRegistry()
+	// AgentRegistry was created above NewRouter; wire it into the
+	// cluster.Manager here so AddAgentProxyCluster can resolve
+	// reachability via the live registry. Same effect as the
+	// previous "create + wire" pair, just split across two sites
+	// to accommodate the /admin/agents endpoint added in V2 Item 5b.
 	manager.SetAgentRegistry(agentRegistry)
 
 	// Tunnel idle timeout — set the package-level default so every
