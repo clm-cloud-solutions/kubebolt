@@ -305,6 +305,100 @@ The `status` label takes one of: `accepted`, `rate_limit`,
 `tenant_id_mismatch`, `tenant_id_missing`, `injection_failed`,
 `upstream_error`.
 
+The gRPC ingest path emits two additional counters that pair with
+the `kubebolt_prom_write_*` set above:
+
+```promql
+# "How many samples is each tenant shipping via the gRPC agent path?"
+sum by (tenant_id) (rate(kubebolt_agent_grpc_samples_received_total[5m]))
+
+# "How many agents have connected for this tenant in the last hour?"
+sum(increase(kubebolt_agent_grpc_streams_total{status="connected",tenant_id="<id>"}[1h]))
+```
+
+The `kubebolt_agent_grpc_streams_total` counter carries a `status`
+label of `connected` (stream accepted) or `disconnected` (stream
+ended). The `auth_rejected` value is reserved but not yet emitted
+in the OSS build.
+
+---
+
+## Scraping `/metrics` into VictoriaMetrics — `additionalScrapeConfigs`
+
+The admin UI's **Ingest Activity** panel (`/admin/ingest-activity`)
+runs PromQL queries against the same VictoriaMetrics the rest of
+KubeBolt uses. For those queries to return data, the backend's
+`/metrics` endpoint must be scraped into VM.
+
+Two paths, pick whichever matches your setup:
+
+### Path A — kubebolt-agent's vmagent sidecar (default for most installs)
+
+When `kubebolt-agent` is installed with `scrape.enabled=true` (the
+default), its vmagent sidecar auto-discovers the `kubebolt-api`
+Service and ships `/metrics` into VM. **No operator action needed.**
+
+To verify the scrape is working:
+
+```bash
+kubectl -n kubebolt logs -l app=kubebolt-agent -c vmagent --tail=20 | grep kubebolt-api
+```
+
+You should see `200 OK` responses with the body size of the
+`/metrics` output. If you see `404` or `connection refused`,
+double-check the Service exists and the agent's RBAC includes the
+backend's namespace.
+
+### Path B — `additionalScrapeConfigs` for kube-prometheus-stack
+
+If you run kube-prometheus-stack (or any vanilla Prometheus install)
+and want IT to scrape `kubebolt-api/metrics` rather than the
+kubebolt-agent's vmagent, add the following to your
+`additionalScrapeConfigs`:
+
+```yaml
+# Secret embedded in kube-prometheus-stack values.yaml (or any
+# Prometheus chart that supports additionalScrapeConfigsSecret).
+additionalScrapeConfigsSecret:
+  enabled: true
+  name: kubebolt-additional-scrape
+  key: kubebolt-scrape.yaml
+
+# Then create the Secret with:
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kubebolt-additional-scrape
+  namespace: monitoring  # or wherever your Prom runs
+type: Opaque
+stringData:
+  kubebolt-scrape.yaml: |
+    - job_name: kubebolt-api
+      scrape_interval: 30s
+      kubernetes_sd_configs:
+        - role: endpoints
+          namespaces:
+            names:
+              - kubebolt  # adjust to your namespace
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_service_name]
+          regex: kubebolt
+          action: keep
+        - source_labels: [__meta_kubernetes_endpoint_port_name]
+          regex: api
+          action: keep
+```
+
+The relabel chain keeps only the `api` port of the `kubebolt`
+Service. Most installs only have one Service-name + port pair, but
+the `keep` clauses defend against future co-located Services that
+expose unrelated `/metrics` endpoints.
+
+The Ingest Activity panel's "No ingest activity in the last hour"
+empty state links back to this section — if a tenant card stays
+empty when you expected activity, the most likely cause is that
+neither Path A nor Path B is running and VM has no data to query.
+
 ---
 
 ## Troubleshooting
