@@ -967,6 +967,13 @@ export const api = {
   issueAgentTokenAndMaterializeSecret: (body: AgentIssueTokenRequest) =>
     postJSON<AgentIssueTokenResponse>(`${API_BASE}/integrations/agent/issue-token`, body),
 
+  // Live agent registry — currently-connected gRPC streams. Spec #09 V2
+  // Item 5b — drives the heartbeat list in /admin/ingest-activity.
+  // Admin-only. Returns an empty array when the backend has no registry
+  // wired (auth-disabled / test fixtures).
+  adminListAgents: () =>
+    fetchJSON<AdminAgentEntry[]>(`${API_BASE}/admin/agents`),
+
   // ─── Admin → Settings (spec #09) ──────────────────────────────────
   //
   // Runtime configuration of things that used to be env-only. Every
@@ -1630,6 +1637,18 @@ export interface AgentIssueTokenResponse {
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
+}
+
+// Live agent registry entry — one per currently-connected gRPC stream.
+// Spec #09 V2 Item 5b. Mirrors the backend's AdminAgentEntry verbatim.
+export interface AdminAgentEntry {
+  clusterId: string
+  agentId: string
+  nodeName: string
+  tenantId?: string
+  authMode?: string
+  // Unix seconds when the stream first opened.
+  connectedAt: number
 }
 
 // Backend topology hints for the agent install / add-cluster wizards.

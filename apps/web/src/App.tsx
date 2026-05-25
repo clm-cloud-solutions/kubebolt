@@ -24,6 +24,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
 import { AgentTokensPage } from '@/pages/admin/AgentTokensPage'
 import { CopilotUsagePage } from '@/pages/admin/CopilotUsagePage'
+import { IngestActivityPage } from '@/pages/admin/IngestActivityPage'
 import { IntegrationsPage } from '@/pages/admin/IntegrationsPage'
 import { SettingsPage as AdminSettingsPage } from '@/pages/admin/SettingsPage'
 import { AdminPlaceholderPage } from '@/pages/admin/AdminPlaceholderPage'
@@ -126,6 +127,7 @@ export default function App() {
               <Route path="/admin/users" element={<RequireRole role="admin"><UsersPage /></RequireRole>} />
               <Route path="/admin/agent-tokens" element={<RequireRole role="admin"><AgentTokensPage /></RequireRole>} />
               <Route path="/admin/copilot-usage" element={<RequireRole role="admin"><CopilotUsagePage /></RequireRole>} />
+              <Route path="/admin/ingest-activity" element={<RequireRole role="admin"><IngestActivityPage /></RequireRole>} />
               <Route path="/admin/integrations" element={<RequireRole role="admin"><IntegrationsPage /></RequireRole>} />
               <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
               <Route path="/admin/service-accounts" element={<RequireRole role="admin"><AdminPlaceholderPage title="Service Accounts" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
