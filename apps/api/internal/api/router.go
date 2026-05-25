@@ -258,6 +258,19 @@ func NewRouter(
 				r.Get("/", h.handleAdminListAgents)
 			})
 
+			// Spec #09 V2 Item 5b — admin PromQL pass-through that
+			// BYPASSES scopeQueryByCluster. Required for tenant-scoped
+			// observability metrics (kubebolt_agent_grpc_*,
+			// kubebolt_prom_write_*) which don't carry a cluster_id
+			// label — applying cluster scoping returns 0 series. The
+			// /admin/ingest-activity page uses these instead of the
+			// public /metrics/query{,_range} routes.
+			r.Route("/admin/metrics", func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/query", h.handleAdminMetricsQuery)
+				r.Get("/query_range", h.handleAdminMetricsQueryRange)
+			})
+
 			// Integrations catalog — list + read are deliberately OUTSIDE
 			// requireConnector so the page works on a fresh install with
 			// no clusters yet. The handlers degrade to metadata-only

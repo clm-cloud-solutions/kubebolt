@@ -1,9 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, AlertCircle, CheckCircle2, Database, Gauge, KeyRound, Network, Power, Server, Timer } from 'lucide-react'
 import { api, type AdminAgentEntry, type Tenant } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
+import { RangeSelector, OVERVIEW_RANGE_OPTIONS } from '@/components/shared/RangeSelector'
 
 // IngestActivityPage answers "what is my ingest doing right now?" —
 // spec #09 V2 Item 5b. The companion piece to Item 5a's Prometheus
@@ -36,6 +37,12 @@ function formatAge(unixMs: number): string {
 }
 
 export function IngestActivityPage() {
+  // Page-level range state — drives both the sparkline (via MetricChart's
+  // controlledRangeMinutes) and the chip increase() windows. 60m default
+  // matches the original "last 1h" framing operators saw before the
+  // selector landed. RangeSelector lets them widen to 24h or narrow to 5m.
+  const [rangeMinutes, setRangeMinutes] = useState(60)
+
   const { data: tenants, isLoading: tenantsLoading, error: tenantsError } = useQuery({
     queryKey: ['admin-tenants'],
     queryFn: api.listTenants,
@@ -80,16 +87,21 @@ export function IngestActivityPage() {
           <p className="text-xs text-kb-text-tertiary mt-0.5 max-w-2xl">
             Live view of what each tenant is ingesting via the two paths: kubebolt-agent gRPC
             channel and Prom remote_write receiver. Refreshes every 30s. Empty cards mean no
-            activity in the last hour — see{' '}
-            <a href="/docs/integrations/prometheus" className="text-kb-accent underline">
+            activity in the selected window — see{' '}
+            <a
+              href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-kb-accent underline"
+            >
               Prometheus integration docs
             </a>{' '}
-            if you expected activity and don't see it (your backend's <code className="font-mono">/metrics</code>{' '}
-            endpoint needs to be scraped into VM).
+            if you expected activity and don't see it.
           </p>
         </div>
-        <div className="text-[10px] font-mono text-kb-text-tertiary shrink-0 mt-1">
-          auto-refresh 30s
+        <div className="flex items-center gap-3 shrink-0 mt-1">
+          <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} />
+          <div className="text-[10px] font-mono text-kb-text-tertiary">auto-refresh 30s</div>
         </div>
       </header>
 
@@ -106,6 +118,7 @@ export function IngestActivityPage() {
             key={t.id}
             tenant={t}
             agents={(agents ?? []).filter((a) => a.tenantId === t.id)}
+            rangeMinutes={rangeMinutes}
           />
         ))}
       </div>
@@ -118,22 +131,34 @@ export function IngestActivityPage() {
 interface TenantIngestCardProps {
   tenant: Tenant
   agents: AdminAgentEntry[]
+  // Selected window in minutes — drives the chip increase() windows
+  // and the sparkline's controlled range. Headline samples/sec stays
+  // at rate[5m] regardless because "current rate" is a smoothing
+  // signal, not a range-dependent aggregation.
+  rangeMinutes: number
 }
 
-function TenantIngestCard({ tenant, agents }: TenantIngestCardProps) {
-  // Three instant queries powering the chips + gauge. Each returns a
-  // single number; we render the result inline. PromQL functions used:
-  //   - sum(rate(...)) for the "samples/sec right now" headline
-  //   - sum by (status) (increase(...[1h])) for the chips
+function TenantIngestCard({ tenant, agents, rangeMinutes }: TenantIngestCardProps) {
+  // Instant queries powering the chips + gauge. Each returns a single
+  // number; we render the result inline. PromQL functions used:
+  //   - sum(rate(...[5m])) for the headline (fixed 5m smoothing)
+  //   - sum by (status) (increase(...[<window>])) for the chips,
+  //     window comes from the RangeSelector
   //   - the activeSeries gauge is already a per-tenant value, no agg
   //     needed beyond the tenant label match.
   const tenantLabel = `tenant_id="${tenant.id}"`
+  // PromQL duration string for the selected window — used in
+  // increase() and the chip header copy. Pulled from the same
+  // OVERVIEW_RANGE_OPTIONS table the RangeSelector uses, so the chip
+  // header label always matches the chart's range chip.
+  const rangeLabel =
+    OVERVIEW_RANGE_OPTIONS.find((o) => o.minutes === rangeMinutes)?.label ?? `${rangeMinutes}m`
 
   // Headline samples/sec — sum of both paths.
   const { data: samplesPerSec } = useQuery({
     queryKey: ['ingest-activity', tenant.id, 'samples-per-sec'],
     queryFn: () =>
-      api.queryMetrics({
+      api.adminQueryMetrics({
         query: `sum(rate(kubebolt_agent_grpc_samples_received_total{${tenantLabel}}[5m])) + sum(rate(kubebolt_prom_write_samples_accepted_total{${tenantLabel}}[5m]))`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
@@ -147,7 +172,7 @@ function TenantIngestCard({ tenant, agents }: TenantIngestCardProps) {
   const { data: activeSeries } = useQuery({
     queryKey: ['ingest-activity', tenant.id, 'active-series'],
     queryFn: () =>
-      api.queryMetrics({
+      api.adminQueryMetrics({
         query: `kubebolt_prom_write_active_series{${tenantLabel}}`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
@@ -162,28 +187,28 @@ function TenantIngestCard({ tenant, agents }: TenantIngestCardProps) {
     staleTime: 60_000, // limits change rarely; cache aggressively
   })
 
-  // Stream lifecycle chips: connections / disconnects in the last hour.
-  // increase() captures the count of events even when both go to 0
-  // (a quiet hour). status="auth_rejected" is RESERVED but not yet
+  // Stream lifecycle chips: connections / disconnects in the selected
+  // window. increase() captures the count of events even when both go
+  // to 0 (a quiet hour). status="auth_rejected" is RESERVED but not yet
   // wired backend-side — query returns 0 until that lands.
   const { data: streamStats } = useQuery({
-    queryKey: ['ingest-activity', tenant.id, 'stream-stats'],
+    queryKey: ['ingest-activity', tenant.id, 'stream-stats', rangeLabel],
     queryFn: () =>
-      api.queryMetrics({
-        query: `sum by (status) (increase(kubebolt_agent_grpc_streams_total{${tenantLabel}}[1h]))`,
+      api.adminQueryMetrics({
+        query: `sum by (status) (increase(kubebolt_agent_grpc_streams_total{${tenantLabel}}[${rangeLabel}]))`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
 
-  // Remote_write request chips: outcome distribution over the last hour.
+  // Remote_write request chips: outcome distribution over the window.
   // The status label has 10 possible values; we group "everything not
   // accepted" into a single "rejected" bucket plus pull out the
   // operationally important ones (auth, rate_limit, cardinality).
   const { data: requestStats } = useQuery({
-    queryKey: ['ingest-activity', tenant.id, 'request-stats'],
+    queryKey: ['ingest-activity', tenant.id, 'request-stats', rangeLabel],
     queryFn: () =>
-      api.queryMetrics({
-        query: `sum by (status) (increase(kubebolt_prom_write_requests_total{${tenantLabel}}[1h]))`,
+      api.adminQueryMetrics({
+        query: `sum by (status) (increase(kubebolt_prom_write_requests_total{${tenantLabel}}[${rangeLabel}]))`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -264,9 +289,14 @@ function TenantIngestCard({ tenant, agents }: TenantIngestCardProps) {
           {/* Sparkline — two series side by side */}
           <div>
             <MetricChart
-              title="Samples per second (last 1h)"
+              title={`Samples per second (last ${rangeLabel})`}
               icon={<Network className="w-4 h-4" />}
               unit="count"
+              // Spec #09 V2 Item 5b — these are tenant-scoped backend
+              // observability metrics that don't carry a cluster_id
+              // label; route through the admin PromQL endpoint that
+              // bypasses scopeQueryByCluster.
+              bypassClusterScope
               queries={[
                 {
                   query: `sum(rate(kubebolt_agent_grpc_samples_received_total{${tenantLabel}}[5m]))`,
@@ -281,14 +311,14 @@ function TenantIngestCard({ tenant, agents }: TenantIngestCardProps) {
               chartType="area"
               showStats={false}
               height={160}
-              controlledRangeMinutes={60}
+              controlledRangeMinutes={rangeMinutes}
             />
           </div>
 
           {/* Chips row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <StreamLifecycleChips stats={streamStats} />
-            <RemoteWriteRequestChips stats={requestStats} />
+            <StreamLifecycleChips stats={streamStats} rangeLabel={rangeLabel} />
+            <RemoteWriteRequestChips stats={requestStats} rangeLabel={rangeLabel} />
           </div>
 
           {/* Heartbeat list */}
@@ -333,19 +363,29 @@ function EmptyTenantState() {
         No ingest activity in the last hour.
       </div>
       <div className="text-[11px] text-kb-text-tertiary mt-2 max-w-md mx-auto leading-relaxed">
-        If this tenant should be active, check that the backend's{' '}
-        <code className="font-mono text-kb-accent">/metrics</code> endpoint is being scraped into
-        VictoriaMetrics. See{' '}
-        <a href="/docs/integrations/prometheus" className="underline">
+        If this tenant should be active, give the backend a few seconds after startup to ship
+        its first self-write to VM. See{' '}
+        <a
+          href="https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline"
+        >
           Prometheus integration docs
         </a>{' '}
-        for the <code className="font-mono">additionalScrapeConfigs</code> recipe.
+        for the metric reference.
       </div>
     </div>
   )
 }
 
-function StreamLifecycleChips({ stats }: { stats: ReturnType<typeof Object> }) {
+function StreamLifecycleChips({
+  stats,
+  rangeLabel,
+}: {
+  stats: ReturnType<typeof Object>
+  rangeLabel: string
+}) {
   const byStatus = vectorByStatus(stats)
   const connected = byStatus['connected'] ?? 0
   const disconnected = byStatus['disconnected'] ?? 0
@@ -354,7 +394,7 @@ function StreamLifecycleChips({ stats }: { stats: ReturnType<typeof Object> }) {
     <div className="rounded-lg border border-kb-border bg-kb-bg p-3">
       <div className="text-[10px] font-mono uppercase tracking-wider text-kb-text-tertiary mb-2 flex items-center gap-1">
         <Power className="w-3 h-3" />
-        gRPC stream events (last 1h)
+        gRPC stream events (last {rangeLabel})
       </div>
       <div className="flex flex-wrap gap-2">
         <Chip label="connected" count={connected} variant="ok" />
@@ -365,7 +405,13 @@ function StreamLifecycleChips({ stats }: { stats: ReturnType<typeof Object> }) {
   )
 }
 
-function RemoteWriteRequestChips({ stats }: { stats: ReturnType<typeof Object> }) {
+function RemoteWriteRequestChips({
+  stats,
+  rangeLabel,
+}: {
+  stats: ReturnType<typeof Object>
+  rangeLabel: string
+}) {
   const byStatus = vectorByStatus(stats)
   const accepted = byStatus['accepted'] ?? 0
   const authRejected = byStatus['auth'] ?? 0
@@ -385,7 +431,7 @@ function RemoteWriteRequestChips({ stats }: { stats: ReturnType<typeof Object> }
     <div className="rounded-lg border border-kb-border bg-kb-bg p-3">
       <div className="text-[10px] font-mono uppercase tracking-wider text-kb-text-tertiary mb-2 flex items-center gap-1">
         <Network className="w-3 h-3" />
-        remote_write requests (last 1h)
+        remote_write requests (last {rangeLabel})
       </div>
       <div className="flex flex-wrap gap-2">
         <Chip label="accepted" count={accepted} variant="ok" />

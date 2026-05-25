@@ -130,6 +130,13 @@ interface MetricChartProps {
   // null is fine when no data exists for that timestamp; the
   // divider only renders when the callback returns truthy JSX.
   tooltipExtra?: (timestampSec: number) => React.ReactNode
+  // Spec #09 V2 Item 5b — when true, route the underlying PromQL
+  // through the admin endpoint that bypasses cluster scoping. Required
+  // for charts of tenant-scoped backend observability metrics
+  // (kubebolt_agent_grpc_*, kubebolt_prom_write_*) which don't carry a
+  // cluster_id label. Default false keeps every existing dashboard
+  // unchanged.
+  bypassClusterScope?: boolean
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -295,6 +302,7 @@ export function MetricChart({
   defaultRangeMinutes = 15,
   rangeOptions = DEFAULT_RANGE_OPTIONS,
   controlledRangeMinutes,
+  bypassClusterScope,
   eventMarkers,
   refetchMs = 15_000,
   height = 220,
@@ -331,11 +339,12 @@ export function MetricChart({
 
   const results = useQueries({
     queries: allQueries.map((spec, idx) => ({
-      queryKey: ['metrics-range', spec.query, rangeMinutes, step, idx],
+      queryKey: ['metrics-range', spec.query, rangeMinutes, step, idx, bypassClusterScope ? 'admin' : 'scoped'],
       queryFn: (): Promise<PromRangeResponse> => {
         const end = Math.floor(Date.now() / 1000)
         const start = end - rangeMinutes * 60
-        return api.queryMetricsRange({ query: spec.query, start, end, step })
+        const fn = bypassClusterScope ? api.adminQueryMetricsRange : api.queryMetricsRange
+        return fn({ query: spec.query, start, end, step })
       },
       refetchInterval: refetchMs,
       retry: (failureCount: number, err: unknown) => {

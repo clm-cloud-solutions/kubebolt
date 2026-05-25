@@ -668,6 +668,20 @@ func main() {
 	agentRegistry := channel.NewAgentRegistry()
 	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry)
 
+	// Spec #09 V2 Item 5b — push the backend's own Prometheus
+	// counters into VM every 30s so the /admin/ingest-activity panel
+	// can query them via PromQL like every other dashboard in the
+	// app. API and VM are co-located in every production topology
+	// (same Helm release / same private network), so the write is
+	// local — sub-millisecond latency, no firewall punchholes.
+	// Reuses the same vmURL the cardinality tracker reads above
+	// (constant once main has resolved KUBEBOLT_METRICS_STORAGE_URL).
+	// Goroutine tied to process-lifetime context.Background — exits
+	// when the process exits.
+	if vmURL != "" {
+		go api.SelfWriteMetricsToVM(context.Background(), prometheus.DefaultGatherer, vmURL)
+	}
+
 	// Mount embedded frontend if available
 	if frontendFS != nil {
 		api.MountFrontend(router, frontendFS)

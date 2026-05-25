@@ -879,6 +879,30 @@ export const api = {
       })}`
     ),
 
+  // Admin PromQL pass-through — BYPASSES cluster scoping. Used by the
+  // /admin/ingest-activity page for tenant-scoped backend observability
+  // metrics (kubebolt_agent_grpc_*, kubebolt_prom_write_*) which don't
+  // carry a cluster_id label — applying cluster scoping returns 0 series.
+  // Spec #09 V2 Item 5b. Other dashboards keep using queryMetrics{,Range}
+  // above; those metrics ARE per-cluster and benefit from auto-scoping.
+  adminQueryMetrics: (params: { query: string; time?: number }) =>
+    fetchJSON<PromVectorResponse>(
+      `${API_BASE}/admin/metrics/query${buildQuery({
+        query: params.query,
+        time: params.time,
+      })}`
+    ),
+
+  adminQueryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>
+    fetchJSON<PromRangeResponse>(
+      `${API_BASE}/admin/metrics/query_range${buildQuery({
+        query: params.query,
+        start: params.start,
+        end: params.end,
+        step: params.step,
+      })}`
+    ),
+
   // Cluster-wide rollout events. The Capacity dashboard uses this
   // to overlay deploy markers on the trends charts so metric shifts
   // can be correlated with "what changed". Window matches the chart
