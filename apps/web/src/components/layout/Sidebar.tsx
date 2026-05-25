@@ -136,6 +136,12 @@ const adminItems = [
   { label: 'Settings', path: '/admin/settings', icon: <SlidersHorizontal className="w-4 h-4" /> },
   { label: 'Users', path: '/admin/users', icon: <Users className="w-4 h-4" /> },
   { label: 'Agent Tokens', path: '/admin/agent-tokens', icon: <KeyRound className="w-4 h-4" /> },
+  // Ingest Activity sits between Agent Tokens and Integrations because
+  // the operator workflow is: issue tokens (Agent Tokens) → install
+  // agents → see them connect (Ingest Activity) → wire integrations
+  // (Integrations). The page is admin-only and lives behind the same
+  // role gate as the rest of /admin/*. Spec #09 V2 Item 5b.
+  { label: 'Ingest Activity', path: '/admin/ingest-activity', icon: <Activity className="w-4 h-4" /> },
   { label: 'Integrations', path: '/admin/integrations', icon: <Puzzle className="w-4 h-4" /> },
   { label: 'Kobi Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
   { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },

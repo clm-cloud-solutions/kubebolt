@@ -879,6 +879,30 @@ export const api = {
       })}`
     ),
 
+  // Admin PromQL pass-through — BYPASSES cluster scoping. Used by the
+  // /admin/ingest-activity page for tenant-scoped backend observability
+  // metrics (kubebolt_agent_grpc_*, kubebolt_prom_write_*) which don't
+  // carry a cluster_id label — applying cluster scoping returns 0 series.
+  // Spec #09 V2 Item 5b. Other dashboards keep using queryMetrics{,Range}
+  // above; those metrics ARE per-cluster and benefit from auto-scoping.
+  adminQueryMetrics: (params: { query: string; time?: number }) =>
+    fetchJSON<PromVectorResponse>(
+      `${API_BASE}/admin/metrics/query${buildQuery({
+        query: params.query,
+        time: params.time,
+      })}`
+    ),
+
+  adminQueryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>
+    fetchJSON<PromRangeResponse>(
+      `${API_BASE}/admin/metrics/query_range${buildQuery({
+        query: params.query,
+        start: params.start,
+        end: params.end,
+        step: params.step,
+      })}`
+    ),
+
   // Cluster-wide rollout events. The Capacity dashboard uses this
   // to overlay deploy markers on the trends charts so metric shifts
   // can be correlated with "what changed". Window matches the chart
@@ -966,6 +990,13 @@ export const api = {
   // for the operator to manage manually.
   issueAgentTokenAndMaterializeSecret: (body: AgentIssueTokenRequest) =>
     postJSON<AgentIssueTokenResponse>(`${API_BASE}/integrations/agent/issue-token`, body),
+
+  // Live agent registry — currently-connected gRPC streams. Spec #09 V2
+  // Item 5b — drives the heartbeat list in /admin/ingest-activity.
+  // Admin-only. Returns an empty array when the backend has no registry
+  // wired (auth-disabled / test fixtures).
+  adminListAgents: () =>
+    fetchJSON<AdminAgentEntry[]>(`${API_BASE}/admin/agents`),
 
   // ─── Admin → Settings (spec #09) ──────────────────────────────────
   //
@@ -1630,6 +1661,18 @@ export interface AgentIssueTokenResponse {
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
+}
+
+// Live agent registry entry — one per currently-connected gRPC stream.
+// Spec #09 V2 Item 5b. Mirrors the backend's AdminAgentEntry verbatim.
+export interface AdminAgentEntry {
+  clusterId: string
+  agentId: string
+  nodeName: string
+  tenantId?: string
+  authMode?: string
+  // Unix seconds when the stream first opened.
+  connectedAt: number
 }
 
 // Backend topology hints for the agent install / add-cluster wizards.

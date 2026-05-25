@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
@@ -86,6 +87,13 @@ type handlers struct {
 	// disabled — increments become no-ops (the metrics methods
 	// nil-guard). Test fixtures pass nil; production wires it.
 	promWriteMetrics *PromWriteMetrics
+	// agentRegistry is the in-memory directory of currently-connected
+	// agents. Spec #09 V2 Item 5b — the /admin/ingest-activity panel's
+	// heartbeat list reads this directly via a new admin endpoint
+	// rather than going through Prometheus (which would lag by the
+	// scrape interval and lose attributes like NodeName + Connected
+	// timestamp that aren't worth pushing into label-cardinality).
+	agentRegistry *channel.AgentRegistry
 }
 
 // liveCopilotConfig resolves the runtime Copilot config: BoltDB override
