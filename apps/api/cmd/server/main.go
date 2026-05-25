@@ -630,6 +630,11 @@ func main() {
 	// tests pass a fresh registry to isolate (see prom_write_metrics
 	// _test.go).
 	promWriteMetrics := api.NewPromWriteMetrics(prometheus.DefaultRegisterer)
+	// Spec #09 V2 Item 5b — gRPC ingest counters powering the
+	// /admin/ingest-activity panel. Same registry as promWriteMetrics
+	// so the `/metrics` endpoint surfaces both ingest paths uniformly
+	// (the panel queries them via PromQL after they're scraped into VM).
+	agentGrpcMetrics := agent.NewGRPCIngestMetrics(prometheus.DefaultRegisterer)
 
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
@@ -921,6 +926,7 @@ func main() {
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
 		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
+		agent.WithGRPCIngestMetrics(agentGrpcMetrics),
 		agent.WithSelfClusterID(selfClusterID),
 	)
 

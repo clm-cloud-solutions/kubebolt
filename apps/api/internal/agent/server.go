@@ -84,6 +84,11 @@ type Server struct {
 	// UI selector (once as in-cluster, once as agent-proxy) — see
 	// cluster-validation BUG-2.
 	selfClusterID string
+	// metrics records per-tenant stream + samples counters powering
+	// the /admin/ingest-activity panel (spec #09 V2 Item 5b). nil
+	// when WithGRPCIngestMetrics wasn't passed — all RecordX methods
+	// nil-guard so call sites stay terse.
+	metrics *GRPCIngestMetrics
 }
 
 // Option configures a Server. Functional-options pattern keeps NewServer
@@ -125,6 +130,14 @@ func WithAutoRegisterClusters(enabled bool) Option {
 // "manual register" to "auto" the moment a fleet rollout starts.
 func WithAutoRegisterClustersFunc(getter func() bool) Option {
 	return func(s *Server) { s.autoRegisterClusters = getter }
+}
+
+// WithGRPCIngestMetrics plugs the Prometheus counter set that powers
+// the /admin/ingest-activity panel. nil is tolerated — when not set,
+// all metric record calls become no-ops via the GRPCIngestMetrics
+// nil-receiver guards. Spec #09 V2 Item 5b.
+func WithGRPCIngestMetrics(m *GRPCIngestMetrics) Option {
+	return func(s *Server) { s.metrics = m }
 }
 
 // resolveAutoRegister centralizes the "is the flag enabled right now"
@@ -318,6 +331,19 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		defer s.registry.Unregister(registeredAgent)
 	}
 
+	// Spec #09 V2 Item 5b — emit stream lifecycle counters that the
+	// /admin/ingest-activity panel queries via PromQL. Connected fires
+	// once per accepted stream (after Welcome + Register); disconnected
+	// runs on any return path from this handler. The auth-rejected
+	// status is recorded in auth_interceptor.go on the failure path
+	// (we never reach this point if auth rejected the stream).
+	tenantIDLabel := ""
+	if id != nil {
+		tenantIDLabel = id.TenantID
+	}
+	s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamConnected)
+	defer s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamDisconnected)
+
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -360,6 +386,14 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 				batchAttrs = append(batchAttrs, slog.String("tenant_id", id.TenantID))
 			}
 			slog.Info("received metric batch", batchAttrs...)
+			// Spec #09 V2 Item 5b — per-tenant samples counter that the
+			// /admin/ingest-activity panel renders as a rate-of-receive
+			// sparkline (`rate(kubebolt_agent_grpc_samples_received_total
+			// [5m])`). Recorded BEFORE writer.Write so a downstream VM
+			// outage still increments the counter — that way the panel
+			// shows ingest IS arriving even when downstream storage is
+			// down, which is useful diagnostically.
+			s.metrics.RecordSamplesReceived(tenantIDLabel, len(batch.GetSamples()))
 			if werr := s.writer.Write(ctx, batch.GetSamples()); werr != nil {
 				// v1 surfaced rejections via IngestAck. v2 omits the ack —
 				// the agent's buffer + heartbeat already give the operator
