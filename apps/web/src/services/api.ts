@@ -500,6 +500,22 @@ export const api = {
       source ? { 'X-KubeBolt-Action-Source': source } : undefined,
     ),
 
+  // Spawn an ephemeral debug container inside a running pod. Returns
+  // the auto-generated container name so the caller can navigate to
+  // the Terminal tab pre-selected on it. Pod-only — backend rejects
+  // other types. See spec #09 V2 Item 4 / C1 audit decision.
+  debugPod: (
+    namespace: string,
+    name: string,
+    body: { image: string; targetContainer?: string; command?: string[]; shareProcessNamespace?: boolean },
+    source?: string,
+  ) =>
+    postJSON<{ status: string; ephemeralContainerName: string }>(
+      `${API_BASE}/resources/pods/${namespace}/${name}/debug`,
+      body,
+      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+    ),
+
   scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string) =>
     postJSON<{ status: string; fromReplicas: number; toReplicas: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/scale`,

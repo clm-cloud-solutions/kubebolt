@@ -357,6 +357,16 @@ func NewRouter(
 					// evict is mid-risk because the PDB-respect makes it
 					// safer than force-delete.
 					r.Post("/resources/{type}/{namespace}/{name}/evict", h.handleEvictPod)
+					// Debug — inject an ephemeral container into a
+					// running pod. Item 4 / C1 from the pod-actions
+					// audit. Editor+ matches Terminal tab's exec
+					// gate; both expose process-level access to
+					// running containers, the ephemeral-container
+					// variant just works on distroless/scratch where
+					// `kubectl exec` can't find a shell. Returns the
+					// auto-generated container name so the UI can
+					// jump to the Terminal tab pre-selected.
+					r.Post("/resources/{type}/{namespace}/{name}/debug", h.handleDebugPod)
 					// Rollout pause/resume. Deployment-only — flips
 					// spec.paused so the deployment controller stops
 					// reconciling without touching pods. The
