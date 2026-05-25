@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
+  Download,
   Loader2,
   Lock,
   Moon,
@@ -50,6 +51,7 @@ interface FormState {
   displayName: string
   defaultRefreshIntervalSeconds: string
   prodNamespacePattern: string
+  updateCheckEnabled: boolean
 }
 
 function stateFromResponse(data: GeneralSettingsResponse): FormState {
@@ -57,6 +59,7 @@ function stateFromResponse(data: GeneralSettingsResponse): FormState {
     displayName: data.effective.displayName,
     defaultRefreshIntervalSeconds: String(data.effective.defaultRefreshIntervalSeconds),
     prodNamespacePattern: data.effective.prodNamespacePattern,
+    updateCheckEnabled: data.effective.updateCheckEnabled,
   }
 }
 
@@ -71,6 +74,9 @@ function buildPatch(initial: FormState, current: FormState): GeneralSettingsPutR
   }
   if (current.prodNamespacePattern !== initial.prodNamespacePattern) {
     patch.prodNamespacePattern = current.prodNamespacePattern
+  }
+  if (current.updateCheckEnabled !== initial.updateCheckEnabled) {
+    patch.updateCheckEnabled = current.updateCheckEnabled
   }
   return Object.keys(patch).length > 0 ? { patch } : {}
 }
@@ -186,6 +192,7 @@ function GeneralSettingsForm({
     defaultRefreshIntervalSeconds:
       form.defaultRefreshIntervalSeconds !== initial.defaultRefreshIntervalSeconds,
     prodNamespacePattern: form.prodNamespacePattern !== initial.prodNamespacePattern,
+    updateCheckEnabled: form.updateCheckEnabled !== initial.updateCheckEnabled,
   }
   const isDirty = Object.values(dirtyMap).some(Boolean)
   const prodPreview = buildRegexPreview(form.prodNamespacePattern)
@@ -343,6 +350,30 @@ function GeneralSettingsForm({
           awkwardly on md. Also flags it as the "more advanced" knob
           via its position outside the friendly 2x2 cluster. */}
       <SectionCard
+        icon={<Download className="w-4 h-4 text-kb-accent" />}
+        title="Update check"
+        subtitle="Lets the UI surface a chip when a newer stable KubeBolt release is available on GitHub."
+      >
+        <Field
+          label="Check for KubeBolt updates"
+          dirty={dirtyMap.updateCheckEnabled}
+          helper="Backend polls api.github.com/repos/clm-cloud-solutions/kubebolt every 6 hours. Disable for air-gapped installs — no outbound traffic to github.com will occur. Boot-time override via KUBEBOLT_UPDATE_CHECK_ENABLED."
+        >
+          <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              className="w-4 h-4 accent-kb-accent cursor-pointer"
+              checked={form.updateCheckEnabled}
+              onChange={(e) => setForm({ ...form, updateCheckEnabled: e.target.checked })}
+            />
+            <span className="text-xs text-kb-text-primary">
+              {form.updateCheckEnabled ? 'Enabled' : 'Disabled'}
+            </span>
+          </label>
+        </Field>
+      </SectionCard>
+
+      <SectionCard
         icon={<Lock className="w-4 h-4 text-kb-accent" />}
         title="Production namespaces"
         subtitle="Pattern used by Secret Reveal to require Admin role instead of Editor."
@@ -431,7 +462,7 @@ function GeneralSettingsForm({
         variant="danger"
         title="Reset General settings to env defaults?"
         description={
-          <>Clears the UI-set <strong className="text-kb-text-primary">Display name</strong>, <strong className="text-kb-text-primary">Default refresh interval</strong>, and <strong className="text-kb-text-primary">Production namespaces pattern</strong> overrides. The next read falls back to the values from <code className="font-mono text-kb-accent">KUBEBOLT_*</code> env vars. Theme is per-browser and not affected.</>
+          <>Clears the UI-set <strong className="text-kb-text-primary">Display name</strong>, <strong className="text-kb-text-primary">Default refresh interval</strong>, <strong className="text-kb-text-primary">Production namespaces pattern</strong>, and <strong className="text-kb-text-primary">Update check</strong> overrides. The next read falls back to the values from <code className="font-mono text-kb-accent">KUBEBOLT_*</code> env vars. Theme is per-browser and not affected.</>
         }
         confirmLabel="Reset"
         onConfirm={() => {

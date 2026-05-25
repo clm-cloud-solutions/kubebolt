@@ -547,6 +547,21 @@ GET  /events
 GET  /metrics/:type/:namespace/:name
   Response: MetricPoint (current)
 
+GET  /update-check
+  Auth: any logged-in role
+  Response: { enabled: bool,
+              currentVersion: string,           // only when enabled
+              latestVersion: string,            // only when a stable release is cached
+              isUpdateAvailable: bool,
+              releaseUrl: string,               // GitHub release notes page
+              releaseName: string,
+              publishedAt: string (RFC3339)  }
+  Notes: Backend caches GitHub /repos/{org}/{repo}/releases for 6h.
+         Prereleases + drafts filtered out — only stable picked.
+         enabled=false when KUBEBOLT_UPDATE_CHECK_ENABLED=false or
+         when the admin toggle in Settings → General is off.
+         Dev builds (no ldflag stamp) always return isUpdateAvailable=false.
+
 WS   /ws
   Subscribe: { type: "subscribe", resources: ["pods", "events", "insights"] }
   Receive: { type: "resource:updated|deleted", data: {...} }

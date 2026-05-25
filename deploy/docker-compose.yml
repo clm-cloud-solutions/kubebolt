@@ -54,6 +54,9 @@ services:
       - KUBEBOLT_AI_FALLBACK_MODEL=${KUBEBOLT_AI_FALLBACK_MODEL:-}
       - KUBEBOLT_AI_FALLBACK_BASE_URL=${KUBEBOLT_AI_FALLBACK_BASE_URL:-}
       - KUBEBOLT_AI_SHOW_TOOL_CALLS=${KUBEBOLT_AI_SHOW_TOOL_CALLS:-true}
+      # Update check — set to false for air-gapped installs so the
+      # backend never reaches out to api.github.com. Cache TTL 6h.
+      - KUBEBOLT_UPDATE_CHECK_ENABLED=${KUBEBOLT_UPDATE_CHECK_ENABLED:-true}
   web:
     build: ../apps/web
     ports: ["3000:3000"]

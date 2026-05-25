@@ -18,6 +18,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
+	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -94,6 +95,12 @@ type handlers struct {
 	// scrape interval and lose attributes like NodeName + Connected
 	// timestamp that aren't worth pushing into label-cardinality).
 	agentRegistry *channel.AgentRegistry
+	// updateCheck polls the GitHub releases API on demand and reports
+	// whether a newer stable version of KubeBolt is available. nil
+	// when the binary is a dev build OR when main.go opted out of
+	// wiring the service. The handler short-circuits to
+	// `{"enabled": false}` in either case.
+	updateCheck *updatecheck.Service
 }
 
 // liveCopilotConfig resolves the runtime Copilot config: BoltDB override
