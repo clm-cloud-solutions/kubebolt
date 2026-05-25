@@ -1,4 +1,46 @@
 # KubeBolt Helm Chart Values
+#
+# ─── UI-first config model (spec #09 V1 + V2, 2026-05-24) ────────────
+# KubeBolt ships an admin Settings UI that edits the following domains
+# at runtime — no redeploy needed:
+#
+#   - AI Copilot           (provider, model, API key, fallback, budget)
+#   - Notifications        (Slack, Discord, SMTP, severity gates)
+#   - Auth                 (JWT TTLs — restart required to apply)
+#   - General              (display name, refresh interval, prod-namespace regex)
+#   - Agents & Ingest      (agent gRPC auth mode, rate limit, autoregister,
+#                           prune horizon, remote_write receiver gate +
+#                           auth mode + fleet defaults, SPDY tunnel idle)
+#                           Three fields restart-required (auth mode +
+#                           token audience + mTLS); rest hot-reload.
+#   - Per-tenant overrides (Settings → Agents & Ingest, bottom card)
+#
+# Values stored via the UI OVERRIDE the env baseline this chart sets
+# on every read. You can leave every UI-domain value in this file
+# empty and configure end-to-end from the UI after first login.
+#
+# ─── What you STILL set here (BOOT-TIME / infra-bound) ───────────────
+#   - api/web image, resources, networking
+#   - service / ingress
+#   - serviceAccount / RBAC
+#   - agentIngest.port / agentIngest.tls (filesystem paths)
+#   - metrics.storage (PVC, image, retention)
+#   - auth.adminPassword + auth.jwtSecret + auth.persistence
+#     (first-boot seed + signing key + data dir)
+#
+# ─── What you CAN set here but BETTER via UI ─────────────────────────
+#   - copilot.*               (Settings → AI Copilot)
+#   - notifications via extraEnv  (Settings → Notifications)
+#   - access/refresh token TTLs via extraEnv  (Settings → Auth)
+#   - display name + refresh defaults via extraEnv  (Settings → General)
+#   - agentIngest.authMode + .autoRegisterClusters + .rateLimit.*
+#       (all in Settings → Agents & Ingest now)
+#   - metrics.remoteWrite.enabled + .authMode  (Settings → Agents & Ingest)
+#
+# To inspect what env vars THIS chart actually wires into the container,
+# log into the UI as admin and open Settings → "Boot snapshot" — it
+# now groups vars into BOOT-TIME and RUNTIME tiers with category
+# subheadings for fast scanning.
 
 # API backend
 api:
@@ -232,9 +274,16 @@ auth:
       - ReadWriteOnce
 
 # AI Copilot configuration
-# The copilot uses the user's own LLM provider API key — no KubeBolt-managed
-# AI service. Leave apiKey empty to disable the copilot entirely. KubeBolt
-# itself works fully without the copilot.
+#
+# DEPRECATED — prefer Settings → AI Copilot in the UI. The fields below
+# still work as a boot-time baseline (useful for GitOps / config-as-code
+# workflows that want to seed an install without manual UI steps), but
+# every value here is editable at runtime from the admin UI without a
+# redeploy. UI overrides win over these values on every read.
+#
+# The copilot uses the user's own LLM provider API key — no
+# KubeBolt-managed AI service. Leave apiKey empty to disable the
+# copilot entirely. KubeBolt itself works fully without the copilot.
 copilot:
   enabled: false
   provider: anthropic     # anthropic | openai | custom

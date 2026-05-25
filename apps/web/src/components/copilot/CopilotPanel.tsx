@@ -22,7 +22,14 @@ import { KobiSigil, type KobiSigilState } from '@/components/kobi'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
-import { parseActionProposal, type CopilotMessage, type CopilotToolCall, type CopilotUsage } from '@/services/copilot/types'
+import { KobiMetricChartCard } from './KobiMetricChartCard'
+import { computeMetricChartAttachments } from './metricChartAttachment'
+import {
+  parseActionProposal,
+  type CopilotMessage,
+  type CopilotToolCall,
+  type CopilotUsage,
+} from '@/services/copilot/types'
 
 // Compact number formatter: 1234 → "1.2k", 15000000 → "15M"
 function formatTokens(n: number): string {
@@ -387,6 +394,14 @@ export function CopilotPanel() {
             }
           }
 
+          // Spec #08 — compute chart attachments once per render. The helper
+          // enforces "attach to the FIRST text-bearing assistant turn that
+          // STRICTLY FOLLOWS the metric tool call" so the chart sits next to
+          // the analysis prose, not above the "I'll check this" preamble that
+          // typically ships with the tool_call in the same Claude message.
+          // See `metricChartAttachment.ts` for the attachment rule details.
+          const metricChartAttachments = computeMetricChartAttachments(messages)
+
           return messages.map((m) => {
             // User turns whose tool results include proposals → interactive
             // ActionProposalCard (the LLM never executes; the operator clicks
@@ -427,13 +442,35 @@ export function CopilotPanel() {
               const visibleCalls = showToolCalls
                 ? toolCalls.filter((tc) => !tc.name.startsWith('propose_'))
                 : []
-              if (!hasText && visibleCalls.length === 0) {
+              // Spec #08 — chart cards attach to the FIRST text-bearing
+              // assistant turn after the tool call (not the tool-call turn
+              // itself). Reading order: question → "I'll check this" →
+              // tool chip → chart (evidence) → analysis text. This keeps
+              // the chart visually next to the prose that interprets it.
+              const metricCards = hasText ? (metricChartAttachments.get(m.id) ?? []) : []
+              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0) {
                 // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
                 // don't render at all; the bottom indicator covers them.
                 return null
               }
               return (
                 <div key={m.id} className="flex flex-col gap-2">
+                  {metricCards.map((mc) => (
+                    // Same outer lane as MessageBubble (max-w-[95%], avatar
+                    // + gap-2 on the left). The avatar slot stays empty here
+                    // so the chart's content aligns horizontally with the
+                    // text bubble's content below, but only the text bubble
+                    // shows the Kobi sigil — one avatar per response block.
+                    <div
+                      key={`chart-${mc.id}`}
+                      className="flex justify-start gap-2 max-w-[95%] min-w-0"
+                    >
+                      <div className="w-6 shrink-0" aria-hidden />
+                      <div className="flex-1 min-w-0">
+                        <KobiMetricChartCard data={mc.data!} />
+                      </div>
+                    </div>
+                  ))}
                   {hasText && <MessageBubble message={m} />}
                   {visibleCalls.length > 0 && (
                     <ToolCardLane>

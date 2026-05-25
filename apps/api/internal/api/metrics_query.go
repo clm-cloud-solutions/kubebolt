@@ -444,3 +444,99 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
+
+// handleAdminMetricsQuery is the admin-only PromQL pass-through that
+// BYPASSES scopeQueryByCluster. Spec #09 V2 Item 5b — the
+// /admin/ingest-activity panel queries `kubebolt_*` observability
+// metrics which are tenant-scoped, not cluster-scoped. Injecting a
+// cluster_id label on these would return zero series (the labels
+// don't exist on these counters). Other dashboards (Capacity,
+// Reliability, Monitor) keep using the cluster-scoped endpoint
+// because their metrics ARE per-cluster.
+//
+// Otherwise identical to handleMetricsQuery — same proxy target, same
+// response shape, same params (just no scoping pass).
+func (h *handlers) handleAdminMetricsQuery(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("query")
+	if q == "" {
+		respondError(w, http.StatusBadRequest, "query is required")
+		return
+	}
+	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
+	params := url.Values{"query": {q}}
+	if t := r.URL.Query().Get("time"); t != "" {
+		params.Set("time", t)
+	}
+	target.RawQuery = params.Encode()
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "build upstream request")
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := metricsHTTPClient.Do(req)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, "metrics storage unreachable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, "read upstream body")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
+}
+
+// handleAdminMetricsQueryRange is the range-query counterpart of
+// handleAdminMetricsQuery. Same bypass-cluster-scoping semantic.
+func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query().Get("query")
+	start := r.URL.Query().Get("start")
+	end := r.URL.Query().Get("end")
+	step := r.URL.Query().Get("step")
+	if q == "" || start == "" || end == "" || step == "" {
+		respondError(w, http.StatusBadRequest, "query, start, end, and step are all required")
+		return
+	}
+	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "invalid storage URL")
+		return
+	}
+	params := url.Values{}
+	params.Set("query", q)
+	params.Set("start", start)
+	params.Set("end", end)
+	params.Set("step", step)
+	target.RawQuery = params.Encode()
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "build upstream request")
+		return
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := metricsHTTPClient.Do(req)
+	if err != nil {
+		slog.Warn("admin tsdb query failed", slog.String("error", err.Error()))
+		respondError(w, http.StatusBadGateway, "metrics storage unreachable")
+		return
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		respondError(w, http.StatusBadGateway, "read upstream body")
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	_, _ = w.Write(body)
+}

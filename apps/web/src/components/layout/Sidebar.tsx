@@ -22,19 +22,18 @@ import {
   FolderOpen,
   Shield,
   Activity,
-  Settings,
+  SlidersHorizontal,
   ShieldOff,
   Users,
   UsersRound,
-  Bell,
   Bot,
   KeyRound,
   Lightbulb,
   Puzzle,
   Info,
-  Gauge,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
+import { useUIConfig } from '@/hooks/useUIConfig'
 import { VERSION } from '@/version'
 import { AboutModal } from '@/components/layout/AboutModal'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
@@ -131,11 +130,19 @@ function getCount(overview: ClusterOverview | undefined, key?: keyof ClusterOver
 const BOLT_EMOJIS = ['⚡', '🔥', '🌟', '💫', '✨', '🚀', '💜']
 
 const adminItems = [
+  // "Settings" first — single home for the env-only config that's now
+  // UI-editable. Other admin pages stay in place for their dedicated
+  // surfaces (Users, Tenants, Integrations, etc.).
+  { label: 'Settings', path: '/admin/settings', icon: <SlidersHorizontal className="w-4 h-4" /> },
   { label: 'Users', path: '/admin/users', icon: <Users className="w-4 h-4" /> },
   { label: 'Agent Tokens', path: '/admin/agent-tokens', icon: <KeyRound className="w-4 h-4" /> },
-  { label: 'Ingest Limits', path: '/admin/ingest-limits', icon: <Gauge className="w-4 h-4" /> },
+  // Ingest Activity sits between Agent Tokens and Integrations because
+  // the operator workflow is: issue tokens (Agent Tokens) → install
+  // agents → see them connect (Ingest Activity) → wire integrations
+  // (Integrations). The page is admin-only and lives behind the same
+  // role gate as the rest of /admin/*. Spec #09 V2 Item 5b.
+  { label: 'Ingest Activity', path: '/admin/ingest-activity', icon: <Activity className="w-4 h-4" /> },
   { label: 'Integrations', path: '/admin/integrations', icon: <Puzzle className="w-4 h-4" /> },
-  { label: 'Notifications', path: '/admin/notifications', icon: <Bell className="w-4 h-4" /> },
   { label: 'Kobi Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
   { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },
   { label: 'Service Accounts', path: '/admin/service-accounts', icon: <Bot className="w-4 h-4" /> },
@@ -148,6 +155,8 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
   const [aboutOpen, setAboutOpen] = useState(false)
   const { hasRole, isAuthEnabled } = useAuth()
   const location = useLocation()
+  const uiConfig = useUIConfig()
+  const brandLabel = uiConfig.displayName?.trim() || 'KubeBolt'
   // Overview is the entry point for the whole dashboard surface
   // (Overview / Capacity / Reliability sub-tabs). All three should
   // light up this nav item — the user is "on the dashboard"
@@ -209,7 +218,12 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
         </div>
         {!collapsed && (
           <div onClick={handleLogoClick} className="flex flex-col min-w-0 cursor-pointer">
-            <span className="text-sm font-semibold text-kb-text-primary leading-tight truncate">KubeBolt</span>
+            <span
+              className="text-sm font-semibold text-kb-text-primary leading-tight truncate"
+              title={brandLabel === 'KubeBolt' ? undefined : brandLabel}
+            >
+              {brandLabel}
+            </span>
             <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em]">v{VERSION}</span>
           </div>
         )}
@@ -326,22 +340,8 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
         )}
       </nav>
 
-      {/* Settings + About */}
+      {/* About */}
       <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
-        <NavLink
-          to="/settings"
-          title={collapsed ? 'Settings' : undefined}
-          className={({ isActive }) =>
-            `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors ${
-              isActive
-                ? 'bg-kb-accent-light text-kb-accent'
-                : 'text-kb-text-primary hover:bg-kb-card'
-            }`
-          }
-        >
-          <Settings className="w-4 h-4 shrink-0" />
-          {!collapsed && <span>Settings</span>}
-        </NavLink>
         <button
           type="button"
           onClick={() => setAboutOpen(true)}

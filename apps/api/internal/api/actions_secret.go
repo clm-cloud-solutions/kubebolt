@@ -127,6 +127,35 @@ func isProductionNamespace(namespace string) bool {
 	return productionNamespaceRegex().MatchString(namespace)
 }
 
+// isProductionNamespaceNow prefers the settings runtime over the
+// cached env-only regex. Spec #09 V2 — operators can edit the prod
+// namespace pattern via Settings → General and Secret Reveal picks up
+// the new pattern on the next request (no restart). Pattern is
+// validated at PUT time so a compile failure here would mean the
+// stored value bypassed validation — we log a WARN and fall back to
+// the env-only regex, which is more conservative than blocking the
+// request. Falls through to the env-only path entirely when
+// settingsRuntime is nil (auth-disabled mode).
+func (h *handlers) isProductionNamespaceNow(namespace string) bool {
+	if namespace == "" {
+		return false
+	}
+	if h.settingsRuntime != nil {
+		pat := h.settingsRuntime.General().ProdNamespacePattern
+		if pat != "" {
+			re, err := regexp.Compile(pat)
+			if err != nil {
+				slog.Warn("stored prod namespace pattern failed to compile, falling back to env baseline",
+					slog.String("pattern", pat),
+					slog.String("error", err.Error()))
+			} else {
+				return re.MatchString(namespace)
+			}
+		}
+	}
+	return productionNamespaceRegex().MatchString(namespace)
+}
+
 type secretRevealRequest struct {
 	Keys   []string `json:"keys,omitempty"` // empty/missing means "reveal all keys"
 	Reason string   `json:"reason"`
@@ -176,7 +205,7 @@ func (h *handlers) handleSecretReveal(w http.ResponseWriter, r *http.Request) {
 	// middleware; we escalate to Admin here for prod namespaces. The
 	// auth middleware has already validated the JWT and stashed the
 	// role on the request context, so this is a cheap in-memory check.
-	if isProductionNamespace(namespace) {
+	if h.isProductionNamespaceNow(namespace) {
 		role := auth.ContextRole(r)
 		if role != auth.RoleAdmin {
 			// Audit even denied attempts — failed reveals on prod

@@ -112,27 +112,33 @@ type CopilotChatRequest struct {
 // This endpoint is reachable even when the cluster is not connected so the
 // frontend can decide whether to render the chat panel.
 func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
+	// Resolve live (BoltDB-override-aware) config so the chat panel's
+	// "Configured / Not configured" pill updates immediately after the
+	// admin saves a new API key in Admin → Settings, without needing a
+	// process restart or a 30s-cached metadata round trip.
+	cfg := h.liveCopilotConfig()
+
 	// Expose the resolved session budget so the UI can show "context X / Y".
-	budget := h.copilotConfig.SessionBudgetTokens
+	budget := cfg.SessionBudgetTokens
 	if budget <= 0 {
-		budget = copilot.ContextWindowFor(h.copilotConfig.Primary.Provider, h.copilotConfig.Primary.Model)
+		budget = copilot.ContextWindowFor(cfg.Primary.Provider, cfg.Primary.Model)
 	}
-	trigger := int(float64(budget) * h.copilotConfig.AutoCompactThreshold)
+	trigger := int(float64(budget) * cfg.AutoCompactThreshold)
 
 	resp := map[string]interface{}{
-		"enabled":        h.copilotConfig.Enabled,
-		"provider":       h.copilotConfig.Primary.Provider,
-		"model":          h.copilotConfig.Primary.Model,
+		"enabled":        cfg.Enabled,
+		"provider":       cfg.Primary.Provider,
+		"model":          cfg.Primary.Model,
 		"proxyMode":      true,
 		"sessionBudget":  budget,
 		"compactTrigger": trigger,
-		"autoCompact":    h.copilotConfig.AutoCompact,
-		"showToolCalls":  h.copilotConfig.ShowToolCalls,
+		"autoCompact":    cfg.AutoCompact,
+		"showToolCalls":  cfg.ShowToolCalls,
 	}
-	if h.copilotConfig.Fallback != nil {
+	if cfg.Fallback != nil {
 		resp["fallback"] = map[string]string{
-			"provider": h.copilotConfig.Fallback.Provider,
-			"model":    h.copilotConfig.Fallback.Model,
+			"provider": cfg.Fallback.Provider,
+			"model":    cfg.Fallback.Model,
 		}
 	}
 	respondJSON(w, http.StatusOK, resp)
@@ -149,7 +155,11 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 //   error      — provider or tool error
 //   done       — stream complete
 func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
-	if !h.copilotConfig.Enabled {
+	// Snapshot the live config ONCE per request. Subsequent reads inside
+	// this handler use `cfg.X` (never re-read) so a concurrent admin
+	// PUT doesn't split the request between two configurations.
+	cfg := h.liveCopilotConfig()
+	if !cfg.Enabled {
 		respondError(w, http.StatusServiceUnavailable, "copilot is not configured (KUBEBOLT_AI_API_KEY not set)")
 		return
 	}
@@ -199,8 +209,8 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		slog.String("component", "copilot"),
 		slog.String("user", auth.ContextUserID(r)),
 		slog.String("cluster", clusterName),
-		slog.String("provider", h.copilotConfig.Primary.Provider),
-		slog.String("model", h.copilotConfig.Primary.Model),
+		slog.String("provider", cfg.Primary.Provider),
+		slog.String("model", cfg.Primary.Model),
 		slog.String("trigger", trigger),
 	)
 
@@ -283,11 +293,21 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rec := &copilot.SessionRecord{
-				Timestamp:  time.Now(),
-				UserID:     auth.ContextUserID(r),
-				Cluster:    clusterName,
-				Provider:   h.copilotConfig.Primary.Provider,
-				Model:      h.copilotConfig.Primary.Model,
+				Timestamp: time.Now(),
+				UserID:    auth.ContextUserID(r),
+				Cluster:   clusterName,
+				Provider:  cfg.Primary.Provider,
+				// Model is resolved through copilot.ResolvedModel so the
+				// stored value reflects the model the provider ACTUALLY
+				// uses. When KUBEBOLT_AI_MODEL is unset the raw
+				// cfg.Primary.Model is empty, but the provider
+				// applies its own default (claude-sonnet-4-6 / gpt-4o).
+				// Persisting the empty string here makes the admin Copilot
+				// Usage page lose pricing — PricingFor("anthropic", "")
+				// returns no-match → estimatedUsd=0 → "no known pricing"
+				// even though real cost was incurred. ResolvedModel
+				// centralises the same fallback the providers do.
+				Model:      copilot.ResolvedModel(cfg.Primary.Provider, cfg.Primary.Model),
 				Trigger:    trigger,
 				Reason:     reason,
 				Rounds:     roundsUsed,
@@ -308,11 +328,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// Resolve the compaction trigger: budget × threshold. The budget is the
 	// user's ceiling (defaults to the model's full context window); the
 	// threshold is how full the conversation gets before we compact.
-	sessionBudget := h.copilotConfig.SessionBudgetTokens
+	sessionBudget := cfg.SessionBudgetTokens
 	if sessionBudget <= 0 {
-		sessionBudget = copilot.ContextWindowFor(h.copilotConfig.Primary.Provider, h.copilotConfig.Primary.Model)
+		sessionBudget = copilot.ContextWindowFor(cfg.Primary.Provider, cfg.Primary.Model)
 	}
-	compactTrigger := int(float64(sessionBudget) * h.copilotConfig.AutoCompactThreshold)
+	compactTrigger := int(float64(sessionBudget) * cfg.AutoCompactThreshold)
 
 	// Full input size of the previous round as reported by the provider
 	// (non-cached + cache-creation + cache-read). This is what the LLM
@@ -342,7 +362,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// Auto-compact when the conversation approaches the budget.
 		// Uses a cheap-tier model of the same provider to summarize the
 		// older turns, then replaces them with a single summary message.
-		if h.copilotConfig.AutoCompact {
+		if cfg.AutoCompact {
 			// Take the max of the last provider-reported input and our
 			// own approximation of "what the next call would send right
 			// now". The provider number is accurate for what was already
@@ -360,9 +380,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					slog.Int("budget", sessionBudget),
 				)
 				cr, cerr := copilot.Compact(r.Context(), messages, copilot.CompactOptions{
-					PreserveTurns: h.copilotConfig.CompactPreserveTurns,
-					Provider:      h.copilotConfig.Primary,
-					CompactModel:  h.copilotConfig.CompactModel,
+					PreserveTurns: cfg.CompactPreserveTurns,
+					Provider:      cfg.Primary,
+					CompactModel:  cfg.CompactModel,
 				})
 				if cerr != nil {
 					logger.Warn("copilot auto-compact failed, continuing without it",
@@ -410,20 +430,20 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			System:    systemPrompt,
 			Messages:  withSessionContextPrefix(messages, sessionCtx),
 			Tools:     tools,
-			Provider:  h.copilotConfig.Primary,
-			MaxTokens: h.copilotConfig.MaxTokens,
+			Provider:  cfg.Primary,
+			MaxTokens: cfg.MaxTokens,
 		}
 
 		resp, err := h.callProvider(r, chatReq)
 
 		// On recoverable error, try fallback if configured
-		if err != nil && copilot.IsRecoverable(err) && h.copilotConfig.Fallback != nil && !usedFallback {
+		if err != nil && copilot.IsRecoverable(err) && cfg.Fallback != nil && !usedFallback {
 			logger.Warn("copilot primary failed, retrying with fallback",
 				slog.String("error", err.Error()),
-				slog.String("fallbackProvider", h.copilotConfig.Fallback.Provider),
-				slog.String("fallbackModel", h.copilotConfig.Fallback.Model),
+				slog.String("fallbackProvider", cfg.Fallback.Provider),
+				slog.String("fallbackModel", cfg.Fallback.Model),
 			)
-			chatReq.Provider = *h.copilotConfig.Fallback
+			chatReq.Provider = *cfg.Fallback
 			resp, err = h.callProvider(r, chatReq)
 			if err == nil {
 				usedFallback = true
@@ -497,7 +517,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			// iteration to guard. Mid-loop cases are already covered by
 			// that check combined with the messages-plus-overhead
 			// approximation.
-			if h.copilotConfig.AutoCompact && lastRoundFullInput >= compactTrigger {
+			if cfg.AutoCompact && lastRoundFullInput >= compactTrigger {
 				logger.Info("copilot auto-compact triggered",
 					slog.String("mode", "reactive"),
 					slog.Int("contextTokens", lastRoundFullInput),
@@ -505,9 +525,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					slog.Int("budget", sessionBudget),
 				)
 				cr, cerr := copilot.Compact(r.Context(), finalMessages, copilot.CompactOptions{
-					PreserveTurns: h.copilotConfig.CompactPreserveTurns,
-					Provider:      h.copilotConfig.Primary,
-					CompactModel:  h.copilotConfig.CompactModel,
+					PreserveTurns: cfg.CompactPreserveTurns,
+					Provider:      cfg.Primary,
+					CompactModel:  cfg.CompactModel,
 				})
 				if cerr != nil {
 					logger.Warn("copilot reactive compact failed, continuing without it",
@@ -667,7 +687,10 @@ type CopilotCompactResponse struct {
 // HandleCopilotCompact runs a standalone compaction over the provided
 // messages. Used by the "new session with summary" button in the UI.
 func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) {
-	if !h.copilotConfig.Enabled {
+	// Same snapshot-per-request pattern as HandleCopilotChat — read
+	// once via the runtime resolver, use the local `cfg` thereafter.
+	cfg := h.liveCopilotConfig()
+	if !cfg.Enabled {
 		respondError(w, http.StatusServiceUnavailable, "copilot is not configured (KUBEBOLT_AI_API_KEY not set)")
 		return
 	}
@@ -688,9 +711,9 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 	)
 
 	cr, err := copilot.Compact(r.Context(), req.Messages, copilot.CompactOptions{
-		PreserveTurns: h.copilotConfig.CompactPreserveTurns,
-		Provider:      h.copilotConfig.Primary,
-		CompactModel:  h.copilotConfig.CompactModel,
+		PreserveTurns: cfg.CompactPreserveTurns,
+		Provider:      cfg.Primary,
+		CompactModel:  cfg.CompactModel,
 		ResetAll:      req.ResetAll,
 	})
 	if err != nil {

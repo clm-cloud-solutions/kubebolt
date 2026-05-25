@@ -36,6 +36,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -114,6 +115,13 @@ func fatal(msg string, args ...any) {
 }
 
 func main() {
+	// Capture every KUBEBOLT_* env var as the FIRST thing main() does,
+	// before any flag parsing or subsystem init can mutate the process
+	// environment. Surfaced via /admin/settings/booted-with so operators
+	// can answer "what did Helm wire into this container?" without
+	// kubectl-exec to inspect /proc/1/environ.
+	bootEnv := api.SnapshotKubeboltEnv(os.Environ())
+
 	cfg := config.DefaultConfig()
 
 	var host string
@@ -243,6 +251,11 @@ func main() {
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
+	// is disabled — same gate as the rest of the admin surface, since
+	// persistence requires BoltDB to be open. Constructed inside the
+	// authCfg.Enabled block where `store` and the JWT secret exist.
+	var settingsRuntime *settings.Runtime
 	// Hoisted out of the auth-enabled scope so the API router can see
 	// it for the agent integration's "issue token + create Secret"
 	// flow (router-level handler talks to the same store the agent
@@ -268,6 +281,18 @@ func main() {
 		WriteBurstSamples:  promLimitsCfg.WriteBurstSamples,
 		MaxActiveSeries:    promLimitsCfg.MaxActiveSeries,
 	}
+
+	// Notifications env baseline. Loaded here (before authCfg.Enabled
+	// block) so both the settings runtime and the boot-time notifier
+	// wiring below see the same config snapshot. Hot-reload via the
+	// admin Settings PUT handler swaps the live manager state at runtime;
+	// this remains the fallback layer for any field not overridden.
+	envNotifCfg := config.LoadNotificationsConfig()
+
+	// General settings env baseline (display name, default refresh
+	// interval). Trivially hot-reloadable — no live subsystem caches
+	// these values; the UI reads them per request.
+	envGeneralCfg := config.LoadGeneralConfig()
 
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
@@ -323,6 +348,33 @@ func main() {
 			}
 		}
 
+		// Settings runtime is built HERE — before the JWT service —
+		// because the resolved Auth() config (env baseline + BoltDB
+		// override) feeds the JWT service's TTLs. Without this order
+		// the JWT service would always use env TTLs and ignore any
+		// previously-saved UI override across restarts.
+		// Spec #09 V2 — the IngestChannel domain centralizes the env
+		// baseline for the agent ↔ backend communication plane (auth
+		// mode, rate limits, auto-registration, remote_write receiver,
+		// tunnel timeouts). Consumer subsystems read live values via
+		// settingsRuntime.IngestChannel() instead of os.Getenv directly.
+		envIngestChannelCfg := config.LoadIngestChannelConfig()
+
+		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
+			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
+				slog.String("error", err.Error()))
+		} else {
+			settingsRuntime = rt
+			// Apply persisted Auth overrides onto the live authCfg so the
+			// JWT service + handlers below pick up the resolved TTLs.
+			// JWTSecret stays from the env/DB path above; only the
+			// UI-editable subset of AuthConfig gets merged.
+			resolvedAuth := rt.Auth()
+			authCfg.AccessTokenExpiry = resolvedAuth.AccessTokenExpiry
+			authCfg.RefreshTokenExpiry = resolvedAuth.RefreshTokenExpiry
+			slog.Info("settings runtime initialised — admin UI can override env config")
+		}
+
 		jwtSvc := auth.NewJWTService(authCfg)
 		authHandlers = auth.NewHandlers(store, jwtSvc, authCfg)
 
@@ -361,6 +413,13 @@ func main() {
 		// e.g. via `go run`) the bundle still includes BearerIngestAuth
 		// for SaaS / cross-cluster ingest tokens.
 		factoryOpts := agent.LoadAuthenticatorOptionsFromEnv()
+		// Spec #09 V2 — BoltDB override wins over the env-derived value
+		// the Load function picked up. Restart-required field, so
+		// pendingRestart will surface in the UI if this diverges from
+		// what's been captured in the boot snapshot.
+		if settingsRuntime != nil {
+			factoryOpts.TokenReviewAudience = settingsRuntime.IngestChannel().AgentTokenAudience
+		}
 		factoryOpts.TenantsStore = tenantsStore
 		if c, err := agent.NewInClusterKubeClient(); err == nil {
 			factoryOpts.KubeClient = c
@@ -375,47 +434,47 @@ func main() {
 		}
 		agentAuthBundle = bundle
 		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
+
+		// Now that the JWT service + admin handlers are wired with the
+		// resolved authCfg, snapshot what the running process was built
+		// from. Subsequent PUTs to /admin/settings/auth compare against
+		// this baseline to compute pendingRestart.
+		if settingsRuntime != nil {
+			settingsRuntime.CaptureAuthBootSnapshot()
+		}
 	} else {
 		slog.Info("authentication disabled (KUBEBOLT_AUTH_ENABLED=false)")
 		authHandlers = auth.NewNoOpHandlers()
 	}
 
-	// Load notifications config and wire up Slack/Discord notifiers if webhooks are set
-	notifCfg := config.LoadNotificationsConfig()
+	// Wire up Slack/Discord/Email notifiers from the env baseline loaded
+	// above. BuildNotifiers + ConfigFromNotifications are shared with the
+	// admin Settings → Notifications PUT handler so boot-time and hot-
+	// reload produce the same notifier composition.
 	var notifManager *notifications.Manager
 	{
-		var notifiers []notifications.Notifier
-		if notifCfg.SlackWebhookURL != "" {
-			notifiers = append(notifiers, notifications.NewSlackNotifier(notifCfg.SlackWebhookURL))
+		// Resolved config = env baseline + any persisted UI overrides.
+		// At boot we read settingsRuntime so admins keep their saved
+		// notifications config across process restarts. When auth is
+		// disabled (no settingsRuntime), env is the only layer.
+		bootNotifCfg := envNotifCfg
+		if settingsRuntime != nil {
+			bootNotifCfg = settingsRuntime.Notifications()
+		}
+		notifiers := notifications.BuildNotifiers(bootNotifCfg)
+		if bootNotifCfg.SlackWebhookURL != "" {
 			slog.Info("slack notifications enabled")
 		}
-		if notifCfg.DiscordWebhookURL != "" {
-			notifiers = append(notifiers, notifications.NewDiscordNotifier(notifCfg.DiscordWebhookURL))
+		if bootNotifCfg.DiscordWebhookURL != "" {
 			slog.Info("discord notifications enabled")
 		}
-		if notifCfg.Email.Enabled() {
-			email := notifications.NewEmailNotifier(notifications.EmailConfig{
-				Host:       notifCfg.Email.Host,
-				Port:       notifCfg.Email.Port,
-				Username:   notifCfg.Email.Username,
-				Password:   notifCfg.Email.Password,
-				From:       notifCfg.Email.From,
-				To:         notifCfg.Email.To,
-				DigestMode: notifications.DigestMode(notifCfg.Email.DigestMode),
-			})
-			notifiers = append(notifiers, email)
+		if bootNotifCfg.Email.Enabled() {
 			slog.Info("email notifications enabled",
-				slog.String("mode", notifCfg.Email.DigestMode),
-				slog.Int("recipients", len(notifCfg.Email.To)),
+				slog.String("mode", bootNotifCfg.Email.DigestMode),
+				slog.Int("recipients", len(bootNotifCfg.Email.To)),
 			)
 		}
-		notifManager = notifications.NewManager(notifiers, notifications.Config{
-			MasterEnabled:   notifCfg.MasterEnabled,
-			MinSeverity:     notifCfg.MinSeverity,
-			Cooldown:        notifCfg.Cooldown,
-			BaseURL:         notifCfg.BaseURL,
-			IncludeResolved: notifCfg.IncludeResolved,
-		})
+		notifManager = notifications.NewManager(notifiers, notifications.ConfigFromNotifications(bootNotifCfg))
 		switch {
 		case !notifManager.MasterEnabled():
 			slog.Info("notifications master-disabled (KUBEBOLT_NOTIFICATIONS_ENABLED=false)")
@@ -503,9 +562,18 @@ func main() {
 	// further down: env says X, but if app auth is disabled (no
 	// agentAuthBundle), the agent gRPC server forces "disabled" — the
 	// UI must reflect the EFFECTIVE mode, not the requested one.
+	//
+	// Spec #09 V2 — read the resolved value (env + BoltDB override)
+	// via the settings runtime so UI changes take effect on next boot.
+	// Falls back to env-only when the runtime isn't available (auth
+	// disabled at app level → no persistent store).
 	resolvedEnforcement := string(agent.EnforcementDisabled)
-	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
-		if parsed, ok := agent.ParseEnforcement(v); ok {
+	authModeSource := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE")
+	if settingsRuntime != nil {
+		authModeSource = settingsRuntime.IngestChannel().AgentAuthMode
+	}
+	if authModeSource != "" {
+		if parsed, ok := agent.ParseEnforcement(authModeSource); ok {
 			resolvedEnforcement = string(parsed)
 		}
 	}
@@ -517,13 +585,25 @@ func main() {
 	// the agent gRPC enforced while keeping remote_write disabled, or
 	// vice-versa). Same three-tier semantics. Default mirrors the gRPC
 	// channel: disabled for Sprint A migration.
+	// Spec #09 V2 — read via the settings runtime so BoltDB override
+	// wins over env baseline. Captured at boot for the router (the
+	// h.promWriteAuthMode field). Note: this is currently a boot-time
+	// capture; flipping the mode in the UI requires a restart for the
+	// handler to pick up the change. A future iteration could move the
+	// mode read into the handler per-request like the enabled flag —
+	// for now V2 ships the simpler "set at boot" semantic, surfaced
+	// via pendingRestart in the masked render.
 	resolvedPromWriteEnforcement := string(agent.EnforcementDisabled)
-	if v := os.Getenv("KUBEBOLT_REMOTE_WRITE_AUTH_MODE"); v != "" {
-		if parsed, ok := agent.ParseEnforcement(v); ok {
+	promWriteAuthModeSource := os.Getenv("KUBEBOLT_REMOTE_WRITE_AUTH_MODE")
+	if settingsRuntime != nil {
+		promWriteAuthModeSource = settingsRuntime.IngestChannel().RemoteWriteAuthMode
+	}
+	if promWriteAuthModeSource != "" {
+		if parsed, ok := agent.ParseEnforcement(promWriteAuthModeSource); ok {
 			resolvedPromWriteEnforcement = string(parsed)
 		} else {
-			slog.Warn("KUBEBOLT_REMOTE_WRITE_AUTH_MODE has unknown value, defaulting to disabled",
-				slog.String("value", v))
+			slog.Warn("remote_write auth mode has unknown value, defaulting to disabled",
+				slog.String("value", promWriteAuthModeSource))
 		}
 	}
 	// Same defense-in-depth as the gRPC path: if there's no
@@ -550,6 +630,11 @@ func main() {
 	// tests pass a fresh registry to isolate (see prom_write_metrics
 	// _test.go).
 	promWriteMetrics := api.NewPromWriteMetrics(prometheus.DefaultRegisterer)
+	// Spec #09 V2 Item 5b — gRPC ingest counters powering the
+	// /admin/ingest-activity panel. Same registry as promWriteMetrics
+	// so the `/metrics` endpoint surfaces both ingest paths uniformly
+	// (the panel queries them via PromQL after they're scraped into VM).
+	agentGrpcMetrics := agent.NewGRPCIngestMetrics(prometheus.DefaultRegisterer)
 
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
@@ -573,7 +658,29 @@ func main() {
 	}
 
 	// Create API Router (with optional embedded frontend)
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics)
+	// AgentRegistry is hoisted ABOVE NewRouter (vs the original
+	// position after VMWriter creation below) because spec #09 V2
+	// Item 5b adds /admin/agents which needs the registry threaded
+	// through the router. The registry has no init-order dependencies
+	// — it's a plain in-memory directory — so creating it early is
+	// safe. SetAgentRegistry + SetStore wiring still runs further
+	// down where the manager + Bolt store are available.
+	agentRegistry := channel.NewAgentRegistry()
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry)
+
+	// Spec #09 V2 Item 5b — push the backend's own Prometheus
+	// counters into VM every 30s so the /admin/ingest-activity panel
+	// can query them via PromQL like every other dashboard in the
+	// app. API and VM are co-located in every production topology
+	// (same Helm release / same private network), so the write is
+	// local — sub-millisecond latency, no firewall punchholes.
+	// Reuses the same vmURL the cardinality tracker reads above
+	// (constant once main has resolved KUBEBOLT_METRICS_STORAGE_URL).
+	// Goroutine tied to process-lifetime context.Background — exits
+	// when the process exits.
+	if vmURL != "" {
+		go api.SelfWriteMetricsToVM(context.Background(), prometheus.DefaultGatherer, vmURL)
+	}
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
@@ -618,12 +725,11 @@ func main() {
 	}
 
 	writer := agent.NewVMWriter(vmURL)
-	// AgentRegistry indexes connected agents by (cluster_id, agent_id).
-	// The AgentProxyTransport (Sprint A.5 commit 5) consumes it via the
-	// cluster.Manager; admin handlers will too (commit 8). The manager
-	// also gets a reference so AddAgentProxyCluster can later resolve
-	// reachability via the live registry.
-	agentRegistry := channel.NewAgentRegistry()
+	// AgentRegistry was created above NewRouter; wire it into the
+	// cluster.Manager here so AddAgentProxyCluster can resolve
+	// reachability via the live registry. Same effect as the
+	// previous "create + wire" pair, just split across two sites
+	// to accommodate the /admin/agents endpoint added in V2 Item 5b.
 	manager.SetAgentRegistry(agentRegistry)
 
 	// Tunnel idle timeout — set the package-level default so every
@@ -642,6 +748,29 @@ func main() {
 				slog.Duration("default", channel.DefaultTunnelIdleTimeout),
 			)
 		}
+	}
+	// Spec #09 V2 — hot-reload the tunnel idle timeout from the
+	// settings runtime. A 30s ticker re-reads the value and rewrites
+	// the package-level default; subsequent tunnel constructions pick
+	// up the new value, in-flight tunnels keep their captured value
+	// (you can't retroactively shorten the watchdog of a running
+	// session). Race-tolerant — concurrent reads of a Duration are
+	// safe on the platforms KubeBolt supports (atomic word write),
+	// and either old/new value is a valid config. Tied to agentCtx so
+	// the ticker stops cleanly on shutdown alongside the gRPC server.
+	if settingsRuntime != nil {
+		go func() {
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-agentCtx.Done():
+					return
+				case <-ticker.C:
+					channel.DefaultTunnelIdleTimeout = settingsRuntime.IngestChannel().AgentTunnelIdleTimeout
+				}
+			}
+		}()
 	}
 
 	// Discover the cluster_id the backend itself runs in (the
@@ -745,32 +874,40 @@ func main() {
 		// for agents currently connected (DisconnectedAt zero) never
 		// expire. The horizon is configurable so SaaS operators can
 		// shorten it if they don't want stale orgs in their data set.
-		pruneHorizon := 24 * time.Hour
-		if v := os.Getenv("KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON"); v != "" {
-			if d, err := time.ParseDuration(v); err == nil && d > 0 {
-				pruneHorizon = d
-			} else {
-				slog.Warn("invalid KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON, using default",
-					slog.String("requested", v),
-					slog.Duration("default", pruneHorizon),
-				)
-			}
-		}
+		//
+		// Spec #09 V2 — the horizon is hot-reloadable. The ticker
+		// re-reads `settingsRuntime.IngestChannel().AgentRegistryPruneHorizon`
+		// on every tick, so UI changes take effect on the next hourly
+		// pass without a restart. Falls back to the env-only baseline
+		// when the runtime isn't available (auth-disabled mode).
 		go func() {
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
+			fallbackHorizon := config.DefaultAgentRegistryPruneHorizon
+			if v := os.Getenv("KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON"); v != "" {
+				if d, err := time.ParseDuration(v); err == nil && d > 0 {
+					fallbackHorizon = d
+				}
+			}
 			for {
 				select {
 				case <-agentCtx.Done():
 					return
 				case <-ticker.C:
-					removed, err := agentStore.Prune(time.Now().UTC().Add(-pruneHorizon))
+					horizon := fallbackHorizon
+					if settingsRuntime != nil {
+						horizon = settingsRuntime.IngestChannel().AgentRegistryPruneHorizon
+					}
+					removed, err := agentStore.Prune(time.Now().UTC().Add(-horizon))
 					if err != nil {
 						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
 						continue
 					}
 					if removed > 0 {
-						slog.Info("agent registry pruned", slog.Int("removed", removed))
+						slog.Info("agent registry pruned",
+							slog.Int("removed", removed),
+							slog.Duration("horizon", horizon),
+						)
 					}
 				}
 			}
@@ -782,7 +919,23 @@ func main() {
 	// in ListClusters automatically. Off by default — single-cluster
 	// self-hosted setups don't need it, and surprise discovery would
 	// be hard to undo. Multi-cluster SaaS / fleet operators flip it on.
-	autoRegisterClusters := parseAutoRegisterFlag(os.Getenv("KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS"))
+	// Spec #09 V2 — wrapped in a closure so the agent server reads the
+	// live value on every registration. UI flips the toggle without
+	// needing a restart: the next agent that connects sees the new
+	// posture (currently-connected agents stay registered until they
+	// reconnect). Falls back to the env-only value when the settings
+	// runtime isn't wired (auth-disabled boot path).
+	envAutoRegister := parseAutoRegisterFlag(os.Getenv("KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS"))
+	autoRegisterFn := func() bool {
+		if settingsRuntime != nil {
+			return settingsRuntime.IngestChannel().AgentAutoRegisterClusters
+		}
+		return envAutoRegister
+	}
+	// Capture once for any boot-time decisions that depend on the
+	// resolved value at startup (e.g., the boot-restore log line below
+	// that mentions "autoregister=true").
+	autoRegisterClusters := autoRegisterFn()
 	if autoRegisterClusters {
 		slog.Info("agent-proxy cluster auto-register enabled")
 	}
@@ -793,22 +946,33 @@ func main() {
 	ingestSrv := agent.NewServer(writer,
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
-		agent.WithAutoRegisterClusters(autoRegisterClusters),
+		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
+		agent.WithGRPCIngestMetrics(agentGrpcMetrics),
 		agent.WithSelfClusterID(selfClusterID),
 	)
 
 	// Sprint A migration window: enforcement defaults to "disabled" so
 	// existing fleets without auth credentials keep working. Operators
 	// flip KUBEBOLT_AGENT_AUTH_MODE=enforced to require credentials.
+	//
+	// Spec #09 V2 — read the resolved auth mode (env + BoltDB) via the
+	// settings runtime so UI overrides win. Restart-required: the
+	// running interceptor is wired with whatever this resolves to at
+	// boot; subsequent UI changes flip pendingRestart in the masked
+	// render and apply on the next restart.
 	agentAuthCfg := agent.AuthConfig{
 		Enforcement: agent.EnforcementDisabled,
 	}
-	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
-		if parsed, ok := agent.ParseEnforcement(v); ok {
+	agentAuthModeRaw := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE")
+	if settingsRuntime != nil {
+		agentAuthModeRaw = settingsRuntime.IngestChannel().AgentAuthMode
+	}
+	if agentAuthModeRaw != "" {
+		if parsed, ok := agent.ParseEnforcement(agentAuthModeRaw); ok {
 			agentAuthCfg.Enforcement = parsed
 		} else {
-			slog.Warn("KUBEBOLT_AGENT_AUTH_MODE has unknown value, defaulting to disabled",
-				slog.String("requested", v),
+			slog.Warn("agent auth mode has unknown value, defaulting to disabled",
+				slog.String("requested", agentAuthModeRaw),
 			)
 		}
 	}
@@ -847,9 +1011,21 @@ func main() {
 
 	// TLS (and optional mTLS) for the agent gRPC channel. Half-set env
 	// surfaces as an error here so misconfigurations fail loud at boot.
+	//
+	// Spec #09 V2 — cert / key / clientCA file paths stay in env
+	// (Bucket A — filesystem paths read at boot, not safely editable
+	// from UI). RequireMTLS is the one knob in this section that the
+	// UI can flip; we override the env-derived value with whatever the
+	// settings runtime resolves (BoltDB wins over env). The CA bundle
+	// must still be present in the filesystem for mTLS to make sense;
+	// if RequireMTLS=true and no clientCA is loaded, LoadServerTLSFromEnv
+	// already fails loud earlier.
 	agentTLS, err := agent.LoadServerTLSFromEnv()
 	if err != nil {
 		fatal("agent TLS configuration invalid", slog.String("error", err.Error()))
+	}
+	if settingsRuntime != nil && agentTLS != nil {
+		agentTLS.RequireMTLS = settingsRuntime.IngestChannel().AgentRequireMTLS
 	}
 	if agentTLS != nil && agentTLS.RequireMTLS {
 		// Mirror to the auth interceptor so identity.TLSVerified is
@@ -869,6 +1045,16 @@ func main() {
 			slog.Float64("requests_per_sec", rateLimitCfg.RequestsPerSec),
 			slog.Float64("burst", rateLimitCfg.Burst),
 		)
+	}
+
+	// Spec #09 V2 — capture the IngestChannel boot snapshot now that the
+	// gRPC interceptor + TLS are wired with their resolved values.
+	// Subsequent PUTs to /admin/settings/ingest-channel compare against
+	// this baseline to compute pendingRestart for the three
+	// restart-required fields (AgentAuthMode, AgentTokenAudience,
+	// AgentRequireMTLS).
+	if settingsRuntime != nil {
+		settingsRuntime.CaptureIngestChannelBootSnapshot()
 	}
 
 	go func() {

@@ -451,6 +451,48 @@ func ToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
+			Name: "get_workload_metrics",
+			Description: "Query CPU, memory, and network metrics for a workload, pod, OR node over a time " +
+				"range. Returns a compact summary {min, avg, max, p95} plus a downsampled sparkline " +
+				"(~12 points) per requested metric. When CPU or memory is requested, also returns the " +
+				"target's current resource bounds and a derived utilizationPercent — for workloads/pods " +
+				"that's requests/limits from KSM; for nodes it's allocatable (\"request\") and capacity " +
+				"(\"limit\"), so the LLM reads \"%of node capacity\" the same way it reads \"% of pod limit\". " +
+				"Use this whenever the question is about behavior OVER TIME (saturation, throttling, " +
+				"memory pressure, deploy-correlated changes, sizing, node health, hot-node identification). " +
+				"Prefer it over get_resource_detail when the question is \"is X bad over time\" rather " +
+				"than \"what is X right now\". " +
+				"Before proposing propose_set_resources, ALWAYS call this first — the summary.max and " +
+				"utilizationPercent are what justify the patched values in the rationale; a set_resources " +
+				"proposal without metric-grounded rationale is a guess. " +
+				"For Node kind: namespace is ignored (nodes are cluster-scoped), name is the node name as " +
+				"reported by `kubectl get nodes`. Use kind=Node when the operator asks about node-level " +
+				"saturation, node memory pressure, or \"which node is doing X\". " +
+				"Disk metrics are not exposed in this version — pod-level disk IO is unreliable on EKS " +
+				"with VPC CNI and PVC fill needs a separate tool path. Do not infer disk pressure from this tool.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"kind":      strPropEnum("Target kind. Case-sensitive. Use Pod / Deployment / StatefulSet / DaemonSet / Job / CronJob for workloads; Node for the node-level view.", []string{"Pod", "Deployment", "StatefulSet", "DaemonSet", "Job", "CronJob", "Node"}),
+					"namespace": strProp("Target namespace. Ignored when kind=Node (nodes are cluster-scoped) — pass any placeholder or omit."),
+					"name":      strProp("Target name (workload name, pod name, or node name depending on kind)"),
+					"metrics": map[string]interface{}{
+						"type":        "array",
+						"description": "Which metrics to query. At least one; up to four. Each call is one VM round-trip per metric, so request only what you need.",
+						"items": map[string]interface{}{
+							"type": "string",
+							"enum": []string{"cpu", "memory", "network_rx", "network_tx"},
+						},
+						"minItems": 1,
+						"maxItems": 4,
+					},
+					"range": strPropEnum("Time range relative to now. Default 15m if omitted. Wider ranges cost more tokens (longer trend, more downsampling) — pick the smallest that answers the question.", []string{"5m", "15m", "1h", "6h", "24h"}),
+					"perContainer": boolProp("When true, split CPU/memory by container instead of aggregating to the workload. Ignored for network metrics (pod-level only) and for kind=Node (nodes don't have containers). Default false. Use when the operator is asking which container is responsible for a usage pattern."),
+				},
+				"required": []string{"kind", "namespace", "name", "metrics"},
+			},
+		},
+		{
 			Name: "get_kubebolt_docs",
 			Description: "Return product documentation about KubeBolt itself (features, navigation, admin " +
 				"pages, configuration). Use this ONLY when the user asks how to do something in the KubeBolt " +

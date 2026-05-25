@@ -19,7 +19,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
+export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
 
 interface QuerySpec {
   query: string
@@ -130,6 +130,13 @@ interface MetricChartProps {
   // null is fine when no data exists for that timestamp; the
   // divider only renders when the callback returns truthy JSX.
   tooltipExtra?: (timestampSec: number) => React.ReactNode
+  // Spec #09 V2 Item 5b — when true, route the underlying PromQL
+  // through the admin endpoint that bypasses cluster scoping. Required
+  // for charts of tenant-scoped backend observability metrics
+  // (kubebolt_agent_grpc_*, kubebolt_prom_write_*) which don't carry a
+  // cluster_id label. Default false keeps every existing dashboard
+  // unchanged.
+  bypassClusterScope?: boolean
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -174,12 +181,15 @@ export const METRIC_ACCENTS = {
 
 // ─── Formatting helpers ─────────────────────────────────────────────────────
 
-interface UnitScale {
+export interface UnitScale {
   divisor: number
   label: string
 }
 
-function pickScale(absMax: number, unit?: UnitKind): UnitScale {
+// pickScale and formatValue are exported so other surfaces (e.g. Kobi's
+// inline metric chart card) can reuse the exact same unit conventions
+// the dashboards use, instead of reinventing scale logic per component.
+export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
   if (unit === 'bytes' || unit === 'bytes/s') {
     const suffix = unit === 'bytes/s' ? '/s' : ''
     if (absMax < 1024) return { divisor: 1, label: 'B' + suffix }
@@ -201,7 +211,7 @@ function pickScale(absMax: number, unit?: UnitKind): UnitScale {
   return { divisor: 1, label: '' }
 }
 
-function formatValue(v: number | null | undefined, scale: UnitScale, useAbs = false): string {
+export function formatValue(v: number | null | undefined, scale: UnitScale, useAbs = false): string {
   if (v == null || Number.isNaN(v)) return '—'
   const scaled = (useAbs ? Math.abs(v) : v) / scale.divisor
   const absScaled = Math.abs(scaled)
@@ -292,6 +302,7 @@ export function MetricChart({
   defaultRangeMinutes = 15,
   rangeOptions = DEFAULT_RANGE_OPTIONS,
   controlledRangeMinutes,
+  bypassClusterScope,
   eventMarkers,
   refetchMs = 15_000,
   height = 220,
@@ -328,11 +339,12 @@ export function MetricChart({
 
   const results = useQueries({
     queries: allQueries.map((spec, idx) => ({
-      queryKey: ['metrics-range', spec.query, rangeMinutes, step, idx],
+      queryKey: ['metrics-range', spec.query, rangeMinutes, step, idx, bypassClusterScope ? 'admin' : 'scoped'],
       queryFn: (): Promise<PromRangeResponse> => {
         const end = Math.floor(Date.now() / 1000)
         const start = end - rangeMinutes * 60
-        return api.queryMetricsRange({ query: spec.query, start, end, step })
+        const fn = bypassClusterScope ? api.adminQueryMetricsRange : api.queryMetricsRange
+        return fn({ query: spec.query, start, end, step })
       },
       refetchInterval: refetchMs,
       retry: (failureCount: number, err: unknown) => {

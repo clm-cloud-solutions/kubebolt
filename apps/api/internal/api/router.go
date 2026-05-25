@@ -7,12 +7,14 @@ import (
 	chimiddleware "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -38,6 +40,20 @@ func NewRouter(
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
 	promWriteMetrics *PromWriteMetrics,
+	// settingsRuntime is the BoltDB-first config resolver introduced by
+	// spec #09. Optional — nil when auth/persistence is disabled (the
+	// /settings/* admin endpoints simply 503 in that mode, and the
+	// Copilot chat handler keeps reading env-only copilotCfg).
+	settingsRuntime *settings.Runtime,
+	// bootEnv is the snapshot of KUBEBOLT_* env vars captured at
+	// process start (via SnapshotKubeboltEnv from main.go). Exposed
+	// read-only via /admin/settings/booted-with so operators can
+	// see what the Helm/env baseline actually was.
+	bootEnv map[string]string,
+	// agentRegistry is the in-memory agent directory. nil-safe — when
+	// no agents are wired (test fixtures, sub-1.0 deployments), the
+	// /admin/agents endpoint returns an empty list rather than 500.
+	agentRegistry *channel.AgentRegistry,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -53,6 +69,8 @@ func NewRouter(
 		pfManager:            NewPortForwardManager(),
 		drainManager:         newDrainSessionManager(),
 		copilotConfig:        copilotCfg,
+		settingsRuntime:      settingsRuntime,
+		bootEnv:              bootEnv,
 		copilotUsage:         copilotUsage,
 		authHandlers:         authHandlers,
 		notifications:        notifManager,
@@ -63,6 +81,7 @@ func NewRouter(
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
 		promWriteMetrics:     promWriteMetrics,
+		agentRegistry:        agentRegistry,
 	}
 
 	// Health check endpoint
@@ -90,6 +109,12 @@ func NewRouter(
 		r.Post("/auth/refresh", authHandlers.Refresh)
 		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
 		r.Get("/copilot/config", h.HandleCopilotConfig)
+
+		// UI config (display name, default refresh interval) is public —
+		// the login page renders the display name, and the
+		// RefreshContext seeds itself before any authenticated query
+		// fires. No secrets here, just chrome / UX defaults.
+		r.Get("/config/ui", h.handleGetUIConfig)
 
 		// Prom remote_write receiver. PUBLIC because vmagent doesn't
 		// carry a JWT; gating is via the dedicated
@@ -172,6 +197,79 @@ func NewRouter(
 					tenantHandlers.RegisterRoutes(r)
 				})
 			}
+
+			// Runtime settings — admin only. Spec #09 introduces UI-edited
+			// overrides of what was previously env-only config. The
+			// settingsRuntime gate is the same auth/persistence gate the
+			// rest of the admin surface uses (when BoltDB is disabled the
+			// whole admin surface is unavailable anyway).
+			if settingsRuntime != nil {
+				r.Route("/admin/settings", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/copilot", h.handleGetSettingsCopilot)
+					r.Put("/copilot", h.handlePutSettingsCopilot)
+					r.Post("/copilot/reset", h.handleResetSettingsCopilot)
+					r.Get("/notifications", h.handleGetSettingsNotifications)
+					r.Put("/notifications", h.handlePutSettingsNotifications)
+					r.Post("/notifications/reset", h.handleResetSettingsNotifications)
+					r.Get("/auth", h.handleGetSettingsAuth)
+					r.Put("/auth", h.handlePutSettingsAuth)
+					r.Post("/auth/reset", h.handleResetSettingsAuth)
+					r.Get("/general", h.handleGetSettingsGeneral)
+					r.Put("/general", h.handlePutSettingsGeneral)
+					r.Post("/general/reset", h.handleResetSettingsGeneral)
+					// Spec #09 V2 — ingest-channel covers the
+					// kubebolt-agent ↔ kubebolt comms plane (auth
+					// modes, rate limits, autoregister, remote_write,
+					// tunnels). Restart-required for the auth subset;
+					// hot-reload for the rest.
+					r.Get("/ingest-channel", h.handleGetSettingsIngestChannel)
+					r.Put("/ingest-channel", h.handlePutSettingsIngestChannel)
+					r.Post("/ingest-channel/reset", h.handleResetSettingsIngestChannel)
+					r.Get("/booted-with", h.handleGetBootedWith)
+				})
+				// First-login wizard status. Separate from /settings/*
+				// because it's not a domain — just a one-bit flag tracking
+				// whether the wizard has been run at least once.
+				r.Route("/admin/setup", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/status", h.handleGetSetupStatus)
+					r.Post("/complete", h.handlePostSetupComplete)
+				})
+				// /admin/system — destructive process-level actions that
+				// don't belong under /settings. Restart is admin-only via
+				// the route group below; same gating as Settings.
+				r.Route("/admin/system", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Post("/restart", h.handleSystemRestart)
+				})
+			}
+
+			// Spec #09 V2 Item 5b — /admin/agents reads the live agent
+			// registry (in-memory directory of currently-connected
+			// gRPC streams). Powers the heartbeat list in the
+			// /admin/ingest-activity panel. Lives OUTSIDE the
+			// settingsRuntime gate because the registry is wired
+			// independently of BoltDB persistence — even in
+			// auth-disabled mode, agents can still connect via the
+			// disabled-auth path, and operators want to see them.
+			r.Route("/admin/agents", func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/", h.handleAdminListAgents)
+			})
+
+			// Spec #09 V2 Item 5b — admin PromQL pass-through that
+			// BYPASSES scopeQueryByCluster. Required for tenant-scoped
+			// observability metrics (kubebolt_agent_grpc_*,
+			// kubebolt_prom_write_*) which don't carry a cluster_id
+			// label — applying cluster scoping returns 0 series. The
+			// /admin/ingest-activity page uses these instead of the
+			// public /metrics/query{,_range} routes.
+			r.Route("/admin/metrics", func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/query", h.handleAdminMetricsQuery)
+				r.Get("/query_range", h.handleAdminMetricsQueryRange)
+			})
 
 			// Integrations catalog — list + read are deliberately OUTSIDE
 			// requireConnector so the page works on a fresh install with
@@ -291,6 +389,16 @@ func NewRouter(
 					// evict is mid-risk because the PDB-respect makes it
 					// safer than force-delete.
 					r.Post("/resources/{type}/{namespace}/{name}/evict", h.handleEvictPod)
+					// Debug — inject an ephemeral container into a
+					// running pod. Item 4 / C1 from the pod-actions
+					// audit. Editor+ matches Terminal tab's exec
+					// gate; both expose process-level access to
+					// running containers, the ephemeral-container
+					// variant just works on distroless/scratch where
+					// `kubectl exec` can't find a shell. Returns the
+					// auto-generated container name so the UI can
+					// jump to the Terminal tab pre-selected.
+					r.Post("/resources/{type}/{namespace}/{name}/debug", h.handleDebugPod)
 					// Rollout pause/resume. Deployment-only — flips
 					// spec.paused so the deployment controller stops
 					// reconciling without touching pods. The
