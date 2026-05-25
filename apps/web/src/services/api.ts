@@ -1081,6 +1081,12 @@ export const api = {
   getUIConfig: () =>
     fetchJSON<UIConfigResponse>(`${API_BASE}/config/ui`),
 
+  // Update-check — backend reports the latest stable KubeBolt release
+  // on GitHub. Returns `{enabled: false}` when admin/env disabled the
+  // poller (air-gapped, etc.).
+  getUpdateCheck: () =>
+    fetchJSON<import('@/hooks/useUpdateCheck').UpdateCheckResponse>(`${API_BASE}/update-check`),
+
   // /admin/settings/booted-with — read-only snapshot of KUBEBOLT_* env
   // vars at process start. Operators use it to debug "is my Helm value
   // making it into the container?" without kubectl-exec.
@@ -1339,12 +1345,14 @@ export interface GeneralSettingsResponse {
     displayName: string
     defaultRefreshIntervalSeconds: number
     prodNamespacePattern: string
+    updateCheckEnabled: boolean
   }
   stored: {
     hasOverride: boolean
     displayName?: string
     defaultRefreshIntervalSeconds?: number
     prodNamespacePattern?: string
+    updateCheckEnabled?: boolean
   }
 }
 
@@ -1353,6 +1361,7 @@ export interface GeneralSettingsPutRequest {
     displayName?: string
     defaultRefreshIntervalSeconds?: number
     prodNamespacePattern?: string
+    updateCheckEnabled?: boolean
   }
 }
 

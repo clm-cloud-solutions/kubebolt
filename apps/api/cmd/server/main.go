@@ -29,14 +29,15 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
-	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
+	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -666,7 +667,15 @@ func main() {
 	// safe. SetAgentRegistry + SetStore wiring still runs further
 	// down where the manager + Bolt store are available.
 	agentRegistry := channel.NewAgentRegistry()
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry)
+
+	// updateCheckSvc drives the "new KubeBolt version available" chip.
+	// Cache TTL 6h keeps GitHub API traffic well under the unauth
+	// rate limit (60/h per IP) even with multiple backends sharing
+	// egress NAT. Dev builds short-circuit inside the service — no
+	// GitHub call ever leaves the process.
+	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
+
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
@@ -1148,8 +1157,8 @@ func persistAdminPasswordSecret(password string) error {
 			Name:      secretName,
 			Namespace: ns,
 			Labels: map[string]string{
-				"app.kubernetes.io/name":      "kubebolt",
-				"app.kubernetes.io/component": "auth",
+				"app.kubernetes.io/name":       "kubebolt",
+				"app.kubernetes.io/component":  "auth",
 				"app.kubernetes.io/managed-by": "kubebolt-api",
 			},
 			Annotations: map[string]string{

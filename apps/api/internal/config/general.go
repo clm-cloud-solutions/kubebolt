@@ -35,6 +35,13 @@ type GeneralConfig struct {
 	// `^(prod|production|prd)([-_].+)?$`. UI-editable via
 	// Settings → General; regex compile is validated server-side.
 	ProdNamespacePattern string
+
+	// UpdateCheckEnabled controls whether the backend periodically
+	// queries the GitHub releases API to surface a "new version
+	// available" chip in the UI. Defaults true. Air-gapped operators
+	// disable via KUBEBOLT_UPDATE_CHECK_ENABLED=false; admins can also
+	// toggle at runtime via Settings → General.
+	UpdateCheckEnabled bool
 }
 
 // LoadGeneralConfig reads general settings from env vars. All optional.
@@ -43,10 +50,16 @@ func LoadGeneralConfig() GeneralConfig {
 		DisplayName:                   os.Getenv("KUBEBOLT_DISPLAY_NAME"),
 		DefaultRefreshIntervalSeconds: 30, // matches RefreshContext fallback
 		ProdNamespacePattern:          os.Getenv("KUBEBOLT_PROD_NAMESPACE_PATTERN"),
+		UpdateCheckEnabled:            true,
 	}
 	if v := os.Getenv("KUBEBOLT_DEFAULT_REFRESH_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && isValidRefreshInterval(n) {
 			cfg.DefaultRefreshIntervalSeconds = n
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_UPDATE_CHECK_ENABLED"); v != "" {
+		if parsed, err := strconv.ParseBool(v); err == nil {
+			cfg.UpdateCheckEnabled = parsed
 		}
 	}
 	return cfg

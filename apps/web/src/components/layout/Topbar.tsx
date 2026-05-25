@@ -4,6 +4,7 @@ import { isDashboardPath } from '@/utils/routes'
 import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { NewResourceModal } from '@/components/resources/NewResourceModal'
+import { UpdateAvailableChip } from '@/components/layout/UpdateAvailableChip'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
@@ -263,6 +264,10 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
 
           {/* Active port-forwards (renders nothing when 0 active) */}
           <PortForwardIndicator />
+
+          {/* Update-available chip (renders nothing until backend
+              confirms a newer stable release on GitHub) */}
+          <UpdateAvailableChip />
 
           {/* Node count — matched to the LIVE / FWD chip shell so the
               three read as one row instead of "two pills + raw text". */}
