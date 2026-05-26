@@ -31,6 +31,7 @@ import (
 	"github.com/kubebolt/kubebolt/packages/agent/internal/collector"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/flows"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
+	"github.com/kubebolt/kubebolt/packages/agent/internal/promread"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/proxy"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/self"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/shipper"
@@ -110,6 +111,39 @@ func main() {
 		self.WithPodsCache(pods),
 		self.WithAggregator(liveAggregatorSizer{}),
 	)
+
+	// promread (Mode C — 1.13 Phase 6 of the Universal Data Plane).
+	// Reads from the customer's Prometheus via /api/v1/query_range
+	// instead of scraping targets directly. Skipped silently when
+	// KUBEBOLT_AGENT_PROMREAD_ENABLED is unset or false.
+	//
+	// Mutual exclusion with scrape.enabled is enforced at chart
+	// render time (hard-fail in deploy/helm/kubebolt-agent — lands
+	// with S1 chunk 3); here we just construct what env asks for.
+	promCfg, err := promread.LoadConfigFromEnv()
+	if err != nil {
+		slog.Error("promread config invalid", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	promCfg.ClusterID = clusterID
+	promCfg.ClusterName = clusterName
+	promCfg.TenantID = tenantID
+
+	var promReader *promread.Reader
+	if promCfg.Enabled {
+		pr, err := promread.NewReader(promCfg)
+		if err != nil {
+			slog.Error("promread init failed", slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		promReader = pr
+		slog.Info("promread enabled",
+			slog.String("url", promCfg.URL),
+			slog.String("auth_mode", string(promCfg.Auth.Mode)),
+			slog.Duration("poll_interval", promReader.PollInterval()),
+			slog.Int("matcher_count", len(promCfg.Matchers)),
+		)
+	}
 
 	// pprof endpoint — opt-in via env. When set, exposes /debug/pprof
 	// on the chosen address (default empty = OFF). Use 127.0.0.1:6060
@@ -267,6 +301,30 @@ func main() {
 			}
 		}
 	}()
+
+	// Customer Prom reader (Mode C — 1.13). Only runs when promCfg.Enabled
+	// is true (i.e. operator opted in via KUBEBOLT_AGENT_PROMREAD_ENABLED).
+	// Same pattern as the other collector goroutines: immediate first
+	// batch + ticker on the operator-set PollInterval (default 30s). The
+	// samples flow through the same pods.Enrich + buffer.Push path so
+	// the shipper doesn't need to know promread exists.
+	if promReader != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			collectAndBuffer(rootCtx, promReader, pods, buf)
+			tick := time.NewTicker(promReader.PollInterval())
+			defer tick.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-tick.C:
+					collectAndBuffer(rootCtx, promReader, pods, buf)
+				}
+			}
+		}()
+	}
 
 	// Shipper — reconnects internally on failure.
 	wg.Add(1)

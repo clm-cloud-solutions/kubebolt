@@ -181,3 +181,8 @@ func (r *Reader) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 func (r *Reader) PollInterval() time.Duration {
 	return r.cfg.PollInterval
 }
+
+// Name identifies the Reader to the agent's collectAndBuffer helper
+// for logging. Stable label "promread" — shows up in
+// `samples collected collector=promread count=N` lines on every tick.
+func (*Reader) Name() string { return "promread" }
