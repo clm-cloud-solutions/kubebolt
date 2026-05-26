@@ -1,4 +1,5 @@
 {{- $backendUrl := required "backendUrl is required — set --set backendUrl=<host:port> or configure it in values.yaml" .Values.backendUrl -}}
+{{- include "kubebolt-agent.validatePromRead" . -}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -202,6 +203,42 @@ spec:
               value: /etc/kubebolt-tls/tls.crt
             - name: KUBEBOLT_AGENT_TLS_KEY_FILE
               value: /etc/kubebolt-tls/tls.key
+            {{- end }}
+            {{- end }}
+            {{- /* ── Mode C — agent reads from customer Prom (1.13) ── */ -}}
+            {{- if and .Values.agent .Values.agent.promRead .Values.agent.promRead.enabled }}
+            - name: KUBEBOLT_AGENT_PROMREAD_ENABLED
+              value: "true"
+            - name: KUBEBOLT_AGENT_PROMREAD_URL
+              value: {{ .Values.agent.promRead.url | quote }}
+            {{- $promAuthMode := default "none" .Values.agent.promRead.auth.mode }}
+            - name: KUBEBOLT_AGENT_PROMREAD_AUTH_MODE
+              value: {{ $promAuthMode | quote }}
+            {{- if eq $promAuthMode "basicAuth" }}
+            - name: KUBEBOLT_AGENT_PROMREAD_BASIC_AUTH_USERNAME
+              value: {{ .Values.agent.promRead.auth.basicAuthUsername | quote }}
+            - name: KUBEBOLT_AGENT_PROMREAD_BASIC_AUTH_PASSWORD
+              value: {{ .Values.agent.promRead.auth.basicAuthPassword | quote }}
+            {{- else if eq $promAuthMode "bearer" }}
+            - name: KUBEBOLT_AGENT_PROMREAD_BEARER_TOKEN
+              value: {{ .Values.agent.promRead.auth.bearerToken | quote }}
+            {{- end }}
+            {{- if .Values.agent.promRead.pollInterval }}
+            - name: KUBEBOLT_AGENT_PROMREAD_POLL_INTERVAL
+              value: {{ .Values.agent.promRead.pollInterval | quote }}
+            {{- end }}
+            {{- if .Values.agent.promRead.step }}
+            - name: KUBEBOLT_AGENT_PROMREAD_STEP
+              value: {{ .Values.agent.promRead.step | quote }}
+            {{- end }}
+            {{- if .Values.agent.promRead.lookback }}
+            - name: KUBEBOLT_AGENT_PROMREAD_LOOKBACK
+              value: {{ .Values.agent.promRead.lookback | quote }}
+            {{- end }}
+            {{- with .Values.agent.promRead.matchers }}
+            - name: KUBEBOLT_AGENT_PROMREAD_MATCHERS
+              value: |-
+{{ join "\n" . | indent 16 }}
             {{- end }}
             {{- end }}
             {{- with .Values.extraEnv }}

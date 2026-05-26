@@ -75,3 +75,39 @@ scrape_configs[] level in the rendered YAML.
 {{ toYaml . | indent 10 }}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Mutual-exclusion + shape check for Mode A (scrape.enabled) vs Mode C
+(agent.promRead.enabled). One agent must have a single canonical
+source of samples — both on would double-emit the same metric
+families and corrupt the dashboards.
+
+Hard-fail (not warning) is intentional: silently picking one path
+would surprise the operator later when their PromQL doesn't agree
+with itself. Called from the top of templates/daemonset.yaml so
+`helm template` aborts before rendering anything else.
+*/}}
+{{- define "kubebolt-agent.validatePromRead" -}}
+{{- $scrapeOn := and .Values.scrape .Values.scrape.enabled -}}
+{{- $promReadOn := and .Values.agent .Values.agent.promRead .Values.agent.promRead.enabled -}}
+{{- if and $scrapeOn $promReadOn -}}
+{{- fail "scrape.enabled=true and agent.promRead.enabled=true are mutually exclusive — pick one sample source per agent. Mode A (scrape sidecar) and Mode C (read from customer Prom) cannot both be on; the agent would double-emit the same metric families." -}}
+{{- end -}}
+{{- if $promReadOn -}}
+{{- if not .Values.agent.promRead.url -}}
+{{- fail "agent.promRead.enabled=true requires agent.promRead.url" -}}
+{{- end -}}
+{{- $mode := default "none" .Values.agent.promRead.auth.mode -}}
+{{- if eq $mode "basicAuth" -}}
+{{- if not .Values.agent.promRead.auth.basicAuthUsername -}}
+{{- fail "agent.promRead.auth.mode=basicAuth requires agent.promRead.auth.basicAuthUsername" -}}
+{{- end -}}
+{{- else if eq $mode "bearer" -}}
+{{- if not .Values.agent.promRead.auth.bearerToken -}}
+{{- fail "agent.promRead.auth.mode=bearer requires agent.promRead.auth.bearerToken (use extraEnv with valueFrom.secretKeyRef for production)" -}}
+{{- end -}}
+{{- else if and (ne $mode "none") (ne $mode "basicAuth") (ne $mode "bearer") -}}
+{{- fail (printf "agent.promRead.auth.mode=%q not supported in S1 — valid: none, basicAuth, bearer. Managed-cloud providers (awsSigV4, azureWorkloadIdentity, gcpIam) ship in S2 of the 1.13 cycle." $mode) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

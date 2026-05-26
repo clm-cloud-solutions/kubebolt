@@ -164,6 +164,63 @@ hubble:
 agent:
   deferNodeNetwork: false
 
+  # Mode C — agent reads from the customer's existing Prometheus via
+  # /api/v1/query_range instead of running a scrape sidecar. 1.13's
+  # flagship; see internal/roadmap-1.13.md § Sprint 1 for design.
+  #
+  # MUTUALLY EXCLUSIVE with `scrape.enabled=true`. The chart hard-fails
+  # at `helm template` if both are on — a single agent must have one
+  # canonical source of samples, never two. The check lives in
+  # _helpers.tpl § kubebolt-agent.validatePromRead and is included
+  # near the top of this DaemonSet template.
+  #
+  # Air-gapped + on-prem use cases stay on `scrape.enabled=true` (the
+  # bundled vmagent sidecar). Mode C is for customers running managed
+  # Prometheus (AMP / Azure Monitor / GMP — S2) or self-managed Prom
+  # whose config they can't edit to add a remote_write block.
+  promRead:
+    enabled: false
+    # Customer Prom endpoint, e.g. "http://prometheus.monitoring:9090".
+    # No trailing slash needed — the client appends /api/v1/query_range.
+    url: ""
+
+    auth:
+      # none | basicAuth | bearer. S2 of the 1.13 cycle adds
+      # awsSigV4 / azureWorkloadIdentity / gcpIam for the three
+      # hyperscaler managed-Prom flavors.
+      mode: none
+      basicAuthUsername: ""
+      # WARNING — plain values.yaml is fine for kind smoke tests but
+      # NOT for production. For Secret-backed credentials, leave
+      # these empty and inject the env vars via the chart's `extraEnv`
+      # escape hatch with a valueFrom.secretKeyRef block.
+      basicAuthPassword: ""
+      bearerToken: ""
+
+    # Cadence the agent fires query_range at. Lower values increase
+    # query load on the customer's Prom — 30s mirrors the load
+    # profile of one extra Grafana client.
+    pollInterval: 30s
+    # query_range `step` parameter (resolution of the returned
+    # matrix). Align to the customer's scrape_interval to avoid
+    # sub-sample interpolation.
+    step: 30s
+    # How far back each query_range window extends from "now".
+    # Should be ≥ pollInterval + small slack so consecutive polls
+    # overlap and gap-recover from transient Prom failures.
+    lookback: 60s
+
+    # Selectivity — what to pull. Each entry is a PromQL selector.
+    # Defaults match the kube-state-metrics + cAdvisor + uptime
+    # families the scrape sidecar collects, so a customer flipping
+    # Mode A → Mode C gets a comparable starting set. Empty list
+    # falls back to the same defaults in code (DefaultMatchers in
+    # packages/agent/internal/promread/config_env.go).
+    matchers:
+      - '{__name__=~"kube_pod_.*"}'
+      - '{__name__=~"container_(cpu|memory|fs|network)_.*"}'
+      - '{__name__=~"up|process_.*"}'
+
 # Default off — Phase 2 is opt-in until the receiver path is
 # blinded with auth in Phase 3.
 scrape:
