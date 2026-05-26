@@ -130,8 +130,29 @@ func main() {
 	promCfg.TenantID = tenantID
 
 	var promReader *promread.Reader
+	var promNodeIdx *promread.K8sNodeIndex
 	if promCfg.Enabled {
-		pr, err := promread.NewReader(promCfg)
+		// K8sNodeIndex needs a kube client to list nodes — required
+		// for the `node=<k8s-node-name>` label enrichment on node_*
+		// series (UI parity with Mode A's cadvisor stamping). The
+		// agent doesn't keep a long-lived kube.Interface elsewhere;
+		// promread creates its own only when enabled so disabled
+		// installs pay zero apiserver overhead.
+		kubeCfg, err := rest.InClusterConfig()
+		if err != nil {
+			slog.Error("promread enabled but in-cluster config unavailable",
+				slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		kubeClient, err := kubernetes.NewForConfig(kubeCfg)
+		if err != nil {
+			slog.Error("promread enabled but kube client init failed",
+				slog.String("error", err.Error()))
+			os.Exit(1)
+		}
+		promNodeIdx = promread.NewK8sNodeIndex(kubeClient, promread.DefaultNodeRefreshInterval)
+
+		pr, err := promread.NewReader(promCfg, promread.WithNodeIndex(promNodeIdx))
 		if err != nil {
 			slog.Error("promread init failed", slog.String("error", err.Error()))
 			os.Exit(1)
@@ -301,6 +322,17 @@ func main() {
 			}
 		}
 	}()
+
+	// K8sNodeIndex refresh loop — paired with promReader. Runs on its
+	// own ticker (5min default) listing nodes to refresh the IP→name
+	// map. Skipped when promRead is disabled (no nodeIdx instance).
+	if promNodeIdx != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			promNodeIdx.Run(rootCtx)
+		}()
+	}
 
 	// Customer Prom reader (Mode C — 1.13). Only runs when promCfg.Enabled
 	// is true (i.e. operator opted in via KUBEBOLT_AGENT_PROMREAD_ENABLED).

@@ -10,14 +10,22 @@ import (
 
 // DefaultMatchers is the matcher set the Reader falls back to when
 // KUBEBOLT_AGENT_PROMREAD_MATCHERS is empty AND ENABLED=true. Pulls
-// the same KSM + cAdvisor + uptime metric families that Mode A's
+// the KSM + cAdvisor + node-exporter + uptime families that Mode A's
 // scrape sidecar collects, so a customer flipping from Mode A to
 // Mode C gets a comparable starting set without picking matchers
-// from scratch. Operators override via the env var (or helm value
-// in chunk 3) when they want a tighter or wider selection.
+// from scratch. Operators override via the env var (or the chart's
+// agent.promRead.matchers value) when they want a tighter or wider
+// selection.
+//
+// node_* coverage is included because the Node detail Monitor tab
+// (Load Average + PSI) and the node-exporter coverage chip both
+// depend on it; the S1 kind smoke surfaced their absence when the
+// defaults skipped node_* — leaving them out was a worse default
+// for Mode C than the small cardinality cost (~50 series per node).
 var DefaultMatchers = []string{
 	`{__name__=~"kube_pod_.*"}`,
 	`{__name__=~"container_(cpu|memory|fs|network)_.*"}`,
+	`{__name__=~"node_.*"}`,
 	`{__name__=~"up|process_.*"}`,
 }
 

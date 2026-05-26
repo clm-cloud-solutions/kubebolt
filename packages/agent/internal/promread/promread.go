@@ -119,17 +119,32 @@ func (c *Config) applyDefaults() {
 
 // Reader pulls samples from the customer's Prometheus on a fixed
 // cadence, converts them to the agent's wire format, and returns
-// them via Collect. The caller (agent main loop, wired in a
-// follow-up chunk) is responsible for pushing the results into the
-// buffer.Ring.
+// them via Collect. The caller (agent main loop) is responsible for
+// pushing the results into the buffer.Ring.
 type Reader struct {
-	cfg    Config
-	client *Client
+	cfg     Config
+	client  *Client
+	nodeIdx NodeIndex // optional — enables `node` label stamping on node_* series
+}
+
+// Option mutates a Reader at construction time. Use the With* helpers
+// instead of building Options directly so future fields stay
+// source-compatible.
+type Option func(*Reader)
+
+// WithNodeIndex injects a NodeIndex that Convert uses to stamp the
+// `node=<k8s-node-name>` label on `node_*` series (resolving the
+// series' `instance` IP via the Kubernetes API). Required for UI
+// parity with Mode A — Node Monitor panels filter by `node`, not
+// `instance`. Optional: a nil NodeIndex (or no option) skips the
+// stamp silently.
+func WithNodeIndex(idx NodeIndex) Option {
+	return func(r *Reader) { r.nodeIdx = idx }
 }
 
 // NewReader constructs a Reader. Returns an error when cfg fails
 // Validate.
-func NewReader(cfg Config) (*Reader, error) {
+func NewReader(cfg Config, opts ...Option) (*Reader, error) {
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -138,10 +153,14 @@ func NewReader(cfg Config) (*Reader, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Reader{
+	r := &Reader{
 		cfg:    cfg,
 		client: NewClient(cfg.URL, auth),
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r, nil
 }
 
 // Collect fires one query_range per configured Matcher against the
@@ -164,7 +183,7 @@ func (r *Reader) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 			}
 			continue
 		}
-		samples, err := Convert(resp, r.cfg.ClusterID, r.cfg.ClusterName, r.cfg.TenantID)
+		samples, err := Convert(resp, r.cfg.ClusterID, r.cfg.ClusterName, r.cfg.TenantID, r.nodeIdx)
 		if err != nil {
 			if firstErr == nil {
 				firstErr = fmt.Errorf("convert %q: %w", matcher, err)

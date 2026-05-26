@@ -211,14 +211,17 @@ agent:
     lookback: 60s
 
     # Selectivity — what to pull. Each entry is a PromQL selector.
-    # Defaults match the kube-state-metrics + cAdvisor + uptime
-    # families the scrape sidecar collects, so a customer flipping
-    # Mode A → Mode C gets a comparable starting set. Empty list
-    # falls back to the same defaults in code (DefaultMatchers in
-    # packages/agent/internal/promread/config_env.go).
+    # Defaults match the kube-state-metrics + cAdvisor + node-exporter
+    # + uptime families the scrape sidecar collects, so a customer
+    # flipping Mode A → Mode C gets a comparable starting set without
+    # picking matchers from scratch. Empty list falls back to the
+    # same defaults in code (DefaultMatchers in
+    # packages/agent/internal/promread/config_env.go) — keep this
+    # list and the Go constant in lockstep.
     matchers:
       - '{__name__=~"kube_pod_.*"}'
       - '{__name__=~"container_(cpu|memory|fs|network)_.*"}'
+      - '{__name__=~"node_.*"}'
       - '{__name__=~"up|process_.*"}'
 
 # Default off — Phase 2 is opt-in until the receiver path is

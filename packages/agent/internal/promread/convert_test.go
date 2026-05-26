@@ -16,6 +16,12 @@ func newQueryResp(seriesMetric map[string]string, values [][]interface{}) *Query
 	}
 }
 
+// fakeNodeIndex is a stand-in for K8sNodeIndex in convert tests —
+// avoids spinning up a fake clientset just to stub IP→name lookups.
+type fakeNodeIndex map[string]string
+
+func (f fakeNodeIndex) NodeByIP(ip string) string { return f[ip] }
+
 func TestConvert_HappyPath(t *testing.T) {
 	resp := newQueryResp(
 		map[string]string{"__name__": "up", "instance": "a"},
@@ -24,7 +30,7 @@ func TestConvert_HappyPath(t *testing.T) {
 			{float64(1700000030), "0"},
 		},
 	)
-	samples, err := Convert(resp, "cluster-1", "yagan-prod", "tenant-x")
+	samples, err := Convert(resp, "cluster-1", "yagan-prod", "tenant-x", nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -54,7 +60,7 @@ func TestConvert_OmitsEmptyStampLabels(t *testing.T) {
 		map[string]string{"__name__": "up"},
 		[][]interface{}{{float64(1700000000), "1"}},
 	)
-	samples, _ := Convert(resp, "", "", "")
+	samples, _ := Convert(resp, "", "", "", nil)
 	if len(samples) != 1 {
 		t.Fatalf("expected 1 sample, got %d", len(samples))
 	}
@@ -71,7 +77,7 @@ func TestConvert_SkipsSeriesWithoutName(t *testing.T) {
 		map[string]string{"instance": "a"}, // no __name__
 		[][]interface{}{{float64(1700000000), "1"}},
 	)
-	samples, err := Convert(resp, "", "", "")
+	samples, err := Convert(resp, "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -88,7 +94,7 @@ func TestConvert_SkipsUnparseableValues(t *testing.T) {
 			{float64(1700000030), "1"},
 		},
 	)
-	samples, err := Convert(resp, "", "", "")
+	samples, err := Convert(resp, "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -108,7 +114,7 @@ func TestConvert_AcceptsNonFiniteValues(t *testing.T) {
 			{float64(1700000060), "-Inf"},
 		},
 	)
-	samples, err := Convert(resp, "", "", "")
+	samples, err := Convert(resp, "", "", "", nil)
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
@@ -122,8 +128,89 @@ func TestConvert_RejectsNonMatrixResponse(t *testing.T) {
 		Status: "success",
 		Data:   QueryRangeData{ResultType: "vector"},
 	}
-	if _, err := Convert(resp, "", "", ""); err == nil {
+	if _, err := Convert(resp, "", "", "", nil); err == nil {
 		t.Fatal("expected error for non-matrix result")
+	}
+}
+
+func TestConvert_NodeEnrichmentStampsKubeNodeName(t *testing.T) {
+	// node-exporter series come with instance=<host-network pod IP>:<port>.
+	// Convert + NodeIndex must surface a `node=<k8s-node-name>` label so
+	// the UI's Node Monitor panels (which filter by node="...") match.
+	resp := newQueryResp(
+		map[string]string{
+			"__name__": "node_load1",
+			"instance": "172.18.0.4:9100",
+			"job":      "node-exporter",
+		},
+		[][]interface{}{{float64(1700000000), "0.7"}},
+	)
+	idx := fakeNodeIndex{"172.18.0.4": "worker-a"}
+	samples, err := Convert(resp, "c1", "n1", "t1", idx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(samples))
+	}
+	if samples[0].Labels["node"] != "worker-a" {
+		t.Errorf("node label: got %q, want worker-a", samples[0].Labels["node"])
+	}
+	// Original labels still present (enrichment additive, not destructive).
+	if samples[0].Labels["instance"] != "172.18.0.4:9100" {
+		t.Errorf("instance should be preserved, got %q", samples[0].Labels["instance"])
+	}
+}
+
+func TestConvert_NodeEnrichmentSkipsNonNodeMetrics(t *testing.T) {
+	// kube_pod_* / container_* shouldn't get a `node` stamp even if
+	// they happen to have an `instance` label — the prefix gate
+	// must be exact.
+	resp := newQueryResp(
+		map[string]string{
+			"__name__": "kube_pod_info",
+			"instance": "172.18.0.4:9100",
+		},
+		[][]interface{}{{float64(1700000000), "1"}},
+	)
+	idx := fakeNodeIndex{"172.18.0.4": "worker-a"}
+	samples, _ := Convert(resp, "", "", "", idx)
+	if _, has := samples[0].Labels["node"]; has {
+		t.Errorf("non-node_* metric should NOT get node stamp, labels=%+v", samples[0].Labels)
+	}
+}
+
+func TestConvert_NodeEnrichmentLookupMissLeavesNoStamp(t *testing.T) {
+	// An unknown IP must not produce a wrong stamp — the panel
+	// showing nothing is better than the panel showing a value
+	// attributed to the wrong node.
+	resp := newQueryResp(
+		map[string]string{
+			"__name__": "node_load1",
+			"instance": "10.99.99.99:9100",
+		},
+		[][]interface{}{{float64(1700000000), "0.5"}},
+	)
+	idx := fakeNodeIndex{"172.18.0.4": "worker-a"} // doesn't contain 10.99.99.99
+	samples, _ := Convert(resp, "", "", "", idx)
+	if _, has := samples[0].Labels["node"]; has {
+		t.Errorf("unknown IP should NOT produce a node stamp, labels=%+v", samples[0].Labels)
+	}
+}
+
+func TestConvert_NilNodeIndexSkipsEnrichment(t *testing.T) {
+	// nil NodeIndex must not panic, just leave node_* without the
+	// stamp — matches existing call sites that don't pass an index.
+	resp := newQueryResp(
+		map[string]string{"__name__": "node_load1", "instance": "172.18.0.4:9100"},
+		[][]interface{}{{float64(1700000000), "0.5"}},
+	)
+	samples, err := Convert(resp, "", "", "", nil)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if _, has := samples[0].Labels["node"]; has {
+		t.Error("nil NodeIndex must not stamp node")
 	}
 }
 
@@ -138,7 +225,7 @@ func TestConvert_LabelsAreNotAliased(t *testing.T) {
 			{float64(1700000030), "0"},
 		},
 	)
-	samples, _ := Convert(resp, "c1", "n1", "t1")
+	samples, _ := Convert(resp, "c1", "n1", "t1", nil)
 	samples[0].Labels["instance"] = "MUTATED"
 	if samples[1].Labels["instance"] != "a" {
 		t.Errorf("Labels aliased across samples: sample[1].instance = %q", samples[1].Labels["instance"])

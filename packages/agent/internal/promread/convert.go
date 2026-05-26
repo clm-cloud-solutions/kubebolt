@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -22,9 +23,17 @@ import (
 // Labels map (mirrors the cadvisor convention). The __name__ entry
 // from the Prom response becomes Sample.MetricName; the remaining
 // labels merge into Sample.Labels.
+//
+// When nodeIdx is non-nil and a sample's __name__ starts with
+// "node_", Convert tries to derive a `node=<k8s-node-name>` label
+// from the series' `instance` label (host-network pod IP →
+// Kubernetes node name). Required for UI parity with Mode A — the
+// Node Monitor panels and the node-exporter coverage chip both
+// filter by `node`, not `instance`.
 func Convert(
 	resp *QueryRangeResponse,
 	clusterID, clusterName, tenantID string,
+	nodeIdx NodeIndex,
 ) ([]*agentv2.Sample, error) {
 	if resp == nil {
 		return nil, errors.New("convert: response is nil")
@@ -56,6 +65,17 @@ func Convert(
 		}
 		if tenantID != "" {
 			baseLabels["tenant_id"] = tenantID
+		}
+		// node_* enrichment — see func doc. Skipped silently when
+		// nodeIdx is nil, when `instance` is missing, or when the
+		// lookup misses (no false stamps; an empty result is better
+		// than a wrong label that misleads the Node Monitor panels).
+		if nodeIdx != nil && strings.HasPrefix(metricName, "node_") {
+			if instance := series.Metric["instance"]; instance != "" {
+				if nodeName := nodeIdx.NodeByIP(StripPort(instance)); nodeName != "" {
+					baseLabels["node"] = nodeName
+				}
+			}
 		}
 
 		for _, pair := range series.Values {
