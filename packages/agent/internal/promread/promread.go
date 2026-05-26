@@ -169,6 +169,14 @@ func NewReader(cfg Config, opts ...Option) (*Reader, error) {
 // error returned, but partial results from successful matchers are
 // always returned — the caller decides whether the batch is worth
 // shipping despite a partial failure.
+//
+// Note for high-cardinality customers: this method accumulates ALL
+// matchers' results before returning, which in multi-node clusters
+// with many matchers can produce batches of tens of thousands of
+// samples. Downstream callers with a bounded ring buffer should
+// prefer CollectMatcher per-matcher instead — see
+// leader.go's collectOnce for the production wiring that does
+// exactly that.
 func (r *Reader) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 	end := time.Now()
 	start := end.Add(-r.cfg.Lookback)
@@ -176,23 +184,53 @@ func (r *Reader) Collect(ctx context.Context) ([]*agentv2.Sample, error) {
 	var all []*agentv2.Sample
 	var firstErr error
 	for _, matcher := range r.cfg.Matchers {
-		resp, err := r.client.QueryRange(ctx, matcher, start, end, r.cfg.Step)
+		samples, err := r.collectMatcher(ctx, matcher, start, end)
 		if err != nil {
 			if firstErr == nil {
-				firstErr = fmt.Errorf("query %q: %w", matcher, err)
-			}
-			continue
-		}
-		samples, err := Convert(resp, r.cfg.ClusterID, r.cfg.ClusterName, r.cfg.TenantID, r.nodeIdx)
-		if err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("convert %q: %w", matcher, err)
+				firstErr = err
 			}
 			continue
 		}
 		all = append(all, samples...)
 	}
 	return all, firstErr
+}
+
+// Matchers returns the configured matcher list. Exposed so callers
+// can iterate and invoke CollectMatcher per entry — letting the
+// caller push to a downstream buffer per-matcher rather than
+// buffering the union of all matchers (which in multi-node, many-
+// matcher configurations can dwarf a bounded ring buffer and
+// silently drop the alphabetically-earliest samples in each batch).
+func (r *Reader) Matchers() []string {
+	out := make([]string, len(r.cfg.Matchers))
+	copy(out, r.cfg.Matchers)
+	return out
+}
+
+// CollectMatcher fires query_range for a single matcher and returns
+// the converted samples. Use when the caller wants to push samples
+// per-matcher to a bounded buffer; use Collect when you want the
+// whole batch in one slice (and the downstream buffer is unbounded
+// or large enough to absorb the full batch without overflow).
+func (r *Reader) CollectMatcher(ctx context.Context, matcher string) ([]*agentv2.Sample, error) {
+	end := time.Now()
+	start := end.Add(-r.cfg.Lookback)
+	return r.collectMatcher(ctx, matcher, start, end)
+}
+
+// collectMatcher is the shared implementation of Collect and
+// CollectMatcher — keeps the per-matcher fetch+convert in one place.
+func (r *Reader) collectMatcher(ctx context.Context, matcher string, start, end time.Time) ([]*agentv2.Sample, error) {
+	resp, err := r.client.QueryRange(ctx, matcher, start, end, r.cfg.Step)
+	if err != nil {
+		return nil, fmt.Errorf("query %q: %w", matcher, err)
+	}
+	samples, err := Convert(resp, r.cfg.ClusterID, r.cfg.ClusterName, r.cfg.TenantID, r.nodeIdx)
+	if err != nil {
+		return nil, fmt.Errorf("convert %q: %w", matcher, err)
+	}
+	return samples, nil
 }
 
 // PollInterval is exposed so the agent's run loop can pick the

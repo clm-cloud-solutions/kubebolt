@@ -70,6 +70,14 @@ spec:
               value: {{ $backendUrl | quote }}
             - name: KUBEBOLT_AGENT_LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            # 1.13 topology split — DaemonSet pods own Mode A (kubelet
+            # collectors + Hubble flows). The promread reader runs in a
+            # separate Deployment (templates/deployment.yaml) when
+            # agent.promRead.enabled=true, so this template explicitly
+            # turns promread OFF for DaemonSet pods even when promRead
+            # is enabled cluster-wide.
+            - name: KUBEBOLT_AGENT_MODE
+              value: "daemonset"
             # Downward API — the kubelet target + leader-election identity
             # are per-pod values, so they must come from fieldRefs.
             - name: KUBEBOLT_AGENT_NODE_NAME
@@ -205,42 +213,12 @@ spec:
               value: /etc/kubebolt-tls/tls.key
             {{- end }}
             {{- end }}
-            {{- /* ── Mode C — agent reads from customer Prom (1.13) ── */ -}}
-            {{- if and .Values.agent .Values.agent.promRead .Values.agent.promRead.enabled }}
-            - name: KUBEBOLT_AGENT_PROMREAD_ENABLED
-              value: "true"
-            - name: KUBEBOLT_AGENT_PROMREAD_URL
-              value: {{ .Values.agent.promRead.url | quote }}
-            {{- $promAuthMode := default "none" .Values.agent.promRead.auth.mode }}
-            - name: KUBEBOLT_AGENT_PROMREAD_AUTH_MODE
-              value: {{ $promAuthMode | quote }}
-            {{- if eq $promAuthMode "basicAuth" }}
-            - name: KUBEBOLT_AGENT_PROMREAD_BASIC_AUTH_USERNAME
-              value: {{ .Values.agent.promRead.auth.basicAuthUsername | quote }}
-            - name: KUBEBOLT_AGENT_PROMREAD_BASIC_AUTH_PASSWORD
-              value: {{ .Values.agent.promRead.auth.basicAuthPassword | quote }}
-            {{- else if eq $promAuthMode "bearer" }}
-            - name: KUBEBOLT_AGENT_PROMREAD_BEARER_TOKEN
-              value: {{ .Values.agent.promRead.auth.bearerToken | quote }}
-            {{- end }}
-            {{- if .Values.agent.promRead.pollInterval }}
-            - name: KUBEBOLT_AGENT_PROMREAD_POLL_INTERVAL
-              value: {{ .Values.agent.promRead.pollInterval | quote }}
-            {{- end }}
-            {{- if .Values.agent.promRead.step }}
-            - name: KUBEBOLT_AGENT_PROMREAD_STEP
-              value: {{ .Values.agent.promRead.step | quote }}
-            {{- end }}
-            {{- if .Values.agent.promRead.lookback }}
-            - name: KUBEBOLT_AGENT_PROMREAD_LOOKBACK
-              value: {{ .Values.agent.promRead.lookback | quote }}
-            {{- end }}
-            {{- with .Values.agent.promRead.matchers }}
-            - name: KUBEBOLT_AGENT_PROMREAD_MATCHERS
-              value: |-
-{{ join "\n" . | indent 16 }}
-            {{- end }}
-            {{- end }}
+            {{- /* Mode C env block moved to templates/deployment.yaml
+                   when 1.13 topology split landed — DaemonSet pods
+                   never run promread now. KUBEBOLT_AGENT_MODE=daemonset
+                   above tells the agent binary to skip the promread
+                   bootstrap even if the env vars happen to be present
+                   (e.g. via extraEnv). */ -}}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

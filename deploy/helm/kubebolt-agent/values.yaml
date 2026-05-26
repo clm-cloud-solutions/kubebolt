@@ -210,19 +210,50 @@ agent:
     # overlap and gap-recover from transient Prom failures.
     lookback: 60s
 
-    # Selectivity — what to pull. Each entry is a PromQL selector.
-    # Defaults match the kube-state-metrics + cAdvisor + node-exporter
-    # + uptime families the scrape sidecar collects, so a customer
-    # flipping Mode A → Mode C gets a comparable starting set without
-    # picking matchers from scratch. Empty list falls back to the
-    # same defaults in code (DefaultMatchers in
-    # packages/agent/internal/promread/config_env.go) — keep this
-    # list and the Go constant in lockstep.
+    # Selectivity — what to pull from the customer's Prom.
+    #
+    # Mode A (the DaemonSet pods' kubelet collectors) ALREADY produces
+    # the KubeBolt-named metrics the UI's curated panels consume
+    # (node_fs_used_bytes, node_memory_working_set_bytes, container_*,
+    # pod_*). The defaults here are SURGICAL — they fetch only what
+    # Mode A doesn't generate, avoiding the double-storage cost of
+    # shipping raw Prom names that duplicate Mode A's data.
+    #
+    # Default coverage:
+    #   - kube_*                  full kube-state-metrics surface
+    #   - node_load.*             load average (1/5/15)
+    #   - node_pressure_.*        PSI — kernel stress signal
+    #   - node_disk_.*            disk I/O detail
+    #   - node_network_.*_errs_.* network errors
+    #   - up, process_*           target health + process self-metrics
+    #
+    # Keep this list and the Go constant DefaultMatchers in
+    # packages/agent/internal/promread/config_env.go in lockstep.
+    # Operators add app-custom metrics or wider node-exporter surface
+    # by appending; an empty list (or omitting the key entirely) falls
+    # back to the same defaults.
     matchers:
-      - '{__name__=~"kube_pod_.*"}'
-      - '{__name__=~"container_(cpu|memory|fs|network)_.*"}'
-      - '{__name__=~"node_.*"}'
+      - '{__name__=~"kube_.*"}'
+      - '{__name__=~"node_load.*|node_pressure_.*"}'
+      - '{__name__=~"node_disk_.*|node_network_.*_errs_.*"}'
       - '{__name__=~"up|process_.*"}'
+
+    # Deployment-pod–specific values for the promread workload. The
+    # promread Deployment is single-replica (Lease-elected),
+    # scheduled by k8s default unless nodeSelector/affinity narrow
+    # it. Resources are lighter than the DaemonSet's because
+    # promread doesn't run kubelet collectors locally.
+    deployment:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 1000m
+          memory: 256Mi
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
 
 # Default off — Phase 2 is opt-in until the receiver path is
 # blinded with auth in Phase 3.

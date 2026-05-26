@@ -51,11 +51,44 @@ func main() {
 	nodeIP := flag.String("node-ip", envOr("KUBEBOLT_AGENT_NODE_IP", ""), "Node IP the kubelet listens on (downward API status.hostIP)")
 	statsInterval := flag.Duration("stats-interval", 15*time.Second, "How often to poll kubelet /stats/summary")
 	podsInterval := flag.Duration("pods-interval", 30*time.Second, "How often to refresh the pods metadata cache")
-	bufferSize := flag.Int("buffer", 10_000, "Max samples buffered in memory before oldest are dropped")
+	// Default 50k: a multi-node Mode C poll can produce 5-7k samples
+	// per matcher across 4-6 matchers — per-matcher pushes (see
+	// promread/leader.go) keep individual pushes small, but 50k gives
+	// the shipper headroom to drain between bursts even when the
+	// backend is briefly slow. Bumped from 10k after the S1 multi-node
+	// smoke surfaced silent drops of node_load*/node_cpu_*/node_memory_*
+	// (alphabetic middle of matcher 3, dropped by Ring.Push overflow
+	// when the original 10k cap was exceeded).
+	bufferSize := flag.Int("buffer", 50_000, "Max samples buffered in memory before oldest are dropped")
 	logLevel := flag.String("log-level", envOr("KUBEBOLT_AGENT_LOG_LEVEL", "info"), "Log level: debug|info|warn|error")
 	flag.Parse()
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: parseLevel(*logLevel)})))
+
+	// KUBEBOLT_AGENT_MODE chooses which collector pipelines run inside
+	// this pod. 1.13 topology split: DaemonSet pods own Mode A
+	// (kubelet/cAdvisor/Hubble + KubeBolt-named samples for the UI's
+	// curated panels); a single Deployment(replicas=1) pod owns Mode C
+	// (promread reading from the customer's central Prom, with
+	// cluster-wide sample volume that would dwarf a DaemonSet pod's
+	// shared buffer if both ran together — see S1 multi-node smoke
+	// 2026-05-26).
+	//
+	//   "daemonset" → Mode A collectors only, NO promread
+	//   "promread"  → promread only (+ self-metrics), NO kubelet collectors
+	//   unset or "both" → everything (legacy / single-pod dev compat)
+	//
+	// The chart sets this explicitly on each template; existing
+	// installs that haven't bumped the chart yet keep the legacy
+	// "everything" behavior.
+	agentMode := strings.ToLower(strings.TrimSpace(os.Getenv("KUBEBOLT_AGENT_MODE")))
+	runModeA := agentMode != "promread"   // Mode A on for daemonset/both/legacy
+	runModeC := agentMode != "daemonset"  // Mode C on for promread/both/legacy
+	slog.Info("agent mode resolved",
+		slog.String("mode", agentMode),
+		slog.Bool("run_mode_a", runModeA),
+		slog.Bool("run_mode_c", runModeC),
+	)
 
 	rootCtx, rootCancel := context.WithCancel(context.Background())
 	defer rootCancel()
@@ -131,6 +164,7 @@ func main() {
 
 	var promReader *promread.Reader
 	var promNodeIdx *promread.K8sNodeIndex
+	var promKubeClient kubernetes.Interface
 	if promCfg.Enabled {
 		// K8sNodeIndex needs a kube client to list nodes — required
 		// for the `node=<k8s-node-name>` label enrichment on node_*
@@ -138,19 +172,24 @@ func main() {
 		// agent doesn't keep a long-lived kube.Interface elsewhere;
 		// promread creates its own only when enabled so disabled
 		// installs pay zero apiserver overhead.
+		//
+		// Same client also drives the Lease-based leader election so
+		// only one agent pod polls the customer's Prom at a time
+		// (otherwise N nodes → N× query cost on AMP/Azure/GMP).
 		kubeCfg, err := rest.InClusterConfig()
 		if err != nil {
 			slog.Error("promread enabled but in-cluster config unavailable",
 				slog.String("error", err.Error()))
 			os.Exit(1)
 		}
-		kubeClient, err := kubernetes.NewForConfig(kubeCfg)
+		kc, err := kubernetes.NewForConfig(kubeCfg)
 		if err != nil {
 			slog.Error("promread enabled but kube client init failed",
 				slog.String("error", err.Error()))
 			os.Exit(1)
 		}
-		promNodeIdx = promread.NewK8sNodeIndex(kubeClient, promread.DefaultNodeRefreshInterval)
+		promKubeClient = kc
+		promNodeIdx = promread.NewK8sNodeIndex(promKubeClient, promread.DefaultNodeRefreshInterval)
 
 		pr, err := promread.NewReader(promCfg, promread.WithNodeIndex(promNodeIdx))
 		if err != nil {
@@ -240,66 +279,74 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Pods metadata refresher.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// Initial refresh so the first stats batch has enrichment data.
-		if err := pods.Refresh(rootCtx); err != nil {
-			slog.Warn("initial pods refresh failed", slog.String("error", err.Error()))
-		} else {
-			slog.Info("pods cache primed", slog.Int("pods", pods.Size()))
-		}
-		tick := time.NewTicker(*podsInterval)
-		defer tick.Stop()
-		for {
-			select {
-			case <-rootCtx.Done():
-				return
-			case <-tick.C:
-				if err := pods.Refresh(rootCtx); err != nil {
-					slog.Warn("pods refresh failed", slog.String("error", err.Error()))
+	// Mode A goroutines — pods refresh, kubelet /stats/summary, kubelet
+	// /metrics/cadvisor. Gated on runModeA so a promread-only Deployment
+	// pod (1.13 topology split) doesn't run these — its kubelet is local
+	// but the cluster-wide samples come from the customer's Prom via
+	// promread anyway, so per-pod kubelet scraping would just bloat the
+	// buffer for no UI gain.
+	if runModeA {
+		// Pods metadata refresher.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Initial refresh so the first stats batch has enrichment data.
+			if err := pods.Refresh(rootCtx); err != nil {
+				slog.Warn("initial pods refresh failed", slog.String("error", err.Error()))
+			} else {
+				slog.Info("pods cache primed", slog.Int("pods", pods.Size()))
+			}
+			tick := time.NewTicker(*podsInterval)
+			defer tick.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-tick.C:
+					if err := pods.Refresh(rootCtx); err != nil {
+						slog.Warn("pods refresh failed", slog.String("error", err.Error()))
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	// Stats collector.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		// Send a first batch immediately so VM has data within seconds.
-		collectAndBuffer(rootCtx, stats, pods, buf)
-		tick := time.NewTicker(*statsInterval)
-		defer tick.Stop()
-		for {
-			select {
-			case <-rootCtx.Done():
-				return
-			case <-tick.C:
-				collectAndBuffer(rootCtx, stats, pods, buf)
+		// Stats collector.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// Send a first batch immediately so VM has data within seconds.
+			collectAndBuffer(rootCtx, stats, pods, buf)
+			tick := time.NewTicker(*statsInterval)
+			defer tick.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-tick.C:
+					collectAndBuffer(rootCtx, stats, pods, buf)
+				}
 			}
-		}
-	}()
+		}()
 
-	// cAdvisor network collector — runs on the same cadence as stats.
-	// Complements /stats/summary for kubelets that don't populate the
-	// pod-level network block (e.g. docker-desktop).
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		collectAndBuffer(rootCtx, cadvisor, pods, buf)
-		tick := time.NewTicker(*statsInterval)
-		defer tick.Stop()
-		for {
-			select {
-			case <-rootCtx.Done():
-				return
-			case <-tick.C:
-				collectAndBuffer(rootCtx, cadvisor, pods, buf)
+		// cAdvisor network collector — runs on the same cadence as stats.
+		// Complements /stats/summary for kubelets that don't populate the
+		// pod-level network block (e.g. docker-desktop).
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			collectAndBuffer(rootCtx, cadvisor, pods, buf)
+			tick := time.NewTicker(*statsInterval)
+			defer tick.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-tick.C:
+					collectAndBuffer(rootCtx, cadvisor, pods, buf)
+				}
 			}
-		}
-	}()
+		}()
+	}
 
 	// Agent self-metrics collector — emits kubebolt_agent_* every stats
 	// tick so VM has fresh self-observability for KubeBolt's own
@@ -326,7 +373,7 @@ func main() {
 	// K8sNodeIndex refresh loop — paired with promReader. Runs on its
 	// own ticker (5min default) listing nodes to refresh the IP→name
 	// map. Skipped when promRead is disabled (no nodeIdx instance).
-	if promNodeIdx != nil {
+	if runModeC && promNodeIdx != nil {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -334,27 +381,31 @@ func main() {
 		}()
 	}
 
-	// Customer Prom reader (Mode C — 1.13). Only runs when promCfg.Enabled
-	// is true (i.e. operator opted in via KUBEBOLT_AGENT_PROMREAD_ENABLED).
-	// Same pattern as the other collector goroutines: immediate first
-	// batch + ticker on the operator-set PollInterval (default 30s). The
-	// samples flow through the same pods.Enrich + buffer.Push path so
-	// the shipper doesn't need to know promread exists.
-	if promReader != nil {
+	// Customer Prom reader (Mode C — 1.13) behind a Kubernetes Lease so
+	// only ONE agent pod cluster-wide polls the customer's Prom at a
+	// time. Without the election, every DaemonSet pod would query the
+	// same central Prom independently — N nodes = N× query cost on
+	// AMP/Azure/GMP, N× shipper bandwidth, and possible drift in the
+	// timestamps that confuses rate()/increase() in the UI. Same
+	// Lease-based pattern as the Hubble flows collector.
+	//
+	// Non-leader pods still emit a kubebolt_promread_leader=0 heartbeat
+	// every 30s so dashboards see who's standing by; the leader's
+	// gauge flips to 1 on lease acquisition.
+	if runModeC && promReader != nil {
+		leaseNs, err := promread.ResolveLeaseNamespace()
+		if err != nil {
+			slog.Error("promread: cannot resolve lease namespace, refusing to start",
+				slog.String("error", err.Error()))
+			os.Exit(1)
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			collectAndBuffer(rootCtx, promReader, pods, buf)
-			tick := time.NewTicker(promReader.PollInterval())
-			defer tick.Stop()
-			for {
-				select {
-				case <-rootCtx.Done():
-					return
-				case <-tick.C:
-					collectAndBuffer(rootCtx, promReader, pods, buf)
-				}
-			}
+			promread.RunLeaderElectedReader(
+				rootCtx, promReader, buf, pods, promKubeClient,
+				clusterID, clusterName, *nodeName, leaseNs, tenantID,
+			)
 		}()
 	}
 
@@ -375,7 +426,9 @@ func main() {
 	// feature off entirely without code changes. Useful when running on
 	// a Cilium cluster where you don't want the extra flow telemetry,
 	// or to cut dependency on the relay while debugging.
-	if !envBool("KUBEBOLT_HUBBLE_ENABLED", true) {
+	if !runModeA {
+		slog.Info("hubble: flow collector skipped (KUBEBOLT_AGENT_MODE=promread)")
+	} else if !envBool("KUBEBOLT_HUBBLE_ENABLED", true) {
 		slog.Info("hubble: flow collector disabled via KUBEBOLT_HUBBLE_ENABLED=false")
 	} else if leaseNs, err := flows.ResolveLeaseNamespace(); err == nil {
 		wg.Add(1)

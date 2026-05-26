@@ -8,24 +8,41 @@ import (
 	"time"
 )
 
-// DefaultMatchers is the matcher set the Reader falls back to when
-// KUBEBOLT_AGENT_PROMREAD_MATCHERS is empty AND ENABLED=true. Pulls
-// the KSM + cAdvisor + node-exporter + uptime families that Mode A's
-// scrape sidecar collects, so a customer flipping from Mode A to
-// Mode C gets a comparable starting set without picking matchers
-// from scratch. Operators override via the env var (or the chart's
-// agent.promRead.matchers value) when they want a tighter or wider
-// selection.
+// DefaultMatchers is the surgical matcher set the Reader falls back to
+// when KUBEBOLT_AGENT_PROMREAD_MATCHERS is empty AND ENABLED=true.
 //
-// node_* coverage is included because the Node detail Monitor tab
-// (Load Average + PSI) and the node-exporter coverage chip both
-// depend on it; the S1 kind smoke surfaced their absence when the
-// defaults skipped node_* — leaving them out was a worse default
-// for Mode C than the small cardinality cost (~50 series per node).
+// Rationale (decision 2026-05-26 after S1 multi-node kind smoke):
+// Mode A (DaemonSet + kubelet collectors) already produces the
+// KubeBolt-named metrics the UI's curated panels consume
+// (node_fs_used_bytes, node_memory_working_set_bytes, container_*,
+// pod_*). Mode C running alongside Mode A duplicating those (with
+// either same names → series collision, or raw Prom names → 2× storage
+// for data the UI doesn't query) is wasteful — burned ~70% of Mode C's
+// sample volume on data Mode A already had.
+//
+// These matchers ship ONLY the metrics Mode A does NOT produce:
+//
+//   - kube_*        full kube-state-metrics surface (pod/deployment/
+//                   statefulset/daemonset/service/node), drives most
+//                   workload-counting panels
+//   - node_load.*   load average (1/5/15) for the Node detail panel
+//   - node_pressure.*  PSI (CPU/IO/memory waiting) for the Node detail
+//                   panel — kernel-level stress signal Mode A can't
+//                   synthesize
+//   - node_disk_.*  full disk I/O detail (read/write bytes, queue,
+//                   latency) — Mode A only emits filesystem capacity
+//   - node_network_.*_errs_.* network error counters, early-warning
+//                   signal for NetworkPolicy / driver issues
+//   - up, process_* target health (scrape success per job) +
+//                   process self-metrics
+//
+// Operators override via the env var (or the chart's
+// agent.promRead.matchers value) when they want app-custom metrics or
+// the wider raw Prom space for ad-hoc VM exploration.
 var DefaultMatchers = []string{
-	`{__name__=~"kube_pod_.*"}`,
-	`{__name__=~"container_(cpu|memory|fs|network)_.*"}`,
-	`{__name__=~"node_.*"}`,
+	`{__name__=~"kube_.*"}`,
+	`{__name__=~"node_load.*|node_pressure_.*"}`,
+	`{__name__=~"node_disk_.*|node_network_.*_errs_.*"}`,
 	`{__name__=~"up|process_.*"}`,
 }
 
