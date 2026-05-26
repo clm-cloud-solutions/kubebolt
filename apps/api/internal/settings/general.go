@@ -20,6 +20,10 @@ type StoredGeneralSettings struct {
 	// namespace as "production" for the Secret Reveal role-escalation
 	// rule. Validated at PUT — invalid regex returns 400.
 	ProdNamespacePattern *string `json:"prodNamespacePattern,omitempty"`
+	// UpdateCheckEnabled toggles the GitHub releases poller that
+	// drives the "new version available" chip. Nil = inherit env
+	// baseline (KUBEBOLT_UPDATE_CHECK_ENABLED, default true).
+	UpdateCheckEnabled *bool `json:"updateCheckEnabled,omitempty"`
 }
 
 // General returns the resolved GeneralConfig (env + BoltDB override).
@@ -74,6 +78,9 @@ func applyStoredGeneral(cfg *config.GeneralConfig, stored *StoredGeneralSettings
 	if stored.ProdNamespacePattern != nil {
 		cfg.ProdNamespacePattern = *stored.ProdNamespacePattern
 	}
+	if stored.UpdateCheckEnabled != nil {
+		cfg.UpdateCheckEnabled = *stored.UpdateCheckEnabled
+	}
 }
 
 // PutGeneral validates and persists a partial General settings patch.
@@ -127,6 +134,7 @@ type MaskedEffectiveGeneral struct {
 	DisplayName                   string `json:"displayName"`
 	DefaultRefreshIntervalSeconds int    `json:"defaultRefreshIntervalSeconds"`
 	ProdNamespacePattern          string `json:"prodNamespacePattern"`
+	UpdateCheckEnabled            bool   `json:"updateCheckEnabled"`
 }
 
 type MaskedStoredGeneral struct {
@@ -134,6 +142,7 @@ type MaskedStoredGeneral struct {
 	DisplayName                   *string `json:"displayName,omitempty"`
 	DefaultRefreshIntervalSeconds *int    `json:"defaultRefreshIntervalSeconds,omitempty"`
 	ProdNamespacePattern          *string `json:"prodNamespacePattern,omitempty"`
+	UpdateCheckEnabled            *bool   `json:"updateCheckEnabled,omitempty"`
 }
 
 func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
@@ -147,14 +156,17 @@ func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
 			DisplayName:                   resolved.DisplayName,
 			DefaultRefreshIntervalSeconds: resolved.DefaultRefreshIntervalSeconds,
 			ProdNamespacePattern:          resolved.ProdNamespacePattern,
+			UpdateCheckEnabled:            resolved.UpdateCheckEnabled,
 		},
 		Stored: MaskedStoredGeneral{
 			HasOverride: stored.DisplayName != nil ||
 				stored.DefaultRefreshIntervalSeconds != nil ||
-				stored.ProdNamespacePattern != nil,
+				stored.ProdNamespacePattern != nil ||
+				stored.UpdateCheckEnabled != nil,
 			DisplayName:                   stored.DisplayName,
 			DefaultRefreshIntervalSeconds: stored.DefaultRefreshIntervalSeconds,
 			ProdNamespacePattern:          stored.ProdNamespacePattern,
+			UpdateCheckEnabled:            stored.UpdateCheckEnabled,
 		},
 	}
 	return out, nil
@@ -213,6 +225,9 @@ func mergeGeneral(base, patch StoredGeneralSettings) StoredGeneralSettings {
 	}
 	if patch.ProdNamespacePattern != nil {
 		out.ProdNamespacePattern = patch.ProdNamespacePattern
+	}
+	if patch.UpdateCheckEnabled != nil {
+		out.UpdateCheckEnabled = patch.UpdateCheckEnabled
 	}
 	return out
 }

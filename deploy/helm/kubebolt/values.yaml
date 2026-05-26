@@ -316,4 +316,8 @@ copilot:
 #       value: "48h"
 #     - name: KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT
 #       value: "10m"
+#     # Air-gapped installs: disable the GitHub update-check so the
+#     # backend never reaches out to api.github.com.
+#     - name: KUBEBOLT_UPDATE_CHECK_ENABLED
+#       value: "false"
 extraEnv: []

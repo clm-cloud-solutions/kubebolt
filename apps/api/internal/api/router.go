@@ -15,6 +15,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
+	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -54,6 +55,11 @@ func NewRouter(
 	// no agents are wired (test fixtures, sub-1.0 deployments), the
 	// /admin/agents endpoint returns an empty list rather than 500.
 	agentRegistry *channel.AgentRegistry,
+	// updateCheck reports whether a newer stable KubeBolt version is
+	// available on GitHub. nil-safe — passing nil disables the
+	// /update-check endpoint (returns {"enabled": false}). Wired in
+	// main.go from `updatecheck.New(version, ...)`.
+	updateCheck *updatecheck.Service,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -82,6 +88,7 @@ func NewRouter(
 		promCardinality:      promCardinality,
 		promWriteMetrics:     promWriteMetrics,
 		agentRegistry:        agentRegistry,
+		updateCheck:          updateCheck,
 	}
 
 	// Health check endpoint
@@ -148,6 +155,12 @@ func NewRouter(
 			// Cluster management — always available, no active connector required
 			r.Get("/clusters", h.listClusters)
 			r.Post("/clusters/switch", h.switchCluster)
+
+			// Update check — reports the latest stable KubeBolt release
+			// on GitHub. Any logged-in role can read; admin toggles the
+			// underlying poller via Settings → General. Returns
+			// {"enabled": false} when disabled at env or runtime.
+			r.Get("/update-check", h.handleUpdateCheck)
 
 			// Metrics storage (VictoriaMetrics) PromQL pass-through — no cluster
 			// connection required. Data is queried from the TSDB directly.
