@@ -11,6 +11,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
+	"github.com/Azure/azure-sdk-for-go/sdk/azidentity"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -29,6 +32,7 @@ const (
 	AuthBearer                AuthMode = "bearer"
 	AuthGcpIam                AuthMode = "gcpIam"
 	AuthAwsSigV4              AuthMode = "awsSigV4"
+	AuthAzureWorkloadIdentity AuthMode = "azureWorkloadIdentity"
 )
 
 // gcpScopeMonitoringRead is the OAuth scope required to query GMP
@@ -47,6 +51,13 @@ const awsServiceAps = "aps"
 // request without a body — which is every promread query_range
 // call (all GETs, no body).
 const emptyPayloadSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+// azurePrometheusScope is the OAuth scope required to query Azure
+// Monitor managed Prometheus. Pre-flight Session 09 (2026-05-27)
+// confirmed this is what `az account get-access-token --resource
+// "https://prometheus.monitor.azure.com"` requests against the
+// federation endpoint.
+const azurePrometheusScope = "https://prometheus.monitor.azure.com/.default"
 
 // AuthConfig is the operator-set auth block, mirrors helm values
 // `agent.promRead.auth.*`. Only one credential set is honored per
@@ -106,6 +117,8 @@ func NewProvider(cfg AuthConfig) (Provider, error) {
 			return nil, errors.New("awsSigV4 requires AwsRegion")
 		}
 		return newAwsSigV4Provider(context.Background(), cfg.AwsRegion)
+	case AuthAzureWorkloadIdentity:
+		return newAzureWorkloadIdentityProvider()
 	default:
 		return nil, fmt.Errorf("unknown auth mode: %q", mode)
 	}
@@ -251,6 +264,63 @@ type sdkSignerAdapter struct {
 func (a sdkSignerAdapter) SignHTTP(ctx context.Context, creds aws.Credentials, r *http.Request, payloadHash, service, region string, signingTime time.Time) error {
 	return a.s.SignHTTP(ctx, creds, r, payloadHash, service, region, signingTime)
 }
+
+// azureWorkloadIdentityProvider mints Azure Entra ID access tokens
+// via the Workload Identity federation flow. Inside an AKS pod with
+// label `azure.workload.identity/use: "true"` and a KSA annotated
+// with `azure.workload.identity/client-id`, the WI webhook auto-
+// injects four env vars (AZURE_CLIENT_ID, AZURE_TENANT_ID,
+// AZURE_FEDERATED_TOKEN_FILE, AZURE_AUTHORITY_HOST). The Azure SDK's
+// NewWorkloadIdentityCredential reads them and handles the federated
+// JWT exchange transparently — same chain that
+// `az login --service-principal --federated-token` exercises (verified
+// in vivo Session 09 2026-05-27).
+//
+// Tokens are cached + refreshed inside the TokenCredential; our
+// Apply call is a thin shim.
+type azureWorkloadIdentityProvider struct {
+	cred azureTokenCredential
+}
+
+// azureTokenCredential is the minimal interface the provider needs
+// from azcore.TokenCredential. Stub-able for unit tests so we don't
+// have to dial the Entra ID token endpoint or read a fake token
+// file off disk just to verify Apply's wiring.
+type azureTokenCredential interface {
+	GetToken(ctx context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error)
+}
+
+// newAzureWorkloadIdentityProvider constructs a Provider via the
+// Azure SDK's WI credential. Returns an error when the WI env vars
+// aren't present (e.g. running outside an AKS pod with the webhook
+// label) — fail loud at boot rather than silently emit 401s every
+// poll.
+func newAzureWorkloadIdentityProvider() (*azureWorkloadIdentityProvider, error) {
+	cred, err := azidentity.NewWorkloadIdentityCredential(nil)
+	if err != nil {
+		return nil, fmt.Errorf("azureWorkloadIdentity: new credential: %w", err)
+	}
+	return &azureWorkloadIdentityProvider{cred: cred}, nil
+}
+
+// newAzureWorkloadIdentityProviderWithCred is the test seam — lets
+// unit tests inject a stub TokenCredential.
+func newAzureWorkloadIdentityProviderWithCred(cred azureTokenCredential) *azureWorkloadIdentityProvider {
+	return &azureWorkloadIdentityProvider{cred: cred}
+}
+
+func (p *azureWorkloadIdentityProvider) Apply(req *http.Request) error {
+	tok, err := p.cred.GetToken(req.Context(), policy.TokenRequestOptions{
+		Scopes: []string{azurePrometheusScope},
+	})
+	if err != nil {
+		return fmt.Errorf("azureWorkloadIdentity: get token: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tok.Token)
+	return nil
+}
+
+func (*azureWorkloadIdentityProvider) Mode() AuthMode { return AuthAzureWorkloadIdentity }
 
 // newAwsSigV4ProviderWithDeps is the test seam — lets unit tests
 // inject stub credential + signer impls without dialing AWS.

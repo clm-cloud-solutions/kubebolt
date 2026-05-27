@@ -10,9 +10,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore"
+	"github.com/Azure/azure-sdk-for-go/sdk/azcore/policy"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"golang.org/x/oauth2"
 )
+
+// stubAzureTokenCredential implements azureTokenCredential for unit
+// tests — returns a fixed token (or fixed error) and records the
+// requested scope for assertion.
+type stubAzureTokenCredential struct {
+	token     string
+	err       error
+	gotScopes []string
+}
+
+func (s *stubAzureTokenCredential) GetToken(_ context.Context, options policy.TokenRequestOptions) (azcore.AccessToken, error) {
+	s.gotScopes = append([]string(nil), options.Scopes...)
+	if s.err != nil {
+		return azcore.AccessToken{}, s.err
+	}
+	return azcore.AccessToken{
+		Token:     s.token,
+		ExpiresOn: time.Now().Add(time.Hour),
+	}, nil
+}
 
 // stubAwsCredentialsProvider implements aws.CredentialsProvider for
 // unit tests — returns a fixed set of credentials (or a fixed error)
@@ -324,6 +346,67 @@ func TestAwsPayloadHash(t *testing.T) {
 			t.Errorf("body not restored, got %q want hello", body)
 		}
 	})
+}
+
+func TestAzureWorkloadIdentityProvider_AppliesBearerHeaderWithCorrectScope(t *testing.T) {
+	cred := &stubAzureTokenCredential{token: "az-access-token-xyz"}
+	p := newAzureWorkloadIdentityProviderWithCred(cred)
+	req := httptest.NewRequest(http.MethodGet, "https://defaultazuremonitorworkspace-eastus.eastus.prometheus.monitor.azure.com/api/v1/query?query=up", nil)
+
+	if err := p.Apply(req); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got := req.Header.Get("Authorization")
+	if got != "Bearer az-access-token-xyz" {
+		t.Errorf("Authorization: got %q want Bearer az-access-token-xyz", got)
+	}
+	if len(cred.gotScopes) != 1 || cred.gotScopes[0] != azurePrometheusScope {
+		t.Errorf("scopes: got %v want [%s]", cred.gotScopes, azurePrometheusScope)
+	}
+}
+
+func TestAzureWorkloadIdentityProvider_PropagatesTokenError(t *testing.T) {
+	// Federation failure (e.g. clock skew, expired federated token
+	// file, IDP unreachable) must surface — caller logs + skips.
+	cred := &stubAzureTokenCredential{err: errors.New("AADSTS70021: federated token expired")}
+	p := newAzureWorkloadIdentityProviderWithCred(cred)
+	req := httptest.NewRequest(http.MethodGet, "https://x/api/v1/query?q=up", nil)
+
+	err := p.Apply(req)
+	if err == nil {
+		t.Fatal("expected error from token credential")
+	}
+	if !strings.Contains(err.Error(), "AADSTS70021") {
+		t.Errorf("error must wrap original cause, got: %v", err)
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Error("no auth header on token error")
+	}
+}
+
+func TestAzureWorkloadIdentityProvider_ModeReturnsAzureWorkloadIdentity(t *testing.T) {
+	p := newAzureWorkloadIdentityProviderWithCred(&stubAzureTokenCredential{token: "x"})
+	if p.Mode() != AuthAzureWorkloadIdentity {
+		t.Errorf("Mode: got %q want %q", p.Mode(), AuthAzureWorkloadIdentity)
+	}
+}
+
+func TestNewProvider_AzureWorkloadIdentityDispatch(t *testing.T) {
+	// Calls azidentity.NewWorkloadIdentityCredential for real. Outside
+	// an AKS pod (no AZURE_FEDERATED_TOKEN_FILE env), this returns an
+	// error from the SDK. Either outcome is acceptable — we're
+	// asserting that the dispatch happens and the error mentions
+	// azureWorkloadIdentity so operators can debug.
+	p, err := NewProvider(AuthConfig{Mode: AuthAzureWorkloadIdentity})
+	if err == nil {
+		if p.Mode() != AuthAzureWorkloadIdentity {
+			t.Errorf("expected azureWorkloadIdentity, got %q", p.Mode())
+		}
+	} else {
+		if !strings.Contains(err.Error(), "azureWorkloadIdentity") {
+			t.Errorf("error must mention azureWorkloadIdentity, got: %v", err)
+		}
+	}
 }
 
 func TestBearerProvider_AppliesHeader(t *testing.T) {
