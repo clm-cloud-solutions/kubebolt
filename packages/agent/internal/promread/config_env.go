@@ -76,6 +76,7 @@ func LoadConfigFromEnv() (Config, error) {
 		BasicAuthUsername: os.Getenv(envPrefix + "BASIC_AUTH_USERNAME"),
 		BasicAuthPassword: os.Getenv(envPrefix + "BASIC_AUTH_PASSWORD"),
 		BearerToken:       os.Getenv(envPrefix + "BEARER_TOKEN"),
+		AwsRegion:         os.Getenv(envPrefix + "AWS_REGION"),
 	}
 
 	for _, f := range []struct {

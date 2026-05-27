@@ -107,6 +107,25 @@ func TestParseMatchers_TrimsAndDropsEmpties(t *testing.T) {
 	}
 }
 
+func TestLoadConfigFromEnv_AwsSigV4Mode(t *testing.T) {
+	clearPromreadEnv(t)
+	t.Setenv(envPrefix+"ENABLED", "true")
+	t.Setenv(envPrefix+"URL", "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-X/")
+	t.Setenv(envPrefix+"AUTH_MODE", "awsSigV4")
+	t.Setenv(envPrefix+"AWS_REGION", "us-east-1")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if cfg.Auth.Mode != AuthAwsSigV4 {
+		t.Errorf("Mode: got %q want awsSigV4", cfg.Auth.Mode)
+	}
+	if cfg.Auth.AwsRegion != "us-east-1" {
+		t.Errorf("AwsRegion: got %q want us-east-1", cfg.Auth.AwsRegion)
+	}
+}
+
 // clearPromreadEnv wipes every KUBEBOLT_AGENT_PROMREAD_* key the
 // loader inspects. t.Setenv handles per-test isolation when we set
 // a key, but defaults from the operator's shell can still bleed in
@@ -122,6 +141,7 @@ func clearPromreadEnv(t *testing.T) {
 		"BASIC_AUTH_USERNAME",
 		"BASIC_AUTH_PASSWORD",
 		"BEARER_TOKEN",
+		"AWS_REGION",
 		"POLL_INTERVAL",
 		"STEP",
 		"LOOKBACK",

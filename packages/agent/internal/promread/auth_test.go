@@ -1,14 +1,63 @@
 package promread
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"golang.org/x/oauth2"
 )
+
+// stubAwsCredentialsProvider implements aws.CredentialsProvider for
+// unit tests — returns a fixed set of credentials (or a fixed error)
+// without dialing STS / IMDS.
+type stubAwsCredentialsProvider struct {
+	creds aws.Credentials
+	err   error
+}
+
+func (s stubAwsCredentialsProvider) Retrieve(_ context.Context) (aws.Credentials, error) {
+	if s.err != nil {
+		return aws.Credentials{}, s.err
+	}
+	return s.creds, nil
+}
+
+// recordingAwsSigner satisfies awsRequestSigner and captures the
+// arguments it received — lets tests assert that Apply forwarded the
+// right service / region / payload hash without verifying signature
+// bytes (which is the SDK's responsibility, not ours).
+type recordingAwsSigner struct {
+	called      bool
+	gotCreds    aws.Credentials
+	gotPayload  string
+	gotService  string
+	gotRegion   string
+	gotTime     time.Time
+	gotRequest  *http.Request
+	returnError error
+}
+
+func (r *recordingAwsSigner) SignHTTP(_ context.Context, creds aws.Credentials, req *http.Request, payloadHash, service, region string, signingTime time.Time) error {
+	r.called = true
+	r.gotCreds = creds
+	r.gotPayload = payloadHash
+	r.gotService = service
+	r.gotRegion = region
+	r.gotTime = signingTime
+	r.gotRequest = req
+	if r.returnError != nil {
+		return r.returnError
+	}
+	req.Header.Set("Authorization", "AWS4-HMAC-SHA256 fake-sig")
+	return nil
+}
 
 // stubTokenSource is a fake oauth2.TokenSource for unit-testing
 // providers that wrap one (gcpIam today; azure provider in S2.4
@@ -151,6 +200,130 @@ func TestNewProvider_GcpIamDispatch(t *testing.T) {
 			t.Errorf("error must mention gcpIam, got: %v", err)
 		}
 	}
+}
+
+func TestAwsSigV4Provider_AppliesSignedHeader(t *testing.T) {
+	signer := &recordingAwsSigner{}
+	p := newAwsSigV4ProviderWithDeps(
+		stubAwsCredentialsProvider{creds: aws.Credentials{
+			AccessKeyID:     "AKIA-test",
+			SecretAccessKey: "secret-test",
+			SessionToken:    "session-test",
+			Source:          "test",
+		}},
+		signer,
+		"us-east-1",
+	)
+	req := httptest.NewRequest(http.MethodGet, "https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-x/api/v1/query?query=up", nil)
+
+	if err := p.Apply(req); err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	if !signer.called {
+		t.Fatal("signer.SignHTTP was not called")
+	}
+	if signer.gotService != awsServiceAps {
+		t.Errorf("service: got %q want %q", signer.gotService, awsServiceAps)
+	}
+	if signer.gotRegion != "us-east-1" {
+		t.Errorf("region: got %q want us-east-1", signer.gotRegion)
+	}
+	if signer.gotCreds.AccessKeyID != "AKIA-test" {
+		t.Errorf("creds AccessKeyID not propagated: got %q", signer.gotCreds.AccessKeyID)
+	}
+	if signer.gotPayload != emptyPayloadSHA256 {
+		t.Errorf("payload hash for nil-body GET should be empty SHA, got %q", signer.gotPayload)
+	}
+	if req.Header.Get("Authorization") == "" {
+		t.Error("signed request must have Authorization header set by the signer")
+	}
+}
+
+func TestAwsSigV4Provider_PropagatesCredentialError(t *testing.T) {
+	// IRSA chain failure (e.g. STS unreachable) must surface — caller
+	// will log + skip the cycle rather than fire unsigned requests.
+	signer := &recordingAwsSigner{}
+	p := newAwsSigV4ProviderWithDeps(
+		stubAwsCredentialsProvider{err: errors.New("STS unreachable")},
+		signer,
+		"us-east-1",
+	)
+	req := httptest.NewRequest(http.MethodGet, "https://x/api/v1/query?q=up", nil)
+
+	err := p.Apply(req)
+	if err == nil {
+		t.Fatal("expected error from credential provider")
+	}
+	if !strings.Contains(err.Error(), "STS unreachable") {
+		t.Errorf("error must wrap original cause, got: %v", err)
+	}
+	if signer.called {
+		t.Error("signer must NOT be called when credentials retrieval fails")
+	}
+	if req.Header.Get("Authorization") != "" {
+		t.Error("no auth header on credential failure")
+	}
+}
+
+func TestAwsSigV4Provider_PropagatesSignerError(t *testing.T) {
+	signer := &recordingAwsSigner{returnError: errors.New("malformed request")}
+	p := newAwsSigV4ProviderWithDeps(
+		stubAwsCredentialsProvider{creds: aws.Credentials{AccessKeyID: "k", SecretAccessKey: "s"}},
+		signer,
+		"us-east-1",
+	)
+	req := httptest.NewRequest(http.MethodGet, "https://x/api/v1/query?q=up", nil)
+
+	err := p.Apply(req)
+	if err == nil {
+		t.Fatal("expected error from signer")
+	}
+	if !strings.Contains(err.Error(), "malformed request") {
+		t.Errorf("error must wrap signer error, got: %v", err)
+	}
+}
+
+func TestAwsSigV4Provider_ModeReturnsAwsSigV4(t *testing.T) {
+	p := newAwsSigV4ProviderWithDeps(stubAwsCredentialsProvider{}, &recordingAwsSigner{}, "us-east-1")
+	if p.Mode() != AuthAwsSigV4 {
+		t.Errorf("Mode: got %q want awsSigV4", p.Mode())
+	}
+}
+
+func TestNewProvider_AwsSigV4RequiresRegion(t *testing.T) {
+	_, err := NewProvider(AuthConfig{Mode: AuthAwsSigV4})
+	if err == nil {
+		t.Fatal("expected error when AwsRegion missing")
+	}
+	if !strings.Contains(err.Error(), "AwsRegion") {
+		t.Errorf("error must mention AwsRegion, got: %v", err)
+	}
+}
+
+func TestAwsPayloadHash(t *testing.T) {
+	t.Run("nil body returns empty SHA", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		got, err := awsPayloadHash(req)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		if got != emptyPayloadSHA256 {
+			t.Errorf("got %q want %s", got, emptyPayloadSHA256)
+		}
+	})
+	t.Run("non-nil body restored after hash", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello"))
+		_, err := awsPayloadHash(req)
+		if err != nil {
+			t.Fatalf("unexpected err: %v", err)
+		}
+		// Body must be re-readable after hashing — would break the
+		// underlying http.Transport otherwise.
+		body, _ := io.ReadAll(req.Body)
+		if string(body) != "hello" {
+			t.Errorf("body not restored, got %q want hello", body)
+		}
+	})
 }
 
 func TestBearerProvider_AppliesHeader(t *testing.T) {
