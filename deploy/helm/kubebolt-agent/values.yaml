@@ -185,17 +185,39 @@ agent:
     url: ""
 
     auth:
-      # none | basicAuth | bearer. S2 of the 1.13 cycle adds
-      # awsSigV4 / azureWorkloadIdentity / gcpIam for the three
-      # hyperscaler managed-Prom flavors.
+      # Supported modes (verified end-to-end in pre-flight sessions
+      # 08/09/10, 2026-05-26 / 27):
+      #
+      #   none                    — anonymous (self-managed Prom with
+      #                             no auth in front)
+      #   basicAuth               — HTTP Basic; requires
+      #                             basicAuthUsername + basicAuthPassword
+      #   bearer                  — static bearer token; requires bearerToken
+      #   gcpIam                  — GMP managed; ambient via Workload
+      #                             Identity (pod KSA annotated with
+      #                             iam.gke.io/gcp-service-account=...)
+      #   azureWorkloadIdentity   — Azure Monitor managed; ambient via
+      #                             Workload Identity (pod label
+      #                             azure.workload.identity/use=true +
+      #                             KSA annotated with
+      #                             azure.workload.identity/client-id=...)
+      #   awsSigV4                — AWS AMP; ambient via IRSA (pod KSA
+      #                             annotated with
+      #                             eks.amazonaws.com/role-arn=...) +
+      #                             requires awsRegion below
       mode: none
       basicAuthUsername: ""
       # WARNING — plain values.yaml is fine for kind smoke tests but
-      # NOT for production. For Secret-backed credentials, leave
-      # these empty and inject the env vars via the chart's `extraEnv`
-      # escape hatch with a valueFrom.secretKeyRef block.
+      # NOT for production credentials. For Secret-backed credentials,
+      # leave these empty and inject the env vars via the chart's
+      # `extraEnv` escape hatch with a valueFrom.secretKeyRef block.
       basicAuthPassword: ""
       bearerToken: ""
+      # Required when mode=awsSigV4. AMP endpoints are region-scoped
+      # (https://aps-workspaces.<region>.amazonaws.com/...) and SigV4
+      # signs against the region; mismatch produces 403 InvalidSignature.
+      # Ignored for other modes.
+      awsRegion: ""
 
     # Cadence the agent fires query_range at. Lower values increase
     # query load on the customer's Prom — 30s mirrors the load

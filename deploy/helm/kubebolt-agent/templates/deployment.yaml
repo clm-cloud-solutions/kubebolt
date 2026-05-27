@@ -129,7 +129,19 @@ spec:
             {{- else if eq $promAuthMode "bearer" }}
             - name: KUBEBOLT_AGENT_PROMREAD_BEARER_TOKEN
               value: {{ .Values.agent.promRead.auth.bearerToken | quote }}
+            {{- else if eq $promAuthMode "awsSigV4" }}
+            # awsSigV4 needs region for SigV4 signing. Credentials
+            # arrive ambient via IRSA (the EKS Pod Identity Webhook
+            # auto-injects AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE
+            # when the KSA has eks.amazonaws.com/role-arn annotation).
+            - name: KUBEBOLT_AGENT_PROMREAD_AWS_REGION
+              value: {{ .Values.agent.promRead.auth.awsRegion | quote }}
             {{- end }}
+            {{- /* gcpIam and azureWorkloadIdentity need NO extra env from
+                   the chart — credentials arrive ambient via the
+                   in-cluster metadata server (GKE Workload Identity)
+                   or the WI webhook-injected env vars (Azure WI). The
+                   provider's SDK auto-discovers them at runtime. */ -}}
             {{- if .Values.agent.promRead.pollInterval }}
             - name: KUBEBOLT_AGENT_PROMREAD_POLL_INTERVAL
               value: {{ .Values.agent.promRead.pollInterval | quote }}

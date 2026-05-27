@@ -106,8 +106,12 @@ with itself. Called from the top of templates/daemonset.yaml so
 {{- if not .Values.agent.promRead.auth.bearerToken -}}
 {{- fail "agent.promRead.auth.mode=bearer requires agent.promRead.auth.bearerToken (use extraEnv with valueFrom.secretKeyRef for production)" -}}
 {{- end -}}
-{{- else if and (ne $mode "none") (ne $mode "basicAuth") (ne $mode "bearer") -}}
-{{- fail (printf "agent.promRead.auth.mode=%q not supported in S1 — valid: none, basicAuth, bearer. Managed-cloud providers (awsSigV4, azureWorkloadIdentity, gcpIam) ship in S2 of the 1.13 cycle." $mode) -}}
+{{- else if eq $mode "awsSigV4" -}}
+{{- if not .Values.agent.promRead.auth.awsRegion -}}
+{{- fail "agent.promRead.auth.mode=awsSigV4 requires agent.promRead.auth.awsRegion (the AMP workspace's region — endpoints are region-scoped and SigV4 signs against the region)" -}}
+{{- end -}}
+{{- else if and (ne $mode "none") (ne $mode "basicAuth") (ne $mode "bearer") (ne $mode "awsSigV4") (ne $mode "gcpIam") (ne $mode "azureWorkloadIdentity") -}}
+{{- fail (printf "agent.promRead.auth.mode=%q not recognized. Valid: none, basicAuth, bearer, gcpIam, awsSigV4, azureWorkloadIdentity." $mode) -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
