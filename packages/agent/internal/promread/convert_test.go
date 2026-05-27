@@ -18,9 +18,24 @@ func newQueryResp(seriesMetric map[string]string, values [][]interface{}) *Query
 
 // fakeNodeIndex is a stand-in for K8sNodeIndex in convert tests —
 // avoids spinning up a fake clientset just to stub IP→name lookups.
+// Implements both NodeByIP (the IP→name map) and IsKnownNode
+// (membership check against the value set, since for the test
+// purposes the values ARE the node names).
 type fakeNodeIndex map[string]string
 
 func (f fakeNodeIndex) NodeByIP(ip string) string { return f[ip] }
+
+func (f fakeNodeIndex) IsKnownNode(name string) bool {
+	if name == "" {
+		return false
+	}
+	for _, v := range f {
+		if v == name {
+			return true
+		}
+	}
+	return false
+}
 
 func TestConvert_HappyPath(t *testing.T) {
 	resp := newQueryResp(
@@ -177,6 +192,54 @@ func TestConvert_NodeEnrichmentSkipsNonNodeMetrics(t *testing.T) {
 	samples, _ := Convert(resp, "", "", "", idx)
 	if _, has := samples[0].Labels["node"]; has {
 		t.Errorf("non-node_* metric should NOT get node stamp, labels=%+v", samples[0].Labels)
+	}
+}
+
+func TestConvert_NodeEnrichmentFallsBackToIsKnownNodeForAzureShape(t *testing.T) {
+	// Azure managed Prom emits node_* series with
+	// instance=<aks-nodepool-XXX-vmss000000> — the value IS the node
+	// name, not an IP:port. NodeByIP returns empty; IsKnownNode
+	// returns true. We must stamp `node` from the stripped instance.
+	resp := newQueryResp(
+		map[string]string{
+			"__name__": "node_load1",
+			"instance": "aks-nodepool1-35286437-vmss000000",
+			"job":      "node",
+		},
+		[][]interface{}{{float64(1700000000), "0.5"}},
+	)
+	// IP→name map only has the IP path; IsKnownNode falls back to value set.
+	idx := fakeNodeIndex{"10.0.0.1": "aks-nodepool1-35286437-vmss000000"}
+	samples, err := Convert(resp, "", "", "", idx)
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if samples[0].Labels["node"] != "aks-nodepool1-35286437-vmss000000" {
+		t.Errorf("Azure fallback: got node=%q, want aks-nodepool1-35286437-vmss000000",
+			samples[0].Labels["node"])
+	}
+}
+
+func TestConvert_NodeEnrichmentRespectsAlreadyPresentNodeLabel(t *testing.T) {
+	// GMP auto-relabels server-side and stamps `node` directly on
+	// the series. Convert must NOT override that — even if our
+	// enrichment lookups would match, the source-of-truth from GMP
+	// wins.
+	resp := newQueryResp(
+		map[string]string{
+			"__name__": "node_load1",
+			"instance": "gke-cluster-default-pool-abc:metrics",
+			"node":     "gmp-original-node-name", // already stamped by GMP
+			"job":      "gmp-kubelet-metrics",
+		},
+		[][]interface{}{{float64(1700000000), "0.5"}},
+	)
+	// IsKnownNode would match "gke-cluster-default-pool-abc" if asked,
+	// but the already-has-node check short-circuits before the lookup.
+	idx := fakeNodeIndex{"_": "gke-cluster-default-pool-abc"}
+	samples, _ := Convert(resp, "", "", "", idx)
+	if samples[0].Labels["node"] != "gmp-original-node-name" {
+		t.Errorf("must preserve existing node label, got %q", samples[0].Labels["node"])
 	}
 }
 

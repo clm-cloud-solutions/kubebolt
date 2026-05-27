@@ -66,14 +66,33 @@ func Convert(
 		if tenantID != "" {
 			baseLabels["tenant_id"] = tenantID
 		}
-		// node_* enrichment — see func doc. Skipped silently when
-		// nodeIdx is nil, when `instance` is missing, or when the
-		// lookup misses (no false stamps; an empty result is better
-		// than a wrong label that misleads the Node Monitor panels).
+		// node_* enrichment — see func doc. Two-pass fallback:
+		//   1. If the series already carries a `node` label (GMP
+		//      auto-relabels server-side), respect it — don't override.
+		//   2. Else try NodeByIP(StripPort(instance)) — AMP /
+		//      node-exporter shape where instance is `<pod-IP>:9100`
+		//      and the pod runs hostNetwork on a node, so pod IP
+		//      equals node InternalIP.
+		//   3. Else fall back to IsKnownNode(stripped) — Azure managed
+		//      Prom shape where instance is already a node name like
+		//      `aks-nodepool1-XXX-vmss000000`. We accept it as a node
+		//      label only if it matches a real Node.metadata.name in
+		//      the cluster (paranoid check: prevents an attacker who
+		//      controls `instance` from injecting an arbitrary node
+		//      label).
+		// Skipped silently when nodeIdx is nil, when `instance` is
+		// missing, or when both lookups miss (no false stamps).
 		if nodeIdx != nil && strings.HasPrefix(metricName, "node_") {
-			if instance := series.Metric["instance"]; instance != "" {
-				if nodeName := nodeIdx.NodeByIP(StripPort(instance)); nodeName != "" {
-					baseLabels["node"] = nodeName
+			if _, alreadyHas := baseLabels["node"]; !alreadyHas {
+				if instance := series.Metric["instance"]; instance != "" {
+					stripped := StripPort(instance)
+					nodeName := nodeIdx.NodeByIP(stripped)
+					if nodeName == "" && nodeIdx.IsKnownNode(stripped) {
+						nodeName = stripped
+					}
+					if nodeName != "" {
+						baseLabels["node"] = nodeName
+					}
 				}
 			}
 		}

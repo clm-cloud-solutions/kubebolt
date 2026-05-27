@@ -96,6 +96,60 @@ func TestK8sNodeIndex_RefreshReplacesMap(t *testing.T) {
 	}
 }
 
+func TestK8sNodeIndex_IsKnownNode(t *testing.T) {
+	client := fake.NewSimpleClientset(
+		makeNode("worker-a", "10.0.0.10"),
+		makeNode("worker-b", "10.0.0.11"),
+		// node with NO InternalIP — only in nameSet, not in ipToName.
+		// Azure VMSS-style names sometimes don't expose InternalIP if
+		// the node-exporter is host-network on a different interface;
+		// IsKnownNode must still match against .metadata.name.
+		&corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "aks-nodepool1-XXX-vmss000000"}},
+	)
+	idx := NewK8sNodeIndex(client, 0)
+	_ = idx.Refresh(context.Background())
+
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"worker-a", true},
+		{"worker-b", true},
+		{"aks-nodepool1-XXX-vmss000000", true},
+		{"not-a-node", false},
+		{"", false},
+		{"10.0.0.10", false}, // IPs are not names
+	}
+	for _, tc := range cases {
+		if got := idx.IsKnownNode(tc.name); got != tc.want {
+			t.Errorf("IsKnownNode(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestK8sNodeIndex_IsKnownNodeRefreshReplacesSet(t *testing.T) {
+	// A node removed from the cluster must disappear from IsKnownNode
+	// on next Refresh — symmetric to the ipToName invalidation.
+	client := fake.NewSimpleClientset(
+		makeNode("worker-a", "10.0.0.10"),
+		makeNode("worker-b", "10.0.0.11"),
+	)
+	idx := NewK8sNodeIndex(client, 0)
+	_ = idx.Refresh(context.Background())
+
+	if err := client.CoreV1().Nodes().Delete(context.Background(), "worker-b", metav1.DeleteOptions{}); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	_ = idx.Refresh(context.Background())
+
+	if idx.IsKnownNode("worker-b") {
+		t.Error("worker-b should be gone from IsKnownNode after refresh")
+	}
+	if !idx.IsKnownNode("worker-a") {
+		t.Error("worker-a should still be present")
+	}
+}
+
 func TestStripPort(t *testing.T) {
 	cases := []struct {
 		in, want string
