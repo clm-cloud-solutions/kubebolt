@@ -469,11 +469,13 @@ kubectl -n kubebolt logs -l kubebolt.dev/role=promread --tail=30
 #       Switch the matcher to explicit metric names.
 
 # 4. Round-trip to backend: the agent has registered.
-#    (admin token from Prerequisite C2; replace with your backend host.)
-curl -sH "Authorization: Bearer <your-admin-token>" \
-  https://<your-kubebolt-host>/api/v1/agents | jq '.[] | select(.cluster_id) | {cluster_id, capabilities}'
-# Expected: one entry with cluster_id=<your-cluster.name>,
-#           capabilities including "prom-read".
+kubectl -n kubebolt logs -l kubebolt.dev/role=promread --tail=50 \
+  | grep -E "cluster identity|channel registered"
+# Expected:
+#   INFO msg="cluster identity" cluster_id=<uuid> cluster_name=<your cluster.name>
+#   INFO msg="channel registered" agent_id=<id> cluster_id=<uuid>
+# Absence of "channel registered" means the backend rejected the
+# handshake — check the ingest-token Secret + auth.mode.
 ```
 
 In the KubeBolt UI, the **Prometheus (read)** card under
