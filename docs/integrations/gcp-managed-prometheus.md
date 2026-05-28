@@ -435,6 +435,15 @@ helm upgrade --install kubebolt-agent \
 > `agent.promRead.matchers`, keep them as explicit name lists for
 > GMP compatibility.
 
+> **Do NOT set `agent.deferNodeStress=true` on GMP.** GMP managed
+> collection does NOT scrape node-exporter — the agent's Mode A
+> NodeStress collector (loadavg + PSI from `/proc/loadavg` directly)
+> is the **only** source of `node_load1/5/15` and
+> `node_pressure_*_waiting_seconds_total` on GKE. Disabling it
+> leaves the UI's Load average panel empty. (This flag IS required
+> on Azure Managed Prometheus, where `ama-metrics` always scrapes
+> node-exporter — but the inverse on GMP.)
+
 `cluster.name` is operator-chosen and shows up in the UI's cluster
 selector. The chart also accepts `cluster.id` if you want to pin it;
 when omitted, the agent derives it from the kube-system namespace

@@ -424,6 +424,19 @@ helm upgrade --install kubebolt-agent \
 > on GMP — but **keep them surgical** to avoid query-cost blow-ups
 > (see [Cost notes](#cost-notes)).
 
+> **If your `remote_write` source pushes node-exporter metrics, set
+> `agent.deferNodeStress=true`.** AMP is sink-only — it holds
+> whatever your source pushes. If that source is
+> `kube-prometheus-stack` (or equivalent) and ships
+> `node_load1/5/15`, Mode C will pull those AND Mode A's NodeStress
+> collector will emit the same metric family from `/proc/loadavg`
+> directly. The UI's Load average panel then renders 6 lines
+> instead of 3. Append `--set agent.deferNodeStress=true` to the
+> helm install. If your source does NOT push node-exporter (e.g.
+> Prometheus-Operator without the node-exporter chart), leave the
+> flag at its `false` default so NodeStress remains the loadavg
+> source.
+
 `cluster.name` is operator-chosen and shows up in the UI's cluster
 selector. The chart also accepts `cluster.id` if you want to pin it;
 when omitted, the agent derives it from the kube-system namespace
