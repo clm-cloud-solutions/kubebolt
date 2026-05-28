@@ -9,6 +9,68 @@ each tag.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Mode C — `internal/promread/`** — agent-side collector that polls the
+  customer's existing Prometheus via `/api/v1/query_range` and forwards
+  the converted samples through the same AgentChannel as Mode A. Closes
+  the 1.13 cycle's "Universal Data Plane Mode C" Phase 6 design: lets
+  customers on AMP / Azure Monitor managed Prom / GMP (where Prom is
+  query-only and `remote_write` outbound isn't an option), or whose
+  change-management process forbids editing their Prom config, run
+  KubeBolt without losing visibility.
+- **Three S1 auth providers**: `none`, `basicAuth`, `bearer`. Managed-
+  cloud providers (`awsSigV4`, `azureWorkloadIdentity`, `gcpIam`) ship
+  in S2 of the 1.13 cycle.
+- **K8sNodeIndex** (`internal/promread/nodes.go`) — maps node `InternalIP`
+  → node name on a 5min refresh ticker. Used by Convert to stamp
+  `node=<k8s-node-name>` on samples whose `__name__` starts with
+  `node_`, so the UI's Node Monitor panels (which filter by `node`)
+  populate correctly. Adds a `nodes` (list) verb to the metrics-tier
+  ClusterRole.
+- **Lease-elected single-writer** (`internal/promread/leader.go`,
+  Lease name `kubebolt-promread`) — guarantees only one pod polls the
+  customer's Prom at a time even if the Deployment is scaled past
+  `replicas=1`. Mirrors `internal/flows/`'s pattern; separate Lease
+  name so flows + promread elect independently.
+- **`KUBEBOLT_AGENT_MODE`** env var — gates which collector pipelines
+  run inside this pod. `daemonset` skips promread; `promread` skips
+  kubelet collectors + Hubble; unset/`both` runs everything (legacy
+  single-pod dev). The chart sets this explicitly on each template.
+- **`KUBEBOLT_AGENT_PROMREAD_*` env vars**: `ENABLED`, `URL`,
+  `AUTH_MODE`, `BASIC_AUTH_USERNAME`, `BASIC_AUTH_PASSWORD`,
+  `BEARER_TOKEN`, `POLL_INTERVAL`, `STEP`, `LOOKBACK`, `MATCHERS`
+  (newline-separated). Matchers default to a surgical set fetching
+  ONLY what Mode A doesn't synthesize (`kube_.*`, `node_load.*|node_pressure_.*`,
+  `node_disk_.*|node_network_.*_errs_.*`, `up|process_.*`).
+- **`kubebolt_promread_leader` gauge** — emitted by every promread
+  pod (value 1 when leading, 0 when standby) so dashboards see who
+  holds the Lease without needing to consult the K8s API.
+
+### Changed
+
+- **Default `--buffer` flag value** bumped 10,000 → 50,000. Defence
+  in depth against bursty ingest; the per-matcher push pattern in
+  promread keeps any single Push call under ~10k regardless.
+- **Topology** — the agent is no longer a single DaemonSet. When
+  `agent.promRead.enabled=true`, the chart renders a second workload:
+  a `Deployment` (`replicas=1`, `kubebolt.dev/role=promread`) that
+  runs the promread reader in isolation. The DaemonSet keeps doing
+  Mode A on every node. The two pods don't share a buffer.
+
+### Fixed
+
+- Multi-node clusters running promread in the original DaemonSet
+  topology silently dropped the leader pod's kubelet samples. The
+  leader pod's shared ring buffer overflowed at ~30k samples/min
+  because it carried 6× the workload of follower pods (Mode A locally
+  + promread cluster-wide). Symptom: missing rows in the Filesystem
+  per-node chart for whichever node was the current leader. Resolved
+  by the topology split + per-matcher push + buffer bump described
+  above.
+
 ## [1.0.0] — 2026-05-09
 
 **Breaking release.** Aligns every metric and label the agent emits

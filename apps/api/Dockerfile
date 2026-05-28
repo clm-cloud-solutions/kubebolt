@@ -38,7 +38,20 @@ RUN cd apps/api && \
     go build -o /kubebolt-api ./cmd/server
 
 FROM alpine:3.21
-RUN apk upgrade --no-cache && apk add --no-cache ca-certificates aws-cli
+# ca-certificates is required for outbound TLS — the Copilot dialer
+# hits Anthropic/OpenAI HTTPS endpoints, and the metrics-storage
+# external-URL path may dial managed VM endpoints over TLS. NO
+# aws-cli: the api binary has zero AWS code paths (no aws-sdk-go
+# import, no exec.Command("aws", ...)) — the package was a leftover
+# from the initial Dockerfile template (commit 3ae4516, 2026-03-23)
+# that pulled in Python + cryptography + urllib3 + pip as transitive
+# deps, carrying ~30MB and ~12 CVEs for zero functional benefit.
+# Session 11-A 2026-05-27 found the AR scan flagged all 12 against
+# those Python packages exclusively; removal drops them all in one
+# stroke. If a future api code path genuinely needs to shell out to
+# aws, add the dep back behind a build tag — don't reinstate the
+# blanket install.
+RUN apk upgrade --no-cache && apk add --no-cache ca-certificates
 RUN mkdir -p /data
 COPY --from=builder /kubebolt-api /usr/local/bin/kubebolt-api
 VOLUME ["/data"]

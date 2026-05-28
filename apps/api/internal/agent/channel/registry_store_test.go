@@ -23,7 +23,7 @@ func TestRegistry_PersistOnRegister(t *testing.T) {
 		DisplayName:  "kind-test (via agent)",
 		AgentVersion: "0.2.0",
 	})
-	a := NewAgent("c1", "agent-1", "node-a", &auth.AgentIdentity{TenantID: "t1", Mode: auth.ModeIngestToken}, nil)
+	a := NewAgent("c1", "agent-1", "node-a", &auth.AgentIdentity{TenantID: "t1", Mode: auth.ModeIngestToken}, nil, nil)
 	r.Register(a)
 
 	recs, err := store.List()
@@ -68,7 +68,7 @@ func TestRegistry_MarkDisconnectedOnUnregister(t *testing.T) {
 	r := NewAgentRegistry()
 	r.SetStore(store)
 
-	a := NewAgent("c1", "agent-1", "node-a", nil, nil)
+	a := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
 	r.Register(a)
 	r.Unregister(a)
 
@@ -96,9 +96,9 @@ func TestRegistry_StaleUnregisterDoesNotMarkDisconnected(t *testing.T) {
 	r := NewAgentRegistry()
 	r.SetStore(store)
 
-	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil)
+	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
 	r.Register(a1)
-	a2 := NewAgent("c1", "agent-1", "node-a", nil, nil) // same key, new pointer
+	a2 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil) // same key, new pointer
 	r.Register(a2)
 
 	// Stale Unregister of a1 (e.g. its handler exiting after a2's
@@ -245,11 +245,11 @@ func TestRegistry_SetStoreNil(t *testing.T) {
 	r := NewAgentRegistry()
 	r.SetStore(store)
 
-	a := NewAgent("c1", "agent-1", "node-a", nil, nil)
+	a := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
 	r.Register(a)
 
 	r.SetStore(nil)
-	a2 := NewAgent("c2", "agent-2", "node-b", nil, nil)
+	a2 := NewAgent("c2", "agent-2", "node-b", nil, nil, nil)
 	r.Register(a2)
 	r.Unregister(a)
 

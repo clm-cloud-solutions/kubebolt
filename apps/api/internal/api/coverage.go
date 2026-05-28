@@ -50,8 +50,14 @@ type CoverageResponse struct {
 //     Distinct from KubeBolt's node_cpu_usage_seconds_total which
 //     is the agent-derived metric; if both are present, both
 //     sources are active and we just show both.
-//   - kube-state-metrics: kube_pod_info exists for every pod KSM
-//     observes. Earliest signal that KSM is being scraped.
+//   - kube-state-metrics: kube_pod_status_phase is core KSM (every
+//     pod KSM observes has at least one phase series) AND it's part
+//     of the curated KSM subset that managed providers ship —
+//     GKE's GMP, AMP, Azure Managed Prometheus all include it. The
+//     previously-used kube_pod_info is more series-rich but NOT in
+//     GMP's curated subset, so the chip would falsely stay inactive
+//     on GKE clusters with Mode C reading from GMP. Discovered in
+//     session 11-A re-validation 2026-05-27.
 //   - hubble: pod_flow_events_total carries the source="hubble"
 //     label that distinguishes it from any other future flow source.
 var coverageProbes = []struct {
@@ -67,8 +73,35 @@ var coverageProbes = []struct {
 		query: `count(node_cpu_seconds_total)`,
 	},
 	{
+		name:  "kubebolt-node-stress",
+		// Probes the Mode A NodeStress collector (Fix #10 session 11-A
+		// v3). Emits node_load{1,5,15} + node_pressure_*_waiting_seconds_total
+		// from /proc/loadavg + /proc/pressure/* directly. Distinct chip
+		// from node-exporter because:
+		//   - node-exporter chip honestly reports "is there a real
+		//     node-exporter source scraped into this VM?"
+		//   - kubebolt-node-stress chip reports "is the agent's
+		//     in-process /proc reader active?"
+		// Both can light up simultaneously when an operator runs both
+		// (e.g. kube-prom-stack node-exporter + Mode A); they cover
+		// different concerns.
+		//
+		// The `source="kubebolt-agent"` filter is critical: NodeStress
+		// emits standard node-exporter metric names (so UI panels
+		// like Node Monitor "Load average" find data regardless of
+		// origin). Without the label filter, this probe would match
+		// node-exporter's `node_load1` and falsely light up on every
+		// cluster running kube-prom-stack — even if Fix #10 isn't
+		// deployed there. NodeStress.nodeLabels() stamps the source
+		// label specifically to make this discriminator honest.
+		// Discovered session 11-A v3 — first version of the probe was
+		// just `count(node_load1)` and lit up wrongly on the
+		// operator's local kind cluster.
+		query: `count(node_load1{source="kubebolt-agent"})`,
+	},
+	{
 		name:  "kube-state-metrics",
-		query: `count(kube_pod_info)`,
+		query: `count(kube_pod_status_phase)`,
 	},
 	{
 		name:  "hubble",

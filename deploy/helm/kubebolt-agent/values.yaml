@@ -54,32 +54,38 @@ cluster:
 
 # ─── Hubble flow collector ─────────────────────────────────
 hubble:
-  # Kill-switch. Set to false to disable flow collection without
-  # uninstalling the chart. Default true.
+  # OPT-IN flag for the Hubble flow collector. Default false (1.13+).
   #
-  # IMPORTANT — set this explicitly to `false` on clusters that do
-  # NOT run Cilium (e.g. EKS with AWS VPC CNI, GKE without managed
-  # Dataplane V2, AKS with kubenet). Leaving it `true` makes the
-  # agent dial `hubble-relay.kube-system.svc.cluster.local:80`
-  # forever; DNS returns NXDOMAIN and the agent emits one WARN per
-  # node per ~minute indefinitely:
+  # Set to true ONLY if your cluster runs Cilium with Hubble relay
+  # exposed. When false (default), the agent skips Hubble entirely
+  # and the Reliability dashboard's L7 HTTP / Network Drops panels
+  # auto-hide when no flow samples reach VictoriaMetrics — zero
+  # user-visible loss.
+  #
+  # Why the default is OFF (changed in 1.13 — was on in 1.12.x):
+  # the vast majority of K8s clusters do NOT run Cilium (EKS with
+  # AWS VPC CNI, GKE Standard, AKS with kubenet, vanilla kubeadm).
+  # Pre-1.13 the agent on those clusters would dial
+  # `hubble-relay.kube-system.svc.cluster.local:80` forever; DNS
+  # returns NXDOMAIN and the agent emits one WARN per node per
+  # ~minute indefinitely:
   #
   #   WARN  hubble: stream ended, will retry  relay=hubble-relay...
   #     error="rpc error: code = Unavailable desc = name resolver
   #     error: produced zero addresses"  backoff=1m0s
   #
-  # The Reliability dashboard (L7 HTTP / Network Drops) is hidden
-  # automatically when no Hubble samples reach VictoriaMetrics, so
-  # disabling here loses NO user-visible feature on those clusters
-  # — only the noise.
-  #
-  # Quick check whether Cilium is present:
+  # Quick check whether Cilium is present in your cluster:
   #   kubectl -n kube-system get pods -l k8s-app=cilium
   #
-  # When Cilium IS present (or later gets installed), leave true.
-  # If you disable now and add Cilium later:
-  #   helm upgrade --reuse-values --set hubble.enabled=true
-  enabled: true
+  # If you ARE on Cilium and want flow visibility, enable explicitly:
+  #   helm upgrade --reuse-values --set hubble.enabled=true ...
+  #
+  # MIGRATION FROM 1.12.x: Cilium users upgrading from 1.12.x will
+  # lose Hubble flow collection silently UNLESS they pass
+  # `--set hubble.enabled=true` during the upgrade. Pre-1.13 the
+  # default was on. See [release notes](docs/RELEASE-NOTES-1.13.0.md)
+  # for the explicit migration command.
+  enabled: false
   relay:
     # Override the relay address. Empty = use the agent default
     # (hubble-relay.kube-system.svc.cluster.local:80).
@@ -163,6 +169,176 @@ hubble:
 # Prometheus is the canonical node-exporter scraper.
 agent:
   deferNodeNetwork: false
+
+  # deferNodeStress=true disables the in-agent NodeStress collector
+  # (load averages + PSI from /proc). Use when a separate
+  # node-exporter source (kube-prom-stack vmagent scrape, PodMonitoring
+  # CR on managed Prom, etc.) is already shipping
+  # `node_load{1,5,15}` and `node_pressure_*_waiting_seconds_total` —
+  # without this flag, the agent's emission would pile a duplicate
+  # series alongside node-exporter's with overlapping labels, and the
+  # UI Node Monitor panels would render two lines per metric. Same
+  # dedup pattern as deferNodeNetwork.
+  #
+  # Default false because the GMP-on-GKE case (the path we exposed
+  # in session 11-A v2) has NO node-exporter scraped by the managed
+  # Prom out of the box, and the Node Monitor "Load average" /
+  # "PSI pressure (waiting)" panels stay empty without our emission.
+  # Operators on kube-prom-stack should set this to true.
+  deferNodeStress: false
+
+  # Mode C — agent reads from the customer's existing Prometheus via
+  # /api/v1/query_range instead of running a scrape sidecar. 1.13's
+  # flagship; see internal/roadmap-1.13.md § Sprint 1 for design.
+  #
+  # MUTUALLY EXCLUSIVE with `scrape.enabled=true`. The chart hard-fails
+  # at `helm template` if both are on — a single agent must have one
+  # canonical source of samples, never two. The check lives in
+  # _helpers.tpl § kubebolt-agent.validatePromRead and is included
+  # near the top of this DaemonSet template.
+  #
+  # Air-gapped + on-prem use cases stay on `scrape.enabled=true` (the
+  # bundled vmagent sidecar). Mode C is for customers running managed
+  # Prometheus (AMP / Azure Monitor / GMP — S2) or self-managed Prom
+  # whose config they can't edit to add a remote_write block.
+  promRead:
+    enabled: false
+    # Customer Prom endpoint, e.g. "http://prometheus.monitoring:9090".
+    # No trailing slash needed — the client appends /api/v1/query_range.
+    url: ""
+
+    auth:
+      # Supported modes (verified end-to-end in pre-flight sessions
+      # 08/09/10, 2026-05-26 / 27):
+      #
+      #   none                    — anonymous (self-managed Prom with
+      #                             no auth in front)
+      #   basicAuth               — HTTP Basic; requires
+      #                             basicAuthUsername + basicAuthPassword
+      #   bearer                  — static bearer token; requires bearerToken
+      #   gcpIam                  — GMP managed; ambient via Workload
+      #                             Identity (pod KSA annotated with
+      #                             iam.gke.io/gcp-service-account=...)
+      #   azureWorkloadIdentity   — Azure Monitor managed; ambient via
+      #                             Workload Identity (pod label
+      #                             azure.workload.identity/use=true +
+      #                             KSA annotated with
+      #                             azure.workload.identity/client-id=...)
+      #   awsSigV4                — AWS AMP; ambient via IRSA (pod KSA
+      #                             annotated with
+      #                             eks.amazonaws.com/role-arn=...) +
+      #                             requires awsRegion below
+      mode: none
+      basicAuthUsername: ""
+      # WARNING — plain values.yaml is fine for kind smoke tests but
+      # NOT for production credentials. For Secret-backed credentials,
+      # leave these empty and inject the env vars via the chart's
+      # `extraEnv` escape hatch with a valueFrom.secretKeyRef block.
+      basicAuthPassword: ""
+      bearerToken: ""
+      # Required when mode=awsSigV4. AMP endpoints are region-scoped
+      # (https://aps-workspaces.<region>.amazonaws.com/...) and SigV4
+      # signs against the region; mismatch produces 403 InvalidSignature.
+      # Ignored for other modes.
+      awsRegion: ""
+
+    # Cadence the agent fires query_range at. Lower values increase
+    # query load on the customer's Prom — 30s mirrors the load
+    # profile of one extra Grafana client.
+    pollInterval: 30s
+    # query_range `step` parameter (resolution of the returned
+    # matrix). Align to the customer's scrape_interval to avoid
+    # sub-sample interpolation.
+    step: 30s
+    # How far back each query_range window extends from "now".
+    # Should be ≥ pollInterval + small slack so consecutive polls
+    # overlap and gap-recover from transient Prom failures.
+    lookback: 60s
+
+    # Selectivity — what to pull from the customer's Prom.
+    #
+    # Mode A (the DaemonSet pods' kubelet collectors) ALREADY produces
+    # the KubeBolt-named metrics the UI's curated panels consume
+    # (node_fs_used_bytes, node_memory_working_set_bytes, container_*,
+    # pod_*). The defaults here are SURGICAL — they fetch only what
+    # Mode A doesn't generate, avoiding the double-storage cost of
+    # shipping raw Prom names that duplicate Mode A's data.
+    #
+    # Why explicit metric names (no `{__name__=~"regex"}` patterns):
+    # Google Managed Prometheus rejects `=~` on the `__name__` label
+    # with HTTP 400 (Cortex/Monarch query-engine limitation; routes
+    # queries on exact name match only). Explicit names are
+    # universally portable across GMP / AMP / Azure AMW / self-managed
+    # Prom, and over-listing is safe — missing metrics return empty
+    # matrices, not errors.
+    #
+    # Default coverage:
+    #   - kube_pod_*, kube_deployment_*, kube_statefulset_*,
+    #     kube_daemonset_*, kube_node_*   KSM core
+    #   - node_load{1,5,15}              load average
+    #   - node_pressure_*_waiting_*      PSI — kernel stress signal
+    #   - node_disk_*                    disk I/O detail
+    #   - node_network_*_errs_total      network errors
+    #   - up, process_*                  target health + process self-metrics
+    #
+    # Keep this list and the Go constant DefaultMatchers in
+    # packages/agent/internal/promread/config_env.go in lockstep.
+    # Operators add app-custom metrics or wider node-exporter surface
+    # by appending; an empty list (or omitting the key entirely) falls
+    # back to the same defaults.
+    matchers:
+      # KSM core — workload inventory + status.
+      - kube_pod_info
+      - kube_pod_status_phase
+      - kube_pod_status_ready
+      - kube_pod_container_status_waiting_reason
+      - kube_pod_container_status_terminated_reason
+      - kube_pod_container_resource_requests
+      - kube_pod_container_resource_limits
+      - kube_deployment_status_replicas
+      - kube_deployment_status_replicas_available
+      - kube_deployment_status_replicas_unavailable
+      - kube_statefulset_status_replicas
+      - kube_statefulset_status_replicas_ready
+      - kube_daemonset_status_number_ready
+      - kube_daemonset_status_desired_number_scheduled
+      - kube_node_info
+      - kube_node_status_capacity
+      - kube_node_status_allocatable
+      - kube_node_status_condition
+      # node-exporter — load + PSI + disk + network errs.
+      - node_load1
+      - node_load5
+      - node_load15
+      - node_pressure_cpu_waiting_seconds_total
+      - node_pressure_io_waiting_seconds_total
+      - node_pressure_memory_waiting_seconds_total
+      - node_disk_read_bytes_total
+      - node_disk_written_bytes_total
+      - node_disk_io_time_seconds_total
+      - node_network_receive_errs_total
+      - node_network_transmit_errs_total
+      # target health + self-metrics.
+      - up
+      - process_resident_memory_bytes
+      - process_cpu_seconds_total
+
+    # Deployment-pod–specific values for the promread workload. The
+    # promread Deployment is single-replica (Lease-elected),
+    # scheduled by k8s default unless nodeSelector/affinity narrow
+    # it. Resources are lighter than the DaemonSet's because
+    # promread doesn't run kubelet collectors locally.
+    deployment:
+      resources:
+        requests:
+          cpu: 50m
+          memory: 64Mi
+        limits:
+          cpu: 1000m
+          memory: 256Mi
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
 
 # Default off — Phase 2 is opt-in until the receiver path is
 # blinded with auth in Phase 3.

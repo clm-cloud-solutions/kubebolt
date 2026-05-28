@@ -25,6 +25,13 @@ rules:
   - apiGroups: [""]
     resources: ["namespaces"]
     verbs: ["get"]
+  # Mode C — promread's K8sNodeIndex lists Node objects on a 5min
+  # ticker to build the InternalIP → node-name map. Required so the
+  # `node=` label can be stamped on node_* series for UI parity with
+  # Mode A. List-only (no watch) because the map changes slowly.
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["list"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

@@ -105,14 +105,36 @@ func (c *VMProbeClient) CountQuery(ctx context.Context, promql string) (int, err
 
 // PromSamplesForCluster is the shape main.go wires into the
 // Prometheus provider's promSampleProbe. Confirms VM holds at least
-// one series of `up` tagged with the given cluster_id — i.e. a
-// Prometheus scraper has been emitting samples for that cluster.
+// one series of `prometheus_build_info` tagged with the given
+// cluster_id — i.e. a Prometheus has been remote_write-ing samples
+// for that cluster.
 //
-// Why `up` specifically: it's the canonical per-scrape-target gauge
-// that every healthy Prom emits, and the kubebolt-agent gRPC channel
-// does NOT emit it (the agent ships cAdvisor / kubelet / Hubble, not
-// scrape-up). So presence of `up{cluster_id="<X>"}` cleanly attributes
-// to "Prometheus shipping for cluster X" rather than the agent.
+// Why `prometheus_build_info` specifically: it's the Prom self-metric
+// every Prometheus instance emits (gauge always = 1, labeled with
+// version, revision, branch, goversion). Critically:
+//
+//   - Mode A (kubebolt-agent DaemonSet) does NOT emit it — the agent
+//     ships cAdvisor / kubelet / Hubble, not Prom self-metrics.
+//   - Mode C (kubebolt-agent promread Deployment) does NOT pull it
+//     either — the chart's default matchers are surgical and don't
+//     include `prometheus_build_info`. An operator overriding
+//     matchers to a very broad regex MIGHT pull it; that's an
+//     operator-opt-in trade-off, not a default false-positive.
+//
+// So presence of `prometheus_build_info{cluster_id="<X>"}` cleanly
+// attributes to "an actual Prometheus instance has remote_write-pushed
+// samples for cluster X" — which is what the Prometheus (push)
+// integration card is meant to detect.
+//
+// History (session 11-A 2026-05-27): this used to query `up`, which
+// worked when Mode A was the only agent topology (Mode A doesn't ship
+// `up`). When Mode C landed in 1.13 with default matchers that
+// include `up` (so the operator's UI panels can see scrape health
+// across the customer's Prom targets), `up` started appearing in VM
+// from the agent rather than from a real Prom — and the Prom (push)
+// card falsely lit up as "Streaming" on every cluster running Mode C
+// with the default matchers. `prometheus_build_info` doesn't have
+// this collision because it's not in any chart default.
 func (c *VMProbeClient) PromSamplesForCluster(ctx context.Context, clusterID string) (bool, error) {
 	if clusterID == "" {
 		// Without a cluster UID we can't form a safe query — the
@@ -121,7 +143,69 @@ func (c *VMProbeClient) PromSamplesForCluster(ctx context.Context, clusterID str
 		// Return "confirmed" so the legacy behavior keeps working.
 		return true, nil
 	}
-	q := fmt.Sprintf(`count(up{cluster_id=%q})`, clusterID)
+	q := fmt.Sprintf(`count(prometheus_build_info{cluster_id=%q})`, clusterID)
+	n, err := c.CountQuery(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// AgentSamplesForCluster is the shape main.go wires into the Agent
+// integration's samplesProbe. Confirms VM holds at least one
+// `kubebolt_agent_info` series tagged with the given cluster_id —
+// i.e. the kubebolt-agent installed in that cluster is actually
+// streaming to THIS backend.
+//
+// Why `kubebolt_agent_info`: it's the canonical "I am here and alive"
+// gauge that the agent's self-collector emits every cycle (stamped
+// with cluster_id from the agent's resolved kube-system UID + tenant
+// info). Presence of this series for cluster X means "the agent in
+// cluster X is shipping to this VM". Absence means "no agent samples
+// for that cluster are arriving here, even if the operator's
+// kubeconfig sees the agent's DaemonSet in that cluster" — the agent
+// is configured to ship elsewhere (different backend).
+//
+// Discovered session 11-A v3 — see
+// project_agent_cross_backend_false_positive for the operator-facing
+// symptom this probe addresses.
+func (c *VMProbeClient) AgentSamplesForCluster(ctx context.Context, clusterID string) (bool, error) {
+	if clusterID == "" {
+		// Without a cluster UID we can't form a safe scoped query.
+		// Caller treats nil/zero as "skipped" — keep legacy behavior.
+		return true, nil
+	}
+	q := fmt.Sprintf(`count(kubebolt_agent_info{cluster_id=%q})`, clusterID)
+	n, err := c.CountQuery(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+// PromreadActiveForCluster is the shape main.go wires into the
+// Prometheus (read) provider. Confirms that at least one
+// kubebolt-agent promread pod currently holds the kubebolt-promread
+// Lease for the given cluster_id — i.e. Mode C is wired and the
+// leader is actively polling the customer's Prom.
+//
+// Signal: `count(kubebolt_promread_leader{cluster_id="<X>"} == 1)`.
+// The gauge is emitted continuously by every promread pod (0 for
+// followers, 1 for the leader). Steady-state should always be 1;
+// transient 0 during pod restarts / lease handover; >1 only during
+// the brief split-brain window the Lease itself closes within
+// LeaseDuration. So "> 0" is the right "active" predicate.
+//
+// Cluster-scoping is hard-required: without it, every cluster's card
+// would light up the moment ANY cluster onboarded Mode C — the gauge
+// stream is global. cluster_id == "" returns (false, nil) so the
+// provider can branch on Unknown rather than the operator being told
+// it's installed when no UID exists to verify.
+func (c *VMProbeClient) PromreadActiveForCluster(ctx context.Context, clusterID string) (bool, error) {
+	if clusterID == "" {
+		return false, nil
+	}
+	q := fmt.Sprintf(`count(kubebolt_promread_leader{cluster_id=%q} == 1)`, clusterID)
 	n, err := c.CountQuery(ctx, q)
 	if err != nil {
 		return false, err

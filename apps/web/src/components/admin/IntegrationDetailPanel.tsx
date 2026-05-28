@@ -273,6 +273,16 @@ export function IntegrationDetailPanel({ integration: initial, isAdmin, onClose 
             <PrometheusSetupSnippet />
           )}
 
+          {/* Prometheus (read) — Mode C setup helper. Mirrors the
+              PrometheusSetupSnippet pattern but generates a `helm
+              upgrade --install` command instead of a prometheus.yml
+              fragment, because Mode C is provisioned cluster-side
+              (the agent reads), not source-side. Same tied-to-id
+              rationale as the write path. */}
+          {integration.id === 'prometheus-read' && (
+            <PrometheusReadSetupSnippet />
+          )}
+
           {/* Configure — only for managed installs. Externally
               managed installs keep their config in the source tool
               (Helm values, raw manifest) so editing from here would
@@ -662,6 +672,245 @@ remote_write:
         Switch clusters in the topbar to get a snippet pre-filled
         for a different cluster. One Prometheus per cluster is the
         supported topology.
+      </p>
+    </div>
+  )
+}
+
+// ── Prometheus (read) — Mode C setup helper ─────────────────────────
+//
+// Mode C lets the agent READ from a customer-managed Prometheus
+// (AMP, Azure Managed Prometheus, GMP, or any self-managed Prom
+// where remote_write is off-limits). Provisioning lives entirely in
+// the kubebolt-agent helm chart — the backend has no install
+// endpoint for this path because the auth credentials are ambient
+// (IRSA / Workload Identity / OIDC) and live in the customer's
+// cloud IAM, which KubeBolt's control plane cannot mutate.
+//
+// This panel generates the exact `helm upgrade --install` command
+// the operator runs to enable it. The 6 auth modes come from
+// values.yaml's allow-list (validatePromRead in _helpers.tpl):
+// none / basicAuth / bearer / awsSigV4 / gcpIam / azureWorkloadIdentity.
+// Each mode renders a different snippet shape — only awsSigV4 needs
+// a region flag because SigV4 signs against the AMP region; the
+// other ambient-auth modes (gcpIam, azureWorkloadIdentity) need no
+// flag at all because the SDKs auto-discover the credential source
+// from in-cluster metadata / WI env vars.
+
+type PromReadAuthMode =
+  | 'none'
+  | 'basicAuth'
+  | 'bearer'
+  | 'awsSigV4'
+  | 'gcpIam'
+  | 'azureWorkloadIdentity'
+
+// Per-mode metadata. urlExample feeds the URL input's placeholder
+// so the operator sees the exact shape their selected provider
+// uses — picking awsSigV4 then seeing a `monitoring.googleapis.com`
+// placeholder would be actively confusing.
+const PROM_READ_AUTH_OPTIONS: Array<{
+  value: PromReadAuthMode
+  label: string
+  hint: string
+  urlExample: string
+}> = [
+  {
+    value: 'none',
+    label: 'None',
+    hint: 'Direct HTTP to an unauthenticated Prom (local dev, in-cluster Prom without auth).',
+    urlExample: 'http://prometheus-server.monitoring.svc.cluster.local:9090',
+  },
+  {
+    value: 'basicAuth',
+    label: 'Basic auth',
+    hint: 'Username + password. Use --set for the username and an extraEnv secretKeyRef for the password in production.',
+    urlExample: 'https://prometheus.example.com',
+  },
+  {
+    value: 'bearer',
+    label: 'Bearer token',
+    hint: 'Static bearer token. Use extraEnv with valueFrom.secretKeyRef for production — never paste tokens into --set.',
+    urlExample: 'https://prometheus.example.com',
+  },
+  {
+    value: 'awsSigV4',
+    label: 'AWS SigV4 (AMP)',
+    hint: 'AWS Managed Prometheus. Requires IRSA on the agent ServiceAccount — annotate it with eks.amazonaws.com/role-arn pointing at a role with AmazonPrometheusQueryAccess. SigV4 region must match the AMP workspace.',
+    urlExample: 'https://aps-workspaces.us-east-1.amazonaws.com/workspaces/ws-abc123',
+  },
+  {
+    value: 'gcpIam',
+    label: 'GCP IAM (GMP)',
+    hint: 'Google Managed Prometheus. Requires Workload Identity on the agent KSA — bind it to a GSA with roles/monitoring.viewer. No flags needed beyond the URL.',
+    urlExample: 'https://monitoring.googleapis.com/v1/projects/<PROJECT_ID>/location/global/prometheus',
+  },
+  {
+    value: 'azureWorkloadIdentity',
+    label: 'Azure Workload Identity (Azure Managed Prom)',
+    hint: 'Azure Managed Prometheus. Requires Azure WI on the agent pod — UAMI + federated credential + azure.workload.identity/use=true pod label. No flags needed beyond the URL.',
+    urlExample: 'https://<workspace>.<region>.prometheus.monitor.azure.com',
+  },
+]
+
+function PrometheusReadSetupSnippet() {
+  const { data: overview } = useClusterOverview()
+  const [authMode, setAuthMode] = useState<PromReadAuthMode>('awsSigV4')
+  const [promURL, setPromURL] = useState('')
+  const [awsRegion, setAwsRegion] = useState('us-east-1')
+  const [copied, setCopied] = useState(false)
+
+  // Cluster name + ID feed --set cluster.* so the agent's samples
+  // get stamped consistently with everything else KubeBolt knows
+  // about this cluster. cluster.id is optional in the chart (agent
+  // computes it from kube-system if absent), but pinning it here
+  // eliminates a race during first boot where the gauge could ship
+  // before the connector reports the UID. Cluster_id stamping is
+  // what makes the Detect() probe in this file's backend twin work,
+  // so the snippet should always include it.
+  const clusterName = overview?.clusterName ?? '<your-cluster-name>'
+  const clusterUID = overview?.clusterUID ?? '<cluster-uid>'
+
+  const activeOption = PROM_READ_AUTH_OPTIONS.find((o) => o.value === authMode)
+  const activeHint = activeOption?.hint ?? ''
+  const activeUrlExample = activeOption?.urlExample ?? '<https://your-prom.example.com>'
+
+  // Per-mode --set lines. Kept declarative so adding a 7th mode
+  // (e.g. mTLS) only touches the table — no nested branching.
+  const authLines = (() => {
+    switch (authMode) {
+      case 'basicAuth':
+        return [
+          `  --set agent.promRead.auth.basicAuthUsername=<USER> \\`,
+          `  --set agent.promRead.auth.basicAuthPassword=<PASS> \\`,
+        ]
+      case 'bearer':
+        return [
+          `  --set agent.promRead.auth.bearerToken=<TOKEN> \\`,
+        ]
+      case 'awsSigV4':
+        return [
+          `  --set agent.promRead.auth.awsRegion=${awsRegion} \\`,
+        ]
+      case 'gcpIam':
+      case 'azureWorkloadIdentity':
+      case 'none':
+      default:
+        return []
+    }
+  })()
+
+  const snippet = [
+    `helm upgrade --install kubebolt-agent \\`,
+    `  oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\`,
+    `  -n kubebolt --create-namespace \\`,
+    `  --set backendUrl=<your-kubebolt-host:443> \\`,
+    `  --set cluster.name=${clusterName} \\`,
+    `  --set cluster.id=${clusterUID} \\`,
+    `  --set scrape.enabled=false \\`,
+    `  --set agent.promRead.enabled=true \\`,
+    `  --set agent.promRead.url=${promURL || activeUrlExample} \\`,
+    `  --set agent.promRead.auth.mode=${authMode}${authLines.length ? ' \\' : ''}`,
+    ...authLines,
+  ].join('\n').replace(/\\\n$/, '')
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(snippet)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch {
+      // Clipboard API can fail in non-https / strict-permissions
+      // contexts. Stay silent; the operator can manually select +
+      // copy from the rendered code block.
+    }
+  }
+
+  return (
+    <div className="pt-4 border-t border-kb-border space-y-3">
+      <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">
+        Prometheus (read) setup — helm command
+      </div>
+      <p className="text-[11px] text-kb-text-secondary leading-relaxed">
+        Mode C deploys a dedicated <code className="font-mono text-kb-text-primary">kubebolt-agent</code>{' '}
+        Deployment (replicas=1, leader-elected) that polls the
+        customer's Prometheus over <code className="font-mono text-kb-text-primary">/api/v1/query_range</code>{' '}
+        and ships samples through the gRPC AgentChannel. Mutually
+        exclusive with Mode A (<code className="font-mono text-kb-text-primary">scrape.enabled</code>) —
+        the chart's render check hard-fails if both are on.
+      </p>
+
+      {/* Auth mode picker. 6 options match the chart's allow-list
+          one-to-one — the snippet shape adapts below. */}
+      <div className="space-y-1.5">
+        <label className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">
+          Auth mode
+        </label>
+        <select
+          value={authMode}
+          onChange={(e) => setAuthMode(e.target.value as PromReadAuthMode)}
+          className="w-full px-3 py-1.5 text-[11px] font-mono rounded-lg bg-kb-elevated border border-kb-border text-kb-text-primary focus:outline-none focus:ring-1 focus:ring-kb-accent"
+        >
+          {PROM_READ_AUTH_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+        <p className="text-[10px] text-kb-text-tertiary leading-relaxed">{activeHint}</p>
+      </div>
+
+      {/* Prom URL input. Always shown — every mode needs a URL. */}
+      <div className="space-y-1.5">
+        <label className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">
+          Prometheus URL
+        </label>
+        <input
+          type="text"
+          value={promURL}
+          onChange={(e) => setPromURL(e.target.value)}
+          placeholder={activeUrlExample}
+          className="w-full px-3 py-1.5 text-[11px] font-mono rounded-lg bg-kb-elevated border border-kb-border text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:ring-1 focus:ring-kb-accent"
+        />
+      </div>
+
+      {/* AWS region — only when awsSigV4. SigV4 signs against the
+          region, and AMP endpoints are region-scoped, so this MUST
+          match the workspace's region. */}
+      {authMode === 'awsSigV4' && (
+        <div className="space-y-1.5">
+          <label className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">
+            AWS region
+          </label>
+          <input
+            type="text"
+            value={awsRegion}
+            onChange={(e) => setAwsRegion(e.target.value)}
+            placeholder="us-east-1"
+            className="w-full px-3 py-1.5 text-[11px] font-mono rounded-lg bg-kb-elevated border border-kb-border text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:ring-1 focus:ring-kb-accent"
+          />
+        </div>
+      )}
+
+      <div className="relative">
+        <pre className="bg-kb-elevated border border-kb-border rounded-lg p-3 text-[10px] font-mono text-kb-text-primary overflow-x-auto whitespace-pre">
+{snippet}
+        </pre>
+        <button
+          onClick={copy}
+          className="absolute top-2 right-2 px-2 py-1 text-[10px] font-medium rounded-md bg-kb-card border border-kb-border text-kb-text-secondary hover:bg-kb-card-hover hover:text-kb-text-primary transition-colors"
+          title="Copy snippet"
+        >
+          {copied ? 'Copied ✓' : 'Copy'}
+        </button>
+      </div>
+
+      <p className="text-[10px] text-kb-text-tertiary leading-relaxed">
+        Substitute the bracketed placeholders before running. For
+        production deployments use secrets (<code className="font-mono text-kb-text-primary">extraEnv</code> with{' '}
+        <code className="font-mono text-kb-text-primary">valueFrom.secretKeyRef</code>) instead of inline
+        <code className="font-mono text-kb-text-primary"> --set</code> for any password / token. After
+        the chart applies, this card flips to{' '}
+        <code className="font-mono text-kb-text-primary">Installed</code> within ~1 minute (the wait is
+        the lease handover + first poll cycle).
       </p>
     </div>
   )

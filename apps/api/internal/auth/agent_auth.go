@@ -147,10 +147,21 @@ func peerHasVerifiedClientCert(p *peer.Peer) bool {
 // deterministic, so reconnects produce the same ID without persistent
 // state. Sprint B replaces this with a ULID stored in the agents bucket.
 //
-// 64 bits is enough — collisions only matter inside a single tenant, and
-// a tenant operating 2^32 nodes is not on the roadmap.
-func DeriveAgentID(tenantID, clusterID, nodeName string) string {
-	sum := sha256.Sum256([]byte(tenantID + "|" + clusterID + "|" + nodeName))
+// `role` discriminates pods that share (tenant, cluster, node) but
+// serve different functions — specifically the Mode A DaemonSet pod
+// (role="proxy", advertises kube-proxy capability) and the Mode C
+// promread Deployment pod (role="metrics", samples-only). Without
+// this discriminator both pods derive the same agent_id when scheduled
+// on the same node (always true in single-node clusters, occasionally
+// true in multi-node), and the AgentRegistry's one-slot-per-agent_id
+// invariant evicts them in a loop every ~30s — see session 11-A
+// project_agent_eviction_loop for full diagnosis.
+//
+// 64 bits is enough — collisions only matter inside a single
+// (tenant, cluster, node, role) cell, and that's a 4-tuple uniqueness
+// problem with cardinality far below 2^32 in any reasonable shape.
+func DeriveAgentID(tenantID, clusterID, nodeName, role string) string {
+	sum := sha256.Sum256([]byte(tenantID + "|" + clusterID + "|" + nodeName + "|" + role))
 	return hex.EncodeToString(sum[:8])
 }
 

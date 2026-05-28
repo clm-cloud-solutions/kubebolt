@@ -72,10 +72,20 @@ web:
       cpu: 100m
       memory: 64Mi
 
-# Service configuration
+# Service configuration for the main HTTP service (web UI + API behind
+# nginx proxy in the web pod).
 service:
   type: ClusterIP
   port: 80
+  # Pinned NodePort when service.type=NodePort. Empty = let Kubernetes
+  # auto-assign from the 30000-32767 range; that's fine when the UI is
+  # reached through cluster-internal DNS or via `kubectl port-forward`,
+  # but breaks any external reverse-proxy / LB / firewall config that
+  # needs a stable port (e.g. caddy fronting the UI on a single-node
+  # k3s VM alongside the agent-ingest gRPC channel). Set to a specific
+  # value in that case. Ignored when type != NodePort. Same shape as
+  # agentIngest.service.nodePort below.
+  nodePort: ""
 
 # Ingress configuration
 ingress:
@@ -114,12 +124,25 @@ agentIngest:
   authMode: disabled
 
   # Auto-register an "agent-proxy" cluster in the cluster switcher when
-  # an agent advertises the kube-proxy capability. Single-cluster
-  # self-hosted setups don't need it — set false. Multi-cluster fleet
-  # / SaaS operators flip it on so new agent installations surface in
-  # the UI without operator action. Maps to env
-  # KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS on the API container.
-  autoRegisterClusters: false
+  # an agent advertises the kube-proxy capability. With this on, every
+  # agent that successfully authenticates surfaces its cluster in the
+  # UI selector without operator action.
+  #
+  # Default = true because the alternative (false) creates a hidden
+  # paper-cut: integrations whose detection probes are scoped to the
+  # active cluster (Mode C "Prometheus (read)" most prominently, but
+  # also the future per-cluster cards) silently report NotInstalled
+  # because the agent's cluster never becomes the active context.
+  # Data still flows, but the operator can't tell from the UI.
+  #
+  # Set to false ONLY for SaaS multi-tenant deployments where an admin
+  # wants to manually approve each agent before it appears in the UI
+  # selector — e.g. compliance regimes that require an explicit
+  # human-in-the-loop step after the ingest-token auth handshake.
+  #
+  # Maps to env KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS on the API
+  # container.
+  autoRegisterClusters: true
 
   # Audience the apiserver-issued projected SA token must carry. Must
   # match auth.tokenReview.audience in the kubebolt-agent chart.
@@ -131,6 +154,14 @@ agentIngest:
     # piggy-backing on the HTTP service.
     create: true
     type: ClusterIP
+    # Pinned NodePort when service.type=NodePort. Empty = let
+    # Kubernetes auto-assign from the 30000-32767 range; that's fine
+    # when the agent reaches this Service through cluster-internal
+    # DNS (kubebolt-agent-ingest.<ns>.svc), but breaks any external
+    # reverse-proxy / LB / firewall config that needs a stable port
+    # (e.g. caddy fronting the gRPC channel on a single-node k3s VM).
+    # Set to a specific value in that case. Ignored when type != NodePort.
+    nodePort: ""
 
   rbac:
     # Adds tokenreviews/create to the backend ClusterRole. Required when

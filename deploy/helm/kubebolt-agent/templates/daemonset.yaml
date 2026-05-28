@@ -1,4 +1,5 @@
 {{- $backendUrl := required "backendUrl is required — set --set backendUrl=<host:port> or configure it in values.yaml" .Values.backendUrl -}}
+{{- include "kubebolt-agent.validatePromRead" . -}}
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
@@ -69,6 +70,14 @@ spec:
               value: {{ $backendUrl | quote }}
             - name: KUBEBOLT_AGENT_LOG_LEVEL
               value: {{ .Values.logLevel | quote }}
+            # 1.13 topology split — DaemonSet pods own Mode A (kubelet
+            # collectors + Hubble flows). The promread reader runs in a
+            # separate Deployment (templates/deployment.yaml) when
+            # agent.promRead.enabled=true, so this template explicitly
+            # turns promread OFF for DaemonSet pods even when promRead
+            # is enabled cluster-wide.
+            - name: KUBEBOLT_AGENT_MODE
+              value: "daemonset"
             # Downward API — the kubelet target + leader-election identity
             # are per-pod values, so they must come from fieldRefs.
             - name: KUBEBOLT_AGENT_NODE_NAME
@@ -132,8 +141,29 @@ spec:
                        bundled sidecar).
                    Either path sets the env var; main.go reads it once
                    and passes it to stats.go's WithDeferNodeNetwork. */ -}}
-            {{- if or (and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled) (and .Values.agent .Values.agent.deferNodeNetwork) }}
+            {{- /* Third dedup trigger — Azure Managed Prometheus (AMW).
+                   Setting agent.promRead.auth.mode=azureWorkloadIdentity
+                   implies the cluster has --enable-azure-monitor-metrics
+                   active, which always deploys ama-metrics-node — Azure's
+                   built-in node-exporter scraper. The Mode A collectors
+                   would emit the same metric family as ama-metrics →
+                   duplicate series on the UI's panels. Predicate is
+                   always-true on AMW so no operator knob needed. */ -}}
+            {{- $promReadAzure := and .Values.agent .Values.agent.promRead .Values.agent.promRead.enabled (eq (default "" (.Values.agent.promRead.auth).mode) "azureWorkloadIdentity") -}}
+            {{- if or (and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled) (and .Values.agent .Values.agent.deferNodeNetwork) $promReadAzure }}
             - name: KUBEBOLT_AGENT_DEFER_NODE_NETWORK
+              value: "true"
+            {{- end }}
+            {{- /* Same dedup trigger pattern for the NodeStress
+                   collector (load + PSI). When the bundled vmagent
+                   scrapes node-exporter, OR the operator explicitly
+                   opts in via `agent.deferNodeStress=true`, OR Mode C
+                   is wired for AMW (always-true on Azure), suppress
+                   the in-agent emission so node-exporter is the
+                   single source of truth for `node_load{1,5,15}` and
+                   `node_pressure_*_waiting_seconds_total`. */ -}}
+            {{- if or (and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled) (and .Values.agent .Values.agent.deferNodeStress) $promReadAzure }}
+            - name: KUBEBOLT_AGENT_DEFER_NODE_STRESS
               value: "true"
             {{- end }}
             {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
@@ -204,6 +234,12 @@ spec:
               value: /etc/kubebolt-tls/tls.key
             {{- end }}
             {{- end }}
+            {{- /* Mode C env block moved to templates/deployment.yaml
+                   when 1.13 topology split landed — DaemonSet pods
+                   never run promread now. KUBEBOLT_AGENT_MODE=daemonset
+                   above tells the agent binary to skip the promread
+                   bootstrap even if the env vars happen to be present
+                   (e.g. via extraEnv). */ -}}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

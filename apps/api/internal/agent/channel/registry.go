@@ -37,6 +37,13 @@ type Agent struct {
 	Identity  *auth.AgentIdentity
 	Connected time.Time
 
+	// Capabilities the agent declared in Hello. Stored here (in
+	// addition to the helloMeta map) so registry filter functions like
+	// GetProxyAgent can pick the right agent without a separate
+	// helloMeta lookup. Empty/nil capabilities are treated as "no
+	// special capability" — the agent only ships samples.
+	Capabilities []string
+
 	// Pending owns request_id correlation for kube_request issued via
 	// this agent.
 	Pending *Multiplexor
@@ -55,16 +62,21 @@ type Agent struct {
 // only needs the registry+pending machinery (typical in unit tests
 // that don't exercise the outbound path); production code from
 // server.go always passes a real Sender wrapping the stream.
-func NewAgent(clusterID, agentID, nodeName string, identity *auth.AgentIdentity, sender Sender) *Agent {
+//
+// capabilities is the list the agent declared in Hello. Pass nil if
+// unknown — the registry's GetProxyAgent picker treats nil
+// capabilities as "no kube-proxy capability".
+func NewAgent(clusterID, agentID, nodeName string, identity *auth.AgentIdentity, capabilities []string, sender Sender) *Agent {
 	return &Agent{
-		ClusterID: clusterID,
-		AgentID:   agentID,
-		NodeName:  nodeName,
-		Identity:  identity,
-		Connected: time.Now().UTC(),
-		Pending:   NewMultiplexor(),
-		sender:    sender,
-		closed:    make(chan struct{}),
+		ClusterID:    clusterID,
+		AgentID:      agentID,
+		NodeName:     nodeName,
+		Identity:     identity,
+		Capabilities: capabilities,
+		Connected:    time.Now().UTC(),
+		Pending:      NewMultiplexor(),
+		sender:       sender,
+		closed:       make(chan struct{}),
 	}
 }
 
@@ -246,9 +258,11 @@ func (r *AgentRegistry) Register(a *Agent) (evicted *Agent) {
 
 // Get returns one connected agent for cluster_id, or nil if none.
 // Multi-agent clusters: the choice is currently arbitrary (map
-// iteration order). Sprint A.5 doesn't care which one services the
-// kube_request — they all share the same in-cluster config. Sprint B+
-// can layer health-checking / leader-election on top.
+// iteration order). Used by callers who only need a registered
+// agent reference (display, presence checks). For apiserver-proxy
+// requests use GetProxyAgent — it filters by capability so a
+// non-proxy-capable agent (e.g. the Mode C promread Deployment pod)
+// doesn't get picked for a request it can't service.
 func (r *AgentRegistry) Get(clusterID string) *Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -256,6 +270,40 @@ func (r *AgentRegistry) Get(clusterID string) *Agent {
 		return a
 	}
 	return nil
+}
+
+// GetProxyAgent returns a connected agent for cluster_id that
+// advertised the "kube-proxy" capability — i.e. one that can service
+// apiserver-proxy round-trips dispatched by AgentProxyTransport. Falls
+// back to ANY connected agent when none advertise the capability, so
+// pre-1.13 agents (which may not have explicit capability declaration
+// but DO serve proxy when the chart's RBAC tier permits it) keep
+// working. Returns nil only when no agents are connected at all.
+//
+// Discovered necessary in session 11-A re-validation (2026-05-27):
+// after Fix #4 stopped the eviction loop, the DS pod (kube-proxy
+// capable) and the Mode C promread Deployment pod (samples-only,
+// NO kube-proxy) coexist in the registry. Get's arbitrary map
+// iteration started returning the promread pod for kube_request
+// dispatch ~half the time, breaking the apiserver-proxy connector
+// with "cache sync timeout — cluster may be unreachable" because
+// the promread pod ignores KubeProxyRequest messages.
+func (r *AgentRegistry) GetProxyAgent(clusterID string) *Agent {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	bucket := r.agents[clusterID]
+	var fallback *Agent
+	for _, a := range bucket {
+		if fallback == nil {
+			fallback = a
+		}
+		for _, c := range a.Capabilities {
+			if c == "kube-proxy" {
+				return a
+			}
+		}
+	}
+	return fallback
 }
 
 // GetByAgentID returns the agent with the exact (cluster_id, agent_id)

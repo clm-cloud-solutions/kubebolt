@@ -21,7 +21,7 @@ import (
 func upgradeRig(t *testing.T) (*AgentProxyTransport, *Agent, *captureSender) {
 	t.Helper()
 	sender := newCaptureSender()
-	agent := NewAgent("c1", "agent-1", "node-a", nil, sender)
+	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
 	tr := NewAgentProxyTransport("c1", reg)
@@ -328,7 +328,7 @@ func TestTunnelConn_WriteBlocksOnSaturatedWindow(t *testing.T) {
 	// block after ~8 KiB. After we deliver an ACK the writer unblocks
 	// and progresses.
 	sender := newCaptureSender()
-	agent := NewAgent("c1", "agent-1", "node-a", nil, sender)
+	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
 	tr := &AgentProxyTransport{ClusterID: "c1", Registry: reg, TunnelWindowBytes: 8192}

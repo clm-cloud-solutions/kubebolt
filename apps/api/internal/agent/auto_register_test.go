@@ -220,7 +220,7 @@ func TestMaybeAutoUnregister_PeersRemain_KeepsCluster(t *testing.T) {
 	// ListClusters every time any single pod restarted.
 	reg := &fakeRegistrar{}
 	registry := channel.NewAgentRegistry()
-	registry.Register(channel.NewAgent("c-prod", "agent-other", "node-b", nil, nil))
+	registry.Register(channel.NewAgent("c-prod", "agent-other", "node-b", nil, nil, nil))
 
 	maybeAutoUnregisterCluster(reg, registry, "c-prod")
 	if len(reg.removed) != 0 {

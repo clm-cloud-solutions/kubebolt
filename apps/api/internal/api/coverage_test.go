@@ -164,10 +164,11 @@ func TestHandleCoverage_PartialActive(t *testing.T) {
 	_ = json.Unmarshal(rec.Body.Bytes(), &got)
 
 	want := map[string]string{
-		"kubebolt-agent":     "active",
-		"node-exporter":      "inactive",
-		"kube-state-metrics": "inactive",
-		"hubble":             "active",
+		"kubebolt-agent":       "active",
+		"node-exporter":        "inactive",
+		"kubebolt-node-stress": "inactive",
+		"kube-state-metrics":   "inactive",
+		"hubble":               "active",
 	}
 	for _, s := range got.Sources {
 		if s.Status != want[s.Name] {
@@ -183,7 +184,8 @@ func TestHandleCoverage_AllSourcesActive(t *testing.T) {
 	for _, name := range []string{
 		"kubebolt_agent_info",
 		"node_cpu_seconds_total",
-		"kube_pod_info",
+		"node_load1", // NodeStress collector (Fix #10) — emit by Mode A in-process /proc reader
+		"kube_pod_status_phase", // KSM core metric — present on GMP, AMP, AMW + full self-managed
 		"pod_flow_events_total",
 	} {
 		stub.configure(t, name, 1)

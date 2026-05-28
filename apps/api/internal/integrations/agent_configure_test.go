@@ -34,11 +34,11 @@ func TestAgentGetConfig_RoundTripAfterInstall(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(in)
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 
-	out, err := NewAgent().(Configurable).GetConfig(context.Background(), cs)
+	out, err := NewAgent(nil, nil).(Configurable).GetConfig(context.Background(), cs)
 	if err != nil {
 		t.Fatalf("getConfig failed: %v", err)
 	}
@@ -81,7 +81,7 @@ func TestAgentGetConfig_RoundTripAfterInstall(t *testing.T) {
 
 func TestAgentGetConfig_NotInstalled(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	_, err := NewAgent().(Configurable).GetConfig(context.Background(), cs)
+	_, err := NewAgent(nil, nil).(Configurable).GetConfig(context.Background(), cs)
 	var ni *NotInstalledError
 	if !errors.As(err, &ni) {
 		t.Fatalf("expected *NotInstalledError, got %T: %v", err, err)
@@ -101,7 +101,7 @@ func TestAgentGetConfig_RefusesExternal(t *testing.T) {
 			},
 		},
 	)
-	_, err := NewAgent().(Configurable).GetConfig(context.Background(), cs)
+	_, err := NewAgent(nil, nil).(Configurable).GetConfig(context.Background(), cs)
 	var nm *NotManagedError
 	if !errors.As(err, &nm) {
 		t.Fatalf("expected *NotManagedError, got %T: %v", err, err)
@@ -115,7 +115,7 @@ func TestAgentConfigure_UpdatesEnv(t *testing.T) {
 	// Install with no cluster name set — matches the bug the user
 	// hit when the UI wizard left the field blank.
 	raw, _ := json.Marshal(AgentInstallConfig{BackendURL: "x:9090"})
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 
@@ -126,7 +126,7 @@ func TestAgentConfigure_UpdatesEnv(t *testing.T) {
 		ImagePullPolicy: "Never",
 	}
 	raw, _ = json.Marshal(update)
-	if err := NewAgent().(Configurable).Configure(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Configurable).Configure(context.Background(), cs, raw); err != nil {
 		t.Fatalf("configure failed: %v", err)
 	}
 
@@ -148,7 +148,7 @@ func TestAgentConfigure_UpdatesEnv(t *testing.T) {
 func TestAgentConfigure_RequiresInstalled(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	raw, _ := json.Marshal(AgentInstallConfig{BackendURL: "x:9090"})
-	err := NewAgent().(Configurable).Configure(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Configurable).Configure(context.Background(), cs, raw)
 	var ni *NotInstalledError
 	if !errors.As(err, &ni) {
 		t.Fatalf("expected *NotInstalledError, got %T: %v", err, err)
@@ -169,7 +169,7 @@ func TestAgentConfigure_RefusesExternal(t *testing.T) {
 		},
 	)
 	raw, _ := json.Marshal(AgentInstallConfig{BackendURL: "x:9090"})
-	err := NewAgent().(Configurable).Configure(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Configurable).Configure(context.Background(), cs, raw)
 	var nm *NotManagedError
 	if !errors.As(err, &nm) {
 		t.Fatalf("expected *NotManagedError, got %T: %v", err, err)
@@ -182,12 +182,12 @@ func TestAgentConfigure_RefusesExternal(t *testing.T) {
 func TestAgentConfigure_RequiresBackendURL(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	raw, _ := json.Marshal(AgentInstallConfig{BackendURL: "x:9090"})
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	// Submit a configure payload without backendUrl.
 	raw, _ = json.Marshal(AgentInstallConfig{ClusterName: "foo"})
-	err := NewAgent().(Configurable).Configure(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Configurable).Configure(context.Background(), cs, raw)
 	if err == nil {
 		t.Fatal("expected error for missing backendUrl, got nil")
 	}

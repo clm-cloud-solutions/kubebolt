@@ -48,6 +48,15 @@ type Shipper struct {
 	clusterHint string
 	clusterName string
 
+	// agentMode is the value of KUBEBOLT_AGENT_MODE ("daemonset" /
+	// "promread" / "" for legacy both-modes). Stamped into
+	// Hello.Labels["kubebolt.io/agent-mode"] so the backend can use it
+	// to disambiguate the agent_id between pods that share
+	// (tenant, cluster, node) — DS Mode A pod vs Deployment Mode C
+	// promread pod in single-node clusters most prominently. See
+	// session 11-A's project_agent_eviction_loop for the full diagnosis.
+	agentMode string
+
 	// Populated each time a session reaches Welcome.
 	agentID string
 }
@@ -87,6 +96,22 @@ func WithClusterIdent(clusterID, clusterName string) Option {
 		s.clusterHint = clusterID
 		s.clusterName = clusterName
 	}
+}
+
+// WithAgentMode stamps the agent's topology mode (KUBEBOLT_AGENT_MODE
+// env: "daemonset" / "promread" / empty for legacy both-modes) into
+// Hello.Labels so the backend can disambiguate the agent_id between
+// pods that share (tenant, cluster, node). Critical for the 1.13+
+// topology split where the DS Mode A pod and the Deployment Mode C
+// promread pod legitimately coexist in the same cluster and may
+// land on the same node (always true in single-node clusters); without
+// the mode discriminator the registry derives the same agent_id for
+// both and evicts them in a ~30s loop.
+//
+// Empty `mode` is forwarded unchanged — the backend then falls back
+// to the capability-based classifier (pre-1.13 compat path).
+func WithAgentMode(mode string) Option {
+	return func(s *Shipper) { s.agentMode = mode }
 }
 
 func New(backendURL, nodeName, agentVersion string, buf *buffer.Ring, opts ...Option) *Shipper {
@@ -189,8 +214,14 @@ func (s *Shipper) runSession(ctx context.Context) error {
 		ClusterHint:      s.clusterHint,
 		Capabilities:     s.capabilities,
 	}
-	if s.clusterName != "" {
-		hello.Labels = map[string]string{"kubebolt.io/cluster-name": s.clusterName}
+	if s.clusterName != "" || s.agentMode != "" {
+		hello.Labels = map[string]string{}
+		if s.clusterName != "" {
+			hello.Labels["kubebolt.io/cluster-name"] = s.clusterName
+		}
+		if s.agentMode != "" {
+			hello.Labels["kubebolt.io/agent-mode"] = s.agentMode
+		}
 	}
 
 	handler := s.handler

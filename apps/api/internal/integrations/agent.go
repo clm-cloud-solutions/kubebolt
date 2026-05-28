@@ -12,11 +12,17 @@ import (
 
 // Agent IDs and detection knobs. Chosen to match what the Helm chart
 // produces: the agent's DaemonSet is labeled
-// app.kubernetes.io/name=kubebolt-agent and its default namespace is
-// kubebolt-system.
+// app.kubernetes.io/name=kubebolt-agent and its default install
+// namespace is `kubebolt` (1.13+ convention; older installs used
+// `kubebolt-system` and we still probe it as a fallback).
 const (
-	AgentID        = "agent"
-	AgentName      = "kubebolt-agent"
+	AgentID   = "agent"
+	AgentName = "kubebolt-agent"
+
+	// agentNamespace is the legacy default install namespace. Kept for
+	// compatibility with installs that predate the 1.13 convention shift
+	// — install/uninstall paths still target it. New detection-side
+	// callers should iterate agentPreferredNamespaces instead.
 	agentNamespace = "kubebolt-system"
 
 	// Labels the chart and dev manifest attach to the DaemonSet. We
@@ -42,12 +48,84 @@ const (
 	operatorClusterRole = "kubebolt-agent-operator"
 )
 
+// agentPreferredNamespaces is the lookup order findAgentDaemonSet
+// tries before falling back to a cluster-wide list. Order matters —
+// the first hit short-circuits.
+//
+//   - `kubebolt`        1.13+ default (our docs + chart NOTES use it
+//                       everywhere)
+//   - `kubebolt-agent`  natural ns name when an operator follows the
+//                       chart's release-name convention
+//                       (`helm install kubebolt-agent ... -n kubebolt-agent`)
+//   - `kubebolt-system` legacy default — yagan-prod / sucal-uat
+//                       installs predate the 1.13 convention shift
+//
+// Operators who install in a custom ns (monitoring, observability,
+// kb-prod, anything else) are caught by the cluster-wide fallback
+// findAgentDaemonSet runs after this list — they're NOT forced into
+// one of these names. The list exists purely to short-circuit the
+// 95% case and avoid an unnecessary cluster-wide list when the
+// agent is somewhere conventional.
+//
+// Edge case the cluster-wide fallback still doesn't cover: a backend
+// whose ServiceAccount is RBAC-restricted to namespace-scoped
+// listing (no `list daemonsets` at cluster scope). If such a
+// deployment also installs the agent in a custom ns, detection
+// fails. That combination is rare in OSS and self-hosted-self
+// installs; for SaaS multi-tenant with strict scoping, the agent's
+// in-cluster ns would be one of the few the backend SA is granted,
+// which by convention is one of the above names anyway.
+var agentPreferredNamespaces = []string{"kubebolt", "kubebolt-agent", "kubebolt-system"}
+
+// agentSamplesProbeFn checks whether THIS backend's VictoriaMetrics
+// holds at least one `kubebolt_agent_info` sample for the given
+// cluster_id — i.e. the agent installed in that cluster is actually
+// shipping to THIS backend (not a different one). Returns
+// (true, nil) when samples are present, (false, nil) when absent,
+// (false, err) on transport errors — callers treat err as "couldn't
+// tell" and fall back to DaemonSet-presence-only logic so a transient
+// VM blip doesn't downgrade a working integration.
+//
+// Symmetric to promSamplesProbeFn / promreadActiveProbeFn — same
+// shape, different metric. See session 11-A v3 finding A
+// (project_agent_cross_backend_false_positive) for the operator-
+// facing symptom this probe addresses: an operator's LOCAL kubebolt
+// that has another cluster's kubeconfig context can SEE the agent
+// DaemonSet via cs.AppsV1().DaemonSets().List(), but that agent is
+// configured to ship to a DIFFERENT backend (e.g. the SaaS) — without
+// the probe the card falsely reads "Installed" even though no agent
+// data is reaching THIS backend's VM.
+type agentSamplesProbeFn func(ctx context.Context, clusterID string) (bool, error)
+
 // agentProvider implements Provider for the kubebolt-agent.
-type agentProvider struct{}
+type agentProvider struct {
+	currentCluster currentClusterIDFn
+	samplesProbe   agentSamplesProbeFn
+}
 
 // NewAgent returns the kubebolt-agent Provider. Stateless — safe to
 // register once at startup.
-func NewAgent() Provider { return &agentProvider{} }
+//
+// currentCluster is called on every Detect to resolve the active
+// cluster's UID. Combined with samplesProbe it closes the
+// "agent visible in the cluster but shipping samples elsewhere"
+// false-positive that surfaces in topologies where an operator's
+// kubeconfig points at clusters whose agent is configured for a
+// DIFFERENT backend (very common in multi-backend SaaS / dev setups).
+//
+// Pass nil currentCluster or nil samplesProbe to disable the probe
+// path independently — the provider then falls back to the legacy
+// DaemonSet-presence-only detection (the pre-Fix #12 behavior).
+// Tests use nils to exercise the legacy branches in isolation.
+func NewAgent(currentCluster currentClusterIDFn, samplesProbe agentSamplesProbeFn) Provider {
+	if currentCluster == nil {
+		currentCluster = func() string { return "" }
+	}
+	return &agentProvider{
+		currentCluster: currentCluster,
+		samplesProbe:   samplesProbe,
+	}
+}
 
 func (a *agentProvider) Meta() Integration {
 	return Integration{
@@ -106,37 +184,80 @@ func (a *agentProvider) Detect(ctx context.Context, cs kubernetes.Interface) (In
 		meta.Status = StatusInstalled
 	}
 
+	// Sample-presence cross-check: the DaemonSet exists in the cluster
+	// AND its pods are ready, but is it actually shipping samples to
+	// THIS backend? In multi-backend topologies (operator's kubeconfig
+	// points at a cluster whose agent is configured for a different
+	// KUBEBOLT_BACKEND_URL — common in SaaS dev setups), the legacy
+	// DaemonSet-presence-only logic would falsely report "Installed"
+	// because cs.AppsV1().DaemonSets().List() sees the DS via
+	// kubeconfig, with zero info about where the agent's gRPC stream
+	// actually terminates. The probe asks VM "do you have
+	// kubebolt_agent_info samples tagged with this cluster's UID?" —
+	// if no, the agent ships to a DIFFERENT backend.
+	//
+	// Skipped (treated as confirmed) when there's no probe wired
+	// (tests, OSS dev without VM) or when there's no resolvable
+	// current cluster (probe can't form a safe scoped query).
+	// Discovered session 11-A v3 — see project_agent_cross_backend_false_positive.
+	if meta.Status == StatusInstalled && a.samplesProbe != nil {
+		clusterID := a.currentCluster()
+		if clusterID != "" {
+			arrives, probeErr := a.samplesProbe(ctx, clusterID)
+			if probeErr == nil && !arrives {
+				meta.Status = StatusDegraded
+				meta.Health.Message = "DaemonSet present in cluster but no agent samples reaching this backend — the agent is likely shipping to a different KUBEBOLT_BACKEND_URL"
+			}
+			// probeErr != nil: transient VM blip, keep StatusInstalled.
+			// The probe is a positive signal — its absence shouldn't
+			// trump the DaemonSet evidence we already have.
+		}
+	}
+
 	return meta, nil
 }
 
 // findAgentDaemonSet looks for the agent DaemonSet across the cluster.
 // Preference order:
-//  1. Labeled with the Helm convention (app.kubernetes.io/name=kubebolt-agent).
-//  2. Labeled with the dev convention (app=kubebolt-agent).
+//  1. agentPreferredNamespaces × {helm, dev label} — fast path when
+//     the agent is installed at the conventional location.
+//  2. Cluster-wide (NamespaceAll) × {helm, dev label} — covers
+//     non-standard installs and the partial-RBAC case where the
+//     namespace-scoped list 403s but cluster-wide works.
 //
-// In both cases the standard namespace (kubebolt-system) is checked
-// first — a dramatic short-circuit when the agent is installed the
-// default way, which is almost always.
-//
-// Returns (nil, "", nil) when the agent isn't found anywhere. Errors
-// indicate "couldn't ask" (API failure, permission denied on the
-// apps group).
+// Returns (nil, "", nil) when the agent isn't found anywhere.
+// Errors indicate "couldn't ask" — but we only surface an error if
+// EVERY attempt failed. Transient errors on the first attempts
+// (tunnel hiccup, RBAC-denied on a specific namespace, etc.) used to
+// abort the whole probe; now they're skipped and the next attempt
+// runs. See session 11-A `project_chart_agentingest_nodeport_ignored`
+// fellow finding for the operator-facing symptom: agent card stuck
+// in UNKNOWN status with a transport error message because the very
+// first list call failed and the cluster-wide fallback never ran.
 func findAgentDaemonSet(ctx context.Context, cs kubernetes.Interface) (*appsv1.DaemonSet, string, error) {
 	type lookup struct {
 		ns    string
 		label string
 	}
-	// Most specific → most general. First hit wins.
-	attempts := []lookup{
-		{agentNamespace, agentLabelHelm},
-		{agentNamespace, agentLabelDev},
-		{metav1.NamespaceAll, agentLabelHelm},
-		{metav1.NamespaceAll, agentLabelDev},
+	// Build the lookup grid: preferred namespaces × labels, then
+	// cluster-wide × labels as last-resort fallbacks.
+	labels := []string{agentLabelHelm, agentLabelDev}
+	attempts := make([]lookup, 0, (len(agentPreferredNamespaces)+1)*len(labels))
+	for _, ns := range agentPreferredNamespaces {
+		for _, lab := range labels {
+			attempts = append(attempts, lookup{ns, lab})
+		}
 	}
+	for _, lab := range labels {
+		attempts = append(attempts, lookup{metav1.NamespaceAll, lab})
+	}
+
+	var lastErr error
 	for _, at := range attempts {
 		list, err := cs.AppsV1().DaemonSets(at.ns).List(ctx, metav1.ListOptions{LabelSelector: at.label})
 		if err != nil {
-			return nil, "", err
+			lastErr = err
+			continue
 		}
 		if len(list.Items) == 0 {
 			continue
@@ -146,6 +267,13 @@ func findAgentDaemonSet(ctx context.Context, cs kubernetes.Interface) (*appsv1.D
 		// enough for UI needs.
 		ds := list.Items[0]
 		return &ds, ds.Namespace, nil
+	}
+	// All attempts exhausted. If at least one returned a transport /
+	// permission error, surface it so the UI shows "detection failed"
+	// (StatusUnknown) instead of "not installed" — there's a real
+	// difference between "we couldn't ask" and "we asked and got no".
+	if lastErr != nil {
+		return nil, "", lastErr
 	}
 	return nil, "", nil
 }

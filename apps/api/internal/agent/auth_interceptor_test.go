@@ -522,7 +522,9 @@ func TestInterceptor_E2E_EnforcedAcceptsValidCredentials(t *testing.T) {
 		t.Fatalf("handshake: %v", err)
 	}
 	// agent_id must be the deterministic derive from identity, not a UUID.
-	derived := auth.DeriveAgentID(want.TenantID, want.ClusterID, "node-a")
+	// helloAndWait sends a Hello with empty Capabilities, so the resolved
+	// role is "metrics" (no kube-proxy capability advertised).
+	derived := auth.DeriveAgentID(want.TenantID, want.ClusterID, "node-a", "metrics")
 	if w.GetAgentId() != derived {
 		t.Errorf("agent_id = %s, want derived %s", w.GetAgentId(), derived)
 	}
@@ -535,7 +537,7 @@ func TestInterceptor_E2E_EnforcedAcceptsValidCredentials(t *testing.T) {
 
 func TestResolveAgentID(t *testing.T) {
 	t.Run("nil identity falls back to UUID + local cluster", func(t *testing.T) {
-		id, cluster := resolveAgentID(nil, "node-a", "")
+		id, cluster := resolveAgentID(nil, "node-a", "", "metrics")
 		if cluster != "local" {
 			t.Errorf("cluster = %s, want local", cluster)
 		}
@@ -544,7 +546,7 @@ func TestResolveAgentID(t *testing.T) {
 		}
 	})
 	t.Run("disabled mode falls back to UUID", func(t *testing.T) {
-		id, _ := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "")
+		id, _ := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "", "metrics")
 		if len(id) != 36 {
 			t.Errorf("expected UUID-shaped id, got %s", id)
 		}
@@ -553,8 +555,8 @@ func TestResolveAgentID(t *testing.T) {
 		identity := &auth.AgentIdentity{
 			Mode: auth.ModeIngestToken, TenantID: "t1", ClusterID: "c1",
 		}
-		id1, _ := resolveAgentID(identity, "node-a", "")
-		id2, _ := resolveAgentID(identity, "node-a", "")
+		id1, _ := resolveAgentID(identity, "node-a", "", "metrics")
+		id2, _ := resolveAgentID(identity, "node-a", "", "metrics")
 		if id1 != id2 {
 			t.Errorf("derived id must be stable, got %s vs %s", id1, id2)
 		}
@@ -564,7 +566,7 @@ func TestResolveAgentID(t *testing.T) {
 	})
 	t.Run("identity with empty cluster and empty hint falls back to local", func(t *testing.T) {
 		identity := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "t1"}
-		_, cluster := resolveAgentID(identity, "node-a", "")
+		_, cluster := resolveAgentID(identity, "node-a", "", "metrics")
 		if cluster != "local" {
 			t.Errorf("cluster = %s, want local fallback", cluster)
 		}
@@ -577,7 +579,7 @@ func TestResolveAgentID(t *testing.T) {
 	t.Run("disabled mode honors non-empty cluster_hint", func(t *testing.T) {
 		// No auth identity but the agent reported a cluster_id —
 		// preserve it so multi-cluster OSS deployments work.
-		_, cluster := resolveAgentID(nil, "node-a", "cluster-A")
+		_, cluster := resolveAgentID(nil, "node-a", "cluster-A", "metrics")
 		if cluster != "cluster-A" {
 			t.Errorf("cluster = %s, want cluster-A (from hint)", cluster)
 		}
@@ -585,7 +587,7 @@ func TestResolveAgentID(t *testing.T) {
 	t.Run("ModeDisabled identity honors non-empty cluster_hint", func(t *testing.T) {
 		// Same as above but with an explicit ModeDisabled identity —
 		// exercises the second arm of the disabled-path predicate.
-		_, cluster := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "cluster-B")
+		_, cluster := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "cluster-B", "metrics")
 		if cluster != "cluster-B" {
 			t.Errorf("cluster = %s, want cluster-B (from hint)", cluster)
 		}
@@ -595,14 +597,14 @@ func TestResolveAgentID(t *testing.T) {
 		// must take over — otherwise SaaS multi-cluster (the topology
 		// that drove the bug escalation) collapses to "local".
 		identity := &auth.AgentIdentity{Mode: auth.ModeIngestToken, TenantID: "t1"}
-		agentID, cluster := resolveAgentID(identity, "node-a", "cluster-C")
+		agentID, cluster := resolveAgentID(identity, "node-a", "cluster-C", "metrics")
 		if cluster != "cluster-C" {
 			t.Errorf("cluster = %s, want cluster-C (from hint)", cluster)
 		}
 		// And the derived agent_id must vary by cluster so two
 		// clusters with the same node name don't collide.
-		_, clusterD := resolveAgentID(identity, "node-a", "cluster-D")
-		agentIDD, _ := resolveAgentID(identity, "node-a", "cluster-D")
+		_, clusterD := resolveAgentID(identity, "node-a", "cluster-D", "metrics")
+		agentIDD, _ := resolveAgentID(identity, "node-a", "cluster-D", "metrics")
 		if clusterD != "cluster-D" || agentIDD == agentID {
 			t.Errorf("agent_id must vary by cluster_id; got %s for both cluster-C and cluster-D", agentID)
 		}
@@ -614,9 +616,71 @@ func TestResolveAgentID(t *testing.T) {
 		identity := &auth.AgentIdentity{
 			Mode: auth.ModeTokenReview, TenantID: "t1", ClusterID: "auth-cluster",
 		}
-		_, cluster := resolveAgentID(identity, "node-a", "spoofed-cluster")
+		_, cluster := resolveAgentID(identity, "node-a", "spoofed-cluster", "metrics")
 		if cluster != "auth-cluster" {
 			t.Errorf("cluster = %s, want auth-cluster (identity must win)", cluster)
 		}
 	})
+
+	// Session 11-A regression: pre-fix, the DS pod (Mode A,
+	// capabilities include kube-proxy → role "proxy") and the
+	// Deployment promread pod (Mode C, capabilities=[metrics] →
+	// role "metrics") derived the SAME agent_id when scheduled on
+	// the same node, causing the registry to evict them in a ~30s
+	// loop. Role must change the derivation.
+	t.Run("same node different role yields distinct agent_id", func(t *testing.T) {
+		identity := &auth.AgentIdentity{
+			Mode: auth.ModeIngestToken, TenantID: "t1", ClusterID: "c1",
+		}
+		proxyID, _ := resolveAgentID(identity, "node-a", "", "proxy")
+		metricsID, _ := resolveAgentID(identity, "node-a", "", "metrics")
+		if proxyID == metricsID {
+			t.Errorf("proxy and metrics roles must yield distinct agent_ids on same node; got %s for both", proxyID)
+		}
+	})
+}
+
+func TestAgentRoleFromHello(t *testing.T) {
+	cases := []struct {
+		name  string
+		hello *agentv2.Hello
+		want  string
+	}{
+		{"nil hello → metrics fallback", nil, "metrics"},
+		// Label path (1.13+ agents) — authoritative.
+		{
+			"explicit mode label daemonset",
+			&agentv2.Hello{Labels: map[string]string{"kubebolt.io/agent-mode": "daemonset"}},
+			"daemonset",
+		},
+		{
+			"explicit mode label promread",
+			&agentv2.Hello{Labels: map[string]string{"kubebolt.io/agent-mode": "promread"}},
+			"promread",
+		},
+		{
+			"mode label wins over capability classifier",
+			&agentv2.Hello{
+				Labels:       map[string]string{"kubebolt.io/agent-mode": "promread"},
+				Capabilities: []string{"metrics", "kube-proxy"},
+			},
+			"promread",
+		},
+		// Capability fallback (pre-1.13 agents) — no label.
+		{"no label + kube-proxy capability → proxy", &agentv2.Hello{Capabilities: []string{"metrics", "kube-proxy"}}, "proxy"},
+		{"no label + metrics only → metrics", &agentv2.Hello{Capabilities: []string{"metrics"}}, "metrics"},
+		{"no label + empty capabilities → metrics", &agentv2.Hello{}, "metrics"},
+		// Defensive: pathological-but-possible inputs.
+		{"empty mode label falls through to capabilities", &agentv2.Hello{
+			Labels:       map[string]string{"kubebolt.io/agent-mode": ""},
+			Capabilities: []string{"kube-proxy"},
+		}, "proxy"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentRoleFromHello(tc.hello); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
 }
