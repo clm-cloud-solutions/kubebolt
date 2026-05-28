@@ -641,6 +641,23 @@ managed service; disabling it would affect other workloads. Leaving
 it enabled has zero per-month cost; only ingestion + queries are
 billed.
 
+**Optional — delete the GKE cluster.** If this cluster was created
+solely to evaluate the KubeBolt + GMP integration and you don't plan
+to keep it around, the fastest way to stop control-plane + node
+billing is:
+
+```bash
+CLUSTER=my-kubebolt-cluster       # the name you picked in Prereq B1
+LOCATION_FLAG="--zone=us-east1-b"  # or --region=<your-region> if you went regional
+
+gcloud container clusters delete $CLUSTER $LOCATION_FLAG --quiet
+```
+
+Takes ~3 minutes; tears down the node VMs as a side-effect. **Do
+NOT run this against a production GKE cluster** — the rest of this
+section (helm uninstall + IAM cleanup) is enough to fully remove
+KubeBolt from a cluster you want to keep.
+
 ---
 
 ## References
