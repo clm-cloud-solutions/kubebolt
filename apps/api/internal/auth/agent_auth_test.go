@@ -80,16 +80,23 @@ func TestExtractMode(t *testing.T) {
 }
 
 func TestDeriveAgentID_DeterministicAndDistinguishing(t *testing.T) {
-	a := DeriveAgentID("t1", "c1", "node-a")
-	b := DeriveAgentID("t1", "c1", "node-a")
+	a := DeriveAgentID("t1", "c1", "node-a", "proxy")
+	b := DeriveAgentID("t1", "c1", "node-a", "proxy")
 	if a != b {
 		t.Errorf("derive must be deterministic, got %s vs %s", a, b)
 	}
-	if same := DeriveAgentID("t1", "c1", "node-b"); same == a {
+	if same := DeriveAgentID("t1", "c1", "node-b", "proxy"); same == a {
 		t.Errorf("different node should yield different id, got collision %s", same)
 	}
-	if same := DeriveAgentID("t2", "c1", "node-a"); same == a {
+	if same := DeriveAgentID("t2", "c1", "node-a", "proxy"); same == a {
 		t.Errorf("different tenant should yield different id, got collision %s", same)
+	}
+	if same := DeriveAgentID("t1", "c1", "node-a", "metrics"); same == a {
+		// Regression guard for the session 11-A eviction loop: Mode A
+		// (role=proxy) and Mode C (role=metrics) MUST NOT collide
+		// when scheduled on the same node, or the registry evicts
+		// them in a ~30s loop.
+		t.Errorf("different role same node should yield different id, got collision %s", same)
 	}
 	if len(a) != 16 {
 		t.Errorf("agent id length = %d, want 16 hex chars (64 bits)", len(a))

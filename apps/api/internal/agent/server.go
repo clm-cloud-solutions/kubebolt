@@ -218,7 +218,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 		return status.Error(codes.InvalidArgument, "first message must be Hello")
 	}
 
-	agentID, clusterID := resolveAgentID(id, hello.GetNodeName(), hello.GetClusterHint())
+	agentID, clusterID := resolveAgentID(id, hello.GetNodeName(), hello.GetClusterHint(), agentRoleFromHello(hello))
 
 	logAttrs := []any{
 		slog.String("agent_id", agentID),
@@ -267,7 +267,7 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	// outbound BackendMessages funnel through agent.Send so concurrent
 	// writers (heartbeat ack on the read loop + AgentProxyTransport
 	// from commit 5+) coordinate via a single mutex inside the Agent.
-	registeredAgent := channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id, streamSender{stream})
+	registeredAgent := channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id, hello.GetCapabilities(), streamSender{stream})
 
 	// Defer ordering matters here. LIFO means later-registered defers
 	// fire FIRST. The teardown chain we want at execution time:
@@ -483,7 +483,7 @@ func autoRegisterDisplayName(hello *agentv2.Hello, clusterID string) string {
 // Pre-fix code dropped clusterHint on the floor and collapsed every agent
 // without an auth-set ClusterID to "local", which is why two distinct kind
 // clusters registered under the same id in cluster-validation Test 3.
-func resolveAgentID(id *auth.AgentIdentity, nodeName, clusterHint string) (agentID, clusterID string) {
+func resolveAgentID(id *auth.AgentIdentity, nodeName, clusterHint, role string) (agentID, clusterID string) {
 	cluster := clusterHint
 	if id != nil && id.ClusterID != "" {
 		// Auth-supplied cluster wins. Currently only tokenreview/mTLS
@@ -500,7 +500,45 @@ func resolveAgentID(id *auth.AgentIdentity, nodeName, clusterHint string) (agent
 		// so multi-cluster OSS deployments don't collapse to one entry.
 		return uuid.NewString(), cluster
 	}
-	return auth.DeriveAgentID(id.TenantID, cluster, nodeName), cluster
+	return auth.DeriveAgentID(id.TenantID, cluster, nodeName, role), cluster
+}
+
+// agentRoleFromHello extracts the role tag used as the 4th
+// discriminator in DeriveAgentID, so two pods sharing
+// (tenant, cluster, node) get distinct agent_ids and the registry
+// doesn't evict them in a loop. See project_agent_eviction_loop for
+// the full diagnosis.
+//
+// Resolution order:
+//
+//  1. Hello.Labels["kubebolt.io/agent-mode"] — agents from chart
+//     1.13.0+ stamp this directly from the KUBEBOLT_AGENT_MODE env
+//     ("daemonset" / "promread"). Authoritative, orthogonal to
+//     capabilities / RBAC mode. Future agent topologies declare
+//     their own mode here and get distinct roles automatically.
+//
+//  2. Fallback for pre-1.13 agents (legacy compat) — classify by
+//     presence of the "kube-proxy" capability: proxy vs metrics.
+//     Less robust than (1) because rbac.mode=metrics on a DS pod
+//     also produces capabilities=[metrics] and would collide with a
+//     promread pod, but that's the best we can do without the label
+//     and pre-1.13 didn't have the promread Deployment topology
+//     anyway.
+func agentRoleFromHello(hello *agentv2.Hello) string {
+	if hello == nil {
+		return "metrics"
+	}
+	if labels := hello.GetLabels(); labels != nil {
+		if mode := labels["kubebolt.io/agent-mode"]; mode != "" {
+			return mode
+		}
+	}
+	for _, c := range hello.GetCapabilities() {
+		if c == "kube-proxy" {
+			return "proxy"
+		}
+	}
+	return "metrics"
 }
 
 // ListenOptions configures Listen. Auth.Enforcement="" defaults to

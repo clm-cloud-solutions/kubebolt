@@ -121,6 +121,14 @@ func main() {
 	// metrics (CPU/memory/filesystem) keep emitting because their
 	// names diverge from node-exporter's.
 	deferNodeNetwork := strings.EqualFold(os.Getenv("KUBEBOLT_AGENT_DEFER_NODE_NETWORK"), "true")
+	// KUBEBOLT_AGENT_DEFER_NODE_STRESS=true disables the NodeStress
+	// collector (load + PSI from /proc). Same dedup pattern as
+	// deferNodeNetwork: when a node-exporter scrape (kube-prom-stack,
+	// PodMonitoring CR) already provides node_load* and
+	// node_pressure_* with overlapping labels, the agent steps aside.
+	// Default false because the GMP-on-GKE case has no node-exporter
+	// out of the box and the Node Monitor panels would stay empty.
+	deferNodeStress := strings.EqualFold(os.Getenv("KUBEBOLT_AGENT_DEFER_NODE_STRESS"), "true")
 	// tenantID (Phase 3 Day 4.2) — operator-provisioned via helm
 	// value `tenant.id` and templated into KUBEBOLT_TENANT_ID. Empty
 	// is fine: collectors skip the tenant_id label and the backend
@@ -133,6 +141,12 @@ func main() {
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
 		collector.WithDeferNodeNetwork(deferNodeNetwork))
 	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID)
+	// NodeStress reads /proc/loadavg + /proc/pressure/* directly.
+	// procPath defaults to "/proc" — system-wide files aren't PID-
+	// namespaced so reading from inside the container returns host
+	// values without any hostPath mount.
+	nodeStress := collector.NewNodeStress(clusterID, clusterName, *nodeName, tenantID, "",
+		collector.WithDeferNodeStress(deferNodeStress))
 	buf := buffer.New(*bufferSize)
 	// Pod cache + Hubble aggregator sizes are plumbed into self-metrics
 	// so kubebolt_agent_pods_cache_size + kubebolt_agent_aggregator_keys
@@ -248,6 +262,7 @@ func main() {
 	shipperOpts := []shipper.Option{
 		shipper.WithAuth(authOpts),
 		shipper.WithClusterIdent(clusterID, clusterName),
+		shipper.WithAgentMode(agentMode),
 	}
 
 	// Sprint A.5: optional K8s API proxy. When enabled, the agent
@@ -343,6 +358,28 @@ func main() {
 					return
 				case <-tick.C:
 					collectAndBuffer(rootCtx, cadvisor, pods, buf)
+				}
+			}
+		}()
+
+		// NodeStress collector — emits node_load{1,5,15} +
+		// node_pressure_{cpu,memory,io}_waiting_seconds_total from
+		// the host's /proc on the same cadence as kubelet stats.
+		// No pod enrichment needed (node-scoped metrics only), so
+		// collect directly into the buffer instead of going through
+		// the pods-cache path that collectAndBuffer takes.
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			collectNodeStress(rootCtx, nodeStress, buf)
+			tick := time.NewTicker(*statsInterval)
+			defer tick.Stop()
+			for {
+				select {
+				case <-rootCtx.Done():
+					return
+				case <-tick.C:
+					collectNodeStress(rootCtx, nodeStress, buf)
 				}
 			}
 		}()
@@ -488,6 +525,27 @@ func collectAndBuffer(ctx context.Context, c Collector, pods *collector.PodsCach
 	// Info-level so the Phase B / Phase C bring-up is observable without
 	// flipping log level. Gets noisy on steady state; revisit when we have
 	// more than two collectors.
+	slog.Info("samples collected", slog.String("collector", c.Name()), slog.Int("count", len(samples)))
+}
+
+// collectNodeStress is the node-scoped variant of collectAndBuffer —
+// NodeStress emits only node-level metrics (no pod/container labels),
+// so the pods.Enrich step is unnecessary. Skipping it avoids a needless
+// map lookup per sample and keeps the hot path predictable for the
+// node monitor panel.
+func collectNodeStress(ctx context.Context, c Collector, buf *buffer.Ring) {
+	samples, err := c.Collect(ctx)
+	if err != nil {
+		slog.Warn("collect failed", slog.String("collector", c.Name()), slog.String("error", err.Error()))
+		return
+	}
+	if len(samples) == 0 {
+		// Disabled via WithDeferNodeStress (operator opted out because
+		// node-exporter is already shipping). Stay silent — info-line
+		// would just be noise every statsInterval.
+		return
+	}
+	buf.Push(samples)
 	slog.Info("samples collected", slog.String("collector", c.Name()), slog.Int("count", len(samples)))
 }
 

@@ -78,7 +78,7 @@ charts; kube-prometheus-stack uses
 scrape.discovery in values.yaml for the override pattern.
 {{- end }}
 
-Hubble flow collection is {{ if .Values.hubble.enabled }}ENABLED{{ else }}DISABLED{{ end }}.
+Hubble flow collection is {{ if .Values.hubble.enabled }}ENABLED{{ else }}DISABLED (default){{ end }}.
 {{- if .Values.hubble.enabled }}
 {{- if .Values.hubble.relay.address }}
 Relay:     {{ .Values.hubble.relay.address }}
@@ -91,17 +91,26 @@ TLS:       enabled via Secret/{{ .Values.hubble.relay.tls.existingSecret }}
 TLS:       disabled (plaintext — acceptable inside the pod network)
 {{- end }}
 
-⚠️  If your cluster does NOT run Cilium, the agent will dial the
+⚠️  IF your cluster does NOT run Cilium, the agent will dial the
 Hubble relay forever and emit one WARN per node every ~1 minute
-("name resolver error: produced zero addresses"). The Reliability
-dashboard requires Hubble flows anyway, so on non-Cilium clusters
-you lose no feature by disabling — only the log noise:
-
-  helm upgrade --reuse-values --set hubble.enabled=false ...
-
-Quick check whether Cilium is present:
+("name resolver error: produced zero addresses"). Verify Cilium
+is actually present before leaving hubble.enabled=true:
 
   kubectl -n kube-system get pods -l k8s-app=cilium
+{{- else }}
+
+To enable Hubble flow collection (requires Cilium with Hubble relay
+reachable at hubble-relay.kube-system.svc.cluster.local:80 — or a
+custom hubble.relay.address override):
+
+  helm upgrade --reuse-values --set hubble.enabled=true ...
+
+Quick check whether Cilium is present in your cluster:
+
+  kubectl -n kube-system get pods -l k8s-app=cilium
+
+Without Cilium the Reliability dashboard's L7 HTTP + Network Drops
+panels auto-hide; no feature loss on non-Cilium clusters.
 {{- end }}
 
 Next:

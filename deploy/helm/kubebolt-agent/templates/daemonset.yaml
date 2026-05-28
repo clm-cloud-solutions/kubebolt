@@ -145,6 +145,17 @@ spec:
             - name: KUBEBOLT_AGENT_DEFER_NODE_NETWORK
               value: "true"
             {{- end }}
+            {{- /* Same dedup trigger pattern for the NodeStress
+                   collector (load + PSI). When the bundled vmagent
+                   scrapes node-exporter, OR the operator explicitly
+                   opts in via `agent.deferNodeStress=true`, suppress
+                   the in-agent emission so node-exporter is the
+                   single source of truth for `node_load{1,5,15}` and
+                   `node_pressure_*_waiting_seconds_total`. */ -}}
+            {{- if or (and .Values.scrape.enabled .Values.scrape.discovery.nodeExporter.enabled) (and .Values.agent .Values.agent.deferNodeStress) }}
+            - name: KUBEBOLT_AGENT_DEFER_NODE_STRESS
+              value: "true"
+            {{- end }}
             {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
             {{- /* Auto-derive proxy enable from rbac.mode unless an
                    explicit override was given. proxy is the path the

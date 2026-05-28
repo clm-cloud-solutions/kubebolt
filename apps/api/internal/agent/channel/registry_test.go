@@ -9,7 +9,7 @@ import (
 
 func TestAgentRegistry_RegisterAndGet(t *testing.T) {
 	r := NewAgentRegistry()
-	a := NewAgent("c1", "agent-1", "node-a", &auth.AgentIdentity{TenantID: "t1", Mode: auth.ModeIngestToken}, nil)
+	a := NewAgent("c1", "agent-1", "node-a", &auth.AgentIdentity{TenantID: "t1", Mode: auth.ModeIngestToken}, nil, nil)
 
 	if evicted := r.Register(a); evicted != nil {
 		t.Errorf("first Register should not evict, got %+v", evicted)
@@ -29,8 +29,8 @@ func TestAgentRegistry_ReconnectEvictsPrevious(t *testing.T) {
 	// Same (cluster_id, agent_id) means the SAME node reconnecting —
 	// the previous record is stale and must be evicted.
 	r := NewAgentRegistry()
-	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil)
-	a2 := NewAgent("c1", "agent-1", "node-a", nil, nil) // same agent_id
+	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
+	a2 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil) // same agent_id
 
 	r.Register(a1)
 	evicted := r.Register(a2)
@@ -50,9 +50,9 @@ func TestAgentRegistry_AllowsMultipleAgentsPerCluster(t *testing.T) {
 	// cluster_id but distinct agent_ids. They MUST coexist; the
 	// registry must not evict peers.
 	r := NewAgentRegistry()
-	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil)
-	a2 := NewAgent("c1", "agent-2", "node-b", nil, nil)
-	a3 := NewAgent("c1", "agent-3", "node-c", nil, nil)
+	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
+	a2 := NewAgent("c1", "agent-2", "node-b", nil, nil, nil)
+	a3 := NewAgent("c1", "agent-3", "node-c", nil, nil, nil)
 
 	if evicted := r.Register(a1); evicted != nil {
 		t.Errorf("a1 Register should not evict, got %+v", evicted)
@@ -87,13 +87,52 @@ func TestAgentRegistry_AllowsMultipleAgentsPerCluster(t *testing.T) {
 	}
 }
 
+func TestAgentRegistry_GetProxyAgent(t *testing.T) {
+	// Session 11-A re-validation regression: after Fix #4 stopped the
+	// eviction loop, the DS pod (has kube-proxy capability) and the
+	// Mode C promread Deployment pod (samples-only, no kube-proxy)
+	// coexist in the registry. The arbitrary Get() picker returned
+	// the promread pod ~half the time for apiserver-proxy requests,
+	// breaking the cluster connector with cache-sync timeout.
+	// GetProxyAgent must always pick the kube-proxy-capable peer
+	// when one is present.
+	r := NewAgentRegistry()
+	dsAgent := NewAgent("c1", "agent-ds", "node-a", nil, []string{"metrics", "kube-proxy"}, nil)
+	prAgent := NewAgent("c1", "agent-pr", "node-a", nil, []string{"metrics"}, nil)
+	r.Register(dsAgent)
+	r.Register(prAgent)
+
+	// Run many iterations — Get() iteration order is map-arbitrary,
+	// so a single call could "accidentally" pick the right one. The
+	// invariant is that GetProxyAgent is deterministically correct.
+	for i := 0; i < 100; i++ {
+		if got := r.GetProxyAgent("c1"); got != dsAgent {
+			t.Fatalf("iter %d: GetProxyAgent returned %p (agent_id=%s caps=%v), want dsAgent (%p)",
+				i, got, got.AgentID, got.Capabilities, dsAgent)
+		}
+	}
+
+	// Fallback: when no peer has kube-proxy, return any.
+	r2 := NewAgentRegistry()
+	onlyMetrics := NewAgent("c2", "agent-m", "node", nil, []string{"metrics"}, nil)
+	r2.Register(onlyMetrics)
+	if got := r2.GetProxyAgent("c2"); got != onlyMetrics {
+		t.Errorf("fallback: GetProxyAgent should return any agent when none have kube-proxy; got %p, want %p", got, onlyMetrics)
+	}
+
+	// Empty cluster: nil.
+	if got := r2.GetProxyAgent("c-nonexistent"); got != nil {
+		t.Errorf("GetProxyAgent on empty cluster should return nil, got %p", got)
+	}
+}
+
 func TestAgentRegistry_StaleUnregisterIsNoop(t *testing.T) {
 	// Pin the contract: when the SAME node reconnects (same agent_id)
 	// and replaces the previous record, the previous handler's
 	// defer-Unregister must NOT remove the fresh one.
 	r := NewAgentRegistry()
-	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil)
-	a2 := NewAgent("c1", "agent-1", "node-a", nil, nil) // same agent_id
+	a1 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
+	a2 := NewAgent("c1", "agent-1", "node-a", nil, nil, nil) // same agent_id
 
 	r.Register(a1)
 	r.Register(a2) // evicts a1
@@ -122,9 +161,9 @@ func TestAgentRegistry_UnregisterNilIsNoop(t *testing.T) {
 
 func TestAgentRegistry_ListSorted(t *testing.T) {
 	r := NewAgentRegistry()
-	r.Register(NewAgent("c-z", "agent-z", "node-z", nil, nil))
-	r.Register(NewAgent("c-a", "agent-a", "node-a", &auth.AgentIdentity{TenantID: "t1", Mode: auth.ModeTokenReview}, nil))
-	r.Register(NewAgent("c-m", "agent-m", "node-m", nil, nil))
+	r.Register(NewAgent("c-z", "agent-z", "node-z", nil, nil, nil))
+	r.Register(NewAgent("c-a", "agent-a", "node-a", &auth.AgentIdentity{TenantID: "t1", Mode: auth.ModeTokenReview}, nil, nil))
+	r.Register(NewAgent("c-m", "agent-m", "node-m", nil, nil, nil))
 
 	list := r.List()
 	if len(list) != 3 {
@@ -143,7 +182,7 @@ func TestAgentRegistry_ListSorted(t *testing.T) {
 }
 
 func TestAgent_CloseClosesChanAndCancelsPending(t *testing.T) {
-	a := NewAgent("c1", "agent-1", "node-a", nil, nil)
+	a := NewAgent("c1", "agent-1", "node-a", nil, nil, nil)
 
 	// Reserve a pending request_id so we can verify Close() cleans it.
 	_, _, err := a.Pending.Register("rid", SlotUnary)
@@ -178,7 +217,7 @@ func TestAgentRegistry_ConcurrentRegisterUnregister(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			id := string(rune('a' + i))
-			a := NewAgent(id, "agent-"+id, "node", nil, nil)
+			a := NewAgent(id, "agent-"+id, "node", nil, nil, nil)
 			r.Register(a)
 			r.Unregister(a)
 		}(i)

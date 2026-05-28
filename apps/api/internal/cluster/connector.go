@@ -3984,7 +3984,9 @@ func (c *Connector) listStatefulSets(namespace string) []map[string]interface{} 
 		m["cpuUsage"] = cpuUsed
 		m["memoryUsage"] = memUsed
 		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
 		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
 		denom := cpuLim
 		if denom == 0 { denom = cpuReq }
 		if denom > 0 { m["cpuPercent"] = float64(cpuUsed) / float64(denom) * 100 }
@@ -4009,13 +4011,25 @@ func (c *Connector) listDaemonSets(namespace string) []map[string]interface{} {
 			continue
 		}
 		m := daemonSetToMap(ds)
-		var cpuUsed, memUsed int64
+		// Aggregate per-pod CPU/memory across all matched pods so the
+		// table columns can render the same Request/Limit markers +
+		// tooltip the Deployment / StatefulSet list views do. Until
+		// this fix the DaemonSet list only emitted cpuUsage/memoryUsage
+		// — markers stayed blank in the UI even though the data was
+		// trivially derivable from the pod specs we already iterate.
+		var cpuUsed, memUsed, cpuReq, cpuLim, memReq, memLim int64
 		for _, pod := range pods {
 			if pod.Namespace != ds.Namespace {
 				continue
 			}
 			for _, ref := range pod.OwnerReferences {
 				if ref.Kind == "DaemonSet" && ref.Name == ds.Name {
+					for _, cont := range pod.Spec.Containers {
+						cpuReq += cont.Resources.Requests.Cpu().MilliValue()
+						cpuLim += cont.Resources.Limits.Cpu().MilliValue()
+						memReq += cont.Resources.Requests.Memory().Value()
+						memLim += cont.Resources.Limits.Memory().Value()
+					}
 					if podMetrics != nil {
 						if pm, ok := podMetrics[pod.Namespace+"/"+pod.Name]; ok {
 							cpuUsed += pm.CPUUsage
@@ -4027,6 +4041,24 @@ func (c *Connector) listDaemonSets(namespace string) []map[string]interface{} {
 		}
 		m["cpuUsage"] = cpuUsed
 		m["memoryUsage"] = memUsed
+		m["cpuRequest"] = cpuReq
+		m["cpuLimit"] = cpuLim
+		m["memoryRequest"] = memReq
+		m["memoryLimit"] = memLim
+		denom := cpuLim
+		if denom == 0 {
+			denom = cpuReq
+		}
+		if denom > 0 {
+			m["cpuPercent"] = float64(cpuUsed) / float64(denom) * 100
+		}
+		denom = memLim
+		if denom == 0 {
+			denom = memReq
+		}
+		if denom > 0 {
+			m["memoryPercent"] = float64(memUsed) / float64(denom) * 100
+		}
 		items = append(items, m)
 	}
 	return items

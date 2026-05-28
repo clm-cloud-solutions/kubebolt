@@ -140,7 +140,10 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	if t.Registry == nil {
 		return nil, errors.New("agent-proxy: registry is nil")
 	}
-	agent := t.Registry.Get(t.ClusterID)
+	// GetProxyAgent (not Get) to filter out the Mode C promread
+	// Deployment pod that can't service kube_request payloads — see
+	// project_agent_eviction_loop follow-up in registry.go.
+	agent := t.Registry.GetProxyAgent(t.ClusterID)
 	if agent == nil {
 		return nil, fmt.Errorf("%w: %s", ErrAgentNotConnected, t.ClusterID)
 	}
