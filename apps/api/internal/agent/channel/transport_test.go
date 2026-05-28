@@ -60,7 +60,7 @@ func (s *captureSender) lastRequest(t *testing.T) *agentv2.BackendMessage {
 func newTestRig(t *testing.T) (*AgentProxyTransport, *Agent, *captureSender) {
 	t.Helper()
 	sender := newCaptureSender()
-	agent := NewAgent("c1", "agent-1", "node-a", nil, sender)
+	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
 	tr := NewAgentProxyTransport("c1", reg)
@@ -382,7 +382,7 @@ func TestAgentProxyTransport_AgentDisconnects(t *testing.T) {
 
 func TestAgentProxyTransport_DefaultTimeout(t *testing.T) {
 	sender := newCaptureSender()
-	agent := NewAgent("c1", "agent-1", "node-a", nil, sender)
+	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
 
@@ -424,7 +424,7 @@ func TestAgentProxyTransport_PropagatesContextDeadlineToProto(t *testing.T) {
 func TestAgentProxyTransport_SendError(t *testing.T) {
 	sender := newCaptureSender()
 	sender.err = errors.New("stream broken")
-	agent := NewAgent("c1", "agent-1", "node-a", nil, sender)
+	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
 	tr := NewAgentProxyTransport("c1", reg)

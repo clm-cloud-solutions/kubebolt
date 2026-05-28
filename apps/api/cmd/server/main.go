@@ -503,57 +503,72 @@ func main() {
 	// Integrations registry. Populated here so adding a new adapter
 	// is one line — the handlers pick it up automatically.
 	integrationRegistry := integrations.NewRegistry()
-	integrationRegistry.Register(integrations.NewAgent())
-	// Prometheus integration is gated on the TenantsStore: detection
+
+	// VM probe client + active-cluster-UID closure — shared by every
+	// integration card that needs to verify "samples are reaching THIS
+	// backend" rather than just "the resource exists in the cluster".
+	// Lifted out of the per-integration blocks so the Agent card (which
+	// is registered unconditionally, regardless of auth) can use the
+	// same probe surface as the Prometheus / Prometheus-read cards.
+	//
+	// Note on UID source: `ActiveAgentProxyClusterID` alone is
+	// insufficient — it returns "" for direct-kubeconfig clusters
+	// (EKS, GKE, AKS reached via the operator's local kubeconfig,
+	// never through the agent proxy). Those clusters DO have a UID
+	// (kube-system namespace UUID) but only the active Connector
+	// knows it. We prefer the agent-proxy value when set (it's
+	// available at boot before the Connector finishes) and fall
+	// back to the Connector's value otherwise. Same selection the
+	// handlers' `activeClusterUID()` helper uses.
+	vmProbeURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
+	if vmProbeURL == "" {
+		vmProbeURL = "http://localhost:8428"
+	}
+	vmProbeClient := integrations.NewVMProbeClient(vmProbeURL, nil)
+	activeClusterUID := func() string {
+		if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
+			return uid
+		}
+		if conn := manager.Connector(); conn != nil {
+			return conn.ClusterUID()
+		}
+		return ""
+	}
+
+	// Agent integration — registered unconditionally. The samplesProbe
+	// closes the cross-backend false-positive (Fix #12 session 11-A
+	// v3): without it, an operator's local kubebolt that has another
+	// cluster's kubeconfig context would falsely report "Agent
+	// installed" because the DaemonSet IS visible via kubeconfig, but
+	// the agent itself is configured to ship to a DIFFERENT
+	// KUBEBOLT_BACKEND_URL. The probe asks VM whether kubebolt_agent_info
+	// samples tagged with this cluster's UID are arriving here.
+	integrationRegistry.Register(integrations.NewAgent(activeClusterUID, vmProbeClient.AgentSamplesForCluster))
+
+	// Prometheus integrations are gated on the TenantsStore: detection
 	// reads ingest-token usage from there as the heartbeat signal.
 	// When auth is disabled the store isn't wired and the receiver
 	// stamps every sample as "anonymous", so a per-tenant integration
 	// card has no signal to read — skip registration entirely.
 	if tenantsStore != nil {
-		// Pass a closure that reads the manager's active cluster
-		// UID on every Detect. Tokens with ClusterID matching this
-		// UID (or unscoped) are the only ones the Prometheus card
-		// considers relevant signal — without it, multi-cluster
-		// installs would see other clusters' tokens inflate this
-		// cluster's "active senders" count.
-		//
-		// Note on UID source: `ActiveAgentProxyClusterID` alone is
-		// insufficient — it returns "" for direct-kubeconfig
-		// clusters (EKS, GKE, AKS reached via the operator's local
-		// kubeconfig, never through the agent proxy). Those
-		// clusters DO have a UID (kube-system namespace UUID) but
-		// only the active Connector knows it. We prefer the
-		// agent-proxy value when set (it's available at boot
-		// before the Connector finishes) and fall back to the
-		// Connector's value otherwise. Same selection the
-		// handlers' `activeClusterUID()` helper uses.
-		//
-		// Sample-presence probe: a tiny VM client that confirms
-		// Prom-originated samples tagged with the current cluster's
-		// UID are actually in storage. Closes the false-positive a
-		// legacy unscoped token would otherwise create on every
-		// cluster the operator switches to. Probe shape:
-		// `count(up{cluster_id="<X>"})` — `up` is the canonical
-		// per-scrape-target gauge that the agent gRPC channel does
-		// NOT emit, so presence cleanly attributes to "Prometheus
-		// shipping for this cluster" rather than the agent.
-		vmProbeURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
-		if vmProbeURL == "" {
-			vmProbeURL = "http://localhost:8428"
-		}
-		vmProbeClient := integrations.NewVMProbeClient(vmProbeURL, nil)
+		// Sample-presence probe (Fix #8 session 11-A v3): probes for
+		// `prometheus_build_info` (Prom self-metric that the
+		// kubebolt-agent never emits, even with Mode C broad
+		// matchers) rather than `up` (which Mode C does ship from
+		// GMP/AMP/AMW and would collide with the discriminator).
 		integrationRegistry.Register(integrations.NewPrometheus(
 			tenantsStore,
-			func() string {
-				if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
-					return uid
-				}
-				if conn := manager.Connector(); conn != nil {
-					return conn.ClusterUID()
-				}
-				return ""
-			},
+			activeClusterUID,
 			vmProbeClient.PromSamplesForCluster,
+		))
+		// Prometheus (read) — Mode C. Same vmProbeClient + same active
+		// cluster UID closure; the only difference is the underlying
+		// query (`kubebolt_promread_leader == 1` vs Prom-only metric).
+		// Inside the same `tenantsStore != nil` block as Prometheus
+		// because both depend on cluster_id stamping at the receiver.
+		integrationRegistry.Register(integrations.NewPrometheusRead(
+			activeClusterUID,
+			vmProbeClient.PromreadActiveForCluster,
 		))
 	}
 

@@ -9,6 +9,9 @@ spec:
   ports:
     - port: {{ .Values.service.port }}
       targetPort: {{ .Values.web.port }}
+      {{- if and (eq .Values.service.type "NodePort") .Values.service.nodePort }}
+      nodePort: {{ .Values.service.nodePort }}
+      {{- end }}
       protocol: TCP
       name: http
   selector:
@@ -47,6 +50,9 @@ spec:
   ports:
     - port: {{ .Values.agentIngest.port }}
       targetPort: {{ .Values.agentIngest.port }}
+      {{- if and (eq .Values.agentIngest.service.type "NodePort") .Values.agentIngest.service.nodePort }}
+      nodePort: {{ .Values.agentIngest.service.nodePort }}
+      {{- end }}
       protocol: TCP
       name: grpc
   selector:

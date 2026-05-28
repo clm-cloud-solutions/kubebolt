@@ -1,0 +1,250 @@
+{{- if and .Values.agent .Values.agent.promRead .Values.agent.promRead.enabled -}}
+{{- $backendUrl := required "backendUrl is required — set --set backendUrl=<host:port> or configure it in values.yaml" .Values.backendUrl -}}
+{{- /*
+1.13 topology split: promread runs in a dedicated Deployment(replicas=1)
+instead of riding on every DaemonSet pod. Rationale (S1 multi-node kind
+smoke 2026-05-26): in DaemonSet topology the leader pod accumulated 6×
+the sample volume of followers (Mode A locally + promread cluster-wide),
+swamped the shared ring buffer, and silently dropped its own kubelet
+collector samples. Isolating promread in its own pod gives it a dedicated
+buffer + shipper and removes the contention entirely.
+
+K8s Lease-based leader election is kept (LeaseName = kubebolt-promread)
+so a future replicas>1 scale-out is safe — only one pod polls the
+customer's Prom regardless.
+*/}}
+{{- include "kubebolt-agent.validatePromRead" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kubebolt-agent.fullname" . }}-promread
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kubebolt-agent.labels" . | nindent 4 }}
+    kubebolt.dev/role: promread
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kubebolt-agent.selectorLabels" . | nindent 6 }}
+      kubebolt.dev/role: promread
+  strategy:
+    type: Recreate  # Lease handles the single-writer guarantee; Recreate
+                    # avoids a brief window of two pollers during rollout.
+  template:
+    metadata:
+      labels:
+        {{- include "kubebolt-agent.selectorLabels" . | nindent 8 }}
+        kubebolt.dev/role: promread
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "kubebolt-agent.serviceAccountName" . }}
+      {{- with .Values.agent.promRead.deployment.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.promRead.deployment.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.agent.promRead.deployment.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.priorityClassName }}
+      priorityClassName: {{ .Values.priorityClassName | quote }}
+      {{- else if .Values.priority.enabled }}
+      priorityClassName: {{ include "kubebolt-agent.fullname" . }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: agent
+          image: {{ include "kubebolt-agent.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          env:
+            - name: KUBEBOLT_BACKEND_URL
+              value: {{ $backendUrl | quote }}
+            - name: KUBEBOLT_AGENT_LOG_LEVEL
+              value: {{ .Values.logLevel | quote }}
+            - name: KUBEBOLT_AGENT_MODE
+              value: "promread"
+            # Downward API — promread uses these for self-metrics labels
+            # and for the lease holderIdentity. The kubelet endpoint
+            # itself isn't used in promread mode (no Mode A collectors).
+            - name: KUBEBOLT_AGENT_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: KUBEBOLT_AGENT_NODE_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.hostIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            {{- if .Values.cluster.name }}
+            - name: KUBEBOLT_AGENT_CLUSTER_NAME
+              value: {{ .Values.cluster.name | quote }}
+            {{- end }}
+            {{- if .Values.cluster.id }}
+            - name: KUBEBOLT_AGENT_CLUSTER_ID
+              value: {{ .Values.cluster.id | quote }}
+            {{- end }}
+            {{- if and .Values.tenant .Values.tenant.id }}
+            - name: KUBEBOLT_TENANT_ID
+              value: {{ .Values.tenant.id | quote }}
+            {{- end }}
+            # Defensive: Hubble is Mode A. With KUBEBOLT_AGENT_MODE=promread
+            # the agent already skips Hubble setup, but the explicit env
+            # makes the intent reading the chart obvious.
+            - name: KUBEBOLT_HUBBLE_ENABLED
+              value: "false"
+            # ── Mode C — promread env block ──
+            - name: KUBEBOLT_AGENT_PROMREAD_ENABLED
+              value: "true"
+            - name: KUBEBOLT_AGENT_PROMREAD_URL
+              value: {{ .Values.agent.promRead.url | quote }}
+            {{- $promAuthMode := default "none" .Values.agent.promRead.auth.mode }}
+            - name: KUBEBOLT_AGENT_PROMREAD_AUTH_MODE
+              value: {{ $promAuthMode | quote }}
+            {{- if eq $promAuthMode "basicAuth" }}
+            - name: KUBEBOLT_AGENT_PROMREAD_BASIC_AUTH_USERNAME
+              value: {{ .Values.agent.promRead.auth.basicAuthUsername | quote }}
+            - name: KUBEBOLT_AGENT_PROMREAD_BASIC_AUTH_PASSWORD
+              value: {{ .Values.agent.promRead.auth.basicAuthPassword | quote }}
+            {{- else if eq $promAuthMode "bearer" }}
+            - name: KUBEBOLT_AGENT_PROMREAD_BEARER_TOKEN
+              value: {{ .Values.agent.promRead.auth.bearerToken | quote }}
+            {{- else if eq $promAuthMode "awsSigV4" }}
+            # awsSigV4 needs region for SigV4 signing. Credentials
+            # arrive ambient via IRSA (the EKS Pod Identity Webhook
+            # auto-injects AWS_ROLE_ARN + AWS_WEB_IDENTITY_TOKEN_FILE
+            # when the KSA has eks.amazonaws.com/role-arn annotation).
+            - name: KUBEBOLT_AGENT_PROMREAD_AWS_REGION
+              value: {{ .Values.agent.promRead.auth.awsRegion | quote }}
+            {{- end }}
+            {{- /* gcpIam and azureWorkloadIdentity need NO extra env from
+                   the chart — credentials arrive ambient via the
+                   in-cluster metadata server (GKE Workload Identity)
+                   or the WI webhook-injected env vars (Azure WI). The
+                   provider's SDK auto-discovers them at runtime. */ -}}
+            {{- if .Values.agent.promRead.pollInterval }}
+            - name: KUBEBOLT_AGENT_PROMREAD_POLL_INTERVAL
+              value: {{ .Values.agent.promRead.pollInterval | quote }}
+            {{- end }}
+            {{- if .Values.agent.promRead.step }}
+            - name: KUBEBOLT_AGENT_PROMREAD_STEP
+              value: {{ .Values.agent.promRead.step | quote }}
+            {{- end }}
+            {{- if .Values.agent.promRead.lookback }}
+            - name: KUBEBOLT_AGENT_PROMREAD_LOOKBACK
+              value: {{ .Values.agent.promRead.lookback | quote }}
+            {{- end }}
+            {{- with .Values.agent.promRead.matchers }}
+            - name: KUBEBOLT_AGENT_PROMREAD_MATCHERS
+              value: |-
+{{ join "\n" . | indent 16 }}
+            {{- end }}
+            # ── Backend auth (mirrors daemonset.yaml) ──
+            {{- if eq .Values.auth.mode "tokenreview" }}
+            - name: KUBEBOLT_AGENT_AUTH_MODE
+              value: "tokenreview"
+            - name: KUBEBOLT_AGENT_TOKEN_FILE
+              value: /var/run/secrets/kubebolt/token
+            {{- else if eq .Values.auth.mode "ingest-token" }}
+            {{- if not .Values.auth.ingestToken.existingSecret }}
+            {{- fail "auth.mode=ingest-token requires auth.ingestToken.existingSecret" }}
+            {{- end }}
+            - name: KUBEBOLT_AGENT_AUTH_MODE
+              value: "ingest-token"
+            - name: KUBEBOLT_AGENT_TOKEN_FILE
+              value: /var/run/secrets/kubebolt/token
+            {{- end }}
+            # ── Transport TLS (mirrors daemonset.yaml) ──
+            {{- if .Values.tls.enabled }}
+            - name: KUBEBOLT_AGENT_TLS_ENABLED
+              value: "true"
+            {{- if .Values.tls.serverName }}
+            - name: KUBEBOLT_AGENT_TLS_SERVER_NAME
+              value: {{ .Values.tls.serverName | quote }}
+            {{- end }}
+            {{- if .Values.tls.caSecret }}
+            - name: KUBEBOLT_AGENT_TLS_CA_FILE
+              value: /etc/kubebolt-tls/ca.crt
+            {{- end }}
+            {{- if .Values.tls.clientCertSecret }}
+            - name: KUBEBOLT_AGENT_TLS_CERT_FILE
+              value: /etc/kubebolt-tls/tls.crt
+            - name: KUBEBOLT_AGENT_TLS_KEY_FILE
+              value: /etc/kubebolt-tls/tls.key
+            {{- end }}
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            {{- if or (eq .Values.auth.mode "tokenreview") (eq .Values.auth.mode "ingest-token") }}
+            - name: kubebolt-token
+              mountPath: /var/run/secrets/kubebolt
+              readOnly: true
+            {{- end }}
+            {{- if and .Values.tls.enabled (or .Values.tls.caSecret .Values.tls.clientCertSecret) }}
+            - name: kubebolt-tls
+              mountPath: /etc/kubebolt-tls
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.agent.promRead.deployment.resources | nindent 12 }}
+      volumes:
+        {{- if eq .Values.auth.mode "tokenreview" }}
+        - name: kubebolt-token
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  audience: {{ .Values.auth.tokenreview.audience | quote }}
+                  expirationSeconds: {{ .Values.auth.tokenreview.expirationSeconds }}
+        {{- else if eq .Values.auth.mode "ingest-token" }}
+        - name: kubebolt-token
+          secret:
+            secretName: {{ .Values.auth.ingestToken.existingSecret | quote }}
+            items:
+              - key: {{ .Values.auth.ingestToken.tokenKey | default "token" | quote }}
+                path: token
+        {{- end }}
+        {{- if and .Values.tls.enabled (or .Values.tls.caSecret .Values.tls.clientCertSecret) }}
+        - name: kubebolt-tls
+          projected:
+            sources:
+              {{- if .Values.tls.caSecret }}
+              - secret:
+                  name: {{ .Values.tls.caSecret | quote }}
+                  items:
+                    - key: ca.crt
+                      path: ca.crt
+              {{- end }}
+              {{- if .Values.tls.clientCertSecret }}
+              - secret:
+                  name: {{ .Values.tls.clientCertSecret | quote }}
+                  items:
+                    - key: tls.crt
+                      path: tls.crt
+                    - key: tls.key
+                      path: tls.key
+              {{- end }}
+        {{- end }}
+{{- end }}

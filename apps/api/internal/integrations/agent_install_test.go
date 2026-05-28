@@ -21,7 +21,7 @@ func TestAgentInstall_FreshCluster(t *testing.T) {
 	}
 	raw, _ := json.Marshal(cfg)
 
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 
@@ -87,7 +87,7 @@ func TestAgentInstall_HubbleDisabled(t *testing.T) {
 	cfg := AgentInstallConfig{BackendURL: "x:9090", HubbleEnabled: &hubbleOff}
 	raw, _ := json.Marshal(cfg)
 
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	ds, _ := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{})
@@ -102,7 +102,7 @@ func TestAgentInstall_MissingBackendURL(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	raw, _ := json.Marshal(AgentInstallConfig{})
 
-	err := NewAgent().(Installable).Install(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw)
 	if err == nil {
 		t.Fatal("expected error for missing backendUrl, got nil")
 	}
@@ -112,7 +112,7 @@ func TestAgentInstall_Idempotent(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	cfg := AgentInstallConfig{BackendURL: "x:9090"}
 	raw, _ := json.Marshal(cfg)
-	install := NewAgent().(Installable)
+	install := NewAgent(nil, nil).(Installable)
 
 	if err := install.Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("first install failed: %v", err)
@@ -143,7 +143,7 @@ func TestAgentInstall_ConflictWithExternal(t *testing.T) {
 	cfg := AgentInstallConfig{BackendURL: "x:9090"}
 	raw, _ := json.Marshal(cfg)
 
-	err := NewAgent().(Installable).Install(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw)
 	if err == nil {
 		t.Fatal("expected ConflictError, got nil")
 	}
@@ -159,7 +159,7 @@ func TestAgentInstall_ConflictWithExternal(t *testing.T) {
 func TestAgentUninstall_RemovesOwnResources(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	raw, _ := json.Marshal(AgentInstallConfig{BackendURL: "x:9090"})
-	inst := NewAgent().(Installable)
+	inst := NewAgent(nil, nil).(Installable)
 	if err := inst.Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
@@ -205,7 +205,7 @@ func TestAgentUninstall_LeavesExternalInstallAlone(t *testing.T) {
 			},
 		},
 	)
-	err := NewAgent().(Installable).Uninstall(context.Background(), cs, UninstallOptions{})
+	err := NewAgent(nil, nil).(Installable).Uninstall(context.Background(), cs, UninstallOptions{})
 	// Default (non-force) uninstall reports this explicitly so the
 	// UI can render the "confirm force uninstall" flow.
 	var notManaged *NotManagedError
@@ -223,7 +223,7 @@ func TestAgentUninstall_LeavesExternalInstallAlone(t *testing.T) {
 
 func TestAgentUninstall_NoOpWhenNothingInstalled(t *testing.T) {
 	cs := fake.NewSimpleClientset()
-	if err := NewAgent().(Installable).Uninstall(context.Background(), cs, UninstallOptions{}); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Uninstall(context.Background(), cs, UninstallOptions{}); err != nil {
 		t.Fatalf("uninstall should be no-op on empty cluster, got: %v", err)
 	}
 }
@@ -255,7 +255,7 @@ func TestAgentUninstall_ForceRemovesExternalInstall(t *testing.T) {
 		},
 	)
 
-	if err := NewAgent().(Installable).Uninstall(context.Background(), cs, UninstallOptions{Force: true}); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Uninstall(context.Background(), cs, UninstallOptions{Force: true}); err != nil {
 		t.Fatalf("force uninstall failed: %v", err)
 	}
 
@@ -279,7 +279,7 @@ func TestAgentInstall_NodeSelectorAndPriorityClass(t *testing.T) {
 		PriorityClassName: "system-cluster-critical",
 	}
 	raw, _ := json.Marshal(cfg)
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	ds, _ := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{})
@@ -303,7 +303,7 @@ func TestAgentInstall_ResourcesOverride(t *testing.T) {
 		},
 	}
 	raw, _ := json.Marshal(cfg)
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	ds, _ := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{})
@@ -329,7 +329,7 @@ func TestAgentInstall_InvalidResourceQuantity(t *testing.T) {
 		Resources:  &AgentResourceConfig{CPURequest: "not-a-quantity"},
 	}
 	raw, _ := json.Marshal(cfg)
-	err := NewAgent().(Installable).Install(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw)
 	if err == nil {
 		t.Fatal("expected parse error for invalid CPU request, got nil")
 	}
@@ -353,7 +353,7 @@ func TestAgentInstall_HubbleMTLS(t *testing.T) {
 		HubbleRelayAddress: "hubble-relay.kube-system:4245",
 	}
 	raw, _ := json.Marshal(cfg)
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	ds, _ := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{})
@@ -407,7 +407,7 @@ func TestAgentInstall_HubbleMTLS_MissingSecretFailsFast(t *testing.T) {
 		HubbleRelayTLS: &HubbleRelayTLSConfig{ExistingSecret: "missing-secret"},
 	}
 	raw, _ := json.Marshal(cfg)
-	err := NewAgent().(Installable).Install(context.Background(), cs, raw)
+	err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw)
 	if err == nil {
 		t.Fatal("expected missing-secret error, got nil")
 	}
@@ -420,7 +420,7 @@ func TestAgentInstall_ImagePullPolicy(t *testing.T) {
 	cs := fake.NewSimpleClientset()
 	cfg := AgentInstallConfig{BackendURL: "x:9090", ImagePullPolicy: "Never"}
 	raw, _ := json.Marshal(cfg)
-	if err := NewAgent().(Installable).Install(context.Background(), cs, raw); err != nil {
+	if err := NewAgent(nil, nil).(Installable).Install(context.Background(), cs, raw); err != nil {
 		t.Fatalf("install failed: %v", err)
 	}
 	ds, _ := cs.AppsV1().DaemonSets(agentNamespace).Get(context.Background(), agentDSName, metav1.GetOptions{})

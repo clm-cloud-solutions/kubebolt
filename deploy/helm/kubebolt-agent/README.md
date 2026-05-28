@@ -89,6 +89,41 @@ Independent toggle from `rbac.mode`. Three values:
   `auth.tokenReview.audience=kubebolt-backend` (matches the
   backend's expected audience).
 
+## Topology — Mode A vs Mode C
+
+The chart can run the agent in two complementary topologies:
+
+| Topology | What it does | When it renders |
+|---|---|---|
+| **Mode A — DaemonSet** *(always)* | One pod per node. Scrapes the local kubelet (`/stats/summary` + `/metrics/cadvisor`) for the KubeBolt-named metrics the UI's curated panels consume (`node_fs_used_bytes`, `container_cpu_usage_seconds_total`, `pod_*`). Optionally runs the leader-elected Hubble flow collector. | Always. |
+| **Mode C — Deployment (replicas=1)** *(opt-in)* | Single cluster-wide pod that polls the customer's existing Prometheus via `/api/v1/query_range` and forwards the converted samples through the same AgentChannel as Mode A. Adds metrics Mode A doesn't synthesize: full kube-state-metrics, `node_load*`, PSI pressure, disk I/O detail, network errors. | When `agent.promRead.enabled=true`. |
+
+The two run **in separate pods** — Mode C does NOT piggy-back on the DaemonSet. The split was introduced in 1.13 after a multi-node validation showed that running both pipelines on the same leader pod overflowed its shared buffer and silently dropped its own kubelet samples. Each pod has dedicated buffer + shipper; no contention.
+
+**Picking your install shape:**
+
+| Customer profile | Values to set |
+|---|---|
+| Greenfield / no existing Prom | `agent.promRead.enabled=false` (default) — Mode A only. Optionally `scrape.enabled=true` for the bundled vmagent sidecar. |
+| Has Prom that supports `remote_write` outbound (self-managed Prom, GCP GMP customer-deployed) | Mode A + customer's Prom `remote_write` into the KubeBolt backend's `/prom/write` endpoint. `agent.promRead.enabled=false`. |
+| Has managed Prom that's query-only (AWS AMP, Azure Monitor managed Prom, GCP GMP managed) OR change-management blocks editing the customer's Prom config | `agent.promRead.enabled=true` + `agent.promRead.url=<customer-prom-svc>` + appropriate `agent.promRead.auth.mode` (`none` / `basicAuth` / `bearer` in 1.13; AWS SigV4 / Azure Workload Identity / GCP IAM in 1.13.x). Mode A keeps running in parallel for the KubeBolt-named metrics. |
+
+**Mutual exclusion enforced at render time:** if `scrape.enabled=true` AND `agent.promRead.enabled=true`, the chart hard-fails with a clear message — pick one (the scrape sidecar and the customer-Prom reader would duplicate work for no UI gain).
+
+**Default Mode C matchers are surgical.** They pull ONLY metrics Mode A doesn't already synthesize, to avoid 2× storage on overlapping data:
+
+```yaml
+agent:
+  promRead:
+    matchers:
+      - '{__name__=~"kube_.*"}'                            # full KSM
+      - '{__name__=~"node_load.*|node_pressure_.*"}'        # uptime + PSI
+      - '{__name__=~"node_disk_.*|node_network_.*_errs_.*"}'  # I/O detail
+      - '{__name__=~"up|process_.*"}'                       # target health
+```
+
+Operators add app-custom metrics or wider node-exporter surface by appending to this list in their values override. Empty list falls back to the same defaults in code.
+
 ## Achieving full node coverage
 
 The agent runs as a DaemonSet — one pod per node. When a pod can't

@@ -134,7 +134,13 @@ function IntegrationCard({
           )}
         </div>
         <div className="flex items-center gap-2">
-          {!isInstalled && isAdmin && (
+          {/* Install — only for integrations that actually expose an
+              install wizard. Catalog-only entries (Prometheus push,
+              Prometheus read — both helm-only) leave `installable=false`
+              from the backend; showing a button that opens a modal
+              with no wizard would be a dead-end UX. The setup snippet
+              lives inside Manage for those. */}
+          {!isInstalled && isAdmin && integration.installable && (
             <button
               onClick={() => canInstall && onInstall(integration)}
               disabled={!canInstall}
