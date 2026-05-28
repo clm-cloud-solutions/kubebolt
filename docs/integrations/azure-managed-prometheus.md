@@ -485,9 +485,18 @@ helm upgrade --install kubebolt-agent \
   --set agent.promRead.url="${AMW_ENDPOINT}" \
   --set agent.promRead.auth.mode=azureWorkloadIdentity \
   --set serviceAccount.annotations."azure\.workload\.identity/client-id"="${UAMI_CLIENT_ID}" \
-  --set-string podLabels."azure\.workload\.identity/use"="true" \
-  --set agent.deferNodeStress=true
+  --set-string podLabels."azure\.workload\.identity/use"="true"
 ```
+
+> **NodeStress auto-defer (1.13.0+).** Earlier 1.13.0-rc builds
+> required `--set agent.deferNodeStress=true` here to prevent the
+> Mode A NodeStress collector from duplicating the
+> `node_load*` / `node_pressure_*` / `node_network_*_errs_*` series
+> that Azure's `ama-metrics-node` ships from node-exporter. As of
+> 1.13.0 the chart auto-defers both collectors when
+> `auth.mode=azureWorkloadIdentity` — no operator flag needed.
+> Operators on 1.13.0-rc.x can drop the explicit flag on the next
+> upgrade.
 
 > **Why `--set-string` for the pod label.** `helm --set` type-infers
 > the value: `true` becomes a YAML boolean, but Kubernetes labels
@@ -511,7 +520,6 @@ helm upgrade --install kubebolt-agent \
 | `agent.promRead.auth.mode=azureWorkloadIdentity` | Tells the agent to mint federated tokens via the WI webhook's env vars + token file. No key file needed. |
 | `serviceAccount.annotations."azure\.workload\.identity/client-id"` | Links the KSA to the UAMI from Step 2. The backslash-escaping is for Helm's `--set` parser, not for YAML. |
 | `podLabels."azure\.workload\.identity/use"="true"` | Opts the pod into the WI webhook's token injection. **Required** — see the note below. |
-| `agent.deferNodeStress=true` | Disables Mode A's NodeStress collector (loadavg + PSI from /proc). **Required on AMW** because `--enable-azure-monitor-metrics` always deploys `ama-metrics-node` which scrapes node-exporter — without this flag the UI's Load average panel renders duplicate series, one from each path. See the dedicated note below. |
 
 > **Escaping `azure.workload.identity/*`.** Helm's `--set` syntax
 > treats `.` as a path separator, so both the annotation key AND the
@@ -734,12 +742,10 @@ If your AKS cluster has Azure's `networkobservability-retina` enabled
 metrics too. Mode C pulls them into KubeBolt automatically, which
 gives you flow-level visibility on AKS without running Cilium/Hubble.
 
-### Quirk 4 — `node_load*` and `node_pressure_*` double-emission
+### Quirk 4 — `node_load*` and `node_pressure_*` double-emission (auto-handled in 1.13.0+)
 
-This is the **most important Azure-specific operational quirk** —
-miss it and the UI's Load average panel will show duplicate series
-(1m + 1m', 5m + 5m', 15m + 15m') for the entire lifetime of the
-install. The mechanism:
+Two paths in the agent would otherwise emit the same metric family
+on AMW:
 
 1. **Mode A path** — the agent's NodeStress collector (added in
    1.13.0 to give GMP-on-GKE parity, since GMP doesn't scrape
@@ -752,29 +758,30 @@ install. The mechanism:
    agent's promread leader pulls them back out with Azure-injected
    labels (`microsoft.*`, `instance=<vmss-name>`).
 
-Both paths land in VictoriaMetrics with different label sets, so
-the UI's chart engine renders them as distinct series. The Step 3
-install command sets `agent.deferNodeStress=true` to disable the
-Mode A path; the Mode C path stays authoritative on AMW.
+**The chart auto-defers the Mode A path on AMW since 1.13.0.** The
+template detects `auth.mode=azureWorkloadIdentity` (an always-true
+predicate for AMW) and sets `KUBEBOLT_AGENT_DEFER_NODE_NETWORK=true`
++ `KUBEBOLT_AGENT_DEFER_NODE_STRESS=true` on the DaemonSet's env
+block. Mode C stays the authoritative source for these metrics on
+AMW. No operator flag needed.
 
-**Cross-provider matrix:**
+**Cross-provider matrix** (1.13.0+ defaults):
 
-| Provider | Recommended `deferNodeStress` | Why |
+| Provider | NodeStress emission | Why |
 |---|---|---|
-| AMW (Azure) | **`true`** | ama-metrics always scrapes node-exporter — guaranteed duplication if NodeStress also runs |
-| AMP (AWS) | depends on your `remote_write` source | If kube-prometheus-stack pushes node-exporter → `true`; if nothing pushes → leave at `false` default |
-| GMP (GCP) | **`false`** (default) | GMP doesn't scrape node-exporter — NodeStress is the **only** loadavg source on GKE |
+| AMW (Azure) | **Auto-deferred** | Chart short-circuits when `auth.mode=azureWorkloadIdentity` — `ama-metrics-node` always scrapes node-exporter |
+| AMP (AWS) | Active by default; defer manually if your `remote_write` source pushes node-exporter | AMP is sink-only — the chart can't auto-detect what's pushing |
+| GMP (GCP) | **Active** | GMP doesn't scrape node-exporter — NodeStress is the **only** loadavg source on GKE |
 
-**Validation:** if you ever see Load average rendering 6 lines
-instead of 3, the agent's `--set agent.deferNodeStress=true` was
-either omitted at install time or got wiped by a `helm upgrade`
-without `--reuse-values`. Re-apply it.
+**Validation:** the Load average panel should render 3 lines (1m +
+5m + 15m), one series each. If you see 6, you're either on a
+pre-1.13.0 agent OR you're on a future provider that ships
+node-exporter alongside Mode C without a chart-side auto-defer
+clause yet — open an issue with your provider + agent version.
 
-> **Future-proofing.** A chart-side enhancement (1.13.1+) is
-> tracked to auto-defer NodeStress when `auth.mode` is
-> `azureWorkloadIdentity` (an always-true predicate on AMW). Once
-> shipped, this flag becomes redundant for new installs and the
-> doc patch will drop it from the Step 3 command.
+**Manual override** is still supported via `--set agent.deferNodeStress=true`
+(and `agent.deferNodeNetwork=true`) — useful on AMP installs with a
+kube-prometheus-stack `remote_write` source.
 
 ### Universal labels
 
@@ -840,7 +847,7 @@ for your workspace's volume.
 | KSA annotation missing | Forgot the `serviceAccount.annotations` chart flag | `kubectl describe sa kubebolt-agent -n kubebolt` — must show `azure.workload.identity/client-id: <UAMI client_id>` |
 | Card still says `Not installed` after 5 min | Cluster UID not stamped on the leader gauge | Check `kubectl -n kubebolt logs -l kubebolt.dev/role=promread \| grep cluster_id` — should show a UUID. If empty, set `--set cluster.id=<kube-system UID>` explicitly |
 | Pod logs show `Server returned 401 InvalidAuthenticationToken` | Token resource scope is wrong (Azure SDK picked the default scope, not `prometheus.monitor.azure.com`) | This shouldn't happen with the chart's wired `azureWorkloadIdentity` provider — file an issue if it does, with the full log line |
-| Load average panel renders 6 lines instead of 3 (1m + 1m', 5m + 5m', 15m + 15m') | Mode A NodeStress + Mode C promread both emit `node_load*` — duplicate paths to VictoriaMetrics | `helm upgrade kubebolt-agent ... --reuse-values --set agent.deferNodeStress=true` — see [Quirk 4](#quirk-4--node_load-and-node_pressure_-double-emission) for the full mechanism |
+| Load average panel renders 6 lines instead of 3 (1m + 1m', 5m + 5m', 15m + 15m') | Pre-1.13.0 agent OR chart auto-defer didn't kick in | Upgrade to agent >= 1.1.0 (ships with kubebolt-agent chart >= 1.1.0). Workaround on older versions: `helm upgrade kubebolt-agent ... --reuse-values --set agent.deferNodeStress=true --set agent.deferNodeNetwork=true` |
 
 ---
 
