@@ -178,6 +178,14 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Pass the resolved semver into the Dockerfile's ARG VERSION
+          # so `main.version` is stamped at compile time. Without this,
+          # the binary keeps its `var version = "dev"` default and the
+          # update-check feature short-circuits — every self-hosted
+          # install sees "currentVersion: dev" and never gets the
+          # Topbar update chip.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
