@@ -137,6 +137,7 @@ export interface ClusterOverview {
   certificates?: ResourceCount
   argocdApps?: ResourceCount
   vpas?: ResourceCount
+  helmReleases?: ResourceCount
   // Endpoints — counted from EndpointSlices, matching what the
   // /resources/endpoints list endpoint returns.
   endpoints?: ResourceCount

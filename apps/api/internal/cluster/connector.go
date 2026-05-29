@@ -1127,6 +1127,18 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.VPAs.Total = len(c.listOptionalCRD("vpas", ""))
 	overview.VPAs.Ready = overview.VPAs.Total
 
+	// Helm releases — count DISTINCT releases (one release has N revision
+	// Secrets) via the owner=helm Secret's `name` label; no gzip/JSON decode
+	// needed for a count. Same source the Applications page lists.
+	if helmSecrets, err := c.ListHelmReleaseSecrets(context.Background()); err == nil {
+		distinct := make(map[string]struct{}, len(helmSecrets))
+		for i := range helmSecrets {
+			distinct[helmSecrets[i].Namespace+"/"+helmSecrets[i].Labels["name"]] = struct{}{}
+		}
+		overview.HelmReleases.Total = len(distinct)
+		overview.HelmReleases.Ready = len(distinct)
+	}
+
 	// Endpoints — count of EndpointSlice objects, matching what the
 	// list endpoint returns (KubeBolt surfaces EndpointSlices under
 	// the `endpoints` resource type — the legacy Endpoints API is

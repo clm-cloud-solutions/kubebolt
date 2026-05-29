@@ -33,6 +33,9 @@ type ClusterOverview struct {
 	Certificates    ResourceCount `json:"certificates"`
 	ArgoCDApps      ResourceCount `json:"argocdApps"`
 	VPAs            ResourceCount `json:"vpas"`
+	// HelmReleases — distinct Helm releases (counted from the owner=helm
+	// Secret labels, no payload decode). Powers the Applications counter.
+	HelmReleases ResourceCount `json:"helmReleases"`
 	// Endpoints — backed by EndpointSlices (KubeBolt's `endpoints`
 	// resource type lists one row per EndpointSlice, not per legacy
 	// Endpoints object). Count matches what the list endpoint returns.
