@@ -104,6 +104,10 @@ var resourceDefs = map[string]resourceDef{
 	"networkpolicies": {group: "networking.k8s.io", resource: "networkpolicies"},
 	// Policy v1
 	"pdbs": {group: "policy", resource: "poddisruptionbudgets"},
+	// Optional CRDs (1.14) — probed so RBAC discovery reflects real access.
+	"certificates": {group: "cert-manager.io", resource: "certificates"},
+	"argocdapps":   {group: "argoproj.io", resource: "applications"},
+	"vpas":         {group: "autoscaling.k8s.io", resource: "verticalpodautoscalers"},
 	// Autoscaling v1
 	"hpas": {group: "autoscaling", resource: "horizontalpodautoscalers"},
 	// Storage v1

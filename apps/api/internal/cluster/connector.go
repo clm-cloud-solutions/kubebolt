@@ -3312,6 +3312,13 @@ func int32PtrOrZero(p *int32) int32 {
 	return *p
 }
 
+// ResourceTypeGVR is the exported accessor for the resource-type → GVR map.
+// Used by the describe handlers to build a RESTMapping for kubectl's generic
+// describer on dynamic CRD types (which have no built-in describer).
+func ResourceTypeGVR(resourceType string) (schema.GroupVersionResource, bool) {
+	return resourceTypeToGVR(resourceType)
+}
+
 // resourceTypeToGVR maps a resource type string to its GroupVersionResource.
 func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) {
 	m := map[string]schema.GroupVersionResource{
