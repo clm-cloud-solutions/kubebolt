@@ -118,6 +118,18 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 	}
 }
 
+// copilotDestructiveBlocked reports whether this request is a Kobi-proposed
+// destructive action that the admin has disabled via the destructive-ops
+// sub-switch (Sprint 1). UI-initiated actions are governed by RBAC, not this
+// gate — only copilot_proposal-sourced mutations are blocked. Defense in
+// depth behind the tool-list filter (which already hides delete from the LLM
+// when destructive ops are off; this also catches scale-to-0, which shares
+// the non-destructive scale tool and so can't be tool-filtered).
+func (h *handlers) copilotDestructiveBlocked(r *http.Request) bool {
+	return !h.copilotConfig.DestructiveActionsEnabled &&
+		r.Header.Get("X-KubeBolt-Action-Source") == "copilot_proposal"
+}
+
 func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 	resourceType := chi.URLParam(r, "type")
 	namespace := chi.URLParam(r, "namespace")
@@ -212,6 +224,13 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Replicas < 0 {
 		respondError(w, http.StatusBadRequest, "replicas must be >= 0")
+		return
+	}
+	// Scale-to-0 is a destructive Kobi action — gated by the destructive-ops
+	// sub-switch. Can't be tool-filtered (shares propose_scale_workload), so
+	// it's enforced here.
+	if body.Replicas == 0 && h.copilotDestructiveBlocked(r) {
+		respondError(w, http.StatusForbidden, "scale-to-0 via Kobi is disabled by the destructive-ops admin setting")
 		return
 	}
 
@@ -581,6 +600,14 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 
 	if namespace == "_" {
 		namespace = ""
+	}
+
+	// Delete is destructive — gated by the destructive-ops sub-switch for
+	// Kobi-proposed actions (defense in depth; the LLM already can't see the
+	// delete tool when the sub-switch is off).
+	if h.copilotDestructiveBlocked(r) {
+		respondError(w, http.StatusForbidden, "delete via Kobi is disabled by the destructive-ops admin setting")
+		return
 	}
 
 	conn := h.manager.Connector()

@@ -2,6 +2,31 @@ package copilot
 
 import "strings"
 
+// GovernedToolDefinitions returns ToolDefinitions() filtered by the Sprint 1
+// action-governance toggles. When actionsEnabled is false, ALL propose_*
+// tools are withheld and Kobi reverts to read-only advisory. When
+// destructiveEnabled is false, the destructive verbs (delete) are withheld;
+// scale-to-0 can't be tool-filtered (it shares propose_scale_workload) so it
+// is blocked server-side instead.
+func GovernedToolDefinitions(actionsEnabled, destructiveEnabled bool) []ToolDefinition {
+	all := ToolDefinitions()
+	if actionsEnabled && destructiveEnabled {
+		return all
+	}
+	out := make([]ToolDefinition, 0, len(all))
+	for _, t := range all {
+		isPropose := strings.HasPrefix(t.Name, "propose_")
+		if !actionsEnabled && isPropose {
+			continue
+		}
+		if !destructiveEnabled && t.Name == "propose_delete_resource" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // ToolDefinitions returns the list of tools the copilot exposes to the LLM.
 // Each tool maps to a KubeBolt API capability — execution happens server-side
 // in the chat handler via the cluster connector.

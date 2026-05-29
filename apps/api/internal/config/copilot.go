@@ -33,6 +33,18 @@ type CopilotConfig struct {
 	// Set KUBEBOLT_AI_SHOW_TOOL_CALLS=false to keep only the final assistant
 	// text and a transient loading indicator (the pre-2026-05-15 behavior).
 	ShowToolCalls bool
+
+	// Action governance (Sprint 1). ActionsEnabled is the master switch:
+	// when false, the propose_* tools are withheld from the LLM and Kobi
+	// reverts to read-only advisory (pre-action-calling 1.12 behavior).
+	// DestructiveActionsEnabled gates the destructive verbs (delete,
+	// scale-to-0); when false they're withheld + rejected server-side.
+	// Both default TRUE — the action surface already shipped, so the
+	// toggles are an opt-out for compliance-conscious operators, not a
+	// behavior change. KUBEBOLT_AI_ACTIONS_ENABLED /
+	// KUBEBOLT_AI_DESTRUCTIVE_ACTIONS_ENABLED.
+	ActionsEnabled            bool
+	DestructiveActionsEnabled bool
 }
 
 // LoadCopilotConfig reads copilot configuration from KUBEBOLT_AI_* env vars.
@@ -46,9 +58,17 @@ func LoadCopilotConfig() CopilotConfig {
 		},
 		MaxTokens:            4096,
 		AutoCompact:          true,
-		AutoCompactThreshold: 0.80,
-		CompactPreserveTurns: 3,
-		ShowToolCalls:        true,
+		AutoCompactThreshold:      0.80,
+		CompactPreserveTurns:      3,
+		ShowToolCalls:             true,
+		ActionsEnabled:            true,
+		DestructiveActionsEnabled: true,
+	}
+	if v := os.Getenv("KUBEBOLT_AI_ACTIONS_ENABLED"); v == "false" || v == "0" {
+		cfg.ActionsEnabled = false
+	}
+	if v := os.Getenv("KUBEBOLT_AI_DESTRUCTIVE_ACTIONS_ENABLED"); v == "false" || v == "0" {
+		cfg.DestructiveActionsEnabled = false
 	}
 	if v := os.Getenv("KUBEBOLT_AI_MAX_TOKENS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {

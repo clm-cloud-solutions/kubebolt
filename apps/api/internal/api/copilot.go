@@ -198,7 +198,14 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	systemPrompt := copilot.BuildSystemPrompt()
 
 	executor := copilot.NewExecutor(h.manager)
-	tools := copilot.ToolDefinitions()
+	// Action governance (Sprint 1): withhold propose_* tools when actions
+	// are disabled, and the destructive verbs when the sub-switch is off —
+	// the LLM can't propose what it can't see. Defaults are ON (the action
+	// surface already shipped); see config.CopilotConfig.
+	tools := copilot.GovernedToolDefinitions(
+		h.copilotConfig.ActionsEnabled,
+		h.copilotConfig.DestructiveActionsEnabled,
+	)
 
 	trigger := req.Trigger
 	if trigger == "" {
