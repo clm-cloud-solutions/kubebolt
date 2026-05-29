@@ -5,6 +5,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { Lightbulb } from 'lucide-react'
+import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 
 type SeverityFilter = '' | 'critical' | 'warning' | 'info'
 
@@ -25,23 +26,29 @@ export function InsightsList() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-semibold text-kb-text-primary">Insights</h1>
-        <div className="flex gap-1">
-          {filters.map((f) => (
-            <button
-              key={f.value}
-              onClick={() => setSeverity(f.value)}
-              className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.06em] border transition-colors ${
-                severity === f.value
-                  ? 'bg-status-info-dim text-status-info border-status-info/20'
-                  : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
-              }`}
-            >
-              {f.label}
-            </button>
-          ))}
+      <div className="mb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ResourceTypeIcon type="insights" />
+            <h1 className="text-lg font-semibold text-kb-text-primary">Insights</h1>
+          </div>
+          <div className="flex gap-1">
+            {filters.map((f) => (
+              <button
+                key={f.value}
+                onClick={() => setSeverity(f.value)}
+                className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.06em] border transition-colors ${
+                  severity === f.value
+                    ? 'bg-status-info-dim text-status-info border-status-info/20'
+                    : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
         </div>
+        <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('insights')}</p>
       </div>
 
       {insights.length === 0 ? (

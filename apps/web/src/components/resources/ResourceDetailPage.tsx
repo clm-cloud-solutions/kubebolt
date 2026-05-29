@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
+import { YamlViewer } from '@/components/shared/YamlViewer'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
@@ -1325,91 +1326,10 @@ function RegexFilterInput({
   )
 }
 
-function highlightYAMLLine(line: string): React.ReactNode {
-  // Comment lines
-  if (/^\s*#/.test(line)) {
-    return <span className="yaml-comment">{line}</span>
-  }
-
-  // Key: value lines
-  const kvMatch = line.match(/^(\s*)([\w.\-/]+)(:)(.*)$/)
-  if (kvMatch) {
-    const [, indent, key, colon, rest] = kvMatch
-    return (
-      <>
-        <span>{indent}</span>
-        <span className="yaml-key">{key}</span>
-        <span>{colon}</span>
-        {highlightValue(rest)}
-      </>
-    )
-  }
-
-  // List items with key: value
-  const listKvMatch = line.match(/^(\s*-\s+)([\w.\-/]+)(:)(.*)$/)
-  if (listKvMatch) {
-    const [, prefix, key, colon, rest] = listKvMatch
-    return (
-      <>
-        <span>{prefix}</span>
-        <span className="yaml-key">{key}</span>
-        <span>{colon}</span>
-        {highlightValue(rest)}
-      </>
-    )
-  }
-
-  // List items with plain value
-  const listMatch = line.match(/^(\s*-\s+)(.*)$/)
-  if (listMatch) {
-    const [, prefix, val] = listMatch
-    return (
-      <>
-        <span>{prefix}</span>
-        {highlightValue(' ' + val)}
-      </>
-    )
-  }
-
-  return <span>{line}</span>
-}
-
-function highlightValue(raw: string): React.ReactNode {
-  const trimmed = raw.trim()
-  if (!trimmed || trimmed === '') return <span>{raw}</span>
-
-  // Quoted strings
-  if (/^["'].*["']$/.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-string">{trimmed}</span></>
-  }
-
-  // Booleans
-  if (/^(true|false)$/i.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-bool">{trimmed}</span></>
-  }
-
-  // Null
-  if (/^(null|~)$/i.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-null">{trimmed}</span></>
-  }
-
-  // Numbers
-  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-number">{trimmed}</span></>
-  }
-
-  // Plain strings (unquoted)
-  if (trimmed.length > 0) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-string">{trimmed}</span></>
-  }
-
-  return <span>{raw}</span>
-}
+// highlightYAMLLine + the read-only YamlViewer now live in
+// components/shared/YamlViewer.tsx (imported above) so the Helm manifest tab
+// renders identically. highlightDescribeLine (below) stays local — it's a
+// different syntax (kubectl describe output, not YAML).
 
 function highlightDescribeLine(line: string): React.ReactNode {
   const trimmed = line.trimStart()
@@ -1956,16 +1876,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       {editing ? (
         <YAMLEditor value={editValue} onChange={setEditValue} />
       ) : (
-        <div className="overflow-auto h-[calc(100vh-360px)] min-h-[320px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
-          <pre className="text-[11px] font-mono leading-5 whitespace-pre-wrap break-all">
-            {lines.map((line, i) => (
-              <div key={i} className="flex">
-                <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
-                <span className="flex-1 min-w-0">{highlightYAMLLine(line)}</span>
-              </div>
-            ))}
-          </pre>
-        </div>
+        <YamlViewer text={lines.join('\n')} />
       )}
     </Section>
   )

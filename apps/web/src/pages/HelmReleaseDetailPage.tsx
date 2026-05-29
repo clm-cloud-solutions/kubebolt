@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Package, ArrowLeft, Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/services/api'
 import { HelmStatusBadge } from '@/pages/ApplicationsPage'
+import { YamlViewer } from '@/components/shared/YamlViewer'
 
 type Tab = 'overview' | 'values' | 'manifest' | 'history' | 'dependencies' | 'related'
 
@@ -120,7 +121,9 @@ export function HelmReleaseDetailPage() {
 
       {tab === 'manifest' && (
         <Section title="Rendered Manifest">
-          <CodeBlock text={data.manifest || ''} />
+          {/* Same read-only YAML viewer as the resource YAML tab (no Edit —
+              Helm releases are read-only in 1.14). */}
+          <YamlViewer text={data.manifest || ''} />
         </Section>
       )}
 
