@@ -403,7 +403,7 @@ interface KindGroupData {
 // the rail shrinks. Clamped so the manifest list never collapses below
 // RAIL_MIN, and the rail never exceeds RAIL_MAX (= today's width) so the YAML
 // can only grow from its current size, never shrink below it. Persisted.
-const RAIL_MIN = 180
+const RAIL_MIN = 130
 const RAIL_MAX = 260
 const RAIL_WIDTH_KEY = 'kb-helm-manifest-rail-width'
 
