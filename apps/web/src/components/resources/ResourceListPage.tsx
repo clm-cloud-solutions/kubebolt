@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight, Filter, X, SearchX, Inbox } from 'lucide-react'
+import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
 import { RestartHistorySparkline } from './RestartHistorySparkline'
@@ -596,7 +597,10 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   return (
     <div>
       <div className="flex items-center gap-3 mb-4">
-        <h1 className="text-lg font-semibold text-kb-text-primary">{label}</h1>
+        <div className="flex items-center gap-2">
+          <ResourceTypeIcon type={resourceType} />
+          <h1 className="text-lg font-semibold text-kb-text-primary">{label}</h1>
+        </div>
         <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
           {total} total
         </span>
