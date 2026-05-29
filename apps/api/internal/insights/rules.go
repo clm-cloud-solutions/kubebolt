@@ -32,6 +32,72 @@ func AllRules() []Rule {
 		networkPolicyNoMatchRule(),
 		namespaceWithoutNetworkPolicyRule(),
 		pdbNoMatchRule(),
+		helmReleaseFailedRule(),
+		helmReleaseHookPendingRule(),
+	}
+}
+
+// helmReleaseFailedRule flags Helm releases whose last action ended in a
+// failed state — an install/upgrade that errored or rolled back, leaving the
+// release unusable until an operator addresses it. (Sprint 4 insight.)
+func helmReleaseFailedRule() Rule {
+	return Rule{
+		ID:       "helm-release-failed",
+		Name:     "Helm release failed",
+		Severity: "critical",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, r := range state.HelmReleases {
+				if !strings.EqualFold(r.Status, "failed") {
+					continue
+				}
+				desc := r.Description
+				if desc == "" {
+					desc = "no description recorded"
+				}
+				insights = append(insights, newInsight(
+					"critical",
+					fmt.Sprintf("HelmRelease/%s/%s", r.Namespace, r.Name),
+					"Helm release failed",
+					fmt.Sprintf("Helm release %s/%s (chart %s %s) is in a failed state: %s",
+						r.Namespace, r.Name, r.Chart, r.ChartVersion, desc),
+					"Inspect with `helm status "+r.Name+" -n "+r.Namespace+"` and `helm history`. "+
+						"Roll back to the last good revision or fix the values and upgrade.",
+				))
+			}
+			return insights
+		},
+	}
+}
+
+// helmReleaseHookPendingRule flags releases stuck in a pending-* state for
+// more than 5 minutes — typically a pre/post lifecycle hook that never
+// completed, leaving the release lock held. (Sprint 4 insight.)
+func helmReleaseHookPendingRule() Rule {
+	return Rule{
+		ID:       "helm-release-hook-pending",
+		Name:     "Helm release stuck pending",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, r := range state.HelmReleases {
+				if !strings.HasPrefix(strings.ToLower(r.Status), "pending-") {
+					continue
+				}
+				if r.Updated.IsZero() || time.Since(r.Updated) < 5*time.Minute {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("HelmRelease/%s/%s", r.Namespace, r.Name),
+					"Helm release stuck pending",
+					fmt.Sprintf("Helm release %s/%s has been in %q for over 5 minutes — a lifecycle hook likely never completed, holding the release lock.",
+						r.Namespace, r.Name, r.Status),
+					"Check hook pods (`kubectl get pods -n "+r.Namespace+"`). If wedged, `helm rollback` or delete the stuck hook job.",
+				))
+			}
+			return insights
+		},
 	}
 }
 

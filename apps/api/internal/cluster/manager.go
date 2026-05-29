@@ -13,6 +13,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -837,6 +838,13 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {
+	// Helm releases aren't informer-backed (decoded on demand from storage
+	// Secrets) — fetch them here so the helm-release insight rules can run.
+	// A single label-selected Secret list per tick; cheap and best-effort.
+	var helmReleases []helm.Release
+	if secrets, err := connector.ListHelmReleaseSecrets(context.Background()); err == nil {
+		helmReleases = helm.DecodeReleases(secrets)
+	}
 	state := &insights.ClusterState{
 		Pods:            connector.GetPods(),
 		Deployments:     connector.GetDeployments(),
@@ -848,6 +856,7 @@ func evaluateInsights(connector *Connector, collector *metrics.Collector, engine
 		EndpointSlices:  connector.GetEndpointSlices(),
 		NetworkPolicies: connector.GetNetworkPolicies(),
 		PDBs:            connector.GetPodDisruptionBudgets(),
+		HelmReleases:    helmReleases,
 		PodMetrics:      collector.GetAllPodMetrics(),
 		NodeMetrics:     collector.GetAllNodeMetrics(),
 	}
