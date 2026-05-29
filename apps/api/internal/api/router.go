@@ -467,6 +467,9 @@ func NewRouter(
 	// When auth is enabled, token is validated via query param ?token=
 	r.Get("/api/v1/ws", h.handleWebSocket)
 	r.Get("/ws/exec/{namespace}/{name}", h.handleExec)
+	// WS raw-stream port-forward (Sprint 2) — carries arbitrary TCP to an
+	// active forward's loopback port so it works against remote backends.
+	r.Get("/ws/portforward/{id}", h.handleWSPortForward)
 
 	// Port-forward reverse proxy (outside JSON middleware — proxied content has its own content-type)
 	r.HandleFunc("/pf/{id}/*", h.handlePortForwardProxy)
