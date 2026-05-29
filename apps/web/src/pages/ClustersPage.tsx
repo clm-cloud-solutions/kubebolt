@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText, ChevronDown, Cable } from 'lucide-react'
+import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { Modal } from '@/components/shared/Modal'
@@ -538,7 +539,10 @@ export function ClustersPage() {
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-lg font-semibold text-kb-text-primary">Clusters</h1>
+          <div className="flex items-center gap-2">
+            <ResourceTypeIcon type="clusters" />
+            <h1 className="text-lg font-semibold text-kb-text-primary">Clusters</h1>
+          </div>
           <p className="text-xs text-kb-text-tertiary mt-0.5">
             {connectedCount} connected · {clusters?.length || 0} available
             {uploadedCount > 0 && ` · ${uploadedCount} uploaded`}

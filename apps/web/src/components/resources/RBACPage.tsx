@@ -2,6 +2,7 @@ import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
+import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { Shield, Link } from 'lucide-react'
 
 export function RBACPage() {
@@ -19,9 +20,15 @@ export function RBACPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-lg font-semibold text-kb-text-primary">RBAC</h1>
-        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+      <div className="mb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <ResourceTypeIcon type="rbac" />
+            <h1 className="text-lg font-semibold text-kb-text-primary">RBAC</h1>
+          </div>
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+        </div>
+        <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('rbac')}</p>
       </div>
 
       <div className="grid grid-cols-2 gap-4">

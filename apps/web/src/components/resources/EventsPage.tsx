@@ -3,6 +3,7 @@ import { useEvents } from '@/hooks/useEvents'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
+import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import { formatAge } from '@/utils/formatters'
 import type { EventParams } from '@/types/kubernetes'
@@ -26,9 +27,13 @@ export function EventsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
+      <div className="mb-4">
+        <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-kb-text-primary">Events</h1>
+          <div className="flex items-center gap-2">
+            <ResourceTypeIcon type="events" />
+            <h1 className="text-lg font-semibold text-kb-text-primary">Events</h1>
+          </div>
           <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
         </div>
         <div className="flex gap-1">
@@ -50,6 +55,8 @@ export function EventsPage() {
             </button>
           ))}
         </div>
+        </div>
+        <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('events')}</p>
       </div>
 
       <div className="bg-kb-card border border-kb-border rounded-[10px] divide-y divide-kb-border">

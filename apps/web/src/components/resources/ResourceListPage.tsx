@@ -54,6 +54,10 @@ const resourceLabels: Record<string, string> = {
   configmaps: 'ConfigMaps',
   secrets: 'Secrets',
   hpas: 'Horizontal Pod Autoscalers',
+  pdbs: 'Pod Disruption Budgets',
+  certificates: 'Certificates',
+  argocdapps: 'ArgoCD Applications',
+  vpas: 'Vertical Pod Autoscalers',
 }
 
 // Sort key for CPU/Memory columns: absolute usage (millicores / bytes).

@@ -24,6 +24,7 @@ import {
   Package,
   Boxes,
   Lightbulb,
+  Activity,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -59,6 +60,9 @@ const resourceTypeIconMap: Record<string, LucideIcon> = {
   vpas: SlidersHorizontal,
   applications: Package,
   insights: Lightbulb,
+  clusters: Server,
+  rbac: Shield,
+  events: Activity,
 }
 
 // resourceTypeDescriptionMap is the one-line subtitle shown under each page
@@ -91,6 +95,9 @@ const resourceTypeDescriptionMap: Record<string, string> = {
   argocdapps: 'ArgoCD applications and their sync/health status.',
   vpas: 'Vertical autoscaling recommendations.',
   insights: 'Detected issues and recommendations across the cluster.',
+  clusters: 'Kubernetes clusters connected to KubeBolt.',
+  rbac: 'Roles and bindings that govern access.',
+  events: 'Recent events emitted by the cluster.',
 }
 
 // resourceTypeDescription returns the subtitle for a resource type, or "" when
