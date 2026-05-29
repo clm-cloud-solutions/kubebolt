@@ -26,6 +26,13 @@ type ClusterOverview struct {
 	// (matches the existing behavior for other declarative kinds).
 	Gateways           ResourceCount       `json:"gateways"`
 	HTTPRoutes         ResourceCount       `json:"httpRoutes"`
+	// ServiceAccounts (core) + the optional CRDs (cert-manager / ArgoCD /
+	// VPA). Same zero-on-absent semantics as Gateways — the sidebar shows
+	// the counter once the type is present.
+	ServiceAccounts ResourceCount `json:"serviceAccounts"`
+	Certificates    ResourceCount `json:"certificates"`
+	ArgoCDApps      ResourceCount `json:"argocdApps"`
+	VPAs            ResourceCount `json:"vpas"`
 	// Endpoints — backed by EndpointSlices (KubeBolt's `endpoints`
 	// resource type lists one row per EndpointSlice, not per legacy
 	// Endpoints object). Count matches what the list endpoint returns.

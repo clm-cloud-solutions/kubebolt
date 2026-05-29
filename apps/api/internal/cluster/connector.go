@@ -1112,6 +1112,21 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.HTTPRoutes.Total = len(c.listGatewayResources("httproutes", ""))
 	overview.HTTPRoutes.Ready = overview.HTTPRoutes.Total
 
+	// ServiceAccounts (typed lister) + the optional CRDs (dynamic list; nil
+	// when the CRD isn't installed → count 0, same as Gateways).
+	var serviceAccounts []*corev1.ServiceAccount
+	if c.serviceAccountLister != nil {
+		serviceAccounts, _ = c.serviceAccountLister.List(everythingSelector())
+	}
+	overview.ServiceAccounts.Total = len(serviceAccounts)
+	overview.ServiceAccounts.Ready = len(serviceAccounts)
+	overview.Certificates.Total = len(c.listOptionalCRD("certificates", ""))
+	overview.Certificates.Ready = overview.Certificates.Total
+	overview.ArgoCDApps.Total = len(c.listOptionalCRD("argocdapps", ""))
+	overview.ArgoCDApps.Ready = overview.ArgoCDApps.Total
+	overview.VPAs.Total = len(c.listOptionalCRD("vpas", ""))
+	overview.VPAs.Ready = overview.VPAs.Total
+
 	// Endpoints — count of EndpointSlice objects, matching what the
 	// list endpoint returns (KubeBolt surfaces EndpointSlices under
 	// the `endpoints` resource type — the legacy Endpoints API is

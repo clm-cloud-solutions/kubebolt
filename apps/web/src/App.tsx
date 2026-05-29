@@ -139,7 +139,7 @@ export default function App() {
               <Route path="/admin/ingest-activity" element={<RequireRole role="admin"><IngestActivityPage /></RequireRole>} />
               <Route path="/admin/integrations" element={<RequireRole role="admin"><IntegrationsPage /></RequireRole>} />
               <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
-              <Route path="/admin/service-accounts" element={<RequireRole role="admin"><AdminPlaceholderPage title="Service Accounts" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
+              <Route path="/admin/api-tokens" element={<RequireRole role="admin"><AdminPlaceholderPage title="API Tokens" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
               <Route path="/admin/authentication" element={<RequireRole role="admin"><AdminPlaceholderPage title="Authentication" description="Configure single sign-on providers (GitHub, Google, Azure AD, OIDC)." /></RequireRole>} />
             </Route>
           </Routes>

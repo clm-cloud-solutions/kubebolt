@@ -133,6 +133,10 @@ export interface ClusterOverview {
   // installed; sidebar hides the chip on zero.
   gateways?: ResourceCount
   httpRoutes?: ResourceCount
+  serviceAccounts?: ResourceCount
+  certificates?: ResourceCount
+  argocdApps?: ResourceCount
+  vpas?: ResourceCount
   // Endpoints — counted from EndpointSlices, matching what the
   // /resources/endpoints list endpoint returns.
   endpoints?: ResourceCount

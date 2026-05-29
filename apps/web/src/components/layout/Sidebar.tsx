@@ -108,7 +108,7 @@ const sections: NavSection[] = [
     items: [
       { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" />, countKey: 'configMaps', permissionKey: 'configmaps' },
       { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" />, countKey: 'secrets', permissionKey: 'secrets' },
-      { label: 'Service Accounts', path: '/serviceaccounts', icon: <UserCog className="w-4 h-4" />, permissionKey: 'serviceaccounts' },
+      { label: 'Service Accounts', path: '/serviceaccounts', icon: <UserCog className="w-4 h-4" />, countKey: 'serviceAccounts', permissionKey: 'serviceaccounts' },
       { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" />, countKey: 'hpas', permissionKey: 'hpas' },
     ],
   },
@@ -117,9 +117,9 @@ const sections: NavSection[] = [
     // installed; the list is empty otherwise. No count/permission gating.
     title: 'Extensions',
     items: [
-      { label: 'Certificates', path: '/certificates', icon: <KeyRound className="w-4 h-4" /> },
-      { label: 'ArgoCD Apps', path: '/argocdapps', icon: <Puzzle className="w-4 h-4" /> },
-      { label: 'VPA', path: '/vpas', icon: <SlidersHorizontal className="w-4 h-4" /> },
+      { label: 'Certificates', path: '/certificates', icon: <KeyRound className="w-4 h-4" />, countKey: 'certificates' },
+      { label: 'ArgoCD Apps', path: '/argocdapps', icon: <Puzzle className="w-4 h-4" />, countKey: 'argocdApps' },
+      { label: 'VPA', path: '/vpas', icon: <SlidersHorizontal className="w-4 h-4" />, countKey: 'vpas' },
     ],
   },
   {
@@ -160,7 +160,7 @@ const adminItems = [
   { label: 'Integrations', path: '/admin/integrations', icon: <Puzzle className="w-4 h-4" /> },
   { label: 'Kobi Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
   { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },
-  { label: 'Service Accounts', path: '/admin/service-accounts', icon: <Bot className="w-4 h-4" /> },
+  { label: 'API Tokens', path: '/admin/api-tokens', icon: <Bot className="w-4 h-4" /> },
   { label: 'Authentication', path: '/admin/authentication', icon: <KeyRound className="w-4 h-4" /> },
 ]
 
