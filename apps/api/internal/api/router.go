@@ -200,6 +200,14 @@ func NewRouter(
 				r.Get("/admin/copilot/usage/sessions", h.handleCopilotUsageSessions)
 			})
 
+			// Action audit history — admin only (Sprint 1). Durable record
+			// of every cluster mutation (UI + Kobi-proposed) for the admin
+			// action-history view.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/admin/actions", h.handleListActions)
+			})
+
 			// Tenant + ingest token administration — global admin only.
 			// Sprint A model: one global admin manages every tenant's
 			// tokens. Per-tenant self-service requires User.TenantID

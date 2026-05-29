@@ -12,12 +12,14 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
@@ -44,8 +46,9 @@ var setImageableTypes = map[string]bool{
 // auditMutation emits a structured audit log entry for any cluster mutation.
 // `source` distinguishes user-initiated UI actions ("ui") from Copilot
 // proposals approved by the user ("copilot_proposal"); it comes from the
-// X-KubeBolt-Action-Source header. The PoC writes to stderr via slog; the
-// production version will persist to BoltDB.
+// X-KubeBolt-Action-Source header. It logs via slog (operational log line)
+// AND, when an audit store is wired (Sprint 1), persists a durable record to
+// the kobi_actions bucket for the admin action-history view.
 func auditMutation(r *http.Request, action, resourceType, namespace, name string, params map[string]any, err error) {
 	source := r.Header.Get("X-KubeBolt-Action-Source")
 	if source == "" {
@@ -79,6 +82,39 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 		slog.Warn("cluster mutation", attrs...)
 	} else {
 		slog.Info("cluster mutation", attrs...)
+	}
+
+	// Durable audit trail (Sprint 1). No-op until SetAuditStore wires a
+	// store. OriginatingInsightID closes the insight→Kobi→action provenance
+	// loop opened in Sprint 0 (frontend sends X-KubeBolt-Origin-Insight when
+	// the Kobi chat was seeded from an insight).
+	if auditStore != nil {
+		clusterID := ""
+		if auditClusterID != nil {
+			clusterID = auditClusterID()
+		}
+		rec := &audit.Record{
+			ID:                   uuid.New().String(),
+			Timestamp:            time.Now().UTC(),
+			Source:               source,
+			UserID:               userID,
+			Username:             username,
+			Role:                 role,
+			ClusterID:            clusterID,
+			Action:               action,
+			TargetType:           resourceType,
+			TargetNamespace:      namespace,
+			TargetName:           name,
+			Params:               params,
+			Result:               result,
+			OriginatingInsightID: r.Header.Get("X-KubeBolt-Origin-Insight"),
+		}
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		if e := auditStore.Append(rec); e != nil {
+			slog.Warn("audit persist failed", slog.String("error", e.Error()))
+		}
 	}
 }
 

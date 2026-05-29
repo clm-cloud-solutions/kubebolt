@@ -31,6 +31,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
@@ -271,6 +272,9 @@ func main() {
 	// Persistent insights store (Sprint 0) — same BoltDB-only gating as
 	// agentStore. nil → engines run in-memory-only (pre-Sprint-0 behavior).
 	var insightStore insights.InsightStore
+	// Durable mutation-audit store (Sprint 1) — same BoltDB-only gating.
+	// nil → mutations are slog-audited only (pre-Sprint-1 behavior).
+	var actionAuditStore audit.Store
 
 	// Fleet-wide Prom remote_write limit defaults (Phase 3 Day 1-3).
 	// Loaded once at startup from KUBEBOLT_PROM_WRITE_DEFAULT_* env
@@ -423,6 +427,18 @@ func main() {
 			insightTenantID = dt.ID
 		}
 		manager.SetInsightStore(insightStore, insightTenantID)
+
+		// Durable mutation-audit store (Sprint 1). Persists every cluster
+		// mutation (UI + Kobi-proposed) to the kobi_actions bucket so the
+		// admin action-history view survives restarts. The cluster-id
+		// resolver stamps the active cluster onto each record.
+		actionAuditStore = audit.NewBoltStore(store.DB(), auth.KobiActionsBucket())
+		api.SetAuditStore(actionAuditStore, func() string {
+			if c := manager.Connector(); c != nil {
+				return c.ClusterUID()
+			}
+			return ""
+		})
 
 		// Build the agent authenticator. TokenReview mode is best-effort:
 		// if there is no in-cluster client (KubeBolt running outside K8s,
@@ -979,6 +995,40 @@ func main() {
 					}
 					if removed > 0 {
 						slog.Info("insights pruned",
+							slog.Int("removed", removed),
+							slog.Duration("horizon", horizon),
+						)
+					}
+				}
+			}
+		}()
+	}
+
+	// Action-audit retention (Sprint 1). Hourly prune of audit records older
+	// than KUBEBOLT_AUDIT_RETENTION_HORIZON (default 90d) — long enough for a
+	// quarter of compliance history without unbounded growth.
+	if actionAuditStore != nil {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-agentCtx.Done():
+					return
+				case <-ticker.C:
+					horizon := 90 * 24 * time.Hour
+					if v := os.Getenv("KUBEBOLT_AUDIT_RETENTION_HORIZON"); v != "" {
+						if d, err := time.ParseDuration(v); err == nil && d > 0 {
+							horizon = d
+						}
+					}
+					removed, err := actionAuditStore.Prune(time.Now().UTC().Add(-horizon))
+					if err != nil {
+						slog.Warn("audit prune failed", slog.String("error", err.Error()))
+						continue
+					}
+					if removed > 0 {
+						slog.Info("audit records pruned",
 							slog.Int("removed", removed),
 							slog.Duration("horizon", horizon),
 						)
