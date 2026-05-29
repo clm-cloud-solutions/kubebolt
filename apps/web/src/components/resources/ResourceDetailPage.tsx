@@ -373,7 +373,21 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
       metrics.push(
         { label: 'Phase', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
         { label: 'Ready Containers', value: String(item.ready ?? '-') },
-        { label: 'Restart Count', value: String(item.restarts ?? 0) },
+        {
+          // Mirror the Containers tab's per-container Restart Count cell, but
+          // pod-level here: no `container` prop → the sparkline sums restarts
+          // across every container, matching `item.restarts` (the pod total).
+          label: 'Restart Count',
+          value: (
+            <div className="flex items-center gap-3">
+              <span>{String(item.restarts ?? 0)}</span>
+              <RestartHistorySparkline
+                namespace={String(item.namespace ?? '')}
+                pod={String(item.name ?? '')}
+              />
+            </div>
+          ),
+        },
         { label: 'Node', value: item.nodeName ? <ResourceLink name={String(item.nodeName)} resourceType="nodes" /> : '-' },
       )
       if (lastTerm) {
