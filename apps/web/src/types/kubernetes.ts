@@ -43,6 +43,45 @@ export interface Insight {
   resolvedAt?: string
 }
 
+// Helm releases — read-only first-class (Sprint 4). Decoded from Helm's
+// storage Secrets server-side; no write verbs in 1.14.
+export interface HelmRelease {
+  name: string
+  namespace: string
+  revision: number
+  status: string
+  chart: string
+  chartVersion: string
+  appVersion?: string
+  updated: string
+  firstDeployed?: string
+  description?: string
+}
+
+export interface HelmReleaseRevision {
+  revision: number
+  status: string
+  chartVersion: string
+  appVersion?: string
+  updated: string
+  description?: string
+}
+
+export interface HelmChartDependency {
+  name: string
+  version?: string
+  repository?: string
+  condition?: string
+}
+
+export interface HelmReleaseDetail extends HelmRelease {
+  values?: Record<string, unknown>
+  manifest?: string
+  notes?: string
+  history?: HelmReleaseRevision[]
+  dependencies?: HelmChartDependency[]
+}
+
 export interface InsightCount {
   critical: number
   warning: number

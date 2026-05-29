@@ -20,6 +20,8 @@ import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { InsightsList } from '@/components/insights/InsightsList'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
+import { ApplicationsPage } from '@/pages/ApplicationsPage'
+import { HelmReleaseDetailPage } from '@/pages/HelmReleaseDetailPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
 import { AgentTokensPage } from '@/pages/admin/AgentTokensPage'
@@ -96,6 +98,8 @@ export default function App() {
               <Route path="/capacity" element={<CapacityPage />} />
               <Route path="/reliability" element={<ReliabilityPage />} />
               <Route path="/insights" element={<InsightsList />} />
+              <Route path="/applications" element={<ApplicationsPage />} />
+              <Route path="/applications/:namespace/:name" element={<HelmReleaseDetailPage />} />
               <Route path="/map" element={<ClusterMap />} />
               <Route path="/pods" element={<ResourceListPage resourceType="pods" />} />
               <Route path="/nodes" element={<NodesPage />} />

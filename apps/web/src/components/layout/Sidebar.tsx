@@ -31,6 +31,7 @@ import {
   Lightbulb,
   Puzzle,
   Info,
+  Package,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -66,6 +67,7 @@ const sections: NavSection[] = [
     title: 'Pinned',
     items: [
       { label: 'Insights', path: '/insights', icon: <Lightbulb className="w-4 h-4" /> },
+      { label: 'Applications', path: '/applications', icon: <Package className="w-4 h-4" /> },
       { label: 'Pods', path: '/pods', icon: <Box className="w-4 h-4" />, countKey: 'pods', permissionKey: 'pods' },
       { label: 'Nodes', path: '/nodes', icon: <Server className="w-4 h-4" />, countKey: 'nodes', permissionKey: 'nodes' },
     ],
