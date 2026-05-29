@@ -5,6 +5,7 @@ import { Package, ArrowLeft, Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/services/api'
 import { HelmStatusBadge } from '@/pages/ApplicationsPage'
 import { YamlViewer } from '@/components/shared/YamlViewer'
+import { formatAge } from '@/utils/formatters'
 
 type Tab = 'overview' | 'values' | 'manifest' | 'history' | 'dependencies' | 'related'
 
@@ -85,26 +86,49 @@ export function HelmReleaseDetailPage() {
       </div>
 
       {tab === 'overview' && (
-        <Section title="Release Information">
-          <div className="grid grid-cols-2 gap-x-8 gap-y-4">
-            <InfoField label="Status"><HelmStatusBadge status={data.status} /></InfoField>
-            <InfoField label="Revision">{data.revision}</InfoField>
-            <InfoField label="Chart">{data.chart} {data.chartVersion}</InfoField>
-            <InfoField label="App version">{data.appVersion || '—'}</InfoField>
-            <InfoField label="Namespace">{data.namespace}</InfoField>
-            <InfoField label="Updated">{data.updated ? new Date(data.updated).toLocaleString() : '—'}</InfoField>
-            <InfoField label="First deployed">
-              {data.firstDeployed ? new Date(data.firstDeployed).toLocaleString() : '—'}
-            </InfoField>
-            {data.description ? <InfoField label="Description">{data.description}</InfoField> : null}
-          </div>
-          {data.notes ? (
-            <div className="mt-5">
-              <div className="text-[10px] uppercase tracking-wide text-kb-text-tertiary mb-1">Notes</div>
-              <CodeBlock text={data.notes} />
+        <div className="space-y-4">
+          {/* Status Overview — stat cards, mirrors the workload detail. */}
+          <Section title="Status Overview">
+            <div className="grid grid-cols-4 gap-6">
+              <Stat label="Status">
+                <div className="flex items-center gap-2">
+                  <span className={`w-2.5 h-2.5 rounded-full ${statusDot(data.status)}`} />
+                  {data.status}
+                </div>
+              </Stat>
+              <Stat label="Revision">{data.revision}</Stat>
+              <Stat label="Chart">{data.chart} {data.chartVersion}</Stat>
+              <Stat label="App version">{data.appVersion || '—'}</Stat>
             </div>
+          </Section>
+
+          <Section title="Release Information">
+            <div className="grid grid-cols-2 gap-x-8 gap-y-4">
+              <InfoField label="Namespace">{data.namespace}</InfoField>
+              <InfoField label="Chart">{data.chart} {data.chartVersion}</InfoField>
+              <InfoField label="App version">{data.appVersion || '—'}</InfoField>
+              <InfoField label="Updated">
+                {data.updated ? `${new Date(data.updated).toLocaleString()} (${formatAge(data.updated)})` : '—'}
+              </InfoField>
+              <InfoField label="First deployed">
+                {data.firstDeployed ? new Date(data.firstDeployed).toLocaleString() : '—'}
+              </InfoField>
+              {data.description ? <InfoField label="Description">{data.description}</InfoField> : null}
+            </div>
+            {/* Counts — at-a-glance "how big / how much history". */}
+            <div className="grid grid-cols-3 gap-x-8 gap-y-4 mt-5 pt-4 border-t border-kb-border">
+              <InfoField label="Resources">{related.length}</InfoField>
+              <InfoField label="Dependencies">{data.dependencies?.length ?? 0}</InfoField>
+              <InfoField label="Revisions">{data.history?.length ?? 0}</InfoField>
+            </div>
+          </Section>
+
+          {data.notes ? (
+            <Section title="Notes">
+              <CodeBlock text={data.notes} />
+            </Section>
           ) : null}
-        </Section>
+        </div>
       )}
 
       {tab === 'values' && (
@@ -245,6 +269,27 @@ function InfoField({ label, children }: { label: string; children: React.ReactNo
       <div className="text-[12px] text-kb-text-primary">{children}</div>
     </div>
   )
+}
+
+// Stat is the more prominent label/value card used in the Status Overview
+// row (mirrors the workload detail's StatusOverview cells).
+function Stat({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="text-[10px] uppercase tracking-wide text-kb-text-tertiary mb-1">{label}</div>
+      <div className="text-sm text-kb-text-primary font-medium">{children}</div>
+    </div>
+  )
+}
+
+// statusDot maps a Helm release status to the colored-dot class used in the
+// Status Overview (same green/amber/red convention as workloads).
+function statusDot(status: string): string {
+  const s = status.toLowerCase()
+  if (s === 'deployed') return 'bg-status-ok'
+  if (s === 'failed') return 'bg-status-error'
+  if (s.startsWith('pending') || s === 'uninstalling') return 'bg-status-warn'
+  return 'bg-kb-text-tertiary'
 }
 
 function CodeBlock({ text }: { text: string }) {
