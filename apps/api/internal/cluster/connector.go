@@ -232,6 +232,26 @@ func (c *Connector) Clientset() kubernetes.Interface {
 	return c.clientset
 }
 
+// ListHelmReleaseSecrets returns all Helm 3 release-storage Secrets (label
+// owner=helm) across the namespaces the connected ServiceAccount can read.
+// Helm stores each release revision as one such Secret; the helm package
+// decodes them into a read-only release view (Sprint 4). Uses a live API
+// list with a label selector rather than the secret informer — Helm release
+// listing is infrequent and the selector is narrow, so it's cheaper than
+// watching every Secret in the cluster.
+func (c *Connector) ListHelmReleaseSecrets(ctx context.Context) ([]corev1.Secret, error) {
+	if c.clientset == nil {
+		return nil, fmt.Errorf("no clientset")
+	}
+	list, err := c.clientset.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		LabelSelector: "owner=helm",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
 // RecentWrites exposes the read-after-write overlay so mutation
 // handlers in apps/api/internal/api can Record(...) the field they
 // just patched. The overlay layers their value on top of the
