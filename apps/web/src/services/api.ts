@@ -1137,6 +1137,8 @@ export interface CopilotSettingsResponse {
     maxTokens: number
     autoCompact: boolean
     showToolCalls: boolean
+    actionsEnabled: boolean
+    destructiveActionsEnabled: boolean
     // Auto-compact tunables surfaced by the backend so the UI shows
     // "what's in effect right now" without a second round-trip. The
     // server emits these with `omitempty` semantics, so they may be
@@ -1172,6 +1174,8 @@ export interface CopilotSettingsResponse {
       compactModel?: string
       compactPreserveTurns?: number
       showToolCalls?: boolean
+      actionsEnabled?: boolean
+      destructiveActionsEnabled?: boolean
     }
   }
   secretsReadable: boolean
@@ -1201,6 +1205,8 @@ export interface CopilotSettingsPutRequest {
     compactModel?: string
     compactPreserveTurns?: number
     showToolCalls?: boolean
+    actionsEnabled?: boolean
+    destructiveActionsEnabled?: boolean
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string
