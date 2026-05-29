@@ -32,6 +32,7 @@ import {
   Puzzle,
   Info,
   Package,
+  UserCog,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -107,6 +108,7 @@ const sections: NavSection[] = [
     items: [
       { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" />, countKey: 'configMaps', permissionKey: 'configmaps' },
       { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" />, countKey: 'secrets', permissionKey: 'secrets' },
+      { label: 'Service Accounts', path: '/serviceaccounts', icon: <UserCog className="w-4 h-4" />, permissionKey: 'serviceaccounts' },
       { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" />, countKey: 'hpas', permissionKey: 'hpas' },
     ],
   },

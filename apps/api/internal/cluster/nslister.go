@@ -221,6 +221,54 @@ func (m *multiConfigMapLister) ConfigMaps(namespace string) corelisters.ConfigMa
 }
 
 // ============================================================
+// multiServiceAccountLister — per-namespace ServiceAccount access.
+// ============================================================
+
+type multiServiceAccountNSLister struct {
+	nsListers []corelisters.ServiceAccountNamespaceLister
+}
+
+func (m *multiServiceAccountNSLister) List(selector labels.Selector) ([]*corev1.ServiceAccount, error) {
+	var result []*corev1.ServiceAccount
+	for _, l := range m.nsListers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiServiceAccountNSLister) Get(name string) (*corev1.ServiceAccount, error) {
+	for _, l := range m.nsListers {
+		item, err := l.Get(name)
+		if err == nil {
+			return item, nil
+		}
+	}
+	return nil, fmt.Errorf("serviceaccount %q not found", name)
+}
+
+type multiServiceAccountLister struct {
+	listers []corelisters.ServiceAccountLister
+}
+
+func (m *multiServiceAccountLister) List(selector labels.Selector) ([]*corev1.ServiceAccount, error) {
+	var result []*corev1.ServiceAccount
+	for _, l := range m.listers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiServiceAccountLister) ServiceAccounts(namespace string) corelisters.ServiceAccountNamespaceLister {
+	var nsListers []corelisters.ServiceAccountNamespaceLister
+	for _, l := range m.listers {
+		nsListers = append(nsListers, l.ServiceAccounts(namespace))
+	}
+	return &multiServiceAccountNSLister{nsListers: nsListers}
+}
+
+// ============================================================
 // multiSecretLister
 // ============================================================
 

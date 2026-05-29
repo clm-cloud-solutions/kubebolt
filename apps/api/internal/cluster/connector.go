@@ -95,6 +95,7 @@ type Connector struct {
 	serviceLister        corelisters.ServiceLister
 	endpointSliceLister  discoverylisters.EndpointSliceLister
 	configMapLister      corelisters.ConfigMapLister
+	serviceAccountLister corelisters.ServiceAccountLister
 	secretLister         corelisters.SecretLister
 	pvcLister            corelisters.PersistentVolumeClaimLister
 	pvLister             corelisters.PersistentVolumeLister
@@ -381,6 +382,16 @@ func (c *Connector) setupInformers() {
 		} else {
 			c.configMapLister = c.factory.Core().V1().ConfigMaps().Lister()
 			c.factory.Core().V1().ConfigMaps().Informer().AddEventHandler(handler)
+		}
+	}
+	if can("serviceaccounts") {
+		if isNS("serviceaccounts") {
+			var listers []corelisters.ServiceAccountLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().ServiceAccounts().Lister()); f.Core().V1().ServiceAccounts().Informer().AddEventHandler(handler) }
+			c.serviceAccountLister = &multiServiceAccountLister{listers: listers}
+		} else {
+			c.serviceAccountLister = c.factory.Core().V1().ServiceAccounts().Lister()
+			c.factory.Core().V1().ServiceAccounts().Informer().AddEventHandler(handler)
 		}
 	}
 	if can("secrets") {
@@ -1791,6 +1802,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listOptionalCRD(resourceType, namespace)
 	case "configmaps":
 		items = c.listConfigMaps(namespace)
+	case "serviceaccounts":
+		items = c.listServiceAccounts(namespace)
 	case "secrets":
 		items = c.listSecrets(namespace)
 	case "pvcs", "persistentvolumeclaims":
@@ -2090,6 +2103,15 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			return nil, err
 		}
 		return configMapToMap(cm), nil
+	case "serviceaccounts":
+		if c.serviceAccountLister == nil {
+			return nil, fmt.Errorf("serviceaccounts not available (RBAC restricted or informer not started)")
+		}
+		sa, err := c.serviceAccountLister.ServiceAccounts(namespace).Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return serviceAccountToMap(sa), nil
 	case "secrets":
 		sec, err := c.secretLister.Secrets(namespace).Get(name)
 		if err != nil {
@@ -2951,6 +2973,30 @@ func configMapToMap(cm *corev1.ConfigMap) map[string]interface{} {
 	}
 }
 
+// serviceAccountToMap renders a ServiceAccount in the shape the frontend
+// expects. Surfaces the mounted secret + image-pull-secret counts and the
+// automountServiceAccountToken flag — what operators check when debugging
+// pod identity / token mounting.
+func serviceAccountToMap(sa *corev1.ServiceAccount) map[string]interface{} {
+	automount := true // nil means the cluster default (true)
+	if sa.AutomountServiceAccountToken != nil {
+		automount = *sa.AutomountServiceAccountToken
+	}
+	return map[string]interface{}{
+		"name":             sa.Name,
+		"namespace":        sa.Namespace,
+		"status":           "Active",
+		"secretCount":      len(sa.Secrets),
+		"imagePullSecrets": len(sa.ImagePullSecrets),
+		"automountToken":   automount,
+		"labels":           safeLabels(sa.Labels),
+		"annotations":      safeAnnotations(sa.Annotations),
+		"createdAt":        sa.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":              formatAge(sa.CreationTimestamp.Time),
+		"ownerReferences":  ownerRefsToSlice(sa.OwnerReferences),
+	}
+}
+
 // secretToMap intentionally does NOT expose secret values.
 func secretToMap(sec *corev1.Secret) map[string]interface{} {
 	keys := make([]string, 0, len(sec.Data))
@@ -3342,6 +3388,7 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
 		"networkpolicies":       {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
 		"pdbs":                  {Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"},
+		"serviceaccounts":       {Group: "", Version: "v1", Resource: "serviceaccounts"},
 		// `endpoints` is the user-facing URL/type; underneath it maps
 		// to the discovery/v1 EndpointSlice API (legacy core/v1
 		// Endpoints is deprecated). Adding this entry enables the
@@ -4631,6 +4678,21 @@ func (c *Connector) listConfigMaps(namespace string) []map[string]interface{} {
 			continue
 		}
 		items = append(items, configMapToMap(cm))
+	}
+	return items
+}
+
+func (c *Connector) listServiceAccounts(namespace string) []map[string]interface{} {
+	if c.serviceAccountLister == nil {
+		return nil
+	}
+	list, _ := c.serviceAccountLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, sa := range list {
+		if namespace != "" && sa.Namespace != namespace {
+			continue
+		}
+		items = append(items, serviceAccountToMap(sa))
 	}
 	return items
 }

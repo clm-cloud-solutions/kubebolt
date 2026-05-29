@@ -53,6 +53,7 @@ const resourceLabels: Record<string, string> = {
   storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps',
   secrets: 'Secrets',
+  serviceaccounts: 'Service Accounts',
   hpas: 'Horizontal Pod Autoscalers',
   pdbs: 'Pod Disruption Budgets',
   certificates: 'Certificates',

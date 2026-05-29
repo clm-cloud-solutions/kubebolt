@@ -87,6 +87,7 @@ var resourceDefs = map[string]resourceDef{
 	"services":       {group: "", resource: "services"},
 	"endpointslices": {group: "discovery.k8s.io", resource: "endpointslices"},
 	"configmaps":     {group: "", resource: "configmaps"},
+	"serviceaccounts": {group: "", resource: "serviceaccounts"},
 	"secrets":        {group: "", resource: "secrets"},
 	"pvcs":           {group: "", resource: "persistentvolumeclaims"},
 	"pvs":            {group: "", resource: "persistentvolumes", clusterScope: true},

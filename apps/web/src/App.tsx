@@ -115,6 +115,7 @@ export default function App() {
               <Route path="/certificates" element={<ResourceListPage resourceType="certificates" />} />
               <Route path="/argocdapps" element={<ResourceListPage resourceType="argocdapps" />} />
               <Route path="/vpas" element={<ResourceListPage resourceType="vpas" />} />
+              <Route path="/serviceaccounts" element={<ResourceListPage resourceType="serviceaccounts" />} />
               <Route path="/gateways" element={<ResourceListPage resourceType="gateways" />} />
               <Route path="/httproutes" element={<ResourceListPage resourceType="httproutes" />} />
               <Route path="/endpoints" element={<ResourceListPage resourceType="endpoints" />} />

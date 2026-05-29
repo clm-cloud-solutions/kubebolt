@@ -25,6 +25,7 @@ import {
   Boxes,
   Lightbulb,
   Activity,
+  UserCog,
   type LucideIcon,
 } from 'lucide-react'
 
@@ -53,6 +54,7 @@ const resourceTypeIconMap: Record<string, LucideIcon> = {
   storageclasses: FolderClosed,
   configmaps: FileText,
   secrets: Lock,
+  serviceaccounts: UserCog,
   hpas: Scale,
   namespaces: FolderOpen,
   certificates: KeyRound,
@@ -89,6 +91,7 @@ const resourceTypeDescriptionMap: Record<string, string> = {
   storageclasses: 'Storage provisioners and their parameters.',
   configmaps: 'Non-secret configuration data.',
   secrets: 'Sensitive configuration — values are redacted.',
+  serviceaccounts: 'Pod identities for cluster API access.',
   hpas: 'Horizontal autoscaling rules and current scale.',
   namespaces: 'Logical partitions of the cluster.',
   certificates: 'cert-manager TLS certificates and renewal status.',

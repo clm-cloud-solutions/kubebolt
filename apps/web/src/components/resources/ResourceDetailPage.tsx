@@ -68,6 +68,7 @@ const kindToRoute: Record<string, string> = {
   Gateway: 'gateways', HTTPRoute: 'httproutes', Namespace: 'namespaces',
   PVC: 'pvcs', PV: 'pvs', PodDisruptionBudget: 'pdbs',
   Certificate: 'certificates', Application: 'argocdapps', VerticalPodAutoscaler: 'vpas',
+  ServiceAccount: 'serviceaccounts',
 }
 
 const routeToKind: Record<string, string> = Object.fromEntries(
@@ -82,6 +83,7 @@ const resourceLabels: Record<string, string> = {
   configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
   namespaces: 'Namespaces', replicasets: 'ReplicaSets', pdbs: 'Pod Disruption Budgets',
   certificates: 'Certificates', argocdapps: 'ArgoCD Applications', vpas: 'Vertical Pod Autoscalers',
+  serviceaccounts: 'Service Accounts',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {
