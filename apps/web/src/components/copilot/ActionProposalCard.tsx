@@ -99,6 +99,11 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
         // the operator to the Pods tab so they can watch pods cycle.
         const ns = target.namespace || '_'
         navigate(`/${target.type}/${ns}/${target.name}?tab=${podsTabId(target.type)}`)
+      } else if (action === 'debug_pod') {
+        // Ephemeral container attached — take the operator to the pod's
+        // detail so they can open a terminal into the debug container.
+        const ns = target.namespace || '_'
+        navigate(`/${target.type}/${ns}/${target.name}`)
       } else if (action === 'patch_hpa') {
         // HPA bound changes don't roll pods; land on the HPA detail page
         // where the new bounds + current scaling math are visible.
@@ -340,7 +345,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
               proposal — protects against a re-mount restarting polling
               against a cluster that has since moved on (e.g. another scale
               was issued in a later turn). */}
-          {action !== 'delete_resource' && action !== 'patch_hpa' && !proposal.progressSettled && (
+          {action !== 'delete_resource' && action !== 'patch_hpa' && action !== 'debug_pod' && !proposal.progressSettled && (
             <WorkloadProgress proposal={proposal} toolCallId={toolCallId} />
           )}
           {action === 'delete_resource' ? (
@@ -459,6 +464,13 @@ async function runProposal(p: ActionProposal): Promise<string> {
     case 'restart_workload': {
       const r = await api.restartResource(p.target.type, p.target.namespace, p.target.name, SOURCE)
       return `Restart triggered (${r.status})`
+    }
+    case 'debug_pod': {
+      const image = typeof p.params.image === 'string' && p.params.image ? p.params.image : 'busybox'
+      const targetContainer =
+        typeof p.params.targetContainer === 'string' ? p.params.targetContainer : undefined
+      const r = await api.debugPod(p.target.namespace, p.target.name, { image, targetContainer }, SOURCE)
+      return `Debug container attached: ${r.ephemeralContainerName} (${r.status})`
     }
     case 'scale_workload': {
       const replicas = Number(p.params.replicas)

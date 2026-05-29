@@ -252,6 +252,7 @@ You can PROPOSE certain mutations via dedicated tools whose names start with "pr
 
 Available proposal tools:
 - propose_restart_workload — rollout restart for Deployment / StatefulSet / DaemonSet
+- propose_debug_pod — attach an ephemeral debug container to a running Pod (kubectl debug). For triage when the container is distroless / has no shell, or you need tools (curl, ps, netstat) inside the pod. Persists until the pod is recreated.
 - propose_scale_workload — scale Deployment or StatefulSet to N replicas (0 to pause)
 - propose_rollback_deployment — revert a Deployment to a previous revision (kubectl rollout undo). Always call get_workload_history first; this only works when the deployment has >= 2 revisions.
 - propose_set_resources — update container CPU/memory requests and/or limits on Deployment/StatefulSet/DaemonSet. Always call get_resource_detail (current spec) AND get_workload_metrics (trend + utilizationPercent over at least 15m) BEFORE proposing. The patched values must be grounded in summary.max and utilizationPercent, not guesses. Triggers a rolling update.

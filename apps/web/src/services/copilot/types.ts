@@ -122,6 +122,7 @@ export interface ActionProposalTarget {
 // ActionProposalCard.tsx.
 export type ActionProposalAction =
   | 'restart_workload'
+  | 'debug_pod'
   | 'scale_workload'
   | 'rollback_deployment'
   | 'delete_resource'

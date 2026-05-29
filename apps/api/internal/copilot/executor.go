@@ -409,6 +409,38 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		p.Reversible = true
 		res.Content = jsonString(p)
 
+	case "propose_debug_pod":
+		ns := stringArg(args, "namespace")
+		name := stringArg(args, "name")
+		image := stringArg(args, "image")
+		if image == "" {
+			image = "busybox"
+		}
+		targetContainer := stringArg(args, "targetContainer")
+		rationale := stringArg(args, "rationale")
+		if ns == "" || name == "" {
+			res.Content = `{"error":"namespace and name are required"}`
+			res.IsError = true
+			return res
+		}
+		if _, err := conn.GetResourceDetail("pods", ns, name); err != nil {
+			res.Content = errJSON(fmt.Errorf("target pod %s/%s not found: %w", ns, name, err))
+			res.IsError = true
+			return res
+		}
+		p := newProposal("debug_pod")
+		p.Target = ProposalTarget{Type: "pods", Namespace: ns, Name: name}
+		p.Params["image"] = image
+		if targetContainer != "" {
+			p.Params["targetContainer"] = targetContainer
+		}
+		p.Summary = fmt.Sprintf("Attach debug container (%s) to pod %s/%s", image, ns, name)
+		p.Rationale = rationale
+		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
+		// Ephemeral containers can't be removed without recreating the pod.
+		p.Reversible = false
+		res.Content = jsonString(p)
+
 	case "propose_scale_workload":
 		t := stringArg(args, "type")
 		ns := stringArg(args, "namespace")

@@ -232,6 +232,28 @@ func ToolDefinitions() []ToolDefinition {
 			},
 		},
 		{
+			Name: "propose_debug_pod",
+			Description: "Propose attaching an ephemeral debug container to a running Pod (kubectl debug). " +
+				"This DOES NOT execute — it returns a structured proposal the UI renders as a confirmation " +
+				"card; the user clicks an explicit button and execution runs under their RBAC role. Use this " +
+				"during triage when the target container is distroless / lacks a shell, or you need tools " +
+				"(curl, ps, netstat) inside the pod's namespaces. The debug container shares the pod's " +
+				"network + (optionally) process namespace. It persists until the pod is recreated — note " +
+				"that in the rationale.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"namespace":       strProp("Pod namespace"),
+					"name":            strProp("Pod name"),
+					"image":           strProp("Debug container image (e.g. busybox, nicolaka/netshoot). Defaults to busybox if omitted."),
+					"targetContainer": strProp("Optional: the container whose process namespace to share (for inspecting that container's processes)."),
+					"rationale":       strProp("Why a debug container is the right move here. Shown to the user in the confirmation card."),
+					"risk":            riskProp(),
+				},
+				"required": []string{"namespace", "name", "rationale"},
+			},
+		},
+		{
 			Name: "propose_scale_workload",
 			Description: "Propose scaling a Deployment or StatefulSet to a target replica count. " +
 				"This DOES NOT execute the scale — it returns a structured proposal that the UI " +
