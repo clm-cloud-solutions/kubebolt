@@ -399,6 +399,14 @@ interface KindGroupData {
   rows: ManifestDoc[]
 }
 
+// Rail width is user-resizable: drag the divider to widen the YAML pane and
+// the rail shrinks. Clamped so the manifest list never collapses below
+// RAIL_MIN, and the rail never exceeds RAIL_MAX (= today's width) so the YAML
+// can only grow from its current size, never shrink below it. Persisted.
+const RAIL_MIN = 180
+const RAIL_MAX = 260
+const RAIL_WIDTH_KEY = 'kb-helm-manifest-rail-width'
+
 // ManifestTab — browse the release's rendered resources one at a time instead
 // of one giant YAML blob. Left rail = KubeBolt's own resource-list grammar
 // (collapsible per-Kind groups with the tinted ResourceTypeIcon + count); right
@@ -413,8 +421,38 @@ function ManifestTab({ manifest, releaseNamespace }: { manifest: string; release
   const searchRef = useRef<HTMLInputElement>(null)
   const selectedRowRef = useRef<HTMLButtonElement>(null)
 
+  // Resizable rail (drag the divider to widen the YAML pane).
+  const [railWidth, setRailWidth] = useState<number>(() => {
+    const stored = Number(localStorage.getItem(RAIL_WIDTH_KEY))
+    return stored >= RAIL_MIN && stored <= RAIL_MAX ? stored : RAIL_MAX
+  })
+  const [dragging, setDragging] = useState(false)
+  const dragRef = useRef<{ startX: number; startW: number } | null>(null)
+  const clampRail = (w: number) => Math.min(RAIL_MAX, Math.max(RAIL_MIN, w))
+
   // Reset selection when the manifest changes (navigating between releases).
   useEffect(() => { setSelectedIdx(0); setQuery('') }, [manifest])
+
+  // Live drag: track the pointer on window so the resize keeps following even
+  // when the cursor outruns the 8px handle. dragRef holds the gesture origin so
+  // the move handler stays correct without re-subscribing on every width tick.
+  useEffect(() => {
+    if (!dragging) return
+    function onMove(e: MouseEvent) {
+      if (!dragRef.current) return
+      setRailWidth(clampRail(dragRef.current.startW + (e.clientX - dragRef.current.startX)))
+    }
+    function onUp() { setDragging(false); dragRef.current = null }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [dragging])
+
+  // Persist the chosen width so the layout sticks across sessions.
+  useEffect(() => { localStorage.setItem(RAIL_WIDTH_KEY, String(railWidth)) }, [railWidth])
 
   // Group by kind, KIND_ORDER then alpha; rows alpha by name within a kind.
   const groups = useMemo<KindGroupData[]>(() => {
@@ -469,6 +507,17 @@ function ManifestTab({ manifest, releaseNamespace }: { manifest: string; release
     })
   }
 
+  function startDrag(e: React.MouseEvent) {
+    e.preventDefault()
+    dragRef.current = { startX: e.clientX, startW: railWidth }
+    setDragging(true)
+  }
+  // Keyboard resize when the divider is focused — ←/→ nudge by 16px.
+  function onHandleKey(e: React.KeyboardEvent) {
+    if (e.key === 'ArrowLeft') { e.preventDefault(); setRailWidth((w) => clampRail(w - 16)) }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); setRailWidth((w) => clampRail(w + 16)) }
+  }
+
   function onListKeyDown(e: React.KeyboardEvent) {
     if (e.key === '/') { e.preventDefault(); searchRef.current?.focus(); return }
     if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
@@ -495,9 +544,12 @@ function ManifestTab({ manifest, releaseNamespace }: { manifest: string; release
 
   return (
     <Section title="Rendered Manifest">
-      <div className="grid grid-cols-[260px_1fr] gap-4 h-[calc(100vh-360px)] min-h-[320px]">
+      <div className={`flex h-[calc(100vh-360px)] min-h-[320px] ${dragging ? 'cursor-col-resize select-none' : ''}`}>
         {/* ── Left rail: search + kind-grouped resource list ──────── */}
-        <div className="bg-kb-bg border border-kb-border rounded-lg flex flex-col h-full overflow-hidden">
+        <div
+          style={{ width: railWidth }}
+          className="shrink-0 bg-kb-bg border border-kb-border rounded-lg flex flex-col h-full overflow-hidden"
+        >
           <div className="p-2 border-b border-kb-border relative">
             <Search className="w-3.5 h-3.5 text-kb-text-tertiary absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
@@ -585,9 +637,22 @@ function ManifestTab({ manifest, releaseNamespace }: { manifest: string; release
           </div>
         </div>
 
+        {/* ── Drag divider: widen the YAML pane by shrinking the rail ─ */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          tabIndex={0}
+          onMouseDown={startDrag}
+          onKeyDown={onHandleKey}
+          title="Drag to resize"
+          className="group relative w-2 mx-1 shrink-0 cursor-col-resize flex items-stretch justify-center rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-kb-accent"
+        >
+          <div className={`w-px transition-colors ${dragging ? 'bg-kb-accent' : 'bg-kb-border group-hover:bg-kb-border-active'}`} />
+        </div>
+
         {/* ── Right detail: resource header + scoped YAML ──────────── */}
         {selected && (
-          <div className="flex flex-col min-w-0 border border-kb-border rounded-lg overflow-hidden h-full">
+          <div className="flex-1 min-w-0 flex flex-col border border-kb-border rounded-lg overflow-hidden h-full">
             <div className="px-3 py-2 border-b border-kb-border bg-kb-card-hover flex flex-col gap-1.5">
               <div className="flex items-center gap-2 min-w-0">
                 <ResourceTypeIcon type={kindToRoute[selected.kind] ?? '__unmapped'} className="w-4 h-4 shrink-0" />
@@ -612,7 +677,7 @@ function ManifestTab({ manifest, releaseNamespace }: { manifest: string; release
           </div>
         )}
       </div>
-      <div className="mt-2 text-[10px] text-kb-text-tertiary">↑/↓ move · / search</div>
+      <div className="mt-2 text-[10px] text-kb-text-tertiary">↑/↓ move · / search · drag the divider to widen the YAML</div>
     </Section>
   )
 }
