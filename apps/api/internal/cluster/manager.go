@@ -53,6 +53,23 @@ type Manager struct {
 	// onResolvedInsight is invoked when an insight transitions to resolved.
 	// Nil when notifications are disabled or includeResolved is false.
 	onResolvedInsight func(clusterContext string, insight models.Insight)
+
+	// insightStore persists insight identities across restarts (Sprint 0).
+	// Set by main.go via SetInsightStore; nil when the BoltDB store is
+	// unavailable, in which case engines run in-memory-only. tenantID
+	// scopes every persisted record ("default" in OSS single-tenant).
+	insightStore insights.InsightStore
+	tenantID     string
+}
+
+// SetInsightStore wires the persistent insights store + tenant scope. Call
+// before connecting so per-cluster engines pick it up. tenantID defaults to
+// "default" (OSS single-tenant) when empty.
+func (m *Manager) SetInsightStore(store insights.InsightStore, tenantID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.insightStore = store
+	m.tenantID = tenantID
 }
 
 // SetOnNewInsight registers a callback invoked (asynchronously) for every new
@@ -765,7 +782,18 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 
 	go collector.Start(ctx)
 
-	engine := insights.NewEngine(m.wsHub)
+	// Resolve a stable clusterID for persisted insights: prefer the
+	// kube-system UID, fall back to the agent-proxy cluster_id, then the
+	// context name — so records key consistently across restarts.
+	engineClusterID := connector.ClusterUID()
+	if engineClusterID == "" {
+		if cid := m.agentProxyContexts[contextName]; cid != "" {
+			engineClusterID = cid
+		} else {
+			engineClusterID = contextName
+		}
+	}
+	engine := insights.NewEngine(m.wsHub, m.insightStore, engineClusterID, m.tenantID)
 
 	// Start insight evaluation ticker
 	go func() {

@@ -32,6 +32,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -267,6 +268,9 @@ func main() {
 	// registry survives a backend restart by losing all state, same
 	// as pre-Sprint-A.5 behavior.
 	var agentStore channel.AgentStore
+	// Persistent insights store (Sprint 0) — same BoltDB-only gating as
+	// agentStore. nil → engines run in-memory-only (pre-Sprint-0 behavior).
+	var insightStore insights.InsightStore
 
 	// Fleet-wide Prom remote_write limit defaults (Phase 3 Day 1-3).
 	// Loaded once at startup from KUBEBOLT_PROM_WRITE_DEFAULT_* env
@@ -408,6 +412,17 @@ func main() {
 		// Bucket already created in auth.NewStore; we just wire the
 		// store + registry binding here.
 		agentStore = channel.NewBoltAgentStore(store.DB(), auth.AgentsBucket())
+
+		// Persistent insights store (Sprint 0). Insight identities survive
+		// restarts, scoped by tenant + cluster, feeding history + restart-safe
+		// notification dedup + Kobi/Autopilot provenance. Bucket created in
+		// auth.NewStore. tenantID = the auto-seeded "default" tenant in OSS.
+		insightStore = insights.NewBoltInsightStore(store.DB(), auth.InsightsBucket())
+		insightTenantID := auth.DefaultTenantName
+		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
+			insightTenantID = dt.ID
+		}
+		manager.SetInsightStore(insightStore, insightTenantID)
 
 		// Build the agent authenticator. TokenReview mode is best-effort:
 		// if there is no in-cluster client (KubeBolt running outside K8s,
@@ -929,6 +944,41 @@ func main() {
 					}
 					if removed > 0 {
 						slog.Info("agent registry pruned",
+							slog.Int("removed", removed),
+							slog.Duration("horizon", horizon),
+						)
+					}
+				}
+			}
+		}()
+	}
+
+	// Insights retention (Sprint 0). Hourly prune of RESOLVED insight
+	// records older than the horizon; active insights never expire. The
+	// horizon is read from KUBEBOLT_INSIGHTS_RETENTION_HORIZON (default 7d)
+	// each tick, so a restart picks up a change without a code edit.
+	if insightStore != nil {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-agentCtx.Done():
+					return
+				case <-ticker.C:
+					horizon := 7 * 24 * time.Hour
+					if v := os.Getenv("KUBEBOLT_INSIGHTS_RETENTION_HORIZON"); v != "" {
+						if d, err := time.ParseDuration(v); err == nil && d > 0 {
+							horizon = d
+						}
+					}
+					removed, err := insightStore.Prune(time.Now().UTC().Add(-horizon))
+					if err != nil {
+						slog.Warn("insights prune failed", slog.String("error", err.Error()))
+						continue
+					}
+					if removed > 0 {
+						slog.Info("insights pruned",
 							slog.Int("removed", removed),
 							slog.Duration("horizon", horizon),
 						)

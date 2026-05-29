@@ -25,6 +25,11 @@ export interface MetricPoint {
 // Insight from the engine
 export interface Insight {
   id: string
+  // Sprint 0: stable identity. `fingerprint` is the cross-restart/recurrence
+  // identity; `id` is the current occurrence id (what Kobi/Autopilot
+  // reference). Both optional for backward-compat with older API payloads.
+  fingerprint?: string
+  ruleId?: string
   severity: 'critical' | 'warning' | 'info'
   category: string
   resource: string
@@ -34,6 +39,8 @@ export interface Insight {
   suggestion: string
   firstSeen: string
   lastSeen: string
+  resolved?: boolean
+  resolvedAt?: string
 }
 
 export interface InsightCount {

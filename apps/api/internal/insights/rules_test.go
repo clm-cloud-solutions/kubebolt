@@ -181,7 +181,7 @@ func TestFrequentRestartsRule_FiresAbove10(t *testing.T) {
 
 func TestEngine_EvaluateIntegratesRules(t *testing.T) {
 	// End-to-end: engine with real rules + crafted state → insights returned.
-	e := NewEngine(websocket.NewHub())
+	e := NewEngine(websocket.NewHub(), nil, "test-cluster", "default")
 
 	p := pod("default", "crash-pod")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{

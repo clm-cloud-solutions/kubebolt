@@ -149,19 +149,30 @@ type MetricPoint struct {
 }
 
 // Insight represents a diagnostic finding from the insights engine.
+//
+// Identity (Sprint 0): ID carries the current occurrence id (what
+// consumers reference — the insight→Kobi trigger, ActionProposal
+// provenance, Autopilot trigger_source_ref). Fingerprint is the stable
+// cross-restart/cross-recurrence identity = sha256(tenant|cluster|ruleId|
+// resource). RuleID/TenantID/ClusterID are stamped by the engine at
+// evaluation time. In OSS, TenantID is always "default".
 type Insight struct {
-	ID         string     `json:"id"`
-	Severity   string     `json:"severity"`
-	Category   string     `json:"category"`
-	Resource   string     `json:"resource"`
-	Namespace  string     `json:"namespace"`
-	Title      string     `json:"title"`
-	Message    string     `json:"message"`
-	Suggestion string     `json:"suggestion"`
-	FirstSeen  time.Time  `json:"firstSeen"`
-	LastSeen   time.Time  `json:"lastSeen"`
-	Resolved   bool       `json:"resolved"`
-	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+	ID          string     `json:"id"`
+	Fingerprint string     `json:"fingerprint,omitempty"`
+	RuleID      string     `json:"ruleId,omitempty"`
+	TenantID    string     `json:"tenantId,omitempty"`
+	ClusterID   string     `json:"clusterId,omitempty"`
+	Severity    string     `json:"severity"`
+	Category    string     `json:"category"`
+	Resource    string     `json:"resource"`
+	Namespace   string     `json:"namespace"`
+	Title       string     `json:"title"`
+	Message     string     `json:"message"`
+	Suggestion  string     `json:"suggestion"`
+	FirstSeen   time.Time  `json:"firstSeen"`
+	LastSeen    time.Time  `json:"lastSeen"`
+	Resolved    bool       `json:"resolved"`
+	ResolvedAt  *time.Time `json:"resolvedAt,omitempty"`
 }
 
 // TopologyNode is a vertex in the cluster topology graph.
