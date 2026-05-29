@@ -399,12 +399,14 @@ interface KindGroupData {
   rows: ManifestDoc[]
 }
 
-// Rail width is user-resizable: drag the divider to widen the YAML pane and
-// the rail shrinks. Clamped so the manifest list never collapses below
-// RAIL_MIN, and the rail never exceeds RAIL_MAX (= today's width) so the YAML
-// can only grow from its current size, never shrink below it. Persisted.
+// Rail width is user-resizable: drag the divider either way. Widen the rail to
+// read long resource names (helm release + chart names concatenate into long
+// identifiers that truncate at the default), or shrink it to give the YAML
+// pane more room. Clamped to [RAIL_MIN, RAIL_MAX] so neither pane collapses;
+// opens at RAIL_DEFAULT. Persisted across sessions.
 const RAIL_MIN = 130
-const RAIL_MAX = 260
+const RAIL_MAX = 520
+const RAIL_DEFAULT = 260
 const RAIL_WIDTH_KEY = 'kb-helm-manifest-rail-width'
 
 // ManifestTab — browse the release's rendered resources one at a time instead
@@ -424,7 +426,7 @@ function ManifestTab({ manifest, releaseNamespace }: { manifest: string; release
   // Resizable rail (drag the divider to widen the YAML pane).
   const [railWidth, setRailWidth] = useState<number>(() => {
     const stored = Number(localStorage.getItem(RAIL_WIDTH_KEY))
-    return stored >= RAIL_MIN && stored <= RAIL_MAX ? stored : RAIL_MAX
+    return stored >= RAIL_MIN && stored <= RAIL_MAX ? stored : RAIL_DEFAULT
   })
   const [dragging, setDragging] = useState(false)
   const dragRef = useRef<{ startX: number; startW: number } | null>(null)
