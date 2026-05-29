@@ -102,6 +102,8 @@ var resourceDefs = map[string]resourceDef{
 	// Networking v1
 	"ingresses":       {group: "networking.k8s.io", resource: "ingresses"},
 	"networkpolicies": {group: "networking.k8s.io", resource: "networkpolicies"},
+	// Policy v1
+	"pdbs": {group: "policy", resource: "poddisruptionbudgets"},
 	// Autoscaling v1
 	"hpas": {group: "autoscaling", resource: "horizontalpodautoscalers"},
 	// Storage v1

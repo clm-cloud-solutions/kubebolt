@@ -65,7 +65,7 @@ const kindToRoute: Record<string, string> = {
   Secret: 'secrets', PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
   HorizontalPodAutoscaler: 'hpas', HPA: 'hpas', StorageClass: 'storageclasses',
   Gateway: 'gateways', HTTPRoute: 'httproutes', Namespace: 'namespaces',
-  PVC: 'pvcs', PV: 'pvs',
+  PVC: 'pvcs', PV: 'pvs', PodDisruptionBudget: 'pdbs',
 }
 
 const routeToKind: Record<string, string> = Object.fromEntries(
@@ -78,7 +78,7 @@ const resourceLabels: Record<string, string> = {
   ingresses: 'Ingresses', gateways: 'Gateways', httproutes: 'HTTPRoutes',
   endpoints: 'Endpoints', pvcs: 'PVCs', pvs: 'PVs', storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
-  namespaces: 'Namespaces', replicasets: 'ReplicaSets',
+  namespaces: 'Namespaces', replicasets: 'ReplicaSets', pdbs: 'Pod Disruption Budgets',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {
@@ -258,6 +258,17 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
       // actually applies to right now. The count goes in the tab
       // label so the operator sees the "is this policy doing
       // anything?" answer without navigating in.
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+      )
+      break
+    case 'pdbs':
+      // PDB carries the same matched-pods affordance as NetworkPolicy —
+      // "which pods does this budget actually protect?" is the question
+      // operators ask when an Evict 429s.
       base.push(
         { id: 'yaml', label: 'YAML' },
         { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },

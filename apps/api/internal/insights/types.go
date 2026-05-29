@@ -6,6 +6,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 )
@@ -29,6 +30,7 @@ type ClusterState struct {
 	Services        []*corev1.Service
 	EndpointSlices  []*discoveryv1.EndpointSlice
 	NetworkPolicies []*networkingv1.NetworkPolicy
+	PDBs            []*policyv1.PodDisruptionBudget
 	PodMetrics      map[string]*models.MetricPoint
 	NodeMetrics     map[string]*models.MetricPoint
 }

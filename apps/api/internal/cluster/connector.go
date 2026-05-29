@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,7 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
+	policylisters "k8s.io/client-go/listers/policy/v1"
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -105,6 +107,7 @@ type Connector struct {
 	cronJobLister        batchlisters.CronJobLister
 	ingressLister        networkinglisters.IngressLister
 	networkPolicyLister  networkinglisters.NetworkPolicyLister
+	pdbLister            policylisters.PodDisruptionBudgetLister
 	hpaLister            autoscalinglisters.HorizontalPodAutoscalerLister
 	storageClassLister   storagelisters.StorageClassLister
 	roleLister           rbaclisters.RoleLister
@@ -498,6 +501,21 @@ func (c *Connector) setupInformers() {
 		} else {
 			c.networkPolicyLister = c.factory.Networking().V1().NetworkPolicies().Lister()
 			c.factory.Networking().V1().NetworkPolicies().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Policy v1
+	if can("pdbs") {
+		if isNS("pdbs") {
+			var listers []policylisters.PodDisruptionBudgetLister
+			for _, f := range nsFactories {
+				listers = append(listers, f.Policy().V1().PodDisruptionBudgets().Lister())
+				f.Policy().V1().PodDisruptionBudgets().Informer().AddEventHandler(handler)
+			}
+			c.pdbLister = &multiPDBLister{listers: listers}
+		} else {
+			c.pdbLister = c.factory.Policy().V1().PodDisruptionBudgets().Lister()
+			c.factory.Policy().V1().PodDisruptionBudgets().Informer().AddEventHandler(handler)
 		}
 	}
 
@@ -1064,6 +1082,14 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 	overview.NetworkPolicies.Total = len(networkPolicies)
 	overview.NetworkPolicies.Ready = len(networkPolicies)
+
+	// PodDisruptionBudgets — same declarative "total = ready" shape.
+	var pdbs []*policyv1.PodDisruptionBudget
+	if c.pdbLister != nil {
+		pdbs, _ = c.pdbLister.List(everythingSelector())
+	}
+	overview.PodDisruptionBudgets.Total = len(pdbs)
+	overview.PodDisruptionBudgets.Ready = len(pdbs)
 
 	// Gateways + HTTPRoutes — declarative resources from the Gateway
 	// API CRDs. Read via the dynamic client (not a typed lister)
@@ -1753,6 +1779,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listIngresses(namespace)
 	case "networkpolicies":
 		items = c.listNetworkPolicies(namespace)
+	case "pdbs":
+		items = c.listPodDisruptionBudgets(namespace)
 	case "endpoints":
 		items = c.listEndpoints(namespace)
 	case "gateways":
@@ -2035,6 +2063,24 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		matched := c.podsMatchingSelector(np.Namespace, &np.Spec.PodSelector)
 		base["matchedPods"] = matched
 		base["matchedPodCount"] = len(matched)
+		return base, nil
+	case "pdbs":
+		if c.pdbLister == nil {
+			return nil, fmt.Errorf("pdbs not available (RBAC restricted or informer not started)")
+		}
+		pdb, err := c.pdbLister.PodDisruptionBudgets(namespace).Get(name)
+		if err != nil {
+			return nil, err
+		}
+		// Enrich with the pods the budget's selector currently matches —
+		// same affordance as NetworkPolicy, and the basis for the
+		// "selector matches zero pods" insight.
+		base := pdbToMap(pdb)
+		if pdb.Spec.Selector != nil {
+			matched := c.podsMatchingSelector(pdb.Namespace, pdb.Spec.Selector)
+			base["matchedPods"] = matched
+			base["matchedPodCount"] = len(matched)
+		}
 		return base, nil
 	case "configmaps":
 		cm, err := c.configMapLister.ConfigMaps(namespace).Get(name)
@@ -2746,6 +2792,61 @@ func ingressToMap(ing *networkingv1.Ingress) map[string]interface{} {
 	}
 }
 
+// pdbToMap renders a PodDisruptionBudget in the shape the generic resource
+// list/detail handlers consume. Surfaces the budget knobs (minAvailable /
+// maxUnavailable) and the live status (currentHealthy / desiredHealthy /
+// disruptionsAllowed / expectedPods) operators check when an Evict is
+// blocked — completing the Evict-blocked → PDB story.
+func pdbToMap(pdb *policyv1.PodDisruptionBudget) map[string]interface{} {
+	m := map[string]interface{}{
+		"name":               pdb.Name,
+		"namespace":          pdb.Namespace,
+		"currentHealthy":     pdb.Status.CurrentHealthy,
+		"desiredHealthy":     pdb.Status.DesiredHealthy,
+		"disruptionsAllowed": pdb.Status.DisruptionsAllowed,
+		"expectedPods":       pdb.Status.ExpectedPods,
+		"selector":           labelSelectorPreview(pdb.Spec.Selector),
+		"labels":             safeLabels(pdb.Labels),
+		"annotations":        safeAnnotations(pdb.Annotations),
+		"createdAt":          pdb.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":                formatAge(pdb.CreationTimestamp.Time),
+		"ownerReferences":    ownerRefsToSlice(pdb.OwnerReferences),
+	}
+	if pdb.Spec.MinAvailable != nil {
+		m["minAvailable"] = pdb.Spec.MinAvailable.String()
+	}
+	if pdb.Spec.MaxUnavailable != nil {
+		m["maxUnavailable"] = pdb.Spec.MaxUnavailable.String()
+	}
+	// Status surfaced as a one-word health for the list view: a PDB that
+	// allows zero disruptions while pods are healthy is "blocking" (the
+	// reason an Evict 429s); otherwise "Active".
+	if pdb.Status.DisruptionsAllowed == 0 && pdb.Status.CurrentHealthy > 0 {
+		m["status"] = "Blocking"
+	} else {
+		m["status"] = "Active"
+	}
+	return m
+}
+
+// labelSelectorPreview renders a LabelSelector as a compact, skimmable
+// string (e.g. "app=foo,tier=db"). Empty selector → "<all>" (matches every
+// pod in the namespace); nil → "<none>".
+func labelSelectorPreview(sel *metav1.LabelSelector) string {
+	if sel == nil {
+		return "<none>"
+	}
+	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
+		return "<all>"
+	}
+	parts := make([]string, 0, len(sel.MatchLabels))
+	for k, v := range sel.MatchLabels {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
 // networkPolicyToMap renders a NetworkPolicy in the shape the
 // generic resource list/detail handlers consume. Captures the
 // information operators scan a list for: which workloads the
@@ -3229,6 +3330,7 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"cronjobs":              {Group: "batch", Version: "v1", Resource: "cronjobs"},
 		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
 		"networkpolicies":       {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
+		"pdbs":                  {Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"},
 		// `endpoints` is the user-facing URL/type; underneath it maps
 		// to the discovery/v1 EndpointSlice API (legacy core/v1
 		// Endpoints is deprecated). Adding this entry enables the
@@ -4236,6 +4338,21 @@ func (c *Connector) listNetworkPolicies(namespace string) []map[string]interface
 			continue
 		}
 		items = append(items, networkPolicyToMap(np))
+	}
+	return items
+}
+
+func (c *Connector) listPodDisruptionBudgets(namespace string) []map[string]interface{} {
+	if c.pdbLister == nil {
+		return nil
+	}
+	list, _ := c.pdbLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, pdb := range list {
+		if namespace != "" && pdb.Namespace != namespace {
+			continue
+		}
+		items = append(items, pdbToMap(pdb))
 	}
 	return items
 }

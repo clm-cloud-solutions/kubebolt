@@ -847,6 +847,7 @@ func evaluateInsights(connector *Connector, collector *metrics.Collector, engine
 		Services:        connector.GetServices(),
 		EndpointSlices:  connector.GetEndpointSlices(),
 		NetworkPolicies: connector.GetNetworkPolicies(),
+		PDBs:            connector.GetPodDisruptionBudgets(),
 		PodMetrics:      collector.GetAllPodMetrics(),
 		NodeMetrics:     collector.GetAllNodeMetrics(),
 	}

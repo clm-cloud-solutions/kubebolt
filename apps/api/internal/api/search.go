@@ -30,7 +30,7 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 	types := []string{
 		"pods", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs",
 		"services", "ingresses", "networkpolicies", "configmaps", "secrets", "nodes", "namespaces",
-		"pvcs", "pvs", "hpas", "storageclasses",
+		"pvcs", "pvs", "hpas", "storageclasses", "pdbs",
 	}
 
 	var results []searchResult
@@ -68,6 +68,7 @@ func resourceTypeToKind(rt string) string {
 		"services": "Service", "ingresses": "Ingress", "networkpolicies": "NetworkPolicy",
 		"configmaps": "ConfigMap", "secrets": "Secret", "nodes": "Node", "namespaces": "Namespace",
 		"pvcs": "PVC", "pvs": "PV", "hpas": "HPA", "storageclasses": "StorageClass",
+		"pdbs": "PodDisruptionBudget",
 	}
 	if k, ok := kinds[rt]; ok {
 		return k

@@ -31,6 +31,63 @@ func AllRules() []Rule {
 		serviceNoEndpointsRule(),
 		networkPolicyNoMatchRule(),
 		namespaceWithoutNetworkPolicyRule(),
+		pdbNoMatchRule(),
+	}
+}
+
+// pdbNoMatchRule flags PodDisruptionBudgets whose selector matches zero pods
+// in their namespace — the budget protects nothing, so a voluntary
+// disruption (drain / Evict) won't be gated as the operator intends.
+// Parallel to networkPolicyNoMatchRule. A nil/empty selector is skipped: an
+// empty selector matches every pod (intentional), and a nil selector is a
+// no-op PDB the apiserver tolerates.
+func pdbNoMatchRule() Rule {
+	return Rule{
+		ID:       "pdb-no-match",
+		Name:     "PodDisruptionBudget selector matches no pods",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			podsByNS := map[string][]*corev1.Pod{}
+			for _, p := range state.Pods {
+				podsByNS[p.Namespace] = append(podsByNS[p.Namespace], p)
+			}
+			for _, pdb := range state.PDBs {
+				if pdb.Spec.Selector == nil {
+					continue
+				}
+				if len(pdb.Spec.Selector.MatchLabels) == 0 && len(pdb.Spec.Selector.MatchExpressions) == 0 {
+					continue // empty selector matches all — intentional
+				}
+				sel, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+				if err != nil {
+					continue
+				}
+				matched := 0
+				for _, p := range podsByNS[pdb.Namespace] {
+					if sel.Matches(labels.Set(p.Labels)) {
+						matched++
+					}
+				}
+				if matched > 0 {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("PodDisruptionBudget/%s/%s", pdb.Namespace, pdb.Name),
+					"PodDisruptionBudget selector matches no pods",
+					fmt.Sprintf(
+						"PodDisruptionBudget %s/%s declares a selector but no pod in its namespace matches. "+
+							"The budget protects nothing — a drain or Evict won't be gated as intended, "+
+							"either because the selector has a typo or the target workload was renamed / deleted.",
+						pdb.Namespace, pdb.Name,
+					),
+					"Verify the PDB's spec.selector.matchLabels against the pods you expect it to protect. "+
+						"kubectl get pods -n "+pdb.Namespace+" --show-labels",
+				))
+			}
+			return insights
+		},
 	}
 }
 

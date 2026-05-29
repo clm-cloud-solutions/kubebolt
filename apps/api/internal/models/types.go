@@ -19,6 +19,7 @@ type ClusterOverview struct {
 	CronJobs           ResourceCount       `json:"cronJobs"`
 	Ingresses          ResourceCount       `json:"ingresses"`
 	NetworkPolicies    ResourceCount       `json:"networkPolicies"`
+	PodDisruptionBudgets ResourceCount     `json:"podDisruptionBudgets"`
 	// Gateways / HTTPRoutes — present when Gateway API CRDs are
 	// installed. Zero on clusters that haven't installed the CRDs;
 	// the sidebar hides the counter chip when the value is zero
