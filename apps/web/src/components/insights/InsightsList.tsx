@@ -66,20 +66,36 @@ export function InsightsList() {
             <ResourceTypeIcon type="insights" />
             <h1 className="text-lg font-semibold text-kb-text-primary">Insights</h1>
           </div>
-          <div className="flex gap-1">
-            {filters.map((f) => (
-              <button
-                key={f.value}
-                onClick={() => selectSeverity(f.value)}
-                className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.06em] border transition-colors ${
-                  severity === f.value
-                    ? 'bg-status-info-dim text-status-info border-status-info/20'
-                    : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-3">
+            {insights.length > PAGE_SIZE_OPTIONS[0] && (
+              <label className="flex items-center gap-1.5 text-[11px] font-mono text-kb-text-tertiary">
+                Per page
+                <select
+                  value={pageSize}
+                  onChange={(e) => changePageSize(Number(e.target.value))}
+                  className="bg-kb-card border border-kb-border rounded px-1.5 py-0.5 text-kb-text-secondary text-[11px] font-mono focus:outline-none focus:border-kb-border-active"
+                >
+                  {PAGE_SIZE_OPTIONS.map((n) => (
+                    <option key={n} value={n}>{n}</option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <div className="flex gap-1">
+              {filters.map((f) => (
+                <button
+                  key={f.value}
+                  onClick={() => selectSeverity(f.value)}
+                  className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.06em] border transition-colors ${
+                    severity === f.value
+                      ? 'bg-status-info-dim text-status-info border-status-info/20'
+                      : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
         <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('insights')}</p>
@@ -126,18 +142,6 @@ export function InsightsList() {
                   <ChevronRight className="w-3.5 h-3.5" />
                 </button>
               </div>
-              <label className="flex items-center gap-1.5 text-[11px] font-mono text-kb-text-tertiary">
-                Per page
-                <select
-                  value={pageSize}
-                  onChange={(e) => changePageSize(Number(e.target.value))}
-                  className="bg-kb-card border border-kb-border rounded px-1.5 py-0.5 text-kb-text-secondary text-[11px] font-mono focus:outline-none focus:border-kb-border-active"
-                >
-                  {PAGE_SIZE_OPTIONS.map((n) => (
-                    <option key={n} value={n}>{n}</option>
-                  ))}
-                </select>
-              </label>
             </div>
           )}
         </>
