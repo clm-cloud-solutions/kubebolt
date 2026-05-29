@@ -201,10 +201,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// Action governance (Sprint 1): withhold propose_* tools when actions
 	// are disabled, and the destructive verbs when the sub-switch is off —
 	// the LLM can't propose what it can't see. Defaults are ON (the action
-	// surface already shipped); see config.CopilotConfig.
+	// surface already shipped). Resolved config (env baseline + live BoltDB
+	// override from the admin toggle) wins over the raw env baseline.
+	govCfg := h.resolvedCopilotConfig()
 	tools := copilot.GovernedToolDefinitions(
-		h.copilotConfig.ActionsEnabled,
-		h.copilotConfig.DestructiveActionsEnabled,
+		govCfg.ActionsEnabled,
+		govCfg.DestructiveActionsEnabled,
 	)
 
 	trigger := req.Trigger

@@ -21,6 +21,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
 var restartableTypes = map[string]bool{
@@ -126,8 +127,19 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 // when destructive ops are off; this also catches scale-to-0, which shares
 // the non-destructive scale tool and so can't be tool-filtered).
 func (h *handlers) copilotDestructiveBlocked(r *http.Request) bool {
-	return !h.copilotConfig.DestructiveActionsEnabled &&
+	return !h.resolvedCopilotConfig().DestructiveActionsEnabled &&
 		r.Header.Get("X-KubeBolt-Action-Source") == "copilot_proposal"
+}
+
+// resolvedCopilotConfig returns the live Copilot config (env baseline +
+// BoltDB admin override) when the settings runtime is wired, else the env
+// baseline — so the Sprint 1 governance toggles take effect from the admin
+// UI without a restart.
+func (h *handlers) resolvedCopilotConfig() config.CopilotConfig {
+	if h.settingsRuntime != nil {
+		return h.settingsRuntime.Copilot()
+	}
+	return h.copilotConfig
 }
 
 func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
