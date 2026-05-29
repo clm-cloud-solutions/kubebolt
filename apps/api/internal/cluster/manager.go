@@ -857,6 +857,8 @@ func evaluateInsights(connector *Connector, collector *metrics.Collector, engine
 		NetworkPolicies: connector.GetNetworkPolicies(),
 		PDBs:            connector.GetPodDisruptionBudgets(),
 		HelmReleases:    helmReleases,
+		Certificates:    connector.listOptionalCRD("certificates", ""),
+		ArgoApps:        connector.listOptionalCRD("argocdapps", ""),
 		PodMetrics:      collector.GetAllPodMetrics(),
 		NodeMetrics:     collector.GetAllNodeMetrics(),
 	}

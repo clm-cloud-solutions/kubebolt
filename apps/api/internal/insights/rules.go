@@ -34,6 +34,88 @@ func AllRules() []Rule {
 		pdbNoMatchRule(),
 		helmReleaseFailedRule(),
 		helmReleaseHookPendingRule(),
+		certExpiringRule(),
+		argoOutOfSyncRule(),
+	}
+}
+
+// certExpiringRule flags cert-manager Certificates that have expired or are
+// within 14 days of expiry. A healthy auto-renewal clears the warning on its
+// own; a persistent one means renewal is failing. (Sprint 3 insight.)
+func certExpiringRule() Rule {
+	return Rule{
+		ID:       "cert-expiring",
+		Name:     "Certificate expiring soon",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, c := range state.Certificates {
+				days, ok := c["expiresInDays"].(int)
+				if !ok {
+					continue
+				}
+				name, _ := c["name"].(string)
+				ns, _ := c["namespace"].(string)
+				switch {
+				case days < 0:
+					insights = append(insights, newInsight(
+						"critical",
+						fmt.Sprintf("Certificate/%s/%s", ns, name),
+						"Certificate expired",
+						fmt.Sprintf("cert-manager Certificate %s/%s expired %d day(s) ago — TLS against it now fails.", ns, name, -days),
+						"Renewal likely failed; check the issuer and cert-manager logs. kubectl describe certificate "+name+" -n "+ns,
+					))
+				case days < 14:
+					insights = append(insights, newInsight(
+						"warning",
+						fmt.Sprintf("Certificate/%s/%s", ns, name),
+						"Certificate expiring soon",
+						fmt.Sprintf("cert-manager Certificate %s/%s expires in %d day(s). If auto-renewal is healthy this clears itself; if it persists, renewal is stuck.", ns, name, days),
+						"Verify cert-manager is renewing it: kubectl describe certificate "+name+" -n "+ns,
+					))
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// argoOutOfSyncRule flags ArgoCD Applications that are OutOfSync or Degraded
+// — live cluster state has drifted from Git, or the app is unhealthy.
+// (Sprint 3 insight.)
+func argoOutOfSyncRule() Rule {
+	return Rule{
+		ID:       "argocd-out-of-sync",
+		Name:     "ArgoCD Application not healthy",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, a := range state.ArgoApps {
+				name, _ := a["name"].(string)
+				ns, _ := a["namespace"].(string)
+				sync, _ := a["syncStatus"].(string)
+				health, _ := a["healthStatus"].(string)
+				var reasons []string
+				if sync == "OutOfSync" {
+					reasons = append(reasons, "OutOfSync")
+				}
+				if health == "Degraded" {
+					reasons = append(reasons, "Degraded")
+				}
+				if len(reasons) == 0 {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("Application/%s/%s", ns, name),
+					"ArgoCD Application not healthy",
+					fmt.Sprintf("ArgoCD Application %s/%s is %s — live state has drifted from Git or the app is unhealthy.",
+						ns, name, strings.Join(reasons, " + ")),
+					"Inspect in ArgoCD or `kubectl describe application "+name+" -n "+ns+"`; sync or roll back as appropriate.",
+				))
+			}
+			return insights
+		},
 	}
 }
 

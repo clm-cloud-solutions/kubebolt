@@ -1787,6 +1787,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listGatewayResources("gateways", namespace)
 	case "httproutes":
 		items = c.listGatewayResources("httproutes", namespace)
+	case "certificates", "argocdapps", "vpas":
+		items = c.listOptionalCRD(resourceType, namespace)
 	case "configmaps":
 		items = c.listConfigMaps(namespace)
 	case "secrets":
@@ -2198,6 +2200,8 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			}
 		}
 		return nil, fmt.Errorf("%s %s/%s not found", resourceType, namespace, name)
+	case "certificates", "argocdapps", "vpas":
+		return c.getOptionalCRD(resourceType, namespace, name)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}
@@ -3347,6 +3351,9 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"clusterrolebindings":   {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
 		"gateways":              {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
 		"httproutes":            {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+		"certificates":          {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
+		"argocdapps":            {Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"},
+		"vpas":                  {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
 	}
 	gvr, ok := m[resourceType]
 	return gvr, ok

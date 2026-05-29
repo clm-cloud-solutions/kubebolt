@@ -111,6 +111,16 @@ const sections: NavSection[] = [
     ],
   },
   {
+    // Optional standard CRDs (Sprint 3) — shown only-useful when the CRD is
+    // installed; the list is empty otherwise. No count/permission gating.
+    title: 'Extensions',
+    items: [
+      { label: 'Certificates', path: '/certificates', icon: <KeyRound className="w-4 h-4" /> },
+      { label: 'ArgoCD Apps', path: '/argocdapps', icon: <Puzzle className="w-4 h-4" /> },
+      { label: 'VPA', path: '/vpas', icon: <SlidersHorizontal className="w-4 h-4" /> },
+    ],
+  },
+  {
     title: 'Cluster',
     items: [
       { label: 'Clusters', path: '/clusters', icon: <Server className="w-4 h-4" /> },

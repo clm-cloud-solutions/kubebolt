@@ -66,6 +66,7 @@ const kindToRoute: Record<string, string> = {
   HorizontalPodAutoscaler: 'hpas', HPA: 'hpas', StorageClass: 'storageclasses',
   Gateway: 'gateways', HTTPRoute: 'httproutes', Namespace: 'namespaces',
   PVC: 'pvcs', PV: 'pvs', PodDisruptionBudget: 'pdbs',
+  Certificate: 'certificates', Application: 'argocdapps', VerticalPodAutoscaler: 'vpas',
 }
 
 const routeToKind: Record<string, string> = Object.fromEntries(
@@ -79,6 +80,7 @@ const resourceLabels: Record<string, string> = {
   endpoints: 'Endpoints', pvcs: 'PVCs', pvs: 'PVs', storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
   namespaces: 'Namespaces', replicasets: 'ReplicaSets', pdbs: 'Pod Disruption Budgets',
+  certificates: 'Certificates', argocdapps: 'ArgoCD Applications', vpas: 'Vertical Pod Autoscalers',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {

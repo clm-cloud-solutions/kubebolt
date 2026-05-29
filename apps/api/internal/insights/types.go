@@ -33,6 +33,10 @@ type ClusterState struct {
 	NetworkPolicies []*networkingv1.NetworkPolicy
 	PDBs            []*policyv1.PodDisruptionBudget
 	HelmReleases    []helm.Release
-	PodMetrics      map[string]*models.MetricPoint
+	// Optional dynamic CRDs (Sprint 3), as generic maps from the dynamic
+	// lister — present only when the CRD is installed.
+	Certificates []map[string]interface{}
+	ArgoApps     []map[string]interface{}
+	PodMetrics   map[string]*models.MetricPoint
 	NodeMetrics     map[string]*models.MetricPoint
 }
