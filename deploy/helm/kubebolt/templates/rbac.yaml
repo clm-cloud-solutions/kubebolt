@@ -65,21 +65,40 @@ rules:
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
-  # Write access for resource management (restart, scale, delete, edit)
+  # Write access for resource management (restart, scale, delete, edit) AND
+  # the "New resource" modal's create flow. The modal offers ~19 kinds; the
+  # create verb must cover them or the apply 403s as the kubebolt SA.
   - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["patch", "update", "delete"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["create", "patch", "update", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "update"]
   - apiGroups: [""]
     resources: ["pods", "services", "persistentvolumeclaims"]
-    verbs: ["delete", "update"]
+    verbs: ["create", "update", "delete"]
   # NetworkPolicies: create/update/delete for the New-resource modal
   # (NetworkPolicy is offered as a first-class kind with starter
   # templates as of 1.11) and for YAML-tab edits + Delete action.
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
+    verbs: ["create", "update", "delete"]
+  # Remaining New-resource modal kinds (Jobs, CronJobs, Ingresses, HPAs,
+  # StorageClasses) + their YAML-apply / Delete actions. The apps + core
+  # create verbs are added above; configmaps/secrets/namespaces/RBAC/
+  # serviceaccounts already had create. These four groups had NO write
+  # rule at all — added in 1.14 so the modal's kind list matches the RBAC.
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["create", "update", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
     verbs: ["create", "update", "delete"]
   # ConfigMaps: agent install creates kubebolt-agent-config alongside the
   # DaemonSet; without create the wizard fails after the SA step.
