@@ -34,6 +34,26 @@ rules:
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["gateways", "httproutes"]
     verbs: ["get", "list", "watch"]
+  # PodDisruptionBudgets — standard policy/v1 resource, surfaced as a
+  # first-class view + insight (pdb-no-match) in 1.14. Without this grant
+  # the permission probe denies it on EVERY install and the PDB view 403s.
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  # Optional CRDs surfaced as first-class read-only views in 1.14. Same
+  # pattern as the gateway.networking.k8s.io grant above: harmless when the
+  # CRD isn't installed (the rule matches nothing), and the moment the
+  # operator adds cert-manager / ArgoCD / VPA, KubeBolt lists them with no
+  # RBAC change. Probed by SelfSubjectAccessReview at connect time.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling.k8s.io"]
+    resources: ["verticalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
     verbs: ["get", "list"]
