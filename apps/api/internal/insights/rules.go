@@ -29,6 +29,7 @@ func AllRules() []Rule {
 		hpaMaxedOutRule(),
 		frequentRestartsRule(),
 		imagePullBackoffRule(),
+		missingConfigDependencyRule(),
 		evictedPodsRule(),
 		serviceNoEndpointsRule(),
 		networkPolicyNoMatchRule(),
@@ -628,6 +629,54 @@ func imagePullBackoffRule() Rule {
 							"Verify the image name/tag exists, check registry credentials, and ensure network access to the registry.",
 						))
 					}
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// missingConfigDependencyRule flags pods that can't start because a ConfigMap
+// or Secret they reference doesn't exist. kubelet reports this on the container
+// as `Waiting.Reason == "CreateContainerConfigError"` with a message like
+// `configmap "app-config" not found` or `secret "db-creds" not found` — the pod
+// is admitted but the container never starts. Unlike a crash-loop (the process
+// runs and exits) the container here never executes, so the remedy is always to
+// (re)create the missing dependency, not to touch the workload. We read the
+// container waiting state (current truth) rather than Events (historical) so the
+// insight clears as soon as the dependency exists. Tier-1 (2026-06).
+func missingConfigDependencyRule() Rule {
+	return Rule{
+		ID:       "missing-config-dependency",
+		Name:     "Pod missing ConfigMap or Secret",
+		Severity: "critical",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Waiting == nil || cs.State.Waiting.Reason != "CreateContainerConfigError" {
+						continue
+					}
+					msg := cs.State.Waiting.Message
+					// Identify which kind of dependency is missing, for a
+					// sharper title + suggestion. kubelet phrases it as
+					// `configmap "X" not found` / `secret "X" not found`.
+					kind := "ConfigMap or Secret"
+					if strings.Contains(msg, "configmap") {
+						kind = "ConfigMap"
+					} else if strings.Contains(msg, "secret") {
+						kind = "Secret"
+					}
+					insights = append(insights, newInsight(
+						"critical",
+						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
+						"Pod missing ConfigMap or Secret",
+						fmt.Sprintf("Container %s in pod %s/%s cannot start — a referenced %s is missing: %s",
+							cs.Name, pod.Namespace, pod.Name, kind, msg),
+						fmt.Sprintf("Create the missing %s in namespace %s (the exact name is in the message above), or remove the reference from the pod spec. kubectl describe pod %s -n %s shows the full error.",
+							kind, pod.Namespace, pod.Name, pod.Namespace),
+					))
+					break // one insight per pod, not per container
 				}
 			}
 			return insights

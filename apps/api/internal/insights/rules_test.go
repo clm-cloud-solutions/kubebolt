@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +131,67 @@ func TestImagePullBackoffRule(t *testing.T) {
 	got := imagePullBackoffRule().Evaluate(state)
 	if len(got) != 1 {
 		t.Errorf("want 1 insight, got %d", len(got))
+	}
+}
+
+func TestMissingConfigDependencyRule_FiresForMissingConfigMap(t *testing.T) {
+	p := pod("default", "needs-config")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "CreateContainerConfigError",
+				Message: `configmap "app-config" not found`,
+			},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	got := missingConfigDependencyRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for missing configmap, got %d", len(got))
+	}
+	if got[0].Severity != "critical" {
+		t.Errorf("severity = %q", got[0].Severity)
+	}
+	// The message should name the ConfigMap specifically (not the generic kind).
+	if !strings.Contains(got[0].Message, "ConfigMap") {
+		t.Errorf("message should identify ConfigMap, got %q", got[0].Message)
+	}
+}
+
+func TestMissingConfigDependencyRule_FiresForMissingSecret(t *testing.T) {
+	p := pod("prod", "needs-secret")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "CreateContainerConfigError",
+				Message: `secret "db-creds" not found`,
+			},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	got := missingConfigDependencyRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for missing secret, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Message, "Secret") {
+		t.Errorf("message should identify Secret, got %q", got[0].Message)
+	}
+}
+
+func TestMissingConfigDependencyRule_IgnoresOtherWaitingReasons(t *testing.T) {
+	// A plain ImagePullBackOff is a different rule's concern — must not fire here.
+	p := pod("default", "pulling")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := missingConfigDependencyRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("should not fire for ImagePullBackOff, got %d insights", len(got))
 	}
 }
 
