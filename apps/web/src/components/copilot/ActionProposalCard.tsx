@@ -130,6 +130,15 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
             `Agent is in read-only mode — its ServiceAccount can't ${verb} ${resource}. ` +
             `Open Administration → Integrations → KubeBolt Agent → Configure and switch the Permission tier ` +
             `to "Cluster-wide read + write".`
+        } else if (e.status === 403 && e.payload?.governanceBlocked === true) {
+          // Governance policy block (admin toggle), NOT an RBAC/role limit.
+          // Surface the backend's reason so the user (and Kobi, via the
+          // recorded outcome) knows it's a policy switch an admin can flip —
+          // not a missing permission to chase.
+          msg =
+            typeof e.payload.error === 'string'
+              ? e.payload.error
+              : `This action is disabled by the Kobi action-governance policy — not your role. An admin can enable it in Administration → Copilot.`
         } else if (e.status === 403) {
           msg = `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
         } else if (e.status === 404) {

@@ -94,3 +94,28 @@ func TestCopilotDestructiveBlocked(t *testing.T) {
 		})
 	}
 }
+
+// A governance block must be distinguishable from an RBAC 403: same status,
+// but a `governanceBlocked:true` flag + `setting` so the frontend renders
+// "disabled by policy" instead of "your role does not allow this action".
+func TestRespondGovernanceBlocked(t *testing.T) {
+	rec := httptest.NewRecorder()
+	respondGovernanceBlocked(rec, "destructive-ops", "Delete via Kobi is disabled.")
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["governanceBlocked"] != true {
+		t.Errorf("governanceBlocked = %v, want true", body["governanceBlocked"])
+	}
+	if body["setting"] != "destructive-ops" {
+		t.Errorf("setting = %v, want destructive-ops", body["setting"])
+	}
+	if body["error"] != "Delete via Kobi is disabled." {
+		t.Errorf("error = %v", body["error"])
+	}
+}

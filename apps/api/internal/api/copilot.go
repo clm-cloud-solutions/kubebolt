@@ -244,6 +244,13 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	sessionCtx := ""
 	if len(messages) > 0 {
 		sessionCtx = copilot.BuildSessionContext(clusterName, req.CurrentPath, time.Now(), req.ClientTimezone)
+		// Tell Kobi the live governance-toggle state so it explains a blocked
+		// action as policy (not RBAC). Appended to the per-session prefix —
+		// keeps the system prompt's cache prefix byte-identical. Empty when
+		// both toggles are ON (the default), so the common case adds nothing.
+		if gov := copilot.GovernanceContextBlock(govCfg.ActionsEnabled, govCfg.DestructiveActionsEnabled); gov != "" {
+			sessionCtx += "\n\n" + gov
+		}
 	}
 
 	usedFallback := false

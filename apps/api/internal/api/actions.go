@@ -242,7 +242,8 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 	// sub-switch. Can't be tool-filtered (shares propose_scale_workload), so
 	// it's enforced here.
 	if body.Replicas == 0 && h.copilotDestructiveBlocked(r) {
-		respondError(w, http.StatusForbidden, "scale-to-0 via Kobi is disabled by the destructive-ops admin setting")
+		respondGovernanceBlocked(w, "destructive-ops",
+			"Scale-to-0 via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → Copilot.")
 		return
 	}
 
@@ -618,7 +619,8 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 	// Kobi-proposed actions (defense in depth; the LLM already can't see the
 	// delete tool when the sub-switch is off).
 	if h.copilotDestructiveBlocked(r) {
-		respondError(w, http.StatusForbidden, "delete via Kobi is disabled by the destructive-ops admin setting")
+		respondGovernanceBlocked(w, "destructive-ops",
+			"Delete via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → Copilot.")
 		return
 	}
 
@@ -855,4 +857,19 @@ func respondMutationError(w http.ResponseWriter, err error) {
 		return
 	}
 	respondError(w, http.StatusInternalServerError, msg)
+}
+
+// respondGovernanceBlocked responds to a Kobi-proposed action that an admin
+// has disabled via a governance toggle (Sprint 1). It returns 403 — the
+// action genuinely is forbidden — but carries `governanceBlocked:true` + the
+// `setting` name so the frontend renders "disabled by policy" instead of the
+// RBAC "your role does not allow this action" message. The distinction
+// matters: this is a policy switch the admin can flip, NOT a limit of the
+// operator's role, and conflating them sends users chasing a phantom RBAC fix.
+func respondGovernanceBlocked(w http.ResponseWriter, setting, msg string) {
+	respondJSON(w, http.StatusForbidden, map[string]any{
+		"error":             msg,
+		"governanceBlocked": true,
+		"setting":           setting,
+	})
 }
