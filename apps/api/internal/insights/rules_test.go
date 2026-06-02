@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -162,6 +163,47 @@ func TestPVCPendingRule(t *testing.T) {
 	got := pvcPendingRule().Evaluate(state)
 	if len(got) != 1 {
 		t.Errorf("want 1 insight for pending PVC, got %d", len(got))
+	}
+}
+
+// deploymentWithProgressing builds a Deployment carrying a single
+// Progressing condition with the given status+reason — the fixture the
+// progress-deadline rule keys off.
+func deploymentWithProgressing(ns, name string, status corev1.ConditionStatus, reason, msg string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Status: appsv1.DeploymentStatus{
+			Conditions: []appsv1.DeploymentCondition{{
+				Type:    appsv1.DeploymentProgressing,
+				Status:  status,
+				Reason:  reason,
+				Message: msg,
+			}},
+		},
+	}
+}
+
+func TestProgressDeadlineExceededRule_Fires(t *testing.T) {
+	d := deploymentWithProgressing("prod", "api",
+		corev1.ConditionFalse, "ProgressDeadlineExceeded",
+		`ReplicaSet "api-7c5" has timed out progressing.`)
+	state := &ClusterState{Deployments: []*appsv1.Deployment{d}}
+	got := progressDeadlineExceededRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for stalled rollout, got %d", len(got))
+	}
+	if got[0].Title != "Rollout Progress Deadline Exceeded" {
+		t.Errorf("unexpected title: %q", got[0].Title)
+	}
+}
+
+func TestProgressDeadlineExceededRule_IgnoresHealthyRollout(t *testing.T) {
+	// A normal, progressing Deployment: Progressing=True, reason=NewReplicaSetAvailable.
+	d := deploymentWithProgressing("prod", "api",
+		corev1.ConditionTrue, "NewReplicaSetAvailable", "ReplicaSet is available.")
+	state := &ClusterState{Deployments: []*appsv1.Deployment{d}}
+	if got := progressDeadlineExceededRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("healthy rollout should not fire, got %d insights", len(got))
 	}
 }
 

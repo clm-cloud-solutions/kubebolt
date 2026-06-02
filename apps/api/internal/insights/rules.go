@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -22,6 +23,7 @@ func AllRules() []Rule {
 		memoryPressureRule(),
 		resourceUnderrequestRule(),
 		zeroReplicasRule(),
+		progressDeadlineExceededRule(),
 		pvcPendingRule(),
 		nodeNotReadyRule(),
 		hpaMaxedOutRule(),
@@ -458,6 +460,41 @@ func zeroReplicasRule() Rule {
 						fmt.Sprintf("Deployment %s/%s has 0 available replicas (desired: %d)", d.Namespace, d.Name, *d.Spec.Replicas),
 						"Check pod events and logs. The deployment may have failing containers or scheduling issues.",
 					))
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// progressDeadlineExceededRule — a Deployment's rollout stalled. The
+// Deployment controller sets the Progressing condition to False with
+// reason=ProgressDeadlineExceeded when new pods don't become available
+// within spec.progressDeadlineSeconds (default 600s). This is one of the
+// most common "my deploy is stuck" incidents, and the default remedy is
+// almost always a rollback to the last working revision — which is why
+// Autopilot auto-triggers on it (registry: progress-deadline-exceeded).
+func progressDeadlineExceededRule() Rule {
+	return Rule{
+		ID:       "progress-deadline-exceeded",
+		Name:     "Rollout Progress Deadline Exceeded",
+		Severity: "critical",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, d := range state.Deployments {
+				for _, cond := range d.Status.Conditions {
+					if cond.Type == appsv1.DeploymentProgressing &&
+						cond.Status == corev1.ConditionFalse &&
+						cond.Reason == "ProgressDeadlineExceeded" {
+						insights = append(insights, newInsight(
+							"critical",
+							fmt.Sprintf("Deployment/%s/%s", d.Namespace, d.Name),
+							"Rollout Progress Deadline Exceeded",
+							fmt.Sprintf("Deployment %s/%s rollout has not progressed: %s", d.Namespace, d.Name, cond.Message),
+							"The new ReplicaSet failed to become available in time. Roll back to the last working revision, or check the new pods' events and logs for the failure cause.",
+						))
+						break // one insight per Deployment, not per condition
+					}
 				}
 			}
 			return insights
