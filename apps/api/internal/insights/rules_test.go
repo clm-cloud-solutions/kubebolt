@@ -265,13 +265,37 @@ func TestLivenessProbeFailingRule_FiresOnRecurringEvent(t *testing.T) {
 			Kind: "Pod", Namespace: "prod", Name: "api-xyz",
 		},
 	}
-	state := &ClusterState{Events: []*corev1.Event{ev}}
+	// The pod the event refers to must still exist for the rule to fire.
+	state := &ClusterState{
+		Pods:   []*corev1.Pod{pod("prod", "api-xyz")},
+		Events: []*corev1.Event{ev},
+	}
 	got := livenessProbeFailingRule().Evaluate(state)
 	if len(got) != 1 {
 		t.Fatalf("want 1 insight for recurring liveness failure, got %d", len(got))
 	}
 	if got[0].Namespace != "prod" {
 		t.Errorf("namespace = %q", got[0].Namespace)
+	}
+}
+
+// A recurring Unhealthy event whose pod has already been deleted must NOT
+// fire — Kubernetes keeps the event for ~1h after the pod is gone, and
+// without a live-pod guard the rule emits a phantom insight (which the UI
+// shows for an hour and Autopilot re-opens every poll tick).
+func TestLivenessProbeFailingRule_IgnoresEventForDeletedPod(t *testing.T) {
+	ev := &corev1.Event{
+		Reason:  "Unhealthy",
+		Message: "Liveness probe failed: HTTP probe failed with statuscode: 404",
+		Count:   31,
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Pod", Namespace: "autopilot-demo", Name: "livefail-app-66f765fdd4-2zxm4",
+		},
+	}
+	// No Pods in state — the workload was deleted, only stale events linger.
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("stale event for deleted pod should not fire, got %d insights", len(got))
 	}
 }
 

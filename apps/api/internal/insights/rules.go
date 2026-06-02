@@ -762,6 +762,16 @@ func livenessProbeFailingRule() Rule {
 		Severity: "warning",
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
+			// Kubernetes retains Events for ~1h after the object is gone
+			// (apiserver --event-ttl). This rule keys on events, not live
+			// pod state, so without this guard it keeps firing for a pod
+			// that's already been deleted — a phantom insight that the UI
+			// shows for up to an hour and that Autopilot re-opens as a new
+			// incident every poll tick. Only emit for pods that still exist.
+			livePods := make(map[string]bool, len(state.Pods))
+			for _, p := range state.Pods {
+				livePods[p.Namespace+"/"+p.Name] = true
+			}
 			seen := map[string]bool{} // dedup per pod
 			for _, ev := range state.Events {
 				if ev == nil || ev.Reason != "Unhealthy" {
@@ -778,6 +788,9 @@ func livenessProbeFailingRule() Rule {
 					continue
 				}
 				key := io.Namespace + "/" + io.Name
+				if !livePods[key] {
+					continue // pod is gone; the event is just stale history
+				}
 				if seen[key] {
 					continue
 				}
