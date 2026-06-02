@@ -195,6 +195,113 @@ func TestMissingConfigDependencyRule_IgnoresOtherWaitingReasons(t *testing.T) {
 	}
 }
 
+func TestReadinessProbeFailingRule_FiresAfterGrace(t *testing.T) {
+	p := pod("default", "not-ready")
+	p.Status.Phase = corev1.PodRunning
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "app",
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	p.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-5 * time.Minute)}, // past grace
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	got := readinessProbeFailingRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for sustained not-Ready, got %d", len(got))
+	}
+}
+
+func TestReadinessProbeFailingRule_IgnoresSlowStart(t *testing.T) {
+	// Not-Ready but only for 10s — a legitimately slow start, must not fire.
+	p := pod("default", "starting")
+	p.Status.Phase = corev1.PodRunning
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "app",
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	p.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Second)},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := readinessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("slow start (10s) should not fire, got %d insights", len(got))
+	}
+}
+
+func TestReadinessProbeFailingRule_IgnoresWaitingContainer(t *testing.T) {
+	// A pod with a Waiting container is another rule's concern (crash/pull),
+	// even if it's not-Ready past the grace window.
+	p := pod("default", "crashing")
+	p.Status.Phase = corev1.PodRunning
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "app",
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+	}}
+	p.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := readinessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("pod with Waiting container should not fire readiness rule, got %d", len(got))
+	}
+}
+
+func TestLivenessProbeFailingRule_FiresOnRecurringEvent(t *testing.T) {
+	ev := &corev1.Event{
+		Reason:  "Unhealthy",
+		Message: "Liveness probe failed: HTTP probe failed with statuscode: 500",
+		Count:   4,
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Pod", Namespace: "prod", Name: "api-xyz",
+		},
+	}
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	got := livenessProbeFailingRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for recurring liveness failure, got %d", len(got))
+	}
+	if got[0].Namespace != "prod" {
+		t.Errorf("namespace = %q", got[0].Namespace)
+	}
+}
+
+func TestLivenessProbeFailingRule_IgnoresSingleBlip(t *testing.T) {
+	ev := &corev1.Event{
+		Reason:         "Unhealthy",
+		Message:        "Liveness probe failed: connection refused",
+		Count:          1, // single blip
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "blip"},
+	}
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("single blip (count=1) should not fire, got %d insights", len(got))
+	}
+}
+
+func TestLivenessProbeFailingRule_IgnoresReadinessEvents(t *testing.T) {
+	// A readiness probe failure must NOT be picked up by the liveness rule.
+	ev := &corev1.Event{
+		Reason:         "Unhealthy",
+		Message:        "Readiness probe failed: HTTP probe failed",
+		Count:          5,
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "ready-fail"},
+	}
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("readiness event should not fire liveness rule, got %d insights", len(got))
+	}
+}
+
 func TestNodeNotReadyRule(t *testing.T) {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},

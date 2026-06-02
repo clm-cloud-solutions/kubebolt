@@ -30,6 +30,8 @@ func AllRules() []Rule {
 		frequentRestartsRule(),
 		imagePullBackoffRule(),
 		missingConfigDependencyRule(),
+		readinessProbeFailingRule(),
+		livenessProbeFailingRule(),
 		evictedPodsRule(),
 		serviceNoEndpointsRule(),
 		networkPolicyNoMatchRule(),
@@ -678,6 +680,116 @@ func missingConfigDependencyRule() Rule {
 					))
 					break // one insight per pod, not per container
 				}
+			}
+			return insights
+		},
+	}
+}
+
+// readinessProbeFailingRule flags pods whose container is Running but whose
+// Ready condition has been False (reason=ContainersNotReady) for more than the
+// startup grace window. This is "running but not serving traffic" — the pod
+// process is up, but its readiness probe keeps failing, so the Service keeps it
+// out of rotation. The time threshold is what separates a real failure from a
+// slow start: a pod that just launched is legitimately not-Ready for a while,
+// so we only fire once it's been not-Ready for >2 minutes. Pods with a Waiting
+// container are skipped — those are crash-loop / image-pull / config-error,
+// other rules' concern. Tier-1 (2026-06).
+func readinessProbeFailingRule() Rule {
+	const grace = 2 * time.Minute
+	return Rule{
+		ID:       "readiness-probe-failing",
+		Name:     "Pod not passing readiness",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				if pod.Status.Phase != corev1.PodRunning {
+					continue
+				}
+				// Skip pods with any container still Waiting — that's a
+				// startup/crash problem owned by another rule, not a probe
+				// failing on a running container.
+				stillWaiting := false
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Waiting != nil {
+						stillWaiting = true
+						break
+					}
+				}
+				if stillWaiting {
+					continue
+				}
+				for _, cond := range pod.Status.Conditions {
+					if cond.Type != corev1.PodReady || cond.Status != corev1.ConditionFalse {
+						continue
+					}
+					// Slow-start guard: only fire once it's been not-Ready
+					// past the grace window.
+					if cond.LastTransitionTime.IsZero() || time.Since(cond.LastTransitionTime.Time) < grace {
+						break
+					}
+					detail := cond.Reason
+					if cond.Message != "" {
+						detail = cond.Reason + " — " + cond.Message
+					}
+					insights = append(insights, newInsight(
+						"warning",
+						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
+						"Pod not passing readiness",
+						fmt.Sprintf("Pod %s/%s is Running but has not been Ready for over 2 minutes (%s) — it's up but the Service is keeping it out of rotation.",
+							pod.Namespace, pod.Name, detail),
+						"Check the container's readiness probe (path/port/timeout) and its logs. If the probe regressed in a recent deploy, roll back; if the app genuinely isn't ready, fix the dependency it's waiting on.",
+					))
+					break // one insight per pod
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// livenessProbeFailingRule flags pods whose liveness probe is actively failing,
+// read from kubelet's `Unhealthy` events ("Liveness probe failed: …"). Unlike
+// crash-loop (which keys on restart count, the downstream symptom) this keys on
+// the probe failure itself — the direct cause — and fires before the restarts
+// pile up. We require the event to have recurred (Count > 1) so a single
+// transient blip doesn't trip it. Tier-1 (2026-06).
+func livenessProbeFailingRule() Rule {
+	return Rule{
+		ID:       "liveness-probe-failing",
+		Name:     "Liveness probe failing",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			seen := map[string]bool{} // dedup per pod
+			for _, ev := range state.Events {
+				if ev == nil || ev.Reason != "Unhealthy" {
+					continue
+				}
+				if !strings.Contains(ev.Message, "Liveness probe failed") {
+					continue
+				}
+				if ev.Count <= 1 {
+					continue // a single blip isn't an incident
+				}
+				io := ev.InvolvedObject
+				if io.Kind != "Pod" {
+					continue
+				}
+				key := io.Namespace + "/" + io.Name
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("Pod/%s/%s", io.Namespace, io.Name),
+					"Liveness probe failing",
+					fmt.Sprintf("Pod %s/%s liveness probe has failed %d times: %s — kubelet will restart the container, risking a restart loop.",
+						io.Namespace, io.Name, ev.Count, ev.Message),
+					"Check the liveness probe config (path/port/initialDelaySeconds/timeout) against what the app actually does at startup. If the probe regressed in a recent deploy, roll back; if it's too aggressive, relax initialDelaySeconds/failureThreshold.",
+				))
 			}
 			return insights
 		},
