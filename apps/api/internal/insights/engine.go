@@ -60,6 +60,24 @@ func NewEngine(wsHub *websocket.Hub, store InsightStore, clusterID, tenantID str
 	}
 }
 
+// SetStore wires (or replaces) the persistence store + tenant scope on a LIVE
+// engine. Needed because the manager's initial cluster connection is async and
+// can create the engine BEFORE main.go calls SetInsightStore — in that boot
+// race the engine would otherwise capture a nil store for its whole lifetime,
+// silently disabling history reads + persistence for the session (and only
+// recovering on a luckier restart). The clusterID is intentionally left as the
+// engine resolved it at connect time (the stable kube-system UID), so records
+// key consistently across restarts regardless of which side won the race.
+func (e *Engine) SetStore(store InsightStore, tenantID string) {
+	if tenantID == "" {
+		tenantID = "default"
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.store = store
+	e.tenantID = tenantID
+}
+
 // SetOnNewInsight registers a callback that is invoked (synchronously, under
 // the engine lock) for every newly detected insight. Keep the callback fast
 // or dispatch asynchronously inside it — the engine holds its write lock while

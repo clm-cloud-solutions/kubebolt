@@ -63,14 +63,21 @@ type Manager struct {
 	tenantID     string
 }
 
-// SetInsightStore wires the persistent insights store + tenant scope. Call
-// before connecting so per-cluster engines pick it up. tenantID defaults to
-// "default" (OSS single-tenant) when empty.
+// SetInsightStore wires the persistent insights store + tenant scope. The
+// initial cluster connection is async (kicked off inside NewManager), so the
+// engine may ALREADY exist by the time main.go calls this — created with a nil
+// store (the boot race). Future engines pick up m.insightStore; the live one
+// is updated in place via engine.SetStore so it persists + serves history this
+// session too. tenantID defaults to "default" (OSS single-tenant) when empty.
 func (m *Manager) SetInsightStore(store insights.InsightStore, tenantID string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.insightStore = store
 	m.tenantID = tenantID
+	eng := m.engine // capture under lock; call SetStore outside to avoid lock-ordering
+	m.mu.Unlock()
+	if eng != nil {
+		eng.SetStore(store, tenantID)
+	}
 }
 
 // SetOnNewInsight registers a callback invoked (asynchronously) for every new
