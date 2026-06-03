@@ -1486,6 +1486,11 @@ export interface DetailedRevision {
   changeCause: string
   replicaCount: number
   active: boolean
+  // Full workload manifest AS OF this revision (live object with this
+  // revision's pod template swapped in), sanitized to clean YAML — for the
+  // History-tab revision diff. Per-revision metadata churn + pod-template-hash
+  // stripped server-side; empty if it couldn't be rendered.
+  manifestYaml?: string
 }
 
 export interface RolloutHistory {
