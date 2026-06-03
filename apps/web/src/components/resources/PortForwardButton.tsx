@@ -111,7 +111,7 @@ export function PortForwardNote() {
   return (
     <div className="inline-flex items-center gap-1.5 px-1.5 py-1 rounded border border-kb-border bg-kb-elevated text-kb-text-tertiary text-[9px] font-mono">
       <Cable className="w-3 h-3 shrink-0" />
-      <span>Opens the forwarded HTTP(S) service inside the dashboard — works with remote backends. Raw TCP (e.g. databases) isn't supported here yet.</span>
+      <span>Opens the forwarded HTTP(S) service inside the dashboard — works with remote backends. Apps that hardcode absolute root paths (e.g. Grafana, Argo CD) may not render correctly through the proxy. Raw TCP (e.g. databases) isn't supported here yet.</span>
     </div>
   )
 }
