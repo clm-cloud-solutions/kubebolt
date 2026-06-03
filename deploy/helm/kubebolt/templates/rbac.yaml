@@ -61,9 +61,22 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["selfsubjectaccessreviews"]
     verbs: ["create"]
-  # Exec for terminal and file browser
+  # Interactive pod subresources, both create-verb:
+  #   - pods/exec       → terminal + file browser
+  #   - pods/portforward → the port-forward feature. Was MISSING, so PF 403'd
+  #     as the kubebolt SA on an in-cluster deploy (where the API talks to the
+  #     apiserver with its own SA, not via the agent). Found in 1.14.0-rc.1
+  #     validation — "cannot create resource pods/portforward".
   - apiGroups: [""]
-    resources: ["pods/exec"]
+    resources: ["pods/exec", "pods/portforward"]
+    verbs: ["create"]
+  # Evict-pod action (api/actions_pod.go → policy/v1 Eviction, respects PDBs).
+  # The eviction subresource's authorization apiGroup has varied across k8s
+  # versions (core "" vs "policy"); listing both is additive and harmless —
+  # the group the apiserver actually checks matches, the other matches
+  # nothing. Sibling RBAC gap to pods/portforward, found in rc.1 validation.
+  - apiGroups: ["", "policy"]
+    resources: ["pods/eviction"]
     verbs: ["create"]
   # Write access for resource management (restart, scale, delete, edit) AND
   # the "New resource" modal's create flow. The modal offers ~19 kinds; the
