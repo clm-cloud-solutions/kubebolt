@@ -1,9 +1,11 @@
 package insights
 
 import (
+	"strings"
 	"testing"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -132,6 +134,198 @@ func TestImagePullBackoffRule(t *testing.T) {
 	}
 }
 
+func TestMissingConfigDependencyRule_FiresForMissingConfigMap(t *testing.T) {
+	p := pod("default", "needs-config")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "CreateContainerConfigError",
+				Message: `configmap "app-config" not found`,
+			},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	got := missingConfigDependencyRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for missing configmap, got %d", len(got))
+	}
+	if got[0].Severity != "critical" {
+		t.Errorf("severity = %q", got[0].Severity)
+	}
+	// The message should name the ConfigMap specifically (not the generic kind).
+	if !strings.Contains(got[0].Message, "ConfigMap") {
+		t.Errorf("message should identify ConfigMap, got %q", got[0].Message)
+	}
+}
+
+func TestMissingConfigDependencyRule_FiresForMissingSecret(t *testing.T) {
+	p := pod("prod", "needs-secret")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{
+				Reason:  "CreateContainerConfigError",
+				Message: `secret "db-creds" not found`,
+			},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	got := missingConfigDependencyRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for missing secret, got %d", len(got))
+	}
+	if !strings.Contains(got[0].Message, "Secret") {
+		t.Errorf("message should identify Secret, got %q", got[0].Message)
+	}
+}
+
+func TestMissingConfigDependencyRule_IgnoresOtherWaitingReasons(t *testing.T) {
+	// A plain ImagePullBackOff is a different rule's concern — must not fire here.
+	p := pod("default", "pulling")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "app",
+		State: corev1.ContainerState{
+			Waiting: &corev1.ContainerStateWaiting{Reason: "ImagePullBackOff"},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := missingConfigDependencyRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("should not fire for ImagePullBackOff, got %d insights", len(got))
+	}
+}
+
+func TestReadinessProbeFailingRule_FiresAfterGrace(t *testing.T) {
+	p := pod("default", "not-ready")
+	p.Status.Phase = corev1.PodRunning
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "app",
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	p.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-5 * time.Minute)}, // past grace
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	got := readinessProbeFailingRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for sustained not-Ready, got %d", len(got))
+	}
+}
+
+func TestReadinessProbeFailingRule_IgnoresSlowStart(t *testing.T) {
+	// Not-Ready but only for 10s — a legitimately slow start, must not fire.
+	p := pod("default", "starting")
+	p.Status.Phase = corev1.PodRunning
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "app",
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+	}}
+	p.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Second)},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := readinessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("slow start (10s) should not fire, got %d insights", len(got))
+	}
+}
+
+func TestReadinessProbeFailingRule_IgnoresWaitingContainer(t *testing.T) {
+	// A pod with a Waiting container is another rule's concern (crash/pull),
+	// even if it's not-Ready past the grace window.
+	p := pod("default", "crashing")
+	p.Status.Phase = corev1.PodRunning
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:  "app",
+		State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "CrashLoopBackOff"}},
+	}}
+	p.Status.Conditions = []corev1.PodCondition{{
+		Type:               corev1.PodReady,
+		Status:             corev1.ConditionFalse,
+		Reason:             "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := readinessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("pod with Waiting container should not fire readiness rule, got %d", len(got))
+	}
+}
+
+func TestLivenessProbeFailingRule_FiresOnRecurringEvent(t *testing.T) {
+	ev := &corev1.Event{
+		Reason:  "Unhealthy",
+		Message: "Liveness probe failed: HTTP probe failed with statuscode: 500",
+		Count:   4,
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Pod", Namespace: "prod", Name: "api-xyz",
+		},
+	}
+	// The pod the event refers to must still exist for the rule to fire.
+	state := &ClusterState{
+		Pods:   []*corev1.Pod{pod("prod", "api-xyz")},
+		Events: []*corev1.Event{ev},
+	}
+	got := livenessProbeFailingRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for recurring liveness failure, got %d", len(got))
+	}
+	if got[0].Namespace != "prod" {
+		t.Errorf("namespace = %q", got[0].Namespace)
+	}
+}
+
+// A recurring Unhealthy event whose pod has already been deleted must NOT
+// fire — Kubernetes keeps the event for ~1h after the pod is gone, and
+// without a live-pod guard the rule emits a phantom insight (which the UI
+// shows for an hour and Autopilot re-opens every poll tick).
+func TestLivenessProbeFailingRule_IgnoresEventForDeletedPod(t *testing.T) {
+	ev := &corev1.Event{
+		Reason:  "Unhealthy",
+		Message: "Liveness probe failed: HTTP probe failed with statuscode: 404",
+		Count:   31,
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Pod", Namespace: "autopilot-demo", Name: "livefail-app-66f765fdd4-2zxm4",
+		},
+	}
+	// No Pods in state — the workload was deleted, only stale events linger.
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("stale event for deleted pod should not fire, got %d insights", len(got))
+	}
+}
+
+func TestLivenessProbeFailingRule_IgnoresSingleBlip(t *testing.T) {
+	ev := &corev1.Event{
+		Reason:         "Unhealthy",
+		Message:        "Liveness probe failed: connection refused",
+		Count:          1, // single blip
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "blip"},
+	}
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("single blip (count=1) should not fire, got %d insights", len(got))
+	}
+}
+
+func TestLivenessProbeFailingRule_IgnoresReadinessEvents(t *testing.T) {
+	// A readiness probe failure must NOT be picked up by the liveness rule.
+	ev := &corev1.Event{
+		Reason:         "Unhealthy",
+		Message:        "Readiness probe failed: HTTP probe failed",
+		Count:          5,
+		InvolvedObject: corev1.ObjectReference{Kind: "Pod", Namespace: "default", Name: "ready-fail"},
+	}
+	state := &ClusterState{Events: []*corev1.Event{ev}}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("readiness event should not fire liveness rule, got %d insights", len(got))
+	}
+}
+
 func TestNodeNotReadyRule(t *testing.T) {
 	node := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{Name: "node-1"},
@@ -165,6 +359,47 @@ func TestPVCPendingRule(t *testing.T) {
 	}
 }
 
+// deploymentWithProgressing builds a Deployment carrying a single
+// Progressing condition with the given status+reason — the fixture the
+// progress-deadline rule keys off.
+func deploymentWithProgressing(ns, name string, status corev1.ConditionStatus, reason, msg string) *appsv1.Deployment {
+	return &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
+		Status: appsv1.DeploymentStatus{
+			Conditions: []appsv1.DeploymentCondition{{
+				Type:    appsv1.DeploymentProgressing,
+				Status:  status,
+				Reason:  reason,
+				Message: msg,
+			}},
+		},
+	}
+}
+
+func TestProgressDeadlineExceededRule_Fires(t *testing.T) {
+	d := deploymentWithProgressing("prod", "api",
+		corev1.ConditionFalse, "ProgressDeadlineExceeded",
+		`ReplicaSet "api-7c5" has timed out progressing.`)
+	state := &ClusterState{Deployments: []*appsv1.Deployment{d}}
+	got := progressDeadlineExceededRule().Evaluate(state)
+	if len(got) != 1 {
+		t.Fatalf("want 1 insight for stalled rollout, got %d", len(got))
+	}
+	if got[0].Title != "Rollout Progress Deadline Exceeded" {
+		t.Errorf("unexpected title: %q", got[0].Title)
+	}
+}
+
+func TestProgressDeadlineExceededRule_IgnoresHealthyRollout(t *testing.T) {
+	// A normal, progressing Deployment: Progressing=True, reason=NewReplicaSetAvailable.
+	d := deploymentWithProgressing("prod", "api",
+		corev1.ConditionTrue, "NewReplicaSetAvailable", "ReplicaSet is available.")
+	state := &ClusterState{Deployments: []*appsv1.Deployment{d}}
+	if got := progressDeadlineExceededRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("healthy rollout should not fire, got %d insights", len(got))
+	}
+}
+
 func TestFrequentRestartsRule_FiresAbove10(t *testing.T) {
 	p := pod("default", "flaky")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
@@ -181,7 +416,7 @@ func TestFrequentRestartsRule_FiresAbove10(t *testing.T) {
 
 func TestEngine_EvaluateIntegratesRules(t *testing.T) {
 	// End-to-end: engine with real rules + crafted state → insights returned.
-	e := NewEngine(websocket.NewHub())
+	e := NewEngine(websocket.NewHub(), nil, "test-cluster", "default")
 
 	p := pod("default", "crash-pod")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{

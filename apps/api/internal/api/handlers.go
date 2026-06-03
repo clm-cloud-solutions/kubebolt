@@ -15,6 +15,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
@@ -332,6 +333,37 @@ func (h *handlers) getInsights(w http.ResponseWriter, r *http.Request) {
 	severity := r.URL.Query().Get("severity")
 	resolvedStr := r.URL.Query().Get("resolved")
 	resolved := resolvedStr == "true"
+
+	// History path (Sprint 0): read persisted insight records — active +
+	// resolved, surviving restarts — instead of live engine state. Opt-in
+	// via ?history=true so the default behavior is unchanged.
+	if r.URL.Query().Get("history") == "true" {
+		q := insights.InsightQuery{Severity: severity}
+		switch r.URL.Query().Get("status") {
+		case "active", "resolved":
+			q.Status = r.URL.Query().Get("status")
+		}
+		if v := r.URL.Query().Get("since"); v != "" {
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				q.Since = t
+			}
+		}
+		if v := r.URL.Query().Get("until"); v != "" {
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				q.Until = t
+			}
+		}
+		records, err := eng.ListHistory(q)
+		if err != nil {
+			respondError(w, http.StatusInternalServerError, "failed to read insight history")
+			return
+		}
+		respondJSON(w, http.StatusOK, map[string]interface{}{
+			"items": records,
+			"total": len(records),
+		})
+		return
+	}
 
 	items := eng.GetInsights(severity, resolved)
 	respondJSON(w, http.StatusOK, map[string]interface{}{

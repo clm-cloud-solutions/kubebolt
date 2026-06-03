@@ -32,10 +32,19 @@ RUN cd apps/api && go mod download
 COPY packages/proto/ ./packages/proto/
 COPY apps/api/ ./apps/api/
 
+# Version stamp — release.yml's build-api passes `--build-arg VERSION=<semver>`
+# so `main.version` (cmd/server/main.go:47) reports the actual release tag
+# instead of staying "dev". A "dev" binary short-circuits the update-check
+# package, so without this stamp every self-hosted install never surfaces
+# the Topbar "Update vX.Y.Z available" chip — defeats the feature shipped
+# in 1.12.1. Default kept at "dev" so local `docker build` from a working
+# tree behaves as before. (Forward-ported from main / the 1.13.1 fix.)
+ARG VERSION=dev
+
 # Cross-compile for the target platform.
 RUN cd apps/api && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -o /kubebolt-api ./cmd/server
+    go build -ldflags="-s -w -X main.version=${VERSION}" -o /kubebolt-api ./cmd/server
 
 FROM alpine:3.21
 # ca-certificates is required for outbound TLS — the Copilot dialer

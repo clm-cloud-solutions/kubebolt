@@ -34,6 +34,26 @@ rules:
   - apiGroups: ["gateway.networking.k8s.io"]
     resources: ["gateways", "httproutes"]
     verbs: ["get", "list", "watch"]
+  # PodDisruptionBudgets — standard policy/v1 resource, surfaced as a
+  # first-class view + insight (pdb-no-match) in 1.14. Without this grant
+  # the permission probe denies it on EVERY install and the PDB view 403s.
+  - apiGroups: ["policy"]
+    resources: ["poddisruptionbudgets"]
+    verbs: ["get", "list", "watch"]
+  # Optional CRDs surfaced as first-class read-only views in 1.14. Same
+  # pattern as the gateway.networking.k8s.io grant above: harmless when the
+  # CRD isn't installed (the rule matches nothing), and the moment the
+  # operator adds cert-manager / ArgoCD / VPA, KubeBolt lists them with no
+  # RBAC change. Probed by SelfSubjectAccessReview at connect time.
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["argoproj.io"]
+    resources: ["applications"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["autoscaling.k8s.io"]
+    resources: ["verticalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
     verbs: ["get", "list"]
@@ -41,25 +61,57 @@ rules:
   - apiGroups: ["authorization.k8s.io"]
     resources: ["selfsubjectaccessreviews"]
     verbs: ["create"]
-  # Exec for terminal and file browser
+  # Interactive pod subresources, both create-verb:
+  #   - pods/exec       → terminal + file browser
+  #   - pods/portforward → the port-forward feature. Was MISSING, so PF 403'd
+  #     as the kubebolt SA on an in-cluster deploy (where the API talks to the
+  #     apiserver with its own SA, not via the agent). Found in 1.14.0-rc.1
+  #     validation — "cannot create resource pods/portforward".
   - apiGroups: [""]
-    resources: ["pods/exec"]
+    resources: ["pods/exec", "pods/portforward"]
     verbs: ["create"]
-  # Write access for resource management (restart, scale, delete, edit)
+  # Evict-pod action (api/actions_pod.go → policy/v1 Eviction, respects PDBs).
+  # The eviction subresource's authorization apiGroup has varied across k8s
+  # versions (core "" vs "policy"); listing both is additive and harmless —
+  # the group the apiserver actually checks matches, the other matches
+  # nothing. Sibling RBAC gap to pods/portforward, found in rc.1 validation.
+  - apiGroups: ["", "policy"]
+    resources: ["pods/eviction"]
+    verbs: ["create"]
+  # Write access for resource management (restart, scale, delete, edit) AND
+  # the "New resource" modal's create flow. The modal offers ~19 kinds; the
+  # create verb must cover them or the apply 403s as the kubebolt SA.
   - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets", "daemonsets"]
-    verbs: ["patch", "update", "delete"]
+    resources: ["deployments", "statefulsets", "daemonsets", "replicasets"]
+    verbs: ["create", "patch", "update", "delete"]
   - apiGroups: ["apps"]
     resources: ["deployments/scale", "statefulsets/scale"]
     verbs: ["get", "update"]
   - apiGroups: [""]
     resources: ["pods", "services", "persistentvolumeclaims"]
-    verbs: ["delete", "update"]
+    verbs: ["create", "update", "delete"]
   # NetworkPolicies: create/update/delete for the New-resource modal
   # (NetworkPolicy is offered as a first-class kind with starter
   # templates as of 1.11) and for YAML-tab edits + Delete action.
   - apiGroups: ["networking.k8s.io"]
     resources: ["networkpolicies"]
+    verbs: ["create", "update", "delete"]
+  # Remaining New-resource modal kinds (Jobs, CronJobs, Ingresses, HPAs,
+  # StorageClasses) + their YAML-apply / Delete actions. The apps + core
+  # create verbs are added above; configmaps/secrets/namespaces/RBAC/
+  # serviceaccounts already had create. These four groups had NO write
+  # rule at all — added in 1.14 so the modal's kind list matches the RBAC.
+  - apiGroups: ["batch"]
+    resources: ["jobs", "cronjobs"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["create", "update", "delete"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["create", "update", "patch", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
     verbs: ["create", "update", "delete"]
   # ConfigMaps: agent install creates kubebolt-agent-config alongside the
   # DaemonSet; without create the wizard fails after the SA step.

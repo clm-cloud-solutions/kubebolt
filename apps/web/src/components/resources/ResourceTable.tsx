@@ -65,7 +65,7 @@ export function ResourceTable<T>({ data, columns, resourceType }: ResourceTableP
                 <th
                   key={header.id}
                   onClick={header.column.getToggleSortingHandler()}
-                  className="px-3 py-2.5 text-left text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-kb-text-tertiary cursor-pointer select-none hover:text-kb-text-secondary transition-colors"
+                  className="px-3 py-2.5 text-left text-[10px] font-mono font-medium uppercase tracking-[0.08em] text-kb-text-secondary cursor-pointer select-none hover:text-kb-text-primary transition-colors"
                 >
                   <div className="flex items-center gap-1">
                     {header.isPlaceholder

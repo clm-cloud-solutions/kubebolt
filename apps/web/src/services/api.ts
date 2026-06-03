@@ -10,6 +10,8 @@ import type {
   InsightParams,
   EventParams,
   ResourceItem,
+  HelmRelease,
+  HelmReleaseDetail,
 } from '@/types/kubernetes'
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/types/auth'
 
@@ -341,6 +343,14 @@ export const api = {
     fetchJSON<ResourceItem>(`${API_BASE}/resources/${type}/${namespace}/${name}`),
 
   getTopology: () => fetchJSON<Topology>(`${API_BASE}/topology`),
+
+  // Helm releases — read-only (Sprint 4).
+  listHelmReleases: () =>
+    fetchJSON<{ items: HelmRelease[]; total: number }>(`${API_BASE}/helm/releases`),
+  getHelmRelease: (namespace: string, name: string) =>
+    fetchJSON<HelmReleaseDetail>(
+      `${API_BASE}/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(name)}`,
+    ),
 
   getInsights: (params?: InsightParams) =>
     fetchJSON<{ items: Insight[]; total: number }>(`${API_BASE}/insights${buildQuery(params as Record<string, string | undefined>)}`),
@@ -1127,6 +1137,8 @@ export interface CopilotSettingsResponse {
     maxTokens: number
     autoCompact: boolean
     showToolCalls: boolean
+    actionsEnabled: boolean
+    destructiveActionsEnabled: boolean
     // Auto-compact tunables surfaced by the backend so the UI shows
     // "what's in effect right now" without a second round-trip. The
     // server emits these with `omitempty` semantics, so they may be
@@ -1162,6 +1174,8 @@ export interface CopilotSettingsResponse {
       compactModel?: string
       compactPreserveTurns?: number
       showToolCalls?: boolean
+      actionsEnabled?: boolean
+      destructiveActionsEnabled?: boolean
     }
   }
   secretsReadable: boolean
@@ -1191,6 +1205,8 @@ export interface CopilotSettingsPutRequest {
     compactModel?: string
     compactPreserveTurns?: number
     showToolCalls?: boolean
+    actionsEnabled?: boolean
+    destructiveActionsEnabled?: boolean
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string

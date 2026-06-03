@@ -2,6 +2,31 @@ package copilot
 
 import "strings"
 
+// GovernedToolDefinitions returns ToolDefinitions() filtered by the Sprint 1
+// action-governance toggles. When actionsEnabled is false, ALL propose_*
+// tools are withheld and Kobi reverts to read-only advisory. When
+// destructiveEnabled is false, the destructive verbs (delete) are withheld;
+// scale-to-0 can't be tool-filtered (it shares propose_scale_workload) so it
+// is blocked server-side instead.
+func GovernedToolDefinitions(actionsEnabled, destructiveEnabled bool) []ToolDefinition {
+	all := ToolDefinitions()
+	if actionsEnabled && destructiveEnabled {
+		return all
+	}
+	out := make([]ToolDefinition, 0, len(all))
+	for _, t := range all {
+		isPropose := strings.HasPrefix(t.Name, "propose_")
+		if !actionsEnabled && isPropose {
+			continue
+		}
+		if !destructiveEnabled && t.Name == "propose_delete_resource" {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
 // ToolDefinitions returns the list of tools the copilot exposes to the LLM.
 // Each tool maps to a KubeBolt API capability — execution happens server-side
 // in the chat handler via the cluster connector.
@@ -204,6 +229,28 @@ func ToolDefinitions() []ToolDefinition {
 					"risk":      riskProp(),
 				},
 				"required": []string{"type", "namespace", "name", "rationale"},
+			},
+		},
+		{
+			Name: "propose_debug_pod",
+			Description: "Propose attaching an ephemeral debug container to a running Pod (kubectl debug). " +
+				"This DOES NOT execute — it returns a structured proposal the UI renders as a confirmation " +
+				"card; the user clicks an explicit button and execution runs under their RBAC role. Use this " +
+				"during triage when the target container is distroless / lacks a shell, or you need tools " +
+				"(curl, ps, netstat) inside the pod's namespaces. The debug container shares the pod's " +
+				"network + (optionally) process namespace. It persists until the pod is recreated — note " +
+				"that in the rationale.",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"namespace":       strProp("Pod namespace"),
+					"name":            strProp("Pod name"),
+					"image":           strProp("Debug container image (e.g. busybox, nicolaka/netshoot). Defaults to busybox if omitted."),
+					"targetContainer": strProp("Optional: the container whose process namespace to share (for inspecting that container's processes)."),
+					"rationale":       strProp("Why a debug container is the right move here. Shown to the user in the confirmation card."),
+					"risk":            riskProp(),
+				},
+				"required": []string{"namespace", "name", "rationale"},
 			},
 		},
 		{

@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect } from 'react'
 import { useParams, useSearchParams, Link } from 'react-router-dom'
 import { type ColumnDef } from '@tanstack/react-table'
 import { ChevronLeft, ChevronRight, Filter, X, SearchX, Inbox } from 'lucide-react'
+import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { useResources } from '@/hooks/useResources'
 import { ResourceTable } from './ResourceTable'
 import { RestartHistorySparkline } from './RestartHistorySparkline'
@@ -52,7 +53,12 @@ const resourceLabels: Record<string, string> = {
   storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps',
   secrets: 'Secrets',
+  serviceaccounts: 'Service Accounts',
   hpas: 'Horizontal Pod Autoscalers',
+  pdbs: 'Pod Disruption Budgets',
+  certificates: 'Certificates',
+  argocdapps: 'ArgoCD Applications',
+  vpas: 'Vertical Pod Autoscalers',
 }
 
 // Sort key for CPU/Memory columns: absolute usage (millicores / bytes).
@@ -595,17 +601,25 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-4">
-        <h1 className="text-lg font-semibold text-kb-text-primary">{label}</h1>
-        <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
-          {total} total
-        </span>
-        <div className="ml-auto">
-          <DataFreshnessIndicator
-            dataUpdatedAt={dataUpdatedAt}
-            isFetching={isFetching}
-          />
+      <div className="mb-4">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <ResourceTypeIcon type={resourceType} />
+            <h1 className="text-lg font-semibold text-kb-text-primary">{label}</h1>
+          </div>
+          <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
+            {total} total
+          </span>
+          <div className="ml-auto">
+            <DataFreshnessIndicator
+              dataUpdatedAt={dataUpdatedAt}
+              isFetching={isFetching}
+            />
+          </div>
         </div>
+        {resourceTypeDescription(resourceType) && (
+          <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription(resourceType)}</p>
+        )}
       </div>
       <FilterBar
         namespaces={namespaces}

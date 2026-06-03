@@ -35,6 +35,9 @@ type StoredCopilotSettings struct {
 	CompactModel         *string  `json:"compactModel,omitempty"`
 	CompactPreserveTurns *int     `json:"compactPreserveTurns,omitempty"`
 	ShowToolCalls        *bool    `json:"showToolCalls,omitempty"`
+	// Sprint 1 action governance (live override of the env baseline).
+	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
+	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
 }
 
 // StoredProviderSettings mirrors config.ProviderConfig with optional
@@ -150,6 +153,12 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 	}
 	if stored.ShowToolCalls != nil {
 		cfg.ShowToolCalls = *stored.ShowToolCalls
+	}
+	if stored.ActionsEnabled != nil {
+		cfg.ActionsEnabled = *stored.ActionsEnabled
+	}
+	if stored.DestructiveActionsEnabled != nil {
+		cfg.DestructiveActionsEnabled = *stored.DestructiveActionsEnabled
 	}
 }
 
@@ -332,6 +341,8 @@ type MaskedEffectiveCopilot struct {
 	MaxTokens            int    `json:"maxTokens"`
 	AutoCompact          bool   `json:"autoCompact"`
 	ShowToolCalls        bool   `json:"showToolCalls"`
+	ActionsEnabled            bool `json:"actionsEnabled"`
+	DestructiveActionsEnabled bool `json:"destructiveActionsEnabled"`
 	// Auto-compact tunables. Surfaced in the API so the UI can display
 	// "what's in effect" without a second round-trip to the env-baseline
 	// endpoint. Nil pointers when the field is unset; the resolver
@@ -368,6 +379,8 @@ type MaskedStoredOtherCopilot struct {
 	CompactModel         *string  `json:"compactModel,omitempty"`
 	CompactPreserveTurns *int     `json:"compactPreserveTurns,omitempty"`
 	ShowToolCalls        *bool    `json:"showToolCalls,omitempty"`
+	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
+	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
 }
 
 // RenderMaskedCopilot builds the GET response from a stored record + env
@@ -390,6 +403,8 @@ func (r *Runtime) RenderMaskedCopilot() (MaskedCopilot, error) {
 			MaxTokens:            effective.MaxTokens,
 			AutoCompact:          effective.AutoCompact,
 			ShowToolCalls:        effective.ShowToolCalls,
+			ActionsEnabled:            effective.ActionsEnabled,
+			DestructiveActionsEnabled: effective.DestructiveActionsEnabled,
 			SessionBudgetTokens:  effective.SessionBudgetTokens,
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 			CompactModel:         effective.CompactModel,
@@ -441,7 +456,8 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 	}
 	if s.MaxTokens != nil || s.AutoCompact != nil || s.SessionBudgetTokens != nil ||
 		s.AutoCompactThreshold != nil || s.CompactModel != nil ||
-		s.CompactPreserveTurns != nil || s.ShowToolCalls != nil {
+		s.CompactPreserveTurns != nil || s.ShowToolCalls != nil ||
+		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil {
 		out.OtherFields = &MaskedStoredOtherCopilot{
 			MaxTokens:            s.MaxTokens,
 			AutoCompact:          s.AutoCompact,
@@ -450,6 +466,8 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 			CompactModel:         s.CompactModel,
 			CompactPreserveTurns: s.CompactPreserveTurns,
 			ShowToolCalls:        s.ShowToolCalls,
+			ActionsEnabled:            s.ActionsEnabled,
+			DestructiveActionsEnabled: s.DestructiveActionsEnabled,
 		}
 	}
 	return out
@@ -588,6 +606,12 @@ func mergeCopilot(base, patch StoredCopilotSettings) StoredCopilotSettings {
 	}
 	if patch.ShowToolCalls != nil {
 		out.ShowToolCalls = patch.ShowToolCalls
+	}
+	if patch.ActionsEnabled != nil {
+		out.ActionsEnabled = patch.ActionsEnabled
+	}
+	if patch.DestructiveActionsEnabled != nil {
+		out.DestructiveActionsEnabled = patch.DestructiveActionsEnabled
 	}
 	return out
 }

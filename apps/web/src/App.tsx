@@ -20,6 +20,8 @@ import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { InsightsList } from '@/components/insights/InsightsList'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
+import { ApplicationsPage } from '@/pages/ApplicationsPage'
+import { HelmReleaseDetailPage } from '@/pages/HelmReleaseDetailPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
 import { AgentTokensPage } from '@/pages/admin/AgentTokensPage'
@@ -96,6 +98,8 @@ export default function App() {
               <Route path="/capacity" element={<CapacityPage />} />
               <Route path="/reliability" element={<ReliabilityPage />} />
               <Route path="/insights" element={<InsightsList />} />
+              <Route path="/applications" element={<ApplicationsPage />} />
+              <Route path="/applications/:namespace/:name" element={<HelmReleaseDetailPage />} />
               <Route path="/map" element={<ClusterMap />} />
               <Route path="/pods" element={<ResourceListPage resourceType="pods" />} />
               <Route path="/nodes" element={<NodesPage />} />
@@ -107,6 +111,11 @@ export default function App() {
               <Route path="/services" element={<ResourceListPage resourceType="services" />} />
               <Route path="/ingresses" element={<ResourceListPage resourceType="ingresses" />} />
               <Route path="/networkpolicies" element={<ResourceListPage resourceType="networkpolicies" />} />
+              <Route path="/pdbs" element={<ResourceListPage resourceType="pdbs" />} />
+              <Route path="/certificates" element={<ResourceListPage resourceType="certificates" />} />
+              <Route path="/argocdapps" element={<ResourceListPage resourceType="argocdapps" />} />
+              <Route path="/vpas" element={<ResourceListPage resourceType="vpas" />} />
+              <Route path="/serviceaccounts" element={<ResourceListPage resourceType="serviceaccounts" />} />
               <Route path="/gateways" element={<ResourceListPage resourceType="gateways" />} />
               <Route path="/httproutes" element={<ResourceListPage resourceType="httproutes" />} />
               <Route path="/endpoints" element={<ResourceListPage resourceType="endpoints" />} />
@@ -130,7 +139,7 @@ export default function App() {
               <Route path="/admin/ingest-activity" element={<RequireRole role="admin"><IngestActivityPage /></RequireRole>} />
               <Route path="/admin/integrations" element={<RequireRole role="admin"><IntegrationsPage /></RequireRole>} />
               <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
-              <Route path="/admin/service-accounts" element={<RequireRole role="admin"><AdminPlaceholderPage title="Service Accounts" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
+              <Route path="/admin/api-tokens" element={<RequireRole role="admin"><AdminPlaceholderPage title="API Tokens" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
               <Route path="/admin/authentication" element={<RequireRole role="admin"><AdminPlaceholderPage title="Authentication" description="Configure single sign-on providers (GitHub, Google, Azure AD, OIDC)." /></RequireRole>} />
             </Route>
           </Routes>

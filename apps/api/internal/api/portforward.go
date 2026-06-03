@@ -306,26 +306,41 @@ func (h *handlers) handlePortForwardProxy(w http.ResponseWriter, r *http.Request
 	r.URL.RawPath = ""
 	r.Host = target.Host
 
-	// Rewrite redirect responses (301, 302, 307, 308) to stay under /pf/{id}/
+	// Rewrite redirect responses (301, 302, 307, 308) to stay under /pf/{id}/.
 	proxy.ModifyResponse = func(resp *http.Response) error {
-		loc := resp.Header.Get("Location")
-		if loc != "" {
-			// Parse the Location header
-			locURL, err := url.Parse(loc)
-			if err == nil {
-				// If it's an absolute redirect to the same host or a relative path,
-				// prepend the /pf/{id} prefix
-				if locURL.Host == "" || locURL.Host == target.Host {
-					newPath := prefix + locURL.Path
-					if locURL.RawQuery != "" {
-						newPath += "?" + locURL.RawQuery
-					}
-					resp.Header.Set("Location", newPath)
-				}
-			}
+		if nl := rewriteUpstreamRedirect(resp.Header.Get("Location"), prefix, target.Hostname()); nl != "" {
+			resp.Header.Set("Location", nl)
 		}
 		return nil
 	}
 
 	proxy.ServeHTTP(w, r)
+}
+
+// rewriteUpstreamRedirect rewrites a backend Location header so a redirect
+// stays under the /pf/{id} prefix. It rewrites RELATIVE redirects and ABSOLUTE
+// redirects that point back at the upstream host — matched by HOSTNAME,
+// ignoring the port. A backend with absolute_redirect on (nginx's default)
+// redirects to its own listen host, e.g. `http://127.0.0.1/login` (port 80
+// omitted), which differs from our dial target's host:port
+// (127.0.0.1:<localPort>); an exact host compare missed that and leaked
+// 127.0.0.1 to the browser. Returns "" to mean "leave the header unchanged"
+// (empty/unparseable, or an absolute redirect to a DIFFERENT host — which the
+// proxy cannot know maps back into /pf/, the documented subpath limitation).
+func rewriteUpstreamRedirect(loc, prefix, upstreamHost string) string {
+	if loc == "" {
+		return ""
+	}
+	u, err := url.Parse(loc)
+	if err != nil {
+		return ""
+	}
+	if u.Host != "" && u.Hostname() != upstreamHost {
+		return ""
+	}
+	newPath := prefix + u.Path
+	if u.RawQuery != "" {
+		newPath += "?" + u.RawQuery
+	}
+	return newPath
 }

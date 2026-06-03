@@ -87,6 +87,7 @@ var resourceDefs = map[string]resourceDef{
 	"services":       {group: "", resource: "services"},
 	"endpointslices": {group: "discovery.k8s.io", resource: "endpointslices"},
 	"configmaps":     {group: "", resource: "configmaps"},
+	"serviceaccounts": {group: "", resource: "serviceaccounts"},
 	"secrets":        {group: "", resource: "secrets"},
 	"pvcs":           {group: "", resource: "persistentvolumeclaims"},
 	"pvs":            {group: "", resource: "persistentvolumes", clusterScope: true},
@@ -102,6 +103,12 @@ var resourceDefs = map[string]resourceDef{
 	// Networking v1
 	"ingresses":       {group: "networking.k8s.io", resource: "ingresses"},
 	"networkpolicies": {group: "networking.k8s.io", resource: "networkpolicies"},
+	// Policy v1
+	"pdbs": {group: "policy", resource: "poddisruptionbudgets"},
+	// Optional CRDs (1.14) — probed so RBAC discovery reflects real access.
+	"certificates": {group: "cert-manager.io", resource: "certificates"},
+	"argocdapps":   {group: "argoproj.io", resource: "applications"},
+	"vpas":         {group: "autoscaling.k8s.io", resource: "verticalpodautoscalers"},
 	// Autoscaling v1
 	"hpas": {group: "autoscaling", resource: "horizontalpodautoscalers"},
 	// Storage v1

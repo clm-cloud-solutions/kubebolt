@@ -2,6 +2,7 @@ import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
+import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { StatusBadge } from './StatusBadge'
 import { FolderOpen } from 'lucide-react'
 import type { ResourceItem } from '@/types/kubernetes'
@@ -142,14 +143,20 @@ export function NamespacesPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-lg font-semibold text-kb-text-primary">Namespaces</h1>
-          <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
-            {namespaces.length} total
-          </span>
+      <div className="mb-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2">
+              <ResourceTypeIcon type="namespaces" />
+              <h1 className="text-lg font-semibold text-kb-text-primary">Namespaces</h1>
+            </div>
+            <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
+              {namespaces.length} total
+            </span>
+          </div>
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
         </div>
-        <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+        <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('namespaces')}</p>
       </div>
       <div className="grid grid-cols-3 gap-3">
         {namespaces.map((ns) => (

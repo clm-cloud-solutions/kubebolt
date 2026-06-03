@@ -31,6 +31,8 @@ import {
   Lightbulb,
   Puzzle,
   Info,
+  Package,
+  UserCog,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -66,6 +68,7 @@ const sections: NavSection[] = [
     title: 'Pinned',
     items: [
       { label: 'Insights', path: '/insights', icon: <Lightbulb className="w-4 h-4" /> },
+      { label: 'Applications', path: '/applications', icon: <Package className="w-4 h-4" />, countKey: 'helmReleases' },
       { label: 'Pods', path: '/pods', icon: <Box className="w-4 h-4" />, countKey: 'pods', permissionKey: 'pods' },
       { label: 'Nodes', path: '/nodes', icon: <Server className="w-4 h-4" />, countKey: 'nodes', permissionKey: 'nodes' },
     ],
@@ -86,6 +89,7 @@ const sections: NavSection[] = [
       { label: 'Services', path: '/services', icon: <Globe className="w-4 h-4" />, countKey: 'services', permissionKey: 'services' },
       { label: 'Ingresses', path: '/ingresses', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'ingresses', permissionKey: 'ingresses' },
       { label: 'NetworkPolicies', path: '/networkpolicies', icon: <Shield className="w-4 h-4" />, countKey: 'networkPolicies', permissionKey: 'networkpolicies' },
+      { label: 'PodDisruptionBudgets', path: '/pdbs', icon: <ShieldOff className="w-4 h-4" />, countKey: 'podDisruptionBudgets', permissionKey: 'pdbs' },
       { label: 'Gateways', path: '/gateways', icon: <Globe className="w-4 h-4" />, countKey: 'gateways' },
       { label: 'HTTPRoutes', path: '/httproutes', icon: <ArrowRightLeft className="w-4 h-4" />, countKey: 'httpRoutes' },
       { label: 'Endpoints', path: '/endpoints', icon: <Radio className="w-4 h-4" />, countKey: 'endpoints', permissionKey: 'endpointslices' },
@@ -104,7 +108,18 @@ const sections: NavSection[] = [
     items: [
       { label: 'ConfigMaps', path: '/configmaps', icon: <FileText className="w-4 h-4" />, countKey: 'configMaps', permissionKey: 'configmaps' },
       { label: 'Secrets', path: '/secrets', icon: <Lock className="w-4 h-4" />, countKey: 'secrets', permissionKey: 'secrets' },
+      { label: 'Service Accounts', path: '/serviceaccounts', icon: <UserCog className="w-4 h-4" />, countKey: 'serviceAccounts', permissionKey: 'serviceaccounts' },
       { label: 'HPAs', path: '/hpas', icon: <Scale className="w-4 h-4" />, countKey: 'hpas', permissionKey: 'hpas' },
+    ],
+  },
+  {
+    // Optional standard CRDs (Sprint 3) — shown only-useful when the CRD is
+    // installed; the list is empty otherwise. No count/permission gating.
+    title: 'Extensions',
+    items: [
+      { label: 'Certificates', path: '/certificates', icon: <KeyRound className="w-4 h-4" />, countKey: 'certificates' },
+      { label: 'ArgoCD Apps', path: '/argocdapps', icon: <Puzzle className="w-4 h-4" />, countKey: 'argocdApps' },
+      { label: 'VPA', path: '/vpas', icon: <SlidersHorizontal className="w-4 h-4" />, countKey: 'vpas' },
     ],
   },
   {
@@ -145,7 +160,7 @@ const adminItems = [
   { label: 'Integrations', path: '/admin/integrations', icon: <Puzzle className="w-4 h-4" /> },
   { label: 'Kobi Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
   { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },
-  { label: 'Service Accounts', path: '/admin/service-accounts', icon: <Bot className="w-4 h-4" /> },
+  { label: 'API Tokens', path: '/admin/api-tokens', icon: <Bot className="w-4 h-4" /> },
   { label: 'Authentication', path: '/admin/authentication', icon: <KeyRound className="w-4 h-4" /> },
 ]
 

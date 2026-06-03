@@ -4,8 +4,11 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kubectl/pkg/describe"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 // resourceTypeToGroupKind maps KubeBolt resource type strings to K8s GroupKind
@@ -53,6 +56,15 @@ var resourceTypeToGroupKind = map[string]schema.GroupKind{
 	"poddisruptionbudgets": {Group: "policy", Kind: "PodDisruptionBudget"},
 	"priorityclasses":      {Group: "scheduling.k8s.io", Kind: "PriorityClass"},
 	"ingressclasses":       {Group: "networking.k8s.io", Kind: "IngressClass"},
+	// 1.14 first-class types. "pdbs" is the short alias the routes use (the
+	// built-in describer resolves via the policy/PodDisruptionBudget GK). The
+	// 3 CRD types have NO built-in describer — they fall through to the
+	// generic describer below (GroupKind here just makes them "recognized"
+	// and supplies the Kind for the RESTMapping).
+	"pdbs":         {Group: "policy", Kind: "PodDisruptionBudget"},
+	"certificates": {Group: "cert-manager.io", Kind: "Certificate"},
+	"argocdapps":   {Group: "argoproj.io", Kind: "Application"},
+	"vpas":         {Group: "autoscaling.k8s.io", Kind: "VerticalPodAutoscaler"},
 }
 
 func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
@@ -78,6 +90,20 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 
 	restConfig := conn.RestConfig()
 	describer, found := describe.DescriberFor(gk, restConfig)
+	if !found {
+		// No built-in describer (dynamic CRDs like cert-manager / ArgoCD /
+		// VPA). Fall back to kubectl's generic describer via a RESTMapping
+		// built from the type's GVR + Kind. Namespaced scope — all 1.14
+		// first-class CRD types are namespaced.
+		if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
+			mapping := &meta.RESTMapping{
+				Resource:         gvr,
+				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
+				Scope:            meta.RESTScopeNamespace,
+			}
+			describer, found = describe.GenericDescriberFor(mapping, restConfig)
+		}
+	}
 	if !found {
 		respondError(w, http.StatusBadRequest, "no describer available for: "+resourceType)
 		return

@@ -24,6 +24,8 @@ var (
 	clusterUIDBucket       = []byte("cluster_uid")      // kube-system UID per kubeconfig context (resolved at connect time)
 	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
 	agentsBucket           = []byte("agents")           // persistent agent registry records
+	insightsBucket         = []byte("insights")         // persistent insight records (Sprint 0)
+	kobiActionsBucket      = []byte("kobi_actions")     // durable mutation audit trail (Sprint 1)
 )
 
 // Role represents a KubeBolt application-level role.
@@ -120,7 +122,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, agentsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, agentsBucket, insightsBucket, kobiActionsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -168,6 +170,22 @@ func ClusterBuckets() (configs, displayNames, uids []byte) {
 // agent-proxy clusters before live reconnects come back in.
 func AgentsBucket() []byte {
 	return agentsBucket
+}
+
+// InsightsBucket returns the bucket name used by the persistent insights
+// store (apps/api/internal/insights/store.go). Holds insight identities
+// (active + recently-resolved) keyed by tenant/cluster/fingerprint so
+// history survives restarts and feeds notifications, Kobi, and Autopilot.
+func InsightsBucket() []byte {
+	return insightsBucket
+}
+
+// KobiActionsBucket returns the bucket name used by the durable mutation
+// audit store (apps/api/internal/audit/store.go). Records every cluster
+// mutation — UI-initiated and Kobi-proposed — so the admin action-history
+// view survives restarts. (Sprint 1.)
+func KobiActionsBucket() []byte {
+	return kobiActionsBucket
 }
 
 // CreateUser creates a new user with a bcrypt-hashed password.

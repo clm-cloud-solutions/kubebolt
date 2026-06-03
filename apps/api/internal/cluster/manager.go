@@ -13,6 +13,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -53,6 +54,30 @@ type Manager struct {
 	// onResolvedInsight is invoked when an insight transitions to resolved.
 	// Nil when notifications are disabled or includeResolved is false.
 	onResolvedInsight func(clusterContext string, insight models.Insight)
+
+	// insightStore persists insight identities across restarts (Sprint 0).
+	// Set by main.go via SetInsightStore; nil when the BoltDB store is
+	// unavailable, in which case engines run in-memory-only. tenantID
+	// scopes every persisted record ("default" in OSS single-tenant).
+	insightStore insights.InsightStore
+	tenantID     string
+}
+
+// SetInsightStore wires the persistent insights store + tenant scope. The
+// initial cluster connection is async (kicked off inside NewManager), so the
+// engine may ALREADY exist by the time main.go calls this — created with a nil
+// store (the boot race). Future engines pick up m.insightStore; the live one
+// is updated in place via engine.SetStore so it persists + serves history this
+// session too. tenantID defaults to "default" (OSS single-tenant) when empty.
+func (m *Manager) SetInsightStore(store insights.InsightStore, tenantID string) {
+	m.mu.Lock()
+	m.insightStore = store
+	m.tenantID = tenantID
+	eng := m.engine // capture under lock; call SetStore outside to avoid lock-ordering
+	m.mu.Unlock()
+	if eng != nil {
+		eng.SetStore(store, tenantID)
+	}
 }
 
 // SetOnNewInsight registers a callback invoked (asynchronously) for every new
@@ -765,7 +790,18 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 
 	go collector.Start(ctx)
 
-	engine := insights.NewEngine(m.wsHub)
+	// Resolve a stable clusterID for persisted insights: prefer the
+	// kube-system UID, fall back to the agent-proxy cluster_id, then the
+	// context name — so records key consistently across restarts.
+	engineClusterID := connector.ClusterUID()
+	if engineClusterID == "" {
+		if cid := m.agentProxyContexts[contextName]; cid != "" {
+			engineClusterID = cid
+		} else {
+			engineClusterID = contextName
+		}
+	}
+	engine := insights.NewEngine(m.wsHub, m.insightStore, engineClusterID, m.tenantID)
 
 	// Start insight evaluation ticker
 	go func() {
@@ -809,6 +845,13 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {
+	// Helm releases aren't informer-backed (decoded on demand from storage
+	// Secrets) — fetch them here so the helm-release insight rules can run.
+	// A single label-selected Secret list per tick; cheap and best-effort.
+	var helmReleases []helm.Release
+	if secrets, err := connector.ListHelmReleaseSecrets(context.Background()); err == nil {
+		helmReleases = helm.DecodeReleases(secrets)
+	}
 	state := &insights.ClusterState{
 		Pods:            connector.GetPods(),
 		Deployments:     connector.GetDeployments(),
@@ -819,6 +862,10 @@ func evaluateInsights(connector *Connector, collector *metrics.Collector, engine
 		Services:        connector.GetServices(),
 		EndpointSlices:  connector.GetEndpointSlices(),
 		NetworkPolicies: connector.GetNetworkPolicies(),
+		PDBs:            connector.GetPodDisruptionBudgets(),
+		HelmReleases:    helmReleases,
+		Certificates:    connector.listOptionalCRD("certificates", ""),
+		ArgoApps:        connector.listOptionalCRD("argocdapps", ""),
 		PodMetrics:      collector.GetAllPodMetrics(),
 		NodeMetrics:     collector.GetAllNodeMetrics(),
 	}
