@@ -61,6 +61,29 @@ type Manager struct {
 	// scopes every persisted record ("default" in OSS single-tenant).
 	insightStore insights.InsightStore
 	tenantID     string
+
+	// runtimes holds per-(tenant,cluster) runtimes for NON-active clusters
+	// (W2). The active cluster's runtime stays in the fields above
+	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
+	// lands in A.3b. nil until first use — reads of a nil map are safe.
+	runtimes map[poolKey]*clusterRuntime
+}
+
+// poolKey identifies a pooled runtime. tenant is "default" in OSS.
+type poolKey struct{ tenant, cluster string }
+
+// clusterRuntime bundles the live machinery for one (tenant,cluster): the
+// connector (informers), metrics collector, insights engine, and the cancel
+// that tears down their goroutines. The active cluster's runtime currently
+// lives in the Manager's own fields; pooled runtimes for non-active clusters
+// (EE/multi-tenant) populate Manager.runtimes in A.3b.
+// Design: internal/kubebolt-w2-connector-pool-design.md.
+type clusterRuntime struct {
+	connector *Connector
+	collector *metrics.Collector
+	engine    *insights.Engine
+	cancelFn  context.CancelFunc
+	connErr   error
 }
 
 // SetInsightStore wires the persistent insights store + tenant scope. The
@@ -575,32 +598,62 @@ func (m *Manager) ActiveAgentProxyClusterID() string {
 	return m.agentProxyContexts[m.activeContext]
 }
 
-// Connector returns the active cluster connector.
+// resolveRuntime returns the runtime for the request's (tenant,cluster),
+// read from ctx's RuntimeKey (W2 A.1).
+//
+//   - Empty cluster, or the active context → the active runtime (today's
+//     single-cluster behavior, unchanged). This is the only branch OSS
+//     ever takes: the OSS frontend doesn't send X-KubeBolt-Cluster.
+//   - A non-active cluster (EE/multi-tenant) → the pooled runtime, or nil
+//     when it isn't spun up. Lazy spin-up lands in A.3b; until then a
+//     non-active cluster reads as "not connected".
+//
+// Returns nil when there is no runtime (e.g. startup before first connect).
+// Snapshots the fields under the read lock so callers use them lock-free.
+func (m *Manager) resolveRuntime(ctx context.Context) *clusterRuntime {
+	key := RuntimeKeyFromContext(ctx)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if key.Cluster == "" || key.Cluster == m.activeContext {
+		if m.connector == nil {
+			return nil
+		}
+		return &clusterRuntime{
+			connector: m.connector,
+			collector: m.collector,
+			engine:    m.engine,
+			cancelFn:  m.cancelFn,
+			connErr:   m.connErr,
+		}
+	}
+	if rt, ok := m.runtimes[poolKey{tenant: key.Tenant, cluster: key.Cluster}]; ok {
+		return rt
+	}
+	return nil
+}
+
 // Connector returns the *Connector for the request's (tenant,cluster).
-// ctx carries the RuntimeKey (W2 A.1); until the connector pool lands
-// (W2 A.3) it is ignored and the single active cluster is served, so
-// behavior is unchanged. See internal/kubebolt-w2-connector-pool-design.md.
 func (m *Manager) Connector(ctx context.Context) *Connector {
-	_ = ctx // pool resolution lands in W2 A.3
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.connector
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		return rt.connector
+	}
+	return nil
 }
 
-// Collector returns the active metrics collector. See Connector re: ctx.
+// Collector returns the metrics collector for the request's (tenant,cluster).
 func (m *Manager) Collector(ctx context.Context) *metrics.Collector {
-	_ = ctx
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.collector
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		return rt.collector
+	}
+	return nil
 }
 
-// Engine returns the insights engine. See Connector re: ctx.
+// Engine returns the insights engine for the request's (tenant,cluster).
 func (m *Manager) Engine(ctx context.Context) *insights.Engine {
-	_ = ctx
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.engine
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		return rt.engine
+	}
+	return nil
 }
 
 // Stop stops the active connector and collector.

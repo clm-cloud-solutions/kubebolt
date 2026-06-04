@@ -29,3 +29,21 @@ func TestRuntimeKey_OSSDefaultShape(t *testing.T) {
 		t.Fatalf("OSS-shape key = %+v", got)
 	}
 }
+
+func TestResolveRuntime_NilSafe(t *testing.T) {
+	m := &Manager{} // zero value: no active connector, nil pool
+
+	// Empty key → active branch; no connector → nil (and getters → nil).
+	if rt := m.resolveRuntime(context.Background()); rt != nil {
+		t.Fatalf("empty key, no connector = %+v, want nil", rt)
+	}
+	if c := m.Connector(context.Background()); c != nil {
+		t.Fatalf("Connector with no active runtime = %v, want nil", c)
+	}
+
+	// A non-active cluster with an empty pool → nil (lazy spin is A.3b).
+	ctx := WithRuntimeKey(context.Background(), RuntimeKey{Tenant: "default", Cluster: "other"})
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		t.Fatalf("non-active cluster, empty pool = %+v, want nil", rt)
+	}
+}
