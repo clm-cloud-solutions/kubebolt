@@ -6,7 +6,7 @@
 
 # Explicit patch pin — see apps/api/Dockerfile for the CVE rationale.
 # Bump in lockstep with all other Dockerfiles and the CI workflows.
-FROM golang:1.25.10-alpine AS builder
+FROM golang:1.25.11-alpine AS builder
 
 WORKDIR /src
 

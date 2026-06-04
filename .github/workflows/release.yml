@@ -465,7 +465,10 @@ jobs:
           # upstream. Pinning explicitly forces setup-go to fetch the
           # patched toolchain regardless of cache contents. Bump in lockstep
           # with apps/api/Dockerfile's FROM golang: pin.
-          go-version: '1.25.10'
+          # 1.14.0: bumped 1.25.10 -> 1.25.11 (released 2026-06-02) to clear
+          # CVE-2026-27145 / -42504 / -42507 (crypto/x509, mime, net/textproto)
+          # flagged by Artifact Hub against the 1.13.1 api binary.
+          go-version: '1.25.11'
 
       - uses: actions/setup-node@v4
         with:
