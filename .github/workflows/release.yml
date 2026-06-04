@@ -178,6 +178,14 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # Pass the resolved semver into the Dockerfile's ARG VERSION
+          # so `main.version` is stamped at compile time. Without this,
+          # the binary keeps its `var version = "dev"` default and the
+          # update-check feature short-circuits — every self-hosted
+          # install sees "currentVersion: dev" and never gets the
+          # Topbar update chip.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -793,6 +801,88 @@ jobs:
       - id: image_version
         run: echo "tag=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      # Assemble the GitHub Release body by prepending the human-readable
+      # release notes markdown (`docs/releases/v<tag>.md`) to the install
+      # instructions block below. The Topbar update-check chip points at
+      # the resulting Release page, so this is where users land when they
+      # click "Update vX.Y.Z available" — give them the narrative
+      # walkthrough first, install commands second.
+      #
+      # Missing release notes file does NOT block the release; we just
+      # emit the install block alone (same as pre-1.13.1 behavior). New
+      # releases SHOULD ship the markdown so the link in the chip lands
+      # somewhere useful.
+      - name: Assemble release body
+        id: body
+        run: |
+          NOTES_FILE="docs/releases/${GITHUB_REF_NAME}.md"
+          OUT=/tmp/release-body.md
+
+          if [ -f "$NOTES_FILE" ]; then
+            cat "$NOTES_FILE" > "$OUT"
+            printf '\n\n---\n\n' >> "$OUT"
+          else
+            echo "::warning::No release notes at $NOTES_FILE — Release body will have install instructions only"
+            : > "$OUT"
+          fi
+
+          cat >> "$OUT" << BODY_EOF
+          ## Install
+
+          ### Helm (recommended for Kubernetes)
+          \`\`\`bash
+          helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
+          kubectl port-forward svc/kubebolt 3000:80
+          \`\`\`
+
+          ### Single Binary (download below)
+          \`\`\`bash
+          # macOS Apple Silicon
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/kubebolt-darwin-arm64
+          chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt
+
+          # Linux amd64
+          curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/kubebolt-linux-amd64
+          chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kubebolt
+
+          kubebolt --kubeconfig ~/.kube/config
+          \`\`\`
+
+          All platform binaries are attached below. Verify with \`sha256sum -c CHECKSUMS.txt\`.
+
+          ### Docker (single container)
+          \`\`\`bash
+          docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \\
+            ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}
+          \`\`\`
+
+          ### Homebrew (macOS, Linux)
+          \`\`\`bash
+          brew install clm-cloud-solutions/tap/kubebolt
+          \`\`\`
+
+          ### kubectl krew plugin
+          \`\`\`bash
+          kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git
+          kubectl krew install clm/kubebolt
+          kubectl kubebolt
+          \`\`\`
+
+          ### Docker Compose
+          \`\`\`bash
+          git clone https://github.com/${{ github.repository }}.git
+          cd kubebolt/deploy && docker compose up -d
+          \`\`\`
+
+          ### Container Images
+          - Single container (binary + frontend): \`ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}\`
+          - API only: \`${{ env.API_IMAGE }}:${{ steps.image_version.outputs.tag }}\`
+          - Web only: \`${{ env.WEB_IMAGE }}:${{ steps.image_version.outputs.tag }}\`
+
+          ## Changelog
+          ${{ steps.changelog.outputs.body }}
+          BODY_EOF
+
       - uses: softprops/action-gh-release@v2
         with:
           # Auto-mark pre-releases so the tag doesn't claim "Latest release"
@@ -813,58 +903,4 @@ jobs:
             dist/sbom-api.cdx.json
             dist/sbom-web.cdx.json
             dist/sbom-single.cdx.json
-          body: |
-            ## Install
-
-            ### Helm (recommended for Kubernetes)
-            ```bash
-            helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
-            kubectl port-forward svc/kubebolt 3000:80
-            ```
-
-            ### Single Binary (download below)
-            ```bash
-            # macOS Apple Silicon
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/kubebolt-darwin-arm64
-            chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt
-
-            # Linux amd64
-            curl -LO https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/kubebolt-linux-amd64
-            chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kubebolt
-
-            kubebolt --kubeconfig ~/.kube/config
-            ```
-
-            All platform binaries are attached below. Verify with `sha256sum -c CHECKSUMS.txt`.
-
-            ### Docker (single container)
-            ```bash
-            docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \
-              ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}
-            ```
-
-            ### Homebrew (macOS, Linux)
-            ```bash
-            brew install clm-cloud-solutions/tap/kubebolt
-            ```
-
-            ### kubectl krew plugin
-            ```bash
-            kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git
-            kubectl krew install clm/kubebolt
-            kubectl kubebolt
-            ```
-
-            ### Docker Compose
-            ```bash
-            git clone https://github.com/${{ github.repository }}.git
-            cd kubebolt/deploy && docker compose up -d
-            ```
-
-            ### Container Images
-            - Single container (binary + frontend): `ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}`
-            - API only: `${{ env.API_IMAGE }}:${{ steps.image_version.outputs.tag }}`
-            - Web only: `${{ env.WEB_IMAGE }}:${{ steps.image_version.outputs.tag }}`
-
-            ## Changelog
-            ${{ steps.changelog.outputs.body }}
+          body_path: /tmp/release-body.md
