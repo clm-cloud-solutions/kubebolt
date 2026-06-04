@@ -84,6 +84,11 @@ type clusterRuntime struct {
 	engine    *insights.Engine
 	cancelFn  context.CancelFunc
 	connErr   error
+	// ready is closed when a pooled runtime finishes building (success or
+	// failure), so concurrent callers single-flight on the same spin instead
+	// of each launching a connector. nil for the active runtime (built
+	// synchronously under the lock).
+	ready chan struct{}
 }
 
 // SetInsightStore wires the persistent insights store + tenant scope. The
@@ -604,32 +609,99 @@ func (m *Manager) ActiveAgentProxyClusterID() string {
 //   - Empty cluster, or the active context → the active runtime (today's
 //     single-cluster behavior, unchanged). This is the only branch OSS
 //     ever takes: the OSS frontend doesn't send X-KubeBolt-Cluster.
-//   - A non-active cluster (EE/multi-tenant) → the pooled runtime, or nil
-//     when it isn't spun up. Lazy spin-up lands in A.3b; until then a
-//     non-active cluster reads as "not connected".
+//   - A non-active cluster (EE/multi-tenant) → the pooled runtime, lazily
+//     spun up on first request via single-flight (getOrSpinPooled).
 //
-// Returns nil when there is no runtime (e.g. startup before first connect).
-// Snapshots the fields under the read lock so callers use them lock-free.
+// Returns nil when there is no runtime (startup before first connect, an
+// unknown context, or a failed spin). Callers use the snapshot lock-free.
 func (m *Manager) resolveRuntime(ctx context.Context) *clusterRuntime {
 	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	if key.Cluster == "" || key.Cluster == m.activeContext {
-		if m.connector == nil {
-			return nil
-		}
-		return &clusterRuntime{
-			connector: m.connector,
-			collector: m.collector,
-			engine:    m.engine,
-			cancelFn:  m.cancelFn,
-			connErr:   m.connErr,
-		}
-	}
-	if rt, ok := m.runtimes[poolKey{tenant: key.Tenant, cluster: key.Cluster}]; ok {
+	active := key.Cluster == "" || key.Cluster == m.activeContext
+	if active {
+		rt := m.activeRuntimeLocked()
+		m.mu.RUnlock()
 		return rt
 	}
-	return nil
+	m.mu.RUnlock()
+	return m.getOrSpinPooled(key.Tenant, key.Cluster)
+}
+
+// activeRuntimeLocked snapshots the active cluster's runtime. Caller holds
+// m.mu. Returns nil when nothing is connected yet.
+func (m *Manager) activeRuntimeLocked() *clusterRuntime {
+	if m.connector == nil {
+		return nil
+	}
+	return &clusterRuntime{
+		connector: m.connector,
+		collector: m.collector,
+		engine:    m.engine,
+		cancelFn:  m.cancelFn,
+		connErr:   m.connErr,
+	}
+}
+
+// getOrSpinPooled returns the pooled runtime for a non-active
+// (tenant,cluster), lazily spinning it up on first request. Single-flight:
+// the first caller reserves a placeholder and builds the connector OUTSIDE
+// m.mu (Start can take ~20s); concurrent callers for the same key block on
+// the placeholder's ready channel instead of launching a second connector.
+// Returns nil on unknown context, no-agent-yet, or a failed build.
+//
+// NOTE (A.3c/A.4 follow-ups): pooled engines don't yet get the notification
+// hook (wireInsightHookLocked) and the wsHub broadcast isn't tenant-scoped,
+// so pooled clusters are read-only-correct but not notification/WS-isolated
+// yet. Harmless in OSS (the pool is never populated).
+func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
+	pk := poolKey{tenant: tenant, cluster: contextName}
+
+	m.mu.Lock()
+	if m.runtimes == nil {
+		m.runtimes = map[poolKey]*clusterRuntime{}
+	}
+	if rt, ok := m.runtimes[pk]; ok {
+		m.mu.Unlock()
+		<-rt.ready // wait if a concurrent caller is still building
+		if rt.connErr != nil {
+			return nil
+		}
+		return rt
+	}
+	// Same fast-fail as the active path: agent-proxy cluster with no agent.
+	if cid, ok := m.agentProxyContexts[contextName]; ok && m.agentRegistry != nil && m.agentRegistry.CountByCluster(cid) == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	access := m.accessForContextLocked(contextName)
+	if access == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	// Snapshot the mutable bits startRuntime needs, reserve the placeholder.
+	agentProxyCID := m.agentProxyContexts[contextName]
+	insightStore := m.insightStore
+	tenantID := m.tenantID
+	placeholder := &clusterRuntime{ready: make(chan struct{})}
+	m.runtimes[pk] = placeholder
+	m.mu.Unlock()
+
+	// Build outside the lock (connector.Start ~20s).
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID)
+	if err != nil {
+		m.mu.Lock()
+		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
+		m.mu.Unlock()
+		placeholder.connErr = err
+		close(placeholder.ready)
+		return nil
+	}
+	placeholder.connector = built.connector
+	placeholder.collector = built.collector
+	placeholder.engine = built.engine
+	placeholder.cancelFn = built.cancelFn
+	close(placeholder.ready)
+	return placeholder
 }
 
 // Connector returns the *Connector for the request's (tenant,cluster).
@@ -656,11 +728,21 @@ func (m *Manager) Engine(ctx context.Context) *insights.Engine {
 	return nil
 }
 
-// Stop stops the active connector and collector.
+// Stop stops the active connector and collector, and tears down every
+// pooled (non-active) runtime.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopCurrent()
+	for pk, rt := range m.runtimes {
+		if rt.cancelFn != nil {
+			rt.cancelFn()
+		}
+		if rt.connector != nil {
+			rt.connector.Stop()
+		}
+		delete(m.runtimes, pk)
+	}
 }
 
 func (m *Manager) stopCurrent() {
@@ -810,8 +892,10 @@ func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 	if m.inCluster && contextName == "in-cluster" {
 		return NewInClusterAccess()
 	}
-	if _, ok := m.kubeConfig.Contexts[contextName]; ok {
-		return NewLocalAccess(m.kubeconfigPath, contextName)
+	if m.kubeConfig != nil {
+		if _, ok := m.kubeConfig.Contexts[contextName]; ok {
+			return NewLocalAccess(m.kubeconfigPath, contextName)
+		}
 	}
 	return nil
 }
@@ -831,39 +915,66 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	if access == nil {
 		return fmt.Errorf("context %q is not registered", contextName)
 	}
+	// Build the active runtime. Holding m.mu across startRuntime keeps the
+	// prior behavior (the ~20s connector.Start runs under the lock for a
+	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
+	// lock instead.
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID)
+	if err != nil {
+		return err
+	}
+	m.connector = rt.connector
+	m.collector = rt.collector
+	m.engine = rt.engine
+	m.cancelFn = rt.cancelFn
+	m.activeContext = contextName
+	m.connErr = nil
+
+	// Wire notification hook if one was registered before this connection
+	// was established (or if we just switched clusters).
+	m.wireInsightHookLocked()
+
+	return nil
+}
+
+// startRuntime connects to contextName and returns a fully-started runtime
+// (connector + collector + engine + the cancel that tears down their
+// goroutines). It takes NO lock and reads only effectively-immutable
+// Manager fields (wsHub, metricInterval, insightInterval, storage) plus the
+// snapshot params the caller resolves under m.mu — so the slow
+// connector.Start (~20s WaitForCacheSync) can run outside the lock for
+// pooled spins. The active path calls it while holding m.mu (unchanged).
+//
+// Mirrors what connectToContextLocked used to inline — keep the two in sync.
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
-		return fmt.Errorf("connecting to context %s: %w", contextName, err)
+		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
 	if err := connector.Start(); err != nil {
 		connector.Stop()
-		return fmt.Errorf("starting connector for context %s: %w", contextName, err)
+		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, err)
 	}
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// Synchronous initial poll so metrics are available before first API request
-	collector.Poll(ctx)
-
+	collector.Poll(ctx) // synchronous initial poll so metrics are ready first
 	go collector.Start(ctx)
 
-	// Resolve a stable clusterID for persisted insights: prefer the
-	// kube-system UID, fall back to the agent-proxy cluster_id, then the
-	// context name — so records key consistently across restarts.
+	// Stable clusterID for persisted insights: kube-system UID, else the
+	// agent-proxy cluster_id, else the context name.
 	engineClusterID := connector.ClusterUID()
 	if engineClusterID == "" {
-		if cid := m.agentProxyContexts[contextName]; cid != "" {
-			engineClusterID = cid
+		if agentProxyCID != "" {
+			engineClusterID = agentProxyCID
 		} else {
 			engineClusterID = contextName
 		}
 	}
-	engine := insights.NewEngine(m.wsHub, m.insightStore, engineClusterID, m.tenantID)
+	engine := insights.NewEngine(m.wsHub, insightStore, engineClusterID, tenantID)
 
-	// Start insight evaluation ticker
 	go func() {
 		ticker := time.NewTicker(m.insightInterval)
 		defer ticker.Stop()
@@ -878,30 +989,16 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 		}
 	}()
 
-	m.connector = connector
-	m.collector = collector
-	m.engine = engine
-	m.cancelFn = cancel
-	m.activeContext = contextName
-
-	// Persist the resolved kube-system UID so subsequent ListClusters
-	// (potentially after a switch to a different cluster, or after a
-	// restart) can populate ClusterID for this context without a
-	// re-connect. Empty UID means the kube-system lookup failed
-	// during NewConnectorFromAccess — skip the write rather than
-	// overwriting a previously-good value with empty.
+	// Persist the resolved kube-system UID so ListClusters can populate
+	// ClusterID without a re-connect. Skip on empty (lookup failed) rather
+	// than overwriting a previously-good value.
 	if m.storage != nil {
 		if uid := connector.ClusterUID(); uid != "" {
 			_ = m.storage.SetClusterUID(contextName, uid)
 		}
 	}
-	m.connErr = nil
 
-	// Wire notification hook if one was registered before this connection
-	// was established (or if we just switched clusters).
-	m.wireInsightHookLocked()
-
-	return nil
+	return &clusterRuntime{connector: connector, collector: collector, engine: engine, cancelFn: cancel}, nil
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {

@@ -41,9 +41,14 @@ func TestResolveRuntime_NilSafe(t *testing.T) {
 		t.Fatalf("Connector with no active runtime = %v, want nil", c)
 	}
 
-	// A non-active cluster with an empty pool → nil (lazy spin is A.3b).
+	// A non-active, unknown cluster → getOrSpinPooled returns nil (access
+	// can't be resolved) and must NOT leave a placeholder in the pool, so a
+	// later request retries cleanly.
 	ctx := WithRuntimeKey(context.Background(), RuntimeKey{Tenant: "default", Cluster: "other"})
 	if rt := m.resolveRuntime(ctx); rt != nil {
-		t.Fatalf("non-active cluster, empty pool = %+v, want nil", rt)
+		t.Fatalf("non-active unknown cluster = %+v, want nil", rt)
+	}
+	if n := len(m.runtimes); n != 0 {
+		t.Fatalf("pool has %d entries after a failed spin, want 0 (no leaked placeholder)", n)
 	}
 }
