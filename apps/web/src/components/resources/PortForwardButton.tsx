@@ -27,8 +27,11 @@ export function PortForwardButton({ namespace, pod, container, remotePort, disab
         f => f.pod === pod && f.namespace === namespace && f.remotePort === remotePort && f.status === 'active'
       )
       if (existing) {
-        const url = `${window.location.protocol}//${window.location.hostname}:${existing.localPort}`
-        setForward({ id: existing.id, url })
+        // Link through the backend's /pf/{id} reverse proxy (same origin as
+        // the dashboard) so the HTTP service is reachable even when the
+        // backend is remote — not the direct host:port, which only works
+        // when backend and browser share a machine.
+        setForward({ id: existing.id, url: `/pf/${existing.id}/` })
       }
     }).catch(() => {})
   }, [namespace, pod, remotePort])
@@ -38,8 +41,7 @@ export function PortForwardButton({ namespace, pod, container, remotePort, disab
     setError(null)
     try {
       const result = await api.createPortForward({ namespace, pod, container, remotePort })
-      const url = `${window.location.protocol}//${window.location.hostname}:${result.localPort}`
-      setForward({ id: result.id, url })
+      setForward({ id: result.id, url: `/pf/${result.id}/` })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start port-forward')
     } finally {
@@ -109,7 +111,7 @@ export function PortForwardNote() {
   return (
     <div className="inline-flex items-center gap-1.5 px-1.5 py-1 rounded border border-kb-border bg-kb-elevated text-kb-text-tertiary text-[9px] font-mono">
       <Cable className="w-3 h-3 shrink-0" />
-      <span>Port forwarding opens ports on the backend host — only works when backend and browser are on the same machine.</span>
+      <span>Opens the forwarded HTTP(S) service inside the dashboard — works with remote backends. Apps that hardcode absolute root paths (e.g. Grafana, Argo CD) may not render correctly through the proxy. Raw TCP (e.g. databases) isn't supported here yet.</span>
     </div>
   )
 }

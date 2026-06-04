@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -22,15 +23,224 @@ func AllRules() []Rule {
 		memoryPressureRule(),
 		resourceUnderrequestRule(),
 		zeroReplicasRule(),
+		progressDeadlineExceededRule(),
 		pvcPendingRule(),
 		nodeNotReadyRule(),
 		hpaMaxedOutRule(),
 		frequentRestartsRule(),
 		imagePullBackoffRule(),
+		missingConfigDependencyRule(),
+		readinessProbeFailingRule(),
+		livenessProbeFailingRule(),
 		evictedPodsRule(),
 		serviceNoEndpointsRule(),
 		networkPolicyNoMatchRule(),
 		namespaceWithoutNetworkPolicyRule(),
+		pdbNoMatchRule(),
+		helmReleaseFailedRule(),
+		helmReleaseHookPendingRule(),
+		certExpiringRule(),
+		argoOutOfSyncRule(),
+	}
+}
+
+// certExpiringRule flags cert-manager Certificates that have expired or are
+// within 14 days of expiry. A healthy auto-renewal clears the warning on its
+// own; a persistent one means renewal is failing. (Sprint 3 insight.)
+func certExpiringRule() Rule {
+	return Rule{
+		ID:       "cert-expiring",
+		Name:     "Certificate expiring soon",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, c := range state.Certificates {
+				days, ok := c["expiresInDays"].(int)
+				if !ok {
+					continue
+				}
+				name, _ := c["name"].(string)
+				ns, _ := c["namespace"].(string)
+				switch {
+				case days < 0:
+					insights = append(insights, newInsight(
+						"critical",
+						fmt.Sprintf("Certificate/%s/%s", ns, name),
+						"Certificate expired",
+						fmt.Sprintf("cert-manager Certificate %s/%s expired %d day(s) ago — TLS against it now fails.", ns, name, -days),
+						"Renewal likely failed; check the issuer and cert-manager logs. kubectl describe certificate "+name+" -n "+ns,
+					))
+				case days < 14:
+					insights = append(insights, newInsight(
+						"warning",
+						fmt.Sprintf("Certificate/%s/%s", ns, name),
+						"Certificate expiring soon",
+						fmt.Sprintf("cert-manager Certificate %s/%s expires in %d day(s). If auto-renewal is healthy this clears itself; if it persists, renewal is stuck.", ns, name, days),
+						"Verify cert-manager is renewing it: kubectl describe certificate "+name+" -n "+ns,
+					))
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// argoOutOfSyncRule flags ArgoCD Applications that are OutOfSync or Degraded
+// — live cluster state has drifted from Git, or the app is unhealthy.
+// (Sprint 3 insight.)
+func argoOutOfSyncRule() Rule {
+	return Rule{
+		ID:       "argocd-out-of-sync",
+		Name:     "ArgoCD Application not healthy",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, a := range state.ArgoApps {
+				name, _ := a["name"].(string)
+				ns, _ := a["namespace"].(string)
+				sync, _ := a["syncStatus"].(string)
+				health, _ := a["healthStatus"].(string)
+				var reasons []string
+				if sync == "OutOfSync" {
+					reasons = append(reasons, "OutOfSync")
+				}
+				if health == "Degraded" {
+					reasons = append(reasons, "Degraded")
+				}
+				if len(reasons) == 0 {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("Application/%s/%s", ns, name),
+					"ArgoCD Application not healthy",
+					fmt.Sprintf("ArgoCD Application %s/%s is %s — live state has drifted from Git or the app is unhealthy.",
+						ns, name, strings.Join(reasons, " + ")),
+					"Inspect in ArgoCD or `kubectl describe application "+name+" -n "+ns+"`; sync or roll back as appropriate.",
+				))
+			}
+			return insights
+		},
+	}
+}
+
+// helmReleaseFailedRule flags Helm releases whose last action ended in a
+// failed state — an install/upgrade that errored or rolled back, leaving the
+// release unusable until an operator addresses it. (Sprint 4 insight.)
+func helmReleaseFailedRule() Rule {
+	return Rule{
+		ID:       "helm-release-failed",
+		Name:     "Helm release failed",
+		Severity: "critical",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, r := range state.HelmReleases {
+				if !strings.EqualFold(r.Status, "failed") {
+					continue
+				}
+				desc := r.Description
+				if desc == "" {
+					desc = "no description recorded"
+				}
+				insights = append(insights, newInsight(
+					"critical",
+					fmt.Sprintf("HelmRelease/%s/%s", r.Namespace, r.Name),
+					"Helm release failed",
+					fmt.Sprintf("Helm release %s/%s (chart %s %s) is in a failed state: %s",
+						r.Namespace, r.Name, r.Chart, r.ChartVersion, desc),
+					"Inspect with `helm status "+r.Name+" -n "+r.Namespace+"` and `helm history`. "+
+						"Roll back to the last good revision or fix the values and upgrade.",
+				))
+			}
+			return insights
+		},
+	}
+}
+
+// helmReleaseHookPendingRule flags releases stuck in a pending-* state for
+// more than 5 minutes — typically a pre/post lifecycle hook that never
+// completed, leaving the release lock held. (Sprint 4 insight.)
+func helmReleaseHookPendingRule() Rule {
+	return Rule{
+		ID:       "helm-release-hook-pending",
+		Name:     "Helm release stuck pending",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, r := range state.HelmReleases {
+				if !strings.HasPrefix(strings.ToLower(r.Status), "pending-") {
+					continue
+				}
+				if r.Updated.IsZero() || time.Since(r.Updated) < 5*time.Minute {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("HelmRelease/%s/%s", r.Namespace, r.Name),
+					"Helm release stuck pending",
+					fmt.Sprintf("Helm release %s/%s has been in %q for over 5 minutes — a lifecycle hook likely never completed, holding the release lock.",
+						r.Namespace, r.Name, r.Status),
+					"Check hook pods (`kubectl get pods -n "+r.Namespace+"`). If wedged, `helm rollback` or delete the stuck hook job.",
+				))
+			}
+			return insights
+		},
+	}
+}
+
+// pdbNoMatchRule flags PodDisruptionBudgets whose selector matches zero pods
+// in their namespace — the budget protects nothing, so a voluntary
+// disruption (drain / Evict) won't be gated as the operator intends.
+// Parallel to networkPolicyNoMatchRule. A nil/empty selector is skipped: an
+// empty selector matches every pod (intentional), and a nil selector is a
+// no-op PDB the apiserver tolerates.
+func pdbNoMatchRule() Rule {
+	return Rule{
+		ID:       "pdb-no-match",
+		Name:     "PodDisruptionBudget selector matches no pods",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			podsByNS := map[string][]*corev1.Pod{}
+			for _, p := range state.Pods {
+				podsByNS[p.Namespace] = append(podsByNS[p.Namespace], p)
+			}
+			for _, pdb := range state.PDBs {
+				if pdb.Spec.Selector == nil {
+					continue
+				}
+				if len(pdb.Spec.Selector.MatchLabels) == 0 && len(pdb.Spec.Selector.MatchExpressions) == 0 {
+					continue // empty selector matches all — intentional
+				}
+				sel, err := metav1.LabelSelectorAsSelector(pdb.Spec.Selector)
+				if err != nil {
+					continue
+				}
+				matched := 0
+				for _, p := range podsByNS[pdb.Namespace] {
+					if sel.Matches(labels.Set(p.Labels)) {
+						matched++
+					}
+				}
+				if matched > 0 {
+					continue
+				}
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("PodDisruptionBudget/%s/%s", pdb.Namespace, pdb.Name),
+					"PodDisruptionBudget selector matches no pods",
+					fmt.Sprintf(
+						"PodDisruptionBudget %s/%s declares a selector but no pod in its namespace matches. "+
+							"The budget protects nothing — a drain or Evict won't be gated as intended, "+
+							"either because the selector has a typo or the target workload was renamed / deleted.",
+						pdb.Namespace, pdb.Name,
+					),
+					"Verify the PDB's spec.selector.matchLabels against the pods you expect it to protect. "+
+						"kubectl get pods -n "+pdb.Namespace+" --show-labels",
+				))
+			}
+			return insights
+		},
 	}
 }
 
@@ -260,6 +470,41 @@ func zeroReplicasRule() Rule {
 	}
 }
 
+// progressDeadlineExceededRule — a Deployment's rollout stalled. The
+// Deployment controller sets the Progressing condition to False with
+// reason=ProgressDeadlineExceeded when new pods don't become available
+// within spec.progressDeadlineSeconds (default 600s). This is one of the
+// most common "my deploy is stuck" incidents, and the default remedy is
+// almost always a rollback to the last working revision — which is why
+// Autopilot auto-triggers on it (registry: progress-deadline-exceeded).
+func progressDeadlineExceededRule() Rule {
+	return Rule{
+		ID:       "progress-deadline-exceeded",
+		Name:     "Rollout Progress Deadline Exceeded",
+		Severity: "critical",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, d := range state.Deployments {
+				for _, cond := range d.Status.Conditions {
+					if cond.Type == appsv1.DeploymentProgressing &&
+						cond.Status == corev1.ConditionFalse &&
+						cond.Reason == "ProgressDeadlineExceeded" {
+						insights = append(insights, newInsight(
+							"critical",
+							fmt.Sprintf("Deployment/%s/%s", d.Namespace, d.Name),
+							"Rollout Progress Deadline Exceeded",
+							fmt.Sprintf("Deployment %s/%s rollout has not progressed: %s", d.Namespace, d.Name, cond.Message),
+							"The new ReplicaSet failed to become available in time. Roll back to the last working revision, or check the new pods' events and logs for the failure cause.",
+						))
+						break // one insight per Deployment, not per condition
+					}
+				}
+			}
+			return insights
+		},
+	}
+}
+
 // 7. PVC in Pending state
 func pvcPendingRule() Rule {
 	return Rule{
@@ -387,6 +632,177 @@ func imagePullBackoffRule() Rule {
 						))
 					}
 				}
+			}
+			return insights
+		},
+	}
+}
+
+// missingConfigDependencyRule flags pods that can't start because a ConfigMap
+// or Secret they reference doesn't exist. kubelet reports this on the container
+// as `Waiting.Reason == "CreateContainerConfigError"` with a message like
+// `configmap "app-config" not found` or `secret "db-creds" not found` — the pod
+// is admitted but the container never starts. Unlike a crash-loop (the process
+// runs and exits) the container here never executes, so the remedy is always to
+// (re)create the missing dependency, not to touch the workload. We read the
+// container waiting state (current truth) rather than Events (historical) so the
+// insight clears as soon as the dependency exists. Tier-1 (2026-06).
+func missingConfigDependencyRule() Rule {
+	return Rule{
+		ID:       "missing-config-dependency",
+		Name:     "Pod missing ConfigMap or Secret",
+		Severity: "critical",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Waiting == nil || cs.State.Waiting.Reason != "CreateContainerConfigError" {
+						continue
+					}
+					msg := cs.State.Waiting.Message
+					// Identify which kind of dependency is missing, for a
+					// sharper title + suggestion. kubelet phrases it as
+					// `configmap "X" not found` / `secret "X" not found`.
+					kind := "ConfigMap or Secret"
+					if strings.Contains(msg, "configmap") {
+						kind = "ConfigMap"
+					} else if strings.Contains(msg, "secret") {
+						kind = "Secret"
+					}
+					insights = append(insights, newInsight(
+						"critical",
+						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
+						"Pod missing ConfigMap or Secret",
+						fmt.Sprintf("Container %s in pod %s/%s cannot start — a referenced %s is missing: %s",
+							cs.Name, pod.Namespace, pod.Name, kind, msg),
+						fmt.Sprintf("Create the missing %s in namespace %s (the exact name is in the message above), or remove the reference from the pod spec. kubectl describe pod %s -n %s shows the full error.",
+							kind, pod.Namespace, pod.Name, pod.Namespace),
+					))
+					break // one insight per pod, not per container
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// readinessProbeFailingRule flags pods whose container is Running but whose
+// Ready condition has been False (reason=ContainersNotReady) for more than the
+// startup grace window. This is "running but not serving traffic" — the pod
+// process is up, but its readiness probe keeps failing, so the Service keeps it
+// out of rotation. The time threshold is what separates a real failure from a
+// slow start: a pod that just launched is legitimately not-Ready for a while,
+// so we only fire once it's been not-Ready for >2 minutes. Pods with a Waiting
+// container are skipped — those are crash-loop / image-pull / config-error,
+// other rules' concern. Tier-1 (2026-06).
+func readinessProbeFailingRule() Rule {
+	const grace = 2 * time.Minute
+	return Rule{
+		ID:       "readiness-probe-failing",
+		Name:     "Pod not passing readiness",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				if pod.Status.Phase != corev1.PodRunning {
+					continue
+				}
+				// Skip pods with any container still Waiting — that's a
+				// startup/crash problem owned by another rule, not a probe
+				// failing on a running container.
+				stillWaiting := false
+				for _, cs := range pod.Status.ContainerStatuses {
+					if cs.State.Waiting != nil {
+						stillWaiting = true
+						break
+					}
+				}
+				if stillWaiting {
+					continue
+				}
+				for _, cond := range pod.Status.Conditions {
+					if cond.Type != corev1.PodReady || cond.Status != corev1.ConditionFalse {
+						continue
+					}
+					// Slow-start guard: only fire once it's been not-Ready
+					// past the grace window.
+					if cond.LastTransitionTime.IsZero() || time.Since(cond.LastTransitionTime.Time) < grace {
+						break
+					}
+					detail := cond.Reason
+					if cond.Message != "" {
+						detail = cond.Reason + " — " + cond.Message
+					}
+					insights = append(insights, newInsight(
+						"warning",
+						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
+						"Pod not passing readiness",
+						fmt.Sprintf("Pod %s/%s is Running but has not been Ready for over 2 minutes (%s) — it's up but the Service is keeping it out of rotation.",
+							pod.Namespace, pod.Name, detail),
+						"Check the container's readiness probe (path/port/timeout) and its logs. If the probe regressed in a recent deploy, roll back; if the app genuinely isn't ready, fix the dependency it's waiting on.",
+					))
+					break // one insight per pod
+				}
+			}
+			return insights
+		},
+	}
+}
+
+// livenessProbeFailingRule flags pods whose liveness probe is actively failing,
+// read from kubelet's `Unhealthy` events ("Liveness probe failed: …"). Unlike
+// crash-loop (which keys on restart count, the downstream symptom) this keys on
+// the probe failure itself — the direct cause — and fires before the restarts
+// pile up. We require the event to have recurred (Count > 1) so a single
+// transient blip doesn't trip it. Tier-1 (2026-06).
+func livenessProbeFailingRule() Rule {
+	return Rule{
+		ID:       "liveness-probe-failing",
+		Name:     "Liveness probe failing",
+		Severity: "warning",
+		Evaluate: func(state *ClusterState) []models.Insight {
+			var insights []models.Insight
+			// Kubernetes retains Events for ~1h after the object is gone
+			// (apiserver --event-ttl). This rule keys on events, not live
+			// pod state, so without this guard it keeps firing for a pod
+			// that's already been deleted — a phantom insight that the UI
+			// shows for up to an hour and that Autopilot re-opens as a new
+			// incident every poll tick. Only emit for pods that still exist.
+			livePods := make(map[string]bool, len(state.Pods))
+			for _, p := range state.Pods {
+				livePods[p.Namespace+"/"+p.Name] = true
+			}
+			seen := map[string]bool{} // dedup per pod
+			for _, ev := range state.Events {
+				if ev == nil || ev.Reason != "Unhealthy" {
+					continue
+				}
+				if !strings.Contains(ev.Message, "Liveness probe failed") {
+					continue
+				}
+				if ev.Count <= 1 {
+					continue // a single blip isn't an incident
+				}
+				io := ev.InvolvedObject
+				if io.Kind != "Pod" {
+					continue
+				}
+				key := io.Namespace + "/" + io.Name
+				if !livePods[key] {
+					continue // pod is gone; the event is just stale history
+				}
+				if seen[key] {
+					continue
+				}
+				seen[key] = true
+				insights = append(insights, newInsight(
+					"warning",
+					fmt.Sprintf("Pod/%s/%s", io.Namespace, io.Name),
+					"Liveness probe failing",
+					fmt.Sprintf("Pod %s/%s liveness probe has failed %d times: %s — kubelet will restart the container, risking a restart loop.",
+						io.Namespace, io.Name, ev.Count, ev.Message),
+					"Check the liveness probe config (path/port/initialDelaySeconds/timeout) against what the app actually does at startup. If the probe regressed in a recent deploy, roll back; if it's too aggressive, relax initialDelaySeconds/failureThreshold.",
+				))
 			}
 			return insights
 		},

@@ -6,6 +6,7 @@ import { useResources } from '@/hooks/useResources'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
+import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 import { UsageBar } from './UsageBar'
 import { NodeActionMenu } from './NodeActionMenu'
 import { DrainModal } from './DrainModal'
@@ -218,14 +219,20 @@ export function NodesPage() {
 
   return (
     <div>
-      <div className="flex items-center gap-3 mb-4">
-        <h1 className="text-lg font-semibold text-kb-text-primary">Nodes</h1>
-        <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
-          {nodes.length} total
-        </span>
-        <div className="ml-auto">
-          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+      <div className="mb-4">
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <ResourceTypeIcon type="nodes" />
+            <h1 className="text-lg font-semibold text-kb-text-primary">Nodes</h1>
+          </div>
+          <span className="text-[10px] font-mono px-2.5 py-0.5 rounded bg-kb-elevated text-kb-text-tertiary">
+            {nodes.length} total
+          </span>
+          <div className="ml-auto">
+            <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+          </div>
         </div>
+        <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('nodes')}</p>
       </div>
       <div className="grid grid-cols-3 gap-3 mb-5">
         {nodes.map((node) => (

@@ -1,10 +1,26 @@
-import { RotateCcw } from 'lucide-react'
+import { useState } from 'react'
+import { RotateCcw, GitCompare } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { useDeploymentHistory, useWorkloadHistory } from '@/hooks/useResources'
 import { formatAge } from '@/utils/formatters'
 import { StatusBadge } from './StatusBadge'
+import { RevisionDiffModal } from './RevisionDiffModal'
+
+// Shared "View Diff" cell button — opens the revision YAML diff modal.
+function ViewDiffButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      title="View YAML diff vs previous revision"
+      className="px-2 py-1 text-[11px] rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary transition-colors inline-flex items-center gap-1"
+    >
+      <GitCompare className="w-3 h-3" />
+      View Diff
+    </button>
+  )
+}
 
 // ResourceLink is duplicated here from ResourceDetailPage's local
 // (un-exported) helper. Same one-line component as the original; we
@@ -77,6 +93,7 @@ function DeploymentHistoryTable({
   canEdit: boolean
 }) {
   const { data, isLoading, error } = useDeploymentHistory(namespace, name)
+  const [diffRevision, setDiffRevision] = useState<number | null>(null)
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
@@ -123,23 +140,39 @@ function DeploymentHistoryTable({
                 </td>
                 <td className="py-2 font-mono text-kb-text-tertiary">{item.createdAt ? formatAge(item.createdAt) : '-'}</td>
                 <td className="py-2 text-right">
-                  {!isActive && onRollback && Number.isFinite(revisionNum) && revisionNum > 0 && (
-                    <button
-                      onClick={() => onRollback(revisionNum)}
-                      disabled={!canEdit}
-                      title={!canEdit ? 'Editor role required' : `Rollback to revision ${revisionNum}`}
-                      className="px-2 py-1 text-[11px] rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary transition-colors inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      Rollback to
-                    </button>
-                  )}
+                  <div className="inline-flex items-center gap-1.5">
+                    {Number.isFinite(revisionNum) && revisionNum > 0 && (
+                      <ViewDiffButton onClick={() => setDiffRevision(revisionNum)} />
+                    )}
+                    {!isActive && onRollback && Number.isFinite(revisionNum) && revisionNum > 0 && (
+                      <button
+                        onClick={() => onRollback(revisionNum)}
+                        disabled={!canEdit}
+                        title={!canEdit ? 'Editor role required' : `Rollback to revision ${revisionNum}`}
+                        className="px-2 py-1 text-[11px] rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary transition-colors inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Rollback to
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             )
           })}
         </tbody>
       </table>
+      {diffRevision != null && (
+        <RevisionDiffModal
+          type="deployments"
+          namespace={namespace}
+          name={name}
+          targetRevision={diffRevision}
+          onClose={() => setDiffRevision(null)}
+          onRollback={onRollback}
+          canEdit={canEdit}
+        />
+      )}
     </Section>
   )
 }
@@ -158,6 +191,7 @@ function WorkloadHistoryTable({
   canEdit: boolean
 }) {
   const { data, isLoading, error } = useWorkloadHistory(type, namespace, name)
+  const [diffRevision, setDiffRevision] = useState<number | null>(null)
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} />
 
@@ -192,23 +226,39 @@ function WorkloadHistoryTable({
                 <td className="py-2 font-mono">{String(item.name ?? '')}</td>
                 <td className="py-2 font-mono text-kb-text-tertiary">{item.createdAt ? formatAge(String(item.createdAt)) : '-'}</td>
                 <td className="py-2 text-right">
-                  {!isLatest && onRollback && Number.isFinite(revisionNum) && revisionNum > 0 && (
-                    <button
-                      onClick={() => onRollback(revisionNum)}
-                      disabled={!canEdit}
-                      title={!canEdit ? 'Editor role required' : `Rollback to revision ${revisionNum}`}
-                      className="px-2 py-1 text-[11px] rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary transition-colors inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
-                    >
-                      <RotateCcw className="w-3 h-3" />
-                      Rollback to
-                    </button>
-                  )}
+                  <div className="inline-flex items-center gap-1.5">
+                    {Number.isFinite(revisionNum) && revisionNum > 0 && (
+                      <ViewDiffButton onClick={() => setDiffRevision(revisionNum)} />
+                    )}
+                    {!isLatest && onRollback && Number.isFinite(revisionNum) && revisionNum > 0 && (
+                      <button
+                        onClick={() => onRollback(revisionNum)}
+                        disabled={!canEdit}
+                        title={!canEdit ? 'Editor role required' : `Rollback to revision ${revisionNum}`}
+                        className="px-2 py-1 text-[11px] rounded border border-kb-border text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary transition-colors inline-flex items-center gap-1 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        <RotateCcw className="w-3 h-3" />
+                        Rollback to
+                      </button>
+                    )}
+                  </div>
                 </td>
               </tr>
             )
           })}
         </tbody>
       </table>
+      {diffRevision != null && (
+        <RevisionDiffModal
+          type={type as 'statefulsets' | 'daemonsets'}
+          namespace={namespace}
+          name={name}
+          targetRevision={diffRevision}
+          onClose={() => setDiffRevision(null)}
+          onRollback={onRollback}
+          canEdit={canEdit}
+        />
+      )}
     </Section>
   )
 }

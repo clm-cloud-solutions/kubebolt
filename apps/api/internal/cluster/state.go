@@ -8,6 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 )
 
 // GetPods returns all pods from the cache.
@@ -127,4 +128,17 @@ func (c *Connector) GetNetworkPolicies() []*networkingv1.NetworkPolicy {
 		return nil
 	}
 	return policies
+}
+
+// GetPodDisruptionBudgets returns all PDBs from the informer cache (Sprint 3).
+func (c *Connector) GetPodDisruptionBudgets() []*policyv1.PodDisruptionBudget {
+	if c.pdbLister == nil {
+		return nil
+	}
+	pdbs, err := c.pdbLister.List(everythingSelector())
+	if err != nil {
+		log.Printf("Error listing pod disruption budgets: %v", err)
+		return nil
+	}
+	return pdbs
 }

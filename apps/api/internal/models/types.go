@@ -19,12 +19,23 @@ type ClusterOverview struct {
 	CronJobs           ResourceCount       `json:"cronJobs"`
 	Ingresses          ResourceCount       `json:"ingresses"`
 	NetworkPolicies    ResourceCount       `json:"networkPolicies"`
+	PodDisruptionBudgets ResourceCount     `json:"podDisruptionBudgets"`
 	// Gateways / HTTPRoutes — present when Gateway API CRDs are
 	// installed. Zero on clusters that haven't installed the CRDs;
 	// the sidebar hides the counter chip when the value is zero
 	// (matches the existing behavior for other declarative kinds).
 	Gateways           ResourceCount       `json:"gateways"`
 	HTTPRoutes         ResourceCount       `json:"httpRoutes"`
+	// ServiceAccounts (core) + the optional CRDs (cert-manager / ArgoCD /
+	// VPA). Same zero-on-absent semantics as Gateways — the sidebar shows
+	// the counter once the type is present.
+	ServiceAccounts ResourceCount `json:"serviceAccounts"`
+	Certificates    ResourceCount `json:"certificates"`
+	ArgoCDApps      ResourceCount `json:"argocdApps"`
+	VPAs            ResourceCount `json:"vpas"`
+	// HelmReleases — distinct Helm releases (counted from the owner=helm
+	// Secret labels, no payload decode). Powers the Applications counter.
+	HelmReleases ResourceCount `json:"helmReleases"`
 	// Endpoints — backed by EndpointSlices (KubeBolt's `endpoints`
 	// resource type lists one row per EndpointSlice, not per legacy
 	// Endpoints object). Count matches what the list endpoint returns.
@@ -149,19 +160,30 @@ type MetricPoint struct {
 }
 
 // Insight represents a diagnostic finding from the insights engine.
+//
+// Identity (Sprint 0): ID carries the current occurrence id (what
+// consumers reference — the insight→Kobi trigger, ActionProposal
+// provenance, Autopilot trigger_source_ref). Fingerprint is the stable
+// cross-restart/cross-recurrence identity = sha256(tenant|cluster|ruleId|
+// resource). RuleID/TenantID/ClusterID are stamped by the engine at
+// evaluation time. In OSS, TenantID is always "default".
 type Insight struct {
-	ID         string     `json:"id"`
-	Severity   string     `json:"severity"`
-	Category   string     `json:"category"`
-	Resource   string     `json:"resource"`
-	Namespace  string     `json:"namespace"`
-	Title      string     `json:"title"`
-	Message    string     `json:"message"`
-	Suggestion string     `json:"suggestion"`
-	FirstSeen  time.Time  `json:"firstSeen"`
-	LastSeen   time.Time  `json:"lastSeen"`
-	Resolved   bool       `json:"resolved"`
-	ResolvedAt *time.Time `json:"resolvedAt,omitempty"`
+	ID          string     `json:"id"`
+	Fingerprint string     `json:"fingerprint,omitempty"`
+	RuleID      string     `json:"ruleId,omitempty"`
+	TenantID    string     `json:"tenantId,omitempty"`
+	ClusterID   string     `json:"clusterId,omitempty"`
+	Severity    string     `json:"severity"`
+	Category    string     `json:"category"`
+	Resource    string     `json:"resource"`
+	Namespace   string     `json:"namespace"`
+	Title       string     `json:"title"`
+	Message     string     `json:"message"`
+	Suggestion  string     `json:"suggestion"`
+	FirstSeen   time.Time  `json:"firstSeen"`
+	LastSeen    time.Time  `json:"lastSeen"`
+	Resolved    bool       `json:"resolved"`
+	ResolvedAt  *time.Time `json:"resolvedAt,omitempty"`
 }
 
 // TopologyNode is a vertex in the cluster topology graph.

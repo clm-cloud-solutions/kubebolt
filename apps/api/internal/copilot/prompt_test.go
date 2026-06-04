@@ -310,3 +310,27 @@ func mustContainAll(t *testing.T, got string, wants ...string) {
 		}
 	}
 }
+
+// GovernanceContextBlock must (1) say nothing when both toggles are ON, and
+// (2) when a toggle is OFF, frame the limit as governance policy and
+// explicitly steer Kobi AWAY from blaming RBAC/role — the exact failure the
+// block exists to prevent.
+func TestGovernanceContextBlock(t *testing.T) {
+	if got := GovernanceContextBlock(true, true); got != "" {
+		t.Errorf("both toggles on should yield no block, got %q", got)
+	}
+
+	actionsOff := GovernanceContextBlock(false, true)
+	for _, w := range []string{"read-only advisory", "NOT an RBAC", "Administration → Copilot"} {
+		if !strings.Contains(actionsOff, w) {
+			t.Errorf("actions-off block missing %q\n%s", w, actionsOff)
+		}
+	}
+
+	destructiveOff := GovernanceContextBlock(true, false)
+	for _, w := range []string{"destructive-ops governance", "do NOT attribute it to RBAC", "scale to N>0"} {
+		if !strings.Contains(destructiveOff, w) {
+			t.Errorf("destructive-off block missing %q\n%s", w, destructiveOff)
+		}
+	}
+}

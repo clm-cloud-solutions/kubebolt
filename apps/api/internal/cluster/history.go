@@ -12,6 +12,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	sigsyaml "sigs.k8s.io/yaml"
 )
 
 // DetailedRevision is the per-revision shape returned by the
@@ -46,6 +47,20 @@ type DetailedRevision struct {
 	ChangeCause  string      `json:"changeCause"`
 	ReplicaCount int32       `json:"replicaCount"`
 	Active       bool        `json:"active"`
+	// ManifestYAML is the full workload manifest AS OF this revision, rendered
+	// as clean YAML for the History-tab revision diff: the live workload object
+	// with its spec.template swapped to this revision's template, then
+	// sanitized. We render the full object (not just the template) so the diff
+	// reads in context — apiVersion/kind/metadata/spec/strategy/template/… —
+	// exactly like the YAML tab. Sanitization strips per-revision metadata churn
+	// (resourceVersion, generation, uid, creationTimestamp, managedFields, the
+	// revision + last-applied annotations, the pod-template-hash label) and
+	// status, so the diff highlights real spec changes, not noise. Non-template
+	// fields reflect the CURRENT object (rollback only changes the template), so
+	// this is exactly what a rollback to this revision would produce. Empty if
+	// the manifest couldn't be rendered. Carries no Secret/ConfigMap values
+	// (only refs), so no value redaction is needed.
+	ManifestYAML string `json:"manifestYaml,omitempty"`
 }
 
 // ImagePair is the container/image tuple shared between the
@@ -105,7 +120,9 @@ func (c *Connector) GetDeploymentHistoryDetailed(namespace, name string) (Detail
 		if !isOwnedBy(rs.OwnerReferences, "Deployment", name, dep.UID) {
 			continue
 		}
-		revs = append(revs, replicaSetToDetailedRevision(rs, currentRev))
+		rev := replicaSetToDetailedRevision(rs, currentRev)
+		rev.ManifestYAML = deploymentRevisionManifestYAML(dep, rs.Spec.Template)
+		revs = append(revs, rev)
 	}
 
 	sort.Slice(revs, func(i, j int) bool { return revs[i].Revision > revs[j].Revision })
@@ -128,6 +145,9 @@ func (c *Connector) GetWorkloadHistoryDetailed(resourceType, namespace, name str
 	var ownerKind string
 	var currentRevName string // CR name, resolved to int after we walk the list
 	var liveReplicas int32
+	// reconstruct renders the full manifest as-of a revision's template; bound
+	// to the typed parent object in the switch so the loop stays type-agnostic.
+	var reconstruct func(tmpl corev1.PodTemplateSpec) string
 
 	switch resourceType {
 	case "statefulsets":
@@ -145,6 +165,7 @@ func (c *Connector) GetWorkloadHistoryDetailed(resourceType, namespace, name str
 		if sts.Spec.Replicas != nil {
 			liveReplicas = *sts.Spec.Replicas
 		}
+		reconstruct = func(tmpl corev1.PodTemplateSpec) string { return stsRevisionManifestYAML(sts, tmpl) }
 	case "daemonsets":
 		ownerKind = "DaemonSet"
 		ds, err := c.clientset.AppsV1().DaemonSets(namespace).Get(ctx, name, metav1.GetOptions{})
@@ -154,6 +175,7 @@ func (c *Connector) GetWorkloadHistoryDetailed(resourceType, namespace, name str
 		liveReplicas = ds.Status.DesiredNumberScheduled
 		// DaemonSets don't expose the current revision directly; we
 		// derive it as the highest revision among owned CRs.
+		reconstruct = func(tmpl corev1.PodTemplateSpec) string { return dsRevisionManifestYAML(ds, tmpl) }
 	default:
 		return DetailedHistoryResponse{}, fmt.Errorf("unsupported workload type for detailed history: %s", resourceType)
 	}
@@ -172,13 +194,15 @@ func (c *Connector) GetWorkloadHistoryDetailed(resourceType, namespace, name str
 			continue
 		}
 		images, _ := extractImagesFromControllerRevision(cr.Data.Raw)
+		tmpl, _ := extractTemplateFromControllerRevision(cr.Data.Raw)
 		rev := DetailedRevision{
-			Revision:    cr.Revision,
-			Name:        cr.Name,
-			CreatedAt:   cr.CreationTimestamp.Format(time.RFC3339),
-			Age:         formatAge(cr.CreationTimestamp.Time),
-			Images:      images,
-			ChangeCause: cr.Annotations[changeCauseAnnotation],
+			Revision:     cr.Revision,
+			Name:         cr.Name,
+			CreatedAt:    cr.CreationTimestamp.Format(time.RFC3339),
+			Age:          formatAge(cr.CreationTimestamp.Time),
+			Images:       images,
+			ChangeCause:  cr.Annotations[changeCauseAnnotation],
+			ManifestYAML: reconstruct(tmpl),
 		}
 		if cr.Revision > maxRev {
 			maxRev = cr.Revision
@@ -239,6 +263,138 @@ func replicaSetToDetailedRevision(rs *appsv1.ReplicaSet, currentRev int64) Detai
 		ReplicaCount: rs.Status.Replicas,
 		Active:       rev == currentRev,
 	}
+}
+
+// podTemplateHashLabel is injected by the Deployment/RS controller and changes
+// on every revision — pure noise in a revision-to-revision diff, so we strip it.
+const podTemplateHashLabel = "pod-template-hash"
+
+const lastAppliedAnnotation = "kubectl.kubernetes.io/last-applied-configuration"
+
+// sanitizeMetaForDiff strips per-revision metadata churn from a workload's
+// ObjectMeta so the revision diff shows real spec changes, not noise.
+func sanitizeMetaForDiff(m *metav1.ObjectMeta) {
+	m.ResourceVersion = ""
+	m.Generation = 0
+	m.UID = ""
+	m.CreationTimestamp = metav1.Time{}
+	m.ManagedFields = nil
+	m.SelfLink = ""
+	if m.Annotations != nil {
+		delete(m.Annotations, deploymentRevisionAnnotation)
+		delete(m.Annotations, lastAppliedAnnotation)
+		if len(m.Annotations) == 0 {
+			m.Annotations = nil
+		}
+	}
+}
+
+// sanitizeTemplateForDiff drops the controller-injected pod-template-hash label,
+// which changes every revision and would otherwise dominate the diff.
+func sanitizeTemplateForDiff(t *corev1.PodTemplateSpec) {
+	if t.Labels != nil {
+		delete(t.Labels, podTemplateHashLabel)
+		if len(t.Labels) == 0 {
+			t.Labels = nil
+		}
+	}
+}
+
+// cleanManifestYAML marshals a workload object to YAML, then drops the empty
+// blocks the typed marshaller always emits — `status: {}` (omitempty doesn't
+// omit a zero struct) and the `creationTimestamp: null` that metav1.Time
+// renders everywhere. Both are identical across revisions so they wouldn't add
+// diff lines, but they clutter the rendered YAML; stripping keeps it clean,
+// like the YAML tab.
+func cleanManifestYAML(obj interface{}) string {
+	b, err := sigsyaml.Marshal(obj)
+	if err != nil {
+		return ""
+	}
+	var m map[string]interface{}
+	if err := sigsyaml.Unmarshal(b, &m); err != nil {
+		return string(b)
+	}
+	delete(m, "status")
+	stripNullCreationTimestamps(m)
+	out, err := sigsyaml.Marshal(m)
+	if err != nil {
+		return string(b)
+	}
+	return string(out)
+}
+
+// stripNullCreationTimestamps recursively removes `creationTimestamp: null`
+// (the zero-value metav1.Time rendering) anywhere in the object tree —
+// top-level metadata, the pod template's metadata, etc.
+func stripNullCreationTimestamps(v interface{}) {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		if val, ok := t["creationTimestamp"]; ok && val == nil {
+			delete(t, "creationTimestamp")
+		}
+		for _, child := range t {
+			stripNullCreationTimestamps(child)
+		}
+	case []interface{}:
+		for _, child := range t {
+			stripNullCreationTimestamps(child)
+		}
+	}
+}
+
+// deploymentRevisionManifestYAML renders the full Deployment manifest AS OF the
+// given revision: the live Deployment with its pod template swapped to the
+// revision's template, sanitized. Returns "" on marshal error.
+func deploymentRevisionManifestYAML(dep *appsv1.Deployment, tmpl corev1.PodTemplateSpec) string {
+	d := dep.DeepCopy()
+	d.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "Deployment"}
+	d.Spec.Template = *tmpl.DeepCopy()
+	d.Status = appsv1.DeploymentStatus{}
+	sanitizeMetaForDiff(&d.ObjectMeta)
+	sanitizeTemplateForDiff(&d.Spec.Template)
+	return cleanManifestYAML(d)
+}
+
+// stsRevisionManifestYAML / dsRevisionManifestYAML — same reconstruction for
+// StatefulSets and DaemonSets.
+func stsRevisionManifestYAML(sts *appsv1.StatefulSet, tmpl corev1.PodTemplateSpec) string {
+	s := sts.DeepCopy()
+	s.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "StatefulSet"}
+	s.Spec.Template = *tmpl.DeepCopy()
+	s.Status = appsv1.StatefulSetStatus{}
+	sanitizeMetaForDiff(&s.ObjectMeta)
+	sanitizeTemplateForDiff(&s.Spec.Template)
+	return cleanManifestYAML(s)
+}
+
+func dsRevisionManifestYAML(ds *appsv1.DaemonSet, tmpl corev1.PodTemplateSpec) string {
+	d := ds.DeepCopy()
+	d.TypeMeta = metav1.TypeMeta{APIVersion: "apps/v1", Kind: "DaemonSet"}
+	d.Spec.Template = *tmpl.DeepCopy()
+	d.Status = appsv1.DaemonSetStatus{}
+	sanitizeMetaForDiff(&d.ObjectMeta)
+	sanitizeTemplateForDiff(&d.Spec.Template)
+	return cleanManifestYAML(d)
+}
+
+// extractTemplateFromControllerRevision unmarshals the full pod template from a
+// ControllerRevision's embedded JSON (STS/DS). Same embedded shape as
+// extractImagesFromControllerRevision (`{spec:{template:...}}`), but the whole
+// PodTemplateSpec rather than just the container images — for the revision diff.
+func extractTemplateFromControllerRevision(raw []byte) (corev1.PodTemplateSpec, error) {
+	if len(raw) == 0 {
+		return corev1.PodTemplateSpec{}, nil
+	}
+	var partial struct {
+		Spec struct {
+			Template corev1.PodTemplateSpec `json:"template"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(raw, &partial); err != nil {
+		return corev1.PodTemplateSpec{}, err
+	}
+	return partial.Spec.Template, nil
 }
 
 // extractImagesFromControllerRevision unmarshals just enough of a

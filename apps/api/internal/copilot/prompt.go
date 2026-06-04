@@ -108,6 +108,30 @@ func BuildSessionContext(clusterName, currentPath string, now time.Time, clientT
 		clusterName, currentPath, nowBlock)
 }
 
+// GovernanceContextBlock returns a per-session note telling Kobi the current
+// state of the action-governance toggles, so it can explain a blocked action
+// accurately instead of inventing an RBAC/role reason (the bug: a governance
+// block was reported to users as "your role does not allow this action").
+// Returns "" when both toggles are ON (the default) — no note needed.
+//
+// This lives in the per-session prefix appended after BuildSessionContext, NOT
+// in the cached system prompt: it varies with live admin settings, so baking
+// it into BuildSystemPrompt would break the byte-identical cache prefix.
+func GovernanceContextBlock(actionsEnabled, destructiveEnabled bool) string {
+	switch {
+	case !actionsEnabled:
+		return "# Action governance\n" +
+			"Kobi action proposals are DISABLED by the admin — you are in read-only advisory mode and cannot propose or execute any cluster mutation. " +
+			"If asked to change the cluster, explain that action proposals are turned off in this KubeBolt (admin setting under Administration → Copilot) — this is a governance policy, NOT an RBAC or role limit — and offer the equivalent kubectl command instead. Never tell the user to ask for a higher role; it would not unblock this."
+	case !destructiveEnabled:
+		return "# Action governance\n" +
+			"Destructive actions (deleting a resource, scaling a workload to 0) are DISABLED by the admin's destructive-ops governance setting. Non-destructive proposals (restart, scale to N>0, edit resources, set image/env, patch HPA) work normally. " +
+			"If a delete or scale-to-0 is blocked, do NOT attribute it to RBAC or the user's role — explain it is the destructive-ops governance policy (admin setting under Administration → Copilot) and offer the equivalent kubectl command. Never tell the user to ask for a higher role for these; it would not unblock them."
+	default:
+		return ""
+	}
+}
+
 // operationalAppendix is the static KubeBolt-specific appendix concatenated
 // onto the brand layers. Parameter-free as of Phase 6 — every byte is
 // stable across requests so the cache_control=ephemeral marker on the
@@ -252,6 +276,7 @@ You can PROPOSE certain mutations via dedicated tools whose names start with "pr
 
 Available proposal tools:
 - propose_restart_workload — rollout restart for Deployment / StatefulSet / DaemonSet
+- propose_debug_pod — attach an ephemeral debug container to a running Pod (kubectl debug). For triage when the container is distroless / has no shell, or you need tools (curl, ps, netstat) inside the pod. Persists until the pod is recreated.
 - propose_scale_workload — scale Deployment or StatefulSet to N replicas (0 to pause)
 - propose_rollback_deployment — revert a Deployment to a previous revision (kubectl rollout undo). Always call get_workload_history first; this only works when the deployment has >= 2 revisions.
 - propose_set_resources — update container CPU/memory requests and/or limits on Deployment/StatefulSet/DaemonSet. Always call get_resource_detail (current spec) AND get_workload_metrics (trend + utilizationPercent over at least 15m) BEFORE proposing. The patched values must be grounded in summary.max and utilizationPercent, not guesses. Triggers a rolling update.

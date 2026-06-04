@@ -39,6 +39,8 @@ interface FormState {
   fallbackApiKey: string
   fallbackBaseURL: string
   showToolCalls: boolean
+  actionsEnabled: boolean
+  destructiveActionsEnabled: boolean
   autoCompact: boolean
   maxTokens: string // string so the input is editable; coerced to number on save
   // Auto-compact tunables. Strings while editing for the same reason as
@@ -62,6 +64,8 @@ function stateFromResponse(data: CopilotSettingsResponse): FormState {
     fallbackApiKey: '',
     fallbackBaseURL: eff.fallbackBaseURL || '',
     showToolCalls: eff.showToolCalls,
+    actionsEnabled: eff.actionsEnabled,
+    destructiveActionsEnabled: eff.destructiveActionsEnabled,
     autoCompact: eff.autoCompact,
     maxTokens: String(eff.maxTokens || 4096),
     sessionBudgetTokens: eff.sessionBudgetTokens != null ? String(eff.sessionBudgetTokens) : '',
@@ -88,6 +92,9 @@ function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutR
   }
 
   if (current.showToolCalls !== initial.showToolCalls) patch.showToolCalls = current.showToolCalls
+  if (current.actionsEnabled !== initial.actionsEnabled) patch.actionsEnabled = current.actionsEnabled
+  if (current.destructiveActionsEnabled !== initial.destructiveActionsEnabled)
+    patch.destructiveActionsEnabled = current.destructiveActionsEnabled
   if (current.autoCompact !== initial.autoCompact) patch.autoCompact = current.autoCompact
   const mt = parseInt(current.maxTokens, 10)
   if (!isNaN(mt) && mt > 0 && mt !== parseInt(initial.maxTokens, 10)) patch.maxTokens = mt
@@ -192,6 +199,8 @@ function CopilotSettingsForm({
     fallbackApiKey: form.fallbackApiKey.trim() !== '',
     fallbackBaseURL: form.fallbackBaseURL !== initial.fallbackBaseURL,
     showToolCalls: form.showToolCalls !== initial.showToolCalls,
+    actionsEnabled: form.actionsEnabled !== initial.actionsEnabled,
+    destructiveActionsEnabled: form.destructiveActionsEnabled !== initial.destructiveActionsEnabled,
     autoCompact: form.autoCompact !== initial.autoCompact,
     maxTokens: form.maxTokens !== initial.maxTokens,
     sessionBudgetTokens: form.sessionBudgetTokens !== initial.sessionBudgetTokens,
@@ -469,6 +478,39 @@ function CopilotSettingsForm({
               className="accent-kb-accent"
             />
             Show tool call cards in chat
+          </label>
+        </Field>
+
+        <Field
+          label="Kobi actions"
+          dirty={dirtyMap.actionsEnabled}
+          helper="When off, Kobi can read + advise but cannot propose any cluster change (read-only assistant). When on, Kobi proposes actions you approve with one click."
+        >
+          <label className="inline-flex items-center gap-2 text-xs text-kb-text-primary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.actionsEnabled}
+              onChange={(e) => setForm({ ...form, actionsEnabled: e.target.checked })}
+              className="accent-kb-accent"
+            />
+            Allow Kobi to propose actions
+          </label>
+        </Field>
+
+        <Field
+          label="Destructive actions"
+          dirty={dirtyMap.destructiveActionsEnabled}
+          helper="Sub-switch under Kobi actions. When off, Kobi cannot propose delete or scale-to-0 (those are withheld and rejected server-side). No effect when Kobi actions are off."
+        >
+          <label className="inline-flex items-center gap-2 text-xs text-kb-text-primary cursor-pointer">
+            <input
+              type="checkbox"
+              checked={form.destructiveActionsEnabled}
+              disabled={!form.actionsEnabled}
+              onChange={(e) => setForm({ ...form, destructiveActionsEnabled: e.target.checked })}
+              className="accent-kb-accent disabled:opacity-40"
+            />
+            Allow destructive proposals (delete, scale-to-0)
           </label>
         </Field>
 

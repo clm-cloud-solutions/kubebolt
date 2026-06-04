@@ -12,13 +12,16 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
 var restartableTypes = map[string]bool{
@@ -44,8 +47,9 @@ var setImageableTypes = map[string]bool{
 // auditMutation emits a structured audit log entry for any cluster mutation.
 // `source` distinguishes user-initiated UI actions ("ui") from Copilot
 // proposals approved by the user ("copilot_proposal"); it comes from the
-// X-KubeBolt-Action-Source header. The PoC writes to stderr via slog; the
-// production version will persist to BoltDB.
+// X-KubeBolt-Action-Source header. It logs via slog (operational log line)
+// AND, when an audit store is wired (Sprint 1), persists a durable record to
+// the kobi_actions bucket for the admin action-history view.
 func auditMutation(r *http.Request, action, resourceType, namespace, name string, params map[string]any, err error) {
 	source := r.Header.Get("X-KubeBolt-Action-Source")
 	if source == "" {
@@ -80,6 +84,62 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 	} else {
 		slog.Info("cluster mutation", attrs...)
 	}
+
+	// Durable audit trail (Sprint 1). No-op until SetAuditStore wires a
+	// store. OriginatingInsightID closes the insight→Kobi→action provenance
+	// loop opened in Sprint 0 (frontend sends X-KubeBolt-Origin-Insight when
+	// the Kobi chat was seeded from an insight).
+	if auditStore != nil {
+		clusterID := ""
+		if auditClusterID != nil {
+			clusterID = auditClusterID()
+		}
+		rec := &audit.Record{
+			ID:                   uuid.New().String(),
+			Timestamp:            time.Now().UTC(),
+			Source:               source,
+			UserID:               userID,
+			Username:             username,
+			Role:                 role,
+			ClusterID:            clusterID,
+			Action:               action,
+			TargetType:           resourceType,
+			TargetNamespace:      namespace,
+			TargetName:           name,
+			Params:               params,
+			Result:               result,
+			OriginatingInsightID: r.Header.Get("X-KubeBolt-Origin-Insight"),
+		}
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		if e := auditStore.Append(rec); e != nil {
+			slog.Warn("audit persist failed", slog.String("error", e.Error()))
+		}
+	}
+}
+
+// copilotDestructiveBlocked reports whether this request is a Kobi-proposed
+// destructive action that the admin has disabled via the destructive-ops
+// sub-switch (Sprint 1). UI-initiated actions are governed by RBAC, not this
+// gate — only copilot_proposal-sourced mutations are blocked. Defense in
+// depth behind the tool-list filter (which already hides delete from the LLM
+// when destructive ops are off; this also catches scale-to-0, which shares
+// the non-destructive scale tool and so can't be tool-filtered).
+func (h *handlers) copilotDestructiveBlocked(r *http.Request) bool {
+	return !h.resolvedCopilotConfig().DestructiveActionsEnabled &&
+		r.Header.Get("X-KubeBolt-Action-Source") == "copilot_proposal"
+}
+
+// resolvedCopilotConfig returns the live Copilot config (env baseline +
+// BoltDB admin override) when the settings runtime is wired, else the env
+// baseline — so the Sprint 1 governance toggles take effect from the admin
+// UI without a restart.
+func (h *handlers) resolvedCopilotConfig() config.CopilotConfig {
+	if h.settingsRuntime != nil {
+		return h.settingsRuntime.Copilot()
+	}
+	return h.copilotConfig
 }
 
 func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
@@ -176,6 +236,14 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Replicas < 0 {
 		respondError(w, http.StatusBadRequest, "replicas must be >= 0")
+		return
+	}
+	// Scale-to-0 is a destructive Kobi action — gated by the destructive-ops
+	// sub-switch. Can't be tool-filtered (shares propose_scale_workload), so
+	// it's enforced here.
+	if body.Replicas == 0 && h.copilotDestructiveBlocked(r) {
+		respondGovernanceBlocked(w, "destructive-ops",
+			"Scale-to-0 via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → Copilot.")
 		return
 	}
 
@@ -547,6 +615,15 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
+	// Delete is destructive — gated by the destructive-ops sub-switch for
+	// Kobi-proposed actions (defense in depth; the LLM already can't see the
+	// delete tool when the sub-switch is off).
+	if h.copilotDestructiveBlocked(r) {
+		respondGovernanceBlocked(w, "destructive-ops",
+			"Delete via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → Copilot.")
+		return
+	}
+
 	conn := h.manager.Connector()
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
@@ -780,4 +857,19 @@ func respondMutationError(w http.ResponseWriter, err error) {
 		return
 	}
 	respondError(w, http.StatusInternalServerError, msg)
+}
+
+// respondGovernanceBlocked responds to a Kobi-proposed action that an admin
+// has disabled via a governance toggle (Sprint 1). It returns 403 — the
+// action genuinely is forbidden — but carries `governanceBlocked:true` + the
+// `setting` name so the frontend renders "disabled by policy" instead of the
+// RBAC "your role does not allow this action" message. The distinction
+// matters: this is a policy switch the admin can flip, NOT a limit of the
+// operator's role, and conflating them sends users chasing a phantom RBAC fix.
+func respondGovernanceBlocked(w http.ResponseWriter, setting, msg string) {
+	respondJSON(w, http.StatusForbidden, map[string]any{
+		"error":             msg,
+		"governanceBlocked": true,
+		"setting":           setting,
+	})
 }

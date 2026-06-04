@@ -6,7 +6,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 )
 
@@ -29,6 +31,12 @@ type ClusterState struct {
 	Services        []*corev1.Service
 	EndpointSlices  []*discoveryv1.EndpointSlice
 	NetworkPolicies []*networkingv1.NetworkPolicy
-	PodMetrics      map[string]*models.MetricPoint
+	PDBs            []*policyv1.PodDisruptionBudget
+	HelmReleases    []helm.Release
+	// Optional dynamic CRDs (Sprint 3), as generic maps from the dynamic
+	// lister — present only when the CRD is installed.
+	Certificates []map[string]interface{}
+	ArgoApps     []map[string]interface{}
+	PodMetrics   map[string]*models.MetricPoint
 	NodeMetrics     map[string]*models.MetricPoint
 }

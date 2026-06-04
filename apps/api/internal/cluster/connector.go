@@ -20,6 +20,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -35,6 +36,7 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
+	policylisters "k8s.io/client-go/listers/policy/v1"
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 	storagelisters "k8s.io/client-go/listers/storage/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -93,6 +95,7 @@ type Connector struct {
 	serviceLister        corelisters.ServiceLister
 	endpointSliceLister  discoverylisters.EndpointSliceLister
 	configMapLister      corelisters.ConfigMapLister
+	serviceAccountLister corelisters.ServiceAccountLister
 	secretLister         corelisters.SecretLister
 	pvcLister            corelisters.PersistentVolumeClaimLister
 	pvLister             corelisters.PersistentVolumeLister
@@ -105,6 +108,7 @@ type Connector struct {
 	cronJobLister        batchlisters.CronJobLister
 	ingressLister        networkinglisters.IngressLister
 	networkPolicyLister  networkinglisters.NetworkPolicyLister
+	pdbLister            policylisters.PodDisruptionBudgetLister
 	hpaLister            autoscalinglisters.HorizontalPodAutoscalerLister
 	storageClassLister   storagelisters.StorageClassLister
 	roleLister           rbaclisters.RoleLister
@@ -230,6 +234,26 @@ func (c *Connector) RestConfig() *rest.Config {
 // Clientset returns the Kubernetes clientset for this cluster connection.
 func (c *Connector) Clientset() kubernetes.Interface {
 	return c.clientset
+}
+
+// ListHelmReleaseSecrets returns all Helm 3 release-storage Secrets (label
+// owner=helm) across the namespaces the connected ServiceAccount can read.
+// Helm stores each release revision as one such Secret; the helm package
+// decodes them into a read-only release view (Sprint 4). Uses a live API
+// list with a label selector rather than the secret informer — Helm release
+// listing is infrequent and the selector is narrow, so it's cheaper than
+// watching every Secret in the cluster.
+func (c *Connector) ListHelmReleaseSecrets(ctx context.Context) ([]corev1.Secret, error) {
+	if c.clientset == nil {
+		return nil, fmt.Errorf("no clientset")
+	}
+	list, err := c.clientset.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
+		LabelSelector: "owner=helm",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }
 
 // RecentWrites exposes the read-after-write overlay so mutation
@@ -360,6 +384,16 @@ func (c *Connector) setupInformers() {
 			c.factory.Core().V1().ConfigMaps().Informer().AddEventHandler(handler)
 		}
 	}
+	if can("serviceaccounts") {
+		if isNS("serviceaccounts") {
+			var listers []corelisters.ServiceAccountLister
+			for _, f := range nsFactories { listers = append(listers, f.Core().V1().ServiceAccounts().Lister()); f.Core().V1().ServiceAccounts().Informer().AddEventHandler(handler) }
+			c.serviceAccountLister = &multiServiceAccountLister{listers: listers}
+		} else {
+			c.serviceAccountLister = c.factory.Core().V1().ServiceAccounts().Lister()
+			c.factory.Core().V1().ServiceAccounts().Informer().AddEventHandler(handler)
+		}
+	}
 	if can("secrets") {
 		if isNS("secrets") {
 			var listers []corelisters.SecretLister
@@ -478,6 +512,21 @@ func (c *Connector) setupInformers() {
 		} else {
 			c.networkPolicyLister = c.factory.Networking().V1().NetworkPolicies().Lister()
 			c.factory.Networking().V1().NetworkPolicies().Informer().AddEventHandler(handler)
+		}
+	}
+
+	// Policy v1
+	if can("pdbs") {
+		if isNS("pdbs") {
+			var listers []policylisters.PodDisruptionBudgetLister
+			for _, f := range nsFactories {
+				listers = append(listers, f.Policy().V1().PodDisruptionBudgets().Lister())
+				f.Policy().V1().PodDisruptionBudgets().Informer().AddEventHandler(handler)
+			}
+			c.pdbLister = &multiPDBLister{listers: listers}
+		} else {
+			c.pdbLister = c.factory.Policy().V1().PodDisruptionBudgets().Lister()
+			c.factory.Policy().V1().PodDisruptionBudgets().Informer().AddEventHandler(handler)
 		}
 	}
 
@@ -1045,6 +1094,14 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.NetworkPolicies.Total = len(networkPolicies)
 	overview.NetworkPolicies.Ready = len(networkPolicies)
 
+	// PodDisruptionBudgets — same declarative "total = ready" shape.
+	var pdbs []*policyv1.PodDisruptionBudget
+	if c.pdbLister != nil {
+		pdbs, _ = c.pdbLister.List(everythingSelector())
+	}
+	overview.PodDisruptionBudgets.Total = len(pdbs)
+	overview.PodDisruptionBudgets.Ready = len(pdbs)
+
 	// Gateways + HTTPRoutes — declarative resources from the Gateway
 	// API CRDs. Read via the dynamic client (not a typed lister)
 	// because the CRDs are optional; when absent, listGatewayResources
@@ -1054,6 +1111,33 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.Gateways.Ready = overview.Gateways.Total
 	overview.HTTPRoutes.Total = len(c.listGatewayResources("httproutes", ""))
 	overview.HTTPRoutes.Ready = overview.HTTPRoutes.Total
+
+	// ServiceAccounts (typed lister) + the optional CRDs (dynamic list; nil
+	// when the CRD isn't installed → count 0, same as Gateways).
+	var serviceAccounts []*corev1.ServiceAccount
+	if c.serviceAccountLister != nil {
+		serviceAccounts, _ = c.serviceAccountLister.List(everythingSelector())
+	}
+	overview.ServiceAccounts.Total = len(serviceAccounts)
+	overview.ServiceAccounts.Ready = len(serviceAccounts)
+	overview.Certificates.Total = len(c.listOptionalCRD("certificates", ""))
+	overview.Certificates.Ready = overview.Certificates.Total
+	overview.ArgoCDApps.Total = len(c.listOptionalCRD("argocdapps", ""))
+	overview.ArgoCDApps.Ready = overview.ArgoCDApps.Total
+	overview.VPAs.Total = len(c.listOptionalCRD("vpas", ""))
+	overview.VPAs.Ready = overview.VPAs.Total
+
+	// Helm releases — count DISTINCT releases (one release has N revision
+	// Secrets) via the owner=helm Secret's `name` label; no gzip/JSON decode
+	// needed for a count. Same source the Applications page lists.
+	if helmSecrets, err := c.ListHelmReleaseSecrets(context.Background()); err == nil {
+		distinct := make(map[string]struct{}, len(helmSecrets))
+		for i := range helmSecrets {
+			distinct[helmSecrets[i].Namespace+"/"+helmSecrets[i].Labels["name"]] = struct{}{}
+		}
+		overview.HelmReleases.Total = len(distinct)
+		overview.HelmReleases.Ready = len(distinct)
+	}
 
 	// Endpoints — count of EndpointSlice objects, matching what the
 	// list endpoint returns (KubeBolt surfaces EndpointSlices under
@@ -1733,14 +1817,20 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listIngresses(namespace)
 	case "networkpolicies":
 		items = c.listNetworkPolicies(namespace)
+	case "pdbs":
+		items = c.listPodDisruptionBudgets(namespace)
 	case "endpoints":
 		items = c.listEndpoints(namespace)
 	case "gateways":
 		items = c.listGatewayResources("gateways", namespace)
 	case "httproutes":
 		items = c.listGatewayResources("httproutes", namespace)
+	case "certificates", "argocdapps", "vpas":
+		items = c.listOptionalCRD(resourceType, namespace)
 	case "configmaps":
 		items = c.listConfigMaps(namespace)
+	case "serviceaccounts":
+		items = c.listServiceAccounts(namespace)
 	case "secrets":
 		items = c.listSecrets(namespace)
 	case "pvcs", "persistentvolumeclaims":
@@ -2016,12 +2106,39 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		base["matchedPods"] = matched
 		base["matchedPodCount"] = len(matched)
 		return base, nil
+	case "pdbs":
+		if c.pdbLister == nil {
+			return nil, fmt.Errorf("pdbs not available (RBAC restricted or informer not started)")
+		}
+		pdb, err := c.pdbLister.PodDisruptionBudgets(namespace).Get(name)
+		if err != nil {
+			return nil, err
+		}
+		// Enrich with the pods the budget's selector currently matches —
+		// same affordance as NetworkPolicy, and the basis for the
+		// "selector matches zero pods" insight.
+		base := pdbToMap(pdb)
+		if pdb.Spec.Selector != nil {
+			matched := c.podsMatchingSelector(pdb.Namespace, pdb.Spec.Selector)
+			base["matchedPods"] = matched
+			base["matchedPodCount"] = len(matched)
+		}
+		return base, nil
 	case "configmaps":
 		cm, err := c.configMapLister.ConfigMaps(namespace).Get(name)
 		if err != nil {
 			return nil, err
 		}
 		return configMapToMap(cm), nil
+	case "serviceaccounts":
+		if c.serviceAccountLister == nil {
+			return nil, fmt.Errorf("serviceaccounts not available (RBAC restricted or informer not started)")
+		}
+		sa, err := c.serviceAccountLister.ServiceAccounts(namespace).Get(name)
+		if err != nil {
+			return nil, err
+		}
+		return serviceAccountToMap(sa), nil
 	case "secrets":
 		sec, err := c.secretLister.Secrets(namespace).Get(name)
 		if err != nil {
@@ -2132,6 +2249,8 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			}
 		}
 		return nil, fmt.Errorf("%s %s/%s not found", resourceType, namespace, name)
+	case "certificates", "argocdapps", "vpas":
+		return c.getOptionalCRD(resourceType, namespace, name)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
 	}
@@ -2726,6 +2845,61 @@ func ingressToMap(ing *networkingv1.Ingress) map[string]interface{} {
 	}
 }
 
+// pdbToMap renders a PodDisruptionBudget in the shape the generic resource
+// list/detail handlers consume. Surfaces the budget knobs (minAvailable /
+// maxUnavailable) and the live status (currentHealthy / desiredHealthy /
+// disruptionsAllowed / expectedPods) operators check when an Evict is
+// blocked — completing the Evict-blocked → PDB story.
+func pdbToMap(pdb *policyv1.PodDisruptionBudget) map[string]interface{} {
+	m := map[string]interface{}{
+		"name":               pdb.Name,
+		"namespace":          pdb.Namespace,
+		"currentHealthy":     pdb.Status.CurrentHealthy,
+		"desiredHealthy":     pdb.Status.DesiredHealthy,
+		"disruptionsAllowed": pdb.Status.DisruptionsAllowed,
+		"expectedPods":       pdb.Status.ExpectedPods,
+		"selector":           labelSelectorPreview(pdb.Spec.Selector),
+		"labels":             safeLabels(pdb.Labels),
+		"annotations":        safeAnnotations(pdb.Annotations),
+		"createdAt":          pdb.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":                formatAge(pdb.CreationTimestamp.Time),
+		"ownerReferences":    ownerRefsToSlice(pdb.OwnerReferences),
+	}
+	if pdb.Spec.MinAvailable != nil {
+		m["minAvailable"] = pdb.Spec.MinAvailable.String()
+	}
+	if pdb.Spec.MaxUnavailable != nil {
+		m["maxUnavailable"] = pdb.Spec.MaxUnavailable.String()
+	}
+	// Status surfaced as a one-word health for the list view: a PDB that
+	// allows zero disruptions while pods are healthy is "blocking" (the
+	// reason an Evict 429s); otherwise "Active".
+	if pdb.Status.DisruptionsAllowed == 0 && pdb.Status.CurrentHealthy > 0 {
+		m["status"] = "Blocking"
+	} else {
+		m["status"] = "Active"
+	}
+	return m
+}
+
+// labelSelectorPreview renders a LabelSelector as a compact, skimmable
+// string (e.g. "app=foo,tier=db"). Empty selector → "<all>" (matches every
+// pod in the namespace); nil → "<none>".
+func labelSelectorPreview(sel *metav1.LabelSelector) string {
+	if sel == nil {
+		return "<none>"
+	}
+	if len(sel.MatchLabels) == 0 && len(sel.MatchExpressions) == 0 {
+		return "<all>"
+	}
+	parts := make([]string, 0, len(sel.MatchLabels))
+	for k, v := range sel.MatchLabels {
+		parts = append(parts, k+"="+v)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ",")
+}
+
 // networkPolicyToMap renders a NetworkPolicy in the shape the
 // generic resource list/detail handlers consume. Captures the
 // information operators scan a list for: which workloads the
@@ -2823,6 +2997,30 @@ func configMapToMap(cm *corev1.ConfigMap) map[string]interface{} {
 		"createdAt":       cm.CreationTimestamp.Time.Format(time.RFC3339),
 		"age":             formatAge(cm.CreationTimestamp.Time),
 		"ownerReferences": ownerRefsToSlice(cm.OwnerReferences),
+	}
+}
+
+// serviceAccountToMap renders a ServiceAccount in the shape the frontend
+// expects. Surfaces the mounted secret + image-pull-secret counts and the
+// automountServiceAccountToken flag — what operators check when debugging
+// pod identity / token mounting.
+func serviceAccountToMap(sa *corev1.ServiceAccount) map[string]interface{} {
+	automount := true // nil means the cluster default (true)
+	if sa.AutomountServiceAccountToken != nil {
+		automount = *sa.AutomountServiceAccountToken
+	}
+	return map[string]interface{}{
+		"name":             sa.Name,
+		"namespace":        sa.Namespace,
+		"status":           "Active",
+		"secretCount":      len(sa.Secrets),
+		"imagePullSecrets": len(sa.ImagePullSecrets),
+		"automountToken":   automount,
+		"labels":           safeLabels(sa.Labels),
+		"annotations":      safeAnnotations(sa.Annotations),
+		"createdAt":        sa.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":              formatAge(sa.CreationTimestamp.Time),
+		"ownerReferences":  ownerRefsToSlice(sa.OwnerReferences),
 	}
 }
 
@@ -3187,6 +3385,13 @@ func int32PtrOrZero(p *int32) int32 {
 	return *p
 }
 
+// ResourceTypeGVR is the exported accessor for the resource-type → GVR map.
+// Used by the describe handlers to build a RESTMapping for kubectl's generic
+// describer on dynamic CRD types (which have no built-in describer).
+func ResourceTypeGVR(resourceType string) (schema.GroupVersionResource, bool) {
+	return resourceTypeToGVR(resourceType)
+}
+
 // resourceTypeToGVR maps a resource type string to its GroupVersionResource.
 func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) {
 	m := map[string]schema.GroupVersionResource{
@@ -3209,6 +3414,8 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"cronjobs":              {Group: "batch", Version: "v1", Resource: "cronjobs"},
 		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
 		"networkpolicies":       {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
+		"pdbs":                  {Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"},
+		"serviceaccounts":       {Group: "", Version: "v1", Resource: "serviceaccounts"},
 		// `endpoints` is the user-facing URL/type; underneath it maps
 		// to the discovery/v1 EndpointSlice API (legacy core/v1
 		// Endpoints is deprecated). Adding this entry enables the
@@ -3225,6 +3432,9 @@ func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) 
 		"clusterrolebindings":   {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
 		"gateways":              {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
 		"httproutes":            {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+		"certificates":          {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
+		"argocdapps":            {Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"},
+		"vpas":                  {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
 	}
 	gvr, ok := m[resourceType]
 	return gvr, ok
@@ -4220,6 +4430,21 @@ func (c *Connector) listNetworkPolicies(namespace string) []map[string]interface
 	return items
 }
 
+func (c *Connector) listPodDisruptionBudgets(namespace string) []map[string]interface{} {
+	if c.pdbLister == nil {
+		return nil
+	}
+	list, _ := c.pdbLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, pdb := range list {
+		if namespace != "" && pdb.Namespace != namespace {
+			continue
+		}
+		items = append(items, pdbToMap(pdb))
+	}
+	return items
+}
+
 // listEndpoints surfaces EndpointSlice objects under the `endpoints`
 // resource type (legacy v1.Endpoints is deprecated; we use the
 // discovery/v1 EndpointSlice API instead). One row per slice,
@@ -4480,6 +4705,21 @@ func (c *Connector) listConfigMaps(namespace string) []map[string]interface{} {
 			continue
 		}
 		items = append(items, configMapToMap(cm))
+	}
+	return items
+}
+
+func (c *Connector) listServiceAccounts(namespace string) []map[string]interface{} {
+	if c.serviceAccountLister == nil {
+		return nil
+	}
+	list, _ := c.serviceAccountLister.List(everythingSelector())
+	var items []map[string]interface{}
+	for _, sa := range list {
+		if namespace != "" && sa.Namespace != namespace {
+			continue
+		}
+		items = append(items, serviceAccountToMap(sa))
 	}
 	return items
 }

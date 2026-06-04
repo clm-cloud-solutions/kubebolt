@@ -20,6 +20,11 @@ export type CopilotTriggerType =
 export interface InsightTriggerPayload {
   type: 'insight'
   insight: {
+    // Sprint 0 identity — `id` is the current occurrence id, `fingerprint`
+    // the stable cross-restart identity. Threaded so a Kobi conversation (and
+    // any action it proposes) is attributable back to the originating insight.
+    id?: string
+    fingerprint?: string
     severity: string
     title: string
     message: string

@@ -25,6 +25,11 @@ export interface MetricPoint {
 // Insight from the engine
 export interface Insight {
   id: string
+  // Sprint 0: stable identity. `fingerprint` is the cross-restart/recurrence
+  // identity; `id` is the current occurrence id (what Kobi/Autopilot
+  // reference). Both optional for backward-compat with older API payloads.
+  fingerprint?: string
+  ruleId?: string
   severity: 'critical' | 'warning' | 'info'
   category: string
   resource: string
@@ -34,6 +39,47 @@ export interface Insight {
   suggestion: string
   firstSeen: string
   lastSeen: string
+  resolved?: boolean
+  resolvedAt?: string
+}
+
+// Helm releases — read-only first-class (Sprint 4). Decoded from Helm's
+// storage Secrets server-side; no write verbs in 1.14.
+export interface HelmRelease {
+  name: string
+  namespace: string
+  revision: number
+  status: string
+  chart: string
+  chartVersion: string
+  appVersion?: string
+  updated: string
+  firstDeployed?: string
+  description?: string
+}
+
+export interface HelmReleaseRevision {
+  revision: number
+  status: string
+  chartVersion: string
+  appVersion?: string
+  updated: string
+  description?: string
+}
+
+export interface HelmChartDependency {
+  name: string
+  version?: string
+  repository?: string
+  condition?: string
+}
+
+export interface HelmReleaseDetail extends HelmRelease {
+  values?: Record<string, unknown>
+  manifest?: string
+  notes?: string
+  history?: HelmReleaseRevision[]
+  dependencies?: HelmChartDependency[]
 }
 
 export interface InsightCount {
@@ -72,6 +118,7 @@ export interface ClusterOverview {
   kubernetesVersion?: string
   platform?: string
   networkPolicies?: ResourceCount
+  podDisruptionBudgets?: ResourceCount
   nodes?: ResourceCount
   pods?: ResourceCount
   namespaces?: ResourceCount
@@ -86,6 +133,11 @@ export interface ClusterOverview {
   // installed; sidebar hides the chip on zero.
   gateways?: ResourceCount
   httpRoutes?: ResourceCount
+  serviceAccounts?: ResourceCount
+  certificates?: ResourceCount
+  argocdApps?: ResourceCount
+  vpas?: ResourceCount
+  helmReleases?: ResourceCount
   // Endpoints — counted from EndpointSlices, matching what the
   // /resources/endpoints list endpoint returns.
   endpoints?: ResourceCount

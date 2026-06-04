@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
+import { YamlViewer } from '@/components/shared/YamlViewer'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
@@ -65,7 +66,9 @@ const kindToRoute: Record<string, string> = {
   Secret: 'secrets', PersistentVolumeClaim: 'pvcs', PersistentVolume: 'pvs',
   HorizontalPodAutoscaler: 'hpas', HPA: 'hpas', StorageClass: 'storageclasses',
   Gateway: 'gateways', HTTPRoute: 'httproutes', Namespace: 'namespaces',
-  PVC: 'pvcs', PV: 'pvs',
+  PVC: 'pvcs', PV: 'pvs', PodDisruptionBudget: 'pdbs',
+  Certificate: 'certificates', Application: 'argocdapps', VerticalPodAutoscaler: 'vpas',
+  ServiceAccount: 'serviceaccounts',
 }
 
 const routeToKind: Record<string, string> = Object.fromEntries(
@@ -78,7 +81,9 @@ const resourceLabels: Record<string, string> = {
   ingresses: 'Ingresses', gateways: 'Gateways', httproutes: 'HTTPRoutes',
   endpoints: 'Endpoints', pvcs: 'PVCs', pvs: 'PVs', storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
-  namespaces: 'Namespaces', replicasets: 'ReplicaSets',
+  namespaces: 'Namespaces', replicasets: 'ReplicaSets', pdbs: 'Pod Disruption Budgets',
+  certificates: 'Certificates', argocdapps: 'ArgoCD Applications', vpas: 'Vertical Pod Autoscalers',
+  serviceaccounts: 'Service Accounts',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {
@@ -265,6 +270,17 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'events', label: 'Events' },
       )
       break
+    case 'pdbs':
+      // PDB carries the same matched-pods affordance as NetworkPolicy —
+      // "which pods does this budget actually protect?" is the question
+      // operators ask when an Evict 429s.
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+      )
+      break
     default:
       base.push(
         { id: 'yaml', label: 'YAML' },
@@ -357,7 +373,21 @@ function StatusOverview({ type, item }: { type: string; item: ResourceItem }) {
       metrics.push(
         { label: 'Phase', value: <div className="flex items-center gap-2"><span className={`w-2.5 h-2.5 rounded-full ${item.status === 'Running' ? 'bg-status-ok' : 'bg-status-warn'}`} />{item.status}</div> },
         { label: 'Ready Containers', value: String(item.ready ?? '-') },
-        { label: 'Restart Count', value: String(item.restarts ?? 0) },
+        {
+          // Mirror the Containers tab's per-container Restart Count cell, but
+          // pod-level here: no `container` prop → the sparkline sums restarts
+          // across every container, matching `item.restarts` (the pod total).
+          label: 'Restart Count',
+          value: (
+            <div className="flex items-center gap-3">
+              <span>{String(item.restarts ?? 0)}</span>
+              <RestartHistorySparkline
+                namespace={String(item.namespace ?? '')}
+                pod={String(item.name ?? '')}
+              />
+            </div>
+          ),
+        },
         { label: 'Node', value: item.nodeName ? <ResourceLink name={String(item.nodeName)} resourceType="nodes" /> : '-' },
       )
       if (lastTerm) {
@@ -1312,91 +1342,10 @@ function RegexFilterInput({
   )
 }
 
-function highlightYAMLLine(line: string): React.ReactNode {
-  // Comment lines
-  if (/^\s*#/.test(line)) {
-    return <span className="yaml-comment">{line}</span>
-  }
-
-  // Key: value lines
-  const kvMatch = line.match(/^(\s*)([\w.\-/]+)(:)(.*)$/)
-  if (kvMatch) {
-    const [, indent, key, colon, rest] = kvMatch
-    return (
-      <>
-        <span>{indent}</span>
-        <span className="yaml-key">{key}</span>
-        <span>{colon}</span>
-        {highlightValue(rest)}
-      </>
-    )
-  }
-
-  // List items with key: value
-  const listKvMatch = line.match(/^(\s*-\s+)([\w.\-/]+)(:)(.*)$/)
-  if (listKvMatch) {
-    const [, prefix, key, colon, rest] = listKvMatch
-    return (
-      <>
-        <span>{prefix}</span>
-        <span className="yaml-key">{key}</span>
-        <span>{colon}</span>
-        {highlightValue(rest)}
-      </>
-    )
-  }
-
-  // List items with plain value
-  const listMatch = line.match(/^(\s*-\s+)(.*)$/)
-  if (listMatch) {
-    const [, prefix, val] = listMatch
-    return (
-      <>
-        <span>{prefix}</span>
-        {highlightValue(' ' + val)}
-      </>
-    )
-  }
-
-  return <span>{line}</span>
-}
-
-function highlightValue(raw: string): React.ReactNode {
-  const trimmed = raw.trim()
-  if (!trimmed || trimmed === '') return <span>{raw}</span>
-
-  // Quoted strings
-  if (/^["'].*["']$/.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-string">{trimmed}</span></>
-  }
-
-  // Booleans
-  if (/^(true|false)$/i.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-bool">{trimmed}</span></>
-  }
-
-  // Null
-  if (/^(null|~)$/i.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-null">{trimmed}</span></>
-  }
-
-  // Numbers
-  if (/^-?\d+(\.\d+)?([eE][+-]?\d+)?$/.test(trimmed)) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-number">{trimmed}</span></>
-  }
-
-  // Plain strings (unquoted)
-  if (trimmed.length > 0) {
-    const leading = raw.slice(0, raw.indexOf(trimmed))
-    return <><span>{leading}</span><span className="yaml-string">{trimmed}</span></>
-  }
-
-  return <span>{raw}</span>
-}
+// highlightYAMLLine + the read-only YamlViewer now live in
+// components/shared/YamlViewer.tsx (imported above) so the Helm manifest tab
+// renders identically. highlightDescribeLine (below) stays local — it's a
+// different syntax (kubectl describe output, not YAML).
 
 function highlightDescribeLine(line: string): React.ReactNode {
   const trimmed = line.trimStart()
@@ -1943,16 +1892,7 @@ function YAMLTab({ type, namespace, name, canEdit }: { type: string; namespace: 
       {editing ? (
         <YAMLEditor value={editValue} onChange={setEditValue} />
       ) : (
-        <div className="overflow-auto h-[calc(100vh-360px)] min-h-[320px] rounded-lg p-3" style={{ backgroundColor: '#0d1117', color: '#c9d1d9' }}>
-          <pre className="text-[11px] font-mono leading-5 whitespace-pre-wrap break-all">
-            {lines.map((line, i) => (
-              <div key={i} className="flex">
-                <span className="w-10 text-right pr-3 select-none shrink-0" style={{ color: '#484f58' }}>{i + 1}</span>
-                <span className="flex-1 min-w-0">{highlightYAMLLine(line)}</span>
-              </div>
-            ))}
-          </pre>
-        </div>
+        <YamlViewer text={lines.join('\n')} />
       )}
     </Section>
   )

@@ -45,6 +45,8 @@ export function InsightCard({ insight }: InsightCardProps) {
                 payload={{
                   type: 'insight',
                   insight: {
+                    id: insight.id,
+                    fingerprint: insight.fingerprint,
                     severity: insight.severity,
                     title: insight.title,
                     message: insight.message,

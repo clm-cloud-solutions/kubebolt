@@ -9,6 +9,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	discoveryv1 "k8s.io/api/discovery/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	appslisters "k8s.io/client-go/listers/apps/v1"
@@ -17,6 +18,7 @@ import (
 	corelisters "k8s.io/client-go/listers/core/v1"
 	discoverylisters "k8s.io/client-go/listers/discovery/v1"
 	networkinglisters "k8s.io/client-go/listers/networking/v1"
+	policylisters "k8s.io/client-go/listers/policy/v1"
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 )
 
@@ -216,6 +218,54 @@ func (m *multiConfigMapLister) ConfigMaps(namespace string) corelisters.ConfigMa
 		nsListers = append(nsListers, l.ConfigMaps(namespace))
 	}
 	return &multiConfigMapNSLister{nsListers: nsListers}
+}
+
+// ============================================================
+// multiServiceAccountLister — per-namespace ServiceAccount access.
+// ============================================================
+
+type multiServiceAccountNSLister struct {
+	nsListers []corelisters.ServiceAccountNamespaceLister
+}
+
+func (m *multiServiceAccountNSLister) List(selector labels.Selector) ([]*corev1.ServiceAccount, error) {
+	var result []*corev1.ServiceAccount
+	for _, l := range m.nsListers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiServiceAccountNSLister) Get(name string) (*corev1.ServiceAccount, error) {
+	for _, l := range m.nsListers {
+		item, err := l.Get(name)
+		if err == nil {
+			return item, nil
+		}
+	}
+	return nil, fmt.Errorf("serviceaccount %q not found", name)
+}
+
+type multiServiceAccountLister struct {
+	listers []corelisters.ServiceAccountLister
+}
+
+func (m *multiServiceAccountLister) List(selector labels.Selector) ([]*corev1.ServiceAccount, error) {
+	var result []*corev1.ServiceAccount
+	for _, l := range m.listers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiServiceAccountLister) ServiceAccounts(namespace string) corelisters.ServiceAccountNamespaceLister {
+	var nsListers []corelisters.ServiceAccountNamespaceLister
+	for _, l := range m.listers {
+		nsListers = append(nsListers, l.ServiceAccounts(namespace))
+	}
+	return &multiServiceAccountNSLister{nsListers: nsListers}
 }
 
 // ============================================================
@@ -796,6 +846,70 @@ func (m *multiNetworkPolicyLister) NetworkPolicies(namespace string) networkingl
 		nsListers = append(nsListers, l.NetworkPolicies(namespace))
 	}
 	return &multiNetworkPolicyNSLister{nsListers: nsListers}
+}
+
+// ============================================================
+// multiPDBLister — same shape, for per-namespace PodDisruptionBudget access.
+// ============================================================
+
+type multiPDBNSLister struct {
+	nsListers []policylisters.PodDisruptionBudgetNamespaceLister
+}
+
+func (m *multiPDBNSLister) List(selector labels.Selector) ([]*policyv1.PodDisruptionBudget, error) {
+	var result []*policyv1.PodDisruptionBudget
+	for _, l := range m.nsListers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiPDBNSLister) Get(name string) (*policyv1.PodDisruptionBudget, error) {
+	for _, l := range m.nsListers {
+		item, err := l.Get(name)
+		if err == nil {
+			return item, nil
+		}
+	}
+	return nil, fmt.Errorf("poddisruptionbudget %q not found", name)
+}
+
+type multiPDBLister struct {
+	listers []policylisters.PodDisruptionBudgetLister
+}
+
+func (m *multiPDBLister) List(selector labels.Selector) ([]*policyv1.PodDisruptionBudget, error) {
+	var result []*policyv1.PodDisruptionBudget
+	for _, l := range m.listers {
+		items, _ := l.List(selector)
+		result = append(result, items...)
+	}
+	return result, nil
+}
+
+func (m *multiPDBLister) PodDisruptionBudgets(namespace string) policylisters.PodDisruptionBudgetNamespaceLister {
+	var nsListers []policylisters.PodDisruptionBudgetNamespaceLister
+	for _, l := range m.listers {
+		nsListers = append(nsListers, l.PodDisruptionBudgets(namespace))
+	}
+	return &multiPDBNSLister{nsListers: nsListers}
+}
+
+// GetPodPodDisruptionBudgets satisfies PodDisruptionBudgetListerExpansion —
+// merges matches across the per-namespace listers. We don't call this
+// ourselves, but the typed lister interface requires it.
+func (m *multiPDBLister) GetPodPodDisruptionBudgets(pod *corev1.Pod) ([]*policyv1.PodDisruptionBudget, error) {
+	var result []*policyv1.PodDisruptionBudget
+	for _, l := range m.listers {
+		if items, err := l.GetPodPodDisruptionBudgets(pod); err == nil {
+			result = append(result, items...)
+		}
+	}
+	if len(result) == 0 {
+		return nil, fmt.Errorf("no PodDisruptionBudgets found for pod %s/%s", pod.Namespace, pod.Name)
+	}
+	return result, nil
 }
 
 // ============================================================

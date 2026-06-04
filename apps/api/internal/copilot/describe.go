@@ -3,6 +3,7 @@ package copilot
 import (
 	"fmt"
 
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/kubectl/pkg/describe"
 
@@ -54,6 +55,12 @@ var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	"poddisruptionbudgets": {Group: "policy", Kind: "PodDisruptionBudget"},
 	"priorityclasses":      {Group: "scheduling.k8s.io", Kind: "PriorityClass"},
 	"ingressclasses":       {Group: "networking.k8s.io", Kind: "IngressClass"},
+	// 1.14 first-class types — MUST match api/describe.go (sync test). The 3
+	// CRD types have no built-in describer and use the generic fallback below.
+	"pdbs":         {Group: "policy", Kind: "PodDisruptionBudget"},
+	"certificates": {Group: "cert-manager.io", Kind: "Certificate"},
+	"argocdapps":   {Group: "argoproj.io", Kind: "Application"},
+	"vpas":         {Group: "autoscaling.k8s.io", Kind: "VerticalPodAutoscaler"},
 }
 
 // describeResource runs `kubectl describe` for the given resource and returns
@@ -64,6 +71,17 @@ func describeResource(conn *cluster.Connector, resourceType, namespace, name str
 		return "", fmt.Errorf("unsupported resource type for describe: %s", resourceType)
 	}
 	describer, found := describe.DescriberFor(gk, conn.RestConfig())
+	if !found {
+		// Generic describer fallback for dynamic CRDs (no built-in describer).
+		if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
+			mapping := &meta.RESTMapping{
+				Resource:         gvr,
+				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
+				Scope:            meta.RESTScopeNamespace,
+			}
+			describer, found = describe.GenericDescriberFor(mapping, conn.RestConfig())
+		}
+	}
 	if !found {
 		return "", fmt.Errorf("no describer available for: %s", resourceType)
 	}

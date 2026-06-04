@@ -176,8 +176,19 @@ func (m *Manager) SetNotifiers(next []Notifier) {
 // All config reads happen inside a single critical section so a
 // concurrent SetConfig/SetNotifiers can't tear this call between two
 // configurations.
+// insightDedupKey identifies an insight for notification dedup. Prefers the
+// stable Fingerprint (Sprint 0 — survives restarts and rule rewording);
+// falls back to Resource|Title for insights emitted without a fingerprint
+// (installs running with no persistent insights store).
+func insightDedupKey(clusterName string, insight models.Insight) string {
+	if insight.Fingerprint != "" {
+		return clusterName + "|" + insight.Fingerprint
+	}
+	return clusterName + "|" + insight.Resource + "|" + insight.Title
+}
+
 func (m *Manager) Enqueue(clusterName string, insight models.Insight) {
-	key := clusterName + "|" + insight.Resource + "|" + insight.Title
+	key := insightDedupKey(clusterName, insight)
 
 	m.mu.Lock()
 	if len(m.notifiers) == 0 || !m.masterEnabled {
@@ -227,7 +238,7 @@ func (m *Manager) Enqueue(clusterName string, insight models.Insight) {
 // Uses a different dedup key than Enqueue so a resolution right after a new
 // notification is not deduplicated.
 func (m *Manager) EnqueueResolved(clusterName string, insight models.Insight) {
-	key := "resolved|" + clusterName + "|" + insight.Resource + "|" + insight.Title
+	key := "resolved|" + insightDedupKey(clusterName, insight)
 
 	m.mu.Lock()
 	if len(m.notifiers) == 0 || !m.masterEnabled || !m.includeResolved {
