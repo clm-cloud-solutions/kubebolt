@@ -25,6 +25,20 @@ func (h *Handlers) RequireAuth(next http.Handler) http.Handler {
 			return
 		}
 
+		// Long-lived REST API token (kbs_/kbk_) — non-interactive callers
+		// (e.g. Autopilot). Distinct from the user-session JWT below.
+		if IsAPIToken(tokenStr) {
+			claims, principal, err := h.validateAPIToken(r, tokenStr)
+			if err != nil {
+				http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)
+				return
+			}
+			ctx := context.WithValue(r.Context(), claimsKey, claims)
+			ctx = context.WithValue(ctx, apiPrincipalKey, principal)
+			next.ServeHTTP(w, r.WithContext(ctx))
+			return
+		}
+
 		claims, err := h.jwt.ValidateAccessToken(tokenStr)
 		if err != nil {
 			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)

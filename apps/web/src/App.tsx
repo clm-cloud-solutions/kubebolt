@@ -25,6 +25,7 @@ import { HelmReleaseDetailPage } from '@/pages/HelmReleaseDetailPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { UsersPage } from '@/pages/admin/UsersPage'
 import { AgentTokensPage } from '@/pages/admin/AgentTokensPage'
+import { APITokensPage } from '@/pages/admin/APITokensPage'
 import { CopilotUsagePage } from '@/pages/admin/CopilotUsagePage'
 import { IngestActivityPage } from '@/pages/admin/IngestActivityPage'
 import { IntegrationsPage } from '@/pages/admin/IntegrationsPage'
@@ -139,7 +140,7 @@ export default function App() {
               <Route path="/admin/ingest-activity" element={<RequireRole role="admin"><IngestActivityPage /></RequireRole>} />
               <Route path="/admin/integrations" element={<RequireRole role="admin"><IntegrationsPage /></RequireRole>} />
               <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
-              <Route path="/admin/api-tokens" element={<RequireRole role="admin"><AdminPlaceholderPage title="API Tokens" description="Create API tokens for automation and CI/CD pipelines." /></RequireRole>} />
+              <Route path="/admin/api-tokens" element={<RequireRole role="admin"><APITokensPage /></RequireRole>} />
               <Route path="/admin/authentication" element={<RequireRole role="admin"><AdminPlaceholderPage title="Authentication" description="Configure single sign-on providers (GitHub, Google, Azure AD, OIDC)." /></RequireRole>} />
             </Route>
           </Routes>
