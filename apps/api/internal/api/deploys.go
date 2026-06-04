@@ -15,7 +15,7 @@ import (
 // without a windowMinutes param fall back to 24h, which covers the
 // "I'm scrolling back" case without overshooting common ranges.
 func (h *handlers) handleDeploys(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

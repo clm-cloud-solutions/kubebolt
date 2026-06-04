@@ -13,7 +13,7 @@ import (
 // the connected ServiceAccount can see (read-only, Sprint 4). Decodes Helm's
 // storage Secrets directly — no helm SDK.
 func (h *handlers) handleListHelmReleases(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -35,7 +35,7 @@ func (h *handlers) handleListHelmReleases(w http.ResponseWriter, r *http.Request
 // manifest + notes + dependencies, plus full revision history) for one
 // release.
 func (h *handlers) handleGetHelmRelease(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

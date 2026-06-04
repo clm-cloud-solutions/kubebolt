@@ -434,7 +434,7 @@ func main() {
 		// resolver stamps the active cluster onto each record.
 		actionAuditStore = audit.NewBoltStore(store.DB(), auth.KobiActionsBucket())
 		api.SetAuditStore(actionAuditStore, func() string {
-			if c := manager.Connector(); c != nil {
+			if c := manager.Connector(context.Background()); c != nil {
 				return c.ClusterUID()
 			}
 			return ""
@@ -560,7 +560,7 @@ func main() {
 		if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
 			return uid
 		}
-		if conn := manager.Connector(); conn != nil {
+		if conn := manager.Connector(context.Background()); conn != nil {
 			return conn.ClusterUID()
 		}
 		return ""

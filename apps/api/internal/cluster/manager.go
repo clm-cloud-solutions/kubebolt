@@ -576,21 +576,28 @@ func (m *Manager) ActiveAgentProxyClusterID() string {
 }
 
 // Connector returns the active cluster connector.
-func (m *Manager) Connector() *Connector {
+// Connector returns the *Connector for the request's (tenant,cluster).
+// ctx carries the RuntimeKey (W2 A.1); until the connector pool lands
+// (W2 A.3) it is ignored and the single active cluster is served, so
+// behavior is unchanged. See internal/kubebolt-w2-connector-pool-design.md.
+func (m *Manager) Connector(ctx context.Context) *Connector {
+	_ = ctx // pool resolution lands in W2 A.3
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.connector
 }
 
-// Collector returns the active metrics collector.
-func (m *Manager) Collector() *metrics.Collector {
+// Collector returns the active metrics collector. See Connector re: ctx.
+func (m *Manager) Collector(ctx context.Context) *metrics.Collector {
+	_ = ctx
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.collector
 }
 
-// Engine returns the insights engine.
-func (m *Manager) Engine() *insights.Engine {
+// Engine returns the insights engine. See Connector re: ctx.
+func (m *Manager) Engine(ctx context.Context) *insights.Engine {
+	_ = ctx
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.engine

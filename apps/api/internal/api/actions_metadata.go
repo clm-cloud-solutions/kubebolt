@@ -124,7 +124,7 @@ func (h *handlers) handleEditMetadata(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

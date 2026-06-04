@@ -165,7 +165,7 @@ func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -247,7 +247,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -336,7 +336,7 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -438,7 +438,7 @@ func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -624,7 +624,7 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -696,7 +696,7 @@ func (h *handlers) handleSetNodeSchedulability(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

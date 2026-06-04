@@ -31,7 +31,7 @@ import (
 // Called from handleRestart when the resource type is "pods" — see
 // the dispatch branch there.
 func (h *handlers) restartPod(w http.ResponseWriter, r *http.Request, namespace, name string) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -82,7 +82,7 @@ func (h *handlers) handleEvictPod(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -211,7 +211,7 @@ func (h *handlers) handleDebugPod(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

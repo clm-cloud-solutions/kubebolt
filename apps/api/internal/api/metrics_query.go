@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log/slog"
@@ -33,11 +34,11 @@ var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
 // that no real cluster would ever emit, so an unknown UID returns
 // zero series rather than leaking data from other clusters that
 // happen to share the same VM.
-func (h *handlers) activeClusterUID() string {
+func (h *handlers) activeClusterUID(ctx context.Context) string {
 	if h.manager == nil {
 		return ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(ctx)
 	if conn == nil {
 		return ""
 	}
@@ -363,7 +364,7 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	q = scopeQueryByCluster(q, h.activeClusterUID())
+	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
 
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
@@ -413,7 +414,7 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "query is required")
 		return
 	}
-	q = scopeQueryByCluster(q, h.activeClusterUID())
+	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {

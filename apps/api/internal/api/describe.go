@@ -76,7 +76,7 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
