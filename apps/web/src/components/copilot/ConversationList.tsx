@@ -42,15 +42,20 @@ interface ConversationListProps {
  * message area inside the panel.
  */
 export function ConversationList({ onClose }: ConversationListProps) {
-  const { resumeConversation, newConversation, conversationId } = useCopilot()
+  const { resumeConversation, newConversation, conversationId, activeClusterContext } = useCopilot()
   const queryClient = useQueryClient()
   const [search, setSearch] = useState('')
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
+  // Conversations are cluster-bound (Kobi's tool results come from one
+  // cluster). Default to the active cluster so the list isn't a confusing mix
+  // across clusters; "All" is an escape hatch to find an older conversation.
+  const [scope, setScope] = useState<'cluster' | 'all'>('cluster')
+  const clusterFilter = scope === 'cluster' ? activeClusterContext ?? undefined : undefined
 
   const { data: conversations = [], isLoading } = useQuery({
-    queryKey: [...CONVERSATIONS_QUERY_KEY, { q: search }],
-    queryFn: () => api.listConversations({ q: search || undefined, limit: 100 }),
+    queryKey: [...CONVERSATIONS_QUERY_KEY, { q: search, cluster: clusterFilter ?? 'all' }],
+    queryFn: () => api.listConversations({ q: search || undefined, cluster: clusterFilter, limit: 100 }),
     staleTime: 10_000,
   })
 
@@ -112,6 +117,23 @@ export function ConversationList({ onClose }: ConversationListProps) {
             placeholder="Search conversations…"
             className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-kb-elevated border border-kb-border text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-kb-accent"
           />
+        </div>
+        {/* Cluster scope — default to the active cluster; conversations are
+            cluster-bound, so a mixed list is confusing. */}
+        <div className="flex items-center gap-1 text-[11px]">
+          {(['cluster', 'all'] as const).map((s) => (
+            <button
+              key={s}
+              onClick={() => setScope(s)}
+              className={`px-2 py-0.5 rounded-md transition-colors ${
+                scope === s
+                  ? 'bg-kb-accent-light text-kb-accent font-medium'
+                  : 'text-kb-text-tertiary hover:text-kb-text-primary'
+              }`}
+            >
+              {s === 'cluster' ? 'This cluster' : 'All clusters'}
+            </button>
+          ))}
         </div>
       </div>
 

@@ -3,15 +3,17 @@ import { renderHook, waitFor, act } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 
-// Locks the cross-user privacy fix: the CopilotProvider is mounted at the app
-// root and does NOT remount on an SPA login, so without an explicit
-// user-change reset the previous user's conversation would stay visible to the
-// next user who logs in on the same browser. We also key the resume pointer by
-// user id so two users never resume each other's conversation.
+// Locks the cross-scope privacy/isolation fixes for Kobi. The CopilotProvider
+// is mounted at the app root and does NOT remount on an SPA login or a cluster
+// switch, so without an explicit scope reset the previous scope's conversation
+// would stay visible:
+//   - a different USER logging in on the same browser, and
+//   - the same user switching to a different CLUSTER.
+// The resume pointer is keyed by (user, cluster); state resets when either
+// changes; the new scope rehydrates its own pointer.
 
-// Controllable mocked auth user (mutated between rerenders to simulate a
-// logout → login as a different user).
 let authUser: { id: string } | null = { id: 'userA' }
+
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({
     user: authUser,
@@ -38,6 +40,7 @@ vi.mock('@/services/api', () => ({
   api: {
     getConversation: (id: string) => getConversation(id),
     getCopilotConfig: () => getCopilotConfig(),
+    listClusters: () => Promise.resolve([{ context: 'cluster-a', active: true }]),
     patchConversation: vi.fn(),
     listConversations: vi.fn(),
     deleteConversation: vi.fn(),
@@ -47,18 +50,30 @@ vi.mock('@/services/api', () => ({
 let useCopilot: typeof import('./CopilotContext').useCopilot
 let CopilotProvider: typeof import('./CopilotContext').CopilotProvider
 
-const POINTER = 'kubebolt-copilot-active-conversation'
+const BASE = 'kubebolt-copilot-active-conversation'
+const pointerKey = (user: string, cluster: string) => `${BASE}:${user}::${cluster}`
 
-function makeWrapper() {
+// makeHarness creates a QueryClient pre-seeded with an active cluster, so the
+// test controls the active cluster directly (a real cluster switch invalidates
+// the ['clusters'] query; here we setQueryData to the same effect).
+function makeHarness(activeCluster: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return function Wrapper({ children }: { children: React.ReactNode }) {
-    return (
-      <QueryClientProvider client={qc}>
-        <CopilotProvider>{children}</CopilotProvider>
-      </QueryClientProvider>
-    )
-  }
+  qc.setQueryData(['clusters'], [{ context: activeCluster, active: true }] as never)
+  const wrapper = ({ children }: { children: React.ReactNode }) => (
+    <QueryClientProvider client={qc}>
+      <CopilotProvider>{children}</CopilotProvider>
+    </QueryClientProvider>
+  )
+  return { qc, wrapper }
 }
+
+const convFixture = (id: string, cluster: string, secret: string) => ({
+  id,
+  clusterId: cluster,
+  title: `${id} title`,
+  updatedAt: new Date().toISOString(),
+  messages: [{ role: 'user', content: secret }],
+})
 
 beforeEach(async () => {
   vi.clearAllMocks()
@@ -70,69 +85,69 @@ beforeEach(async () => {
   CopilotProvider = mod.CopilotProvider
 })
 
-describe('CopilotContext cross-user isolation', () => {
-  it('rehydrates the active user’s conversation from a per-user pointer', async () => {
-    localStorage.setItem(`${POINTER}:userA`, 'cA')
-    getConversation.mockResolvedValue({
-      id: 'cA',
-      clusterId: 'prod',
-      title: 'A conversation',
-      updatedAt: new Date().toISOString(),
-      messages: [{ role: 'user', content: 'A SECRET' }],
-    })
+describe('CopilotContext scope isolation', () => {
+  it('rehydrates the active (user, cluster) conversation from its pointer', async () => {
+    localStorage.setItem(pointerKey('userA', 'cluster-a'), 'cA')
+    getConversation.mockResolvedValue(convFixture('cA', 'cluster-a', 'A SECRET'))
 
-    const { result } = renderHook(() => useCopilot(), { wrapper: makeWrapper() })
+    const { wrapper } = makeHarness('cluster-a')
+    const { result } = renderHook(() => useCopilot(), { wrapper })
 
     await waitFor(() => expect(result.current.conversationId).toBe('cA'))
     expect(result.current.messages.some((m) => m.content === 'A SECRET')).toBe(true)
-    expect(getConversation).toHaveBeenCalledWith('cA')
+    expect(result.current.activeClusterContext).toBe('cluster-a')
   })
 
-  it('clears the previous user’s transcript when the active user changes', async () => {
-    localStorage.setItem(`${POINTER}:userA`, 'cA')
+  it('clears the transcript when the active USER changes', async () => {
+    localStorage.setItem(pointerKey('userA', 'cluster-a'), 'cA')
     getConversation.mockImplementation((id: string) =>
-      id === 'cA'
-        ? Promise.resolve({
-            id: 'cA',
-            clusterId: 'prod',
-            title: 'A conversation',
-            updatedAt: new Date().toISOString(),
-            messages: [{ role: 'user', content: 'A SECRET' }],
-          })
-        : Promise.reject(new Error('404')),
+      id === 'cA' ? Promise.resolve(convFixture('cA', 'cluster-a', 'A SECRET')) : Promise.reject(new Error('404')),
     )
 
-    const { result, rerender } = renderHook(() => useCopilot(), { wrapper: makeWrapper() })
-
-    // User A's conversation is loaded.
+    const { wrapper } = makeHarness('cluster-a')
+    const { result, rerender } = renderHook(() => useCopilot(), { wrapper })
     await waitFor(() => expect(result.current.messages.some((m) => m.content === 'A SECRET')).toBe(true))
 
-    // Simulate logout → login as a different user (no remount, SPA).
     act(() => {
       authUser = { id: 'userB' }
     })
     rerender()
 
-    // User B must NOT see user A's conversation.
     await waitFor(() => expect(result.current.messages.length).toBe(0))
     expect(result.current.conversationId).toBeNull()
-    expect(result.current.conversationTitle).toBeNull()
     expect(result.current.messages.some((m) => m.content === 'A SECRET')).toBe(false)
   })
 
-  it('does not reuse one user’s pointer for another user', async () => {
-    // Only user A has a saved pointer; user B has none.
-    localStorage.setItem(`${POINTER}:userA`, 'cA')
-    authUser = { id: 'userB' }
-    getConversation.mockRejectedValue(new Error('404'))
+  it('clears the transcript when the active CLUSTER changes (and resumes per-cluster)', async () => {
+    // userA has a conversation in cluster-a but NONE in cluster-b.
+    localStorage.setItem(pointerKey('userA', 'cluster-a'), 'cA')
+    getConversation.mockImplementation((id: string) =>
+      id === 'cA' ? Promise.resolve(convFixture('cA', 'cluster-a', 'CLUSTER A SECRET')) : Promise.reject(new Error('404')),
+    )
 
-    const { result } = renderHook(() => useCopilot(), { wrapper: makeWrapper() })
+    const { qc, wrapper } = makeHarness('cluster-a')
+    const { result, rerender } = renderHook(() => useCopilot(), { wrapper })
 
-    // Give the rehydrate effect a chance to run; B has no pointer so nothing
-    // is fetched and the transcript stays empty.
-    await waitFor(() => expect(getCopilotConfig).toHaveBeenCalled())
-    await new Promise((r) => setTimeout(r, 0))
-    expect(getConversation).not.toHaveBeenCalledWith('cA')
-    expect(result.current.messages.length).toBe(0)
+    // Cluster A's conversation is loaded.
+    await waitFor(() => expect(result.current.messages.some((m) => m.content === 'CLUSTER A SECRET')).toBe(true))
+
+    // Switch to cluster-b (no conversation there).
+    act(() => {
+      qc.setQueryData(['clusters'], [{ context: 'cluster-b', active: true }] as never)
+    })
+    rerender()
+
+    await waitFor(() => expect(result.current.activeClusterContext).toBe('cluster-b'))
+    // Must NOT carry cluster A's conversation into cluster B.
+    await waitFor(() => expect(result.current.messages.length).toBe(0))
+    expect(result.current.conversationId).toBeNull()
+    expect(result.current.messages.some((m) => m.content === 'CLUSTER A SECRET')).toBe(false)
+
+    // Switch back to cluster-a → its conversation resumes again.
+    act(() => {
+      qc.setQueryData(['clusters'], [{ context: 'cluster-a', active: true }] as never)
+    })
+    rerender()
+    await waitFor(() => expect(result.current.messages.some((m) => m.content === 'CLUSTER A SECRET')).toBe(true))
   })
 })

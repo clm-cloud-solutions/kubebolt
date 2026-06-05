@@ -93,6 +93,10 @@ interface CopilotContextValue {
   renameActiveConversation: (title: string) => Promise<void>
   /** Dismiss the stale-context banner without sending a message. */
   dismissStaleResume: () => void
+  /** Context name of the active cluster (matches a conversation's clusterId).
+   * The history list filters to this by default — conversations are
+   * cluster-bound. null while clusters are loading or none is active. */
+  activeClusterContext: string | null
 }
 
 export interface SendMessageOptions {
@@ -137,13 +141,29 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
 
   // ─── Conversation persistence + resume ───
   const queryClient = useQueryClient()
-  // The active user owns their conversations. We key the localStorage resume
-  // pointer by user id so two users sharing a browser never resume each
-  // other's conversation, and we reset in-memory state whenever the user
-  // changes (login / logout / switch). "anon" covers the auth-disabled
-  // single-user install (one stable key).
+  // Active cluster context. Conversations are scoped to the cluster they ran
+  // against (Kobi's tool results are cluster-bound), so the resume pointer and
+  // the history list are keyed/filtered by it. Shares the ['clusters'] query
+  // with the Topbar (react-query dedupes), so switching clusters there flips
+  // this here too. `.context` matches the backend's ConversationRecord.ClusterID.
+  const { data: clusters } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: api.listClusters,
+    enabled: !auth.isLoading,
+    staleTime: 30_000,
+  })
+  const activeClusterContext = clusters?.find((c) => c.active)?.context ?? null
+
+  // The active user OWNS their conversations; each conversation also belongs to
+  // a cluster. We key the localStorage resume pointer by (user, cluster) so two
+  // users — or one user across two clusters — never resume each other's
+  // conversation, and we reset in-memory state whenever that scope changes
+  // (login / logout / account switch / cluster switch). "anon"/"none" cover the
+  // auth-disabled and no-active-cluster cases (stable keys).
   const userKey = auth.user?.id ?? 'anon'
-  const pointerStorageKey = `${ACTIVE_CONVERSATION_KEY}:${userKey}`
+  const clusterKey = activeClusterContext ?? 'none'
+  const scopeKey = `${userKey}::${clusterKey}`
+  const pointerStorageKey = `${ACTIVE_CONVERSATION_KEY}:${scopeKey}`
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [conversationTitle, setConversationTitle] = useState<string | null>(null)
   const [staleResume, setStaleResume] = useState<StaleResumeInfo | null>(null)
@@ -265,18 +285,21 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     }
   }, [hydrated, auth.isLoading, config?.enabled, pointerStorageKey, hydrateFromRecord, persistActivePointer])
 
-  // Reset Kobi when the active user changes (login / logout / account switch).
+  // Reset Kobi when the conversation scope changes — a different user
+  // (login / logout / account switch) OR a different cluster (cluster switch).
   // The CopilotProvider is mounted at the app root and does NOT remount on an
-  // SPA login, so without this the previous user's in-memory transcript would
-  // stay visible to the next user. Clearing state + flipping `hydrated` makes
-  // the rehydrate effect above re-run against the NEW user's pointer.
-  const prevUserKeyRef = useRef(userKey)
+  // SPA login or a cluster switch, so without this the previous scope's
+  // in-memory transcript would stay visible (e.g. cluster A's conversation
+  // showing while viewing cluster B). Clearing state + flipping `hydrated`
+  // makes the rehydrate effect above re-run against the NEW (user, cluster)
+  // pointer.
+  const prevScopeKeyRef = useRef(scopeKey)
   useEffect(() => {
-    if (prevUserKeyRef.current === userKey) return
-    prevUserKeyRef.current = userKey
+    if (prevScopeKeyRef.current === scopeKey) return
+    prevScopeKeyRef.current = scopeKey
     resetConversationState()
     setHydrated(false)
-  }, [userKey, resetConversationState])
+  }, [scopeKey, resetConversationState])
 
   const sendMessage = useCallback(
     async (text: string, options?: SendMessageOptions) => {
@@ -670,6 +693,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         newConversation,
         renameActiveConversation,
         dismissStaleResume,
+        activeClusterContext,
       }}
     >
       {children}
