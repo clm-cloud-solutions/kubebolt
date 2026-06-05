@@ -53,7 +53,7 @@ function CodeBlock({ language, children }: { language: string; children: ReactNo
           )}
         </button>
       </div>
-      <pre className="px-3 py-2 overflow-x-auto text-[11px] leading-relaxed max-w-full">{children}</pre>
+      <pre className="px-3 py-2 overflow-x-auto text-[13px] leading-relaxed max-w-full">{children}</pre>
     </div>
   )
 }
@@ -62,23 +62,23 @@ function CodeBlock({ language, children }: { language: string; children: ReactNo
 const components: Components = {
   // Headings — compact but clearly differentiated
   h1: ({ children }) => (
-    <h1 className="text-sm font-bold text-kb-text-primary mt-3 mb-2 first:mt-0">{children}</h1>
+    <h1 className="text-base font-bold text-kb-text-primary mt-3 mb-2 first:mt-0">{children}</h1>
   ),
   h2: ({ children }) => (
-    <h2 className="text-sm font-semibold text-kb-text-primary mt-3 mb-1.5 first:mt-0">{children}</h2>
+    <h2 className="text-base font-semibold text-kb-text-primary mt-3 mb-1.5 first:mt-0">{children}</h2>
   ),
   h3: ({ children }) => (
-    <h3 className="text-[12px] font-semibold text-kb-text-primary mt-2.5 mb-1 first:mt-0">{children}</h3>
+    <h3 className="text-sm font-semibold text-kb-text-primary mt-2.5 mb-1 first:mt-0">{children}</h3>
   ),
   h4: ({ children }) => (
-    <h4 className="text-[11px] font-semibold text-kb-text-secondary mt-2 mb-1 first:mt-0 uppercase tracking-wider">{children}</h4>
+    <h4 className="text-xs font-semibold text-kb-text-secondary mt-2 mb-1 first:mt-0 uppercase tracking-wider">{children}</h4>
   ),
-  h5: ({ children }) => <h5 className="text-[11px] font-semibold text-kb-text-secondary mt-2 mb-1 first:mt-0">{children}</h5>,
-  h6: ({ children }) => <h6 className="text-[11px] font-semibold text-kb-text-tertiary mt-2 mb-1 first:mt-0">{children}</h6>,
+  h5: ({ children }) => <h5 className="text-xs font-semibold text-kb-text-secondary mt-2 mb-1 first:mt-0">{children}</h5>,
+  h6: ({ children }) => <h6 className="text-xs font-semibold text-kb-text-tertiary mt-2 mb-1 first:mt-0">{children}</h6>,
 
   // Paragraphs and inline text
   p: ({ children }) => (
-    <p className="text-xs text-kb-text-primary leading-relaxed my-1.5 first:mt-0 last:mb-0">{children}</p>
+    <p className="text-sm text-kb-text-primary leading-relaxed my-1.5 first:mt-0 last:mb-0">{children}</p>
   ),
   strong: ({ children }) => <strong className="font-semibold text-kb-text-primary">{children}</strong>,
   em: ({ children }) => <em className="italic text-kb-text-secondary">{children}</em>,
@@ -98,10 +98,10 @@ const components: Components = {
 
   // Lists
   ul: ({ children }) => (
-    <ul className="list-disc list-outside ml-4 my-1.5 space-y-1 text-xs text-kb-text-primary">{children}</ul>
+    <ul className="list-disc list-outside ml-4 my-1.5 space-y-1 text-sm text-kb-text-primary">{children}</ul>
   ),
   ol: ({ children }) => (
-    <ol className="list-decimal list-outside ml-4 my-1.5 space-y-1 text-xs text-kb-text-primary">{children}</ol>
+    <ol className="list-decimal list-outside ml-4 my-1.5 space-y-1 text-sm text-kb-text-primary">{children}</ol>
   ),
   li: ({ children }) => <li className="leading-relaxed">{children}</li>,
 
@@ -120,7 +120,7 @@ const components: Components = {
     // Inline code — small pill with subtle background
     return (
       <code
-        className="px-1 py-0.5 rounded bg-kb-elevated text-[11px] font-mono text-kb-accent"
+        className="px-1 py-0.5 rounded bg-kb-elevated text-[13px] font-mono text-kb-accent"
         {...props}
       >
         {children}
@@ -138,14 +138,14 @@ const components: Components = {
   // Tables — proper rendering with borders
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto rounded-lg border border-kb-border">
-      <table className="w-full text-[11px] border-collapse">{children}</table>
+      <table className="w-full text-xs border-collapse">{children}</table>
     </div>
   ),
   thead: ({ children }) => <thead className="bg-kb-elevated/50">{children}</thead>,
   tbody: ({ children }) => <tbody>{children}</tbody>,
   tr: ({ children }) => <tr className="border-b border-kb-border last:border-0">{children}</tr>,
   th: ({ children }) => (
-    <th className="px-2 py-1.5 text-left font-semibold text-kb-text-primary text-[10px] uppercase tracking-wider">
+    <th className="px-2 py-1.5 text-left font-semibold text-kb-text-primary text-[11px] uppercase tracking-wider">
       {children}
     </th>
   ),
@@ -153,7 +153,7 @@ const components: Components = {
 
   // Blockquote — subtle left border
   blockquote: ({ children }) => (
-    <blockquote className="border-l-2 border-kb-accent/40 pl-3 my-2 text-xs text-kb-text-secondary italic">
+    <blockquote className="border-l-2 border-kb-accent/40 pl-3 my-2 text-sm text-kb-text-secondary italic">
       {children}
     </blockquote>
   ),
