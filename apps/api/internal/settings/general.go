@@ -24,6 +24,11 @@ type StoredGeneralSettings struct {
 	// drives the "new version available" chip. Nil = inherit env
 	// baseline (KUBEBOLT_UPDATE_CHECK_ENABLED, default true).
 	UpdateCheckEnabled *bool `json:"updateCheckEnabled,omitempty"`
+	// CacheSyncTimeoutSeconds is the cold-connect informer cache-sync
+	// deadline. Nil = inherit env baseline
+	// (KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS, default 45). Applies on the
+	// next cluster connect — no restart.
+	CacheSyncTimeoutSeconds *int `json:"cacheSyncTimeoutSeconds,omitempty"`
 }
 
 // General returns the resolved GeneralConfig (env + BoltDB override).
@@ -81,6 +86,9 @@ func applyStoredGeneral(cfg *config.GeneralConfig, stored *StoredGeneralSettings
 	if stored.UpdateCheckEnabled != nil {
 		cfg.UpdateCheckEnabled = *stored.UpdateCheckEnabled
 	}
+	if stored.CacheSyncTimeoutSeconds != nil {
+		cfg.CacheSyncTimeoutSeconds = *stored.CacheSyncTimeoutSeconds
+	}
 }
 
 // PutGeneral validates and persists a partial General settings patch.
@@ -135,6 +143,7 @@ type MaskedEffectiveGeneral struct {
 	DefaultRefreshIntervalSeconds int    `json:"defaultRefreshIntervalSeconds"`
 	ProdNamespacePattern          string `json:"prodNamespacePattern"`
 	UpdateCheckEnabled            bool   `json:"updateCheckEnabled"`
+	CacheSyncTimeoutSeconds       int    `json:"cacheSyncTimeoutSeconds"`
 }
 
 type MaskedStoredGeneral struct {
@@ -143,6 +152,7 @@ type MaskedStoredGeneral struct {
 	DefaultRefreshIntervalSeconds *int    `json:"defaultRefreshIntervalSeconds,omitempty"`
 	ProdNamespacePattern          *string `json:"prodNamespacePattern,omitempty"`
 	UpdateCheckEnabled            *bool   `json:"updateCheckEnabled,omitempty"`
+	CacheSyncTimeoutSeconds       *int    `json:"cacheSyncTimeoutSeconds,omitempty"`
 }
 
 func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
@@ -157,16 +167,19 @@ func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
 			DefaultRefreshIntervalSeconds: resolved.DefaultRefreshIntervalSeconds,
 			ProdNamespacePattern:          resolved.ProdNamespacePattern,
 			UpdateCheckEnabled:            resolved.UpdateCheckEnabled,
+			CacheSyncTimeoutSeconds:       resolved.CacheSyncTimeoutSeconds,
 		},
 		Stored: MaskedStoredGeneral{
 			HasOverride: stored.DisplayName != nil ||
 				stored.DefaultRefreshIntervalSeconds != nil ||
 				stored.ProdNamespacePattern != nil ||
-				stored.UpdateCheckEnabled != nil,
+				stored.UpdateCheckEnabled != nil ||
+				stored.CacheSyncTimeoutSeconds != nil,
 			DisplayName:                   stored.DisplayName,
 			DefaultRefreshIntervalSeconds: stored.DefaultRefreshIntervalSeconds,
 			ProdNamespacePattern:          stored.ProdNamespacePattern,
 			UpdateCheckEnabled:            stored.UpdateCheckEnabled,
+			CacheSyncTimeoutSeconds:       stored.CacheSyncTimeoutSeconds,
 		},
 	}
 	return out, nil
@@ -212,6 +225,11 @@ func validateGeneralPatch(p *StoredGeneralSettings) error {
 			}
 		}
 	}
+	if p.CacheSyncTimeoutSeconds != nil {
+		if *p.CacheSyncTimeoutSeconds < config.MinCacheSyncTimeoutSeconds || *p.CacheSyncTimeoutSeconds > 600 {
+			return &ValidationError{Field: "cacheSyncTimeoutSeconds", Message: "must be between 5 and 600 seconds"}
+		}
+	}
 	return nil
 }
 
@@ -228,6 +246,9 @@ func mergeGeneral(base, patch StoredGeneralSettings) StoredGeneralSettings {
 	}
 	if patch.UpdateCheckEnabled != nil {
 		out.UpdateCheckEnabled = patch.UpdateCheckEnabled
+	}
+	if patch.CacheSyncTimeoutSeconds != nil {
+		out.CacheSyncTimeoutSeconds = patch.CacheSyncTimeoutSeconds
 	}
 	return out
 }

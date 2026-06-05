@@ -84,7 +84,10 @@ type Connector struct {
 	// subscribe by (X-KubeBolt-Cluster), not the kube-system clusterUID.
 	wsTenant  string
 	wsCluster string
-	stopCh    chan struct{}
+	// cacheSyncTimeout overrides the Start() informer-sync deadline. Set by the
+	// manager per-connect from the live General setting; 0 → defaultCacheSyncTimeout.
+	cacheSyncTimeout time.Duration
+	stopCh           chan struct{}
 	// recentWrites bridges the read-after-write gap between an
 	// apiserver Patch landing and the informer cache catching up
 	// (~hundreds of ms). Mutation handlers Record(...) the field
@@ -887,15 +890,39 @@ func (c *Connector) addGatewayTopologyNodes() {
 	}
 }
 
-// Start begins the shared informer factory. Returns an error if cache sync
-// does not complete within 20 seconds (e.g. cluster is unreachable).
+// defaultCacheSyncTimeout is the fallback deadline Start() waits for informer
+// caches to sync when the manager hasn't injected a configured value (tests, or
+// before the settings provider is wired). 45s — a cold connect to a large
+// cluster can need 20-30s, so the old hard-coded 20s left big EKS/GKE clusters
+// at the edge and they flaked on the first switch after a restart. The warm
+// pool keeps repeat switches instant regardless.
+const defaultCacheSyncTimeout = 45 * time.Second
+
+// SetCacheSyncTimeout sets the informer cache-sync deadline for the NEXT Start()
+// of this connector. The manager calls it per-connect with the live General
+// setting (env baseline + UI override, hot-reloaded — no restart). Values below
+// 5s, or unset, fall back to defaultCacheSyncTimeout.
+func (c *Connector) SetCacheSyncTimeout(d time.Duration) {
+	c.cacheSyncTimeout = d
+}
+
+func (c *Connector) effectiveCacheSyncTimeout() time.Duration {
+	if c.cacheSyncTimeout >= 5*time.Second {
+		return c.cacheSyncTimeout
+	}
+	return defaultCacheSyncTimeout
+}
+
+// Start begins the shared informer factory. Returns an error if cache sync does
+// not complete within the configured timeout (default 45s; e.g. cluster
+// unreachable).
 func (c *Connector) Start() error {
 	c.factory.Start(c.stopCh)
 	for _, f := range c.nsFactories {
 		f.Start(c.stopCh)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), c.effectiveCacheSyncTimeout())
 	defer cancel()
 	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
 		if !ok {

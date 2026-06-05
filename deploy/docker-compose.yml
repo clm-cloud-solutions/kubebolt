@@ -57,6 +57,10 @@ services:
       # Update check — set to false for air-gapped installs so the
       # backend never reaches out to api.github.com. Cache TTL 6h.
       - KUBEBOLT_UPDATE_CHECK_ENABLED=${KUBEBOLT_UPDATE_CHECK_ENABLED:-true}
+      # Cold cluster-connect cache-sync timeout (seconds). Raise for large
+      # clusters that flake on first switch. Runtime-overridable via
+      # Settings → General (no restart). Default 45.
+      - KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS=${KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS:-45}
   web:
     build: ../apps/web
     ports: ["3000:3000"]
