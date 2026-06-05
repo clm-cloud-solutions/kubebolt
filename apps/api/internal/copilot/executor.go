@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -47,7 +48,11 @@ func NewExecutor(manager *cluster.Manager) *Executor {
 func (e *Executor) Execute(call ToolCall) ToolResult {
 	res := ToolResult{ToolCallID: call.ID}
 
-	conn := e.manager.Connector()
+	// context.Background(): the Kobi executor has no request ctx here, so it
+	// resolves to default-tenant + active-cluster (correct in OSS). EE
+	// (Fase B) threads the real request ctx into Execute for per-tenant
+	// scoping. See internal/kubebolt-w2-connector-pool-design.md.
+	conn := e.manager.Connector(context.Background())
 	if conn == nil {
 		res.Content = `{"error":"cluster not connected"}`
 		res.IsError = true
@@ -340,7 +345,7 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		res.Content = jsonString(conn.GetTopology())
 
 	case "get_insights":
-		eng := e.manager.Engine()
+		eng := e.manager.Engine(context.Background()) // see Connector() note above
 		if eng == nil {
 			res.Content = `{"error":"insights engine not available"}`
 			res.IsError = true

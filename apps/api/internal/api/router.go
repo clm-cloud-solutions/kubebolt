@@ -135,6 +135,15 @@ func NewRouter(
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
 			r.Use(authHandlers.RequireAuth)
+			// Resolve the request's tenant (org) once, after auth, and
+			// stash it in context. OSS: always DefaultTenantName. EE swaps
+			// the resolver for real multi-tenant resolution. See
+			// auth.TenantResolver.
+			r.Use(authHandlers.ResolveTenant)
+			// Stash the request's (tenant, cluster) RuntimeKey for the
+			// connector pool (W2). Behavior-neutral until the pool reads
+			// it; threading it now keeps the pool additive to handlers.
+			r.Use(h.resolveCluster)
 
 			// Auth-protected user routes
 			r.Post("/auth/logout", authHandlers.Logout)

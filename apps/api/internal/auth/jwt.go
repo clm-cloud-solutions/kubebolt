@@ -18,6 +18,11 @@ type Claims struct {
 	UserID   string `json:"uid"`
 	Username string `json:"usr"`
 	Role     Role   `json:"role"`
+	// TenantID scopes the token to an organization/tenant. Empty in OSS
+	// (single-tenant: callers resolve it to DefaultTenantName). The EE/SaaS
+	// edition populates it at login for multi-tenant deployments. Read it
+	// via ContextTenantID; override resolution via TenantResolver.
+	TenantID string `json:"tid,omitempty"`
 }
 
 // JWTService handles JWT token generation and validation.

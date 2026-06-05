@@ -141,7 +141,7 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Exec request: namespace=%s name=%s container=%s shell=%s", namespace, name, container, shell)
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		http.Error(w, "cluster not connected", http.StatusServiceUnavailable)
 		return

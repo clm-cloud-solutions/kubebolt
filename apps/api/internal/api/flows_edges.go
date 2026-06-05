@@ -115,7 +115,7 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	// secondary cluster (e.g. docker-desktop running in parallel with
 	// kind) doesn't contribute flows that belong to a different
 	// visual.
-	uid := h.activeClusterUID()
+	uid := h.activeClusterUID(r.Context())
 	eventsQuery := scopeQueryByCluster(fmt.Sprintf(
 		`sum by (source_namespace, source_pod, destination_namespace, destination_pod, verdict) (rate(pod_flow_events_total%s[%dm]))`,
 		eventsSelector, windowMin,
@@ -263,7 +263,7 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	// internal IPs would otherwise pile up in the synthetic (external)
 	// region after every pod restart.
 	var podCIDRs []*net.IPNet
-	if conn := h.manager.Connector(); conn != nil {
+	if conn := h.manager.Connector(r.Context()); conn != nil {
 		if pl := conn.PodLister(); pl != nil {
 			if pods, err := pl.List(labels.Everything()); err == nil {
 				for _, p := range pods {
