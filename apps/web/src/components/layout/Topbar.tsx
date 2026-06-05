@@ -92,8 +92,25 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
     // under the header. Pooled switches resolve near-instantly; a first-time
     // connect keeps the overlay up for its ~20s sync.
     mutationFn: async (context: string) => {
-      await api.switchCluster(context)
+      let switchErr: unknown = null
+      try {
+        await api.switchCluster(context)
+      } catch (e) {
+        switchErr = e
+      }
+      // The overview query is a single shared key. Cancel whatever is in flight
+      // BEFORE refetching: /cluster/overview can take seconds over an agent-
+      // proxy channel, so a request fired for the PREVIOUS cluster may still be
+      // pending — React Query would otherwise dedupe our refetch onto it and we
+      // (and the cache) would get the old cluster's data. Cancelling discards
+      // that stale in-flight response; the refetch then starts a fresh fetch,
+      // now that the backend is on the new cluster. Awaiting it to a TERMINAL
+      // state (fresh data, or 503 on a failed connect) before the mutation
+      // resolves keeps the single centered overlay up until Layout can show the
+      // right thing — never the previous cluster's snapshot.
+      await queryClient.cancelQueries({ queryKey: ['cluster-overview'] })
       await queryClient.refetchQueries({ queryKey: ['cluster-overview'] })
+      if (switchErr) throw switchErr
     },
     onMutate: (context: string) => {
       // Immediately mark the selected cluster as active — don't wait for the server round-trip

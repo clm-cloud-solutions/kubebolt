@@ -84,6 +84,8 @@ type Connector struct {
 	mu            sync.RWMutex
 	clusterName    string
 	clusterUID     string // kube-system namespace UID, used to scope VM queries per cluster
+	k8sVersion     string // cached GitVersion — ServerVersion() over agent-proxy is slow, and it never changes; fetch once
+	platform       string // cached, derived from k8sVersion
 	collector      metricsCollector
 	topologyTimer  *time.Timer
 	permissions    ResourcePermissions
@@ -887,6 +889,32 @@ func (c *Connector) Stop() {
 	close(c.stopCh) // stops both factory and nsFactories since they share stopCh
 }
 
+// serverVersionCached returns the cluster's k8s GitVersion + detected platform,
+// fetching ServerVersion() once and caching it. The version is immutable for a
+// connector's lifetime, and the discovery round-trip is expensive over the
+// agent-proxy channel (multiple seconds) — calling it on every GetOverview
+// (every refresh tick) dragged the overview, and with the switch overlay now
+// awaiting a fresh overview, dragged every cluster switch too. A failed lookup
+// isn't cached, so it retries on the next call.
+func (c *Connector) serverVersionCached() (version, platform string) {
+	c.mu.RLock()
+	version, platform = c.k8sVersion, c.platform
+	c.mu.RUnlock()
+	if version != "" {
+		return version, platform
+	}
+	sv, err := c.clientset.Discovery().ServerVersion()
+	if err != nil {
+		return "", ""
+	}
+	version = sv.GitVersion
+	platform = detectPlatform(sv.GitVersion)
+	c.mu.Lock()
+	c.k8sVersion, c.platform = version, platform
+	c.mu.Unlock()
+	return version, platform
+}
+
 // GetOverview aggregates counts from listers.
 func (c *Connector) GetOverview() models.ClusterOverview {
 	overview := models.ClusterOverview{}
@@ -894,11 +922,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	// Cluster info
 	overview.ClusterName = c.clusterName
 	overview.ClusterUID = c.clusterUID
-	serverVersion, err := c.clientset.Discovery().ServerVersion()
-	if err == nil {
-		overview.KubernetesVersion = serverVersion.GitVersion
-		overview.Platform = detectPlatform(serverVersion.GitVersion)
-	}
+	overview.KubernetesVersion, overview.Platform = c.serverVersionCached()
 
 	// Nodes
 	var nodes []*corev1.Node

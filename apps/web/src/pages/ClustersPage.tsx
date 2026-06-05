@@ -513,8 +513,20 @@ export function ClustersPage() {
     // Stay pending until the new cluster's overview is loaded — single
     // centered overlay, no page-spinner double, no stale name flash.
     mutationFn: async (context: string) => {
-      await api.switchCluster(context)
+      // Cancel any in-flight overview (a slow agent-proxy reply for the
+      // PREVIOUS cluster) before refetching, so the stale response can't be
+      // deduped onto our refetch, then settle to a terminal state (fresh data
+      // or 503) before resolving — even on a failed switch. See Topbar for the
+      // full rationale.
+      let switchErr: unknown = null
+      try {
+        await api.switchCluster(context)
+      } catch (e) {
+        switchErr = e
+      }
+      await queryClient.cancelQueries({ queryKey: ['cluster-overview'] })
       await queryClient.refetchQueries({ queryKey: ['cluster-overview'] })
+      if (switchErr) throw switchErr
     },
     onMutate: (context: string) => {
       queryClient.setQueryData(['clusters'], (old: ClusterInfo[] | undefined) =>
