@@ -67,6 +67,17 @@ type Manager struct {
 	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
 	// lands in A.3b. nil until first use — reads of a nil map are safe.
 	runtimes map[poolKey]*clusterRuntime
+
+	// poolIdleTimeout / poolMaxRuntimes bound the parked-runtime pool (A.3d).
+	// Each pooled runtime keeps live informers (memory + apiserver watches),
+	// so the pool can't grow without bound: the reaper evicts runtimes idle
+	// longer than poolIdleTimeout, and parking evicts the LRU when the pool
+	// would exceed poolMaxRuntimes. Zero disables the respective limit (the
+	// active runtime is never pooled, so it's never evicted). reaperStop stops
+	// the reaper goroutine from Stop().
+	poolIdleTimeout time.Duration
+	poolMaxRuntimes int
+	reaperStop      chan struct{}
 }
 
 // poolKey identifies a pooled runtime. tenant is "default" in OSS.
@@ -84,6 +95,12 @@ type clusterRuntime struct {
 	engine    *insights.Engine
 	cancelFn  context.CancelFunc
 	connErr   error
+	// lastUsed is the wall-clock time this runtime was last parked or served
+	// from the pool (A.3d). The idle reaper evicts pooled runtimes whose
+	// lastUsed predates poolIdleTimeout; the cap evicts the LRU (oldest
+	// lastUsed). Zero/unused for the active runtime — it's never pooled.
+	// Guarded by Manager.mu.
+	lastUsed time.Time
 	// ready is closed when a pooled runtime finishes building (success or
 	// failure), so concurrent callers single-flight on the same spin instead
 	// of each launching a connector. nil for the active runtime (built
@@ -102,9 +119,23 @@ func (m *Manager) SetInsightStore(store insights.InsightStore, tenantID string) 
 	m.insightStore = store
 	m.tenantID = tenantID
 	eng := m.engine // capture under lock; call SetStore outside to avoid lock-ordering
+	// Generalize the boot-race fix to the pool (A.3d): pooled (parked) engines
+	// built before the store was wired must pick it up too, else a cluster you
+	// switched away from stops persisting insights. In OSS this list is empty
+	// at boot (SetInsightStore runs before any switch parks a runtime), so it's
+	// a no-op there — but it keeps the pool correct under EE multi-tenant.
+	var pooled []*insights.Engine
+	for _, rt := range m.runtimes {
+		if rt.engine != nil {
+			pooled = append(pooled, rt.engine)
+		}
+	}
 	m.mu.Unlock()
 	if eng != nil {
 		eng.SetStore(store, tenantID)
+	}
+	for _, e := range pooled {
+		e.SetStore(store, tenantID)
 	}
 }
 
@@ -292,6 +323,7 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 		m.stopCurrent()
 		m.activeContext = ""
 	}
+	m.evictPooledContextLocked(contextName, "cluster removed")
 	delete(m.agentProxyContexts, contextName)
 	delete(m.kubeConfig.Contexts, contextName)
 	delete(m.kubeConfig.Clusters, contextName)
@@ -389,6 +421,16 @@ type ClusterInfo struct {
 	ClusterID string `json:"clusterId,omitempty"`
 }
 
+// Pool bounds (A.3d). A parked runtime keeps live informers, so the pool is
+// capped and idle-evicted. Defaults suit OSS (a handful of clusters in the
+// switcher); EE tunes them per-org. Switching back to an evicted cluster pays
+// the cold connect again — acceptable, since eviction only hits clusters left
+// untouched for poolIdleTimeout.
+const (
+	defaultPoolIdleTimeout = 30 * time.Minute
+	defaultPoolMaxRuntimes = 8
+)
+
 // NewManager creates a new cluster manager.
 func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, insightInterval time.Duration) (*Manager, error) {
 	// Try loading kubeconfig file first; fall back to in-cluster config
@@ -412,7 +454,11 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 				wsHub:           wsHub,
 				metricInterval:  metricInterval,
 				insightInterval: insightInterval,
+				poolIdleTimeout: defaultPoolIdleTimeout,
+				poolMaxRuntimes: defaultPoolMaxRuntimes,
+				reaperStop:      make(chan struct{}),
 			}
+			m.startPoolReaper()
 
 			go func() {
 				m.mu.Lock()
@@ -436,7 +482,11 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 		wsHub:           wsHub,
 		metricInterval:  metricInterval,
 		insightInterval: insightInterval,
+		poolIdleTimeout: defaultPoolIdleTimeout,
+		poolMaxRuntimes: defaultPoolMaxRuntimes,
+		reaperStop:      make(chan struct{}),
 	}
+	m.startPoolReaper()
 
 	// Connect asynchronously so the HTTP server can bind immediately.
 	// The manager starts in disconnected state; the UI will see 503s until ready.
@@ -596,7 +646,8 @@ func (m *Manager) SwitchCluster(contextName string) error {
 // parkActiveLocked moves the current active runtime (if any) into the pool,
 // keyed by its context, so a later SwitchCluster back to it reuses the live,
 // already-synced runtime instead of reconnecting. The runtime keeps running.
-// Caller holds m.mu. Pool growth is bounded by idle eviction (A.3c).
+// Caller holds m.mu. Pool growth is bounded by the cap (enforced here) and the
+// idle reaper (A.3d).
 func (m *Manager) parkActiveLocked() {
 	if m.connector == nil || m.activeContext == "" {
 		return
@@ -609,12 +660,124 @@ func (m *Manager) parkActiveLocked() {
 		collector: m.collector,
 		engine:    m.engine,
 		cancelFn:  m.cancelFn,
+		lastUsed:  time.Now(),
 	}
 	m.connector = nil
 	m.collector = nil
 	m.engine = nil
 	m.cancelFn = nil
 	m.connErr = nil
+	// Bound the pool: evict the LRU parked runtime(s) if we just went over cap.
+	// The one we parked above has the freshest lastUsed, so it's never the
+	// victim of its own park.
+	m.enforcePoolCapLocked()
+}
+
+// evictPoolEntryLocked tears down one pooled runtime and removes it from the
+// pool. Caller holds m.mu. Skips the goroutine teardown for placeholders still
+// building (connector nil) but still deletes the map entry so a removed cluster
+// doesn't linger. Never call this for the active runtime — it isn't pooled.
+func (m *Manager) evictPoolEntryLocked(pk poolKey, rt *clusterRuntime, reason string) {
+	if rt.cancelFn != nil {
+		rt.cancelFn()
+	}
+	if rt.connector != nil {
+		rt.connector.Stop()
+	}
+	delete(m.runtimes, pk)
+	slog.Info("evicted pooled cluster runtime",
+		slog.String("cluster", pk.cluster),
+		slog.String("reason", reason))
+}
+
+// enforcePoolCapLocked evicts the least-recently-used pooled runtime(s) until
+// the pool is within poolMaxRuntimes. Caller holds m.mu. Placeholders that are
+// still building (connector nil) are not eligible victims — they have no
+// informers to reclaim yet and a concurrent caller is blocked on their ready
+// channel.
+func (m *Manager) enforcePoolCapLocked() {
+	if m.poolMaxRuntimes <= 0 {
+		return
+	}
+	for {
+		// Count only fully-built runtimes against the cap, and track the LRU
+		// among them. Placeholders still building (connector nil) are exempt:
+		// they hold no informers yet and a caller is blocked on their ready.
+		built := 0
+		var victimKey poolKey
+		var victim *clusterRuntime
+		for pk, rt := range m.runtimes {
+			if rt.connector == nil {
+				continue
+			}
+			built++
+			if victim == nil || rt.lastUsed.Before(victim.lastUsed) {
+				victimKey, victim = pk, rt
+			}
+		}
+		if built <= m.poolMaxRuntimes || victim == nil {
+			return
+		}
+		m.evictPoolEntryLocked(victimKey, victim, "pool cap")
+	}
+}
+
+// evictPooledContextLocked evicts the pooled runtime for contextName, if one
+// exists, so removing a cluster doesn't leak its parked informers. Caller holds
+// m.mu. No-op when the context isn't pooled.
+func (m *Manager) evictPooledContextLocked(contextName, reason string) {
+	if m.runtimes == nil {
+		return
+	}
+	pk := poolKey{tenant: m.tenantID, cluster: contextName}
+	if rt, ok := m.runtimes[pk]; ok {
+		m.evictPoolEntryLocked(pk, rt, reason)
+	}
+}
+
+// reapIdlePooledRuntimes evicts pooled runtimes left untouched longer than
+// poolIdleTimeout. Runs on the reaper goroutine; takes m.mu itself.
+func (m *Manager) reapIdlePooledRuntimes() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.poolIdleTimeout <= 0 || len(m.runtimes) == 0 {
+		return
+	}
+	cutoff := time.Now().Add(-m.poolIdleTimeout)
+	for pk, rt := range m.runtimes {
+		if rt.connector == nil {
+			continue // still building
+		}
+		if rt.lastUsed.Before(cutoff) {
+			m.evictPoolEntryLocked(pk, rt, "idle timeout")
+		}
+	}
+}
+
+// startPoolReaper launches the background goroutine that idle-evicts pooled
+// runtimes. No-op when idle eviction is disabled (poolIdleTimeout <= 0) or the
+// stop channel was never created (directly-constructed Managers in tests). The
+// ticker fires at a quarter of the idle window, floored at 1m.
+func (m *Manager) startPoolReaper() {
+	if m.poolIdleTimeout <= 0 || m.reaperStop == nil {
+		return
+	}
+	interval := m.poolIdleTimeout / 4
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-m.reaperStop:
+				return
+			case <-ticker.C:
+				m.reapIdlePooledRuntimes()
+			}
+		}
+	}()
 }
 
 // ConnError returns the last connection error, or nil if connected.
@@ -693,10 +856,12 @@ func (m *Manager) activeRuntimeLocked() *clusterRuntime {
 // the placeholder's ready channel instead of launching a second connector.
 // Returns nil on unknown context, no-agent-yet, or a failed build.
 //
-// NOTE (A.3c/A.4 follow-ups): pooled engines don't yet get the notification
-// hook (wireInsightHookLocked) and the wsHub broadcast isn't tenant-scoped,
-// so pooled clusters are read-only-correct but not notification/WS-isolated
-// yet. Harmless in OSS (the pool is never populated).
+// NOTE (A.4 follow-up): pooled engines don't yet get the notification hook
+// (wireInsightHookLocked) and the wsHub broadcast isn't tenant-scoped, so
+// pooled clusters are read-only-correct but not notification/WS-isolated yet.
+// Harmless in OSS (the pool is only ever populated by parkActiveLocked on a
+// switch, and Autopilot is single-cluster for now — see
+// internal/kubebolt-w2-connector-pool-design.md §4b).
 func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	pk := poolKey{tenant: tenant, cluster: contextName}
 
@@ -705,6 +870,7 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 		m.runtimes = map[poolKey]*clusterRuntime{}
 	}
 	if rt, ok := m.runtimes[pk]; ok {
+		rt.lastUsed = time.Now() // touch for LRU/idle accounting before releasing the lock
 		m.mu.Unlock()
 		<-rt.ready // wait if a concurrent caller is still building
 		if rt.connErr != nil {
@@ -744,6 +910,7 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	placeholder.collector = built.collector
 	placeholder.engine = built.engine
 	placeholder.cancelFn = built.cancelFn
+	placeholder.lastUsed = time.Now()
 	close(placeholder.ready)
 	return placeholder
 }
@@ -777,6 +944,15 @@ func (m *Manager) Engine(ctx context.Context) *insights.Engine {
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Stop the idle reaper. Guard against a double Stop() (and the
+	// directly-constructed Managers in tests, which have a nil reaperStop).
+	if m.reaperStop != nil {
+		select {
+		case <-m.reaperStop: // already closed
+		default:
+			close(m.reaperStop)
+		}
+	}
 	m.stopCurrent()
 	for pk, rt := range m.runtimes {
 		if rt.cancelFn != nil {
@@ -888,6 +1064,8 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 		m.stopCurrent()
 		m.activeContext = ""
 	}
+	// Drop any parked runtime for it so its informers don't linger in the pool.
+	m.evictPooledContextLocked(contextName, "cluster removed")
 
 	// Remove from BoltDB
 	if err := m.storage.DeleteKubeconfig(contextName); err != nil {
