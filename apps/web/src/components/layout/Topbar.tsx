@@ -86,13 +86,20 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
 
   const switchMutation = useMutation({
     mutationKey: ['switch-cluster'],
-    mutationFn: (context: string) => api.switchCluster(context),
+    // Stay pending until the NEW cluster's overview is loaded, so the single
+    // centered "Connecting" overlay covers the whole switch — no overlay-then-
+    // page-spinner double, and the previous cluster's name never flashes
+    // under the header. Pooled switches resolve near-instantly; a first-time
+    // connect keeps the overlay up for its ~20s sync.
+    mutationFn: async (context: string) => {
+      await api.switchCluster(context)
+      await queryClient.refetchQueries({ queryKey: ['cluster-overview'] })
+    },
     onMutate: (context: string) => {
       // Immediately mark the selected cluster as active — don't wait for the server round-trip
       queryClient.setQueryData(['clusters'], (old: ClusterInfo[] | undefined) =>
         old?.map(c => ({ ...c, active: c.context === context }))
       )
-      queryClient.setQueryData(['cluster-overview'], undefined)
       setOpen(false)
     },
     onSuccess: () => {

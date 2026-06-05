@@ -555,12 +555,32 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return fmt.Errorf("context %q not found in kubeconfig", contextName)
 	}
 
-	// Stop existing connector and immediately mark new context as active.
-	// The user explicitly chose this cluster, so we stay on it even if unreachable.
-	m.stopCurrent()
-	m.activeContext = contextName
+	// Park the CURRENT active runtime in the pool instead of tearing it down,
+	// so switching BACK to it later is instant (no reconnect). Its informers,
+	// collector, and insight ticker stay live in the background.
+	m.parkActiveLocked()
 
-	// Connect to new context; on failure, stay disconnected on contextName (no fallback).
+	// If the target is already pooled (previously connected, informers still
+	// live), promote it — an INSTANT switch with no WaitForCacheSync. This is
+	// the whole point: re-selecting a cluster you've already connected to
+	// should be immediate, not a 20s reconnect every time.
+	pk := poolKey{tenant: m.tenantID, cluster: contextName}
+	if rt, ok := m.runtimes[pk]; ok && rt.connector != nil {
+		delete(m.runtimes, pk)
+		m.connector = rt.connector
+		m.collector = rt.collector
+		m.engine = rt.engine
+		m.cancelFn = rt.cancelFn
+		m.activeContext = contextName
+		m.connErr = nil
+		m.wireInsightHookLocked()
+		slog.Info("switched cluster context (pooled, instant)", slog.String("context", contextName))
+		return nil
+	}
+
+	// First connect to this cluster — the only slow path (~20s
+	// WaitForCacheSync). connectToContextLocked builds + installs the runtime.
+	m.activeContext = contextName
 	if err := m.connectToContextLocked(contextName); err != nil {
 		m.connErr = err
 		slog.Warn("failed to connect to context, staying disconnected",
@@ -569,8 +589,32 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return err
 	}
 
-	slog.Info("switched cluster context", slog.String("context", contextName))
+	slog.Info("switched cluster context (fresh connect)", slog.String("context", contextName))
 	return nil
+}
+
+// parkActiveLocked moves the current active runtime (if any) into the pool,
+// keyed by its context, so a later SwitchCluster back to it reuses the live,
+// already-synced runtime instead of reconnecting. The runtime keeps running.
+// Caller holds m.mu. Pool growth is bounded by idle eviction (A.3c).
+func (m *Manager) parkActiveLocked() {
+	if m.connector == nil || m.activeContext == "" {
+		return
+	}
+	if m.runtimes == nil {
+		m.runtimes = map[poolKey]*clusterRuntime{}
+	}
+	m.runtimes[poolKey{tenant: m.tenantID, cluster: m.activeContext}] = &clusterRuntime{
+		connector: m.connector,
+		collector: m.collector,
+		engine:    m.engine,
+		cancelFn:  m.cancelFn,
+	}
+	m.connector = nil
+	m.collector = nil
+	m.engine = nil
+	m.cancelFn = nil
+	m.connErr = nil
 }
 
 // ConnError returns the last connection error, or nil if connected.

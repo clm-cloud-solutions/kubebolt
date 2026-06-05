@@ -510,12 +510,16 @@ export function ClustersPage() {
 
   const switchMutation = useMutation({
     mutationKey: ['switch-cluster'],
-    mutationFn: (context: string) => api.switchCluster(context),
+    // Stay pending until the new cluster's overview is loaded — single
+    // centered overlay, no page-spinner double, no stale name flash.
+    mutationFn: async (context: string) => {
+      await api.switchCluster(context)
+      await queryClient.refetchQueries({ queryKey: ['cluster-overview'] })
+    },
     onMutate: (context: string) => {
       queryClient.setQueryData(['clusters'], (old: ClusterInfo[] | undefined) =>
         old?.map(c => ({ ...c, active: c.context === context }))
       )
-      queryClient.setQueryData(['cluster-overview'], undefined)
     },
     onSuccess: () => {
       queryClient.invalidateQueries()
