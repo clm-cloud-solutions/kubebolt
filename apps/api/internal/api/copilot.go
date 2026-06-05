@@ -602,8 +602,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			finalMessages := messages
 			if resp.Text != "" {
 				finalMessages = append(finalMessages, copilot.Message{
-					Role:    copilot.RoleAssistant,
-					Content: resp.Text,
+					Role:      copilot.RoleAssistant,
+					Content:   resp.Text,
+					Timestamp: time.Now(),
 				})
 			}
 
@@ -679,6 +680,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			Role:      copilot.RoleAssistant,
 			Content:   resp.Text,
 			ToolCalls: resp.ToolCalls,
+			Timestamp: time.Now(),
 		})
 
 		// Execute each tool and append results
@@ -723,6 +725,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, copilot.Message{
 			Role:        copilot.RoleUser,
 			ToolResults: toolResults,
+			Timestamp:   time.Now(),
 		})
 
 		// Continue the loop — model will see tool results and produce its next response

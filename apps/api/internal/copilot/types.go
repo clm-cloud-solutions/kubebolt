@@ -1,6 +1,9 @@
 package copilot
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Role represents the message author.
 type Role string
@@ -18,6 +21,12 @@ type Message struct {
 	Content     string       `json:"content,omitempty"`
 	ToolCalls   []ToolCall   `json:"toolCalls,omitempty"`
 	ToolResults []ToolResult `json:"toolResults,omitempty"`
+	// Timestamp is when this turn happened. Stamped server-side on messages the
+	// chat loop appends and preserved from the client for the rest, so a
+	// persisted conversation reconstructs its real timeline on resume / export
+	// instead of collapsing to "now". Never sent to the LLM (the provider
+	// adapters read role/content/tools only). Optional for backward-compat.
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
 // ToolCall represents an LLM-issued request to invoke a tool.

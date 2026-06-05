@@ -192,6 +192,28 @@ func TestConversationStore_SetTitleArchiveDelete(t *testing.T) {
 	}
 }
 
+func TestConversationStore_PreservesMessageTimestamps(t *testing.T) {
+	for name, store := range newConvStores(t, DefaultConversationRetention, DefaultConversationsPerUser) {
+		t.Run(name, func(t *testing.T) {
+			ts := time.Now().Add(-3 * time.Hour).Truncate(time.Second)
+			rec := newConv("c1", "alice", "prod", "t",
+				Message{Role: RoleUser, Content: "hi", Timestamp: ts},
+				Message{Role: RoleAssistant, Content: "hello", Timestamp: ts.Add(time.Minute)},
+			)
+			if err := store.Upsert(rec); err != nil {
+				t.Fatalf("upsert: %v", err)
+			}
+			got, _, _ := store.Get(DefaultConversationTenant, "alice", "c1")
+			if !got.Messages[0].Timestamp.Equal(ts) {
+				t.Fatalf("user msg timestamp not preserved: got %v want %v", got.Messages[0].Timestamp, ts)
+			}
+			if !got.Messages[1].Timestamp.Equal(ts.Add(time.Minute)) {
+				t.Fatalf("assistant msg timestamp not preserved: got %v", got.Messages[1].Timestamp)
+			}
+		})
+	}
+}
+
 func TestConversationStore_SetMessages(t *testing.T) {
 	for name, store := range newConvStores(t, DefaultConversationRetention, DefaultConversationsPerUser) {
 		t.Run(name, func(t *testing.T) {
