@@ -59,6 +59,13 @@ func (h *Hub) Run() {
 				if !client.IsSubscribed(msg.Type) {
 					continue
 				}
+				// A.4 scope gate: deliver a cluster-scoped event only to clients
+				// viewing that (tenant, cluster). Unscoped message or unscoped
+				// client → deliver (OSS-degenerate: clients carry no scope, so
+				// this is a no-op and behavior is identical to pre-A.4).
+				if !client.matchesScope(msg.Tenant, msg.Cluster) {
+					continue
+				}
 				select {
 				case client.send <- data:
 				default:
@@ -74,8 +81,18 @@ func (h *Hub) Run() {
 	}
 }
 
-// Broadcast sends a message to all subscribed clients.
+// Broadcast sends a GLOBAL (unscoped) message to all subscribed clients. Use
+// for events not tied to a single cluster (clusters.changed, cluster:connected).
 func (h *Hub) Broadcast(msgType string, data interface{}) {
+	h.BroadcastScoped("", "", msgType, data)
+}
+
+// BroadcastScoped sends a message tagged with the originating (tenant, cluster).
+// The hub delivers it only to clients viewing that scope (or to clients with no
+// scope set — the OSS-degenerate case). Empty tenant+cluster = global, same as
+// Broadcast. Used by per-runtime emitters (engine insight:*, connector
+// resource:*) so EE multi-tenant clients don't see each other's events.
+func (h *Hub) BroadcastScoped(tenant, cluster, msgType string, data interface{}) {
 	h.mu.RLock()
 	clientCount := len(h.clients)
 	h.mu.RUnlock()
@@ -86,8 +103,10 @@ func (h *Hub) Broadcast(msgType string, data interface{}) {
 	}
 
 	msg := &models.WSMessage{
-		Type: msgType,
-		Data: data,
+		Type:    msgType,
+		Data:    data,
+		Tenant:  tenant,
+		Cluster: cluster,
 	}
 	select {
 	case h.broadcast <- msg:

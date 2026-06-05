@@ -881,12 +881,13 @@ func (m *Manager) activeRuntimeLocked() *clusterRuntime {
 // the placeholder's ready channel instead of launching a second connector.
 // Returns nil on unknown context, no-agent-yet, or a failed build.
 //
-// NOTE (A.4 follow-up): pooled engines don't yet get the notification hook
-// (wireInsightHookLocked) and the wsHub broadcast isn't tenant-scoped, so
-// pooled clusters are read-only-correct but not notification/WS-isolated yet.
-// Harmless in OSS (the pool is only ever populated by parkActiveLocked on a
-// switch, and Autopilot is single-cluster for now — see
-// internal/kubebolt-w2-connector-pool-design.md §4b).
+// NOTE (Fase B / EE): WS broadcasts are now (tenant,cluster)-tagged (A.4 seam)
+// and the hub filters by client scope, but pooled runtimes are still gated-off
+// in OSS (parkActiveLocked) and pooled engines don't get the notification hook
+// (wireInsightHookLocked). EE flips this: pooled runtimes broadcast scoped (gate
+// on), the frontend declares each client's active (tenant,cluster), and pooled
+// engines notify. Harmless in OSS — the pool is only populated by a switch and
+// Autopilot is single-cluster for now (internal/kubebolt-w2-connector-pool-design.md §4b).
 func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	pk := poolKey{tenant: tenant, cluster: contextName}
 
@@ -1218,6 +1219,10 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	gate := &atomic.Bool{}
 	gate.Store(true)
 	connector.SetBroadcastGate(gate)
+	// A.4: tag this runtime's WS broadcasts with (tenant, context) so EE
+	// clients only receive their own cluster's events. OSS clients carry no
+	// scope, so this is inert there.
+	connector.SetWSScope(tenantID, contextName)
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)
@@ -1238,6 +1243,7 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	}
 	engine := insights.NewEngine(m.wsHub, insightStore, engineClusterID, tenantID)
 	engine.SetBroadcastGate(gate)
+	engine.SetWSScope(tenantID, contextName)
 
 	go func() {
 		ticker := time.NewTicker(m.insightInterval)

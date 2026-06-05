@@ -63,12 +63,32 @@ type Engine struct {
 	// WS suppression here is correct long-term; notification suppression is the
 	// temporary part. See internal/kubebolt-w2-connector-pool-design.md §4c.
 	broadcastGate *atomic.Bool
+
+	// wsTenant/wsCluster scope this engine's WS broadcasts (A.4). Empty =
+	// global. Set by the manager to (tenantID, contextName).
+	wsTenant  string
+	wsCluster string
 }
 
 // SetBroadcastGate wires the active/parked gate shared with this engine's
 // connector. Called once at runtime construction, before the eval loop starts.
 func (e *Engine) SetBroadcastGate(g *atomic.Bool) {
 	e.broadcastGate = g
+}
+
+// wsTenant/wsCluster scope this engine's WS broadcasts to the (tenant, context)
+// of its runtime (A.4), matching the RuntimeKey dimension EE clients subscribe
+// by. Empty = global (the OSS-degenerate default for any engine built without
+// SetWSScope).
+//
+// NOTE: this is the CONTEXT name, not the engine's clusterID (kube-system UID).
+// Clients scope by the X-KubeBolt-Cluster header = context name, so the emitter
+// must tag with the same dimension or EE filtering would never match.
+
+// SetWSScope tags this engine's WS broadcasts with (tenant, cluster-context).
+func (e *Engine) SetWSScope(tenant, cluster string) {
+	e.wsTenant = tenant
+	e.wsCluster = cluster
 }
 
 // outboundEnabled reports whether this engine's runtime is active, i.e. should
@@ -78,12 +98,14 @@ func (e *Engine) outboundEnabled() bool {
 	return e.broadcastGate == nil || e.broadcastGate.Load()
 }
 
-// broadcast pushes to the WS hub unless this engine's runtime is parked.
+// broadcast pushes to the WS hub unless this engine's runtime is parked. The
+// (wsTenant, wsCluster) scope is empty by default → global delivery, identical
+// to pre-A.4; EE sets it so clients only see their own cluster's events.
 func (e *Engine) broadcast(msgType string, data interface{}) {
 	if !e.outboundEnabled() {
 		return
 	}
-	e.wsHub.Broadcast(msgType, data)
+	e.wsHub.BroadcastScoped(e.wsTenant, e.wsCluster, msgType, data)
 }
 
 // NewEngine creates a new insights engine with all rules. store may be nil

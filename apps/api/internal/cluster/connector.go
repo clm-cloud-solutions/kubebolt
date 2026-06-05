@@ -78,7 +78,13 @@ type Connector struct {
 	// instant) but their resource:updated / resource:deleted events shouldn't
 	// reach clients viewing a different cluster. nil = always broadcast.
 	broadcastGate *atomic.Bool
-	stopCh        chan struct{}
+	// wsTenant/wsCluster scope this connector's WS broadcasts (A.4). Empty =
+	// global (OSS-degenerate default). Set by the manager to (tenantID,
+	// contextName) — the context name, matching the dimension EE clients
+	// subscribe by (X-KubeBolt-Cluster), not the kube-system clusterUID.
+	wsTenant  string
+	wsCluster string
+	stopCh    chan struct{}
 	// recentWrites bridges the read-after-write gap between an
 	// apiserver Patch landing and the informer cache catching up
 	// (~hundreds of ms). Mutation handlers Record(...) the field
@@ -599,12 +605,21 @@ func (c *Connector) SetBroadcastGate(g *atomic.Bool) {
 	c.broadcastGate = g
 }
 
-// broadcast pushes to the WS hub unless this connector's runtime is parked.
+// SetWSScope tags this connector's WS broadcasts with (tenant, cluster-context)
+// so EE clients only receive their own cluster's resource events (A.4).
+func (c *Connector) SetWSScope(tenant, cluster string) {
+	c.wsTenant = tenant
+	c.wsCluster = cluster
+}
+
+// broadcast pushes to the WS hub unless this connector's runtime is parked. The
+// (wsTenant, wsCluster) scope is empty by default → global, identical to
+// pre-A.4; EE sets it so clients only see their own cluster's events.
 func (c *Connector) broadcast(msgType string, obj interface{}) {
 	if c.broadcastGate != nil && !c.broadcastGate.Load() {
 		return
 	}
-	c.wsHub.Broadcast(msgType, obj)
+	c.wsHub.BroadcastScoped(c.wsTenant, c.wsCluster, msgType, obj)
 }
 
 func (c *Connector) onResourceChange(action string, obj interface{}) {

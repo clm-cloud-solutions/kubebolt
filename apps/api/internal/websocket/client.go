@@ -31,8 +31,38 @@ type Client struct {
 	conn      *gorilla.Conn
 	send      chan []byte
 	subs      map[string]bool
+	// tenant/cluster scope the events this client wants (A.4). Empty = receive
+	// every cluster's events (the OSS-degenerate default). EE sets these so a
+	// tenant's client never sees another tenant's resource/insight events.
+	tenant    string
+	cluster   string
 	mu        sync.RWMutex
 	closeOnce sync.Once
+}
+
+// SetScope pins the (tenant, cluster) this client is viewing. Empty values
+// clear the scope (receive all). Safe for concurrent use.
+func (c *Client) SetScope(tenant, cluster string) {
+	c.mu.Lock()
+	c.tenant = tenant
+	c.cluster = cluster
+	c.mu.Unlock()
+}
+
+// matchesScope reports whether a message tagged (tenant, cluster) should reach
+// this client. An unscoped message (empty) is global → always delivered. A
+// client with no scope set receives everything (OSS-degenerate). Otherwise both
+// dimensions must match.
+func (c *Client) matchesScope(tenant, cluster string) bool {
+	if tenant == "" && cluster == "" {
+		return true // global event
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.tenant == "" && c.cluster == "" {
+		return true // unscoped client — receive all
+	}
+	return c.tenant == tenant && c.cluster == cluster
 }
 
 // subscribeMessage is the incoming subscribe/unsubscribe request.
