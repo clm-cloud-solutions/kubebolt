@@ -484,7 +484,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       setIsCompacting(true)
       setError(null)
       try {
-        const resp = await compactCopilotSession(chatMessages, resetAll)
+        const resp = await compactCopilotSession(chatMessages, resetAll, conversationId)
         const notice: CompactNotice = {
           turnsFolded: resp.turnsFolded,
           toolResultsStubbed: resp.toolResultsStubbed ?? 0,
@@ -522,7 +522,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         setIsCompacting(false)
       }
     },
-    [messages, isCompacting, isLoading],
+    [messages, isCompacting, isLoading, conversationId],
   )
 
   // Patch the tool result that emitted an action proposal with execution

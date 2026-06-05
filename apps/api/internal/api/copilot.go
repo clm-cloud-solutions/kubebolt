@@ -341,10 +341,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rec := &copilot.SessionRecord{
-				Timestamp: time.Now(),
-				UserID:    auth.ContextUserID(r),
-				Cluster:   clusterName,
-				Provider:  cfg.Primary.Provider,
+				Timestamp:      time.Now(),
+				UserID:         auth.ContextUserID(r),
+				Cluster:        clusterName,
+				ConversationID: conversationID,
+				Provider:       cfg.Primary.Provider,
 				// Model is resolved through copilot.ResolvedModel so the
 				// stored value reflects the model the provider ACTUALLY
 				// uses. When KUBEBOLT_AI_MODEL is unset the raw
@@ -416,7 +417,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// Refine the heuristic title with the cheap model for a brand-new
 		// conversation — in the background so it never delays the response.
 		if newConversation && rec.FirstUserMessage() != "" {
-			go h.refineConversationTitle(convUserID, conversationID, cfg.Primary, rec.FirstUserMessage(), rec.LastAssistantMessage())
+			go h.refineConversationTitle(convUserID, clusterName, conversationID, cfg.Primary, rec.FirstUserMessage(), rec.LastAssistantMessage())
 		}
 	}
 
@@ -739,23 +740,59 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	finish("max_rounds")
 }
 
+// recordAuxUsage persists a SessionRecord for an LLM call made OUTSIDE the
+// main chat loop (auto-title, standalone manual compaction). The rule is "no
+// LLM consumption without a usage record" — these calls spend real tokens, so
+// they must show up in the admin cost analytics, attributed to the user (and
+// the conversation, when there is one). Best-effort; nil store = no-op.
+func (h *handlers) recordAuxUsage(userID, cluster, conversationID, trigger, provider, model string, usage copilot.Usage, dur time.Duration) {
+	if h.copilotUsage == nil {
+		return
+	}
+	if err := h.copilotUsage.Record(&copilot.SessionRecord{
+		Timestamp:      time.Now(),
+		UserID:         userID,
+		Cluster:        cluster,
+		ConversationID: conversationID,
+		Provider:       provider,
+		Model:          model,
+		Trigger:        trigger,
+		Reason:         "done",
+		Rounds:         1,
+		Usage:          usage,
+		DurationMs:     dur.Milliseconds(),
+	}); err != nil {
+		slog.Default().Warn("failed to record auxiliary copilot usage",
+			slog.String("trigger", trigger),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
 // refineConversationTitle asks the cheap model for a better title than the
 // first-prompt heuristic and persists it. Best-effort + detached: runs in its
 // own goroutine with a fresh context (the request's context is already
 // cancelled once the SSE stream closes), and silently keeps the heuristic on
 // any failure. SetTitle is a field-level load-modify-save so it never clobbers
 // a transcript append from a concurrent turn.
-func (h *handlers) refineConversationTitle(userID, conversationID string, provider config.ProviderConfig, firstUser, assistantReply string) {
+//
+// The title call's token usage is always recorded (even when the reply is
+// unusable) so no LLM spend goes unaccounted.
+func (h *handlers) refineConversationTitle(userID, cluster, conversationID string, provider config.ProviderConfig, firstUser, assistantReply string) {
 	if h.copilotConversations == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	title, err := copilot.GenerateTitle(ctx, provider, firstUser, assistantReply)
-	if err != nil || title == "" {
+	start := time.Now()
+	res, err := copilot.GenerateTitle(ctx, provider, firstUser, assistantReply)
+	if res != nil && res.Usage.Total() > 0 {
+		h.recordAuxUsage(userID, cluster, conversationID, "auto_title", provider.Provider, res.Model, res.Usage, time.Since(start))
+	}
+	if err != nil || res == nil || res.Title == "" {
 		return
 	}
-	if err := h.copilotConversations.SetTitle(copilot.DefaultConversationTenant, userID, conversationID, title); err != nil {
+	if err := h.copilotConversations.SetTitle(copilot.DefaultConversationTenant, userID, conversationID, res.Title); err != nil {
 		slog.Default().Warn("failed to persist refined conversation title",
 			slog.String("error", err.Error()),
 			slog.String("conversationId", conversationID),
@@ -795,6 +832,9 @@ type CopilotCompactRequest struct {
 	// ResetAll true → summarize everything and return a single summary
 	// message. False → preserve the last CompactPreserveTurns turns intact.
 	ResetAll bool `json:"resetAll,omitempty"`
+	// ConversationID lets the recorded compaction usage cross-reference the
+	// conversation it summarized. Optional.
+	ConversationID string `json:"conversationId,omitempty"`
 }
 
 // CopilotCompactResponse mirrors copilot.CompactResult with JSON naming.
@@ -834,6 +874,7 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 		slog.String("user", auth.ContextUserID(r)),
 	)
 
+	compactStart := time.Now()
 	cr, err := copilot.Compact(r.Context(), req.Messages, copilot.CompactOptions{
 		PreserveTurns: cfg.CompactPreserveTurns,
 		Provider:      cfg.Primary,
@@ -845,6 +886,13 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusBadGateway, friendlyCopilotError(err))
 		return
 	}
+
+	// A manual compaction is a real LLM call — record its token usage so it
+	// isn't invisible spend (the "no LLM consumption without a usage record"
+	// rule). Resolve the model the summarizer actually used for pricing.
+	compactModel := copilot.ResolvedModel(cfg.Primary.Provider, cr.UsedModel)
+	h.recordAuxUsage(auth.ContextUserID(r), h.manager.ActiveContext(), req.ConversationID,
+		"manual_compact", cfg.Primary.Provider, compactModel, cr.Usage, time.Since(compactStart))
 
 	logger.Info("copilot manual compact",
 		slog.Int("turnsFolded", cr.TurnsFolded),

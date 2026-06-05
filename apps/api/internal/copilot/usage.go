@@ -27,6 +27,11 @@ type SessionRecord struct {
 	Timestamp  time.Time            `json:"timestamp"`
 	UserID     string               `json:"userId"`
 	Cluster    string               `json:"cluster"`
+	// ConversationID cross-references the persisted conversation this usage
+	// belongs to (empty for calls with no conversation, e.g. a standalone
+	// manual compaction). Lets the admin usage view link a cost record back
+	// to its transcript.
+	ConversationID string            `json:"conversationId,omitempty"`
 	Provider   string               `json:"provider"`
 	Model      string               `json:"model"`
 	Trigger    string               `json:"trigger"`

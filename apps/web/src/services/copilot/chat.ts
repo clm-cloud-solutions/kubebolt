@@ -123,6 +123,7 @@ export async function* sendCopilotChat(
 export async function compactCopilotSession(
   messages: CopilotMessage[],
   resetAll: boolean,
+  conversationId?: string | null,
 ): Promise<CompactResponse> {
   const token = getAccessToken()
   const res = await fetch('/api/v1/copilot/compact', {
@@ -134,6 +135,8 @@ export async function compactCopilotSession(
     body: JSON.stringify({
       messages: serializeMessages(messages),
       resetAll,
+      // Cross-references the recorded compaction-token usage to this conversation.
+      conversationId: conversationId ?? undefined,
     }),
   })
   if (!res.ok) {

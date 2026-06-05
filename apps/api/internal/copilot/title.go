@@ -38,18 +38,27 @@ func SanitizeTitle(s string) string {
 	return truncateRunes(s, conversationTitleMaxLen)
 }
 
+// TitleResult is what GenerateTitle returns: the title plus the token usage
+// and the model actually used, so the caller can record the spend (no LLM
+// consumption goes unaccounted).
+type TitleResult struct {
+	Title string
+	Usage Usage
+	Model string // resolved model the call ran against, for pricing
+}
+
 // GenerateTitle asks the cheap model of the configured provider for a short
 // (3–6 word) title summarizing the opening exchange. Best-effort: returns an
 // error the caller treats as "keep the heuristic". Mirrors compact.go's
 // cheap-model invocation so it shares the same provider/model fallback.
-func GenerateTitle(ctx context.Context, provider config.ProviderConfig, firstUserMsg, assistantReply string) (string, error) {
+func GenerateTitle(ctx context.Context, provider config.ProviderConfig, firstUserMsg, assistantReply string) (*TitleResult, error) {
 	p := provider
 	if model := CheapModelFor(provider.Provider); model != "" {
 		p.Model = model
 	}
 	prov := GetProvider(p.Provider)
 	if prov == nil {
-		return "", fmt.Errorf("unknown title provider %q", p.Provider)
+		return nil, fmt.Errorf("unknown title provider %q", p.Provider)
 	}
 
 	sys := "You write a SHORT title (3-6 words) for a Kubernetes operations chat. " +
@@ -68,11 +77,13 @@ func GenerateTitle(ctx context.Context, provider config.ProviderConfig, firstUse
 		MaxTokens: 32,
 	})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	title := SanitizeTitle(resp.Text)
 	if title == "" {
-		return "", fmt.Errorf("title generation returned empty")
+		// Still report the usage — the call DID consume tokens even though the
+		// reply was unusable — so the caller can account for the spend.
+		return &TitleResult{Title: "", Usage: resp.Usage, Model: ResolvedModel(p.Provider, p.Model)}, fmt.Errorf("title generation returned empty")
 	}
-	return title, nil
+	return &TitleResult{Title: title, Usage: resp.Usage, Model: ResolvedModel(p.Provider, p.Model)}, nil
 }

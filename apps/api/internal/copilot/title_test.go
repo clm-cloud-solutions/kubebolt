@@ -47,7 +47,7 @@ func TestSanitizeTitle(t *testing.T) {
 
 func TestGenerateTitle_SuccessSanitizes(t *testing.T) {
 	registerFake(t, "title-fake-ok", `  "payments pod OOMKilled."  `)
-	title, err := GenerateTitle(
+	res, err := GenerateTitle(
 		context.Background(),
 		config.ProviderConfig{Provider: "title-fake-ok"},
 		"why is the payments pod OOMing?",
@@ -56,8 +56,12 @@ func TestGenerateTitle_SuccessSanitizes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if title != "payments pod OOMKilled" {
-		t.Fatalf("title = %q, want sanitized %q", title, "payments pod OOMKilled")
+	if res.Title != "payments pod OOMKilled" {
+		t.Fatalf("title = %q, want sanitized %q", res.Title, "payments pod OOMKilled")
+	}
+	// The call's token usage must be surfaced so the spend can be recorded.
+	if res.Usage.Total() == 0 {
+		t.Fatalf("GenerateTitle dropped the call's token usage")
 	}
 }
 
@@ -73,11 +77,17 @@ func TestGenerateTitle_UnknownProviderErrors(t *testing.T) {
 
 func TestGenerateTitle_EmptyReplyErrors(t *testing.T) {
 	registerFake(t, "title-fake-empty", "    ")
-	if _, err := GenerateTitle(
+	res, err := GenerateTitle(
 		context.Background(),
 		config.ProviderConfig{Provider: "title-fake-empty"},
 		"q", "",
-	); err == nil {
+	)
+	if err == nil {
 		t.Fatalf("expected error when the model returns an empty title")
+	}
+	// Even on an unusable reply the call consumed tokens — usage must still be
+	// reported so the caller can account for the spend.
+	if res == nil || res.Usage.Total() == 0 {
+		t.Fatalf("usage must be surfaced even when the title reply is empty")
 	}
 }
