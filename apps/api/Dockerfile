@@ -10,7 +10,7 @@
 # Explicit patch pin (not floating 1.25-alpine) so the build reuses
 # the CVE-patched toolchain consistently across CI / release / local.
 # Bump in lockstep with .github/workflows/release.yml setup-go.
-FROM --platform=$BUILDPLATFORM golang:1.25.10-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.25.11-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
