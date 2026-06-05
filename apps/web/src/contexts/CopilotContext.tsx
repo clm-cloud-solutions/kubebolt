@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react'
+import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from 'react'
 import { useLocation } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '@/services/api'
@@ -137,20 +137,48 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
 
   // ─── Conversation persistence + resume ───
   const queryClient = useQueryClient()
+  // The active user owns their conversations. We key the localStorage resume
+  // pointer by user id so two users sharing a browser never resume each
+  // other's conversation, and we reset in-memory state whenever the user
+  // changes (login / logout / switch). "anon" covers the auth-disabled
+  // single-user install (one stable key).
+  const userKey = auth.user?.id ?? 'anon'
+  const pointerStorageKey = `${ACTIVE_CONVERSATION_KEY}:${userKey}`
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [conversationTitle, setConversationTitle] = useState<string | null>(null)
   const [staleResume, setStaleResume] = useState<StaleResumeInfo | null>(null)
-  // Guards the one-shot rehydrate-on-mount so it doesn't re-run on every
-  // config/auth state change.
+  // Guards the one-shot rehydrate so it doesn't re-run on every config/auth
+  // state change. Reset to false on a user change so the new user rehydrates.
   const [hydrated, setHydrated] = useState(false)
 
-  const persistActivePointer = useCallback((id: string | null) => {
-    try {
-      if (id) localStorage.setItem(ACTIVE_CONVERSATION_KEY, id)
-      else localStorage.removeItem(ACTIVE_CONVERSATION_KEY)
-    } catch {
-      // storage disabled / quota — pointer is a convenience, not load-bearing
-    }
+  const persistActivePointer = useCallback(
+    (id: string | null) => {
+      try {
+        if (id) localStorage.setItem(pointerStorageKey, id)
+        else localStorage.removeItem(pointerStorageKey)
+      } catch {
+        // storage disabled / quota — pointer is a convenience, not load-bearing
+      }
+    },
+    [pointerStorageKey],
+  )
+
+  // resetConversationState clears the in-memory transcript WITHOUT touching any
+  // user's localStorage pointer — used on a user change so the next user never
+  // sees the previous user's conversation, while each user's saved pointer
+  // survives for when they return.
+  const resetConversationState = useCallback(() => {
+    setMessages([])
+    setError(null)
+    setPendingToolCalls([])
+    setUsedFallback(false)
+    setSessionUsage(null)
+    setSessionRounds(0)
+    setCompactNotices([])
+    setLastRoundUsage(null)
+    setConversationId(null)
+    setConversationTitle(null)
+    setStaleResume(null)
   }, [])
 
   // hydrateFromRecord replaces the in-memory transcript with a persisted
@@ -213,7 +241,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     let cancelled = false
     let pointer: string | null = null
     try {
-      pointer = localStorage.getItem(ACTIVE_CONVERSATION_KEY)
+      pointer = localStorage.getItem(pointerStorageKey)
     } catch {
       pointer = null
     }
@@ -235,7 +263,20 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true
     }
-  }, [hydrated, auth.isLoading, config?.enabled, hydrateFromRecord, persistActivePointer])
+  }, [hydrated, auth.isLoading, config?.enabled, pointerStorageKey, hydrateFromRecord, persistActivePointer])
+
+  // Reset Kobi when the active user changes (login / logout / account switch).
+  // The CopilotProvider is mounted at the app root and does NOT remount on an
+  // SPA login, so without this the previous user's in-memory transcript would
+  // stay visible to the next user. Clearing state + flipping `hydrated` makes
+  // the rehydrate effect above re-run against the NEW user's pointer.
+  const prevUserKeyRef = useRef(userKey)
+  useEffect(() => {
+    if (prevUserKeyRef.current === userKey) return
+    prevUserKeyRef.current = userKey
+    resetConversationState()
+    setHydrated(false)
+  }, [userKey, resetConversationState])
 
   const sendMessage = useCallback(
     async (text: string, options?: SendMessageOptions) => {
