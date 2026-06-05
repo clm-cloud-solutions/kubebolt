@@ -12,7 +12,7 @@ import {
   ExternalLink,
   Trash2,
 } from 'lucide-react'
-import { api, ApiError } from '@/services/api'
+import { api, ApiError, type ActionAudit } from '@/services/api'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
@@ -44,7 +44,7 @@ interface Props {
 export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { recordProposalOutcome } = useCopilot()
+  const { recordProposalOutcome, conversationId } = useCopilot()
   const auth = useAuth()
   // Seed the local status from any persisted execution metadata. If the
   // chat re-renders this card after the user already acted (or after a
@@ -72,7 +72,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
     setStatus('executing')
     setError(null)
     try {
-      const result = await runProposal(proposal)
+      const result = await runProposal(proposal, conversationId)
       setResultMsg(result)
       setStatus('success')
       recordProposalOutcome(toolCallId, 'executed', result)
@@ -475,8 +475,11 @@ function formatProposalParam(key: string, value: unknown): string {
 // runProposal dispatches the proposal to the matching mutation endpoint.
 // New action types added to the backend whitelist must be added here too —
 // keeping this switch exhaustive is what enforces the frontend whitelist.
-async function runProposal(p: ActionProposal): Promise<string> {
-  const SOURCE = 'copilot_proposal'
+async function runProposal(p: ActionProposal, conversationId?: string | null): Promise<string> {
+  // Tag every proposal-sourced mutation with the conversation that produced it,
+  // so the durable action audit cross-references the chat ("why was this pod
+  // restarted?"). Threaded through each api call as the audit context.
+  const SOURCE: ActionAudit = { source: 'copilot_proposal', conversationId: conversationId ?? undefined }
   switch (p.action) {
     case 'restart_workload': {
       const r = await api.restartResource(p.target.type, p.target.namespace, p.target.name, SOURCE)

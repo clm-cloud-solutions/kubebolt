@@ -109,6 +109,7 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 			Params:               params,
 			Result:               result,
 			OriginatingInsightID: r.Header.Get("X-KubeBolt-Origin-Insight"),
+			ConversationID:       r.Header.Get("X-KubeBolt-Conversation-Id"),
 		}
 		if err != nil {
 			rec.Error = err.Error()
