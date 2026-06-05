@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,6 +107,17 @@ type CopilotChatRequest struct {
 	// Now block. Reserved for future drift detection / multi-region
 	// debugging without a schema change. Optional.
 	ClientNow string `json:"clientNow,omitempty"`
+	// ConversationID ties this turn to a persisted conversation so it can be
+	// resumed after a browser refresh / re-login. Empty on the first turn of
+	// a new conversation — the server generates one and returns it in the
+	// `meta` event. Persistence is skipped silently when no store is wired
+	// (auth/BoltDB disabled).
+	ConversationID string `json:"conversationId,omitempty"`
+	// OriginatingInsightID links a conversation that began from an insight
+	// (the insight's stable fingerprint) so the insight detail can deep-link
+	// "Kobi analyzed this" back to resume. Sent only on the first turn of an
+	// insight-triggered conversation; preserved across later turns.
+	OriginatingInsightID string `json:"originatingInsightId,omitempty"`
 }
 
 // HandleCopilotConfig returns the public copilot configuration (no API keys).
@@ -214,6 +226,22 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		trigger = "manual"
 	}
 
+	// Resolve the conversation identity for persistence + resume. A brand-new
+	// conversation has no id yet — we mint one and hand it back in the `meta`
+	// event up-front, so a mid-stream refresh can still resume before `done`
+	// lands. Owner is the user (conversations are personal); fall back to a
+	// stable "local" id when auth is disabled so single-user installs persist.
+	convUserID := auth.ContextUserID(r)
+	if convUserID == "" {
+		convUserID = copilot.FallbackConversationUser
+	}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	newConversation := conversationID == ""
+	if newConversation {
+		conversationID = copilot.NewConversationID()
+	}
+	writeSSEEvent(w, flusher, "meta", map[string]any{"conversationId": conversationID})
+
 	logger := slog.Default().With(
 		slog.String("component", "copilot"),
 		slog.String("user", auth.ContextUserID(r)),
@@ -261,6 +289,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	var sessionToolCalls int
 	sessionStart := time.Now()
 	roundsUsed := 0
+	// Provider-reported usage of the most recent round. Stored on the
+	// conversation as LastRoundUsage so a resumed chat seeds its first
+	// auto-compact decision accurately (same hint the frontend carries).
+	var lastTurnUsage copilot.Usage
 
 	// Per-tool breakdown: nombre → {calls, bytes, errors, duration}
 	type toolStats struct {
@@ -338,6 +370,53 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			if err := h.copilotUsage.Record(rec); err != nil {
 				logger.Warn("failed to persist copilot session", slog.String("error", err.Error()))
 			}
+		}
+	}
+
+	// persistConversation write-throughs the full transcript so the operator
+	// can resume after a refresh / re-login. Called once per request on every
+	// terminal path (done / error / max_rounds) — even an errored turn saves
+	// what happened so the user can pick it back up. No-op when no store is
+	// wired (auth/BoltDB disabled). Stays out of the stateless chat loop:
+	// resume just pre-populates `messages` the loop already consumes.
+	persistConversation := func(msgs []copilot.Message) {
+		if h.copilotConversations == nil || len(msgs) == 0 {
+			return
+		}
+		tenant := copilot.DefaultConversationTenant
+		var lru *copilot.Usage
+		if lastTurnUsage.Total() > 0 {
+			u := lastTurnUsage
+			lru = &u
+		}
+		// Load any prior copy so MergeConversationRecord can preserve the
+		// identity-stable fields (CreatedAt, refined Title, Archived, origin
+		// Trigger, insight provenance, last-round usage seed) across resumes.
+		existing, _, _ := h.copilotConversations.Get(tenant, convUserID, conversationID)
+		rec := copilot.MergeConversationRecord(copilot.ConversationUpsertInput{
+			ID:                   conversationID,
+			TenantID:             tenant,
+			UserID:               convUserID,
+			ClusterID:            clusterName,
+			Provider:             cfg.Primary.Provider,
+			Model:                copilot.ResolvedModel(cfg.Primary.Provider, cfg.Primary.Model),
+			Messages:             msgs,
+			Trigger:              trigger,
+			OriginatingInsightID: strings.TrimSpace(req.OriginatingInsightID),
+			LastRoundUsage:       lru,
+			Now:                  time.Now(),
+		}, existing)
+		if err := h.copilotConversations.Upsert(rec); err != nil {
+			logger.Warn("failed to persist conversation",
+				slog.String("error", err.Error()),
+				slog.String("conversationId", conversationID),
+			)
+			return
+		}
+		// Refine the heuristic title with the cheap model for a brand-new
+		// conversation — in the background so it never delays the response.
+		if newConversation && rec.FirstUserMessage() != "" {
+			go h.refineConversationTitle(convUserID, conversationID, cfg.Primary, rec.FirstUserMessage(), rec.LastAssistantMessage())
 		}
 	}
 
@@ -475,12 +554,14 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			writeSSEEvent(w, flusher, "error", map[string]string{"error": friendlyCopilotError(err)})
 			writeSSEEvent(w, flusher, "done", nil)
 			roundsUsed = round + 1
+			persistConversation(messages)
 			finish("error")
 			return
 		}
 
 		// Accumulate token usage for the session
 		sessionUsage.Add(resp.Usage)
+		lastTurnUsage = resp.Usage
 		roundsUsed = round + 1
 
 		// Capture full input size (non-cached + cached) of this round for
@@ -584,8 +665,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 			writeSSEEvent(w, flusher, "done", map[string]any{
-				"messages": finalMessages,
+				"messages":       finalMessages,
+				"conversationId": conversationID,
 			})
+			persistConversation(finalMessages)
 			finish("done")
 			return
 		}
@@ -652,7 +735,32 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
 	})
 	writeSSEEvent(w, flusher, "done", nil)
+	persistConversation(messages)
 	finish("max_rounds")
+}
+
+// refineConversationTitle asks the cheap model for a better title than the
+// first-prompt heuristic and persists it. Best-effort + detached: runs in its
+// own goroutine with a fresh context (the request's context is already
+// cancelled once the SSE stream closes), and silently keeps the heuristic on
+// any failure. SetTitle is a field-level load-modify-save so it never clobbers
+// a transcript append from a concurrent turn.
+func (h *handlers) refineConversationTitle(userID, conversationID string, provider config.ProviderConfig, firstUser, assistantReply string) {
+	if h.copilotConversations == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	title, err := copilot.GenerateTitle(ctx, provider, firstUser, assistantReply)
+	if err != nil || title == "" {
+		return
+	}
+	if err := h.copilotConversations.SetTitle(copilot.DefaultConversationTenant, userID, conversationID, title); err != nil {
+		slog.Default().Warn("failed to persist refined conversation title",
+			slog.String("error", err.Error()),
+			slog.String("conversationId", conversationID),
+		)
+	}
 }
 
 // callProvider invokes the configured provider for one chat turn.

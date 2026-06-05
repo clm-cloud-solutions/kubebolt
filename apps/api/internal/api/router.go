@@ -31,6 +31,10 @@ func NewRouter(
 	corsOrigins []string,
 	copilotCfg config.CopilotConfig,
 	copilotUsage *copilot.UsageStore,
+	// copilotConversations persists per-user Kobi transcripts for history +
+	// resume. Optional — nil when auth/persistence is disabled (chat stays
+	// ephemeral, the /copilot/conversations endpoints 503).
+	copilotConversations copilot.ConversationStore,
 	authHandlers *auth.Handlers,
 	tenantHandlers *auth.TenantHandlers,
 	notifManager *notifications.Manager,
@@ -78,6 +82,7 @@ func NewRouter(
 		settingsRuntime:      settingsRuntime,
 		bootEnv:              bootEnv,
 		copilotUsage:         copilotUsage,
+		copilotConversations: copilotConversations,
 		authHandlers:         authHandlers,
 		notifications:        notifManager,
 		integrations:         integrationRegistry,
@@ -175,6 +180,16 @@ func NewRouter(
 			// underlying poller via Settings → General. Returns
 			// {"enabled": false} when disabled at env or runtime.
 			r.Get("/update-check", h.handleUpdateCheck)
+
+			// Kobi conversation history — per-user, no active connector
+			// required (reads BoltDB) so operators can browse / resume past
+			// conversations even when the cluster is unreachable. Any logged-in
+			// role; every handler enforces (tenant, user) ownership so a user
+			// only ever sees their own. Writes happen inside /copilot/chat.
+			r.Get("/copilot/conversations", h.handleListConversations)
+			r.Get("/copilot/conversations/{id}", h.handleGetConversation)
+			r.Patch("/copilot/conversations/{id}", h.handlePatchConversation)
+			r.Delete("/copilot/conversations/{id}", h.handleDeleteConversation)
 
 			// Metrics storage (VictoriaMetrics) PromQL pass-through — no cluster
 			// connection required. Data is queried from the TSDB directly.

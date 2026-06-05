@@ -254,6 +254,10 @@ func main() {
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// copilotConversations persists per-user Kobi transcripts for history +
+	// resume. Wired alongside copilotUsage inside the authCfg.Enabled block
+	// (needs the open BoltDB). Interface type so it stays nil-safe.
+	var copilotConversations copilot.ConversationStore
 	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
 	// is disabled — same gate as the rest of the admin surface, since
 	// persistence requires BoltDB to be open. Constructed inside the
@@ -399,6 +403,14 @@ func main() {
 		// Attach the copilot usage store so admin analytics survive restarts.
 		// Shares the same BoltDB file; bucket created by auth.NewStore.
 		copilotUsage = copilot.NewUsageStore(store.DB(), auth.CopilotSessionsBucket())
+
+		// Persistent Kobi conversation store — full transcripts per user so
+		// the operator can refresh / re-login and resume. Same BoltDB file;
+		// bucket created by auth.NewStore. Retention + per-user cap come from
+		// the environment (KUBEBOLT_COPILOT_CONVERSATION_*), defaulting to
+		// 90d / 200 per user.
+		convRetention, convMaxPerUser := copilot.ConversationStoreConfigFromEnv()
+		copilotConversations = copilot.NewBoltConversationStore(store.DB(), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
 
 		// Tenants + ingest tokens (Sprint A). Auto-seeds the "default"
 		// tenant on first boot; the admin REST surface lets operators
@@ -742,7 +754,7 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
