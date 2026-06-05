@@ -38,6 +38,10 @@ type handlers struct {
 	settingsRuntime  *settings.Runtime   // nil when auth/persistence disabled — same gate as copilotUsage
 	bootEnv          map[string]string   // snapshot of KUBEBOLT_* env vars captured at process start
 	copilotUsage     *copilot.UsageStore // nil when auth/persistence disabled
+	// copilotConversations persists Kobi chat transcripts per user so the
+	// operator can refresh / re-login and resume. nil when auth/persistence
+	// disabled (same gate as copilotUsage) — chat still works, just ephemeral.
+	copilotConversations copilot.ConversationStore
 	authHandlers     *auth.Handlers
 	notifications *notifications.Manager // nil when no webhook URLs configured
 	integrations  *integrations.Registry

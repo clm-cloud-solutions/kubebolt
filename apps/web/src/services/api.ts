@@ -14,6 +14,7 @@ import type {
   HelmReleaseDetail,
 } from '@/types/kubernetes'
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/types/auth'
+import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
 
 const API_BASE = '/api/v1'
 
@@ -181,6 +182,19 @@ async function putJSON<T>(url: string, body: unknown, headers?: Record<string, s
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: typeof body === 'string' ? body : JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const { message, payload } = await extractErrorPayload(res)
+    throw new ApiError(res.status, message, payload)
+  }
+  return parseJSONOrEmpty<T>(res)
+}
+
+async function patchJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+  const res = await fetchWithAuth(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
   })
   if (!res.ok) {
     const { message, payload } = await extractErrorPayload(res)
@@ -875,6 +889,25 @@ export const api = {
       proxyMode: boolean
       fallback?: { provider: string; model: string }
     }>(`${API_BASE}/copilot/config`),
+
+  // Kobi conversation history (per-user persist + resume).
+  listConversations: (params?: { cluster?: string; q?: string; archived?: boolean; limit?: number }) =>
+    fetchJSON<{ conversations: ConversationSummary[] }>(
+      `${API_BASE}/copilot/conversations${buildQuery({
+        cluster: params?.cluster,
+        q: params?.q,
+        archived: params?.archived ? 'true' : undefined,
+        limit: params?.limit,
+      })}`,
+    ).then((r) => r.conversations ?? []),
+  getConversation: (id: string) =>
+    fetchJSON<ConversationDetail>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
+  patchConversation: (
+    id: string,
+    body: { title?: string; archived?: boolean; messages?: unknown[] },
+  ) => patchJSON<ConversationSummary>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`, body),
+  deleteConversation: (id: string) =>
+    deleteRequest<{ ok: boolean }>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
 
   // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
   queryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>

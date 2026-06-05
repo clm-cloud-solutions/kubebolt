@@ -23,6 +23,7 @@ var (
 	clusterDisplayBucket   = []byte("cluster_display")  // display name overrides
 	clusterUIDBucket       = []byte("cluster_uid")      // kube-system UID per kubeconfig context (resolved at connect time)
 	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
+	copilotConvBucket      = []byte("copilot_conversations") // persistent Kobi conversation transcripts (per user)
 	agentsBucket           = []byte("agents")           // persistent agent registry records
 	insightsBucket         = []byte("insights")         // persistent insight records (Sprint 0)
 	kobiActionsBucket      = []byte("kobi_actions")     // durable mutation audit trail (Sprint 1)
@@ -122,7 +123,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, agentsBucket, insightsBucket, kobiActionsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -147,6 +148,12 @@ func (s *Store) Close() error {
 // across the codebase are created at Store initialization.
 func (s *Store) DB() *bolt.DB {
 	return s.db
+}
+
+// CopilotConversationsBucket returns the bucket name for persistent Kobi
+// conversation transcripts (per-user history + resume).
+func CopilotConversationsBucket() []byte {
+	return copilotConvBucket
 }
 
 // CopilotSessionsBucket returns the bucket name for copilot usage records.

@@ -13,8 +13,10 @@ function resolveBrowserTimezone(): string {
 }
 
 // Strip transient UI fields before sending to backend. Compact notices are
-// UI-only markers and never leave the client.
-function serializeMessages(messages: CopilotMessage[]) {
+// UI-only markers and never leave the client. Exported so the context can
+// reuse the exact same wire shape when syncing a transcript outside a chat
+// turn (e.g. persisting an action-proposal outcome).
+export function serializeMessages(messages: CopilotMessage[]) {
   return messages
     .filter((m) => m.kind !== 'compact-notice')
     .map((m) => ({
@@ -44,6 +46,8 @@ export async function* sendCopilotChat(
   signal?: AbortSignal,
   trigger?: string,
   lastRoundUsage?: CopilotUsage | null,
+  conversationId?: string | null,
+  originatingInsightId?: string | null,
 ): AsyncGenerator<CopilotStreamEvent> {
   const token = getAccessToken()
   const res = await fetch('/api/v1/copilot/chat', {
@@ -63,6 +67,12 @@ export async function* sendCopilotChat(
       // JSON-heavy tool results and misses the trigger on round 0 of
       // follow-up requests.
       lastRoundUsage: lastRoundUsage ?? undefined,
+      // Resume binding: the server persists the transcript under this id so a
+      // refresh / re-login can pick the conversation back up. Empty on the
+      // first turn of a new conversation — the server mints one and returns it
+      // in the `meta` event.
+      conversationId: conversationId ?? undefined,
+      originatingInsightId: originatingInsightId ?? undefined,
       // Anchor Kobi to the user's clock. Without these the model has no
       // notion of "today" and guesses from its training cutoff — which
       // produces day-off errors on relative-time questions like "ayer
@@ -113,6 +123,7 @@ export async function* sendCopilotChat(
 export async function compactCopilotSession(
   messages: CopilotMessage[],
   resetAll: boolean,
+  conversationId?: string | null,
 ): Promise<CompactResponse> {
   const token = getAccessToken()
   const res = await fetch('/api/v1/copilot/compact', {
@@ -124,6 +135,8 @@ export async function compactCopilotSession(
     body: JSON.stringify({
       messages: serializeMessages(messages),
       resetAll,
+      // Cross-references the recorded compaction-token usage to this conversation.
+      conversationId: conversationId ?? undefined,
     }),
   })
   if (!res.ok) {

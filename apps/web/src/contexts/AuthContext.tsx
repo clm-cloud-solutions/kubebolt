@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { api, setAccessToken, clearAccessToken } from '@/services/api'
 import type { AuthUser, UserRole } from '@/types/auth'
 
@@ -18,6 +19,7 @@ interface AuthContextValue {
 const AuthContext = createContext<AuthContextValue | null>(null)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient()
   const [isAuthEnabled, setIsAuthEnabled] = useState<boolean | null>(null)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -72,7 +74,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     clearAccessToken()
     setUser(null)
-  }, [])
+    // Drop every cached server query so the next user who logs in on this
+    // same browser never sees the previous user's data (e.g. Kobi's
+    // conversation list). Per-user in-memory state is reset separately by
+    // the contexts that watch the active user id.
+    queryClient.clear()
+  }, [queryClient])
 
   const hasRole = useCallback((minRole: UserRole): boolean => {
     // When auth is disabled, everyone has admin access
