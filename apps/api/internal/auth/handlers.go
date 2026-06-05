@@ -14,6 +14,21 @@ type Handlers struct {
 	jwt         *JWTService
 	authEnabled bool
 	cfg         config.AuthConfig
+	// apiTokens is optional. When wired (SetAPITokenStore), RequireAuth
+	// also accepts long-lived REST API tokens (kbs_/kbk_) in addition to
+	// the user-session JWT. nil → only JWT auth.
+	apiTokens *APITokenStore
+}
+
+// SetAPITokenStore wires the REST API-token store so RequireAuth accepts
+// kbs_/kbk_ bearer tokens. Optional; call once at boot from main.go.
+func (h *Handlers) SetAPITokenStore(s *APITokenStore) {
+	h.apiTokens = s
+}
+
+// APITokens exposes the wired store (nil if unset) for the admin handlers.
+func (h *Handlers) APITokens() *APITokenStore {
+	return h.apiTokens
 }
 
 // NewHandlers creates auth handlers with a store and JWT service.

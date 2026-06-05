@@ -409,6 +409,16 @@ func main() {
 		}
 		tenantsStore = ts
 
+		// REST API tokens — long-lived bearer tokens for non-interactive
+		// callers (service tokens kbs_ for Autopilot / EE; customer keys
+		// kbk_ later). Shares the same BoltDB file. Wiring it makes
+		// RequireAuth accept these in addition to the user-session JWT.
+		apiTokenStore, err := auth.NewAPITokenStore(store.DB())
+		if err != nil {
+			fatal("failed to open api token store", slog.String("error", err.Error()))
+		}
+		authHandlers.SetAPITokenStore(apiTokenStore)
+
 		// Persistent agent registry. Restart-survival for the
 		// agent-proxy cluster list — operators expect their dashboard
 		// to keep showing connected clusters across `helm upgrade` of

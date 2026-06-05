@@ -135,6 +135,11 @@ func NewRouter(
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
 			r.Use(authHandlers.RequireAuth)
+			// Restrict REST API-token callers (kbs_/kbk_) to their granted
+			// path scopes. No-op for user-session JWT callers. Must run
+			// after RequireAuth (which establishes the principal) — fail fast
+			// on out-of-scope paths before tenant/cluster resolution.
+			r.Use(authHandlers.EnforceAPITokenScope)
 			// Resolve the request's tenant (org) once, after auth, and
 			// stash it in context. OSS: always DefaultTenantName. EE swaps
 			// the resolver for real multi-tenant resolution. See
@@ -215,6 +220,16 @@ func NewRouter(
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
 				r.Get("/admin/actions", h.handleListActions)
+			})
+
+			// REST API tokens — service tokens (kbs_) for Autopilot / EE
+			// machine callers, and customer keys (kbk_) later. Admin only.
+			// Plaintext is returned once at creation.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/admin/api-tokens", authHandlers.ListAPITokens)
+				r.Post("/admin/api-tokens", authHandlers.CreateAPIToken)
+				r.Delete("/admin/api-tokens/{id}", authHandlers.DeleteAPIToken)
 			})
 
 			// Tenant + ingest token administration — global admin only.

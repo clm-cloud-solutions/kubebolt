@@ -275,6 +275,15 @@ export const api = {
       `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}`,
     ),
 
+  // --- REST API tokens (global, not tenant-scoped in OSS) ---
+  listAPITokens: () => fetchJSON<APIToken[]>(`${API_BASE}/admin/api-tokens`),
+
+  createAPIToken: (body: CreateAPITokenRequest) =>
+    postJSON<IssuedAPIToken>(`${API_BASE}/admin/api-tokens`, body),
+
+  revokeAPIToken: (id: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/admin/api-tokens/${id}`),
+
   // --- Per-tenant Prom remote_write limits (Phase 3) ---
   //
   // GET returns the three-view DTO: effective (what enforcement uses),
@@ -1940,6 +1949,44 @@ export interface TenantWithTokens extends Tenant {
 export interface IssuedToken {
   token: string // plaintext — shown once
   info: IngestToken
+}
+
+// --- REST API tokens (kbs_ service / kbk_ customer key) ---
+//
+// Distinct from the ingest tokens above: these authenticate non-interactive
+// callers against the REST API (/api/v1/*). Service tokens (kbs_) are for
+// internal machine callers (Autopilot, EE) and are rejected over the public
+// edge; API tokens (kbk_) are for customer integrations / CI-CD and work
+// from anywhere. Mirrors apps/api/internal/auth/api_tokens_store.go.
+export type APITokenType = 'service' | 'apikey'
+
+export interface APIToken {
+  id: string
+  prefix: string // e.g. "kbs_7ixpmg36" — safe to display
+  label: string
+  type: APITokenType
+  role: string // admin | editor | viewer
+  scopes?: string[]
+  tenantId?: string
+  clusterId?: string
+  createdAt: string
+  createdBy: string
+  lastUsedAt?: string
+  expiresAt?: string
+  revokedAt?: string
+}
+
+export interface IssuedAPIToken {
+  token: string // plaintext — shown once
+  apiToken: APIToken
+}
+
+export interface CreateAPITokenRequest {
+  label: string
+  type?: APITokenType
+  role?: string
+  scopes?: string[]
+  ttlHours?: number
 }
 
 // --- Per-tenant Prom remote_write limits ---
