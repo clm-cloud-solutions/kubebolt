@@ -1,8 +1,11 @@
 package cluster
 
 import (
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
 // fakePooledRuntime builds a clusterRuntime that survives eviction's teardown
@@ -84,6 +87,46 @@ func TestReapIdle_DisabledNoop(t *testing.T) {
 	if _, ok := m.runtimes[poolKey{"default", "x"}]; !ok {
 		t.Fatalf("idle eviction disabled (timeout=0) must not evict anything")
 	}
+}
+
+func TestParkActive_DisablesBroadcastGate(t *testing.T) {
+	gate := &atomic.Bool{}
+	gate.Store(true) // active runtime is broadcasting
+	m := &Manager{
+		tenantID:      "default",
+		activeContext: "a",
+		connector:     &Connector{stopCh: make(chan struct{})},
+		activeGate:    gate,
+		runtimes:      map[poolKey]*clusterRuntime{},
+	}
+
+	m.parkActiveLocked()
+
+	if gate.Load() {
+		t.Fatalf("parked runtime must have its broadcast gate disabled")
+	}
+	if m.activeGate != nil {
+		t.Fatalf("active gate should be cleared after parking")
+	}
+	rt, ok := m.runtimes[poolKey{"default", "a"}]
+	if !ok || rt.gate != gate {
+		t.Fatalf("parked runtime should carry its gate in the pool for re-promotion")
+	}
+
+	// Promote (as the SwitchCluster pooled path does) re-enables broadcasting.
+	rt.gate.Store(true)
+	if !gate.Load() {
+		t.Fatalf("promoted runtime must broadcast again")
+	}
+}
+
+func TestConnectorBroadcast_GateSuppresses(t *testing.T) {
+	// nil wsHub on purpose: if the gate didn't short-circuit, broadcast would
+	// panic dereferencing it. No panic = the parked gate suppressed the send.
+	c := &Connector{}
+	gate := &atomic.Bool{} // false
+	c.SetBroadcastGate(gate)
+	c.broadcast(websocket.ResourceUpdated, nil)
 }
 
 func TestEvictPooledContext_DropsParkedRuntime(t *testing.T) {

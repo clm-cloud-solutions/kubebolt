@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -78,6 +79,14 @@ type Manager struct {
 	poolIdleTimeout time.Duration
 	poolMaxRuntimes int
 	reaperStop      chan struct{}
+
+	// activeGate is the broadcast gate of the CURRENTLY active runtime (the one
+	// in m.connector/m.engine). Held true while active; parking flips it false
+	// before stashing the runtime in the pool, and promoting flips the target's
+	// gate true. Lets parked runtimes keep their informers + eval loop alive
+	// (instant switch-back) without leaking WS events for a cluster nobody is
+	// viewing (A.4 OSS hole). nil when nothing is connected.
+	activeGate *atomic.Bool
 }
 
 // poolKey identifies a pooled runtime. tenant is "default" in OSS.
@@ -95,6 +104,11 @@ type clusterRuntime struct {
 	engine    *insights.Engine
 	cancelFn  context.CancelFunc
 	connErr   error
+	// gate is the shared active/parked broadcast switch for this runtime's
+	// connector + engine (A.4 OSS hole). true = broadcasting (active), false =
+	// parked (informers + eval keep running, WS broadcasts suppressed). The
+	// manager flips it on park/promote; the connector and engine read it.
+	gate *atomic.Bool
 	// lastUsed is the wall-clock time this runtime was last parked or served
 	// from the pool (A.3d). The idle reaper evicts pooled runtimes whose
 	// lastUsed predates poolIdleTimeout; the cap evicts the LRU (oldest
@@ -621,6 +635,10 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		m.collector = rt.collector
 		m.engine = rt.engine
 		m.cancelFn = rt.cancelFn
+		m.activeGate = rt.gate
+		if rt.gate != nil {
+			rt.gate.Store(true) // promoted → resume broadcasting
+		}
 		m.activeContext = contextName
 		m.connErr = nil
 		m.wireInsightHookLocked()
@@ -660,12 +678,19 @@ func (m *Manager) parkActiveLocked() {
 		collector: m.collector,
 		engine:    m.engine,
 		cancelFn:  m.cancelFn,
+		gate:      m.activeGate,
 		lastUsed:  time.Now(),
+	}
+	// Parked → stop broadcasting (informers + eval keep running for instant
+	// switch-back, but no WS noise for a cluster nobody is viewing).
+	if m.activeGate != nil {
+		m.activeGate.Store(false)
 	}
 	m.connector = nil
 	m.collector = nil
 	m.engine = nil
 	m.cancelFn = nil
+	m.activeGate = nil
 	m.connErr = nil
 	// Bound the pool: evict the LRU parked runtime(s) if we just went over cap.
 	// The one we parked above has the freshest lastUsed, so it's never the
@@ -910,6 +935,13 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	placeholder.collector = built.collector
 	placeholder.engine = built.engine
 	placeholder.cancelFn = built.cancelFn
+	placeholder.gate = built.gate
+	// A pooled (non-active) runtime doesn't broadcast in the OSS-degenerate
+	// world — only the active cluster's events reach the shared hub. Full
+	// per-(tenant,cluster) WS delivery for pooled runtimes is A.4.
+	if built.gate != nil {
+		built.gate.Store(false)
+	}
 	placeholder.lastUsed = time.Now()
 	close(placeholder.ready)
 	return placeholder
@@ -976,6 +1008,7 @@ func (m *Manager) stopCurrent() {
 	}
 	m.collector = nil
 	m.engine = nil
+	m.activeGate = nil
 	m.connErr = nil
 }
 
@@ -1149,6 +1182,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	m.collector = rt.collector
 	m.engine = rt.engine
 	m.cancelFn = rt.cancelFn
+	m.activeGate = rt.gate // active runtime broadcasts (gate already true)
 	m.activeContext = contextName
 	m.connErr = nil
 
@@ -1178,6 +1212,13 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, err)
 	}
 
+	// Shared broadcast gate for this runtime — starts enabled. The caller
+	// (connectToContextLocked / getOrSpinPooled) decides whether this runtime
+	// is active (keep enabled) or pooled (disable), and park/promote flip it.
+	gate := &atomic.Bool{}
+	gate.Store(true)
+	connector.SetBroadcastGate(gate)
+
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)
 
@@ -1196,6 +1237,7 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 		}
 	}
 	engine := insights.NewEngine(m.wsHub, insightStore, engineClusterID, tenantID)
+	engine.SetBroadcastGate(gate)
 
 	go func() {
 		ticker := time.NewTicker(m.insightInterval)
@@ -1220,7 +1262,7 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 		}
 	}
 
-	return &clusterRuntime{connector: connector, collector: collector, engine: engine, cancelFn: cancel}, nil
+	return &clusterRuntime{connector: connector, collector: collector, engine: engine, cancelFn: cancel, gate: gate}, nil
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"context"
@@ -71,6 +72,12 @@ type Connector struct {
 	nsFactories   []informers.SharedInformerFactory // per-namespace factories for namespace-scoped access
 	graph         *TopologyGraph
 	wsHub         *websocket.Hub
+	// broadcastGate, when non-nil and false, suppresses this connector's WS
+	// broadcasts — set by the manager when the connector's runtime is PARKED
+	// in the pool (W2). Parked informers keep syncing (so a switch back is
+	// instant) but their resource:updated / resource:deleted events shouldn't
+	// reach clients viewing a different cluster. nil = always broadcast.
+	broadcastGate *atomic.Bool
 	stopCh        chan struct{}
 	// recentWrites bridges the read-after-write gap between an
 	// apiserver Patch landing and the informer cache catching up
@@ -586,11 +593,25 @@ func (c *Connector) setupInformers() {
 	}
 }
 
+// SetBroadcastGate wires the active/parked gate shared with this connector's
+// insights engine. Called once at runtime construction, before informers emit.
+func (c *Connector) SetBroadcastGate(g *atomic.Bool) {
+	c.broadcastGate = g
+}
+
+// broadcast pushes to the WS hub unless this connector's runtime is parked.
+func (c *Connector) broadcast(msgType string, obj interface{}) {
+	if c.broadcastGate != nil && !c.broadcastGate.Load() {
+		return
+	}
+	c.wsHub.Broadcast(msgType, obj)
+}
+
 func (c *Connector) onResourceChange(action string, obj interface{}) {
 	if action == "delete" {
-		c.wsHub.Broadcast(websocket.ResourceDeleted, obj)
+		c.broadcast(websocket.ResourceDeleted, obj)
 	} else {
-		c.wsHub.Broadcast(websocket.ResourceUpdated, obj)
+		c.broadcast(websocket.ResourceUpdated, obj)
 	}
 	// Debounced topology rebuild — coalesce rapid changes
 	c.scheduleTopologyRebuild()

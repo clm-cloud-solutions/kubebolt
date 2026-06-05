@@ -4,6 +4,7 @@ import (
 	"log"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -42,6 +43,30 @@ type Engine struct {
 	store     InsightStore
 	clusterID string
 	tenantID  string
+
+	// broadcastGate, when non-nil and false, suppresses this engine's WebSocket
+	// broadcasts — set by the manager when the engine's runtime is PARKED in
+	// the connector pool (W2). A parked runtime keeps evaluating and persisting
+	// insights, but nobody is viewing its cluster, so pushing insight:new /
+	// insight:resolved over the shared hub would spam every connected client
+	// with events for a cluster that isn't on screen. nil = always broadcast
+	// (the default for any engine built without a gate). Full per-(tenant,
+	// cluster) WS scoping is A.4.
+	broadcastGate *atomic.Bool
+}
+
+// SetBroadcastGate wires the active/parked gate shared with this engine's
+// connector. Called once at runtime construction, before the eval loop starts.
+func (e *Engine) SetBroadcastGate(g *atomic.Bool) {
+	e.broadcastGate = g
+}
+
+// broadcast pushes to the WS hub unless this engine's runtime is parked.
+func (e *Engine) broadcast(msgType string, data interface{}) {
+	if e.broadcastGate != nil && !e.broadcastGate.Load() {
+		return
+	}
+	e.wsHub.Broadcast(msgType, data)
 }
 
 // NewEngine creates a new insights engine with all rules. store may be nil
@@ -142,7 +167,7 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			e.insights[i].Resolved = true
 			e.insights[i].ResolvedAt = &now
 			e.persistResolved(e.insights[i], now)
-			e.wsHub.Broadcast(websocket.InsightResolved, e.insights[i])
+			e.broadcast(websocket.InsightResolved, e.insights[i])
 			if e.onResolved != nil {
 				e.onResolved(e.insights[i])
 			}
@@ -171,7 +196,7 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			// FirstSeen and open/reopen an occurrence (restart survival).
 			newIns, freshEpisode := e.admitNew(ins, now)
 			e.insights = append(e.insights, newIns)
-			e.wsHub.Broadcast(websocket.InsightNew, newIns)
+			e.broadcast(websocket.InsightNew, newIns)
 			// Only fire the notification hook for a GENUINELY new episode
 			// (brand-new identity or reopen-after-resolve). An insight that
 			// merely survived a backend restart is a continuation, not a new
