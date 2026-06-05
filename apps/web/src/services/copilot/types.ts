@@ -61,6 +61,10 @@ export interface CopilotStreamEvent {
   toolName?: string
   error?: string
   fallback?: boolean
+  // "meta" / "done" payload: the persisted conversation id. Sent early in a
+  // `meta` event (so a mid-stream refresh can still resume) and echoed on
+  // `done`. Empty/absent when persistence isn't wired (auth/BoltDB disabled).
+  conversationId?: string
   // "usage" event payload: per-round delta and running session totals
   round?: number
   turn?: CopilotUsage
@@ -291,6 +295,49 @@ export function parseWorkloadMetrics(content: string): WorkloadMetricsResponse |
     // Not JSON or malformed — definitely not a metrics response.
   }
   return null
+}
+
+// ─── Conversation history (persist + resume) ───────────────────────
+//
+// Conversations are personal (per user). The list endpoint returns metadata
+// only (ConversationSummary); the detail endpoint returns the full transcript
+// (ConversationDetail) so the panel can rehydrate and resume.
+
+export interface ConversationSummary {
+  id: string
+  title: string
+  clusterId: string
+  preview: string
+  messageCount: number
+  createdAt: string // RFC3339
+  updatedAt: string // RFC3339
+  provider?: string
+  model?: string
+  trigger?: string
+  originatingInsightId?: string
+  archived?: boolean
+}
+
+export interface ConversationDetail {
+  id: string
+  tenantId: string
+  userId: string
+  clusterId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  provider?: string
+  model?: string
+  messages: Array<{
+    role: CopilotRole
+    content?: string
+    toolCalls?: CopilotToolCall[]
+    toolResults?: CopilotToolResult[]
+  }>
+  lastRoundUsage?: CopilotUsage
+  trigger?: string
+  originatingInsightId?: string
+  archived?: boolean
 }
 
 export interface CopilotConfig {

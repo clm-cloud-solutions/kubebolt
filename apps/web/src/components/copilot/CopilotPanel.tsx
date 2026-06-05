@@ -13,7 +13,12 @@ import {
   User,
   Scissors,
   Sparkles,
+  History,
+  Plus,
+  Download,
+  Clock,
 } from 'lucide-react'
+import { ConversationList } from './ConversationList'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
@@ -47,6 +52,58 @@ function formatUsageTooltip(u: CopilotUsage): string {
   if (u.cacheReadTokens) parts.push(`Cache read: ${u.cacheReadTokens.toLocaleString()}`)
   if (u.cacheCreationTokens) parts.push(`Cache write: ${u.cacheCreationTokens.toLocaleString()}`)
   return parts.join('\n')
+}
+
+// How old a resumed conversation must be before we warn that the cluster
+// state may have moved on. 30 minutes balances "stale enough to matter"
+// against not nagging on a conversation resumed minutes later.
+const STALE_RESUME_MS = 30 * 60 * 1000
+
+// Coarse single-unit relative time for the stale-resume banner.
+function relativeTimeShort(iso: string): string {
+  const then = new Date(iso).getTime()
+  if (!Number.isFinite(then)) return ''
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
+  if (s < 90) return 'a moment ago'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} minutes ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`
+  const d = Math.floor(h / 24)
+  return `${d} day${d === 1 ? '' : 's'} ago`
+}
+
+// exportConversationMarkdown renders the visible transcript to a .md file and
+// triggers a browser download — for pasting into postmortems / RCA docs.
+function exportConversationMarkdown(messages: CopilotMessage[], title: string | null): void {
+  const lines: string[] = [`# ${title || 'Kobi conversation'}`, '']
+  for (const m of messages) {
+    if (m.kind === 'compact-notice') {
+      lines.push('> _(conversation compacted here)_', '')
+      continue
+    }
+    if (m.role === 'user' && (m.content ?? '').trim()) {
+      lines.push(`## You`, '', m.content.trim(), '')
+    } else if (m.role === 'assistant' && (m.content ?? '').trim()) {
+      lines.push(`## Kobi`, '', m.content.trim(), '')
+    }
+    if (m.toolCalls?.length) {
+      for (const tc of m.toolCalls) {
+        lines.push(`- 🔧 \`${tc.name}\``)
+      }
+      lines.push('')
+    }
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const slug = (title || 'kobi-conversation').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  a.href = url
+  a.download = `${slug || 'kobi-conversation'}.md`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
 }
 
 // Approximate current context size using a 4-chars-per-token heuristic
@@ -88,10 +145,15 @@ export function CopilotPanel() {
     isCompacting,
     lastRoundUsage,
     layout: layoutState,
+    conversationTitle,
+    staleResume,
+    newConversation,
+    dismissStaleResume,
   } = useCopilot()
   const { layout, toggleMode, setDockedWidth, setFloatingSize } = layoutState
 
   const [input, setInput] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -336,6 +398,20 @@ export function CopilotPanel() {
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
+            onClick={() => setShowHistory(true)}
+            title="Conversation history"
+            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <History className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={newConversation}
+            title="New conversation"
+            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+          <button
             onClick={toggleMode}
             title={isDocked ? 'Switch to floating window' : 'Dock to right side'}
             className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
@@ -350,6 +426,15 @@ export function CopilotPanel() {
               className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isCompacting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Scissors className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {messages.filter((m) => m.kind !== 'compact-notice').length > 0 && (
+            <button
+              onClick={() => exportConversationMarkdown(messages, conversationTitle)}
+              title="Export conversation (Markdown)"
+              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
             </button>
           )}
           {messages.length > 0 && (
@@ -370,6 +455,38 @@ export function CopilotPanel() {
           </button>
         </div>
       </div>
+
+      {/* Active conversation title */}
+      {conversationTitle && messages.length > 0 && (
+        <div className="px-4 py-1.5 border-b border-kb-border flex items-center gap-1.5 shrink-0">
+          <Sparkles className="w-3 h-3 text-kb-text-tertiary shrink-0" />
+          <span className="text-xs text-kb-text-secondary truncate">{conversationTitle}</span>
+        </div>
+      )}
+
+      {/* Stale-resume banner — shown when a conversation older than the
+          threshold is resumed, so the operator knows the cluster state the
+          transcript reflects may have moved on. */}
+      {staleResume && Date.now() - new Date(staleResume.updatedAt).getTime() > STALE_RESUME_MS && (
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900/40 flex items-start gap-2 shrink-0">
+          <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-700 dark:text-amber-300 leading-snug flex-1">
+            This conversation is from {relativeTimeShort(staleResume.updatedAt)}
+            {staleResume.clusterId ? ` · it ran against ${staleResume.clusterId}` : ''}. The cluster
+            state may have changed — Kobi will re-check the live state when you continue.
+          </p>
+          <button
+            onClick={dismissStaleResume}
+            title="Dismiss"
+            className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-200 shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Conversation history drawer — overlays the message area */}
+      {showHistory && <ConversationList onClose={() => setShowHistory(false)} />}
 
       {/* Messages */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
