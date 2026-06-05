@@ -661,8 +661,12 @@ export function CopilotPanel() {
         )}
 
         {usedFallback && (
-          <div className="text-[10px] font-mono text-kb-text-tertiary text-center">
-            via fallback model ({config.fallback?.provider} {config.fallback?.model})
+          <div className="mx-auto w-fit flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-amber-700 dark:text-amber-300 text-[11px]">
+            <AlertCircle className="w-3 h-3 shrink-0" />
+            <span>
+              Answered by the fallback model
+              {config.fallback ? ` · ${config.fallback.provider} ${config.fallback.model}` : ''}
+            </span>
           </div>
         )}
 

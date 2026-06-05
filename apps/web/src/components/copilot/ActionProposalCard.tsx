@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { api, ApiError } from '@/services/api'
 import { useCopilot } from '@/contexts/CopilotContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
 import type { ActionProposal, ActionProposalAction } from '@/services/copilot/types'
 
@@ -44,6 +45,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
   const { recordProposalOutcome } = useCopilot()
+  const auth = useAuth()
   // Seed the local status from any persisted execution metadata. If the
   // chat re-renders this card after the user already acted (or after a
   // session compaction), we honor that and never re-offer Execute on a
@@ -140,7 +142,13 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
               ? e.payload.error
               : `This action is disabled by the Kobi action-governance policy — not your role. An admin can enable it in Administration → Copilot.`
         } else if (e.status === 403) {
-          msg = `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
+          // Not an agent-RBAC or governance block (those carry payload flags
+          // handled above) → it's the USER's own KubeBolt role that's too low.
+          // Name the role so the limit is unambiguous (vs the agent's tier).
+          const role = auth.user?.role
+          msg = role
+            ? `Your role (${role}) can't execute this action — ask an Editor or Admin to run it.`
+            : `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
         } else if (e.status === 404) {
           msg = `Target ${target.namespace}/${target.name} no longer exists. The cluster may have changed since this was proposed.`
         } else if (e.status === 503) {
