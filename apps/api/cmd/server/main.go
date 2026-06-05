@@ -541,6 +541,17 @@ func main() {
 	// Ensure the email digest flusher (if any) drains on shutdown
 	defer notifManager.Stop()
 
+	// Cluster cold-connects read the informer cache-sync deadline live, so an
+	// admin can bump it for slow/large clusters (Settings → General) with no
+	// restart. Falls back to the env baseline when settings are unavailable
+	// (auth disabled). Read per-connect; repeat switches stay instant (pool).
+	manager.SetCacheSyncTimeoutProvider(func() time.Duration {
+		if settingsRuntime != nil {
+			return time.Duration(settingsRuntime.General().CacheSyncTimeoutSeconds) * time.Second
+		}
+		return time.Duration(config.LoadGeneralConfig().CacheSyncTimeoutSeconds) * time.Second
+	})
+
 	// Integrations registry. Populated here so adding a new adapter
 	// is one line — the handlers pick it up automatically.
 	integrationRegistry := integrations.NewRegistry()

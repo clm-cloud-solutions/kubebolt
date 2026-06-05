@@ -1371,6 +1371,7 @@ export interface GeneralSettingsResponse {
     defaultRefreshIntervalSeconds: number
     prodNamespacePattern: string
     updateCheckEnabled: boolean
+    cacheSyncTimeoutSeconds: number
   }
   stored: {
     hasOverride: boolean
@@ -1378,6 +1379,7 @@ export interface GeneralSettingsResponse {
     defaultRefreshIntervalSeconds?: number
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
+    cacheSyncTimeoutSeconds?: number
   }
 }
 
@@ -1387,6 +1389,7 @@ export interface GeneralSettingsPutRequest {
     defaultRefreshIntervalSeconds?: number
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
+    cacheSyncTimeoutSeconds?: number
   }
 }
 

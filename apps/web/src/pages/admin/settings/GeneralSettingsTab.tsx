@@ -52,6 +52,7 @@ interface FormState {
   defaultRefreshIntervalSeconds: string
   prodNamespacePattern: string
   updateCheckEnabled: boolean
+  cacheSyncTimeoutSeconds: string
 }
 
 function stateFromResponse(data: GeneralSettingsResponse): FormState {
@@ -60,6 +61,7 @@ function stateFromResponse(data: GeneralSettingsResponse): FormState {
     defaultRefreshIntervalSeconds: String(data.effective.defaultRefreshIntervalSeconds),
     prodNamespacePattern: data.effective.prodNamespacePattern,
     updateCheckEnabled: data.effective.updateCheckEnabled,
+    cacheSyncTimeoutSeconds: String(data.effective.cacheSyncTimeoutSeconds),
   }
 }
 
@@ -77,6 +79,10 @@ function buildPatch(initial: FormState, current: FormState): GeneralSettingsPutR
   }
   if (current.updateCheckEnabled !== initial.updateCheckEnabled) {
     patch.updateCheckEnabled = current.updateCheckEnabled
+  }
+  const cst = parseInt(current.cacheSyncTimeoutSeconds, 10)
+  if (!isNaN(cst) && cst !== parseInt(initial.cacheSyncTimeoutSeconds, 10)) {
+    patch.cacheSyncTimeoutSeconds = cst
   }
   return Object.keys(patch).length > 0 ? { patch } : {}
 }
@@ -193,6 +199,8 @@ function GeneralSettingsForm({
       form.defaultRefreshIntervalSeconds !== initial.defaultRefreshIntervalSeconds,
     prodNamespacePattern: form.prodNamespacePattern !== initial.prodNamespacePattern,
     updateCheckEnabled: form.updateCheckEnabled !== initial.updateCheckEnabled,
+    cacheSyncTimeoutSeconds:
+      form.cacheSyncTimeoutSeconds !== initial.cacheSyncTimeoutSeconds,
   }
   const isDirty = Object.values(dirtyMap).some(Boolean)
   const prodPreview = buildRegexPreview(form.prodNamespacePattern)
@@ -341,6 +349,24 @@ function GeneralSettingsForm({
             ))}
           </select>
         </Field>
+
+        <Field
+          label="Cluster connect timeout"
+          dirty={dirtyMap.cacheSyncTimeoutSeconds}
+          helper="How long a cold connect waits for a cluster's resources to sync before giving up. Raise it (e.g. 60–90s) for large clusters that flake with 'cluster may be unreachable' on the first switch. Applies on the next connect — no restart. Range 5–600s. Boot override via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS."
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={5}
+              max={600}
+              className="w-24 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+              value={form.cacheSyncTimeoutSeconds}
+              onChange={(e) => setForm({ ...form, cacheSyncTimeoutSeconds: e.target.value })}
+            />
+            <span className="text-xs text-kb-text-tertiary">seconds</span>
+          </div>
+        </Field>
       </SectionCard>
       </div>{/* /grid */}
 
@@ -462,7 +488,7 @@ function GeneralSettingsForm({
         variant="danger"
         title="Reset General settings to env defaults?"
         description={
-          <>Clears the UI-set <strong className="text-kb-text-primary">Display name</strong>, <strong className="text-kb-text-primary">Default refresh interval</strong>, <strong className="text-kb-text-primary">Production namespaces pattern</strong>, and <strong className="text-kb-text-primary">Update check</strong> overrides. The next read falls back to the values from <code className="font-mono text-kb-accent">KUBEBOLT_*</code> env vars. Theme is per-browser and not affected.</>
+          <>Clears the UI-set <strong className="text-kb-text-primary">Display name</strong>, <strong className="text-kb-text-primary">Default refresh interval</strong>, <strong className="text-kb-text-primary">Cluster connect timeout</strong>, <strong className="text-kb-text-primary">Production namespaces pattern</strong>, and <strong className="text-kb-text-primary">Update check</strong> overrides. The next read falls back to the values from <code className="font-mono text-kb-accent">KUBEBOLT_*</code> env vars. Theme is per-browser and not affected.</>
         }
         confirmLabel="Reset"
         onConfirm={() => {

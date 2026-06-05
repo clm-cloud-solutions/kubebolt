@@ -63,6 +63,12 @@ type Manager struct {
 	insightStore insights.InsightStore
 	tenantID     string
 
+	// cacheSyncTimeoutFn returns the live informer cache-sync deadline for a
+	// cold connect, read per-connect so a Settings → General change takes
+	// effect on the next switch with no restart. nil → connector uses its
+	// built-in default. Wired from main.go to settingsRuntime.General().
+	cacheSyncTimeoutFn func() time.Duration
+
 	// runtimes holds per-(tenant,cluster) runtimes for NON-active clusters
 	// (W2). The active cluster's runtime stays in the fields above
 	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
@@ -200,6 +206,26 @@ func (m *Manager) wireInsightHookLocked() {
 			hook(activeCtx, insight)
 		})
 	}
+}
+
+// SetCacheSyncTimeoutProvider wires a provider for the informer cache-sync
+// deadline, read fresh on every cold connect (Settings → General changes apply
+// with no restart). Pass nil to fall back to the connector's built-in default.
+func (m *Manager) SetCacheSyncTimeoutProvider(fn func() time.Duration) {
+	m.mu.Lock()
+	m.cacheSyncTimeoutFn = fn
+	m.mu.Unlock()
+}
+
+// resolveCacheSyncTimeoutLocked returns the configured cache-sync deadline, or
+// 0 (connector falls back to its default) when no provider is wired. Caller
+// holds m.mu. The provider reads settingsRuntime, which has its own lock — no
+// lock-ordering issue.
+func (m *Manager) resolveCacheSyncTimeoutLocked() time.Duration {
+	if m.cacheSyncTimeoutFn != nil {
+		return m.cacheSyncTimeoutFn()
+	}
+	return 0
 }
 
 // SetAgentRegistry attaches the live AgentRegistry to the manager so
@@ -918,12 +944,13 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	agentProxyCID := m.agentProxyContexts[contextName]
 	insightStore := m.insightStore
 	tenantID := m.tenantID
+	cacheSyncTimeout := m.resolveCacheSyncTimeoutLocked()
 	placeholder := &clusterRuntime{ready: make(chan struct{})}
 	m.runtimes[pk] = placeholder
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
-	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID)
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout)
 	if err != nil {
 		m.mu.Lock()
 		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
@@ -1175,7 +1202,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	// prior behavior (the ~20s connector.Start runs under the lock for a
 	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
 	// lock instead.
-	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID)
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked())
 	if err != nil {
 		return err
 	}
@@ -1203,11 +1230,13 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // pooled spins. The active path calls it while holding m.mu (unchanged).
 //
 // Mirrors what connectToContextLocked used to inline — keep the two in sync.
-func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string) (*clusterRuntime, error) {
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout time.Duration) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
+	// Apply the live cache-sync deadline before Start() (default when 0).
+	connector.SetCacheSyncTimeout(cacheSyncTimeout)
 	if err := connector.Start(); err != nil {
 		connector.Stop()
 		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, err)

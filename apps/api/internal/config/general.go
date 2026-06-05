@@ -42,7 +42,24 @@ type GeneralConfig struct {
 	// disable via KUBEBOLT_UPDATE_CHECK_ENABLED=false; admins can also
 	// toggle at runtime via Settings → General.
 	UpdateCheckEnabled bool
+
+	// CacheSyncTimeoutSeconds is how long a cold cluster connect waits for
+	// informer caches to sync before failing ("cluster may be unreachable").
+	// Default 45s — a cold connect to a large cluster (many resource types)
+	// can need 20-30s, so the old hard-coded 20s left big EKS/GKE clusters
+	// right at the edge and they flaked on the first switch after a restart.
+	// The warm connector pool makes repeat switches instant regardless. Set
+	// via KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS; admins override at runtime (no
+	// restart) via Settings → General. Floored at 5s.
+	CacheSyncTimeoutSeconds int
 }
+
+// DefaultCacheSyncTimeoutSeconds is the baseline informer cache-sync deadline.
+const DefaultCacheSyncTimeoutSeconds = 45
+
+// MinCacheSyncTimeoutSeconds floors the override so a fat-fingered tiny value
+// can't make every connect fail instantly.
+const MinCacheSyncTimeoutSeconds = 5
 
 // LoadGeneralConfig reads general settings from env vars. All optional.
 func LoadGeneralConfig() GeneralConfig {
@@ -51,6 +68,7 @@ func LoadGeneralConfig() GeneralConfig {
 		DefaultRefreshIntervalSeconds: 30, // matches RefreshContext fallback
 		ProdNamespacePattern:          os.Getenv("KUBEBOLT_PROD_NAMESPACE_PATTERN"),
 		UpdateCheckEnabled:            true,
+		CacheSyncTimeoutSeconds:       DefaultCacheSyncTimeoutSeconds,
 	}
 	if v := os.Getenv("KUBEBOLT_DEFAULT_REFRESH_INTERVAL_SECONDS"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && isValidRefreshInterval(n) {
@@ -60,6 +78,11 @@ func LoadGeneralConfig() GeneralConfig {
 	if v := os.Getenv("KUBEBOLT_UPDATE_CHECK_ENABLED"); v != "" {
 		if parsed, err := strconv.ParseBool(v); err == nil {
 			cfg.UpdateCheckEnabled = parsed
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= MinCacheSyncTimeoutSeconds {
+			cfg.CacheSyncTimeoutSeconds = n
 		}
 	}
 	return cfg
