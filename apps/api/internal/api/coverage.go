@@ -120,7 +120,7 @@ const coverageLookbackMinutes = 5
 // current cluster. Read-only, cheap (4 instant queries), safe to
 // poll from the UI on a 30-60s tick.
 func (h *handlers) handleCoverage(w http.ResponseWriter, r *http.Request) {
-	uid := h.activeClusterUID()
+	uid := h.activeClusterUID(r.Context())
 
 	sources := make([]CoverageSource, 0, len(coverageProbes))
 	for _, probe := range coverageProbes {

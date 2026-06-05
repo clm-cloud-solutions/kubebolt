@@ -169,7 +169,7 @@ func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -181,8 +181,8 @@ func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
 	// data — visible in the dashboard's Insights KPI showing "0" while
 	// the page shows real items. Recompute with the engine here so the
 	// overview payload matches what /cluster/health and /insights see.
-	if eng := h.manager.Engine(); eng != nil {
-		col := h.manager.Collector()
+	if eng := h.manager.Engine(r.Context()); eng != nil {
+		col := h.manager.Collector(r.Context())
 		metricsAvailable := col != nil && col.IsAvailable()
 		overview.Health = conn.GetHealth(metricsAvailable, eng.GetAllInsights())
 	}
@@ -190,9 +190,9 @@ func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getClusterHealth(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
-	eng := h.manager.Engine()
-	col := h.manager.Collector()
+	conn := h.manager.Connector(r.Context())
+	eng := h.manager.Engine(r.Context())
+	col := h.manager.Collector(r.Context())
 	if conn == nil || eng == nil || col == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -219,7 +219,7 @@ func (h *handlers) getResources(w http.ResponseWriter, r *http.Request) {
 		limit = 50
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -242,7 +242,7 @@ func (h *handlers) getResourceDetail(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -258,7 +258,7 @@ func (h *handlers) getResourceDetail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Inject metrics from collector if available
-	if col := h.manager.Collector(); col != nil {
+	if col := h.manager.Collector(r.Context()); col != nil {
 		switch resourceType {
 		case "pods":
 			if pm := col.GetPodMetrics(namespace, name); pm != nil {
@@ -316,7 +316,7 @@ func (h *handlers) getResourceDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getTopology(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -325,7 +325,7 @@ func (h *handlers) getTopology(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getInsights(w http.ResponseWriter, r *http.Request) {
-	eng := h.manager.Engine()
+	eng := h.manager.Engine(r.Context())
 	if eng == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -373,7 +373,7 @@ func (h *handlers) getInsights(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getEvents(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -439,7 +439,7 @@ func (h *handlers) getPodLogs(w http.ResponseWriter, r *http.Request) {
 		q.TailLines = 100
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -465,7 +465,7 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -503,7 +503,7 @@ func (h *handlers) getResourceYAML(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -519,7 +519,7 @@ func (h *handlers) getResourceYAML(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getMetrics(w http.ResponseWriter, r *http.Request) {
-	col := h.manager.Collector()
+	col := h.manager.Collector(r.Context())
 	if col == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -561,7 +561,7 @@ func (h *handlers) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handlers) getPermissions(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -570,10 +570,10 @@ func (h *handlers) getPermissions(w http.ResponseWriter, r *http.Request) {
 }
 
 // requireConnector is middleware that returns 503 when no cluster is connected.
-// Used to guard all endpoints that call h.manager.Connector().
+// Used to guard all endpoints that call h.manager.Connector(r.Context()).
 func (h *handlers) requireConnector(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if h.manager.Connector() == nil {
+		if h.manager.Connector(r.Context()) == nil {
 			msg := "cluster not connected"
 			if err := h.manager.ConnError(); err != nil {
 				msg = err.Error()
@@ -591,7 +591,7 @@ func (h *handlers) getDeploymentPods(w http.ResponseWriter, r *http.Request) {
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -610,7 +610,7 @@ func (h *handlers) getDeploymentHistory(w http.ResponseWriter, r *http.Request) 
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -641,7 +641,7 @@ func (h *handlers) getStatefulSetPods(w http.ResponseWriter, r *http.Request) {
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -660,7 +660,7 @@ func (h *handlers) getDaemonSetPods(w http.ResponseWriter, r *http.Request) {
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -679,7 +679,7 @@ func (h *handlers) getJobPods(w http.ResponseWriter, r *http.Request) {
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -699,7 +699,7 @@ func (h *handlers) getWorkloadHistory(w http.ResponseWriter, r *http.Request) {
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -729,7 +729,7 @@ func (h *handlers) getCronJobJobs(w http.ResponseWriter, r *http.Request) {
 	if namespace == "_" {
 		namespace = ""
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

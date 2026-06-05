@@ -235,10 +235,16 @@ type ResourceList struct {
 	Forbidden bool                     `json:"forbidden,omitempty"`
 }
 
-// WSMessage is a WebSocket message envelope.
+// WSMessage is a WebSocket message envelope. Tenant/Cluster scope the event to
+// the runtime that produced it (A.4): the hub delivers a scoped message only to
+// clients viewing that (tenant, cluster). Empty = global/unscoped — delivered
+// to everyone (the OSS-degenerate case, and cluster-management events like
+// clusters.changed that aren't tied to one cluster).
 type WSMessage struct {
-	Type string      `json:"type"`
-	Data interface{} `json:"data"`
+	Type    string      `json:"type"`
+	Data    interface{} `json:"data"`
+	Tenant  string      `json:"tenant,omitempty"`
+	Cluster string      `json:"cluster,omitempty"`
 }
 
 // ClusterInfoResponse represents a cluster entry returned by the clusters API.

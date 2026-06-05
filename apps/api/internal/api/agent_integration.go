@@ -104,7 +104,7 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusServiceUnavailable, "tenants store not configured (KUBEBOLT_AUTH_ENABLED must be true to issue ingest tokens)")
 		return
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

@@ -20,7 +20,7 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

@@ -175,7 +175,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cluster must be connected for tool execution to work
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

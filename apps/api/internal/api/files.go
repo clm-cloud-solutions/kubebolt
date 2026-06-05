@@ -27,8 +27,8 @@ type fileEntry struct {
 }
 
 // execCommand runs a non-interactive command in a pod container and returns stdout/stderr.
-func (h *handlers) execCommand(namespace, name, container string, command []string) (string, string, error) {
-	conn := h.manager.Connector()
+func (h *handlers) execCommand(ctx context.Context, namespace, name, container string, command []string) (string, string, error) {
+	conn := h.manager.Connector(ctx)
 	if conn == nil {
 		return "", "", fmt.Errorf("cluster not connected")
 	}
@@ -91,15 +91,15 @@ func (h *handlers) handleListFiles(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Try ls variants, then fall back to find for minimal containers
-	stdout, stderr, err := h.execCommand(namespace, name, container,
+	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"ls", "-la", "--time-style=long-iso", dirPath})
 	if err != nil || strings.Contains(stderr, "unrecognized option") {
-		stdout, stderr, err = h.execCommand(namespace, name, container,
+		stdout, stderr, err = h.execCommand(r.Context(), namespace, name, container,
 			[]string{"ls", "-la", dirPath})
 	}
 	if err != nil {
 		// Fallback: use find for distroless/minimal containers without ls
-		stdout, stderr, err = h.execCommand(namespace, name, container,
+		stdout, stderr, err = h.execCommand(r.Context(), namespace, name, container,
 			[]string{"find", dirPath, "-maxdepth", "1", "-printf", "%y %s %f\n"})
 		if err != nil {
 			errMsg := stderr
@@ -237,7 +237,7 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check file size first (1MB limit)
-	sizeOut, _, _ := h.execCommand(namespace, name, container,
+	sizeOut, _, _ := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"stat", "-c", "%s", filePath})
 	sizeStr := strings.TrimSpace(sizeOut)
 	if len(sizeStr) > 0 {
@@ -249,7 +249,7 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	stdout, stderr, err := h.execCommand(namespace, name, container,
+	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"cat", filePath})
 	if err != nil {
 		respondError(w, http.StatusNotFound, fmt.Sprintf("cannot read file: %s %s", stderr, err))
@@ -271,7 +271,7 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	stdout, stderr, err := h.execCommand(namespace, name, container,
+	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"cat", filePath})
 	if err != nil {
 		respondError(w, http.StatusNotFound, fmt.Sprintf("cannot read file: %s %s", stderr, err))

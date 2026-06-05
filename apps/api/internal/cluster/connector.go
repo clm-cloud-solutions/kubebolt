@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"context"
@@ -71,7 +72,19 @@ type Connector struct {
 	nsFactories   []informers.SharedInformerFactory // per-namespace factories for namespace-scoped access
 	graph         *TopologyGraph
 	wsHub         *websocket.Hub
-	stopCh        chan struct{}
+	// broadcastGate, when non-nil and false, suppresses this connector's WS
+	// broadcasts — set by the manager when the connector's runtime is PARKED
+	// in the pool (W2). Parked informers keep syncing (so a switch back is
+	// instant) but their resource:updated / resource:deleted events shouldn't
+	// reach clients viewing a different cluster. nil = always broadcast.
+	broadcastGate *atomic.Bool
+	// wsTenant/wsCluster scope this connector's WS broadcasts (A.4). Empty =
+	// global (OSS-degenerate default). Set by the manager to (tenantID,
+	// contextName) — the context name, matching the dimension EE clients
+	// subscribe by (X-KubeBolt-Cluster), not the kube-system clusterUID.
+	wsTenant  string
+	wsCluster string
+	stopCh    chan struct{}
 	// recentWrites bridges the read-after-write gap between an
 	// apiserver Patch landing and the informer cache catching up
 	// (~hundreds of ms). Mutation handlers Record(...) the field
@@ -84,6 +97,8 @@ type Connector struct {
 	mu            sync.RWMutex
 	clusterName    string
 	clusterUID     string // kube-system namespace UID, used to scope VM queries per cluster
+	k8sVersion     string // cached GitVersion — ServerVersion() over agent-proxy is slow, and it never changes; fetch once
+	platform       string // cached, derived from k8sVersion
 	collector      metricsCollector
 	topologyTimer  *time.Timer
 	permissions    ResourcePermissions
@@ -584,11 +599,34 @@ func (c *Connector) setupInformers() {
 	}
 }
 
+// SetBroadcastGate wires the active/parked gate shared with this connector's
+// insights engine. Called once at runtime construction, before informers emit.
+func (c *Connector) SetBroadcastGate(g *atomic.Bool) {
+	c.broadcastGate = g
+}
+
+// SetWSScope tags this connector's WS broadcasts with (tenant, cluster-context)
+// so EE clients only receive their own cluster's resource events (A.4).
+func (c *Connector) SetWSScope(tenant, cluster string) {
+	c.wsTenant = tenant
+	c.wsCluster = cluster
+}
+
+// broadcast pushes to the WS hub unless this connector's runtime is parked. The
+// (wsTenant, wsCluster) scope is empty by default → global, identical to
+// pre-A.4; EE sets it so clients only see their own cluster's events.
+func (c *Connector) broadcast(msgType string, obj interface{}) {
+	if c.broadcastGate != nil && !c.broadcastGate.Load() {
+		return
+	}
+	c.wsHub.BroadcastScoped(c.wsTenant, c.wsCluster, msgType, obj)
+}
+
 func (c *Connector) onResourceChange(action string, obj interface{}) {
 	if action == "delete" {
-		c.wsHub.Broadcast(websocket.ResourceDeleted, obj)
+		c.broadcast(websocket.ResourceDeleted, obj)
 	} else {
-		c.wsHub.Broadcast(websocket.ResourceUpdated, obj)
+		c.broadcast(websocket.ResourceUpdated, obj)
 	}
 	// Debounced topology rebuild — coalesce rapid changes
 	c.scheduleTopologyRebuild()
@@ -887,6 +925,32 @@ func (c *Connector) Stop() {
 	close(c.stopCh) // stops both factory and nsFactories since they share stopCh
 }
 
+// serverVersionCached returns the cluster's k8s GitVersion + detected platform,
+// fetching ServerVersion() once and caching it. The version is immutable for a
+// connector's lifetime, and the discovery round-trip is expensive over the
+// agent-proxy channel (multiple seconds) — calling it on every GetOverview
+// (every refresh tick) dragged the overview, and with the switch overlay now
+// awaiting a fresh overview, dragged every cluster switch too. A failed lookup
+// isn't cached, so it retries on the next call.
+func (c *Connector) serverVersionCached() (version, platform string) {
+	c.mu.RLock()
+	version, platform = c.k8sVersion, c.platform
+	c.mu.RUnlock()
+	if version != "" {
+		return version, platform
+	}
+	sv, err := c.clientset.Discovery().ServerVersion()
+	if err != nil {
+		return "", ""
+	}
+	version = sv.GitVersion
+	platform = detectPlatform(sv.GitVersion)
+	c.mu.Lock()
+	c.k8sVersion, c.platform = version, platform
+	c.mu.Unlock()
+	return version, platform
+}
+
 // GetOverview aggregates counts from listers.
 func (c *Connector) GetOverview() models.ClusterOverview {
 	overview := models.ClusterOverview{}
@@ -894,11 +958,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	// Cluster info
 	overview.ClusterName = c.clusterName
 	overview.ClusterUID = c.clusterUID
-	serverVersion, err := c.clientset.Discovery().ServerVersion()
-	if err == nil {
-		overview.KubernetesVersion = serverVersion.GitVersion
-		overview.Platform = detectPlatform(serverVersion.GitVersion)
-	}
+	overview.KubernetesVersion, overview.Platform = c.serverVersionCached()
 
 	// Nodes
 	var nodes []*corev1.Node

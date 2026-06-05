@@ -569,7 +569,7 @@ export function CopilotPanel() {
               placeholder="Ask about your cluster..."
               rows={1}
               disabled={isLoading}
-              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-xs text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 disabled:opacity-50"
+              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 disabled:opacity-50"
               style={{ minHeight: '36px' }}
             />
           </div>
@@ -642,7 +642,7 @@ function EmptyState() {
         <KobiSigil state="watching" size={56} />
       </div>
       <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Kobi</h3>
-      <p className="text-xs text-kb-text-tertiary mb-4 max-w-xs">
+      <p className="text-sm text-kb-text-tertiary mb-4 max-w-xs">
         Ask about your cluster, troubleshoot an issue, or learn about Kubernetes.
       </p>
       <div className="space-y-1.5 w-full max-w-md">
@@ -650,7 +650,7 @@ function EmptyState() {
           <button
             key={text}
             onClick={() => sendMessage(text)}
-            className="w-full text-left px-3 py-2 rounded-lg bg-kb-bg hover:bg-kb-elevated border border-kb-border text-[11px] text-kb-text-secondary hover:text-kb-text-primary transition-colors"
+            className="w-full text-left px-3 py-2 rounded-lg bg-kb-bg hover:bg-kb-elevated border border-kb-border text-xs text-kb-text-secondary hover:text-kb-text-primary transition-colors"
           >
             {text}
           </button>
@@ -672,7 +672,7 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end gap-2">
-        <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-xs text-kb-text-primary whitespace-pre-wrap break-words">
+        <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-sm text-kb-text-primary whitespace-pre-wrap break-words">
           {message.content}
         </div>
         <div className="w-6 h-6 rounded-full bg-kb-elevated flex items-center justify-center shrink-0 mt-0.5">
@@ -702,7 +702,7 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
         <KobiSigil state="static" size={14} />
       </div>
       <div className="flex flex-col items-start min-w-0 flex-1">
-        <div className="relative px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
+        <div className="relative px-3 py-2 rounded-lg bg-kb-bg text-sm text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
           {message.content ? (
             <MarkdownRenderer content={message.content} />
           ) : (

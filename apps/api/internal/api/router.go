@@ -137,8 +137,18 @@ func NewRouter(
 			r.Use(authHandlers.RequireAuth)
 			// Restrict REST API-token callers (kbs_/kbk_) to their granted
 			// path scopes. No-op for user-session JWT callers. Must run
-			// after RequireAuth (which establishes the principal).
+			// after RequireAuth (which establishes the principal) — fail fast
+			// on out-of-scope paths before tenant/cluster resolution.
 			r.Use(authHandlers.EnforceAPITokenScope)
+			// Resolve the request's tenant (org) once, after auth, and
+			// stash it in context. OSS: always DefaultTenantName. EE swaps
+			// the resolver for real multi-tenant resolution. See
+			// auth.TenantResolver.
+			r.Use(authHandlers.ResolveTenant)
+			// Stash the request's (tenant, cluster) RuntimeKey for the
+			// connector pool (W2). Behavior-neutral until the pool reads
+			// it; threading it now keeps the pool additive to handlers.
+			r.Use(h.resolveCluster)
 
 			// Auth-protected user routes
 			r.Post("/auth/logout", authHandlers.Logout)
