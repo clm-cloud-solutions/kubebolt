@@ -44,14 +44,24 @@ type Engine struct {
 	clusterID string
 	tenantID  string
 
-	// broadcastGate, when non-nil and false, suppresses this engine's WebSocket
-	// broadcasts — set by the manager when the engine's runtime is PARKED in
-	// the connector pool (W2). A parked runtime keeps evaluating and persisting
-	// insights, but nobody is viewing its cluster, so pushing insight:new /
-	// insight:resolved over the shared hub would spam every connected client
-	// with events for a cluster that isn't on screen. nil = always broadcast
-	// (the default for any engine built without a gate). Full per-(tenant,
-	// cluster) WS scoping is A.4.
+	// broadcastGate, when non-nil and false, suppresses this engine's OUTBOUND
+	// signals — both WebSocket broadcasts (insight:new / insight:resolved) AND
+	// the notification hooks (onNew / onResolved → Slack/email). Set by the
+	// manager when the engine's runtime is PARKED in the connector pool (W2). A
+	// parked runtime keeps evaluating and persisting insights, but nobody is
+	// viewing its cluster, so emitting either channel would surface events for a
+	// cluster that isn't on screen. nil = always emit (the default for any
+	// engine built without a gate).
+	//
+	// TEMPORARY — gating NOTIFICATIONS on "is this the active cluster" is a
+	// stopgap, NOT the desired behavior. A notification should fire whenever an
+	// event warrants it, independent of whether anyone has that cluster open in
+	// the UI. The proper fix (event-driven notifications decoupled from the
+	// active-cluster view) lands with A.4 / the EE notifications work. Until
+	// then we keep the pre-pool behavior (only the active cluster notifies) so
+	// the pool doesn't start spraying notifications for every parked cluster.
+	// WS suppression here is correct long-term; notification suppression is the
+	// temporary part. See internal/kubebolt-w2-connector-pool-design.md §4c.
 	broadcastGate *atomic.Bool
 }
 
@@ -61,9 +71,16 @@ func (e *Engine) SetBroadcastGate(g *atomic.Bool) {
 	e.broadcastGate = g
 }
 
+// outboundEnabled reports whether this engine's runtime is active, i.e. should
+// emit outbound signals (WS broadcasts and notification hooks). false when the
+// runtime is parked in the pool. See the broadcastGate field doc.
+func (e *Engine) outboundEnabled() bool {
+	return e.broadcastGate == nil || e.broadcastGate.Load()
+}
+
 // broadcast pushes to the WS hub unless this engine's runtime is parked.
 func (e *Engine) broadcast(msgType string, data interface{}) {
-	if e.broadcastGate != nil && !e.broadcastGate.Load() {
+	if !e.outboundEnabled() {
 		return
 	}
 	e.wsHub.Broadcast(msgType, data)
@@ -168,7 +185,9 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			e.insights[i].ResolvedAt = &now
 			e.persistResolved(e.insights[i], now)
 			e.broadcast(websocket.InsightResolved, e.insights[i])
-			if e.onResolved != nil {
+			// Parked runtimes still persist (above) but don't notify — see the
+			// TEMPORARY note on broadcastGate.
+			if e.outboundEnabled() && e.onResolved != nil {
 				e.onResolved(e.insights[i])
 			}
 		}
@@ -201,7 +220,10 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			// (brand-new identity or reopen-after-resolve). An insight that
 			// merely survived a backend restart is a continuation, not a new
 			// finding — firing onNew there is the restart-renotify spam bug.
-			if freshEpisode && e.onNew != nil {
+			// outboundEnabled gates parked runtimes (TEMPORARY — see the
+			// broadcastGate note; notifications shouldn't depend on the active
+			// cluster long-term).
+			if freshEpisode && e.outboundEnabled() && e.onNew != nil {
 				e.onNew(newIns)
 			}
 		}
