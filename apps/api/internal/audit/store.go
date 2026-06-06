@@ -39,6 +39,10 @@ type Record struct {
 	Result               string         `json:"result"` // "success" | "error"
 	Error                string         `json:"error,omitempty"`
 	OriginatingInsightID string         `json:"originatingInsightId,omitempty"`
+	// ConversationID links a copilot_proposal-sourced action back to the Kobi
+	// conversation that proposed it, so the admin action-history can jump to
+	// the chat that produced the mutation ("why was this pod restarted?").
+	ConversationID string `json:"conversationId,omitempty"`
 }
 
 // Store persists audit records. Safe for concurrent use.

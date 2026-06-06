@@ -12,8 +12,9 @@ import {
   ExternalLink,
   Trash2,
 } from 'lucide-react'
-import { api, ApiError } from '@/services/api'
+import { api, ApiError, type ActionAudit } from '@/services/api'
 import { useCopilot } from '@/contexts/CopilotContext'
+import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
 import type { ActionProposal, ActionProposalAction } from '@/services/copilot/types'
 
@@ -43,7 +44,8 @@ interface Props {
 export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { recordProposalOutcome } = useCopilot()
+  const { recordProposalOutcome, conversationId } = useCopilot()
+  const auth = useAuth()
   // Seed the local status from any persisted execution metadata. If the
   // chat re-renders this card after the user already acted (or after a
   // session compaction), we honor that and never re-offer Execute on a
@@ -70,7 +72,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
     setStatus('executing')
     setError(null)
     try {
-      const result = await runProposal(proposal)
+      const result = await runProposal(proposal, conversationId)
       setResultMsg(result)
       setStatus('success')
       recordProposalOutcome(toolCallId, 'executed', result)
@@ -140,7 +142,13 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
               ? e.payload.error
               : `This action is disabled by the Kobi action-governance policy — not your role. An admin can enable it in Administration → Copilot.`
         } else if (e.status === 403) {
-          msg = `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
+          // Not an agent-RBAC or governance block (those carry payload flags
+          // handled above) → it's the USER's own KubeBolt role that's too low.
+          // Name the role so the limit is unambiguous (vs the agent's tier).
+          const role = auth.user?.role
+          msg = role
+            ? `Your role (${role}) can't execute this action — ask an Editor or Admin to run it.`
+            : `Forbidden — your role does not allow this action. Ask an Editor or Admin to approve.`
         } else if (e.status === 404) {
           msg = `Target ${target.namespace}/${target.name} no longer exists. The cluster may have changed since this was proposed.`
         } else if (e.status === 503) {
@@ -467,8 +475,11 @@ function formatProposalParam(key: string, value: unknown): string {
 // runProposal dispatches the proposal to the matching mutation endpoint.
 // New action types added to the backend whitelist must be added here too —
 // keeping this switch exhaustive is what enforces the frontend whitelist.
-async function runProposal(p: ActionProposal): Promise<string> {
-  const SOURCE = 'copilot_proposal'
+async function runProposal(p: ActionProposal, conversationId?: string | null): Promise<string> {
+  // Tag every proposal-sourced mutation with the conversation that produced it,
+  // so the durable action audit cross-references the chat ("why was this pod
+  // restarted?"). Threaded through each api call as the audit context.
+  const SOURCE: ActionAudit = { source: 'copilot_proposal', conversationId: conversationId ?? undefined }
   switch (p.action) {
     case 'restart_workload': {
       const r = await api.restartResource(p.target.type, p.target.namespace, p.target.name, SOURCE)

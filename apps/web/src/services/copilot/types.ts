@@ -83,6 +83,7 @@ export interface CopilotStreamEvent {
     content: string
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
+    timestamp?: string
   }>
 }
 
@@ -93,6 +94,7 @@ export interface CompactResponse {
     content: string
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
+    timestamp?: string
   }>
   tokensBefore: number
   tokensAfter: number
@@ -333,6 +335,7 @@ export interface ConversationDetail {
     content?: string
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
+    timestamp?: string
   }>
   lastRoundUsage?: CopilotUsage
   trigger?: string

@@ -214,7 +214,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         content: m.content ?? '',
         toolCalls: m.toolCalls,
         toolResults: m.toolResults,
-        timestamp: new Date(),
+        timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
       }))
       setMessages(rebuilt)
       setConversationId(rec.id)
@@ -417,7 +417,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
                   content: m.content ?? '',
                   toolCalls: m.toolCalls,
                   toolResults: m.toolResults,
-                  timestamp: new Date(),
+                  timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
                 }))
                 // Keep compact notices visible at the end so the user
                 // still sees that compaction happened.
@@ -525,7 +525,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           content: m.content ?? '',
           toolCalls: m.toolCalls,
           toolResults: m.toolResults,
-          timestamp: new Date(),
+          timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
         }))
         rebuilt.push({
           id: generateId(),

@@ -20,19 +20,25 @@ func (e *ProviderHTTPError) Error() string {
 }
 
 // IsRecoverable returns true if the error is one that should trigger fallback
-// retry: rate limits, 5xx, network issues. Auth errors and 4xx (except 429)
-// are NOT recoverable — they propagate to the user.
+// retry: rate limits (429), 5xx, 404 (primary model/endpoint unavailable), and
+// network issues. Auth errors (401/403) and other 4xx validation errors are
+// NOT recoverable — they propagate to the user.
 func IsRecoverable(err error) bool {
 	if err == nil {
 		return false
 	}
 	var herr *ProviderHTTPError
 	if errors.As(err, &herr) {
-		// 429 (rate limit) and 5xx are recoverable
-		if herr.StatusCode == 429 || herr.StatusCode >= 500 {
+		// 429 (rate limit) and 5xx are recoverable.
+		// 404 too: the primary's model (or endpoint) is unavailable for this
+		// account — the fallback's different provider/model is exactly the
+		// remedy, and the "answered by fallback" badge makes the switch visible
+		// so the misconfiguration isn't silently masked.
+		if herr.StatusCode == 429 || herr.StatusCode == 404 || herr.StatusCode >= 500 {
 			return true
 		}
-		// 4xx auth/validation errors propagate
+		// Other 4xx (401/403 auth, validation) propagate — those are "fix the
+		// key/request", not something a retry on the fallback can resolve.
 		return false
 	}
 	// Network-level errors (timeouts, DNS, connection refused) are recoverable

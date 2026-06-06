@@ -222,6 +222,22 @@ async function putJSONWithWarnings<T>(url: string, body: unknown): Promise<{ dat
   return { data, warnings }
 }
 
+// ActionAudit tags a mutation for the durable audit trail. Backward-compatible
+// with the legacy `source?: string` arg: a plain string is treated as
+// `{ source }`. Copilot proposal cards pass the conversationId so the audit
+// record cross-references the chat that produced the action.
+export type ActionAudit = { source?: string; conversationId?: string; originInsight?: string }
+
+function actionHeaders(a?: string | ActionAudit): Record<string, string> | undefined {
+  if (!a) return undefined
+  const ctx = typeof a === 'string' ? { source: a } : a
+  const h: Record<string, string> = {}
+  if (ctx.source) h['X-KubeBolt-Action-Source'] = ctx.source
+  if (ctx.conversationId) h['X-KubeBolt-Conversation-Id'] = ctx.conversationId
+  if (ctx.originInsight) h['X-KubeBolt-Origin-Insight'] = ctx.originInsight
+  return Object.keys(h).length ? h : undefined
+}
+
 export const api = {
   // --- Auth ---
   getAuthConfig: () =>
@@ -495,7 +511,7 @@ export const api = {
     type: string,
     namespace: string,
     name: string,
-    options?: { orphan?: boolean; force?: boolean; source?: string },
+    options?: { orphan?: boolean; force?: boolean; source?: string | ActionAudit },
   ) => {
     const params = new URLSearchParams()
     if (options?.orphan) params.set('orphan', 'true')
@@ -503,7 +519,7 @@ export const api = {
     const query = params.toString()
     return deleteRequest<{ status: string }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}${query ? '?' + query : ''}`,
-      options?.source ? { 'X-KubeBolt-Action-Source': options.source } : undefined,
+      actionHeaders(options?.source),
     )
   },
 
@@ -513,11 +529,11 @@ export const api = {
   // The `resource` field carries the post-mutation object in the same
   // shape as `useResourceDetail`, so callers can call `setQueryData`
   // and reflect the change without waiting for a WS event or poll.
-  restartResource: (type: string, namespace: string, name: string, source?: string) =>
+  restartResource: (type: string, namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: string; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/restart`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Evict a Pod via the policy/v1 Eviction API — distinct from
@@ -526,11 +542,11 @@ export const api = {
   // surfaces a structured payload (`pdbBlocked: true`) the caller can
   // use to render an explicit "blocked by PDB" message instead of a
   // generic 429. Pod-only — the backend rejects other types.
-  evictPod: (namespace: string, name: string, source?: string) =>
+  evictPod: (namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: string }>(
       `${API_BASE}/resources/pods/${namespace}/${name}/evict`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Spawn an ephemeral debug container inside a running pod. Returns
@@ -541,28 +557,28 @@ export const api = {
     namespace: string,
     name: string,
     body: { image: string; targetContainer?: string; command?: string[]; shareProcessNamespace?: boolean },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{ status: string; ephemeralContainerName: string }>(
       `${API_BASE}/resources/pods/${namespace}/${name}/debug`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string) =>
+  scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string | ActionAudit) =>
     postJSON<{ status: string; fromReplicas: number; toReplicas: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/scale`,
       { replicas },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Rollback a Deployment to a previous revision (kubectl rollout undo).
   // toRevision = 0 (or omitted) means "previous revision".
-  rollbackResource: (type: string, namespace: string, name: string, toRevision?: number, source?: string) =>
+  rollbackResource: (type: string, namespace: string, name: string, toRevision?: number, source?: string | ActionAudit) =>
     postJSON<{ status: string; fromRevision: number; toRevision: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollback`,
       { toRevision: toRevision ?? 0 },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Set image — strategic merge patch on container images, equivalent
@@ -577,7 +593,7 @@ export const api = {
     namespace: string,
     name: string,
     images: { container: string; image: string }[],
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched' | 'unchanged'
@@ -587,7 +603,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-image`,
       { images },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Set resources — kubectl set resources. Strategic merge patch on
@@ -600,7 +616,7 @@ export const api = {
     namespace: string,
     name: string,
     containers: ContainerResourcesPatch[],
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched'
@@ -610,7 +626,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-resources`,
       { containers },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Set env — kubectl set env. Strategic merge patch on each
@@ -623,7 +639,7 @@ export const api = {
     namespace: string,
     name: string,
     body: SetEnvBody,
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched'
@@ -634,7 +650,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-env`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Patch HPA bounds — strategic merge on spec.minReplicas /
@@ -646,7 +662,7 @@ export const api = {
     namespace: string,
     name: string,
     body: { minReplicas?: number; maxReplicas?: number },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched' | 'unchanged'
@@ -656,7 +672,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/hpas/${namespace}/${name}/set-bounds`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Edit metadata — kubectl label / kubectl annotate equivalents.
@@ -668,7 +684,7 @@ export const api = {
     namespace: string,
     name: string,
     body: EditMetadataBody,
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched'
@@ -677,7 +693,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/edit-metadata`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Reveal a Secret's values. POST (not GET) so the request body —
@@ -689,12 +705,12 @@ export const api = {
     namespace: string,
     name: string,
     body: { keys?: string[]; reason: string },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<SecretRevealResponse>(
       `${API_BASE}/resources/secrets/${namespace}/${name}/reveal`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Create a new resource from a YAML or JSON manifest. Tier 2 #10
@@ -705,14 +721,13 @@ export const api = {
     type: string,
     namespace: string,
     manifest: string,
-    source?: string,
+    source?: string | ActionAudit,
   ) => {
     // Send the raw manifest bytes — the backend's sigs.k8s.io/yaml
     // decoder accepts both YAML and JSON, so a single content-type
     // (application/yaml) covers both. We don't go through postJSON
     // because the body isn't JSON-serialized; it's the raw text.
-    const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
-    if (source) headers['X-KubeBolt-Action-Source'] = source
+    const headers: Record<string, string> = { 'Content-Type': 'application/yaml', ...actionHeaders(source) }
     return fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}`, {
       method: 'POST',
       headers,
@@ -730,18 +745,18 @@ export const api = {
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
   // segment of cluster-scoped resources.
-  cordonNode: (name: string, source?: string) =>
+  cordonNode: (name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'cordoned'; alreadyCordoned: boolean; node: ResourceItem | null }>(
       `${API_BASE}/resources/nodes/_/${name}/cordon`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  uncordonNode: (name: string, source?: string) =>
+  uncordonNode: (name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'uncordoned'; alreadyUncordoned: boolean; node: ResourceItem | null }>(
       `${API_BASE}/resources/nodes/_/${name}/uncordon`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Rollout pause / resume — kubectl rollout pause / resume.
@@ -752,7 +767,7 @@ export const api = {
   // Response carries the post-patch deployment so the panel can
   // re-render without an extra refetch round-trip, plus the
   // `alreadyPaused` / `alreadyActive` flag for no-op detection.
-  pauseRollout: (type: string, namespace: string, name: string, source?: string) =>
+  pauseRollout: (type: string, namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{
       status: 'paused'
       alreadyPaused: boolean
@@ -760,10 +775,10 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollout-pause`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  resumeRollout: (type: string, namespace: string, name: string, source?: string) =>
+  resumeRollout: (type: string, namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{
       status: 'resumed'
       alreadyActive: boolean
@@ -771,7 +786,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollout-resume`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Drain — long-running streaming operation. The POST body
@@ -790,14 +805,14 @@ export const api = {
       force: boolean
       disableEviction: boolean
     },
-    source?: string,
+    source?: string | ActionAudit,
     signal?: AbortSignal,
   ) =>
     fetchWithAuth(`${API_BASE}/resources/nodes/_/${name}/drain`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(source ? { 'X-KubeBolt-Action-Source': source } : {}),
+        ...actionHeaders(source),
       },
       body: JSON.stringify(body),
       signal,
@@ -826,18 +841,18 @@ export const api = {
   // Suspend & resume mirror cordon/uncordon: the response includes
   // an `alreadySuspended`/`alreadyActive` flag so the UI can render
   // "no change" rather than a fake success toast on a no-op.
-  suspendCronJob: (namespace: string, name: string, source?: string) =>
+  suspendCronJob: (namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'suspended'; alreadySuspended: boolean; cronJob: ResourceItem | null }>(
       `${API_BASE}/resources/cronjobs/${namespace}/${name}/suspend`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  resumeCronJob: (namespace: string, name: string, source?: string) =>
+  resumeCronJob: (namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'resumed'; alreadyActive: boolean; cronJob: ResourceItem | null }>(
       `${API_BASE}/resources/cronjobs/${namespace}/${name}/resume`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Trigger creates a one-off Job from the CronJob's jobTemplate.
@@ -847,7 +862,7 @@ export const api = {
     namespace: string,
     name: string,
     body?: { jobName?: string; suspendAfterTrigger?: boolean },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'triggered'
@@ -863,7 +878,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/cronjobs/${namespace}/${name}/trigger`,
       body ?? {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Port forwarding
