@@ -77,15 +77,20 @@ function relativeTimeShort(iso: string): string {
 // triggers a browser download — for pasting into postmortems / RCA docs.
 function exportConversationMarkdown(messages: CopilotMessage[], title: string | null): void {
   const lines: string[] = [`# ${title || 'Kobi conversation'}`, '']
+  // Per-message time turns the export into a real timeline (postmortems / RCA).
+  const stamp = (m: CopilotMessage) =>
+    m.timestamp instanceof Date && !Number.isNaN(m.timestamp.getTime())
+      ? ` · ${m.timestamp.toLocaleString()}`
+      : ''
   for (const m of messages) {
     if (m.kind === 'compact-notice') {
       lines.push('> _(conversation compacted here)_', '')
       continue
     }
     if (m.role === 'user' && (m.content ?? '').trim()) {
-      lines.push(`## You`, '', m.content.trim(), '')
+      lines.push(`## You${stamp(m)}`, '', m.content.trim(), '')
     } else if (m.role === 'assistant' && (m.content ?? '').trim()) {
-      lines.push(`## Kobi`, '', m.content.trim(), '')
+      lines.push(`## Kobi${stamp(m)}`, '', m.content.trim(), '')
     }
     if (m.toolCalls?.length) {
       for (const tc of m.toolCalls) {
@@ -184,6 +189,17 @@ export function CopilotPanel() {
     if (document.activeElement && document.activeElement.tagName === 'BUTTON') return
     inputRef.current?.focus({ preventScroll: true })
   }, [isLoading, isOpen])
+
+  // Focus the input when a fresh/blank conversation appears — clicking "New
+  // conversation" (header or history drawer) clears the transcript but doesn't
+  // change isOpen/isLoading, so the focus effects above don't fire. Keyed on
+  // the transcript going empty; guarded on the drawer being closed so it never
+  // steals focus from the history search box.
+  useEffect(() => {
+    if (!isOpen || isLoading || showHistory || messages.length > 0) return
+    const t = setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 60)
+    return () => clearTimeout(t)
+  }, [messages.length, isOpen, isLoading, showHistory])
 
   // Context-size indicator: how full the conversation is relative to the
   // auto-compact trigger. Source of truth is the provider-reported input
