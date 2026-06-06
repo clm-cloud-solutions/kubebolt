@@ -455,6 +455,16 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	systemToolsOverhead := copilot.ApproxSystemToolsTokens(systemPrompt, tools)
 
 	for round := 0; round < maxRounds; round++ {
+		// Active provider for this round: the primary, unless an earlier round
+		// already fell over to the fallback — then we STICK with the fallback
+		// for the rest of the session instead of re-trying a degraded primary
+		// every round. Re-trying surfaced a confusing upstream error (e.g. a
+		// 502) AFTER the fallback had already answered the conversation.
+		activeProvider := cfg.Primary
+		if usedFallback && cfg.Fallback != nil {
+			activeProvider = *cfg.Fallback
+		}
+
 		// Auto-compact when the conversation approaches the budget.
 		// Uses a cheap-tier model of the same provider to summarize the
 		// older turns, then replaces them with a single summary message.
@@ -477,7 +487,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				)
 				cr, cerr := copilot.Compact(r.Context(), messages, copilot.CompactOptions{
 					PreserveTurns: cfg.CompactPreserveTurns,
-					Provider:      cfg.Primary,
+					Provider:      activeProvider,
 					CompactModel:  cfg.CompactModel,
 				})
 				if cerr != nil {
@@ -526,7 +536,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			System:    systemPrompt,
 			Messages:  withSessionContextPrefix(messages, sessionCtx),
 			Tools:     tools,
-			Provider:  cfg.Primary,
+			Provider:  activeProvider,
 			MaxTokens: cfg.MaxTokens,
 		}
 
@@ -625,7 +635,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				)
 				cr, cerr := copilot.Compact(r.Context(), finalMessages, copilot.CompactOptions{
 					PreserveTurns: cfg.CompactPreserveTurns,
-					Provider:      cfg.Primary,
+					Provider:      activeProvider,
 					CompactModel:  cfg.CompactModel,
 				})
 				if cerr != nil {
