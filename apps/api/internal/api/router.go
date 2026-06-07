@@ -13,6 +13,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcp"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
@@ -95,6 +96,15 @@ func NewRouter(
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
 	}
+
+	// Kobi MCP server (read-only). Built once — the executor is stateless
+	// (it only wraps the manager) and the read-only tool catalogue is
+	// static. Registered as a route inside the authenticated group below.
+	mcpServer := mcp.NewServer(
+		mcp.ServerInfo{Name: "kubebolt-kobi", Version: "1"},
+		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager)),
+		mcp.NewKobiPromptProvider(),
+	)
 
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -190,6 +200,19 @@ func NewRouter(
 			r.Get("/copilot/conversations/{id}", h.handleGetConversation)
 			r.Patch("/copilot/conversations/{id}", h.handlePatchConversation)
 			r.Delete("/copilot/conversations/{id}", h.handleDeleteConversation)
+
+			// Kobi MCP server (read-only) — exposes Kobi's read-only tool
+			// catalogue + guidance prompt to external MCP hosts (Claude Code,
+			// Cursor, CI/CD) over the Streamable HTTP transport. Mounted in the
+			// authenticated group but OUTSIDE requireConnector on purpose:
+			// initialize / tools/list must work even when the cluster is
+			// momentarily disconnected, and a tools/call then degrades to a
+			// graceful isError result. The request context already carries the
+			// (tenant, cluster) RuntimeKey from ResolveTenant + resolveCluster,
+			// so this one endpoint serves every tenant/cluster the API token is
+			// authorized for — single "default" tenant in OSS, many in EE/SaaS.
+			// Auth reuses the standard API tokens (kb_...).
+			r.Handle("/mcp", mcp.Handler(mcpServer))
 
 			// Metrics storage (VictoriaMetrics) PromQL pass-through — no cluster
 			// connection required. Data is queried from the TSDB directly.

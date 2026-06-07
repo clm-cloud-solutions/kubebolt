@@ -42,17 +42,27 @@ func NewExecutor(manager *cluster.Manager) *Executor {
 	return &Executor{manager: manager}
 }
 
-// Execute runs a single tool call and returns its result as a JSON string.
-// Errors during execution are returned as ToolResult with IsError=true so the
-// LLM can react gracefully.
+// Execute runs a single tool call against the default-tenant + active-cluster
+// runtime. It is a thin shim over ExecuteCtx for callers that have no request
+// context (the OSS chat loop). New callers that DO carry a request context
+// — most notably the MCP server, where the context holds the resolved
+// (tenant, cluster) RuntimeKey — must call ExecuteCtx so per-tenant routing
+// works. See internal/kubebolt-w2-connector-pool-design.md.
 func (e *Executor) Execute(call ToolCall) ToolResult {
+	return e.ExecuteCtx(context.Background(), call)
+}
+
+// ExecuteCtx runs a single tool call and returns its result as a JSON string,
+// resolving the connector/engine for the (tenant, cluster) carried by ctx via
+// cluster.RuntimeKeyFromContext. When ctx has no RuntimeKey (the zero value),
+// it resolves to default-tenant + active-cluster — preserving the original
+// single-tenant OSS behavior. Errors during execution are returned as
+// ToolResult with IsError=true so the caller (LLM or MCP host) can react
+// gracefully.
+func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
 	res := ToolResult{ToolCallID: call.ID}
 
-	// context.Background(): the Kobi executor has no request ctx here, so it
-	// resolves to default-tenant + active-cluster (correct in OSS). EE
-	// (Fase B) threads the real request ctx into Execute for per-tenant
-	// scoping. See internal/kubebolt-w2-connector-pool-design.md.
-	conn := e.manager.Connector(context.Background())
+	conn := e.manager.Connector(ctx)
 	if conn == nil {
 		res.Content = `{"error":"cluster not connected"}`
 		res.IsError = true
@@ -345,7 +355,7 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		res.Content = jsonString(conn.GetTopology())
 
 	case "get_insights":
-		eng := e.manager.Engine(context.Background()) // see Connector() note above
+		eng := e.manager.Engine(ctx) // resolved for ctx's (tenant, cluster); see ExecuteCtx
 		if eng == nil {
 			res.Content = `{"error":"insights engine not available"}`
 			res.IsError = true
