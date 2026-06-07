@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   X,
   Send,
+  Square,
   Trash2,
   Loader2,
   AlertCircle,
@@ -145,6 +146,7 @@ export function CopilotPanel() {
     sessionRounds,
     closePanel,
     sendMessage,
+    cancelMessage,
     clearHistory,
     compactSession,
     isCompacting,
@@ -581,9 +583,11 @@ export function CopilotPanel() {
               // tool chip → chart (evidence) → analysis text. This keeps
               // the chart visually next to the prose that interprets it.
               const metricCards = hasText ? (metricChartAttachments.get(m.id) ?? []) : []
-              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0) {
+              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0 && !m.cancelled) {
                 // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
                 // don't render at all; the bottom indicator covers them.
+                // Exception: a cancelled turn renders even when empty so the
+                // "Stopped by you" marker shows (the user stopped before any token).
                 return null
               }
               return (
@@ -620,6 +624,17 @@ export function CopilotPanel() {
                         )
                       })}
                     </ToolCardLane>
+                  )}
+                  {m.cancelled && (
+                    // "Stopped by you" — aligned to the assistant content lane
+                    // (empty avatar slot + content), like the metric cards above.
+                    <div className="flex justify-start gap-2 max-w-[95%]">
+                      <div className="w-6 shrink-0" aria-hidden />
+                      <div className="flex items-center gap-1.5 text-[11px] text-kb-text-tertiary">
+                        <Square className="w-2.5 h-2.5 fill-current shrink-0" />
+                        <span className="font-mono">Stopped by you</span>
+                      </div>
+                    </div>
                   )}
                 </div>
               )
@@ -663,11 +678,7 @@ export function CopilotPanel() {
           })()
         )}
 
-        {isLoading &&
-          messages[messages.length - 1]?.role === 'assistant' &&
-          messages[messages.length - 1]?.content === '' && (
-            <ThinkingIndicator />
-          )}
+        {isLoading && <StreamStatusHint />}
 
         {error && (
           <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-[11px]">
@@ -710,13 +721,24 @@ export function CopilotPanel() {
               style={{ minHeight: '36px' }}
             />
           </div>
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="w-9 h-9 rounded-lg bg-kb-accent hover:bg-kb-accent/90 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
-          >
-            <Send className="w-4 h-4" />
-          </button>
+          {isLoading ? (
+            <button
+              onClick={cancelMessage}
+              title="Stop generating"
+              aria-label="Stop generating"
+              className="w-9 h-9 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-secondary hover:text-kb-text-primary border border-kb-border flex items-center justify-center transition-colors shrink-0"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="w-9 h-9 rounded-lg bg-kb-accent hover:bg-kb-accent/90 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          )}
         </div>
         <div className="text-[9px] font-mono text-kb-text-tertiary mt-1.5 text-center leading-relaxed">
           AI can make mistakes. Verify important information before acting on it.
@@ -891,6 +913,48 @@ function ToolCallIndicator({ toolName }: { toolName: string }) {
       <Wrench className="w-3 h-3 text-kb-accent" />
       <span>{label}</span>
       <Loader2 className="w-3 h-3 animate-spin ml-auto" />
+    </div>
+  )
+}
+
+// StreamStatusHint — adaptive in-flight indicator. While the turn streams it
+// distinguishes three states off lastActivityAt (bumped on every stream event):
+//   • awaiting first token       → the "Thinking" dots
+//   • streaming, recent activity → nothing (the text itself is the progress)
+//   • stalled (no event for a while) → a subtle "Waiting…" / "Taking longer
+//     than usual…" line, so a slow network or a hung upstream doesn't read as
+//     a frozen response. Cancelling is always one click away via the input's
+//     Stop button. Ticks once a second so the thresholds advance on their own.
+const IDLE_HINT_MS = 4000
+const LONG_WAIT_MS = 15000
+
+function StreamStatusHint() {
+  const { isLoading, lastActivityAt, messages } = useCopilot()
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!isLoading) return
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [isLoading])
+
+  if (!isLoading) return null
+  const last = messages[messages.length - 1]
+  const awaitingFirstToken = last?.role === 'assistant' && last?.content === ''
+  const idleMs = lastActivityAt ? Date.now() - lastActivityAt : 0
+
+  // First token can legitimately take a few seconds (tool calls, cold model) —
+  // keep the dots until it's clearly unusual.
+  if (awaitingFirstToken && idleMs < LONG_WAIT_MS) return <ThinkingIndicator />
+  // Mid-stream and still flowing — the text is the signal, no extra chrome.
+  if (!awaitingFirstToken && idleMs < IDLE_HINT_MS) return null
+
+  const longWait = idleMs >= LONG_WAIT_MS
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border w-fit text-[11px] text-kb-text-tertiary">
+      <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+      <span className="font-mono">
+        {longWait ? 'Taking longer than usual…' : 'Waiting for response…'}
+      </span>
     </div>
   )
 }
