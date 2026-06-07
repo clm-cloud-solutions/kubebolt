@@ -34,6 +34,9 @@ vi.mock('@/services/api', () => ({
     setEnvResource: (...args: unknown[]) => apiCalls.setEnvResource(...args),
     patchHpaBounds: (...args: unknown[]) => apiCalls.patchHpaBounds(...args),
     getResourceDetail: vi.fn().mockResolvedValue({}),
+    // Auto dry-run fires on mount of a pending card; default to "would apply"
+    // so it doesn't interfere with the execute-dispatch assertions.
+    getDryRunPreview: vi.fn().mockResolvedValue({ ok: true, message: 'Would apply' }),
   },
   ApiError: class ApiError extends Error {
     status = 0

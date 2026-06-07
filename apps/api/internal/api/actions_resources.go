@@ -218,15 +218,27 @@ func (h *handlers) handleSetResources(w http.ResponseWriter, r *http.Request) {
 		"toResources":   toResources,
 	}
 
+	dryRun := dryRunRequested(r)
+	resOpts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
-		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, resOpts)
 	case "statefulsets":
-		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, resOpts)
 	case "daemonsets":
-		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, resOpts)
 	}
 
+	if dryRun {
+		// The Deployment patch applies, but quota/LimitRange admit the NEW
+		// requests/limits at pod creation — check a marginal pod built from the
+		// patched template so an over-quota bump surfaces before Execute.
+		if err == nil {
+			err = dryRunPatchedPod(ctx, clientset, resourceType, namespace, name, patchBytes)
+		}
+		respondDryRun(w, err, "Would apply · container requests/limits updated")
+		return
+	}
 	if err != nil {
 		auditMutation(r, "set_resources", resourceType, namespace, name, params, err)
 		log.Printf("Set-resources failed for %s/%s/%s: %v", resourceType, namespace, name, err)

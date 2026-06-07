@@ -3864,7 +3864,7 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 }
 
 // DeleteResource deletes a resource using the dynamic client.
-func (c *Connector) DeleteResource(resourceType, namespace, name string, propagation metav1.DeletionPropagation, gracePeriod *int64) error {
+func (c *Connector) DeleteResource(resourceType, namespace, name string, propagation metav1.DeletionPropagation, gracePeriod *int64, dryRun bool) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
 	}
@@ -3880,13 +3880,17 @@ func (c *Connector) DeleteResource(resourceType, namespace, name string, propaga
 	if gracePeriod != nil {
 		opts.GracePeriodSeconds = gracePeriod
 	}
+	if dryRun {
+		opts.DryRun = []string{"All"}
+	}
 	var err error
 	if isClusterScoped(resourceType) {
 		err = c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
 	} else {
 		err = c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
 	}
-	if err == nil {
+	// A dry-run delete persists nothing, so don't tombstone the read path.
+	if err == nil && !dryRun {
 		// Record a tombstone so list/detail reads mask the deleted
 		// resource until the informer's deletion event propagates.
 		// 10s default TTL covers the typical informer lag (<1s) plus
@@ -5235,7 +5239,7 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 // annotations at the time of the call. Errors if the deployment has fewer
 // than 2 revisions, if the target revision can't be found, or if the
 // target equals the current (no-op).
-func (c *Connector) RollbackDeployment(namespace, name string, toRevision int) (int, int, error) {
+func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, dryRun bool) (int, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -5313,7 +5317,11 @@ func (c *Connector) RollbackDeployment(namespace, name string, toRevision int) (
 	}
 	dep.Spec.Template = *newTemplate
 
-	if _, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
+	upOpts := metav1.UpdateOptions{}
+	if dryRun {
+		upOpts.DryRun = []string{"All"}
+	}
+	if _, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, dep, upOpts); err != nil {
 		return fromRev, toRev, err
 	}
 	return fromRev, toRev, nil

@@ -12,7 +12,7 @@ import {
   ExternalLink,
   Trash2,
 } from 'lucide-react'
-import { api, ApiError, type ActionAudit } from '@/services/api'
+import { api, ApiError, type ActionAudit, type DryRunResult } from '@/services/api'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
@@ -66,8 +66,54 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const [resultMsg, setResultMsg] = useState<string | null>(
     proposal.executionStatus === 'executed' ? proposal.executionResult ?? 'Done' : null,
   )
+  // Auto dry-run preview state. idle = not run / not applicable; validating =
+  // call in flight; ok / rejected = result in hand.
+  const [dryRunPhase, setDryRunPhase] = useState<'idle' | 'validating' | 'ok' | 'rejected'>('idle')
+  const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null)
 
   const { action, target, params, summary, rationale, risk, reversible } = proposal
+
+  // Validate a FRESH, pending, in-this-session proposal against the cluster
+  // (?dryRun=true) ONCE, so the card shows "would apply" / "would be rejected"
+  // before Execute. Skipped for resumed/historical proposals (already resolved)
+  // and verbs without a server dry-run (rollback → unsupported). Read-only.
+  useEffect(() => {
+    if (status !== 'pending' || proposal.executionStatus) return
+    let cancelled = false
+    // Subscribe to the SHARED dry-run promise (created once, reused across
+    // StrictMode double-invokes and remounts) so the result lands on whichever
+    // run is still mounted instead of being dropped on a cancelled one.
+    let promise = dryRunCache.get(toolCallId)
+    if (!promise) {
+      promise = api.getDryRunPreview({ action, target, params })
+      dryRunCache.set(toolCallId, promise)
+    }
+    setDryRunPhase('validating')
+    promise
+      .then((res) => {
+        if (cancelled) return
+        if (res.unsupported) {
+          setDryRunPhase('idle')
+          return
+        }
+        setDryRunResult(res)
+        setDryRunPhase(res.ok ? 'ok' : 'rejected')
+      })
+      .catch(() => {
+        // Couldn't validate (network / unexpected error) — drop the cache so a
+        // later mount can retry, hide the preview, and leave Execute available.
+        dryRunCache.delete(toolCallId)
+        if (!cancelled) setDryRunPhase('idle')
+      })
+    return () => {
+      cancelled = true
+    }
+    // Depend ONLY on status + toolCallId. proposal/target/params are re-parsed
+    // into fresh object refs every parent render (streaming, isLoading flips);
+    // depending on them would re-run this effect spuriously. The shared promise
+    // cache makes re-subscription safe regardless.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, toolCallId])
 
   async function execute() {
     setStatus('executing')
@@ -323,26 +369,54 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
 
       {/* Action footer */}
       {status === 'pending' && (
-        <div className="flex items-center gap-2 mt-1">
-          <button
-            onClick={execute}
-            disabled={!confirmMatched}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-              risk === 'high'
-                ? 'bg-status-error hover:bg-status-error/90'
-                : 'bg-kb-accent hover:bg-kb-accent/90'
-            }`}
-          >
-            {risk === 'high' ? <Trash2 className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-            Execute · {action.replace(/_/g, ' ')}
-          </button>
-          <button
-            onClick={dismiss}
-            className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg ${headerMutedClass} hover:text-kb-text-primary hover:bg-kb-elevated text-[11px] transition-colors`}
-          >
-            <XIcon className="w-3 h-3" />
-            Dismiss
-          </button>
+        <div className="flex flex-col gap-1.5 mt-1">
+          {/* Dry-run preview — runs automatically; verifies the proposal would
+              apply before the user commits. */}
+          <DryRunPreview phase={dryRunPhase} result={dryRunResult} />
+          <div className="flex items-center gap-2 flex-wrap">
+            {dryRunPhase === 'rejected' ? (
+              // The cluster would reject this: block the primary Execute and
+              // offer a de-emphasized override (the dry-run can be stale, or the
+              // cluster may have changed since).
+              <>
+                <button
+                  disabled
+                  title="The cluster would reject this — see the preview above"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-[11px] font-medium bg-kb-accent opacity-40 cursor-not-allowed"
+                >
+                  <Play className="w-3 h-3" />
+                  Execute · {action.replace(/_/g, ' ')}
+                </button>
+                <button
+                  onClick={execute}
+                  disabled={!confirmMatched}
+                  className={`text-[11px] font-mono underline ${headerMutedClass} hover:text-status-error disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed`}
+                >
+                  Execute anyway
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={execute}
+                disabled={!confirmMatched}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  risk === 'high'
+                    ? 'bg-status-error hover:bg-status-error/90'
+                    : 'bg-kb-accent hover:bg-kb-accent/90'
+                }`}
+              >
+                {risk === 'high' ? <Trash2 className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+                Execute · {action.replace(/_/g, ' ')}
+              </button>
+            )}
+            <button
+              onClick={dismiss}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg ${headerMutedClass} hover:text-kb-text-primary hover:bg-kb-elevated text-[11px] transition-colors`}
+            >
+              <XIcon className="w-3 h-3" />
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
@@ -773,6 +847,16 @@ const handledStalls = new Set<string>()
 // because after a reload nothing was executed live yet.
 const liveExecutions = new Set<string>()
 
+// In-flight/resolved dry-run PROMISE per toolCallId — a promise cache, not a
+// "started" flag. Under React StrictMode the mount effect runs twice (setup →
+// cleanup → setup) and a card can remount on a transcript rebuild; with a flag,
+// the second setup would skip re-subscribing and the result (delivered to the
+// first, now-cancelled run) is dropped, leaving the card stuck on "Validating…".
+// Caching the promise lets EVERY setup subscribe to the SAME call, so whichever
+// run is still mounted gets the result. A reload clears it (correct: re-validate
+// against current cluster state — the call is cheap + read-only).
+const dryRunCache = new Map<string, Promise<DryRunResult>>()
+
 // investigateStall fires the auto-root-cause turn: a synthetic user message
 // that hands Kobi the stall context and points it at events/describe. Reused
 // by the auto-trigger (on timeout) and the manual "Ask Kobi" button (for the
@@ -1074,6 +1158,59 @@ function StalledNotice({ proposal }: { proposal: ActionProposal }) {
         <Wrench className="w-2.5 h-2.5" />
         Ask Kobi why
       </button>
+    </div>
+  )
+}
+
+// DryRunPreview renders the automatic pre-Execute validation: a one-line
+// "Validating…" → "Would apply · <diff>" (green) → "Would be rejected · <reason>"
+// (red, + a req/used/limit breakdown for quota blocks). idle renders nothing
+// (not run, not applicable, or couldn't validate). Reuses status-ok/error
+// tokens — no new design tokens.
+function DryRunPreview({
+  phase,
+  result,
+}: {
+  phase: 'idle' | 'validating' | 'ok' | 'rejected'
+  result: DryRunResult | null
+}) {
+  if (phase === 'idle') return null
+  if (phase === 'validating') {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-kb-text-secondary ml-1">
+        <Loader2 className="w-3.5 h-3.5 animate-spin text-kb-accent shrink-0" />
+        <span className="font-mono">Validating against the cluster…</span>
+      </div>
+    )
+  }
+  if (phase === 'ok') {
+    return (
+      <div className="flex items-center gap-2 text-[11px] text-status-ok ml-1 rounded-md border border-status-ok/20 bg-status-ok/5 px-2 py-1.5">
+        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+        <span className="font-mono">{result?.message || 'Would apply'}</span>
+      </div>
+    )
+  }
+  // rejected
+  const q = result?.quota
+  return (
+    <div className="flex flex-col gap-1 text-[11px] text-status-error ml-1 rounded-md border border-status-error/25 bg-status-error/5 px-2 py-1.5">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+        <span className="font-mono break-words">
+          Would be rejected · {result?.message || 'the cluster would reject this'}
+        </span>
+      </div>
+      {q && (
+        <div className="ml-5 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-0.5 text-[10px] font-mono text-status-error/85">
+          <span>requested</span>
+          <span className="break-all">{q.requested}</span>
+          <span>used</span>
+          <span className="break-all">{q.used}</span>
+          <span>limit</span>
+          <span className="break-all">{q.limited}</span>
+        </div>
+      )}
     </div>
   )
 }

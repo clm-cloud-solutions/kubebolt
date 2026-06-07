@@ -183,17 +183,23 @@ func (h *handlers) handleRestart(w http.ResponseWriter, r *http.Request) {
 		time.Now().Format(time.RFC3339),
 	)
 	patchBytes := []byte(restartPatch)
+	dryRun := dryRunRequested(r)
+	opts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
 
 	var err error
 	switch resourceType {
 	case "deployments":
-		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, opts)
 	case "statefulsets":
-		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, opts)
 	case "daemonsets":
-		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, opts)
 	}
 
+	if dryRun {
+		respondDryRun(w, err, "Would restart · pods roll with a new revision")
+		return
+	}
 	if err != nil {
 		auditMutation(r, "restart_workload", resourceType, namespace, name, nil, err)
 		log.Printf("Restart failed for %s/%s/%s: %v", resourceType, namespace, name, err)
@@ -259,40 +265,50 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	params := map[string]any{"replicas": body.Replicas}
+	dryRun := dryRunRequested(r)
 
-	// Use the scale subresource
+	// Use the scale subresource. The UpdateScale carries DryRun=All in preview
+	// mode so the apiserver runs quota/LimitRange/admission without persisting.
 	var currentReplicas int32
+	var err error
 	switch resourceType {
 	case "deployments":
-		scale, err := clientset.AppsV1().Deployments(namespace).GetScale(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondMutationError(w, err)
-			return
+		scale, gErr := clientset.AppsV1().Deployments(namespace).GetScale(ctx, name, metav1.GetOptions{})
+		if gErr != nil {
+			err = gErr
+			break
 		}
 		currentReplicas = scale.Spec.Replicas
 		scale.Spec.Replicas = body.Replicas
-		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
-		if err != nil {
-			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondMutationError(w, err)
-			return
-		}
+		_, err = clientset.AppsV1().Deployments(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{DryRun: dryRunAll(dryRun)})
 	case "statefulsets":
-		scale, err := clientset.AppsV1().StatefulSets(namespace).GetScale(ctx, name, metav1.GetOptions{})
-		if err != nil {
-			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondMutationError(w, err)
-			return
+		scale, gErr := clientset.AppsV1().StatefulSets(namespace).GetScale(ctx, name, metav1.GetOptions{})
+		if gErr != nil {
+			err = gErr
+			break
 		}
 		currentReplicas = scale.Spec.Replicas
 		scale.Spec.Replicas = body.Replicas
-		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{})
-		if err != nil {
-			auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
-			respondMutationError(w, err)
-			return
+		_, err = clientset.AppsV1().StatefulSets(namespace).UpdateScale(ctx, name, scale, metav1.UpdateOptions{DryRun: dryRunAll(dryRun)})
+	}
+
+	// Dry-run: report would-apply / rejection without auditing or side effects.
+	if dryRun {
+		// The scale subresource applies cleanly even when the cluster can't
+		// actually run the new replicas — quota/LimitRange are enforced at POD
+		// creation, not on the scale call. So for a scale-UP, the binding check
+		// is whether a marginal pod from the template is admissible; that's what
+		// predicts (and matches) the real stall.
+		if err == nil && body.Replicas > currentReplicas {
+			err = dryRunMarginalPod(ctx, clientset, resourceType, namespace, name)
 		}
+		respondDryRun(w, err, fmt.Sprintf("Would apply · replicas %d → %d", currentReplicas, body.Replicas))
+		return
+	}
+	if err != nil {
+		auditMutation(r, "scale_workload", resourceType, namespace, name, params, err)
+		respondMutationError(w, err)
+		return
 	}
 
 	params["fromReplicas"] = currentReplicas
@@ -344,24 +360,32 @@ func (h *handlers) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := map[string]any{"toRevision": body.ToRevision}
+	dryRun := dryRunRequested(r)
 
 	var fromRev, toRev int64
 	var err error
 	switch resourceType {
 	case "deployments":
 		var f, t int
-		f, t, err = conn.RollbackDeployment(namespace, name, int(body.ToRevision))
+		f, t, err = conn.RollbackDeployment(namespace, name, int(body.ToRevision), dryRun)
 		fromRev, toRev = int64(f), int64(t)
 	case "statefulsets":
-		fromRev, toRev, err = conn.RollbackStatefulSet(namespace, name, body.ToRevision)
+		fromRev, toRev, err = conn.RollbackStatefulSet(namespace, name, body.ToRevision, dryRun)
 	case "daemonsets":
-		fromRev, toRev, err = conn.RollbackDaemonSet(namespace, name, body.ToRevision)
+		fromRev, toRev, err = conn.RollbackDaemonSet(namespace, name, body.ToRevision, dryRun)
 	}
 	if fromRev > 0 {
 		params["fromRevision"] = fromRev
 	}
 	if toRev > 0 {
 		params["resolvedToRevision"] = toRev
+	}
+	// Dry-run: the revision lookup is read-only and the final Update ran with
+	// DryRun=All. Report would-apply / the validation reason (no history, no-op,
+	// target not found) without auditing or persisting.
+	if dryRun {
+		respondDryRun(w, err, fmt.Sprintf("Would roll back · revision %d → %d", fromRev, toRev))
+		return
 	}
 	if err != nil {
 		auditMutation(r, "rollback_deployment", resourceType, namespace, name, params, err)
@@ -448,6 +472,7 @@ func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
 	clientset := conn.Clientset()
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
+	dryRun := dryRunRequested(r)
 
 	// 1. Capture pre-patch state. We need both the from-image map for
 	//    the audit / response AND the set of valid container names so
@@ -495,6 +520,10 @@ func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if allUnchanged {
+		if dryRun {
+			respondDryRun(w, nil, "No change · images already at the requested tags")
+			return
+		}
 		respondJSON(w, http.StatusOK, map[string]any{
 			"status":     "unchanged",
 			"fromImages": fromImages,
@@ -515,15 +544,20 @@ func (h *handlers) handleSetImage(w http.ResponseWriter, r *http.Request) {
 		"toImages":   body.Images,
 	}
 
+	imgOpts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
-		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, imgOpts)
 	case "statefulsets":
-		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, imgOpts)
 	case "daemonsets":
-		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, imgOpts)
 	}
 
+	if dryRun {
+		respondDryRun(w, err, setImageWouldMsg(body.Images))
+		return
+	}
 	if err != nil {
 		auditMutation(r, "set_image", resourceType, namespace, name, params, err)
 		log.Printf("Set-image failed for %s/%s/%s: %v", resourceType, namespace, name, err)
@@ -645,8 +679,14 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := map[string]any{"force": force, "orphan": orphan}
+	dryRun := dryRunRequested(r)
 
-	if err := conn.DeleteResource(resourceType, namespace, name, propagation, gracePeriod); err != nil {
+	err := conn.DeleteResource(resourceType, namespace, name, propagation, gracePeriod, dryRun)
+	if dryRun {
+		respondDryRun(w, err, fmt.Sprintf("Would delete · %s/%s", resourceType, name))
+		return
+	}
+	if err != nil {
 		auditMutation(r, "delete", resourceType, namespace, name, params, err)
 		log.Printf("Delete failed for %s/%s/%s: %v", resourceType, namespace, name, err)
 		respondMutationError(w, err)
