@@ -41,6 +41,10 @@ interface FormState {
   showToolCalls: boolean
   actionsEnabled: boolean
   destructiveActionsEnabled: boolean
+  // Action-progress timeout, held as SECONDS in the form (the wire/API unit
+  // is milliseconds — converted in stateFromResponse / buildPatch). String so
+  // the input is editable; empty = inherit env default.
+  actionProgressTimeoutSeconds: string
   autoCompact: boolean
   maxTokens: string // string so the input is editable; coerced to number on save
   // Auto-compact tunables. Strings while editing for the same reason as
@@ -66,6 +70,8 @@ function stateFromResponse(data: CopilotSettingsResponse): FormState {
     showToolCalls: eff.showToolCalls,
     actionsEnabled: eff.actionsEnabled,
     destructiveActionsEnabled: eff.destructiveActionsEnabled,
+    actionProgressTimeoutSeconds:
+      eff.actionProgressTimeoutMs != null ? String(Math.round(eff.actionProgressTimeoutMs / 1000)) : '',
     autoCompact: eff.autoCompact,
     maxTokens: String(eff.maxTokens || 4096),
     sessionBudgetTokens: eff.sessionBudgetTokens != null ? String(eff.sessionBudgetTokens) : '',
@@ -95,6 +101,14 @@ function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutR
   if (current.actionsEnabled !== initial.actionsEnabled) patch.actionsEnabled = current.actionsEnabled
   if (current.destructiveActionsEnabled !== initial.destructiveActionsEnabled)
     patch.destructiveActionsEnabled = current.destructiveActionsEnabled
+  // Action-progress timeout: the form is in seconds, the API in milliseconds.
+  // Only send when the operator typed something meaningful (>0) and changed it.
+  if (current.actionProgressTimeoutSeconds !== initial.actionProgressTimeoutSeconds) {
+    const secs = parseInt(current.actionProgressTimeoutSeconds, 10)
+    if (current.actionProgressTimeoutSeconds !== '' && !isNaN(secs) && secs > 0) {
+      patch.actionProgressTimeoutMs = secs * 1000
+    }
+  }
   if (current.autoCompact !== initial.autoCompact) patch.autoCompact = current.autoCompact
   const mt = parseInt(current.maxTokens, 10)
   if (!isNaN(mt) && mt > 0 && mt !== parseInt(initial.maxTokens, 10)) patch.maxTokens = mt
@@ -201,6 +215,7 @@ function CopilotSettingsForm({
     showToolCalls: form.showToolCalls !== initial.showToolCalls,
     actionsEnabled: form.actionsEnabled !== initial.actionsEnabled,
     destructiveActionsEnabled: form.destructiveActionsEnabled !== initial.destructiveActionsEnabled,
+    actionProgressTimeout: form.actionProgressTimeoutSeconds !== initial.actionProgressTimeoutSeconds,
     autoCompact: form.autoCompact !== initial.autoCompact,
     maxTokens: form.maxTokens !== initial.maxTokens,
     sessionBudgetTokens: form.sessionBudgetTokens !== initial.sessionBudgetTokens,
@@ -512,6 +527,24 @@ function CopilotSettingsForm({
             />
             Allow destructive proposals (delete, scale-to-0)
           </label>
+        </Field>
+
+        <Field
+          label="Action timeout"
+          dirty={dirtyMap.actionProgressTimeout}
+          helper="Seconds to wait for an executed action to converge before Kobi marks it stalled and auto-investigates why (e.g. a scale blocked by a ResourceQuota). Min 10s. Blank = env default (90s)."
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={10}
+              placeholder="90"
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+              value={form.actionProgressTimeoutSeconds}
+              onChange={(e) => setForm({ ...form, actionProgressTimeoutSeconds: e.target.value })}
+            />
+            <span className="text-[11px] text-kb-text-tertiary">seconds</span>
+          </div>
         </Field>
 
         <Field

@@ -17,6 +17,7 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
 import type { ActionProposal, ActionProposalAction } from '@/services/copilot/types'
+import { buildTriggerPrompt } from '@/services/copilot/triggers'
 
 type Status = 'pending' | 'executing' | 'success' | 'error' | 'dismissed'
 
@@ -365,6 +366,10 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
           {action !== 'delete_resource' && action !== 'patch_hpa' && action !== 'debug_pod' && !proposal.progressSettled && (
             <WorkloadProgress proposal={proposal} toolCallId={toolCallId} />
           )}
+          {/* Terminal "did not converge" state, persisted so it survives the
+              WorkloadProgress unmount (which fires the moment progressSettled
+              latches) and any re-mount of the card. */}
+          {proposal.progressOutcome === 'stalled' && <StalledNotice proposal={proposal} />}
           {action === 'delete_resource' ? (
             <Link
               to={`/${canonicalListRoute(target.type)}`}
@@ -732,11 +737,51 @@ function BlastRadiusPreview({ blast }: { blast: Record<string, unknown> }) {
 // After Execute succeeds, WorkloadProgress polls the workload's detail
 // every few seconds and renders a one-line status: "Rollout: 2/3 pods
 // updated · 2/3 ready" or "Scale: 2/3 ready". Polling stops when the
-// action is complete or after PROGRESS_TIMEOUT_MS, whichever comes first,
-// so we don't burn requests forever on a stuck rollout.
+// action is complete or after the configurable progress timeout, whichever
+// comes first, so we don't burn requests forever on a stuck rollout — and
+// on timeout we mark the card "did not converge" and ask Kobi why.
 
-const PROGRESS_TIMEOUT_MS = 90_000
+// Client fallback when the backend doesn't report actionProgressTimeoutMs
+// (older API). The live value comes from config.actionProgressTimeoutMs
+// (env KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT).
+const PROGRESS_TIMEOUT_FALLBACK_MS = 90_000
 const PROGRESS_POLL_MS = 2_500
+
+// toolCallIds whose stall has already been handled THIS page session. This is
+// the load-bearing guard, NOT a per-mount ref and NOT the persisted proposal
+// flag: the card remounts and the chat transcript is rebuilt mid-stream (by
+// the auto-investigation turn itself, by auto-compact, by resume), and neither
+// a ref nor a transcript mutation reliably survives that. When the guard was
+// per-mount, every remount re-armed the timeout and re-fired the root-cause —
+// the "spinner never freezes + Kobi investigates on a loop" bug. A module-level
+// Set is the one signal immune to both remount and transcript rebuild.
+const handledStalls = new Set<string>()
+
+// investigateStall fires the auto-root-cause turn: a synthetic user message
+// that hands Kobi the stall context and points it at events/describe. Reused
+// by the auto-trigger (on timeout) and the manual "Ask Kobi" button (for the
+// rare case the auto-turn was dropped because a chat was already streaming).
+function investigateStall(
+  send: (text: string, options?: { trigger?: string }) => unknown,
+  proposal: ActionProposal,
+  detail: string,
+  timeoutMs: number,
+) {
+  send(
+    buildTriggerPrompt({
+      type: 'action_stalled',
+      action: {
+        verb: proposal.action,
+        kind: proposal.target.type,
+        namespace: proposal.target.namespace,
+        name: proposal.target.name,
+        detail,
+        timeoutSeconds: Math.round(timeoutMs / 1000),
+      },
+    }),
+    { trigger: 'action_stalled' },
+  )
+}
 
 interface WorkloadCounts {
   desired: number // spec.replicas — what we want
@@ -813,19 +858,27 @@ function WorkloadProgress({
   proposal: ActionProposal
   toolCallId: string
 }) {
-  const { recordProposalProgressSettled } = useCopilot()
+  const { config, sendMessage, isLoading, recordProposalProgressSettled, recordProposalStalled } = useCopilot()
   const startedAt = useRef(Date.now())
-  const [timedOut, setTimedOut] = useState(false)
+  // Initialize already-frozen if this proposal stalled earlier — survives a
+  // remount (module Set) and a page reload (persisted progressOutcome). Without
+  // this the spinner restarts and re-times-out on every remount.
+  const [timedOut, setTimedOut] = useState(
+    () => handledStalls.has(toolCallId) || proposal.progressOutcome === 'stalled',
+  )
   const [done, setDone] = useState(false)
 
+  const timeoutMs = config?.actionProgressTimeoutMs ?? PROGRESS_TIMEOUT_FALLBACK_MS
+
   useEffect(() => {
+    if (timedOut) return // already stalled — don't re-arm the clock
     const id = window.setInterval(() => {
-      if (Date.now() - startedAt.current > PROGRESS_TIMEOUT_MS) {
+      if (Date.now() - startedAt.current > timeoutMs) {
         setTimedOut(true)
       }
     }, 5_000)
     return () => window.clearInterval(id)
-  }, [])
+  }, [timeoutMs, timedOut])
 
   const { data } = useQuery<Record<string, unknown>>({
     queryKey: [
@@ -926,22 +979,84 @@ function WorkloadProgress({
     }
   }, [isComplete, done, recordProposalProgressSettled, toolCallId])
 
-  const Icon = isComplete ? CheckCircle2 : Loader2
+  // Timeout reached without convergence → terminal "stalled" state. Guarded by
+  // the module-level Set (immune to remount + transcript rebuild) AND the
+  // persisted flag (immune to page reload) so the root-cause turn fires AT MOST
+  // ONCE per proposal. Fire the auto-investigation FIRST (its setMessages run
+  // before we mutate the toolResult; recordProposalStalled's functional update
+  // then applies on top), then latch the persisted stall for reload + StalledNotice.
+  useEffect(() => {
+    if (
+      !timedOut ||
+      isComplete ||
+      done ||
+      handledStalls.has(toolCallId) ||
+      proposal.progressOutcome === 'stalled'
+    ) {
+      return
+    }
+    handledStalls.add(toolCallId)
+    investigateStall(sendMessage, proposal, line, timeoutMs)
+    recordProposalStalled(toolCallId, line)
+  }, [timedOut, isComplete, done, line, sendMessage, proposal, recordProposalStalled, toolCallId, timeoutMs])
+
+  const isStalled = timedOut && !isComplete
+  const Icon = isComplete ? CheckCircle2 : isStalled ? AlertTriangle : Loader2
   const colorCls = isComplete
     ? 'text-status-ok'
-    : timedOut
+    : isStalled
       ? 'text-status-warn'
       : 'text-kb-text-secondary'
-  const iconAnim = isComplete ? '' : 'animate-spin'
+  // Spinner only while genuinely in flight — a stalled action must NOT keep
+  // spinning (the original bug: the icon spun forever on a stuck rollout).
+  const iconAnim = isComplete || isStalled ? '' : 'animate-spin'
 
   return (
-    <div className={`flex items-center gap-2 text-[11px] ${colorCls}`}>
-      <Icon className={`w-3.5 h-3.5 ${iconAnim}`} />
+    <div className={`flex items-center gap-2 text-[11px] flex-wrap ${colorCls}`}>
+      <Icon className={`w-3.5 h-3.5 shrink-0 ${iconAnim}`} />
       <span className="font-mono">{line}</span>
       {isComplete && <span className="text-[10px]">· complete</span>}
-      {timedOut && !isComplete && (
-        <span className="text-[10px]">· still in progress, check pods view</span>
+      {isStalled && (
+        <>
+          <span className="text-[10px]">· did not converge in {Math.round(timeoutMs / 1000)}s</span>
+          <button
+            onClick={() => investigateStall(sendMessage, proposal, line, timeoutMs)}
+            disabled={isLoading}
+            className="text-[10px] font-mono text-kb-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
+          >
+            <Wrench className="w-2.5 h-2.5" />
+            Ask Kobi why
+          </button>
+        </>
       )}
+    </div>
+  )
+}
+
+// ─── Stalled terminal state ──────────────────────────────────────────
+//
+// Rendered by the parent (from the persisted proposal) once WorkloadProgress
+// has latched progressOutcome='stalled'. Lives outside WorkloadProgress
+// because that component unmounts the moment progressSettled flips. Survives
+// re-mounts and shows the honest "did not converge" state + a manual
+// "Ask Kobi" fallback in case the auto-investigation was dropped.
+function StalledNotice({ proposal }: { proposal: ActionProposal }) {
+  const { config, sendMessage, isLoading } = useCopilot()
+  const timeoutMs = config?.actionProgressTimeoutMs ?? PROGRESS_TIMEOUT_FALLBACK_MS
+  const detail = proposal.progressDetail ?? 'did not converge'
+  return (
+    <div className="flex items-center gap-2 text-[11px] text-status-warn flex-wrap">
+      <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+      <span className="font-mono">{detail}</span>
+      <span className="text-[10px]">· did not converge in {Math.round(timeoutMs / 1000)}s</span>
+      <button
+        onClick={() => investigateStall(sendMessage, proposal, detail, timeoutMs)}
+        disabled={isLoading}
+        className="text-[10px] font-mono text-kb-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
+      >
+        <Wrench className="w-2.5 h-2.5" />
+        Ask Kobi why
+      </button>
     </div>
   )
 }

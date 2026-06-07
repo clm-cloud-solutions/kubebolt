@@ -47,6 +47,10 @@ vi.mock('@/contexts/CopilotContext', () => ({
   useCopilot: () => ({
     recordProposalOutcome: vi.fn(),
     recordProposalProgressSettled: vi.fn(),
+    recordProposalStalled: vi.fn(),
+    sendMessage: vi.fn(),
+    config: null,
+    isLoading: false,
     conversationId: null,
   }),
 }))

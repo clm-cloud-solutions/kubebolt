@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"testing"
+	"time"
 )
 
 // clearCopilotEnv wipes every KUBEBOLT_AI_* env var so tests don't pick up
@@ -17,6 +18,7 @@ func clearCopilotEnv(t *testing.T) {
 		"KUBEBOLT_AI_COMPACT_PRESERVE_TURNS",
 		"KUBEBOLT_AI_FALLBACK_PROVIDER", "KUBEBOLT_AI_FALLBACK_API_KEY",
 		"KUBEBOLT_AI_FALLBACK_MODEL", "KUBEBOLT_AI_FALLBACK_BASE_URL",
+		"KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT",
 	}
 	for _, v := range vars {
 		t.Setenv(v, "") // t.Setenv automatically restores on test end
@@ -48,6 +50,33 @@ func TestLoadCopilotConfig_Defaults(t *testing.T) {
 	}
 	if cfg.Fallback != nil {
 		t.Error("no fallback without API key")
+	}
+	if cfg.ActionProgressTimeout != DefaultActionProgressTimeout {
+		t.Errorf("default action timeout = %v, want %v", cfg.ActionProgressTimeout, DefaultActionProgressTimeout)
+	}
+}
+
+func TestLoadCopilotConfig_ActionProgressTimeout(t *testing.T) {
+	clearCopilotEnv(t)
+	t.Setenv("KUBEBOLT_AI_API_KEY", "sk")
+
+	// Valid override is applied.
+	t.Setenv("KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT", "2m")
+	if got := LoadCopilotConfig().ActionProgressTimeout; got != 2*time.Minute {
+		t.Errorf("override = %v, want 2m", got)
+	}
+
+	// Below the floor is ignored — keeps the default so a fat-fingered "1s"
+	// doesn't declare every rollout stalled before the first poll lands.
+	t.Setenv("KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT", "1s")
+	if got := LoadCopilotConfig().ActionProgressTimeout; got != DefaultActionProgressTimeout {
+		t.Errorf("sub-floor value should fall back to default; got %v", got)
+	}
+
+	// Unparseable is ignored too.
+	t.Setenv("KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT", "not-a-duration")
+	if got := LoadCopilotConfig().ActionProgressTimeout; got != DefaultActionProgressTimeout {
+		t.Errorf("bad duration should fall back to default; got %v", got)
 	}
 }
 

@@ -54,6 +54,9 @@ services:
       - KUBEBOLT_AI_FALLBACK_MODEL=${KUBEBOLT_AI_FALLBACK_MODEL:-}
       - KUBEBOLT_AI_FALLBACK_BASE_URL=${KUBEBOLT_AI_FALLBACK_BASE_URL:-}
       - KUBEBOLT_AI_SHOW_TOOL_CALLS=${KUBEBOLT_AI_SHOW_TOOL_CALLS:-true}
+      # How long the UI polls an executed action for convergence before marking
+      # it stalled and auto-triggering a Kobi root-cause turn. Default 90s.
+      - KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT=${KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT:-90s}
       # Kobi conversation history — persisted per user (refresh / re-login resume).
       - KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON=${KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON:-2160h}
       - KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER=${KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER:-200}

@@ -903,6 +903,7 @@ export const api = {
       model: string
       proxyMode: boolean
       fallback?: { provider: string; model: string }
+      actionProgressTimeoutMs?: number
     }>(`${API_BASE}/copilot/config`),
 
   // Kobi conversation history (per-user persist + resume).
@@ -1205,6 +1206,8 @@ export interface CopilotSettingsResponse {
     autoCompactThreshold?: number
     compactModel?: string
     compactPreserveTurns?: number
+    // Action-progress timeout in effect, milliseconds (UI shows seconds).
+    actionProgressTimeoutMs?: number
   }
   stored: {
     hasPrimaryOverride: boolean
@@ -1233,6 +1236,7 @@ export interface CopilotSettingsResponse {
       showToolCalls?: boolean
       actionsEnabled?: boolean
       destructiveActionsEnabled?: boolean
+      actionProgressTimeoutMs?: number
     }
   }
   secretsReadable: boolean
@@ -1264,6 +1268,8 @@ export interface CopilotSettingsPutRequest {
     showToolCalls?: boolean
     actionsEnabled?: boolean
     destructiveActionsEnabled?: boolean
+    // Milliseconds on the wire; the form converts the seconds the admin types.
+    actionProgressTimeoutMs?: number
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string
