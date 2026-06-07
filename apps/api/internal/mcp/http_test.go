@@ -59,6 +59,14 @@ func TestHTTPHandlerGetNotAllowed(t *testing.T) {
 	if allow := rec.Header().Get("Allow"); allow != "POST" {
 		t.Errorf("Allow = %q, want POST", allow)
 	}
+	// Every response from the MCP endpoint must be JSON so strict clients can
+	// parse failures the same way they parse success.
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("error Content-Type = %q, want application/json", ct)
+	}
+	if m := decode(t, rec.Body.Bytes()); m["error"] == nil {
+		t.Errorf("405 body should be a JSON error object, got %q", rec.Body.String())
+	}
 }
 
 func TestHTTPHandlerContextFlowsToTool(t *testing.T) {

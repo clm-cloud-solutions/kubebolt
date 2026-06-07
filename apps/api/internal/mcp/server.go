@@ -57,7 +57,17 @@ func NewServer(info ServerInfo, tools ToolProvider, prompts PromptProvider) *Ser
 // (nothing to send back). It never returns a non-nil error for protocol-level
 // problems — those are encoded as JSON-RPC error responses — so transports can
 // treat a nil byte slice as "no reply" and otherwise just write the bytes.
-func (s *Server) HandleMessage(ctx context.Context, raw []byte) ([]byte, error) {
+func (s *Server) HandleMessage(ctx context.Context, raw []byte) (out []byte, outErr error) {
+	// A panic in a tool/provider must never crash the process. The HTTP
+	// transport has chi.Recoverer, but stdio (cmd/mcp) has no middleware — and
+	// even on HTTP a JSON-RPC internal-error reply is friendlier than a raw 500.
+	// Recover here, at the single dispatch entry point, for both transports.
+	defer func() {
+		if rec := recover(); rec != nil {
+			out, outErr = marshalResponse(errorResponse(nullID, codeInternalError, "internal server error"))
+		}
+	}()
+
 	var req request
 	if err := json.Unmarshal(raw, &req); err != nil {
 		return marshalResponse(errorResponse(nullID, codeParseError, "parse error: "+err.Error()))

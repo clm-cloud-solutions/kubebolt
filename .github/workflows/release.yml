@@ -512,6 +512,16 @@ jobs:
               go build -ldflags="-s -w -X main.version=${VERSION}" \
               -o "../../${OUT}" ./cmd/server/
             cd ../..
+            # Standalone Kobi MCP (stdio) CLI — local MCP server against a
+            # kubeconfig. Shipped alongside the server binaries so operators
+            # don't have to build it from source. See docs/guides/kobi-mcp.md.
+            MCPOUT="dist/kubebolt-mcp-${target}${EXT}"
+            echo "Building $MCPOUT..."
+            cd apps/api
+            CGO_ENABLED=0 GOOS=$GOOS GOARCH=$GOARCH \
+              go build -ldflags="-s -w -X main.version=${VERSION}" \
+              -o "../../${MCPOUT}" ./cmd/mcp/
+            cd ../..
           done
 
       - name: Package binaries for krew (kubectl-kubebolt)
@@ -897,6 +907,11 @@ jobs:
             dist/kubebolt-darwin-amd64
             dist/kubebolt-darwin-arm64
             dist/kubebolt-windows-amd64.exe
+            dist/kubebolt-mcp-linux-amd64
+            dist/kubebolt-mcp-linux-arm64
+            dist/kubebolt-mcp-darwin-amd64
+            dist/kubebolt-mcp-darwin-arm64
+            dist/kubebolt-mcp-windows-amd64.exe
             dist/kubebolt-linux-amd64.tar.gz
             dist/kubebolt-linux-arm64.tar.gz
             dist/kubebolt-darwin-amd64.tar.gz

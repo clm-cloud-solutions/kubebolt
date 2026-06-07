@@ -25,8 +25,11 @@ one JSON response) and is authenticated with a normal KubeBolt **API token**.
 
 **Setup:**
 
-1. In KubeBolt, create an API token (Admin → API Tokens). You get a `kb_…`
-   value.
+1. In KubeBolt, create an API token (Admin → API Tokens). You get a `kbs_…`
+   value (a service token). Its default scopes already include `/api/v1/mcp`,
+   so it works against this endpoint out of the box. If you mint a token with
+   **custom** scopes, include `/api/v1/mcp` (or `*`) or the call returns
+   `403 token scope does not permit this path`.
 2. Point your MCP host at the endpoint with the token as a bearer header.
 
 Example MCP host config (Claude Code / Cursor `mcpServers`):
@@ -37,7 +40,7 @@ Example MCP host config (Claude Code / Cursor `mcpServers`):
     "kubebolt": {
       "type": "http",
       "url": "https://kubebolt.example.com/api/v1/mcp",
-      "headers": { "Authorization": "Bearer kb_xxxxxxxxxxxxxxxx" }
+      "headers": { "Authorization": "Bearer kbs_xxxxxxxxxxxxxxxx" }
     }
   }
 }
@@ -153,7 +156,7 @@ This is the path the automated tests can't reach. Create an API token in
 KubeBolt (Admin → API Tokens), then:
 
 ```bash
-TOKEN=kb_xxxxxxxxxxxxxxxx
+TOKEN=kbs_xxxxxxxxxxxxxxxx
 BASE=https://kubebolt.example.com/api/v1/mcp
 auth=(-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json')
 
@@ -188,7 +191,7 @@ npx @modelcontextprotocol/inspector
 
 - **stdio:** command `kubebolt-mcp`, args `--kubeconfig ~/.kube/config`.
 - **HTTP:** transport "Streamable HTTP", URL `https://…/api/v1/mcp`, and add an
-  `Authorization: Bearer kb_…` header.
+  `Authorization: Bearer kbs_…` header.
 
 #### D. A real host (Claude Code / Cursor)
 

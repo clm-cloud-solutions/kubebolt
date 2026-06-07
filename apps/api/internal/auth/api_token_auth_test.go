@@ -126,3 +126,12 @@ func TestEnforceAPITokenScope_Middleware(t *testing.T) {
 		t.Fatalf("jwt-user code = %d, want 200", code)
 	}
 }
+
+// A default service token (DefaultAutopilotScopes) must reach the read-only Kobi
+// MCP endpoint, or the documented "create a token, point your MCP host at it"
+// flow 403s. Guards the scope added for the MCP server.
+func TestDefaultAutopilotScopes_AllowMCP(t *testing.T) {
+	if !apiScopeAllows(DefaultAutopilotScopes, "/api/v1/mcp") {
+		t.Errorf("default service-token scopes must permit /api/v1/mcp; got %v", DefaultAutopilotScopes)
+	}
+}
