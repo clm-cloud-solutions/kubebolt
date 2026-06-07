@@ -598,7 +598,11 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           kind: 'compact-notice',
           compactMeta: notice,
         })
-        setMessages(rebuilt)
+        // Compaction rebuilds from the server's summary, which (like the 'done'
+        // echo) predates client-only proposal annotations — carry the execution
+        // outcome + progress/stall lifecycle so compaction never wipes them and
+        // resurrects a settled card's poller.
+        setMessages((prev) => carryProposalAnnotations(prev, rebuilt))
         setSessionUsage(null)
         setSessionRounds(0)
         setLastRoundUsage(null)

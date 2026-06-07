@@ -76,6 +76,10 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
       const result = await runProposal(proposal, conversationId)
       setResultMsg(result)
       setStatus('success')
+      // Mark this as a LIVE execution so WorkloadProgress polls + (on stall)
+      // auto-investigates. A resumed/historical proposal is never in this Set,
+      // so it can't re-run the timeout→investigate cycle on reload.
+      liveExecutions.add(toolCallId)
       recordProposalOutcome(toolCallId, 'executed', result)
       // Refresh any visible list/detail of this resource so the user
       // sees the post-mutation state without having to hit Refresh.
@@ -363,7 +367,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
               proposal — protects against a re-mount restarting polling
               against a cluster that has since moved on (e.g. another scale
               was issued in a later turn). */}
-          {action !== 'delete_resource' && action !== 'patch_hpa' && action !== 'debug_pod' && !proposal.progressSettled && (
+          {action !== 'delete_resource' && action !== 'patch_hpa' && action !== 'debug_pod' && !proposal.progressSettled && liveExecutions.has(toolCallId) && (
             <WorkloadProgress proposal={proposal} toolCallId={toolCallId} />
           )}
           {/* Terminal "did not converge" state, persisted so it survives the
@@ -757,6 +761,18 @@ const PROGRESS_POLL_MS = 2_500
 // Set is the one signal immune to both remount and transcript rebuild.
 const handledStalls = new Set<string>()
 
+// toolCallIds the user Executed in THIS page session. The live progress poller
+// (and therefore the timeout → auto-investigate cycle) only runs for these.
+// A proposal loaded from history (resume / reload) has executionStatus from a
+// PAST session but is NOT in this Set, so it never re-polls and never
+// re-investigates a stall that already happened and closed — the manual
+// "Ask Kobi why" button stays for those. This is the guard that survives the
+// failure mode the persisted flag and handledStalls can't: a reload (which
+// zeroes handledStalls) of a stalled proposal whose annotation never reached
+// the server. Cleared on reload like any module state — which is exactly right,
+// because after a reload nothing was executed live yet.
+const liveExecutions = new Set<string>()
+
 // investigateStall fires the auto-root-cause turn: a synthetic user message
 // that hands Kobi the stall context and points it at events/describe. Reused
 // by the auto-trigger (on timeout) and the manual "Ask Kobi" button (for the
@@ -990,6 +1006,7 @@ function WorkloadProgress({
       !timedOut ||
       isComplete ||
       done ||
+      !liveExecutions.has(toolCallId) || // never auto-investigate a resumed/historical proposal
       handledStalls.has(toolCallId) ||
       proposal.progressOutcome === 'stalled'
     ) {
