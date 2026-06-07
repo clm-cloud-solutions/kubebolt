@@ -115,6 +115,119 @@ Kobi's operating guidance (sourced from the same embedded prompt layers the
 in-product Copilot uses) so the host LLM can adopt Kobi's voice and diagnostic
 approach. It is prefixed with a note that this surface is read-only.
 
+## Verifying it works (manual test plan)
+
+This is the checklist to run when bringing the server up in a new environment.
+
+### Already covered by automated tests
+
+`go test ./internal/mcp/...` covers the protocol dispatch, both transports
+(via `httptest` and in-memory pipes), the read-only guard, and prompts, all
+against a fake tool provider. The stdio binary has also been exercised
+end-to-end. What those tests **cannot** cover — and what you should verify on a
+live system — is the HTTP path with a **real API token** and **real cluster
+data** flowing through the executor.
+
+### The four ways to test
+
+#### A. Raw JSON-RPC over stdio (protocol-level, no cluster needed)
+
+Quickest sanity check. Pipe newline-delimited JSON-RPC into the binary:
+
+```bash
+cd apps/api && go build -o /tmp/kubebolt-mcp ./cmd/mcp
+
+printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | /tmp/kubebolt-mcp --kubeconfig ~/.kube/config --connect-wait 5 2>/dev/null | jq -c .
+```
+
+Expect: an `initialize` result, **no** line for the notification, then a
+`tools/list` result with 17 tools.
+
+#### B. Raw JSON-RPC over HTTP with curl (needs a live server + token)
+
+This is the path the automated tests can't reach. Create an API token in
+KubeBolt (Admin → API Tokens), then:
+
+```bash
+TOKEN=kb_xxxxxxxxxxxxxxxx
+BASE=https://kubebolt.example.com/api/v1/mcp
+auth=(-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json')
+
+# 1. initialize
+curl -sS -X POST "$BASE" "${auth[@]}" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' | jq
+
+# 2. tools/list — confirm 17 tools and NO propose_* leaked
+curl -sS -X POST "$BASE" "${auth[@]}" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+  | jq '.result.tools | length, (map(.name) | map(select(startswith("propose_"))))'
+
+# 3. tools/call against real cluster data
+curl -sS -X POST "$BASE" "${auth[@]}" \
+  -d '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_cluster_overview"}}' \
+  | jq '.result.content[0].text | fromjson'
+
+# 4. a tool with arguments
+curl -sS -X POST "$BASE" "${auth[@]}" \
+  -d '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"list_resources","arguments":{"type":"pods","namespace":"kube-system"}}}' \
+  | jq '.result.content[0].text | fromjson | .items | length'
+```
+
+#### C. MCP Inspector (official tool)
+
+The reference [MCP Inspector](https://github.com/modelcontextprotocol/inspector)
+gives a UI to browse tools/prompts and fire calls:
+
+```bash
+npx @modelcontextprotocol/inspector
+```
+
+- **stdio:** command `kubebolt-mcp`, args `--kubeconfig ~/.kube/config`.
+- **HTTP:** transport "Streamable HTTP", URL `https://…/api/v1/mcp`, and add an
+  `Authorization: Bearer kb_…` header.
+
+#### D. A real host (Claude Code / Cursor)
+
+The end-to-end acceptance test: wire the config from sections 1/2 above and ask
+the host something like *"using the kubebolt tools, what's the health of my
+cluster and are any pods crash-looping?"* — confirm it calls the tools and
+answers from live data.
+
+### What to check, and the expected result
+
+| # | Check | How | Expected |
+|---|-------|-----|----------|
+| 1 | Handshake | `initialize` | `result.protocolVersion` echoes yours; `serverInfo.name = kubebolt-kobi`; `capabilities` has `tools` + `prompts` |
+| 2 | Catalogue | `tools/list` | exactly the 17 read tools; **zero** `propose_*` |
+| 3 | Read works | `tools/call get_cluster_overview` on a connected cluster | `result.content[0].text` is the overview JSON; **no** `isError` |
+| 4 | Args plumb through | `tools/call list_resources {type:pods,namespace:…}` | filtered list in the result |
+| 5 | **Read-only guard** | `tools/call` with `name:"propose_delete_resource"` | JSON-RPC **error**, code `-32602`, message `unknown tool: …` — the mutation is rejected even by name |
+| 6 | Graceful when disconnected | `tools/call` while the cluster is down | `result.isError = true`, text `{"error":"cluster not connected"}` — **not** a session failure |
+| 7 | Prompts | `prompts/list` then `prompts/get {name:"kobi-guidance"}` | one prompt; one `user` message starting with the read-only preamble |
+| 8 | Notification (HTTP) | POST `notifications/initialized` | HTTP **202**, empty body |
+| 9 | Wrong verb (HTTP) | `GET /api/v1/mcp` | HTTP **405**, `Allow: POST` |
+| 10 | **Auth required** (HTTP) | POST with no / bad token (when `KUBEBOLT_AUTH_ENABLED=true`) | HTTP **401** `{"error":"authentication required"}` / `invalid or expired token` |
+| 11 | Multi-cluster routing | add header `X-KubeBolt-Cluster: <id>` | `tools/call` results reflect that cluster (EE/SaaS, or OSS with multiple contexts) |
+| 12 | Tenant isolation (EE/SaaS) | use token from tenant A | only tenant A's clusters are visible; there is no way to pass another tenant as a parameter |
+
+### Notes / gotchas
+
+- **Auth disabled?** When `KUBEBOLT_AUTH_ENABLED=false`, no token is needed and
+  the request resolves as the default admin/tenant — check #10 is then expected
+  to succeed without a token.
+- **`jq` decoding tool output:** tool results are JSON *strings* inside
+  `content[0].text`, so pipe through `fromjson` (as above) to inspect them.
+- **stdio logs:** they go to stderr — redirect with `2>/dev/null` when you only
+  want the protocol stream, or `2>mcp.log` to keep them.
+- **HTTP batching / SSE:** this server handles one JSON-RPC message per POST and
+  replies with `application/json`; it does not implement JSON-RPC batch arrays
+  or the optional `text/event-stream` response. If a host strictly negotiates
+  SSE, it will still work over the single-response JSON path.
+
 ## Protocol notes
 
 - JSON-RPC 2.0; MCP protocol revision `2025-06-18` (the server echoes a
