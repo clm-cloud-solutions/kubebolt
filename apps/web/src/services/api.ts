@@ -238,6 +238,18 @@ function actionHeaders(a?: string | ActionAudit): Record<string, string> | undef
   return Object.keys(h).length ? h : undefined
 }
 
+// DryRunResult is the uniform envelope from a ?dryRun=true action call. ok=true
+// → the apiserver would accept the mutation (message = "Would …"); ok=false →
+// it would reject (message = human reason, + quota breakdown when a
+// ResourceQuota is the blocker). unsupported=true marks a verb with no server
+// dry-run (rollback) so the card renders no preview block.
+export interface DryRunResult {
+  ok: boolean
+  message: string
+  quota?: { name: string; requested: string; used: string; limited: string }
+  unsupported?: boolean
+}
+
 export const api = {
   // --- Auth ---
   getAuthConfig: () =>
@@ -682,6 +694,72 @@ export const api = {
       body,
       actionHeaders(source),
     ),
+
+  // Dry-run preview for a Kobi action proposal: re-issues the SAME mutation
+  // endpoint with ?dryRun=true so the apiserver runs full admission (quota,
+  // LimitRange, webhooks, validation) WITHOUT persisting, and the card can show
+  // "would apply" / "would be rejected: <reason>" before Execute. Mirrors
+  // runProposal()'s verb→endpoint+body dispatch — keep the two in sync. Verbs
+  // without a server dry-run (rollback) return {unsupported:true} so the card
+  // skips the preview block.
+  getDryRunPreview: (p: {
+    action: string
+    target: { type: string; namespace: string; name: string }
+    params: Record<string, unknown>
+  }): Promise<DryRunResult> => {
+    const t = p.target.type
+    const ns = p.target.namespace
+    const name = p.target.name
+    const src: ActionAudit = { source: 'copilot_proposal' }
+    const withDry = (path: string) => `${path}${path.includes('?') ? '&' : '?'}dryRun=true`
+    const post = (path: string, body: unknown) =>
+      postJSON<DryRunResult>(withDry(`${API_BASE}${path}`), body, actionHeaders(src))
+    switch (p.action) {
+      case 'restart_workload':
+        return post(`/resources/${t}/${ns}/${name}/restart`, {})
+      case 'scale_workload':
+        return post(`/resources/${t}/${ns}/${name}/scale`, { replicas: Number(p.params.replicas) })
+      case 'set_image':
+        return post(`/resources/${t}/${ns}/${name}/set-image`, { images: p.params.images ?? [] })
+      case 'set_resources':
+        return post(`/resources/${t}/${ns}/${name}/set-resources`, { containers: p.params.containers ?? [] })
+      case 'set_env':
+        return post(`/resources/${t}/${ns}/${name}/set-env`, {
+          containers: p.params.containers ?? [],
+          triggerRollout: p.params.triggerRollout !== false,
+        })
+      case 'patch_hpa':
+        return post(`/resources/hpas/${ns}/${name}/set-bounds`, {
+          minReplicas: typeof p.params.minReplicas === 'number' ? p.params.minReplicas : undefined,
+          maxReplicas: typeof p.params.maxReplicas === 'number' ? p.params.maxReplicas : undefined,
+        })
+      case 'debug_pod':
+        return post(`/resources/pods/${ns}/${name}/debug`, {
+          image: typeof p.params.image === 'string' && p.params.image ? p.params.image : 'busybox',
+          targetContainer:
+            typeof p.params.targetContainer === 'string' ? p.params.targetContainer : undefined,
+        })
+      case 'rollback_deployment': {
+        const toRevision = Number(p.params.toRevision)
+        return post(`/resources/${t}/${ns}/${name}/rollback`, {
+          toRevision: Number.isFinite(toRevision) && toRevision > 0 ? toRevision : 0,
+        })
+      }
+      case 'delete_resource': {
+        const q = new URLSearchParams()
+        if (p.params.orphan) q.set('orphan', 'true')
+        if (p.params.force) q.set('force', 'true')
+        q.set('dryRun', 'true')
+        return deleteRequest<DryRunResult>(
+          `${API_BASE}/resources/${t}/${ns}/${name}?${q.toString()}`,
+          actionHeaders(src),
+        )
+      }
+      default:
+        // Unknown verb — no dry-run; the card skips the preview block.
+        return Promise.resolve({ ok: true, message: '', unsupported: true })
+    }
+  },
 
   // Edit metadata — kubectl label / kubectl annotate equivalents.
   // JSON merge patch on metadata.labels + metadata.annotations via

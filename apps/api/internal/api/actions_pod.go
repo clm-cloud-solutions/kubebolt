@@ -40,7 +40,7 @@ func (h *handlers) restartPod(w http.ResponseWriter, r *http.Request, namespace,
 	// Default propagation + grace period — matches `kubectl delete
 	// pod <name>` semantics. The owner reconcile loop picks up the
 	// deletion and re-creates the pod with the same spec.
-	if err := conn.DeleteResource("pods", namespace, name, metav1.DeletePropagationBackground, nil); err != nil {
+	if err := conn.DeleteResource("pods", namespace, name, metav1.DeletePropagationBackground, nil, false); err != nil {
 		auditMutation(r, "restart_pod", "pods", namespace, name, nil, err)
 		log.Printf("Restart pod failed for %s/%s: %v", namespace, name, err)
 		respondMutationError(w, err)
@@ -287,7 +287,13 @@ func (h *handlers) handleDebugPod(w http.ResponseWriter, r *http.Request) {
 	// apiserver accepts on a running pod. Patching `pods/<name>`
 	// directly with a new ephemeralContainers entry fails — the
 	// subresource exists precisely for this mutation path.
-	if _, err := clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, name, pod, metav1.UpdateOptions{}); err != nil {
+	dryRun := dryRunRequested(r)
+	_, err = clientset.CoreV1().Pods(namespace).UpdateEphemeralContainers(ctx, name, pod, metav1.UpdateOptions{DryRun: dryRunAll(dryRun)})
+	if dryRun {
+		respondDryRun(w, err, fmt.Sprintf("Would attach · debug container %q (image %s)", ephemeralName, req.Image))
+		return
+	}
+	if err != nil {
 		auditMutation(r, "debug_pod", "pods", namespace, name, nil, err)
 		log.Printf("Debug pod (spawn ephemeral) failed for %s/%s: %v", namespace, name, err)
 		respondMutationError(w, err)
