@@ -146,6 +146,10 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 		"compactTrigger": trigger,
 		"autoCompact":    cfg.AutoCompact,
 		"showToolCalls":  cfg.ShowToolCalls,
+		// How long the UI polls an executed action for convergence before
+		// declaring it stalled and auto-investigating. Milliseconds so the
+		// frontend can feed it straight into setInterval/Date math.
+		"actionProgressTimeoutMs": cfg.ActionProgressTimeout.Milliseconds(),
 	}
 	if cfg.Fallback != nil {
 		resp["fallback"] = map[string]string{

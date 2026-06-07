@@ -162,6 +162,16 @@ export interface ActionProposal {
   // scale was issued in the meantime) and report a confusing "still in
   // progress" line for an action that already finished cleanly.
   progressSettled?: boolean
+  // Terminal NON-convergence: the poller hit the configurable progress
+  // timeout while the action was applied-but-not-converged (e.g. scale 3→4
+  // blocked by a namespace ResourceQuota). Distinct from progressSettled
+  // (which also covers clean completion) so the card can render an honest
+  // "did not converge" state instead of a spinner that never resolves, and
+  // so re-mounts don't re-arm the poller. Set once, alongside progressSettled.
+  progressOutcome?: 'stalled'
+  // Human-readable last-observed progress at the moment of the stall, e.g.
+  // "Scale to 4: 2/4 ready". Surfaced in the terminal card + fed to Kobi.
+  progressDetail?: string
 }
 
 /**
@@ -352,6 +362,11 @@ export interface CopilotConfig {
   sessionBudget?: number
   compactTrigger?: number
   autoCompact?: boolean
+  // How long (ms) the UI polls an executed action for convergence before
+  // declaring it stalled and asking Kobi to investigate. Server-side:
+  // KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT. Falls back to a client default
+  // when absent (older backend).
+  actionProgressTimeoutMs?: number
   // When true (default), the chat panel renders persistent collapsible
   // cards for each tool call (name + status + result). When false, the
   // panel keeps only the final assistant text and a transient loading

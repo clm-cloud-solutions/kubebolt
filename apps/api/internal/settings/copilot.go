@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
@@ -38,6 +39,10 @@ type StoredCopilotSettings struct {
 	// Sprint 1 action governance (live override of the env baseline).
 	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
 	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
+	// Action-progress timeout override, in milliseconds (the wire unit the
+	// UI and public /copilot/config speak). Applied onto the env baseline's
+	// time.Duration and floored at config.MinActionProgressTimeout.
+	ActionProgressTimeoutMs *int `json:"actionProgressTimeoutMs,omitempty"`
 }
 
 // StoredProviderSettings mirrors config.ProviderConfig with optional
@@ -159,6 +164,15 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 	}
 	if stored.DestructiveActionsEnabled != nil {
 		cfg.DestructiveActionsEnabled = *stored.DestructiveActionsEnabled
+	}
+	if stored.ActionProgressTimeoutMs != nil && *stored.ActionProgressTimeoutMs > 0 {
+		ms := time.Duration(*stored.ActionProgressTimeoutMs) * time.Millisecond
+		// Same floor the env path enforces — a fat-fingered tiny value must
+		// not declare every rollout stalled before the first poll lands.
+		if ms < config.MinActionProgressTimeout {
+			ms = config.MinActionProgressTimeout
+		}
+		cfg.ActionProgressTimeout = ms
 	}
 }
 
@@ -343,6 +357,8 @@ type MaskedEffectiveCopilot struct {
 	ShowToolCalls        bool   `json:"showToolCalls"`
 	ActionsEnabled            bool `json:"actionsEnabled"`
 	DestructiveActionsEnabled bool `json:"destructiveActionsEnabled"`
+	// Action-progress timeout in effect, milliseconds (UI converts to seconds).
+	ActionProgressTimeoutMs int `json:"actionProgressTimeoutMs,omitempty"`
 	// Auto-compact tunables. Surfaced in the API so the UI can display
 	// "what's in effect" without a second round-trip to the env-baseline
 	// endpoint. Nil pointers when the field is unset; the resolver
@@ -381,6 +397,7 @@ type MaskedStoredOtherCopilot struct {
 	ShowToolCalls        *bool    `json:"showToolCalls,omitempty"`
 	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
 	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
+	ActionProgressTimeoutMs   *int  `json:"actionProgressTimeoutMs,omitempty"`
 }
 
 // RenderMaskedCopilot builds the GET response from a stored record + env
@@ -405,6 +422,7 @@ func (r *Runtime) RenderMaskedCopilot() (MaskedCopilot, error) {
 			ShowToolCalls:        effective.ShowToolCalls,
 			ActionsEnabled:            effective.ActionsEnabled,
 			DestructiveActionsEnabled: effective.DestructiveActionsEnabled,
+			ActionProgressTimeoutMs:   int(effective.ActionProgressTimeout.Milliseconds()),
 			SessionBudgetTokens:  effective.SessionBudgetTokens,
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 			CompactModel:         effective.CompactModel,
@@ -457,7 +475,8 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 	if s.MaxTokens != nil || s.AutoCompact != nil || s.SessionBudgetTokens != nil ||
 		s.AutoCompactThreshold != nil || s.CompactModel != nil ||
 		s.CompactPreserveTurns != nil || s.ShowToolCalls != nil ||
-		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil {
+		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil ||
+		s.ActionProgressTimeoutMs != nil {
 		out.OtherFields = &MaskedStoredOtherCopilot{
 			MaxTokens:            s.MaxTokens,
 			AutoCompact:          s.AutoCompact,
@@ -468,6 +487,7 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 			ShowToolCalls:        s.ShowToolCalls,
 			ActionsEnabled:            s.ActionsEnabled,
 			DestructiveActionsEnabled: s.DestructiveActionsEnabled,
+			ActionProgressTimeoutMs:   s.ActionProgressTimeoutMs,
 		}
 	}
 	return out
@@ -532,6 +552,11 @@ func validateCopilotPatch(p *StoredCopilotSettings) error {
 	}
 	if p.CompactPreserveTurns != nil && *p.CompactPreserveTurns < 0 {
 		return &ValidationError{Field: "compactPreserveTurns", Message: "must be >= 0"}
+	}
+	// Milliseconds; must be positive. Values below the floor are accepted here
+	// and clamped to config.MinActionProgressTimeout in applyStoredCopilot.
+	if p.ActionProgressTimeoutMs != nil && *p.ActionProgressTimeoutMs <= 0 {
+		return &ValidationError{Field: "actionProgressTimeoutMs", Message: "must be > 0"}
 	}
 	return nil
 }
@@ -612,6 +637,9 @@ func mergeCopilot(base, patch StoredCopilotSettings) StoredCopilotSettings {
 	}
 	if patch.DestructiveActionsEnabled != nil {
 		out.DestructiveActionsEnabled = patch.DestructiveActionsEnabled
+	}
+	if patch.ActionProgressTimeoutMs != nil {
+		out.ActionProgressTimeoutMs = patch.ActionProgressTimeoutMs
 	}
 	return out
 }

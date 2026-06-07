@@ -3,6 +3,19 @@ package config
 import (
 	"os"
 	"strconv"
+	"time"
+)
+
+// Action-progress timeout bounds. After an action executes, the frontend
+// polls the workload for convergence (observedGeneration + ready==desired)
+// and gives up after this long, marking the card "did not converge" and
+// asking Kobi to investigate why. Configurable via
+// KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT (a Go duration, e.g. "120s", "2m").
+const (
+	DefaultActionProgressTimeout = 90 * time.Second
+	// Floor so a fat-fingered tiny value (e.g. "1s") doesn't declare every
+	// real rollout stalled before the first poll even lands.
+	MinActionProgressTimeout = 10 * time.Second
 )
 
 // ProviderConfig holds settings for a single LLM provider (primary or fallback).
@@ -45,6 +58,11 @@ type CopilotConfig struct {
 	// KUBEBOLT_AI_DESTRUCTIVE_ACTIONS_ENABLED.
 	ActionsEnabled            bool
 	DestructiveActionsEnabled bool
+
+	// ActionProgressTimeout bounds how long the UI polls an executed action
+	// for convergence before declaring it stalled and auto-investigating.
+	// Default DefaultActionProgressTimeout; KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT.
+	ActionProgressTimeout time.Duration
 }
 
 // LoadCopilotConfig reads copilot configuration from KUBEBOLT_AI_* env vars.
@@ -63,6 +81,7 @@ func LoadCopilotConfig() CopilotConfig {
 		ShowToolCalls:             true,
 		ActionsEnabled:            true,
 		DestructiveActionsEnabled: true,
+		ActionProgressTimeout:     DefaultActionProgressTimeout,
 	}
 	if v := os.Getenv("KUBEBOLT_AI_ACTIONS_ENABLED"); v == "false" || v == "0" {
 		cfg.ActionsEnabled = false
@@ -98,6 +117,11 @@ func LoadCopilotConfig() CopilotConfig {
 	}
 	if v := os.Getenv("KUBEBOLT_AI_SHOW_TOOL_CALLS"); v == "false" || v == "0" {
 		cfg.ShowToolCalls = false
+	}
+	if v := os.Getenv("KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= MinActionProgressTimeout {
+			cfg.ActionProgressTimeout = d
+		}
 	}
 
 	// Optional fallback — only enabled when its API key is present

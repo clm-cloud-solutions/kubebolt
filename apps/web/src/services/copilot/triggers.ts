@@ -16,6 +16,7 @@ export type CopilotTriggerType =
   | 'metric_anomaly'
   | 'resource_inquiry'
   | 'panel_inquiry'
+  | 'action_stalled'
 
 export interface InsightTriggerPayload {
   type: 'insight'
@@ -167,6 +168,22 @@ export interface PanelInquiryTriggerPayload {
   truncatedFromTotal?: number
 }
 
+// Fired automatically when an executed action does not converge within the
+// configured progress timeout (e.g. a scale blocked by a ResourceQuota). The
+// payload carries the last-observed progress so Kobi can investigate WHY
+// without re-deriving what was attempted.
+export interface ActionStalledTriggerPayload {
+  type: 'action_stalled'
+  action: {
+    verb: string // the proposal action, e.g. "scale_workload"
+    kind: string // target kind/type, e.g. "deployments"
+    namespace: string
+    name: string
+    detail: string // last-observed progress, e.g. "Scale to 4: 2/4 ready"
+    timeoutSeconds: number
+  }
+}
+
 export type CopilotTriggerPayload =
   | InsightTriggerPayload
   | NotReadyResourceTriggerPayload
@@ -175,6 +192,7 @@ export type CopilotTriggerPayload =
   | MetricAnomalyTriggerPayload
   | ResourceInquiryTriggerPayload
   | PanelInquiryTriggerPayload
+  | ActionStalledTriggerPayload
 
 export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
   switch (payload.type) {
@@ -213,6 +231,20 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
       }
       lines.push(``, `Explain what's happening and suggest actionable fixes.`)
       return lines.join('\n')
+    }
+    case 'action_stalled': {
+      const a = payload.action
+      return [
+        `I ran the action \`${a.verb}\` on ${a.namespace}/${a.name} (${a.kind}) but it did NOT converge after ${a.timeoutSeconds}s.`,
+        ``,
+        `Last observed progress: ${a.detail}`,
+        ``,
+        `Investigate WHY it stalled. Check the workload's Events and describe the` +
+          ` Pending / not-Ready pod(s): look for a ResourceQuota or LimitRange` +
+          ` blocking the new replica, "0/N nodes available" scheduling failures,` +
+          ` image-pull errors, or FailedCreate from the controller. Name the root` +
+          ` cause and the exact next step to fix it.`,
+      ].join('\n')
     }
     case 'warning_event': {
       const e = payload.event

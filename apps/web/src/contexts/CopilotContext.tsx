@@ -74,6 +74,13 @@ interface CopilotContextValue {
    * follow-up message rebuilding messages[]) doesn't restart polling
    * against the cluster — the action already landed; the poller was UX. */
   recordProposalProgressSettled: (toolCallId: string) => void
+  /** Record that the post-Execute poller hit the progress timeout with the
+   * action applied-but-not-converged. Latches progressSettled (so re-mounts
+   * don't re-poll) AND stamps progressOutcome='stalled' + the last-observed
+   * progressDetail, so the card renders an honest terminal state instead of
+   * an endless spinner. The auto-investigation is fired separately by the
+   * caller via sendMessage(action_stalled). */
+  recordProposalStalled: (toolCallId: string, detail: string) => void
   // ─── Conversation history (persist + resume) ───
   /** Id of the conversation currently open, or null for an unsaved fresh one.
    * The server mints it on the first turn; the client persists a pointer to it
@@ -111,6 +118,58 @@ const CopilotContext = createContext<CopilotContextValue | null>(null)
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+}
+
+// Client-only fields written onto an action_proposal tool result AFTER it was
+// emitted: the execution outcome (recordProposalOutcome) and the progress
+// lifecycle (recordProposalProgressSettled / recordProposalStalled). These
+// must survive the 'done' event's transcript rebuild, which replaces messages
+// with the server's echo — and that echo predates any annotation applied
+// during the SAME turn. The stall mutation is the prime victim: it's written
+// right after the auto-investigation turn fires, so the server never saw it,
+// and without this carry-over it was wiped on every 'done', re-arming the
+// poller and re-triggering the root-cause investigation on a loop.
+const PROPOSAL_ANNOTATION_FIELDS = [
+  'executionStatus',
+  'executionResult',
+  'executedAt',
+  'progressSettled',
+  'progressOutcome',
+  'progressDetail',
+] as const
+
+function carryProposalAnnotations(
+  prev: CopilotMessage[],
+  rebuilt: CopilotMessage[],
+): CopilotMessage[] {
+  const prevByCall = new Map<string, string>() // toolCallId → content
+  for (const m of prev) {
+    for (const tr of m.toolResults ?? []) prevByCall.set(tr.toolCallId, tr.content)
+  }
+  if (prevByCall.size === 0) return rebuilt
+  return rebuilt.map((m) => {
+    if (!m.toolResults || m.toolResults.length === 0) return m
+    let mutated = false
+    const merged = m.toolResults.map((tr) => {
+      const prevContent = prevByCall.get(tr.toolCallId)
+      if (!prevContent) return tr
+      try {
+        const cur = JSON.parse(tr.content)
+        const old = JSON.parse(prevContent)
+        if (cur?.kind !== 'action_proposal' || old?.kind !== 'action_proposal') return tr
+        const carried: Record<string, unknown> = {}
+        for (const k of PROPOSAL_ANNOTATION_FIELDS) {
+          if (old[k] !== undefined && cur[k] === undefined) carried[k] = old[k]
+        }
+        if (Object.keys(carried).length === 0) return tr
+        mutated = true
+        return { ...tr, content: JSON.stringify({ ...cur, ...carried }) }
+      } catch {
+        return tr
+      }
+    })
+    return mutated ? { ...m, toolResults: merged } : m
+  })
 }
 
 export function CopilotProvider({ children }: { children: ReactNode }) {
@@ -419,9 +478,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
                   toolResults: m.toolResults,
                   timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
                 }))
+                // Carry client-only proposal annotations (execution outcome +
+                // progress/stall lifecycle) from the pre-rebuild transcript so
+                // the server echo doesn't wipe them — see carryProposalAnnotations.
+                const preserved = carryProposalAnnotations(prev, rebuilt)
                 // Keep compact notices visible at the end so the user
                 // still sees that compaction happened.
-                return [...rebuilt, ...notices]
+                return [...preserved, ...notices]
               })
             }
             // Refresh the history drawer so the new/updated conversation (and
@@ -649,6 +712,54 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     [syncTranscript],
   )
 
+  // Terminal counterpart for the non-convergence path. Latches the same
+  // progressSettled bit recordProposalProgressSettled uses (so a re-mount
+  // skips the poller) AND records progressOutcome='stalled' + the observed
+  // detail so the card can render an honest "did not converge" state that
+  // survives re-renders. Idempotent: skips if already stalled.
+  const recordProposalStalled = useCallback(
+    (toolCallId: string, detail: string) => {
+      setMessages((prev) => {
+        let didMutate = false
+        const next = prev.map((m) => {
+          if (!m.toolResults || m.toolResults.length === 0) return m
+          let mutated = false
+          const updatedResults = m.toolResults.map((tr) => {
+            if (tr.toolCallId !== toolCallId) return tr
+            try {
+              const parsed = JSON.parse(tr.content)
+              if (
+                parsed &&
+                typeof parsed === 'object' &&
+                parsed.kind === 'action_proposal' &&
+                parsed.progressOutcome !== 'stalled'
+              ) {
+                mutated = true
+                return {
+                  ...tr,
+                  content: JSON.stringify({
+                    ...parsed,
+                    progressSettled: true,
+                    progressOutcome: 'stalled',
+                    progressDetail: detail,
+                  }),
+                }
+              }
+            } catch {
+              // not JSON — leave as-is
+            }
+            return tr
+          })
+          if (mutated) didMutate = true
+          return mutated ? { ...m, toolResults: updatedResults } : m
+        })
+        if (didMutate) queueMicrotask(() => syncTranscript(next))
+        return next
+      })
+    },
+    [syncTranscript],
+  )
+
   // Cmd+J / Ctrl+J shortcut to toggle the panel (if enabled)
   useEffect(() => {
     if (!config?.enabled) return
@@ -686,6 +797,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         compactSession,
         recordProposalOutcome,
         recordProposalProgressSettled,
+        recordProposalStalled,
         conversationId,
         conversationTitle,
         staleResume,

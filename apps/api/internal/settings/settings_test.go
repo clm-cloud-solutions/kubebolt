@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
@@ -34,11 +35,12 @@ func newTestRuntime(t *testing.T) *Runtime {
 			Model:    "claude-sonnet-4-6",
 			APIKey:   "env-key-from-helm",
 		},
-		MaxTokens:            4096,
-		AutoCompact:          true,
-		AutoCompactThreshold: 0.8,
-		CompactPreserveTurns: 3,
-		ShowToolCalls:        true,
+		MaxTokens:             4096,
+		AutoCompact:           true,
+		AutoCompactThreshold:  0.8,
+		CompactPreserveTurns:  3,
+		ShowToolCalls:         true,
+		ActionProgressTimeout: config.DefaultActionProgressTimeout,
 	}
 	envBase.Enabled = true
 
@@ -250,6 +252,40 @@ func TestCopilot_Reset_FallsBackToEnv(t *testing.T) {
 	}
 }
 
+func TestCopilot_ActionProgressTimeout_OverrideAndFloor(t *testing.T) {
+	// No override → env baseline (90s).
+	rt := newTestRuntime(t)
+	if got := rt.Copilot().ActionProgressTimeout; got != config.DefaultActionProgressTimeout {
+		t.Fatalf("no override: got %v, want env baseline %v", got, config.DefaultActionProgressTimeout)
+	}
+
+	// Valid override (120s, sent as 120000 ms) is applied verbatim.
+	if err := rt.PutCopilot(&StoredCopilotSettings{ActionProgressTimeoutMs: intPtr(120000)}, nil, nil); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if got := rt.Copilot().ActionProgressTimeout; got != 120*time.Second {
+		t.Errorf("override: got %v, want 2m", got)
+	}
+
+	// Sub-floor override (5s) passes validation (>0) but is clamped to the
+	// floor in applyStoredCopilot — same defence the env path has.
+	if err := rt.PutCopilot(&StoredCopilotSettings{ActionProgressTimeoutMs: intPtr(5000)}, nil, nil); err != nil {
+		t.Fatalf("put sub-floor: %v", err)
+	}
+	if got := rt.Copilot().ActionProgressTimeout; got != config.MinActionProgressTimeout {
+		t.Errorf("sub-floor: got %v, want clamp to %v", got, config.MinActionProgressTimeout)
+	}
+
+	// The effective value is surfaced (in ms) by the masked render.
+	masked, err := rt.RenderMaskedCopilot()
+	if err != nil {
+		t.Fatalf("render masked: %v", err)
+	}
+	if masked.Effective.ActionProgressTimeoutMs != int(config.MinActionProgressTimeout.Milliseconds()) {
+		t.Errorf("masked effective: got %d ms, want %d", masked.Effective.ActionProgressTimeoutMs, config.MinActionProgressTimeout.Milliseconds())
+	}
+}
+
 func TestCopilot_InvalidationOnPut(t *testing.T) {
 	rt := newTestRuntime(t)
 	// Prime the cache with the env baseline read.
@@ -301,6 +337,11 @@ func TestCopilot_Validation(t *testing.T) {
 			"negative budget",
 			&StoredCopilotSettings{SessionBudgetTokens: intPtr(-100)},
 			"sessionBudgetTokens",
+		},
+		{
+			"zero action timeout",
+			&StoredCopilotSettings{ActionProgressTimeoutMs: intPtr(0)},
+			"actionProgressTimeoutMs",
 		},
 	}
 	rt := newTestRuntime(t)
