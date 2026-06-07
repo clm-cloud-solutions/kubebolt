@@ -36,6 +36,10 @@ interface CopilotContextValue {
   config?: CopilotConfig
   isOpen: boolean
   isLoading: boolean
+  /** Epoch ms of the last stream event for the in-flight turn, or null when
+   * idle. The UI ticks against it to tell "actively streaming" from "stalled"
+   * and to escalate a waiting hint. */
+  lastActivityAt: number | null
   error: string | null
   messages: CopilotMessage[]
   pendingToolCalls: string[]
@@ -57,6 +61,8 @@ interface CopilotContextValue {
   closePanel: () => void
   togglePanel: () => void
   sendMessage: (text: string, options?: SendMessageOptions) => Promise<void>
+  /** Abort the in-flight turn. Keeps whatever streamed so far; no error. */
+  cancelMessage: () => void
   clearHistory: () => void
   /** Trigger manual compaction. resetAll=true starts a fresh session keeping only a summary. */
   compactSession: (resetAll?: boolean) => Promise<void>
@@ -184,6 +190,12 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   const [isOpen, setIsOpen] = useState(false)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // Cancel + latency feedback for the in-flight turn. abortRef holds the live
+  // AbortController so cancelMessage() can stop the stream; lastActivityAt is
+  // bumped on every stream event so the UI can tell "still flowing" from
+  // "stalled" and surface a waiting/cancel affordance.
+  const abortRef = useRef<AbortController | null>(null)
+  const [lastActivityAt, setLastActivityAt] = useState<number | null>(null)
   const [messages, setMessages] = useState<CopilotMessage[]>([])
   const [pendingToolCalls, setPendingToolCalls] = useState<string[]>([])
   const [usedFallback, setUsedFallback] = useState(false)
@@ -372,10 +384,15 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         timestamp: new Date(),
       }
 
+      // Fresh AbortController for this turn so the user can stop it.
+      const ac = new AbortController()
+      abortRef.current = ac
+
       // Append the user message to history
       const newMessages = [...messages, userMsg]
       setMessages(newMessages)
       setIsLoading(true)
+      setLastActivityAt(Date.now())
       setError(null)
       setPendingToolCalls([])
       setUsedFallback(false)
@@ -408,12 +425,15 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         for await (const event of sendCopilotChat(
           newMessages,
           location.pathname,
-          undefined,
+          ac.signal,
           options?.trigger,
           carriedLastRoundUsage,
           conversationId,
           options?.originatingInsightId,
         )) {
+          // Every event is a sign of life — bump so the UI can distinguish an
+          // actively-streaming turn from a stalled one and escalate its hint.
+          setLastActivityAt(Date.now())
           if (event.type === 'meta') {
             if (event.fallback) setUsedFallback(true)
             // The server hands back the conversation id up-front (new chats)
@@ -494,10 +514,25 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           }
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : 'Failed to reach copilot backend')
+        // User-initiated cancel (cancelMessage → ac.abort()) surfaces as an
+        // AbortError. That's not a failure: keep whatever streamed so far
+        // ("stop at the point it reached"), show no error banner, and tag the
+        // assistant turn so the UI renders a "Stopped by you" marker (a partial
+        // or empty answer must not read as completed or hung).
+        if (ac.signal.aborted) {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantId ? { ...m, cancelled: true } : m)),
+          )
+        } else {
+          setError(err instanceof Error ? err.message : 'Failed to reach copilot backend')
+        }
       } finally {
         setIsLoading(false)
+        setLastActivityAt(null)
         setPendingToolCalls([])
+        // Only clear the controller if it's still ours (a newer turn may have
+        // replaced it). Prevents a late finally from nulling an active stream.
+        if (abortRef.current === ac) abortRef.current = null
       }
     },
     // location.pathname is read at call time inside sendCopilotChat, not
@@ -505,6 +540,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     // pointlessly recreate the callback on every route change).
     [messages, isLoading, lastRoundUsage, conversationId, persistActivePointer, queryClient],
   )
+
+  // Stop the in-flight turn. The abort propagates to fetch → the stream throws
+  // AbortError → sendMessage's catch ignores it and the finally resets loading.
+  // Partial assistant text already streamed stays on screen.
+  const cancelMessage = useCallback(() => {
+    abortRef.current?.abort()
+  }, [])
 
   const openPanel = useCallback(() => setIsOpen(true), [])
   const closePanel = useCallback(() => setIsOpen(false), [])
@@ -779,6 +821,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         config,
         isOpen,
         isLoading,
+        lastActivityAt,
         error,
         messages,
         pendingToolCalls,
@@ -793,6 +836,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         closePanel,
         togglePanel,
         sendMessage,
+        cancelMessage,
         clearHistory,
         compactSession,
         recordProposalOutcome,

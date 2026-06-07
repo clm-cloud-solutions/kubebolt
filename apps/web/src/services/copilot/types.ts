@@ -21,6 +21,10 @@ export interface CopilotMessage {
     model?: string
     auto: boolean
   }
+  /** Set on the assistant turn the user stopped via the Stop button. The UI
+   * renders a "Stopped by you" marker so a half-finished (or empty) answer
+   * reads as a deliberate cancel, not a hang or a completed reply. */
+  cancelled?: boolean
 }
 
 export interface CopilotToolCall {
