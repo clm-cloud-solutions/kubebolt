@@ -4,7 +4,13 @@
 export interface CopilotUsageSummary {
   range: string
   sessions: number
+  // Excludes AUX records (auto_title / manual_compact) — honest adoption count.
+  interactiveSessions: number
   errorSessions: number
+  maxRoundsSessions: number
+  fallbackSessions: number
+  errorRate: number // % of sessions with reason != "done"
+  fallbackRate: number // % of sessions that used the fallback provider
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
@@ -24,6 +30,16 @@ export interface CopilotUsageSummary {
   topTriggers: Record<string, number>
 }
 
+// Breakdown-by-X: ?groupBy=user|trigger|cluster|model|reason|conversation on the
+// summary endpoint returns one summary per group, sorted by cost desc.
+export type BreakdownDimension = 'user' | 'trigger' | 'cluster' | 'model' | 'reason' | 'conversation'
+
+export interface CopilotUsageBreakdown {
+  range: string
+  groupBy: BreakdownDimension
+  groups: Array<{ key: string; summary: CopilotUsageSummary }>
+}
+
 export interface CopilotUsageBucket {
   time: string
   sessions: number
@@ -39,6 +55,7 @@ export interface CopilotSessionEnriched {
   timestamp: string
   userId: string
   cluster: string
+  conversationId?: string
   provider: string
   model: string
   trigger: string

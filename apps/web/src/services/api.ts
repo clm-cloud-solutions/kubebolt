@@ -361,6 +361,14 @@ export const api = {
       `${API_BASE}/admin/copilot/usage/summary?range=${range}`,
     ),
 
+  getCopilotUsageBreakdown: (
+    range: string,
+    groupBy: import('@/types/copilotUsage').BreakdownDimension,
+  ) =>
+    fetchJSON<import('@/types/copilotUsage').CopilotUsageBreakdown>(
+      `${API_BASE}/admin/copilot/usage/summary?range=${range}&groupBy=${groupBy}`,
+    ),
+
   getCopilotUsageTimeseries: (range: string) =>
     fetchJSON<import('@/types/copilotUsage').CopilotUsageBucket[]>(
       `${API_BASE}/admin/copilot/usage/timeseries?range=${range}`,
