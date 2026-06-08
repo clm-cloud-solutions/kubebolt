@@ -433,6 +433,51 @@ func main() {
 		}
 		tenantsStore = ts
 
+		// W1 identity-model bootstrap invariant: every install has a default
+		// org (the auto-seeded "default" tenant) AND a default team under it.
+		// OSS stays single-org + single-team, so the cluster(s) are implicitly
+		// owned by this team — owner_team_id is an EE-only column (see the
+		// ClusterStore seam comment), not modeled here. EnsureDefaultTeam is
+		// idempotent: it returns the existing team on every boot after the first.
+		teamStore, err := auth.NewTeamStore(store.DB())
+		if err != nil {
+			fatal("failed to open team store", slog.String("error", err.Error()))
+		}
+		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
+			team, err := teamStore.EnsureDefaultTeam(dt.ID)
+			if err != nil {
+				fatal("failed to ensure default team", slog.String("error", err.Error()))
+			}
+			// Backfill: materialize membership for every existing user so the
+			// org → team → user hierarchy is real, not implicit. Idempotent
+			// (AddMember upserts), so this is a safe every-boot reconcile that
+			// also picks up the seeded admin and any users created while an
+			// older binary (pre-membership) was running. team_role "" = inherit
+			// the org role; OSS teams never elevate.
+			enrolled := 0
+			if users, err := store.ListUsers(); err == nil {
+				for i := range users {
+					if _, err := teamStore.AddMember(team.ID, users[i].ID, ""); err != nil {
+						slog.Warn("default-team backfill: could not enroll user",
+							slog.String("user_id", users[i].ID),
+							slog.String("error", err.Error()),
+						)
+						continue
+					}
+					enrolled++
+				}
+			}
+			slog.Info("default team ready",
+				slog.String("team_id", team.ID),
+				slog.String("org_id", dt.ID),
+				slog.Int("members", enrolled),
+			)
+			// Wire the org/team context into the auth handlers so CreateUser /
+			// DeleteUser keep membership in sync, /auth/me surfaces org+team,
+			// and the /teams endpoints resolve the default org/team.
+			authHandlers.SetOrgTeamContext(teamStore, tenantsStore, dt.ID, team.ID)
+		}
+
 		// Ingest-token store (Sprint A → W1 refactor). Tokens used to live
 		// inlined under Tenant.IngestTokens; they now have their own buckets.
 		// MigrateInlinedTokens is a one-time, idempotent cutover — it reads

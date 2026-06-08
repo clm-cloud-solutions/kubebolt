@@ -9,19 +9,16 @@
 //
 // ENTERPRISE-CANDIDATE (multi-tenant management):
 // The OSS edition operates against a single auto-seeded "default"
-// tenant. The endpoints in this file are split:
-//
-//   OSS               GetTenant/ListTokens/IssueToken/RotateToken/RevokeToken
-//                     (operating on the default tenant)
-//   Enterprise        ListTenants / CreateTenant / UpdateTenant /
-//                     DeleteTenant — and operating any of the
-//                     token endpoints against a non-default tenant.
-//
-// The split is enforced in the frontend (commit 8): the OSS UI only
-// shows the default tenant. The backend exposes everything because
-// drawing the line server-side would require a license check, which
-// we are deferring per ENTERPRISE-CANDIDATE policy until the SaaS
-// edition has a license model.
+// tenant. The lifecycle endpoints that would create a SECOND tenant —
+// CreateTenant / DeleteTenant — are gated SERVER-SIDE behind the
+// MultiTenantEnabled seam (edition.go): OSS returns 409 + code
+// "requires_ee" so the UI can show an upgrade CTA, EE flips the seam to
+// unlock them. The read + per-token endpoints (GetTenant / ListTenants /
+// ListTokens / IssueToken / RotateToken / RevokeToken / limits) stay open
+// because they operate on the existing default tenant and are harmless
+// single-tenant. This supersedes the earlier "expose everything, let the
+// frontend hide it" policy — a UI-only guard left the REST surface
+// reachable, which is not a real boundary.
 package auth
 
 import (
@@ -170,6 +167,13 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// writeErrCode is writeErr plus a machine-readable code the frontend can key
+// off (e.g. ErrCodeRequiresEE to render the upgrade CTA) without parsing the
+// human message.
+func writeErrCode(w http.ResponseWriter, code int, errCode, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg, "code": errCode})
+}
+
 // ─── Handlers ─────────────────────────────────────────────────────────
 
 func (h *TenantHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
@@ -187,6 +191,14 @@ func (h *TenantHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TenantHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
+	// OSS guardrail: a second organization is an EE/SaaS capability. The
+	// default tenant is auto-seeded at boot, never via this endpoint, so in
+	// OSS this is always an attempt to create tenant #2 → 409 requires_ee.
+	if !MultiTenantEnabled {
+		writeErrCode(w, http.StatusConflict, ErrCodeRequiresEE,
+			"creating additional organizations requires KubeBolt SaaS or Enterprise")
+		return
+	}
 	var req struct {
 		Name string `json:"name"`
 		Plan string `json:"plan"`
@@ -272,6 +284,14 @@ func (h *TenantHandlers) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *TenantHandlers) DeleteTenant(w http.ResponseWriter, r *http.Request) {
+	// OSS guardrail: deleting tenants is multi-tenant lifecycle management.
+	// OSS has exactly the default tenant and deleting it would orphan every
+	// user/token, so the operation is EE-only.
+	if !MultiTenantEnabled {
+		writeErrCode(w, http.StatusConflict, ErrCodeRequiresEE,
+			"deleting organizations requires KubeBolt SaaS or Enterprise")
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if err := h.store.DeleteTenant(id); err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
