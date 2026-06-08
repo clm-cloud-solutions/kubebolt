@@ -26,6 +26,10 @@ func newTestHandlers(t *testing.T) (*TenantHandlers, *mockInvalidator) {
 	if err != nil {
 		t.Fatalf("NewTenantsStore: %v", err)
 	}
+	its, err := NewIngestTokenStore(store.DB())
+	if err != nil {
+		t.Fatalf("NewIngestTokenStore: %v", err)
+	}
 	inv := &mockInvalidator{}
 	// Synthetic defaults distinct from real production values so tests
 	// asserting limits behavior can pin them deterministically.
@@ -34,7 +38,7 @@ func newTestHandlers(t *testing.T) (*TenantHandlers, *mockInvalidator) {
 		WriteBurstSamples:  10_000,
 		MaxActiveSeries:    100_000,
 	}
-	return NewTenantHandlers(ts, defaults, inv), inv
+	return NewTenantHandlers(ts, its, defaults, inv), inv
 }
 
 // withAdminUser fakes a chi-routed request as an authenticated admin.

@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -34,9 +33,8 @@ import (
 )
 
 var (
-	tenantsBucket          = []byte("tenants")
-	tenantTokenIndexBucket = []byte("tenant_token_index")
-	tenantNameIndexBucket  = []byte("tenant_name_index")
+	tenantsBucket         = []byte("tenants")
+	tenantNameIndexBucket = []byte("tenant_name_index")
 )
 
 const (
@@ -80,50 +78,12 @@ type Tenant struct {
 	CreatedAt    time.Time     `json:"createdAt"`
 	UpdatedAt    time.Time     `json:"updatedAt"`
 	Disabled     bool          `json:"disabled"`
-	IngestTokens []IngestToken `json:"ingestTokens"`
 	Limits       *TenantLimits `json:"limits,omitempty"`
 }
 
-// IngestToken is a long-lived bearer credential issued by the backend for
-// agents that cannot use Kubernetes TokenReview (e.g. SaaS / cross-cluster).
-type IngestToken struct {
-	ID         string     `json:"id"`
-	Hash       string     `json:"hash"`
-	Prefix     string     `json:"prefix"`
-	Label      string     `json:"label"`
-	CreatedAt  time.Time  `json:"createdAt"`
-	CreatedBy  string     `json:"createdBy"`
-	LastUsedAt *time.Time `json:"lastUsedAt,omitempty"`
-	ExpiresAt  *time.Time `json:"expiresAt,omitempty"`
-	RevokedAt  *time.Time `json:"revokedAt,omitempty"`
-
-	// ClusterID is the kube-system namespace UID of the cluster this
-	// token is scoped to. Empty value means "any cluster" — applies
-	// to legacy tokens issued before this field existed AND to
-	// tokens explicitly issued without a cluster scope. Used by the
-	// Prometheus integration card to discriminate which token's
-	// activity belongs to the current cluster's view; without it,
-	// multi-cluster self-hosted installs collapse all activity under
-	// the single tenant `default` and the card can't tell sources
-	// apart.
-	//
-	// Convention matches the `cluster_id` metric label the agent
-	// stamps on every sample, so future per-cluster receiver
-	// counters can join cleanly with this field.
-	ClusterID string `json:"clusterId,omitempty"`
-}
-
-// Active reports whether the token is currently valid: not revoked and
-// not past its optional expiration.
-func (t *IngestToken) Active(now time.Time) bool {
-	if t.RevokedAt != nil {
-		return false
-	}
-	if t.ExpiresAt != nil && now.After(*t.ExpiresAt) {
-		return false
-	}
-	return true
-}
+// (IngestToken + its store moved to ingest_tokens_store.go — tokens are no
+// longer inlined in the Tenant record. A one-time boot migration
+// (BoltIngestTokenStore.MigrateInlinedTokens) moves legacy inlined tokens out.)
 
 // TenantStore is the W1 seam for the Organization domain — a Tenant IS the
 // Organization (internal/saas/kubebolt-e1-multitenant-scoping.md §8). OSS uses
@@ -150,15 +110,8 @@ var _ TenantStore = (*TenantsStore)(nil)
 type TenantsStore struct {
 	db *bolt.DB
 
-	// nowFn is overridable in tests to drive expiration / debounce logic
-	// without sleeping.
+	// nowFn is overridable in tests to drive expiration logic without sleeping.
 	nowFn func() time.Time
-
-	// markUsedAt debounces LastUsedAt persistence so we do not write to
-	// BoltDB on every single agent RPC. Process-local and intentionally
-	// non-persistent: a server restart simply resumes the dance.
-	markUsedMu sync.Mutex
-	markUsedAt map[string]time.Time
 }
 
 // NewTenantsStore opens the tenant buckets on the supplied BoltDB and
@@ -168,7 +121,7 @@ func NewTenantsStore(db *bolt.DB) (*TenantsStore, error) {
 		return nil, errors.New("tenants store: nil db")
 	}
 	err := db.Update(func(tx *bolt.Tx) error {
-		for _, name := range [][]byte{tenantsBucket, tenantTokenIndexBucket, tenantNameIndexBucket} {
+		for _, name := range [][]byte{tenantsBucket, tenantNameIndexBucket} {
 			if _, err := tx.CreateBucketIfNotExists(name); err != nil {
 				return fmt.Errorf("create bucket %s: %w", name, err)
 			}
@@ -179,9 +132,8 @@ func NewTenantsStore(db *bolt.DB) (*TenantsStore, error) {
 		return nil, err
 	}
 	s := &TenantsStore{
-		db:         db,
-		nowFn:      func() time.Time { return time.Now().UTC() },
-		markUsedAt: map[string]time.Time{},
+		db:    db,
+		nowFn: func() time.Time { return time.Now().UTC() },
 	}
 	if _, err := s.ensureDefaultTenant(); err != nil {
 		return nil, fmt.Errorf("seed default tenant: %w", err)
@@ -383,229 +335,11 @@ func (s *TenantsStore) DeleteTenant(id string) error {
 		if err := json.Unmarshal(data, &t); err != nil {
 			return err
 		}
-		tokIdx := tx.Bucket(tenantTokenIndexBucket)
-		for _, tok := range t.IngestTokens {
-			_ = tokIdx.Delete([]byte(tok.Hash))
-		}
+		// NB: the tenant's ingest tokens now live in IngestTokenStore — the
+		// caller is responsible for cleaning them up (cascade) when removing a
+		// tenant. OSS never deletes the default tenant, so this is moot there.
 		_ = tx.Bucket(tenantNameIndexBucket).Delete([]byte(strings.ToLower(t.Name)))
 		return bucket.Delete([]byte(id))
-	})
-}
-
-// IssueToken generates a fresh ingest token, persists its hash, and returns
-// the plaintext to the caller. The plaintext is unrecoverable afterwards.
-// ttl=nil means the token never expires.
-//
-// clusterID is the kube-system namespace UID of the cluster this token
-// is scoped to. Pass "" to issue an unscoped token (matches any cluster
-// — used by integrations that aren't cluster-attributable, and by the
-// admin UI's legacy issue flow that doesn't yet collect a cluster).
-func (s *TenantsStore) IssueToken(tenantID, clusterID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
-	plaintext, err := generateTokenPlaintext()
-	if err != nil {
-		return "", nil, err
-	}
-	hash := hashToken(plaintext)
-	now := s.nowFn()
-	tok := IngestToken{
-		ID:        uuid.New().String(),
-		Hash:      hash,
-		Prefix:    tokenDisplayPrefix(plaintext),
-		Label:     label,
-		ClusterID: clusterID,
-		CreatedAt: now,
-		CreatedBy: createdBy,
-	}
-	if ttl != nil {
-		exp := now.Add(*ttl)
-		tok.ExpiresAt = &exp
-	}
-	err = s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(tenantsBucket)
-		data := bucket.Get([]byte(tenantID))
-		if data == nil {
-			return ErrTenantNotFound
-		}
-		var t Tenant
-		if err := json.Unmarshal(data, &t); err != nil {
-			return err
-		}
-		t.IngestTokens = append(t.IngestTokens, tok)
-		t.UpdatedAt = now
-		newData, err := json.Marshal(&t)
-		if err != nil {
-			return err
-		}
-		if err := bucket.Put([]byte(tenantID), newData); err != nil {
-			return err
-		}
-		return tx.Bucket(tenantTokenIndexBucket).Put([]byte(hash), []byte(tenantID))
-	})
-	if err != nil {
-		return "", nil, err
-	}
-	return plaintext, &tok, nil
-}
-
-// RevokeToken marks a token revoked and removes it from the lookup index
-// so future LookupByToken calls fail fast. The audit record (RevokedAt)
-// stays on the tenant for traceability.
-func (s *TenantsStore) RevokeToken(tenantID, tokenID string) error {
-	now := s.nowFn()
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(tenantsBucket)
-		data := bucket.Get([]byte(tenantID))
-		if data == nil {
-			return ErrTenantNotFound
-		}
-		var t Tenant
-		if err := json.Unmarshal(data, &t); err != nil {
-			return err
-		}
-		found := false
-		for i := range t.IngestTokens {
-			if t.IngestTokens[i].ID != tokenID {
-				continue
-			}
-			if t.IngestTokens[i].RevokedAt == nil {
-				rev := now
-				t.IngestTokens[i].RevokedAt = &rev
-			}
-			_ = tx.Bucket(tenantTokenIndexBucket).Delete([]byte(t.IngestTokens[i].Hash))
-			found = true
-			break
-		}
-		if !found {
-			return ErrTokenNotFound
-		}
-		t.UpdatedAt = now
-		newData, err := json.Marshal(&t)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(tenantID), newData)
-	})
-}
-
-// RotateToken issues a replacement token preserving the old token's label
-// and TTL window, then revokes the old one. The new plaintext is returned
-// once. Caller hands the new value to the operator before the rotation
-// grace period begins.
-func (s *TenantsStore) RotateToken(tenantID, tokenID, createdBy string) (string, *IngestToken, error) {
-	t, err := s.GetTenant(tenantID)
-	if err != nil {
-		return "", nil, err
-	}
-	var old *IngestToken
-	for i := range t.IngestTokens {
-		if t.IngestTokens[i].ID == tokenID {
-			old = &t.IngestTokens[i]
-			break
-		}
-	}
-	if old == nil {
-		return "", nil, ErrTokenNotFound
-	}
-	var ttl *time.Duration
-	if old.ExpiresAt != nil {
-		d := old.ExpiresAt.Sub(old.CreatedAt)
-		ttl = &d
-	}
-	// Preserve the cluster scope of the rotated token — a rotation
-	// is the same logical credential with a fresh secret, so the
-	// cluster binding must carry over.
-	plaintext, newTok, err := s.IssueToken(tenantID, old.ClusterID, old.Label, createdBy, ttl)
-	if err != nil {
-		return "", nil, err
-	}
-	if err := s.RevokeToken(tenantID, tokenID); err != nil {
-		return "", nil, err
-	}
-	return plaintext, newTok, nil
-}
-
-// LookupByToken validates a plaintext bearer token: malformed prefix,
-// unknown hash, revoked, expired, and disabled-tenant cases all return
-// distinct sentinel errors so the interceptor can map them to gRPC codes.
-func (s *TenantsStore) LookupByToken(plaintext string) (*Tenant, *IngestToken, error) {
-	if !strings.HasPrefix(plaintext, TokenPrefix) {
-		return nil, nil, ErrTokenMalformed
-	}
-	hash := hashToken(plaintext)
-	var tenantID string
-	err := s.db.View(func(tx *bolt.Tx) error {
-		v := tx.Bucket(tenantTokenIndexBucket).Get([]byte(hash))
-		if v == nil {
-			return ErrTokenNotFound
-		}
-		tenantID = string(v)
-		return nil
-	})
-	if err != nil {
-		return nil, nil, err
-	}
-	t, err := s.GetTenant(tenantID)
-	if err != nil {
-		return nil, nil, err
-	}
-	if t.Disabled {
-		return nil, nil, ErrTenantDisabled
-	}
-	var tok *IngestToken
-	for i := range t.IngestTokens {
-		if t.IngestTokens[i].Hash == hash {
-			tok = &t.IngestTokens[i]
-			break
-		}
-	}
-	if tok == nil {
-		return nil, nil, ErrTokenNotFound
-	}
-	now := s.nowFn()
-	if tok.RevokedAt != nil {
-		return nil, nil, ErrTokenRevoked
-	}
-	if tok.ExpiresAt != nil && now.After(*tok.ExpiresAt) {
-		return nil, nil, ErrTokenExpired
-	}
-	return t, tok, nil
-}
-
-// MarkUsed updates LastUsedAt on the token, debounced to one persistence
-// per (token, minute). The first call after a server restart always
-// persists; subsequent calls within the window are coalesced.
-func (s *TenantsStore) MarkUsed(tenantID, tokenID string, when time.Time) error {
-	s.markUsedMu.Lock()
-	last, ok := s.markUsedAt[tokenID]
-	if ok && when.Sub(last) < time.Minute {
-		s.markUsedMu.Unlock()
-		return nil
-	}
-	s.markUsedAt[tokenID] = when
-	s.markUsedMu.Unlock()
-
-	return s.db.Update(func(tx *bolt.Tx) error {
-		bucket := tx.Bucket(tenantsBucket)
-		data := bucket.Get([]byte(tenantID))
-		if data == nil {
-			return ErrTenantNotFound
-		}
-		var t Tenant
-		if err := json.Unmarshal(data, &t); err != nil {
-			return err
-		}
-		for i := range t.IngestTokens {
-			if t.IngestTokens[i].ID == tokenID {
-				w := when
-				t.IngestTokens[i].LastUsedAt = &w
-				break
-			}
-		}
-		newData, err := json.Marshal(&t)
-		if err != nil {
-			return err
-		}
-		return bucket.Put([]byte(tenantID), newData)
 	})
 }
 

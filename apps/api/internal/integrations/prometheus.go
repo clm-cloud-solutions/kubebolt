@@ -59,6 +59,13 @@ type tenantsLister interface {
 	ListTenants() ([]auth.Tenant, error)
 }
 
+// ingestTokenLister is the minimal slice of the ingest-token store the
+// provider needs (ingest tokens live in their own store now, not inlined
+// in the tenant record).
+type ingestTokenLister interface {
+	ListByTenant(tenantID string) ([]auth.IngestToken, error)
+}
+
 // currentClusterIDFn returns the kube-system namespace UID of the
 // currently-active cluster (or "" when the active session reaches
 // the apiserver via direct kubeconfig and we haven't resolved the
@@ -102,6 +109,7 @@ type promSamplesProbeFn func(ctx context.Context, clusterID string) (bool, error
 // state. Stateless; safe to register once at startup.
 type prometheusProvider struct {
 	tenants         tenantsLister
+	ingestTokens    ingestTokenLister
 	currentCluster  currentClusterIDFn
 	promSampleProbe promSamplesProbeFn
 }
@@ -131,6 +139,7 @@ type prometheusProvider struct {
 // branches in isolation.
 func NewPrometheus(
 	tenants tenantsLister,
+	ingestTokens ingestTokenLister,
 	currentCluster currentClusterIDFn,
 	promSampleProbe promSamplesProbeFn,
 ) Provider {
@@ -139,6 +148,7 @@ func NewPrometheus(
 	}
 	return &prometheusProvider{
 		tenants:         tenants,
+		ingestTokens:    ingestTokens,
 		currentCluster:  currentCluster,
 		promSampleProbe: promSampleProbe,
 	}
@@ -210,8 +220,9 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 		freshSenders     int
 	)
 	for _, tenant := range tenants {
-		for i := range tenant.IngestTokens {
-			tok := &tenant.IngestTokens[i]
+		toks, _ := p.ingestTokens.ListByTenant(tenant.ID)
+		for i := range toks {
+			tok := &toks[i]
 			if !tok.Active(now) {
 				continue
 			}

@@ -59,6 +59,9 @@ type handlers struct {
 	// nil when auth is disabled — the issue-token endpoint refuses
 	// in that case.
 	tenantsStore *auth.TenantsStore
+	// ingestTokens validates "kb_" ingest tokens (now in their own store,
+	// not inlined in the tenant record). nil when auth is disabled.
+	ingestTokens auth.IngestTokenStore
 	// promWriteAuthMode mirrors agentAuthEnforcement above but
 	// scopes the policy to the HTTP /api/v1/prom/write receiver
 	// (vmagent's ingest path). Same three values:

@@ -49,8 +49,8 @@ func fetchDefaultTenantID(t *testing.T, h *handlers) string {
 }
 
 func TestAuthenticatePromWrite_Disabled_WithStore_ReturnsDefaultTenant(t *testing.T) {
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthDisabled}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthDisabled}
 	wantID := fetchDefaultTenantID(t, h)
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
@@ -85,8 +85,8 @@ func TestAuthenticatePromWrite_Disabled_NoStore_ReturnsNil(t *testing.T) {
 }
 
 func TestAuthenticatePromWrite_Permissive_NoBearer_ReturnsDefaultTenant(t *testing.T) {
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 	wantID := fetchDefaultTenantID(t, h)
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
@@ -102,8 +102,8 @@ func TestAuthenticatePromWrite_Permissive_NoBearer_ReturnsDefaultTenant(t *testi
 }
 
 func TestAuthenticatePromWrite_Permissive_EmptyBearer_ReturnsDefaultTenant(t *testing.T) {
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 	wantID := fetchDefaultTenantID(t, h)
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
@@ -120,8 +120,8 @@ func TestAuthenticatePromWrite_Permissive_EmptyBearer_ReturnsDefaultTenant(t *te
 }
 
 func TestAuthenticatePromWrite_Permissive_BadBearer_ReturnsDefaultTenant(t *testing.T) {
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 	wantID := fetchDefaultTenantID(t, h)
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
@@ -141,8 +141,8 @@ func TestAuthenticatePromWrite_Permissive_ValidBearer_ReturnsTokenTenant(t *test
 	// Sanity-check that the VALID-token path still picks up the
 	// token's tenant rather than defaulting. Without this, the fix
 	// might accidentally clobber a real authenticated identity.
-	store, plaintext := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, plaintext := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 	defaultID := fetchDefaultTenantID(t, h)
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
@@ -180,8 +180,8 @@ func TestAuthenticatePromWrite_Permissive_NoStore_ReturnsNil(t *testing.T) {
 func TestAuthenticatePromWrite_Enforced_NoBearer_StillRejects(t *testing.T) {
 	// Regression guard — the fix must NOT change enforced mode.
 	// Missing bearer still 401s.
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
 	rec := httptest.NewRecorder()
@@ -200,8 +200,8 @@ func TestAuthenticatePromWrite_Enforced_NoBearer_StillRejects(t *testing.T) {
 
 func TestAuthenticatePromWrite_Enforced_BadBearer_StillRejects(t *testing.T) {
 	// Same regression guard for invalid bearer.
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader(""))
 	req.Header.Set("Authorization", "Bearer kbtok_v1_invalid")

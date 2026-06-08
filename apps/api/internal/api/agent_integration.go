@@ -142,14 +142,19 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 	// own cluster_id ships in the Hello message after it boots.
 	// Pass "" to keep the unscoped behavior we had before
 	// per-token cluster scoping landed.
-	plaintext, tok, err := h.tenantsStore.IssueToken(req.TenantID, "", label, issuer, nil)
-	if err != nil {
-		// Tenant lookup miss → 404; everything else is a 400 from
-		// the store's own validation (label too long, etc).
+	// Validate the tenant exists (the ingest-token store doesn't, since
+	// tokens are no longer coupled to the tenant record) so a bad TenantID
+	// still 404s instead of minting an orphan token.
+	if _, err := h.tenantsStore.GetTenant(req.TenantID); err != nil {
 		if errors.Is(err, auth.ErrTenantNotFound) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
 		}
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	plaintext, tok, err := h.ingestTokens.Issue(req.TenantID, "", label, issuer, nil)
+	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -159,7 +164,7 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		// after we failed to wire it into the cluster. RevokeToken
 		// errors are logged but don't override the underlying
 		// failure that brought us here.
-		if revokeErr := h.tenantsStore.RevokeToken(req.TenantID, tok.ID); revokeErr != nil {
+		if revokeErr := h.ingestTokens.Revoke(req.TenantID, tok.ID); revokeErr != nil {
 			slog.Warn("issue-token: failed to revoke after Secret apply error",
 				slog.String("error", revokeErr.Error()),
 			)

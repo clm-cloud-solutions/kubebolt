@@ -159,12 +159,29 @@ func TestAuthCache_Invalidate(t *testing.T) {
 
 // ─── BearerIngestAuth ─────────────────────────────────────────────────
 
-func TestBearerIngestAuth_HappyPath(t *testing.T) {
-	ts := newTestTenantsStore(t)
-	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
+// newTestBearerStores spins a TenantsStore and an IngestTokenStore backed by
+// the same BoltDB — BearerIngestAuth needs both (tokens for Lookup, tenants
+// for the Disabled check).
+func newTestBearerStores(t *testing.T) (*TenantsStore, *BoltIngestTokenStore) {
+	t.Helper()
+	s := newTestStore(t)
+	ts, err := NewTenantsStore(s.DB())
+	if err != nil {
+		t.Fatalf("NewTenantsStore: %v", err)
+	}
+	its, err := NewIngestTokenStore(s.DB())
+	if err != nil {
+		t.Fatalf("NewIngestTokenStore: %v", err)
+	}
+	return ts, its
+}
 
-	auth := NewBearerIngestAuth(ts, time.Minute)
+func TestBearerIngestAuth_HappyPath(t *testing.T) {
+	ts, its := newTestBearerStores(t)
+	tn, _ := ts.CreateTenant("acme", "team")
+	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 	id, err := auth.Authenticate(context.Background(), md, nil)
 	if err != nil {
@@ -185,16 +202,16 @@ func TestBearerIngestAuth_HappyPath(t *testing.T) {
 }
 
 func TestBearerIngestAuth_MissingToken(t *testing.T) {
-	ts := newTestTenantsStore(t)
-	auth := NewBearerIngestAuth(ts, time.Minute)
+	ts, its := newTestBearerStores(t)
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	if _, err := auth.Authenticate(context.Background(), mdWith(), nil); !errors.Is(err, ErrMissingToken) {
 		t.Errorf("expected ErrMissingToken, got %v", err)
 	}
 }
 
 func TestBearerIngestAuth_MalformedToken(t *testing.T) {
-	ts := newTestTenantsStore(t)
-	auth := NewBearerIngestAuth(ts, time.Minute)
+	ts, its := newTestBearerStores(t)
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer not-a-kb-token")
 	if _, err := auth.Authenticate(context.Background(), md, nil); !errors.Is(err, ErrTokenMalformed) {
 		t.Errorf("expected ErrTokenMalformed, got %v", err)
@@ -202,8 +219,8 @@ func TestBearerIngestAuth_MalformedToken(t *testing.T) {
 }
 
 func TestBearerIngestAuth_UnknownToken(t *testing.T) {
-	ts := newTestTenantsStore(t)
-	auth := NewBearerIngestAuth(ts, time.Minute)
+	ts, its := newTestBearerStores(t)
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+TokenPrefix+"deadbeef")
 	if _, err := auth.Authenticate(context.Background(), md, nil); !errors.Is(err, ErrTokenNotFound) {
 		t.Errorf("expected ErrTokenNotFound, got %v", err)
@@ -214,17 +231,17 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 	// Pin the cache contract: revoking on the store does NOT push through
 	// to the cache automatically. The admin handler is responsible for
 	// calling InvalidateCache after a RevokeToken mutation.
-	ts := newTestTenantsStore(t)
+	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, tok, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
+	plain, tok, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
 
-	auth := NewBearerIngestAuth(ts, time.Minute)
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 
 	if _, err := auth.Authenticate(context.Background(), md, nil); err != nil {
 		t.Fatalf("initial auth: %v", err)
 	}
-	if err := ts.RevokeToken(tn.ID, tok.ID); err != nil {
+	if err := its.Revoke(tn.ID, tok.ID); err != nil {
 		t.Fatalf("RevokeToken: %v", err)
 	}
 	if _, err := auth.Authenticate(context.Background(), md, nil); err != nil {
@@ -237,11 +254,11 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 }
 
 func TestBearerIngestAuth_DisabledTenant(t *testing.T) {
-	ts := newTestTenantsStore(t)
+	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
+	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
 
-	auth := NewBearerIngestAuth(ts, 0) // cache disabled — every call hits store
+	auth := NewBearerIngestAuth(its, ts, 0) // cache disabled — every call hits store
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 	if _, err := auth.Authenticate(context.Background(), md, nil); err != nil {
 		t.Fatalf("baseline auth: %v", err)
@@ -255,11 +272,11 @@ func TestBearerIngestAuth_DisabledTenant(t *testing.T) {
 }
 
 func TestBearerIngestAuth_TLSVerifiedFromPeer(t *testing.T) {
-	ts := newTestTenantsStore(t)
+	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
+	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
 
-	auth := NewBearerIngestAuth(ts, time.Minute)
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 
 	// Peer with TLSInfo but no VerifiedChains → still unverified.
@@ -274,10 +291,10 @@ func TestBearerIngestAuth_TLSVerifiedFromPeer(t *testing.T) {
 }
 
 func TestBearerIngestAuth_ConcurrentAuth(t *testing.T) {
-	ts := newTestTenantsStore(t)
+	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := ts.IssueToken(tn.ID, "", "prod", "admin", nil)
-	auth := NewBearerIngestAuth(ts, time.Minute)
+	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 
 	var wg sync.WaitGroup

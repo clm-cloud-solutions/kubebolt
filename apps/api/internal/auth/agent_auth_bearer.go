@@ -19,19 +19,22 @@ import (
 // any RevokeToken / RotateToken / disable-tenant mutation. This is the
 // trade we accept to keep the hot path lock-free.
 type BearerIngestAuth struct {
-	store *TenantsStore
-	cache *authCache
-	nowFn func() time.Time
+	tokens  IngestTokenStore // token validity (revoked/expired)
+	tenants *TenantsStore    // owning tenant lookup + Disabled check
+	cache   *authCache
+	nowFn   func() time.Time
 }
 
-// NewBearerIngestAuth wires the authenticator with its backing store.
-// cacheTTL=0 disables caching (every call hits BoltDB) — useful in
-// tests; in production set 5*time.Minute.
-func NewBearerIngestAuth(store *TenantsStore, cacheTTL time.Duration) *BearerIngestAuth {
+// NewBearerIngestAuth wires the authenticator with the ingest-token store (for
+// token validity) and the tenants store (to resolve + gate the owning tenant).
+// cacheTTL=0 disables caching (every call hits BoltDB) — useful in tests; in
+// production set 5*time.Minute.
+func NewBearerIngestAuth(tokens IngestTokenStore, tenants *TenantsStore, cacheTTL time.Duration) *BearerIngestAuth {
 	return &BearerIngestAuth{
-		store: store,
-		cache: newAuthCache(cacheTTL),
-		nowFn: func() time.Time { return time.Now().UTC() },
+		tokens:  tokens,
+		tenants: tenants,
+		cache:   newAuthCache(cacheTTL),
+		nowFn:   func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -51,9 +54,18 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	if cached, ok := a.cache.get(hash); ok {
 		return cached, nil
 	}
-	tenant, tok, err := a.store.LookupByToken(plaintext)
+	tok, err := a.tokens.Lookup(plaintext)
 	if err != nil {
 		return nil, err
+	}
+	// Token is valid; gate on the owning tenant (Disabled is the TenantStore's
+	// concern now that tokens no longer live inside the tenant record).
+	tenant, err := a.tenants.GetTenant(tok.TenantID)
+	if err != nil {
+		return nil, err
+	}
+	if tenant.Disabled {
+		return nil, ErrTenantDisabled
 	}
 	now := a.nowFn()
 	identity := &AgentIdentity{
@@ -65,7 +77,7 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	a.cache.put(hash, identity)
 	// Best-effort touch — the store debounces persistence to once per
 	// minute per token, so we can fire-and-forget every RPC.
-	_ = a.store.MarkUsed(tenant.ID, tok.ID, now)
+	_ = a.tokens.MarkUsed(tok.TenantID, tok.ID, now)
 	return identity, nil
 }
 

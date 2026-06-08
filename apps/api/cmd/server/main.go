@@ -268,6 +268,11 @@ func main() {
 	// flow (router-level handler talks to the same store the agent
 	// gRPC interceptor validates against).
 	var tenantsStore *auth.TenantsStore
+	// Ingest tokens live in their own store now (no longer inlined in the
+	// tenant record) — the base for SaaS/EE per-token cluster scoping. Same
+	// BoltDB-only gating as tenantsStore. Interface type so the nil check in
+	// the factory / handlers is a true nil (not a typed-nil interface).
+	var ingestTokenStore auth.IngestTokenStore
 	// Persistent agent registry — only enabled when auth is on (the
 	// BoltDB file only exists in that path). When nil, the in-memory
 	// registry survives a backend restart by losing all state, same
@@ -421,6 +426,25 @@ func main() {
 		}
 		tenantsStore = ts
 
+		// Ingest-token store (Sprint A → W1 refactor). Tokens used to live
+		// inlined under Tenant.IngestTokens; they now have their own buckets.
+		// MigrateInlinedTokens is a one-time, idempotent cutover — it reads
+		// any legacy inlined tokens, re-keys them into the dedicated buckets
+		// stamping TenantID, and rewrites the tenant record clean. Safe to run
+		// on every boot (skips tokens already indexed).
+		its, err := auth.NewIngestTokenStore(store.DB())
+		if err != nil {
+			fatal("failed to open ingest token store", slog.String("error", err.Error()))
+		}
+		if migrated, err := its.MigrateInlinedTokens(); err != nil {
+			fatal("failed to migrate inlined ingest tokens", slog.String("error", err.Error()))
+		} else if migrated > 0 {
+			slog.Info("migrated inlined ingest tokens to dedicated store",
+				slog.Int("count", migrated),
+			)
+		}
+		ingestTokenStore = its
+
 		// REST API tokens — long-lived bearer tokens for non-interactive
 		// callers (service tokens kbs_ for Autopilot / EE; customer keys
 		// kbk_ later). Shares the same BoltDB file. Wiring it makes
@@ -475,6 +499,7 @@ func main() {
 			factoryOpts.TokenReviewAudience = settingsRuntime.IngestChannel().AgentTokenAudience
 		}
 		factoryOpts.TenantsStore = tenantsStore
+		factoryOpts.IngestTokenStore = ingestTokenStore
 		if c, err := agent.NewInClusterKubeClient(); err == nil {
 			factoryOpts.KubeClient = c
 		} else {
@@ -487,7 +512,7 @@ func main() {
 			fatal("agent auth bundle", slog.String("error", err.Error()))
 		}
 		agentAuthBundle = bundle
-		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, ingestTokenStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
 
 		// Now that the JWT service + admin handlers are wired with the
 		// resolved authCfg, snapshot what the running process was built
@@ -622,6 +647,7 @@ func main() {
 		// GMP/AMP/AMW and would collide with the discriminator).
 		integrationRegistry.Register(integrations.NewPrometheus(
 			tenantsStore,
+			ingestTokenStore,
 			activeClusterUID,
 			vmProbeClient.PromSamplesForCluster,
 		))
@@ -754,7 +780,7 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
