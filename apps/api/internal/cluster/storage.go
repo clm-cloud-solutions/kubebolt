@@ -18,6 +18,29 @@ type StoredKubeconfig struct {
 	UploadedBy string    `json:"uploadedBy"` // username of the admin who added it
 }
 
+// ClusterStore is the W1 seam for cluster persistence
+// (internal/saas/kubebolt-e1-multitenant-scoping.md §8). OSS uses the BoltDB
+// *Storage below (the default org's clusters, all owned by the default team);
+// EE swaps a Postgres impl that scopes clusters by org and adds owner_team_id +
+// cross-team access grants. Pure-seam for now: the interface mirrors the
+// current surface; team ownership lands with the team-wiring step (W1 #7).
+type ClusterStore interface {
+	SaveKubeconfig(cfg *StoredKubeconfig) error
+	GetKubeconfig(contextName string) (*StoredKubeconfig, error)
+	ListKubeconfigs() ([]*StoredKubeconfig, error)
+	DeleteKubeconfig(contextName string) error
+	SetDisplayName(contextName, displayName string) error
+	GetDisplayName(contextName string) string
+	DeleteDisplayName(contextName string) error
+	AllDisplayNames() (map[string]string, error)
+	SetClusterUID(contextName, uid string) error
+	GetClusterUID(contextName string) string
+	AllClusterUIDs() (map[string]string, error)
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ ClusterStore = (*Storage)(nil)
+
 // Storage is a thin wrapper around BoltDB for cluster-related persistence.
 // It shares the underlying DB with the auth Store (bucket separation).
 type Storage struct {
