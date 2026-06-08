@@ -116,13 +116,17 @@ func apiScopeAllows(scopes []string, path string) bool {
 	return false
 }
 
-// DefaultAutopilotScopes are the REST path prefixes Autopilot needs:
-// read of cluster/resources/insights/events + the deployment & HPA
-// mutations it performs. Used as the default scope when minting the
-// Autopilot service token.
+// DefaultAutopilotScopes are the REST path prefixes a service token gets when
+// created without explicit scopes — what Autopilot needs (read of
+// cluster/resources/insights/events) plus the read-only Kobi MCP endpoint, so a
+// token minted via Admin → API Tokens "just works" against POST /api/v1/mcp
+// without the operator having to hand-craft scopes. MCP is read-only and a
+// strict subset of the resource reads already granted here, so this widens
+// nothing in practice. A token scoped to "*" also covers it.
 var DefaultAutopilotScopes = []string{
 	"/api/v1/cluster/overview",
 	"/api/v1/insights",
 	"/api/v1/events",
 	"/api/v1/resources",
+	"/api/v1/mcp",
 }

@@ -1,4 +1,4 @@
-.PHONY: dev dev-clean dev-api dev-api-clean dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
+.PHONY: dev dev-clean dev-api dev-api-clean dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-mcp build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -358,6 +358,11 @@ build: build-api build-web
 build-api:
 	cd apps/api && go build -o kubebolt cmd/server/main.go
 
+## Build the standalone Kobi MCP (stdio) binary — a local CLI that speaks MCP
+## over stdin/stdout against a kubeconfig (see docs/guides/kobi-mcp.md).
+build-mcp:
+	cd apps/api && go build -o kubebolt-mcp ./cmd/mcp
+
 ## Build the frontend for production
 build-web:
 	cd apps/web && npm run build
@@ -392,6 +397,11 @@ build-all: install build-web
 		cd apps/api && CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH \
 			go build -ldflags="-s -w -X main.version=$(VERSION)" \
 			-o ../../$$OUT ./cmd/server/ && cd ../..; \
+		MCPOUT="dist/kubebolt-mcp-$${target}$${EXT}"; \
+		echo "  → $$MCPOUT"; \
+		cd apps/api && CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH \
+			go build -ldflags="-s -w -X main.version=$(VERSION)" \
+			-o ../../$$MCPOUT ./cmd/mcp/ && cd ../..; \
 	done
 	@echo ""
 	@echo "Generating checksums..."
