@@ -148,6 +148,13 @@ function UserFormModal({ user, onClose, onSaved }: UserFormModalProps) {
           </select>
         </div>
 
+        {!isEdit && (
+          <p className="flex items-center gap-1.5 text-[10px] text-kb-text-tertiary">
+            <Users className="w-3 h-3 shrink-0" />
+            New users automatically join the default team.
+          </p>
+        )}
+
         <div className="flex justify-end gap-2 pt-2">
           <button
             type="button"
