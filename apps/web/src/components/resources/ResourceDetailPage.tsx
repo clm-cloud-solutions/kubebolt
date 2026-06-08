@@ -69,6 +69,7 @@ const kindToRoute: Record<string, string> = {
   PVC: 'pvcs', PV: 'pvs', PodDisruptionBudget: 'pdbs',
   Certificate: 'certificates', Application: 'argocdapps', VerticalPodAutoscaler: 'vpas',
   ServiceAccount: 'serviceaccounts',
+  CiliumNetworkPolicy: 'ciliumnetworkpolicies', CiliumClusterwideNetworkPolicy: 'ciliumclusterwidenetworkpolicies',
 }
 
 const routeToKind: Record<string, string> = Object.fromEntries(
@@ -82,8 +83,10 @@ const resourceLabels: Record<string, string> = {
   endpoints: 'Endpoints', pvcs: 'PVCs', pvs: 'PVs', storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
   namespaces: 'Namespaces', replicasets: 'ReplicaSets', pdbs: 'Pod Disruption Budgets',
+  networkpolicies: 'Network Policies',
   certificates: 'Certificates', argocdapps: 'ArgoCD Applications', vpas: 'Vertical Pod Autoscalers',
   serviceaccounts: 'Service Accounts',
+  ciliumnetworkpolicies: 'Cilium Network Policies', ciliumclusterwidenetworkpolicies: 'Cilium Clusterwide Network Policies',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {
@@ -274,6 +277,17 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
       // PDB carries the same matched-pods affordance as NetworkPolicy —
       // "which pods does this budget actually protect?" is the question
       // operators ask when an Evict 429s.
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+      )
+      break
+    case 'ciliumnetworkpolicies':
+    case 'ciliumclusterwidenetworkpolicies':
+      // Same matched-pods affordance as NetworkPolicy — which endpoints does
+      // this policy's endpointSelector actually select right now.
       base.push(
         { id: 'yaml', label: 'YAML' },
         { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
@@ -552,6 +566,15 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
           {type === 'storageclasses' && <InfoField label="Reclaim Policy">{String(item.reclaimPolicy ?? '-')}</InfoField>}
           {type === 'gateways' && <InfoField label="Class">{String(item.class ?? '-')}</InfoField>}
           {type === 'httproutes' && item.gateway != null && <InfoField label="Gateway"><ResourceLink name={String(item.gateway)} namespace={String(item.gatewayNamespace ?? item.namespace)} resourceType="gateways" /></InfoField>}
+          {(type === 'ciliumnetworkpolicies' || type === 'ciliumclusterwidenetworkpolicies') && (
+            <>
+              <InfoField label="Endpoint Selector"><span className="font-mono">{String(item.endpointSelector ?? '-')}</span></InfoField>
+              <InfoField label="Ingress / Egress Rules">{`${item.ingressRules ?? 0} / ${item.egressRules ?? 0}`}</InfoField>
+              {Array.isArray(item.l7Protocols) && (item.l7Protocols as string[]).length > 0 && (
+                <InfoField label="L7"><span className="font-mono">{(item.l7Protocols as string[]).join(', ')}</span></InfoField>
+              )}
+            </>
+          )}
         </div>
 
         {/* Labels & Annotations */}
@@ -573,9 +596,64 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
       <MetricsBar item={item} />
       {type === 'nodes' && <NodeTopConsumersSection item={item} />}
 
+      {(type === 'ciliumnetworkpolicies' || type === 'ciliumclusterwidenetworkpolicies') && (
+        <CiliumPolicyRulesSection item={item} />
+      )}
+
       {/* Conditions */}
       <ConditionsSection conditions={item.conditions} />
     </div>
+  )
+}
+
+// CiliumPolicyRulesSection renders the structured ingress/egress breakdown
+// (peers, ports, L7) the backend derives from a CNP/CCNP spec — the L3-L7 view
+// a standard NetworkPolicy can't express. Full edit happens in the YAML tab.
+function CiliumPolicyRulesSection({ item }: { item: ResourceItem }) {
+  const rules = Array.isArray(item.policyRules) ? (item.policyRules as Array<Record<string, unknown>>) : []
+  if (rules.length === 0) {
+    return (
+      <Section title="Policy Rules">
+        <p className="text-[12px] text-kb-text-tertiary">
+          No explicit ingress/egress rules — this policy selects endpoints without restricting traffic.
+        </p>
+      </Section>
+    )
+  }
+  return (
+    <Section title="Policy Rules">
+      <div className="space-y-2">
+        {rules.map((r, i) => {
+          const direction = String(r.direction ?? 'ingress')
+          const deny = Boolean(r.deny)
+          const peers = Array.isArray(r.peers) ? (r.peers as string[]) : []
+          const ports = Array.isArray(r.ports) ? (r.ports as string[]) : []
+          const l7 = Array.isArray(r.l7) ? (r.l7 as string[]) : []
+          return (
+            <div key={i} className="rounded border border-kb-border bg-kb-bg/60 p-3 text-[11px] font-mono space-y-1.5">
+              <div className="flex items-center gap-2">
+                <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded ${direction === 'ingress' ? 'bg-kb-accent-light text-kb-accent' : 'bg-kb-elevated text-kb-text-secondary'}`}>
+                  {direction}
+                </span>
+                {deny && (
+                  <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-status-error/15 text-status-error">deny</span>
+                )}
+                {l7.length > 0 && (
+                  <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-status-warn/15 text-status-warn">L7</span>
+                )}
+              </div>
+              <div><span className="text-kb-text-tertiary">{direction === 'ingress' ? 'from' : 'to'}:</span> <span className="text-kb-text-secondary">{peers.join(' · ')}</span></div>
+              {ports.length > 0 && (
+                <div><span className="text-kb-text-tertiary">ports:</span> <span className="text-kb-text-secondary">{ports.join(', ')}</span></div>
+              )}
+              {l7.map((rule, j) => (
+                <div key={j} className="text-kb-text-secondary pl-3 border-l border-kb-border">{rule}</div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+    </Section>
   )
 }
 

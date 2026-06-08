@@ -137,6 +137,8 @@ export interface ClusterOverview {
   certificates?: ResourceCount
   argocdApps?: ResourceCount
   vpas?: ResourceCount
+  ciliumNetworkPolicies?: ResourceCount
+  ciliumClusterwideNetworkPolicies?: ResourceCount
   helmReleases?: ResourceCount
   // Endpoints — counted from EndpointSlices, matching what the
   // /resources/endpoints list endpoint returns.

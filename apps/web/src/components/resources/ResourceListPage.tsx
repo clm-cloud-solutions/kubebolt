@@ -59,6 +59,8 @@ const resourceLabels: Record<string, string> = {
   certificates: 'Certificates',
   argocdapps: 'ArgoCD Applications',
   vpas: 'Vertical Pod Autoscalers',
+  ciliumnetworkpolicies: 'Cilium Network Policies',
+  ciliumclusterwidenetworkpolicies: 'Cilium Clusterwide Network Policies',
 }
 
 // Sort key for CPU/Memory columns: absolute usage (millicores / bytes).
@@ -391,6 +393,51 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
         cell: (info) => (
           <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
         ),
+      },
+    )
+  }
+
+  if (resourceType === 'ciliumnetworkpolicies' || resourceType === 'ciliumclusterwidenetworkpolicies') {
+    base.push(
+      {
+        accessorKey: 'endpointSelector',
+        header: 'Endpoint Selector',
+        cell: (info) => {
+          const v = String(info.getValue() ?? '—')
+          const isCatchAll = v.startsWith('all pods')
+          return (
+            <span className={`font-mono text-[11px] ${isCatchAll ? 'text-status-warn' : 'text-kb-text-secondary'}`}>
+              {v}
+            </span>
+          )
+        },
+      },
+      {
+        accessorKey: 'ingressRules',
+        header: 'Ingress',
+        cell: (info) => (
+          <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
+        ),
+      },
+      {
+        accessorKey: 'egressRules',
+        header: 'Egress',
+        cell: (info) => (
+          <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
+        ),
+      },
+      {
+        accessorKey: 'l7Protocols',
+        header: 'L7',
+        cell: (info) => {
+          const raw = info.getValue() as string[] | undefined
+          if (!raw || raw.length === 0) return <span className="text-[11px] text-kb-text-tertiary">—</span>
+          return (
+            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-kb-accent-light text-kb-accent">
+              {raw.join(', ')}
+            </span>
+          )
+        },
       },
     )
   }

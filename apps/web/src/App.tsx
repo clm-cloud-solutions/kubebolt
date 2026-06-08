@@ -109,6 +109,8 @@ export default function App() {
               <Route path="/services" element={<ResourceListPage resourceType="services" />} />
               <Route path="/ingresses" element={<ResourceListPage resourceType="ingresses" />} />
               <Route path="/networkpolicies" element={<ResourceListPage resourceType="networkpolicies" />} />
+              <Route path="/ciliumnetworkpolicies" element={<ResourceListPage resourceType="ciliumnetworkpolicies" />} />
+              <Route path="/ciliumclusterwidenetworkpolicies" element={<ResourceListPage resourceType="ciliumclusterwidenetworkpolicies" />} />
               <Route path="/pdbs" element={<ResourceListPage resourceType="pdbs" />} />
               <Route path="/certificates" element={<ResourceListPage resourceType="certificates" />} />
               <Route path="/argocdapps" element={<ResourceListPage resourceType="argocdapps" />} />

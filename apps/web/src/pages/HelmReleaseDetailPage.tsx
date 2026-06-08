@@ -318,6 +318,8 @@ const kindToRoute: Record<string, string> = {
   PersistentVolumeClaim: 'pvcs',
   HorizontalPodAutoscaler: 'hpas',
   NetworkPolicy: 'networkpolicies',
+  CiliumNetworkPolicy: 'ciliumnetworkpolicies',
+  CiliumClusterwideNetworkPolicy: 'ciliumclusterwidenetworkpolicies',
   PodDisruptionBudget: 'pdbs',
 }
 
