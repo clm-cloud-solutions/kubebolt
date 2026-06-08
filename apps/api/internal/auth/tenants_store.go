@@ -125,6 +125,26 @@ func (t *IngestToken) Active(now time.Time) bool {
 	return true
 }
 
+// TenantStore is the W1 seam for the Organization domain — a Tenant IS the
+// Organization (internal/saas/kubebolt-e1-multitenant-scoping.md §8). OSS uses
+// the BoltDB *TenantsStore below (degenerate: a single auto-seeded "default"
+// org); EE swaps a Postgres impl that activates multi-org. The interface covers
+// org management only; the inlined ingest-token methods (IssueToken, …) are the
+// TokenStore concern (W1 #5).
+type TenantStore interface {
+	GetDefaultTenant() (*Tenant, error)
+	CreateTenant(name, plan string) (*Tenant, error)
+	GetTenant(id string) (*Tenant, error)
+	ListTenants() ([]Tenant, error)
+	UpdateTenant(id string, mut func(*Tenant) error) (*Tenant, error)
+	SetLimits(id string, patch *TenantLimits) (*Tenant, LimitsValidation, error)
+	ClearLimits(id string) (*Tenant, error)
+	DeleteTenant(id string) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ TenantStore = (*TenantsStore)(nil)
+
 // TenantsStore wraps the BoltDB handle from auth.Store and owns the
 // tenant + ingest-token lifecycle. Safe for concurrent use.
 type TenantsStore struct {
