@@ -61,6 +61,9 @@ var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	"certificates": {Group: "cert-manager.io", Kind: "Certificate"},
 	"argocdapps":   {Group: "argoproj.io", Kind: "Application"},
 	"vpas":         {Group: "autoscaling.k8s.io", Kind: "VerticalPodAutoscaler"},
+	// Cilium policy CRDs — generic fallback; CCNP is cluster-scoped.
+	"ciliumnetworkpolicies":            {Group: "cilium.io", Kind: "CiliumNetworkPolicy"},
+	"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Kind: "CiliumClusterwideNetworkPolicy"},
 }
 
 // describeResource runs `kubectl describe` for the given resource and returns
@@ -74,10 +77,14 @@ func describeResource(conn *cluster.Connector, resourceType, namespace, name str
 	if !found {
 		// Generic describer fallback for dynamic CRDs (no built-in describer).
 		if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
+			scope := meta.RESTScope(meta.RESTScopeNamespace)
+			if cluster.IsClusterScoped(resourceType) {
+				scope = meta.RESTScopeRoot
+			}
 			mapping := &meta.RESTMapping{
 				Resource:         gvr,
 				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
-				Scope:            meta.RESTScopeNamespace,
+				Scope:            scope,
 			}
 			describer, found = describe.GenericDescriberFor(mapping, conn.RestConfig())
 		}

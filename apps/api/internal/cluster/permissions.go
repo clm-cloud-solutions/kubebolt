@@ -109,6 +109,9 @@ var resourceDefs = map[string]resourceDef{
 	"certificates": {group: "cert-manager.io", resource: "certificates"},
 	"argocdapps":   {group: "argoproj.io", resource: "applications"},
 	"vpas":         {group: "autoscaling.k8s.io", resource: "verticalpodautoscalers"},
+	// Cilium policy CRDs (present only on Cilium clusters). CCNP is cluster-scoped.
+	"ciliumnetworkpolicies":            {group: "cilium.io", resource: "ciliumnetworkpolicies"},
+	"ciliumclusterwidenetworkpolicies": {group: "cilium.io", resource: "ciliumclusterwidenetworkpolicies", clusterScope: true},
 	// Autoscaling v1
 	"hpas": {group: "autoscaling", resource: "horizontalpodautoscalers"},
 	// Storage v1

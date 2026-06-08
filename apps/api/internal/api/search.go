@@ -32,6 +32,7 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"services", "ingresses", "networkpolicies", "configmaps", "secrets", "nodes", "namespaces",
 		"pvcs", "pvs", "hpas", "storageclasses", "pdbs",
 		"certificates", "argocdapps", "vpas", "serviceaccounts",
+		"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies",
 	}
 
 	var results []searchResult
@@ -72,6 +73,7 @@ func resourceTypeToKind(rt string) string {
 		"pdbs": "PodDisruptionBudget",
 		"certificates": "Certificate", "argocdapps": "Application", "vpas": "VerticalPodAutoscaler",
 		"serviceaccounts": "ServiceAccount",
+		"ciliumnetworkpolicies": "CiliumNetworkPolicy", "ciliumclusterwidenetworkpolicies": "CiliumClusterwideNetworkPolicy",
 	}
 	if k, ok := kinds[rt]; ok {
 		return k
