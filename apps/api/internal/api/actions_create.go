@@ -15,6 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	sigsyaml "sigs.k8s.io/yaml"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 // Apply new manifest — kubectl create -f equivalent. Tier 2 #10.
@@ -97,6 +99,19 @@ var createKindByType = map[string]string{
 	"clusterroles":             "ClusterRole",
 	"rolebindings":             "RoleBinding",
 	"clusterrolebindings":      "ClusterRoleBinding",
+	// Optional CRDs + describe-aliases the GVR map supports. These were
+	// historically absent here, so create-from-manifest 400'd for every one of
+	// them ("unsupported resource type for create") — only surfaced once they
+	// were added to the + New picker.
+	"pdbs":                             "PodDisruptionBudget",
+	"serviceaccounts":                  "ServiceAccount",
+	"gateways":                         "Gateway",
+	"httproutes":                       "HTTPRoute",
+	"certificates":                     "Certificate",
+	"argocdapps":                       "Application",
+	"vpas":                             "VerticalPodAutoscaler",
+	"ciliumnetworkpolicies":            "CiliumNetworkPolicy",
+	"ciliumclusterwidenetworkpolicies": "CiliumClusterwideNetworkPolicy",
 }
 
 // multiDocSeparatorRE matches the YAML document separator. A bare
@@ -289,6 +304,17 @@ func (h *handlers) handleCreateResource(w http.ResponseWriter, r *http.Request) 
 		case apierrors.IsForbidden(err):
 			respondError(w, http.StatusForbidden, err.Error())
 			return
+		case apierrors.IsNotFound(err) && strings.Contains(err.Error(), "could not find the requested resource"):
+			// The apiserver doesn't serve this GVR — almost always an optional
+			// CRD (ArgoCD, cert-manager, Gateway API, Cilium, …) that isn't
+			// installed in this cluster. The raw "the server could not find the
+			// requested resource" is opaque; name what's actually missing. (The
+			// substring check avoids misfiring on a real NotFound like a missing
+			// target namespace, which carries the resource name in its message.)
+			respondError(w, http.StatusBadRequest, fmt.Sprintf(
+				"%s (%s) isn't available in this cluster — its CustomResourceDefinition is not installed. Install the operator/CRD first, then retry.",
+				kind, apiVersion))
+			return
 		}
 		log.Printf("Create failed for %s/%s/%s: %v", resourceType, namespace, obj.GetName(), err)
 		respondMutationError(w, err)
@@ -393,26 +419,16 @@ func hasMultiDoc(body []byte) bool {
 // directly, but it doesn't need the full GVR — just the GroupVersion
 // for the apiVersion consistency check.
 func expectedGroupVersionFor(resourceType string) schema.GroupVersion {
-	switch resourceType {
-	case "pods", "nodes", "namespaces", "services", "configmaps", "secrets",
-		"persistentvolumeclaims", "pvcs", "persistentvolumes", "pvs", "events":
-		return schema.GroupVersion{Group: "", Version: "v1"}
-	case "deployments", "statefulsets", "daemonsets", "replicasets":
-		return schema.GroupVersion{Group: "apps", Version: "v1"}
-	case "jobs", "cronjobs":
-		return schema.GroupVersion{Group: "batch", Version: "v1"}
-	case "ingresses", "networkpolicies":
-		return schema.GroupVersion{Group: "networking.k8s.io", Version: "v1"}
-	case "hpas", "horizontalpodautoscalers":
-		return schema.GroupVersion{Group: "autoscaling", Version: "v1"}
-	case "storageclasses":
-		return schema.GroupVersion{Group: "storage.k8s.io", Version: "v1"}
-	case "roles", "clusterroles", "rolebindings", "clusterrolebindings":
-		return schema.GroupVersion{Group: "rbac.authorization.k8s.io", Version: "v1"}
+	// Derive from the single source of truth (the GVR map) instead of a
+	// parallel switch — this auto-covers every type the dynamic client can
+	// create, including optional CRDs (Gateway API, cert-manager, ArgoCD, VPA,
+	// Cilium policies). A hardcoded switch silently fell out of sync and
+	// rejected create for those types with an empty expected GroupVersion.
+	if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
+		return gvr.GroupVersion()
 	}
-	// Unknown — caller already validated the type, so this branch
-	// shouldn't fire in practice. Return an empty GV so the
-	// mismatch check surfaces a clear error.
+	// Unknown — caller already validated the type, so this branch shouldn't
+	// fire in practice. Empty GV makes the mismatch check surface a clear error.
 	return schema.GroupVersion{}
 }
 
