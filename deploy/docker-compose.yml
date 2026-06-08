@@ -57,6 +57,9 @@ services:
       # How long the UI polls an executed action for convergence before marking
       # it stalled and auto-triggering a Kobi root-cause turn. Default 90s.
       - KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT=${KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT:-90s}
+      # Max tool-call rounds per Kobi turn; on exhaustion Kobi summarizes instead
+      # of erroring. Raise for small sequential models (Haiku). Clamped [2,40].
+      - KUBEBOLT_AI_MAX_ROUNDS=${KUBEBOLT_AI_MAX_ROUNDS:-20}
       # Kobi conversation history — persisted per user (refresh / re-login resume).
       - KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON=${KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON:-2160h}
       - KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER=${KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER:-200}

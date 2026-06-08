@@ -45,6 +45,9 @@ interface FormState {
   // is milliseconds — converted in stateFromResponse / buildPatch). String so
   // the input is editable; empty = inherit env default.
   actionProgressTimeoutSeconds: string
+  // Max tool-call rounds per Kobi turn. String so the input is editable;
+  // empty = inherit env default. Clamped to [2, 40] server-side.
+  maxRounds: string
   autoCompact: boolean
   maxTokens: string // string so the input is editable; coerced to number on save
   // Auto-compact tunables. Strings while editing for the same reason as
@@ -72,6 +75,7 @@ function stateFromResponse(data: CopilotSettingsResponse): FormState {
     destructiveActionsEnabled: eff.destructiveActionsEnabled,
     actionProgressTimeoutSeconds:
       eff.actionProgressTimeoutMs != null ? String(Math.round(eff.actionProgressTimeoutMs / 1000)) : '',
+    maxRounds: eff.maxRounds != null ? String(eff.maxRounds) : '',
     autoCompact: eff.autoCompact,
     maxTokens: String(eff.maxTokens || 4096),
     sessionBudgetTokens: eff.sessionBudgetTokens != null ? String(eff.sessionBudgetTokens) : '',
@@ -107,6 +111,14 @@ function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutR
     const secs = parseInt(current.actionProgressTimeoutSeconds, 10)
     if (current.actionProgressTimeoutSeconds !== '' && !isNaN(secs) && secs > 0) {
       patch.actionProgressTimeoutMs = secs * 1000
+    }
+  }
+  // Max tool-call rounds — only send when typed (>0) and changed; the server
+  // clamps to [2, 40].
+  if (current.maxRounds !== initial.maxRounds) {
+    const rounds = parseInt(current.maxRounds, 10)
+    if (current.maxRounds !== '' && !isNaN(rounds) && rounds > 0) {
+      patch.maxRounds = rounds
     }
   }
   if (current.autoCompact !== initial.autoCompact) patch.autoCompact = current.autoCompact
@@ -216,6 +228,7 @@ function CopilotSettingsForm({
     actionsEnabled: form.actionsEnabled !== initial.actionsEnabled,
     destructiveActionsEnabled: form.destructiveActionsEnabled !== initial.destructiveActionsEnabled,
     actionProgressTimeout: form.actionProgressTimeoutSeconds !== initial.actionProgressTimeoutSeconds,
+    maxRounds: form.maxRounds !== initial.maxRounds,
     autoCompact: form.autoCompact !== initial.autoCompact,
     maxTokens: form.maxTokens !== initial.maxTokens,
     sessionBudgetTokens: form.sessionBudgetTokens !== initial.sessionBudgetTokens,
@@ -544,6 +557,25 @@ function CopilotSettingsForm({
               onChange={(e) => setForm({ ...form, actionProgressTimeoutSeconds: e.target.value })}
             />
             <span className="text-[11px] text-kb-text-tertiary">seconds</span>
+          </div>
+        </Field>
+
+        <Field
+          label="Max tool steps"
+          dirty={dirtyMap.maxRounds}
+          helper="Max tool-call steps Kobi may take to answer one question (one model turn that calls tools = one step). On reaching the limit Kobi summarizes what it found instead of erroring. Raise it for small, sequential models (e.g. Haiku) on deep investigations. 2–40. Blank = env default (20)."
+        >
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={2}
+              max={40}
+              placeholder="20"
+              className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+              value={form.maxRounds}
+              onChange={(e) => setForm({ ...form, maxRounds: e.target.value })}
+            />
+            <span className="text-[11px] text-kb-text-tertiary">steps</span>
           </div>
         </Field>
 

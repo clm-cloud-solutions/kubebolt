@@ -41,6 +41,7 @@ func newTestRuntime(t *testing.T) *Runtime {
 		CompactPreserveTurns:  3,
 		ShowToolCalls:         true,
 		ActionProgressTimeout: config.DefaultActionProgressTimeout,
+		MaxRounds:             config.DefaultMaxRounds,
 	}
 	envBase.Enabled = true
 
@@ -283,6 +284,53 @@ func TestCopilot_ActionProgressTimeout_OverrideAndFloor(t *testing.T) {
 	}
 	if masked.Effective.ActionProgressTimeoutMs != int(config.MinActionProgressTimeout.Milliseconds()) {
 		t.Errorf("masked effective: got %d ms, want %d", masked.Effective.ActionProgressTimeoutMs, config.MinActionProgressTimeout.Milliseconds())
+	}
+}
+
+func TestCopilot_MaxRounds_OverrideAndClamp(t *testing.T) {
+	// No override → env baseline (DefaultMaxRounds).
+	rt := newTestRuntime(t)
+	if got := rt.Copilot().MaxRounds; got != config.DefaultMaxRounds {
+		t.Fatalf("no override: got %d, want env baseline %d", got, config.DefaultMaxRounds)
+	}
+
+	// In-range override applied verbatim.
+	if err := rt.PutCopilot(&StoredCopilotSettings{MaxRounds: intPtr(30)}, nil, nil); err != nil {
+		t.Fatalf("put: %v", err)
+	}
+	if got := rt.Copilot().MaxRounds; got != 30 {
+		t.Errorf("override: got %d, want 30", got)
+	}
+
+	// Above the ceiling → clamped to MaxMaxRounds (passes validation since >0).
+	if err := rt.PutCopilot(&StoredCopilotSettings{MaxRounds: intPtr(999)}, nil, nil); err != nil {
+		t.Fatalf("put over-ceiling: %v", err)
+	}
+	if got := rt.Copilot().MaxRounds; got != config.MaxMaxRounds {
+		t.Errorf("over-ceiling: got %d, want clamp to %d", got, config.MaxMaxRounds)
+	}
+
+	// Below the floor (but >0) → clamped up to MinMaxRounds.
+	if err := rt.PutCopilot(&StoredCopilotSettings{MaxRounds: intPtr(1)}, nil, nil); err != nil {
+		t.Fatalf("put sub-floor: %v", err)
+	}
+	if got := rt.Copilot().MaxRounds; got != config.MinMaxRounds {
+		t.Errorf("sub-floor: got %d, want clamp to %d", got, config.MinMaxRounds)
+	}
+
+	// Effective value is surfaced by the masked render.
+	masked, err := rt.RenderMaskedCopilot()
+	if err != nil {
+		t.Fatalf("render masked: %v", err)
+	}
+	if masked.Effective.MaxRounds != config.MinMaxRounds {
+		t.Errorf("masked effective: got %d, want %d", masked.Effective.MaxRounds, config.MinMaxRounds)
+	}
+
+	// Zero/negative is rejected at validation (the UI must surface an error,
+	// not silently floor a typo).
+	if err := rt.PutCopilot(&StoredCopilotSettings{MaxRounds: intPtr(0)}, nil, nil); err == nil {
+		t.Error("maxRounds=0 should fail validation")
 	}
 }
 

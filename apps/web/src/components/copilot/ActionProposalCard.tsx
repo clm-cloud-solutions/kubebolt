@@ -572,7 +572,18 @@ async function runProposal(p: ActionProposal, conversationId?: string | null): P
       const image = typeof p.params.image === 'string' && p.params.image ? p.params.image : 'busybox'
       const targetContainer =
         typeof p.params.targetContainer === 'string' ? p.params.targetContainer : undefined
-      const r = await api.debugPod(p.target.namespace, p.target.name, { image, targetContainer }, SOURCE)
+      // Kobi may propose a non-interactive diagnostic command (already wrapped
+      // as ["sh","-c",<line>] server-side) so the container runs it, exits, and
+      // leaves output in its logs for Kobi to read back via get_pod_logs.
+      const command = Array.isArray(p.params.command)
+        ? (p.params.command as unknown[]).filter((s): s is string => typeof s === 'string')
+        : undefined
+      const r = await api.debugPod(
+        p.target.namespace,
+        p.target.name,
+        { image, targetContainer, command },
+        SOURCE,
+      )
       return `Debug container attached: ${r.ephemeralContainerName} (${r.status})`
     }
     case 'scale_workload': {

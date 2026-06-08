@@ -432,6 +432,7 @@ func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
 			image = "busybox"
 		}
 		targetContainer := stringArg(args, "targetContainer")
+		command := stringArg(args, "command")
 		rationale := stringArg(args, "rationale")
 		if ns == "" || name == "" {
 			res.Content = `{"error":"namespace and name are required"}`
@@ -449,7 +450,19 @@ func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
 		if targetContainer != "" {
 			p.Params["targetContainer"] = targetContainer
 		}
+		if command != "" {
+			// Wrap as sh -c so the LLM can pass a single shell line; the
+			// ephemeral container runs it, exits, and the output lands in the
+			// container logs for get_pod_logs to read back. The execution path
+			// (debugPodRequest.Command) honors this verbatim.
+			p.Params["command"] = []string{"sh", "-c", command}
+		}
 		p.Summary = fmt.Sprintf("Attach debug container (%s) to pod %s/%s", image, ns, name)
+		if command != "" {
+			// Surface the exact command in the card — it runs under the
+			// operator's RBAC, so they should see it before clicking Execute.
+			p.Summary += fmt.Sprintf(" — runs: %s", command)
+		}
 		p.Rationale = rationale
 		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
 		// Ephemeral containers can't be removed without recreating the pod.

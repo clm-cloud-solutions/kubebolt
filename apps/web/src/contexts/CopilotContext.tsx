@@ -410,6 +410,10 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       // Pre-create the assistant message that will accumulate streamed text
       const assistantId = generateId()
       let assistantText = ''
+      // Set when the server signals the turn hit the tool-step limit (meta
+      // event). Read in the `done` handler to append a deterministic
+      // "reached step limit" notice — independent of the model's closing text.
+      let maxRoundsHit: number | null = null
       setMessages((prev) => [
         ...prev,
         { id: assistantId, role: 'assistant', content: '', timestamp: new Date() },
@@ -436,6 +440,9 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           setLastActivityAt(Date.now())
           if (event.type === 'meta') {
             if (event.fallback) setUsedFallback(true)
+            if (typeof event.maxRoundsReached === 'number') {
+              maxRoundsHit = event.maxRoundsReached
+            }
             // The server hands back the conversation id up-front (new chats)
             // so a mid-stream refresh can already resume. Persist the pointer.
             if (event.conversationId) {
@@ -489,6 +496,13 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
             // size on the next request.
             if (Array.isArray(event.messages)) {
               setMessages((prev) => {
+                // Compact notices are historical markers (one per compaction
+                // event) — preserve them across the rebuild. A maxrounds-notice
+                // is NOT historical: it's the transient "you can continue"
+                // affordance for the LATEST pause, so we deliberately drop any
+                // prior one here and re-append only this turn's (if it paused)
+                // below. Preserving them stacked a new banner — each with its
+                // own Continue button — on every resumed turn.
                 const notices = prev.filter((m) => m.kind === 'compact-notice')
                 const rebuilt: CopilotMessage[] = event.messages!.map((m, idx) => ({
                   id: `srv-${Date.now()}-${idx}`,
@@ -502,9 +516,21 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
                 // progress/stall lifecycle) from the pre-rebuild transcript so
                 // the server echo doesn't wipe them — see carryProposalAnnotations.
                 const preserved = carryProposalAnnotations(prev, rebuilt)
-                // Keep compact notices visible at the end so the user
-                // still sees that compaction happened.
-                return [...preserved, ...notices]
+                const tail = [...notices]
+                // This turn hit the tool-step limit → append a deterministic
+                // notice (after the model's closing summary) with a Continue
+                // control. Does not depend on the model writing the right text.
+                if (maxRoundsHit != null) {
+                  tail.push({
+                    id: generateId(),
+                    role: 'system',
+                    content: '',
+                    timestamp: new Date(),
+                    kind: 'maxrounds-notice',
+                    maxRoundsLimit: maxRoundsHit,
+                  })
+                }
+                return [...preserved, ...tail]
               })
             }
             // Refresh the history drawer so the new/updated conversation (and

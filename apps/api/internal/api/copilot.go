@@ -165,11 +165,12 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 // the handler executes them, appends results, and re-invokes the model.
 //
 // Response is streamed via Server-Sent Events with these event types:
-//   meta       — fallback used, model info
-//   tool_call  — emitted when the LLM invokes a tool (for UI indicator)
-//   text       — final assistant text
-//   error      — provider or tool error
-//   done       — stream complete
+//
+//	meta       — fallback used, model info
+//	tool_call  — emitted when the LLM invokes a tool (for UI indicator)
+//	text       — final assistant text
+//	error      — provider or tool error
+//	done       — stream complete
 func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// Snapshot the live config ONCE per request. Subsequent reads inside
 	// this handler use `cfg.X` (never re-read) so a concurrent admin
@@ -255,8 +256,14 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		slog.String("trigger", trigger),
 	)
 
-	// Multi-step tool calling loop
-	const maxRounds = 10
+	// Multi-step tool calling loop. The round budget is configurable
+	// (KUBEBOLT_AI_MAX_ROUNDS / Settings → Copilot) because a small,
+	// sequential model (e.g. Haiku, which calls tools one at a time) needs
+	// more headroom to converge on a deep RCA than a model that batches calls.
+	maxRounds := cfg.MaxRounds
+	if maxRounds < config.MinMaxRounds {
+		maxRounds = config.DefaultMaxRounds
+	}
 	// Detach from req.Messages so subsequent appends in the round loop never
 	// reach back into the caller's slice via shared backing array.
 	messages := append([]copilot.Message(nil), req.Messages...)
@@ -745,15 +752,92 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// Continue the loop — model will see tool results and produce its next response
 	}
 
-	// Hit the max rounds limit
+	// Hit the max rounds limit. Instead of a dead error that throws away
+	// everything Kobi gathered, run ONE final tools-free turn that summarizes
+	// what was found and tells the operator they can ask to continue. Small,
+	// sequential models exhaust the round budget mid-RCA precisely when they're
+	// being most useful — a bare "reached max tool call rounds" is the worst
+	// possible payload at that moment.
 	logger.Warn("copilot hit max rounds",
 		slog.Int("maxRounds", maxRounds),
 	)
-	writeSSEEvent(w, flusher, "error", map[string]string{
-		"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
+	// Forward-compatible signal so the UI can later offer a "Continue
+	// investigation" affordance (1.16). Unknown meta keys are ignored today.
+	writeSSEEvent(w, flusher, "meta", map[string]any{"maxRoundsReached": maxRounds})
+
+	// Same provider-selection rule the loop uses: stick with the fallback if an
+	// earlier round already fell over to it.
+	closeProvider := cfg.Primary
+	if usedFallback && cfg.Fallback != nil {
+		closeProvider = *cfg.Fallback
+	}
+	// Deliver the close directive as a final USER turn, not a system-prompt
+	// tail. In-vivo (maxRounds=5 on the 3-tier RCA) the system-tail directive
+	// was ignored — the model kept narrating "let me check…" instead of
+	// summarizing. A trailing instruction message is far more salient. It steers
+	// the close turn ONLY and is never persisted (closeMessages is a copy;
+	// finalMessages derives from `messages`).
+	closeMessages := append(append([]copilot.Message(nil), messages...), copilot.Message{
+		Role:      copilot.RoleUser,
+		Content:   copilot.MaxRoundsCloseDirective(maxRounds),
+		Timestamp: time.Now(),
 	})
-	writeSSEEvent(w, flusher, "done", nil)
-	persistConversation(messages)
+	closeReq := copilot.ChatRequest{
+		System:    systemPrompt,
+		Messages:  withSessionContextPrefix(closeMessages, sessionCtx),
+		Tools:     nil, // force a text-only answer — no more tool calls
+		Provider:  closeProvider,
+		MaxTokens: cfg.MaxTokens,
+	}
+	resp, err := h.callProvider(r, closeReq)
+	if err != nil && copilot.IsRecoverable(err) && cfg.Fallback != nil && !usedFallback {
+		closeReq.Provider = *cfg.Fallback
+		resp, err = h.callProvider(r, closeReq)
+		if err == nil {
+			usedFallback = true
+			writeSSEEvent(w, flusher, "meta", map[string]bool{"fallback": true})
+		}
+	}
+
+	finalMessages := messages
+	if err != nil {
+		// Even the close turn failed — fall back to the honest error, but keep
+		// the transcript we have so the next resume isn't empty.
+		logger.Error("copilot max-rounds close turn failed",
+			slog.String("error", err.Error()),
+		)
+		writeSSEEvent(w, flusher, "error", map[string]string{
+			"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
+		})
+		writeSSEEvent(w, flusher, "done", map[string]any{
+			"messages":       finalMessages,
+			"conversationId": conversationID,
+		})
+		persistConversation(finalMessages)
+		finish("max_rounds")
+		return
+	}
+
+	sessionUsage.Add(resp.Usage)
+	lastTurnUsage = resp.Usage
+	writeSSEEvent(w, flusher, "usage", map[string]any{
+		"round":   maxRounds,
+		"turn":    resp.Usage,
+		"session": sessionUsage,
+	})
+	if resp.Text != "" {
+		writeSSEEvent(w, flusher, "text", map[string]string{"text": resp.Text})
+		finalMessages = append(finalMessages, copilot.Message{
+			Role:      copilot.RoleAssistant,
+			Content:   resp.Text,
+			Timestamp: time.Now(),
+		})
+	}
+	writeSSEEvent(w, flusher, "done", map[string]any{
+		"messages":       finalMessages,
+		"conversationId": conversationID,
+	})
+	persistConversation(finalMessages)
 	finish("max_rounds")
 }
 
