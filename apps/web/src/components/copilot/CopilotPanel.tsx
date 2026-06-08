@@ -18,6 +18,8 @@ import {
   Plus,
   Download,
   Clock,
+  Hourglass,
+  ArrowRight,
 } from 'lucide-react'
 import { ConversationList } from './ConversationList'
 import { useCopilot } from '@/contexts/CopilotContext'
@@ -88,6 +90,10 @@ function exportConversationMarkdown(messages: CopilotMessage[], title: string | 
       lines.push('> _(conversation compacted here)_', '')
       continue
     }
+    if (m.kind === 'maxrounds-notice') {
+      lines.push(`> _(reached the tool-step limit${m.maxRoundsLimit ? ` of ${m.maxRoundsLimit}` : ''} here — investigation paused)_`, '')
+      continue
+    }
     if (m.role === 'user' && (m.content ?? '').trim()) {
       lines.push(`## You${stamp(m)}`, '', m.content.trim(), '')
     } else if (m.role === 'assistant' && (m.content ?? '').trim()) {
@@ -117,7 +123,7 @@ function exportConversationMarkdown(messages: CopilotMessage[], title: string | 
 function approxContextTokens(messages: CopilotMessage[]): number {
   let chars = 0
   for (const m of messages) {
-    if (m.kind === 'compact-notice') continue
+    if (m.kind === 'compact-notice' || m.kind === 'maxrounds-notice') continue
     chars += (m.content ?? '').length
     if (m.toolCalls) {
       for (const tc of m.toolCalls) {
@@ -436,7 +442,7 @@ export function CopilotPanel() {
           >
             {isDocked ? <PanelRightOpen className="w-3.5 h-3.5" /> : <PanelRightClose className="w-3.5 h-3.5" />}
           </button>
-          {messages.filter((m) => m.kind !== 'compact-notice').length >= 2 && (
+          {messages.filter((m) => m.kind !== 'compact-notice' && m.kind !== 'maxrounds-notice').length >= 2 && (
             <button
               onClick={() => void compactSession(true)}
               disabled={isCompacting || isLoading}
@@ -446,7 +452,7 @@ export function CopilotPanel() {
               {isCompacting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Scissors className="w-3.5 h-3.5" />}
             </button>
           )}
-          {messages.filter((m) => m.kind !== 'compact-notice').length > 0 && (
+          {messages.filter((m) => m.kind !== 'compact-notice' && m.kind !== 'maxrounds-notice').length > 0 && (
             <button
               onClick={() => exportConversationMarkdown(messages, conversationTitle)}
               title="Export conversation (Markdown)"
@@ -828,6 +834,10 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
     return <CompactNoticeBubble meta={message.compactMeta} />
   }
 
+  if (message.kind === 'maxrounds-notice') {
+    return <MaxRoundsNoticeBubble limit={message.maxRoundsLimit} />
+  }
+
   if (message.role === 'user') {
     return (
       <div className="flex justify-end gap-2">
@@ -983,6 +993,38 @@ function ThinkingIndicator() {
         />
       </div>
       <span className="kb-ai-shimmer-text text-[11px] font-mono">Thinking</span>
+    </div>
+  )
+}
+
+// MaxRoundsNoticeBubble marks where a turn hit the tool-call step limit and
+// offers a Continue control that resumes the investigation with a fresh round
+// budget (a new user turn on the same conversation). Deterministic — it renders
+// regardless of what the model's closing text said, so the operator always sees
+// that Kobi paused on the limit rather than froze.
+function MaxRoundsNoticeBubble({ limit }: { limit?: number }) {
+  const { sendMessage, isLoading } = useCopilot()
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-status-warn/40 bg-status-warn/5 text-[10px] font-mono text-kb-text-secondary">
+      <Hourglass className="w-3 h-3 text-status-warn shrink-0" />
+      <span className="text-status-warn font-semibold uppercase tracking-wider">Step limit reached</span>
+      <span className="text-kb-text-tertiary">·</span>
+      <span>
+        Kobi paused after {limit ?? 'the'} tool step{limit === 1 ? '' : 's'} before finishing.
+      </span>
+      <button
+        type="button"
+        disabled={isLoading}
+        onClick={() =>
+          sendMessage('Continue the investigation from where you left off — run the next step you named.', {
+            trigger: 'continue_after_max_rounds',
+          })
+        }
+        className="ml-auto inline-flex items-center gap-1 text-status-warn hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
+      >
+        Continue
+        <ArrowRight className="w-3 h-3" />
+      </button>
     </div>
   )
 }

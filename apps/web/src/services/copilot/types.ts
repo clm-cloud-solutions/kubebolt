@@ -9,10 +9,10 @@ export interface CopilotMessage {
   toolCalls?: CopilotToolCall[]
   toolResults?: CopilotToolResult[]
   timestamp: Date
-  /** Optional message kind; 'compact-notice' renders as an inline banner
-   * marking where auto- or manual compaction happened and never gets sent
-   * to the provider. */
-  kind?: 'compact-notice'
+  /** Optional message kind. 'compact-notice' marks where compaction happened;
+   * 'maxrounds-notice' marks where a turn hit the tool-step limit and offers a
+   * Continue control. Neither is ever sent to the provider. */
+  kind?: 'compact-notice' | 'maxrounds-notice'
   compactMeta?: {
     turnsFolded: number
     toolResultsStubbed: number
@@ -21,6 +21,9 @@ export interface CopilotMessage {
     model?: string
     auto: boolean
   }
+  /** Set on a 'maxrounds-notice' message: the step limit that was reached, so
+   * the banner can show "reached the step limit (N)". */
+  maxRoundsLimit?: number
   /** Set on the assistant turn the user stopped via the Stop button. The UI
    * renders a "Stopped by you" marker so a half-finished (or empty) answer
    * reads as a deliberate cancel, not a hang or a completed reply. */
@@ -73,6 +76,10 @@ export interface CopilotStreamEvent {
   round?: number
   turn?: CopilotUsage
   session?: CopilotUsage
+  // "meta" event payload: the turn hit the tool-call step limit; value is the
+  // limit N. The UI renders a deterministic "reached step limit" notice with a
+  // Continue control regardless of what the model's closing text says.
+  maxRoundsReached?: number
   // "compact" event payload: auto-compaction occurred mid-session
   turnsFolded?: number
   toolResultsStubbed?: number

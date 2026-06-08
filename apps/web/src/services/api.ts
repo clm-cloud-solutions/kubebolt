@@ -1320,6 +1320,8 @@ export interface CopilotSettingsResponse {
     compactPreserveTurns?: number
     // Action-progress timeout in effect, milliseconds (UI shows seconds).
     actionProgressTimeoutMs?: number
+    // Max tool-call rounds in effect.
+    maxRounds?: number
   }
   stored: {
     hasPrimaryOverride: boolean
@@ -1349,6 +1351,7 @@ export interface CopilotSettingsResponse {
       actionsEnabled?: boolean
       destructiveActionsEnabled?: boolean
       actionProgressTimeoutMs?: number
+      maxRounds?: number
     }
   }
   secretsReadable: boolean
@@ -1382,6 +1385,8 @@ export interface CopilotSettingsPutRequest {
     destructiveActionsEnabled?: boolean
     // Milliseconds on the wire; the form converts the seconds the admin types.
     actionProgressTimeoutMs?: number
+    // Max tool-call rounds per Kobi turn. Clamped to [2, 40] server-side.
+    maxRounds?: number
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string
