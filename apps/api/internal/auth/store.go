@@ -195,6 +195,26 @@ func KobiActionsBucket() []byte {
 	return kobiActionsBucket
 }
 
+// UserStore is the W1 seam for the User domain
+// (internal/saas/kubebolt-e1-multitenant-scoping.md §8). OSS uses the BoltDB
+// *Store (every user is an org member with a set Role); EE swaps a Postgres
+// impl where User.Role may be "" — a "team-only" user with no org-wide access,
+// the segmentation primitive. The interface covers user management; the
+// refresh-token methods on *Store are the TokenStore concern (W1 #5).
+type UserStore interface {
+	CreateUser(username, email, name, password string, role Role) (*User, error)
+	GetUser(id string) (*User, error)
+	GetUserByUsername(username string) (*User, error)
+	ListUsers() ([]User, error)
+	UpdateUser(id, username, email, name string, role Role) (*User, error)
+	UpdatePassword(id, newPassword string) error
+	UpdateLastLogin(id string) error
+	DeleteUser(id string) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ UserStore = (*Store)(nil)
+
 // CreateUser creates a new user with a bcrypt-hashed password.
 func (s *Store) CreateUser(username, email, name, password string, role Role) (*User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
