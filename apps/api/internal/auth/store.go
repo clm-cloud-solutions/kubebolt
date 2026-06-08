@@ -495,6 +495,23 @@ func (s *Store) SeedAdmin(password string) (bool, error) {
 	return true, nil
 }
 
+// RefreshTokenStore is the W1 seam for refresh-token persistence — the
+// rotating, hashed session tokens behind /auth/refresh (distinct from the
+// long-lived ingest "kb_" and REST "kbs_/kbk_" tokens, which have their own
+// stores). Split out from UserStore on purpose: a user's identity and their
+// active sessions are separate concerns, and EE may back sessions with a
+// different store (e.g. Redis/Postgres with TTL eviction) than user records.
+// OSS uses the BoltDB *Store for both.
+type RefreshTokenStore interface {
+	SaveRefreshToken(rt *RefreshToken) error
+	GetRefreshToken(tokenHash string) (*RefreshToken, error)
+	DeleteRefreshToken(tokenHash string) error
+	DeleteUserRefreshTokens(userID string) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ RefreshTokenStore = (*Store)(nil)
+
 // SaveRefreshToken stores a refresh token.
 func (s *Store) SaveRefreshToken(rt *RefreshToken) error {
 	return s.db.Update(func(tx *bolt.Tx) error {

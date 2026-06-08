@@ -98,6 +98,24 @@ func (t *APIToken) Active(now time.Time) bool {
 	return true
 }
 
+// APITokenStorer is the W1 seam for the long-lived REST API tokens
+// (kbs_ service tokens + kbk_ customer keys). OSS uses the BoltDB
+// *APITokenStore; EE swaps a Postgres impl that can enforce per-tenant
+// quotas and central revocation. Named with the -er suffix because the
+// concrete keeps the natural *APITokenStore name (mirrors the
+// IngestTokenStore/BoltIngestTokenStore split without renaming the type
+// every caller already references).
+type APITokenStorer interface {
+	Issue(typ APITokenType, role Role, scopes []string, label, createdBy string, ttl *time.Duration) (string, *APIToken, error)
+	Lookup(plaintext string) (*APIToken, error)
+	List() ([]APIToken, error)
+	Revoke(id string) error
+	MarkUsed(id string, when time.Time) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ APITokenStorer = (*APITokenStore)(nil)
+
 // APITokenStore owns the api_tokens buckets. Safe for concurrent use.
 type APITokenStore struct {
 	db    *bolt.DB
