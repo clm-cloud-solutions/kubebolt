@@ -25,11 +25,17 @@ one JSON response) and is authenticated with a normal KubeBolt **API token**.
 
 **Setup:**
 
-1. In KubeBolt, create an API token (Admin → API Tokens). You get a `kbs_…`
-   value (a service token). Its default scopes already include `/api/v1/mcp`,
-   so it works against this endpoint out of the box. If you mint a token with
-   **custom** scopes, include `/api/v1/mcp` (or `*`) or the call returns
-   `403 token scope does not permit this path`.
+1. In KubeBolt, create a **service token** — Admin → API Tokens, type
+   **Service** (the default). You get a `kbs_…` value. Its default scopes
+   already include `/api/v1/mcp`, so it works against this endpoint out of the
+   box.
+
+   > **Use a service token (`kbs_`), not an API key (`kbk_`).** A `kbs_` service
+   > token created with the default scopes can reach `/api/v1/mcp`. A `kbk_` API
+   > key is issued with **no default scopes**, so it returns
+   > `403 token scope does not permit this path` unless you explicitly grant it
+   > `/api/v1/mcp` (or `*`). The same applies to **any** token you mint with
+   > custom scopes — include `/api/v1/mcp` (or `*`).
 2. Point your MCP host at the endpoint with the token as a bearer header.
 
 Example MCP host config (Claude Code / Cursor `mcpServers`):
@@ -126,10 +132,15 @@ This is the checklist to run when bringing the server up in a new environment.
 
 `go test ./internal/mcp/...` covers the protocol dispatch, both transports
 (via `httptest` and in-memory pipes), the read-only guard, and prompts, all
-against a fake tool provider. The stdio binary has also been exercised
-end-to-end. What those tests **cannot** cover — and what you should verify on a
-live system — is the HTTP path with a **real API token** and **real cluster
-data** flowing through the executor.
+against a fake tool provider.
+
+Both transports have also been verified **end-to-end against a live cluster**:
+stdio against a real MCP host (Claude Code) and HTTP with a real `kbs_` service
+token via raw requests — `initialize` (`2025-06-18`), `tools/list` (17 tools, 0
+`propose_`), real `tools/call` reads, **Secret YAML redaction** (`data` → `REDACTED`),
+the **read-only guard** (`propose_*` rejected `-32602 unknown tool`), `401` with
+no token, and `405` on `GET`. Re-run the checklist below when bringing the
+server up in a new environment (different auth config, cluster, or host).
 
 ### The four ways to test
 
