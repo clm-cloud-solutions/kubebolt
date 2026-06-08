@@ -56,6 +56,45 @@ func (m *mockTenantsLister) ListTenants() ([]auth.Tenant, error) {
 	return m.tenants, m.err
 }
 
+// promTenant is a test fixture pairing a tenant with the tokens its ingest
+// store returns. Pre-W1 these were a single struct (auth.Tenant.IngestTokens);
+// the W1 split moved tokens into their own store, but co-locating them in the
+// fixtures keeps the test cases readable.
+type promTenant struct {
+	ID     string
+	Name   string
+	Tokens []auth.IngestToken
+}
+
+// mockPromStore implements BOTH tenantsLister and ingestTokenLister — the
+// provider now reads tenants from one and tokens from the other. tokens is
+// keyed by tenant ID.
+type mockPromStore struct {
+	tenants []auth.Tenant
+	tokens  map[string][]auth.IngestToken
+	err     error
+}
+
+func (m *mockPromStore) ListTenants() ([]auth.Tenant, error) { return m.tenants, m.err }
+
+func (m *mockPromStore) ListByTenant(tenantID string) ([]auth.IngestToken, error) {
+	if m.tokens == nil {
+		return nil, nil
+	}
+	return m.tokens[tenantID], nil
+}
+
+// newPromMock builds a combined mock from fixture tenants. A non-nil err is
+// returned by ListTenants to drive the Unknown path.
+func newPromMock(err error, pts ...promTenant) *mockPromStore {
+	m := &mockPromStore{err: err, tokens: map[string][]auth.IngestToken{}}
+	for _, pt := range pts {
+		m.tenants = append(m.tenants, auth.Tenant{ID: pt.ID, Name: pt.Name})
+		m.tokens[pt.ID] = pt.Tokens
+	}
+	return m
+}
+
 // tokenAt is a small helper that builds an IngestToken with a given
 // label and last-used age. Negative ageFromNow means "not used yet"
 // (LastUsedAt = nil) — distinct from a zero time.
@@ -75,7 +114,7 @@ func tokenAt(label string, ageFromNow time.Duration) auth.IngestToken {
 }
 
 func TestPrometheusProvider_Meta(t *testing.T) {
-	p := NewPrometheus(&mockTenantsLister{}, nil, nil)
+	p := NewPrometheus(&mockTenantsLister{}, newPromMock(nil), nil, nil)
 	m := p.Meta()
 	if m.ID != PrometheusID {
 		t.Errorf("Meta().ID = %q, want %q", m.ID, PrometheusID)
@@ -94,7 +133,7 @@ func TestPrometheusProvider_Meta(t *testing.T) {
 func TestPrometheusProvider_Detect(t *testing.T) {
 	tests := []struct {
 		name               string
-		tenants            []auth.Tenant
+		tenants            []promTenant
 		err                error
 		wantStatus         Status
 		wantMessageContain string // substring match
@@ -113,11 +152,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 		},
 		{
 			name: "tokens issued but never used → not installed, hint to configure",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("never-used", -1)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("never-used", -1)},
 				},
 			},
 			wantStatus:         StatusNotInstalled,
@@ -125,11 +164,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 		},
 		{
 			name: "token used 10s ago → streaming",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-1", 10*time.Second)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-1", 10*time.Second)},
 				},
 			},
 			wantStatus:         StatusInstalled,
@@ -137,11 +176,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 		},
 		{
 			name: "token used 5m ago → stale (still installed)",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-1", 5*time.Minute)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-1", 5*time.Minute)},
 				},
 			},
 			wantStatus:         StatusInstalled,
@@ -149,11 +188,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 		},
 		{
 			name: "token used 1h ago → cold (degraded)",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-1", 1*time.Hour)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-1", 1*time.Hour)},
 				},
 			},
 			wantStatus:         StatusDegraded,
@@ -161,11 +200,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 		},
 		{
 			name: "two senders, both fresh → streaming + active senders count",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
 					ID:   "t1",
 					Name: "default",
-					IngestTokens: []auth.IngestToken{
+					Tokens: []auth.IngestToken{
 						tokenAt("prom-a", 10*time.Second),
 						tokenAt("prom-b", 5*time.Second),
 					},
@@ -176,11 +215,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 		},
 		{
 			name: "revoked token ignored — only active count",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
 					ID:   "t1",
 					Name: "default",
-					IngestTokens: []auth.IngestToken{
+					Tokens: []auth.IngestToken{
 						// Revoked: doesn't count as active, even if recently used.
 						func() auth.IngestToken {
 							tok := tokenAt("revoked", 10*time.Second)
@@ -205,11 +244,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 			// — that's the advanced cross-cluster path, the correct
 			// branch when no in-cluster Prom is detectable.
 			name: "old token does not inflate active senders count",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
 					ID:   "t1",
 					Name: "default",
-					IngestTokens: []auth.IngestToken{
+					Tokens: []auth.IngestToken{
 						tokenAt("old-other-cluster", 18*24*time.Hour), // 18 days ago
 						tokenAt("prom-local", 10*time.Second),         // streaming now
 					},
@@ -227,11 +266,11 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 			// driven by it (Cold), and active senders count drops to
 			// 0 — no contradictory "Cold + N active senders" message.
 			name: "cold most-recent + no fresh senders → no inflated count",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
 					ID:   "t1",
 					Name: "default",
-					IngestTokens: []auth.IngestToken{
+					Tokens: []auth.IngestToken{
 						tokenAt("a", 1*time.Hour),
 						tokenAt("b", 3*time.Hour),
 					},
@@ -250,17 +289,15 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 	// check above is positive-only). Run the inverse-cold case
 	// separately so we can assert what's NOT in the message.
 	t.Run("cold case has no active-senders suffix", func(t *testing.T) {
-		lister := &mockTenantsLister{tenants: []auth.Tenant{
-			{
-				ID:   "t1",
-				Name: "default",
-				IngestTokens: []auth.IngestToken{
-					tokenAt("a", 1*time.Hour),
-					tokenAt("b", 3*time.Hour),
-				},
+		lister := newPromMock(nil, promTenant{
+			ID:   "t1",
+			Name: "default",
+			Tokens: []auth.IngestToken{
+				tokenAt("a", 1*time.Hour),
+				tokenAt("b", 3*time.Hour),
 			},
-		}}
-		p := NewPrometheus(lister, nil, nil)
+		})
+		p := NewPrometheus(lister, lister, nil, nil)
 		got, _ := p.Detect(context.Background(), nil)
 		if got.Health == nil {
 			t.Fatal("Health is nil")
@@ -272,8 +309,8 @@ func TestPrometheusProvider_Detect(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lister := &mockTenantsLister{tenants: tc.tenants, err: tc.err}
-			p := NewPrometheus(lister, nil, nil)
+			lister := newPromMock(tc.err, tc.tenants...)
+			p := NewPrometheus(lister, lister, nil, nil)
 			got, err := p.Detect(context.Background(), nil /* k8s client unused */)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v (Detect should never return errors — surface them via Status=Unknown)", err)
@@ -303,7 +340,7 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 	tests := []struct {
 		name               string
 		objs               []*corev1.Pod
-		tenants            []auth.Tenant
+		tenants            []promTenant
 		wantStatus         Status
 		wantNamespace      string
 		wantVersion        string
@@ -318,11 +355,11 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 			objs: []*corev1.Pod{
 				promPodReady("monitoring", "prometheus-0", "3.11.3"),
 			},
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
 				},
 			},
 			wantStatus:         StatusInstalled,
@@ -342,11 +379,11 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 				promPodReady("monitoring", "prometheus-0", "3.11.3"),
 				promPodNotReady("monitoring", "prometheus-1", "3.11.3"),
 			},
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
 				},
 			},
 			wantStatus:      StatusDegraded,
@@ -361,11 +398,11 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 			objs: []*corev1.Pod{
 				promPodReady("monitoring", "prometheus-0", "3.11.3"),
 			},
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("never-used", -1)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("never-used", -1)},
 				},
 			},
 			wantStatus:         StatusDegraded,
@@ -382,11 +419,11 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 			objs: []*corev1.Pod{
 				promPodReady("monitoring", "prometheus-0", "3.11.3"),
 			},
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-local", 1*time.Hour)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-local", 1*time.Hour)},
 				},
 			},
 			wantStatus:         StatusDegraded,
@@ -405,8 +442,8 @@ func TestPrometheusProvider_Detect_WithWorkload(t *testing.T) {
 				objs = append(objs, p)
 			}
 			cs := fake.NewSimpleClientset(objs...)
-			lister := &mockTenantsLister{tenants: tc.tenants}
-			p := NewPrometheus(lister, nil, nil)
+			lister := newPromMock(nil, tc.tenants...)
+			p := NewPrometheus(lister, lister, nil, nil)
 
 			got, err := p.Detect(context.Background(), kubernetes.Interface(cs))
 			if err != nil {
@@ -528,10 +565,8 @@ func TestPrometheusProvider_Detect_ClusterScope(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lister := &mockTenantsLister{tenants: []auth.Tenant{
-				{ID: "t1", Name: "default", IngestTokens: tc.tokens},
-			}}
-			p := NewPrometheus(lister, func() string { return tc.currentClusterID }, nil)
+			lister := newPromMock(nil, promTenant{ID: "t1", Name: "default", Tokens: tc.tokens})
+			p := NewPrometheus(lister, lister, func() string { return tc.currentClusterID }, nil)
 			got, err := p.Detect(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v", err)
@@ -560,18 +595,18 @@ func TestPrometheusProvider_Detect_ClusterScope(t *testing.T) {
 // matters.
 func TestPrometheusProvider_Detect_AdaptiveSourceLabel(t *testing.T) {
 	tests := []struct {
-		name               string
-		tenants            []auth.Tenant
-		wantContains       string
-		wantOmits          string
+		name         string
+		tenants      []promTenant
+		wantContains string
+		wantOmits    string
 	}{
 		{
 			name: "single-tenant → bare token label",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
+					ID:     "t1",
+					Name:   "default",
+					Tokens: []auth.IngestToken{tokenAt("prom-local", 10*time.Second)},
 				},
 			},
 			wantContains: "from prom-local",
@@ -579,16 +614,16 @@ func TestPrometheusProvider_Detect_AdaptiveSourceLabel(t *testing.T) {
 		},
 		{
 			name: "multi-tenant → keeps tenant prefix",
-			tenants: []auth.Tenant{
+			tenants: []promTenant{
 				{
-					ID:           "t1",
-					Name:         "acme",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-acme", 10*time.Second)},
+					ID:     "t1",
+					Name:   "acme",
+					Tokens: []auth.IngestToken{tokenAt("prom-acme", 10*time.Second)},
 				},
 				{
-					ID:           "t2",
-					Name:         "globex",
-					IngestTokens: []auth.IngestToken{tokenAt("prom-globex", 30*time.Second)},
+					ID:     "t2",
+					Name:   "globex",
+					Tokens: []auth.IngestToken{tokenAt("prom-globex", 30*time.Second)},
 				},
 			},
 			wantContains: "from acme/prom-acme",
@@ -597,8 +632,8 @@ func TestPrometheusProvider_Detect_AdaptiveSourceLabel(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			lister := &mockTenantsLister{tenants: tc.tenants}
-			p := NewPrometheus(lister, nil, nil)
+			lister := newPromMock(nil, tc.tenants...)
+			p := NewPrometheus(lister, lister, nil, nil)
 			got, err := p.Detect(context.Background(), nil)
 			if err != nil {
 				t.Fatalf("Detect() returned error: %v", err)
@@ -669,14 +704,13 @@ func TestPrometheusProvider_Detect_SampleProbe(t *testing.T) {
 			// the v1.11 in-vivo session manifested as: token passes
 			// the scope filter, heartbeat looks alive, but no
 			// samples are actually arriving for the active cluster.
-			lister := &mockTenantsLister{tenants: []auth.Tenant{
-				{
-					ID:           "t1",
-					Name:         "default",
-					IngestTokens: []auth.IngestToken{tokenAt("legacy-prom", 10*time.Second)},
-				},
-			}}
+			lister := newPromMock(nil, promTenant{
+				ID:     "t1",
+				Name:   "default",
+				Tokens: []auth.IngestToken{tokenAt("legacy-prom", 10*time.Second)},
+			})
 			p := NewPrometheus(
+				lister,
 				lister,
 				func() string { return activeClusterID },
 				tc.probe,

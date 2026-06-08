@@ -14,10 +14,11 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
-// newTenantsStoreWithToken spins a fresh BoltDB + TenantsStore in
-// t.TempDir() and issues a single non-expiring ingest token. Returns
-// the store + the plaintext token for use in Authorization headers.
-func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, string) {
+// newTenantsStoreWithToken spins a fresh BoltDB + TenantsStore +
+// IngestTokenStore in t.TempDir() and issues a single non-expiring ingest
+// token. Returns both stores + the plaintext token for use in Authorization
+// headers. (Tokens live in their own store now, not inlined in the tenant.)
+func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, *auth.BoltIngestTokenStore, string) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := auth.NewStore(dir)
@@ -29,15 +30,36 @@ func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, string) {
 	if err != nil {
 		t.Fatalf("auth.NewTenantsStore: %v", err)
 	}
+	its, err := auth.NewIngestTokenStore(store.DB())
+	if err != nil {
+		t.Fatalf("auth.NewIngestTokenStore: %v", err)
+	}
 	tn, err := ts.CreateTenant("test-tenant", "team")
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	plaintext, _, err := ts.IssueToken(tn.ID, "", "scrape", "admin", nil)
+	plaintext, _, err := its.Issue(tn.ID, "", "scrape", "admin", nil)
 	if err != nil {
-		t.Fatalf("IssueToken: %v", err)
+		t.Fatalf("Issue: %v", err)
 	}
-	return ts, plaintext
+	return ts, its, plaintext
+}
+
+// lookupBearerTenant resolves the tenant a plaintext ingest token maps to,
+// going through the ingest store (token → TenantID) then the tenant store.
+// Replaces the old TenantsStore.LookupByToken which returned the tenant
+// directly when tokens were inlined.
+func lookupBearerTenant(t *testing.T, ts *auth.TenantsStore, its *auth.BoltIngestTokenStore, plaintext string) *auth.Tenant {
+	t.Helper()
+	tok, err := its.Lookup(plaintext)
+	if err != nil {
+		t.Fatalf("ingest Lookup: %v", err)
+	}
+	tn, err := ts.GetTenant(tok.TenantID)
+	if err != nil {
+		t.Fatalf("GetTenant: %v", err)
+	}
+	return tn
 }
 
 // fakeUpstream is a minimal stand-in for VictoriaMetrics' /api/v1/write.
@@ -235,8 +257,8 @@ func TestHandlePromWrite_BodyTooLargeReturns413(t *testing.T) {
 
 func TestHandlePromWrite_Enforced_NoBearerReturns401(t *testing.T) {
 	withPromWriteEnabled(t)
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	rec := httptest.NewRecorder()
@@ -250,8 +272,8 @@ func TestHandlePromWrite_Enforced_NoBearerReturns401(t *testing.T) {
 
 func TestHandlePromWrite_Enforced_BadBearerReturns401(t *testing.T) {
 	withPromWriteEnabled(t)
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer kbtok_v1_not-a-real-token")
@@ -266,8 +288,8 @@ func TestHandlePromWrite_Enforced_BadBearerReturns401(t *testing.T) {
 
 func TestHandlePromWrite_Enforced_EmptyBearerReturns401(t *testing.T) {
 	withPromWriteEnabled(t)
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthEnforced}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer ")
@@ -287,8 +309,8 @@ func TestHandlePromWrite_Enforced_ValidBearerForwards(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, plaintext := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthEnforced}
+	store, its, plaintext := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthEnforced}
 
 	body := []byte("snappy-protobuf-bytes")
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
@@ -336,8 +358,8 @@ func TestHandlePromWrite_Permissive_NoBearerLogsWarnAndForwards(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	rec := httptest.NewRecorder()
@@ -356,8 +378,8 @@ func TestHandlePromWrite_Permissive_BadBearerLogsWarnAndForwards(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer kbtok_v1_garbage")
@@ -377,8 +399,8 @@ func TestHandlePromWrite_Permissive_ValidBearerForwards(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, plaintext := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthPermissive}
+	store, its, plaintext := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthPermissive}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer "+plaintext)
@@ -400,8 +422,8 @@ func TestHandlePromWrite_Disabled_BadBearerStillForwards(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, _ := newTenantsStoreWithToken(t)
-	h := &handlers{tenantsStore: store, promWriteAuthMode: promWriteAuthDisabled}
+	store, its, _ := newTenantsStoreWithToken(t)
+	h := &handlers{tenantsStore: store, ingestTokens: its, promWriteAuthMode: promWriteAuthDisabled}
 
 	req := httptest.NewRequest(http.MethodPost, "/prom/write", strings.NewReader("payload"))
 	req.Header.Set("Authorization", "Bearer kbtok_v1_garbage")
@@ -490,10 +512,11 @@ func TestHandlePromWrite_Enforced_MissingTenantIDReturns401(t *testing.T) {
 	// are rejected outright (no auto-stamp fallback). Operator must
 	// configure tenant.id via helm.
 	withPromWriteEnabled(t)
-	store, plaintext := newTenantsStoreWithToken(t)
+	store, its, plaintext := newTenantsStoreWithToken(t)
 
 	h := &handlers{
 		tenantsStore:      store,
+		ingestTokens:      its,
 		promWriteAuthMode: promWriteAuthEnforced,
 		// promRateLimiter MUST be non-nil to activate the decode +
 		// validation path. Day 4.1 wires the entire tenant_id check
@@ -528,10 +551,11 @@ func TestHandlePromWrite_Permissive_MissingTenantIDAutoStamps(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, plaintext := newTenantsStoreWithToken(t)
+	store, its, plaintext := newTenantsStoreWithToken(t)
 
 	h := &handlers{
 		tenantsStore:      store,
+		ingestTokens:      its,
 		promWriteAuthMode: promWriteAuthPermissive,
 		promRateLimiter:   NewPromRateLimiter(limitDefaultsForTest()),
 	}
@@ -561,10 +585,7 @@ func TestHandlePromWrite_Permissive_MissingTenantIDAutoStamps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("upstream body should be valid snappy, got: %v", err)
 	}
-	bearerTenant, _, err := store.LookupByToken(plaintext)
-	if err != nil {
-		t.Fatalf("LookupByToken: %v", err)
-	}
+	bearerTenant := lookupBearerTenant(t, store, its, plaintext)
 	tid, found := readTenantIDFromFirstSeries(decoded)
 	if !found {
 		t.Errorf("tenant_id should be stamped on the forwarded body, got absent")
@@ -583,16 +604,14 @@ func TestHandlePromWrite_Enforced_MatchingTenantIDForwards(t *testing.T) {
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, plaintext := newTenantsStoreWithToken(t)
+	store, its, plaintext := newTenantsStoreWithToken(t)
 	// Resolve the actual tenant the bearer maps to (the helper
 	// creates "test-tenant", not the auto-seeded "default").
-	bearerTenant, _, err := store.LookupByToken(plaintext)
-	if err != nil {
-		t.Fatalf("LookupByToken: %v", err)
-	}
+	bearerTenant := lookupBearerTenant(t, store, its, plaintext)
 
 	h := &handlers{
 		tenantsStore:      store,
+		ingestTokens:      its,
 		promWriteAuthMode: promWriteAuthEnforced,
 		promRateLimiter:   NewPromRateLimiter(limitDefaultsForTest()),
 	}

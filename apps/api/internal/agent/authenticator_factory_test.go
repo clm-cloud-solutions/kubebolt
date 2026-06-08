@@ -12,10 +12,11 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
-// newTenantsStoreForTest spins a fresh BoltDB and TenantsStore on
-// disk in t.TempDir(). Used here instead of importing the auth-package
-// test helper, which is unexported.
-func newTenantsStoreForTest(t *testing.T) *auth.TenantsStore {
+// newTenantsStoreForTest spins a fresh BoltDB on disk in t.TempDir() and
+// returns both the TenantsStore and the dedicated IngestTokenStore backed by
+// the same DB. Used here instead of importing the auth-package test helper,
+// which is unexported.
+func newTenantsStoreForTest(t *testing.T) (*auth.TenantsStore, auth.IngestTokenStore) {
 	t.Helper()
 	dir := t.TempDir()
 	store, err := auth.NewStore(dir)
@@ -27,7 +28,11 @@ func newTenantsStoreForTest(t *testing.T) *auth.TenantsStore {
 	if err != nil {
 		t.Fatalf("auth.NewTenantsStore: %v", err)
 	}
-	return ts
+	its, err := auth.NewIngestTokenStore(store.DB())
+	if err != nil {
+		t.Fatalf("auth.NewIngestTokenStore: %v", err)
+	}
+	return ts, its
 }
 
 func newKubeClientWithKubeSystem(uid string) *fake.Clientset {
@@ -42,9 +47,10 @@ func newKubeClientWithKubeSystem(uid string) *fake.Clientset {
 // ─── BuildAuthenticator ───────────────────────────────────────────────
 
 func TestBuildAuthenticator_BearerOnlyWhenKubeClientNil(t *testing.T) {
-	store := newTenantsStoreForTest(t)
+	store, tokens := newTenantsStoreForTest(t)
 	bundle, err := BuildAuthenticator(context.Background(), AuthenticatorOptions{
-		TenantsStore: store,
+		TenantsStore:     store,
+		IngestTokenStore: tokens,
 	})
 	if err != nil {
 		t.Fatalf("BuildAuthenticator: %v", err)
@@ -61,10 +67,11 @@ func TestBuildAuthenticator_BearerOnlyWhenKubeClientNil(t *testing.T) {
 }
 
 func TestBuildAuthenticator_BothModesWhenKubeClientPresent(t *testing.T) {
-	store := newTenantsStoreForTest(t)
+	store, tokens := newTenantsStoreForTest(t)
 	bundle, err := BuildAuthenticator(context.Background(), AuthenticatorOptions{
-		TenantsStore: store,
-		KubeClient:   newKubeClientWithKubeSystem("cluster-uid-xyz"),
+		TenantsStore:     store,
+		IngestTokenStore: tokens,
+		KubeClient:       newKubeClientWithKubeSystem("cluster-uid-xyz"),
 	})
 	if err != nil {
 		t.Fatalf("BuildAuthenticator: %v", err)
@@ -89,10 +96,11 @@ func TestBuildAuthenticator_RequiresTenantsStore(t *testing.T) {
 func TestBuildAuthenticator_FallbackClusterIDWhenDiscoveryFails(t *testing.T) {
 	// kube-system absent → discovery fails → cluster_id falls back to
 	// "local". TokenReview must still be built (warning logged, no error).
-	store := newTenantsStoreForTest(t)
+	store, tokens := newTenantsStoreForTest(t)
 	bundle, err := BuildAuthenticator(context.Background(), AuthenticatorOptions{
-		TenantsStore: store,
-		KubeClient:   fake.NewSimpleClientset(),
+		TenantsStore:     store,
+		IngestTokenStore: tokens,
+		KubeClient:       fake.NewSimpleClientset(),
 	})
 	if err != nil {
 		t.Fatalf("BuildAuthenticator unexpectedly errored: %v", err)
@@ -103,11 +111,12 @@ func TestBuildAuthenticator_FallbackClusterIDWhenDiscoveryFails(t *testing.T) {
 }
 
 func TestBuildAuthenticator_HonorsExplicitClusterID(t *testing.T) {
-	store := newTenantsStoreForTest(t)
+	store, tokens := newTenantsStoreForTest(t)
 	bundle, err := BuildAuthenticator(context.Background(), AuthenticatorOptions{
-		TenantsStore: store,
-		KubeClient:   newKubeClientWithKubeSystem("ignored-uid"),
-		ClusterID:    "explicit-cluster",
+		TenantsStore:     store,
+		IngestTokenStore: tokens,
+		KubeClient:       newKubeClientWithKubeSystem("ignored-uid"),
+		ClusterID:        "explicit-cluster",
 	})
 	if err != nil {
 		t.Fatal(err)

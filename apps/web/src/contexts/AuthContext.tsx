@@ -63,7 +63,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const response = await api.login(username, password)
     setAccessToken(response.accessToken)
-    setUser(response.user)
+    // The login payload carries the bare user; /auth/me adds the org+team
+    // context (the hierarchy the topbar + teams page render). Fetch it now so
+    // those surfaces are populated immediately rather than after the next
+    // refresh. Fall back to the login user if the follow-up call fails.
+    try {
+      setUser(await api.getMe())
+    } catch {
+      setUser(response.user)
+    }
   }, [])
 
   const logout = useCallback(async () => {

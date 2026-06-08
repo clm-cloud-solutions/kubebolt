@@ -9,19 +9,16 @@
 //
 // ENTERPRISE-CANDIDATE (multi-tenant management):
 // The OSS edition operates against a single auto-seeded "default"
-// tenant. The endpoints in this file are split:
-//
-//   OSS               GetTenant/ListTokens/IssueToken/RotateToken/RevokeToken
-//                     (operating on the default tenant)
-//   Enterprise        ListTenants / CreateTenant / UpdateTenant /
-//                     DeleteTenant — and operating any of the
-//                     token endpoints against a non-default tenant.
-//
-// The split is enforced in the frontend (commit 8): the OSS UI only
-// shows the default tenant. The backend exposes everything because
-// drawing the line server-side would require a license check, which
-// we are deferring per ENTERPRISE-CANDIDATE policy until the SaaS
-// edition has a license model.
+// tenant. The lifecycle endpoints that would create a SECOND tenant —
+// CreateTenant / DeleteTenant — are gated SERVER-SIDE behind the
+// MultiTenantEnabled seam (edition.go): OSS returns 409 + code
+// "requires_ee" so the UI can show an upgrade CTA, EE flips the seam to
+// unlock them. The read + per-token endpoints (GetTenant / ListTenants /
+// ListTokens / IssueToken / RotateToken / RevokeToken / limits) stay open
+// because they operate on the existing default tenant and are harmless
+// single-tenant. This supersedes the earlier "expose everything, let the
+// frontend hide it" policy — a UI-only guard left the REST surface
+// reachable, which is not a real boundary.
 package auth
 
 import (
@@ -54,6 +51,7 @@ type CacheInvalidator interface {
 // system-wide policy change.
 type TenantHandlers struct {
 	store          *TenantsStore
+	ingestTokens   IngestTokenStore
 	invalidators   []CacheInvalidator
 	limitsDefaults EffectiveLimits
 }
@@ -63,10 +61,12 @@ type TenantHandlers struct {
 // process owns so revoke / rotate / disable take effect immediately.
 // limitsDefaults are the fleet-wide Prom remote_write defaults used to
 // resolve per-tenant overrides on the /admin/tenants/:id/limits
-// surface.
-func NewTenantHandlers(store *TenantsStore, limitsDefaults EffectiveLimits, invalidators ...CacheInvalidator) *TenantHandlers {
+// surface. ingestTokens is the dedicated ingest-token store (tokens no
+// longer live inlined in the tenant record).
+func NewTenantHandlers(store *TenantsStore, ingestTokens IngestTokenStore, limitsDefaults EffectiveLimits, invalidators ...CacheInvalidator) *TenantHandlers {
 	return &TenantHandlers{
 		store:          store,
+		ingestTokens:   ingestTokens,
 		invalidators:   invalidators,
 		limitsDefaults: limitsDefaults,
 	}
@@ -121,11 +121,11 @@ type issuedTokenResponse struct {
 	Info  ingestTokenResponse `json:"info"`
 }
 
-func summarizeTenant(t *Tenant) tenantResponse {
+func summarizeTenant(t *Tenant, tokens []IngestToken) tenantResponse {
 	now := time.Now().UTC()
 	var active int
-	for i := range t.IngestTokens {
-		if t.IngestTokens[i].Active(now) {
+	for i := range tokens {
+		if tokens[i].Active(now) {
 			active++
 		}
 	}
@@ -136,7 +136,7 @@ func summarizeTenant(t *Tenant) tenantResponse {
 		Disabled:         t.Disabled,
 		CreatedAt:        t.CreatedAt,
 		UpdatedAt:        t.UpdatedAt,
-		TokenCount:       len(t.IngestTokens),
+		TokenCount:       len(tokens),
 		ActiveTokenCount: active,
 	}
 }
@@ -167,6 +167,13 @@ func writeErr(w http.ResponseWriter, code int, msg string) {
 	writeJSON(w, code, map[string]string{"error": msg})
 }
 
+// writeErrCode is writeErr plus a machine-readable code the frontend can key
+// off (e.g. ErrCodeRequiresEE to render the upgrade CTA) without parsing the
+// human message.
+func writeErrCode(w http.ResponseWriter, code int, errCode, msg string) {
+	writeJSON(w, code, map[string]string{"error": msg, "code": errCode})
+}
+
 // ─── Handlers ─────────────────────────────────────────────────────────
 
 func (h *TenantHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
@@ -177,12 +184,21 @@ func (h *TenantHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tenantResponse, 0, len(tenants))
 	for i := range tenants {
-		out = append(out, summarizeTenant(&tenants[i]))
+		toks, _ := h.ingestTokens.ListByTenant(tenants[i].ID)
+		out = append(out, summarizeTenant(&tenants[i], toks))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 func (h *TenantHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
+	// OSS guardrail: a second organization is an EE/SaaS capability. The
+	// default tenant is auto-seeded at boot, never via this endpoint, so in
+	// OSS this is always an attempt to create tenant #2 → 409 requires_ee.
+	if !MultiTenantEnabled {
+		writeErrCode(w, http.StatusConflict, ErrCodeRequiresEE,
+			"creating additional organizations requires KubeBolt SaaS or Enterprise")
+		return
+	}
 	var req struct {
 		Name string `json:"name"`
 		Plan string `json:"plan"`
@@ -201,7 +217,7 @@ func (h *TenantHandlers) CreateTenant(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	writeJSON(w, http.StatusCreated, summarizeTenant(t))
+	writeJSON(w, http.StatusCreated, summarizeTenant(t, nil)) // fresh tenant has no tokens
 }
 
 func (h *TenantHandlers) GetTenant(w http.ResponseWriter, r *http.Request) {
@@ -211,10 +227,11 @@ func (h *TenantHandlers) GetTenant(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	resp := tenantWithTokensResponse{tenantResponse: summarizeTenant(t)}
+	toks, _ := h.ingestTokens.ListByTenant(t.ID)
+	resp := tenantWithTokensResponse{tenantResponse: summarizeTenant(t, toks)}
 	now := time.Now().UTC()
-	resp.IngestTokens = make([]ingestTokenResponse, 0, len(t.IngestTokens))
-	for _, tok := range t.IngestTokens {
+	resp.IngestTokens = make([]ingestTokenResponse, 0, len(toks))
+	for _, tok := range toks {
 		resp.IngestTokens = append(resp.IngestTokens, tokenInfo(tok, now))
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -262,10 +279,19 @@ func (h *TenantHandlers) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 	if !wasDisabled && nowDisabled {
 		h.onTokenChange()
 	}
-	writeJSON(w, http.StatusOK, summarizeTenant(updated))
+	toks, _ := h.ingestTokens.ListByTenant(updated.ID)
+	writeJSON(w, http.StatusOK, summarizeTenant(updated, toks))
 }
 
 func (h *TenantHandlers) DeleteTenant(w http.ResponseWriter, r *http.Request) {
+	// OSS guardrail: deleting tenants is multi-tenant lifecycle management.
+	// OSS has exactly the default tenant and deleting it would orphan every
+	// user/token, so the operation is EE-only.
+	if !MultiTenantEnabled {
+		writeErrCode(w, http.StatusConflict, ErrCodeRequiresEE,
+			"deleting organizations requires KubeBolt SaaS or Enterprise")
+		return
+	}
 	id := chi.URLParam(r, "id")
 	if err := h.store.DeleteTenant(id); err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
@@ -286,9 +312,10 @@ func (h *TenantHandlers) ListTokens(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
+	toks, _ := h.ingestTokens.ListByTenant(t.ID)
 	now := time.Now().UTC()
-	out := make([]ingestTokenResponse, 0, len(t.IngestTokens))
-	for _, tok := range t.IngestTokens {
+	out := make([]ingestTokenResponse, 0, len(toks))
+	for _, tok := range toks {
 		out = append(out, tokenInfo(tok, now))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -323,7 +350,7 @@ func (h *TenantHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.store.IssueToken(id, req.ClusterID, req.Label, issuer, ttl)
+	plaintext, tok, err := h.ingestTokens.Issue(id, req.ClusterID, req.Label, issuer, ttl)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -345,7 +372,7 @@ func (h *TenantHandlers) RotateToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.store.RotateToken(tenantID, tokenID, issuer)
+	plaintext, tok, err := h.ingestTokens.Rotate(tenantID, tokenID, issuer)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) || errors.Is(err, ErrTokenNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -364,7 +391,7 @@ func (h *TenantHandlers) RotateToken(w http.ResponseWriter, r *http.Request) {
 func (h *TenantHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "id")
 	tokenID := chi.URLParam(r, "tokenID")
-	if err := h.store.RevokeToken(tenantID, tokenID); err != nil {
+	if err := h.ingestTokens.Revoke(tenantID, tokenID); err != nil {
 		if errors.Is(err, ErrTenantNotFound) || errors.Is(err, ErrTokenNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
 			return

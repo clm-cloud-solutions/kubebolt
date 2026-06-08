@@ -13,7 +13,7 @@ import type {
   HelmRelease,
   HelmReleaseDetail,
 } from '@/types/kubernetes'
-import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/types/auth'
+import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
 import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
 
 const API_BASE = '/api/v1'
@@ -29,6 +29,16 @@ export class ApiError extends Error {
     this.name = 'ApiError'
     this.payload = payload
   }
+}
+
+/**
+ * isRequiresEE reports whether an error is the backend's "this needs SaaS/EE"
+ * boundary — a 409 carrying `code: "requires_ee"` (e.g. creating a second org
+ * or an additional team in OSS). The UI keys off this to render an upgrade CTA
+ * instead of a raw error.
+ */
+export function isRequiresEE(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.payload?.code === 'requires_ee'
 }
 
 // --- Token management (in-memory, not localStorage) ---
@@ -281,6 +291,22 @@ export const api = {
 
   deleteUser: (id: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/users/${id}`),
+
+  // --- Teams (org → team → user hierarchy) ---
+  //
+  // OSS is single-org + single-team: these read the auto-seeded "default"
+  // team and its members. Creating additional teams is gated server-side —
+  // createTeam returns 409 with payload.code === "requires_ee" so the UI can
+  // render an upgrade CTA. The member list requires admin.
+  listTeams: () => fetchJSON<Team[]>(`${API_BASE}/teams`),
+
+  getTeam: (id: string) => fetchJSON<Team>(`${API_BASE}/teams/${id}`),
+
+  listTeamMembers: (id: string) =>
+    fetchJSON<TeamMember[]>(`${API_BASE}/teams/${id}/members`),
+
+  createTeam: (data: { name: string }) =>
+    postJSON<Team>(`${API_BASE}/teams`, data),
 
   // --- Agent ingest tokens (admin) ---
   //

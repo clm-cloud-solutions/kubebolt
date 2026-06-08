@@ -1002,7 +1002,7 @@ function EnforcedConfirmDialog({
         </div>
         <p className="text-xs text-kb-text-secondary leading-relaxed">
           Before flipping to enforced, make sure every agent in the fleet has been issued an
-          ingest token via <code className="font-mono">/admin/agent-tokens</code> and that the
+          ingest token via the <code className="font-mono">Agent Tokens</code> tab and that the
           agent helm chart has been redeployed with the token mounted.
         </p>
         <p className="text-[11px] text-kb-text-tertiary leading-relaxed">

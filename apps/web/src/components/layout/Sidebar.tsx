@@ -144,24 +144,21 @@ function getCount(overview: ClusterOverview | undefined, key?: keyof ClusterOver
 
 const BOLT_EMOJIS = ['⚡', '🔥', '🌟', '💫', '✨', '🚀', '💜']
 
+// Administration grouped into domain hubs (each a tabbed page) so the area
+// reads by concern instead of a flat dump. The former Settings tabs are split
+// across these hubs; the per-domain management pages (Users, Teams, Agent
+// Tokens, Activity, Integrations, Kobi Usage) become tabs within their hub.
 const adminItems = [
-  // "Settings" first — single home for the env-only config that's now
-  // UI-editable. Other admin pages stay in place for their dedicated
-  // surfaces (Users, Tenants, Integrations, etc.).
-  { label: 'Settings', path: '/admin/settings', icon: <SlidersHorizontal className="w-4 h-4" /> },
-  { label: 'Users', path: '/admin/users', icon: <Users className="w-4 h-4" /> },
-  { label: 'Agent Tokens', path: '/admin/agent-tokens', icon: <KeyRound className="w-4 h-4" /> },
-  // Ingest Activity sits between Agent Tokens and Integrations because
-  // the operator workflow is: issue tokens (Agent Tokens) → install
-  // agents → see them connect (Ingest Activity) → wire integrations
-  // (Integrations). The page is admin-only and lives behind the same
-  // role gate as the rest of /admin/*. Spec #09 V2 Item 5b.
-  { label: 'Ingest Activity', path: '/admin/ingest-activity', icon: <Activity className="w-4 h-4" /> },
-  { label: 'Integrations', path: '/admin/integrations', icon: <Puzzle className="w-4 h-4" /> },
-  { label: 'Kobi Usage', path: '/admin/copilot-usage', icon: <BarChart3 className="w-4 h-4" /> },
-  { label: 'Teams', path: '/admin/teams', icon: <UsersRound className="w-4 h-4" /> },
-  { label: 'API Tokens', path: '/admin/api-tokens', icon: <Bot className="w-4 h-4" /> },
-  { label: 'Authentication', path: '/admin/authentication', icon: <KeyRound className="w-4 h-4" /> },
+  // Access — identity & sign-in: Users · Teams · Authentication.
+  { label: 'Access', path: '/admin/access', icon: <Shield className="w-4 h-4" /> },
+  // Agents & Ingest — getting data in: Agent Tokens · Activity · Integrations · Config.
+  { label: 'Agents & Ingest', path: '/admin/agents', icon: <Radio className="w-4 h-4" /> },
+  // AI (Kobi) — copilot Config · Usage.
+  { label: 'AI (Kobi)', path: '/admin/ai', icon: <Bot className="w-4 h-4" /> },
+  // System — instance-wide: General · Notifications.
+  { label: 'System', path: '/admin/system', icon: <SlidersHorizontal className="w-4 h-4" /> },
+  // API Tokens — long-lived REST tokens (kbs_/kbk_). Standalone.
+  { label: 'API Tokens', path: '/admin/api-tokens', icon: <KeyRound className="w-4 h-4" /> },
 ]
 
 export function Sidebar({ overview, collapsed }: SidebarProps) {

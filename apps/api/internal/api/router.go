@@ -17,6 +17,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -42,10 +43,15 @@ func NewRouter(
 	integrationRegistry *integrations.Registry,
 	agentAuthEnforcement string,
 	tenantsStore *auth.TenantsStore,
+	ingestTokens auth.IngestTokenStore,
 	promWriteAuthMode string,
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
 	promWriteMetrics *PromWriteMetrics,
+	// usageStore is the W1 metering seam. Never nil — OSS passes the no-op,
+	// EE passes a Postgres-backed impl. Call sites (e.g. prom_write accepted
+	// samples) record billable usage through it unconditionally.
+	usageStore usage.UsageStore,
 	// settingsRuntime is the BoltDB-first config resolver introduced by
 	// spec #09. Optional — nil when auth/persistence is disabled (the
 	// /settings/* admin endpoints simply 503 in that mode, and the
@@ -89,10 +95,12 @@ func NewRouter(
 		integrations:         integrationRegistry,
 		agentAuthEnforcement: agentAuthEnforcement,
 		tenantsStore:         tenantsStore,
+		ingestTokens:         ingestTokens,
 		promWriteAuthMode:    promWriteAuthMode,
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
 		promWriteMetrics:     promWriteMetrics,
+		usage:                usageStore,
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
 	}
@@ -179,6 +187,21 @@ func NewRouter(
 				r.Put("/{id}", authHandlers.UpdateUser)
 				r.Put("/{id}/password", authHandlers.ResetPassword)
 				r.Delete("/{id}", authHandlers.DeleteUser)
+			})
+
+			// Teams — read-only view of the org → team → user hierarchy.
+			// OSS serves the single default team; POST is gated 409
+			// requires_ee. List/detail are open to any authenticated user
+			// (their own team); the member list is admin-only, matching the
+			// sensitivity of /users.
+			r.Route("/teams", func(r chi.Router) {
+				r.Get("/", authHandlers.ListTeams)
+				r.Get("/{id}", authHandlers.GetTeam)
+				r.Post("/", authHandlers.CreateTeam)
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/{id}/members", authHandlers.ListTeamMembers)
+				})
 			})
 
 			// Cluster management — always available, no active connector required

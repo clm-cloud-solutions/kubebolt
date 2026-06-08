@@ -21,6 +21,10 @@ import (
 type AuthenticatorOptions struct {
 	TenantsStore *auth.TenantsStore
 
+	// IngestTokenStore validates the long-lived "kb_" ingest tokens (these
+	// live in their own store now, not inlined in the tenant record).
+	IngestTokenStore auth.IngestTokenStore
+
 	// KubeClient enables TokenReview mode. Pass the in-cluster client
 	// when KubeBolt runs inside the same cluster as the agents. Nil
 	// means TokenReview is unavailable — only BearerIngestAuth is built.
@@ -83,6 +87,9 @@ func BuildAuthenticator(ctx context.Context, opts AuthenticatorOptions) (*Authen
 	if opts.TenantsStore == nil {
 		return nil, errors.New("authenticator factory: TenantsStore is required")
 	}
+	if opts.IngestTokenStore == nil {
+		return nil, errors.New("authenticator factory: IngestTokenStore is required")
+	}
 	if opts.BearerCacheTTL == 0 {
 		opts.BearerCacheTTL = 5 * time.Minute
 	}
@@ -93,7 +100,7 @@ func BuildAuthenticator(ctx context.Context, opts AuthenticatorOptions) (*Authen
 		opts.TokenReviewAudience = "kubebolt-backend"
 	}
 
-	bearer := auth.NewBearerIngestAuth(opts.TenantsStore, opts.BearerCacheTTL)
+	bearer := auth.NewBearerIngestAuth(opts.IngestTokenStore, opts.TenantsStore, opts.BearerCacheTTL)
 	bundle := &AuthenticatorBundle{BearerIngest: bearer}
 	authers := []auth.AgentAuthenticator{bearer}
 	slog.Info("agent auth: BearerIngest mode enabled",

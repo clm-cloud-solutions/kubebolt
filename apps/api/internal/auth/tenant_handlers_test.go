@@ -13,6 +13,16 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+// withMultiTenant sets the MultiTenantEnabled seam for the duration of a test
+// and restores the prior value on cleanup. Package tests are sequential, so the
+// global flip is safe.
+func withMultiTenant(t *testing.T, v bool) {
+	t.Helper()
+	prev := MultiTenantEnabled
+	MultiTenantEnabled = v
+	t.Cleanup(func() { MultiTenantEnabled = prev })
+}
+
 // mockInvalidator counts InvalidateCache invocations so tests can pin
 // the contract: every mutating endpoint must trigger a cache flush.
 type mockInvalidator struct{ calls atomic.Int32 }
@@ -21,10 +31,20 @@ func (m *mockInvalidator) InvalidateCache() { m.calls.Add(1) }
 
 func newTestHandlers(t *testing.T) (*TenantHandlers, *mockInvalidator) {
 	t.Helper()
+	// These handler tests exercise the multi-tenant MANAGEMENT path (create /
+	// delete tenants + manage their tokens/limits) — the behavior EE unlocks.
+	// Enable the seam for the duration so the OSS 409 guardrail doesn't block
+	// the setup; the dedicated guardrail tests below assert the OSS-default
+	// (seam off) behavior explicitly.
+	withMultiTenant(t, true)
 	store := newTestStore(t)
 	ts, err := NewTenantsStore(store.DB())
 	if err != nil {
 		t.Fatalf("NewTenantsStore: %v", err)
+	}
+	its, err := NewIngestTokenStore(store.DB())
+	if err != nil {
+		t.Fatalf("NewIngestTokenStore: %v", err)
 	}
 	inv := &mockInvalidator{}
 	// Synthetic defaults distinct from real production values so tests
@@ -34,7 +54,7 @@ func newTestHandlers(t *testing.T) (*TenantHandlers, *mockInvalidator) {
 		WriteBurstSamples:  10_000,
 		MaxActiveSeries:    100_000,
 	}
-	return NewTenantHandlers(ts, defaults, inv), inv
+	return NewTenantHandlers(ts, its, defaults, inv), inv
 }
 
 // withAdminUser fakes a chi-routed request as an authenticated admin.
@@ -525,5 +545,42 @@ func TestHandlers_GetTenantLimits_NotFound(t *testing.T) {
 	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/admin/tenants/nonexistent-id/limits", nil))
 	if rr.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d body=%s", rr.Code, rr.Body)
+	}
+}
+
+// ─── OSS multi-tenant guardrails (MultiTenantEnabled seam off) ─────────
+
+func TestHandlers_CreateTenant_OSSGuardrailRequiresEE(t *testing.T) {
+	h, _ := newTestHandlers(t) // newTestHandlers turns the seam ON…
+	withMultiTenant(t, false)  // …override to the OSS default for this test.
+	srv := mountAdmin(t, h)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/admin/tenants",
+		strings.NewReader(`{"name":"second-org","plan":"team"}`)))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("OSS CreateTenant should 409 requires_ee, got %d body=%s", rr.Code, rr.Body)
+	}
+	var body map[string]string
+	decodeJSON(t, rr.Body.Bytes(), &body)
+	if body["code"] != ErrCodeRequiresEE {
+		t.Errorf("expected code %q, got %q", ErrCodeRequiresEE, body["code"])
+	}
+}
+
+func TestHandlers_DeleteTenant_OSSGuardrailRequiresEE(t *testing.T) {
+	h, _ := newTestHandlers(t)
+	withMultiTenant(t, false)
+	srv := mountAdmin(t, h)
+
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/admin/tenants/any-id", nil))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("OSS DeleteTenant should 409 requires_ee, got %d body=%s", rr.Code, rr.Body)
+	}
+	var body map[string]string
+	decodeJSON(t, rr.Body.Bytes(), &body)
+	if body["code"] != ErrCodeRequiresEE {
+		t.Errorf("expected code %q, got %q", ErrCodeRequiresEE, body["code"])
 	}
 }

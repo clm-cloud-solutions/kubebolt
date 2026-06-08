@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -64,7 +65,31 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Enroll the new user in the default team so the org → team → user
+	// hierarchy stays materialized (every user is a real member, not just an
+	// implicit org-role holder). team_role "" = inherit the org role. Best
+	// effort: a membership write failure must not fail user creation — the
+	// boot backfill re-ensures it on next start. nil-guarded for the
+	// auth-disabled path where the team context isn't wired.
+	h.enrollInDefaultTeam(user.ID)
+
 	respondJSON(w, http.StatusCreated, user.ToResponse())
+}
+
+// enrollInDefaultTeam adds a user to the OSS default team (idempotent). No-op
+// when the team context isn't wired. team_role is "" — the user's access is
+// their org role; OSS teams never elevate.
+func (h *Handlers) enrollInDefaultTeam(userID string) {
+	if h.teams == nil || h.defaultTeamID == "" {
+		return
+	}
+	if _, err := h.teams.AddMember(h.defaultTeamID, userID, ""); err != nil {
+		slog.Warn("could not enroll user in default team",
+			slog.String("user_id", userID),
+			slog.String("team_id", h.defaultTeamID),
+			slog.String("error", err.Error()),
+		)
+	}
 }
 
 // --- Get user ---
@@ -198,6 +223,18 @@ func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.DeleteUser(id); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete user")
 		return
+	}
+
+	// Drop the user's default-team membership so no orphan membership lingers.
+	// Best effort + nil-guarded (auth-disabled path).
+	if h.teams != nil && h.defaultTeamID != "" {
+		if err := h.teams.RemoveMember(h.defaultTeamID, id); err != nil {
+			slog.Warn("could not remove deleted user's team membership",
+				slog.String("user_id", id),
+				slog.String("team_id", h.defaultTeamID),
+				slog.String("error", err.Error()),
+			)
+		}
 	}
 
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
