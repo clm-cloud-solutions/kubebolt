@@ -23,14 +23,11 @@ import { ClustersPage } from '@/pages/ClustersPage'
 import { ApplicationsPage } from '@/pages/ApplicationsPage'
 import { HelmReleaseDetailPage } from '@/pages/HelmReleaseDetailPage'
 import { LoginPage } from '@/pages/LoginPage'
-import { UsersPage } from '@/pages/admin/UsersPage'
-import { AgentTokensPage } from '@/pages/admin/AgentTokensPage'
 import { APITokensPage } from '@/pages/admin/APITokensPage'
-import { CopilotUsagePage } from '@/pages/admin/CopilotUsagePage'
-import { IngestActivityPage } from '@/pages/admin/IngestActivityPage'
-import { IntegrationsPage } from '@/pages/admin/IntegrationsPage'
-import { SettingsPage as AdminSettingsPage } from '@/pages/admin/SettingsPage'
-import { AdminPlaceholderPage } from '@/pages/admin/AdminPlaceholderPage'
+import { AccessHub } from '@/pages/admin/AccessHub'
+import { AgentsHub } from '@/pages/admin/AgentsHub'
+import { AIHub } from '@/pages/admin/AIHub'
+import { SystemHub } from '@/pages/admin/SystemHub'
 import { CopilotProvider } from '@/contexts/CopilotContext'
 
 const queryClient = new QueryClient({
@@ -132,16 +129,15 @@ export default function App() {
               <Route path="/events" element={<EventsPage />} />
               <Route path="/rbac" element={<RBACPage />} />
 
-              {/* Admin routes */}
-              <Route path="/admin/settings" element={<RequireRole role="admin"><AdminSettingsPage /></RequireRole>} />
-              <Route path="/admin/users" element={<RequireRole role="admin"><UsersPage /></RequireRole>} />
-              <Route path="/admin/agent-tokens" element={<RequireRole role="admin"><AgentTokensPage /></RequireRole>} />
-              <Route path="/admin/copilot-usage" element={<RequireRole role="admin"><CopilotUsagePage /></RequireRole>} />
-              <Route path="/admin/ingest-activity" element={<RequireRole role="admin"><IngestActivityPage /></RequireRole>} />
-              <Route path="/admin/integrations" element={<RequireRole role="admin"><IntegrationsPage /></RequireRole>} />
-              <Route path="/admin/teams" element={<RequireRole role="admin"><AdminPlaceholderPage title="Teams" description="Group users into teams and assign roles at team level." /></RequireRole>} />
+              {/* Admin — grouped into domain hubs (Access / Agents & Ingest /
+                  AI / System) so the area reads by concern instead of a flat
+                  list. Each hub is a tabbed shell; the active tab is URL-driven
+                  via ?tab=. API Tokens stays standalone. */}
+              <Route path="/admin/access" element={<RequireRole role="admin"><AccessHub /></RequireRole>} />
+              <Route path="/admin/agents" element={<RequireRole role="admin"><AgentsHub /></RequireRole>} />
+              <Route path="/admin/ai" element={<RequireRole role="admin"><AIHub /></RequireRole>} />
+              <Route path="/admin/system" element={<RequireRole role="admin"><SystemHub /></RequireRole>} />
               <Route path="/admin/api-tokens" element={<RequireRole role="admin"><APITokensPage /></RequireRole>} />
-              <Route path="/admin/authentication" element={<RequireRole role="admin"><AdminPlaceholderPage title="Authentication" description="Configure single sign-on providers (GitHub, Google, Azure AD, OIDC)." /></RequireRole>} />
             </Route>
           </Routes>
         </CopilotProvider>

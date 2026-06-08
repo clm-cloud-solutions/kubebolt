@@ -52,16 +52,12 @@ const ROUTE_TITLES: Record<string, string> = {
   '/rbac':            'RBAC',
   '/settings':        'Settings',
 
-  // Admin
-  '/admin/users':           'Users',
-  '/admin/agent-tokens':    'Agent Tokens',
-  '/admin/ingest-limits':   'Ingest Limits',
-  '/admin/notifications':   'Notifications',
-  '/admin/copilot-usage':   'Copilot Usage',
-  '/admin/integrations':    'Integrations',
-  '/admin/teams':           'Teams',
-  '/admin/service-accounts':'Service Accounts',
-  '/admin/authentication':  'Authentication',
+  // Admin — grouped domain hubs
+  '/admin/access':    'Access',
+  '/admin/agents':    'Agents & Ingest',
+  '/admin/ai':        'AI (Kobi)',
+  '/admin/system':    'System',
+  '/admin/api-tokens': 'API Tokens',
 
   // Auth
   '/login': 'Sign in',

@@ -2921,7 +2921,7 @@ function AgentTrendsCTA() {
           )}
         </div>
         <Link
-          to="/admin/integrations"
+          to="/admin/agents?tab=integrations"
           onClick={(e) => e.stopPropagation()}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-kb-accent text-white text-xs font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all shrink-0"
         >

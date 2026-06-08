@@ -111,7 +111,7 @@ export function classifyMutationError(error: unknown): MutationErrorVariant {
         body:
           `The agent's ServiceAccount can't ${verb} ${resource}. To enable write operations through the agent, ` +
           `open the KubeBolt Agent integration and switch the Permission tier to "Cluster-wide read + write".`,
-        cta: { to: '/admin/integrations', label: 'Open Integrations' },
+        cta: { to: '/admin/agents?tab=integrations', label: 'Open Integrations' },
         detail: typeof error.message === 'string' ? error.message : undefined,
       }
     }
