@@ -40,6 +40,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -284,6 +285,12 @@ func main() {
 	// Durable mutation-audit store (Sprint 1) — same BoltDB-only gating.
 	// nil → mutations are slog-audited only (pre-Sprint-1 behavior).
 	var actionAuditStore audit.Store
+
+	// W1 metering seam. OSS is free + unmetered, so this is the no-op impl;
+	// EE injects a Postgres-backed UsageStore here. Constructed unconditionally
+	// (no DB needed) so the handlers always hold a non-nil store and call sites
+	// record unconditionally. EE's wiring swaps this single assignment.
+	var usageStore usage.UsageStore = usage.NewNoopUsageStore()
 
 	// Fleet-wide Prom remote_write limit defaults (Phase 3 Day 1-3).
 	// Loaded once at startup from KUBEBOLT_PROM_WRITE_DEFAULT_* env
@@ -780,7 +787,7 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel

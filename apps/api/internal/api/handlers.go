@@ -20,6 +20,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -96,6 +97,11 @@ type handlers struct {
 	// disabled — increments become no-ops (the metrics methods
 	// nil-guard). Test fixtures pass nil; production wires it.
 	promWriteMetrics *PromWriteMetrics
+	// usage is the W1 metering seam — durable, per-tenant billable usage
+	// (samples ingested, etc.). OSS holds the no-op; EE injects a
+	// Postgres-backed impl. May be nil in raw test fixtures, so call sites
+	// nil-guard before recording.
+	usage usage.UsageStore
 	// agentRegistry is the in-memory directory of currently-connected
 	// agents. Spec #09 V2 Item 5b — the /admin/ingest-activity panel's
 	// heartbeat list reads this directly via a new admin endpoint

@@ -17,6 +17,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -47,6 +48,10 @@ func NewRouter(
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
 	promWriteMetrics *PromWriteMetrics,
+	// usageStore is the W1 metering seam. Never nil — OSS passes the no-op,
+	// EE passes a Postgres-backed impl. Call sites (e.g. prom_write accepted
+	// samples) record billable usage through it unconditionally.
+	usageStore usage.UsageStore,
 	// settingsRuntime is the BoltDB-first config resolver introduced by
 	// spec #09. Optional — nil when auth/persistence is disabled (the
 	// /settings/* admin endpoints simply 503 in that mode, and the
@@ -95,6 +100,7 @@ func NewRouter(
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
 		promWriteMetrics:     promWriteMetrics,
+		usage:                usageStore,
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
 	}

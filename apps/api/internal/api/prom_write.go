@@ -17,6 +17,7 @@ import (
 	"github.com/golang/snappy"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
 // promWriteEnabled returns true when the operator opted into the
@@ -520,6 +521,20 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	// client preserves the granular error.
 	h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusAccepted)
 	h.promWriteMetrics.RecordAcceptedSamples(tenantID, sampleCount, len(body))
+
+	// W1 metering: record the billable samples through the usage seam. OSS's
+	// no-op makes this free; EE's impl buffers it toward the monthly roll-up.
+	// Distinct from the Prometheus counter above (ephemeral observability) —
+	// this is the durable, invoice-reconciling signal. nil-guarded for raw
+	// test fixtures that build handlers without the seam.
+	if h.usage != nil && sampleCount > 0 {
+		_ = h.usage.Record(r.Context(), usage.UsageRecord{
+			TenantID: tenantID,
+			Metric:   usage.MetricSamplesIngested,
+			Quantity: int64(sampleCount),
+			At:       time.Now(),
+		})
+	}
 
 	// Forward the upstream response verbatim. vminsert returns 204 on
 	// success; on 4xx it includes a small text body explaining the
