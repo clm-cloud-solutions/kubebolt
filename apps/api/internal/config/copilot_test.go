@@ -19,6 +19,7 @@ func clearCopilotEnv(t *testing.T) {
 		"KUBEBOLT_AI_FALLBACK_PROVIDER", "KUBEBOLT_AI_FALLBACK_API_KEY",
 		"KUBEBOLT_AI_FALLBACK_MODEL", "KUBEBOLT_AI_FALLBACK_BASE_URL",
 		"KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT",
+		"KUBEBOLT_AI_MAX_ROUNDS",
 	}
 	for _, v := range vars {
 		t.Setenv(v, "") // t.Setenv automatically restores on test end
@@ -53,6 +54,38 @@ func TestLoadCopilotConfig_Defaults(t *testing.T) {
 	}
 	if cfg.ActionProgressTimeout != DefaultActionProgressTimeout {
 		t.Errorf("default action timeout = %v, want %v", cfg.ActionProgressTimeout, DefaultActionProgressTimeout)
+	}
+	if cfg.MaxRounds != DefaultMaxRounds {
+		t.Errorf("default MaxRounds = %d, want %d", cfg.MaxRounds, DefaultMaxRounds)
+	}
+}
+
+func TestLoadCopilotConfig_MaxRounds(t *testing.T) {
+	clearCopilotEnv(t)
+	t.Setenv("KUBEBOLT_AI_API_KEY", "sk")
+
+	// In-range override applied verbatim.
+	t.Setenv("KUBEBOLT_AI_MAX_ROUNDS", "30")
+	if got := LoadCopilotConfig().MaxRounds; got != 30 {
+		t.Errorf("override = %d, want 30", got)
+	}
+
+	// Above the ceiling clamps down to MaxMaxRounds.
+	t.Setenv("KUBEBOLT_AI_MAX_ROUNDS", "999")
+	if got := LoadCopilotConfig().MaxRounds; got != MaxMaxRounds {
+		t.Errorf("over-ceiling = %d, want clamp to %d", got, MaxMaxRounds)
+	}
+
+	// Below the floor clamps up to MinMaxRounds.
+	t.Setenv("KUBEBOLT_AI_MAX_ROUNDS", "1")
+	if got := LoadCopilotConfig().MaxRounds; got != MinMaxRounds {
+		t.Errorf("sub-floor = %d, want clamp to %d", got, MinMaxRounds)
+	}
+
+	// Unparseable is ignored — keeps the default.
+	t.Setenv("KUBEBOLT_AI_MAX_ROUNDS", "not-a-number")
+	if got := LoadCopilotConfig().MaxRounds; got != DefaultMaxRounds {
+		t.Errorf("bad value should fall back to default; got %d", got)
 	}
 }
 

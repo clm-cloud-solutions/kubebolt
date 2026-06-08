@@ -18,6 +18,23 @@ const (
 	MinActionProgressTimeout = 10 * time.Second
 )
 
+// Tool-call round bounds. A "round" is one model turn that calls ≥1 tool
+// (several parallel tool calls count as ONE). The multi-step loop runs until
+// the model answers without tools or it hits MaxRounds. Configurable via
+// KUBEBOLT_AI_MAX_ROUNDS so a small, sequential model (e.g. Haiku, which
+// calls tools one at a time) can be given more headroom to converge on a
+// deep RCA than a model that batches calls in parallel.
+const (
+	DefaultMaxRounds = 20
+	// MinMaxRounds keeps at least a couple of tool turns available — a value
+	// of 0/1 would make Kobi useless for anything needing data.
+	MinMaxRounds = 2
+	// MaxMaxRounds caps cost/latency: each round is a full provider call plus
+	// tool execution, so an unbounded ceiling lets one runaway session burn
+	// tokens. 40 is generous headroom over the 20 default.
+	MaxMaxRounds = 40
+)
+
 // ProviderConfig holds settings for a single LLM provider (primary or fallback).
 type ProviderConfig struct {
 	Provider string // "anthropic" | "openai" | "custom"
@@ -63,6 +80,13 @@ type CopilotConfig struct {
 	// for convergence before declaring it stalled and auto-investigating.
 	// Default DefaultActionProgressTimeout; KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT.
 	ActionProgressTimeout time.Duration
+
+	// MaxRounds bounds the multi-step tool-calling loop (one model turn that
+	// calls ≥1 tool = one round). On exhaustion the handler runs one final
+	// tools-free turn that summarizes what was found instead of erroring out.
+	// Default DefaultMaxRounds; KUBEBOLT_AI_MAX_ROUNDS, clamped to
+	// [MinMaxRounds, MaxMaxRounds].
+	MaxRounds int
 }
 
 // LoadCopilotConfig reads copilot configuration from KUBEBOLT_AI_* env vars.
@@ -82,6 +106,7 @@ func LoadCopilotConfig() CopilotConfig {
 		ActionsEnabled:            true,
 		DestructiveActionsEnabled: true,
 		ActionProgressTimeout:     DefaultActionProgressTimeout,
+		MaxRounds:                 DefaultMaxRounds,
 	}
 	if v := os.Getenv("KUBEBOLT_AI_ACTIONS_ENABLED"); v == "false" || v == "0" {
 		cfg.ActionsEnabled = false
@@ -123,6 +148,11 @@ func LoadCopilotConfig() CopilotConfig {
 			cfg.ActionProgressTimeout = d
 		}
 	}
+	if v := os.Getenv("KUBEBOLT_AI_MAX_ROUNDS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.MaxRounds = ClampMaxRounds(n)
+		}
+	}
 
 	// Optional fallback — only enabled when its API key is present
 	if fbKey := os.Getenv("KUBEBOLT_AI_FALLBACK_API_KEY"); fbKey != "" {
@@ -143,4 +173,18 @@ func getEnvOr(key, def string) string {
 		return v
 	}
 	return def
+}
+
+// ClampMaxRounds bounds a configured round limit to [MinMaxRounds, MaxMaxRounds]
+// so neither a too-small value (Kobi can't fetch data) nor a runaway ceiling
+// (cost/latency blowout) slips through. Shared by env parsing and the
+// settings-override merge so both honor the same bounds.
+func ClampMaxRounds(n int) int {
+	if n < MinMaxRounds {
+		return MinMaxRounds
+	}
+	if n > MaxMaxRounds {
+		return MaxMaxRounds
+	}
+	return n
 }

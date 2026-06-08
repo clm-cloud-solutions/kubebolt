@@ -43,6 +43,9 @@ type StoredCopilotSettings struct {
 	// UI and public /copilot/config speak). Applied onto the env baseline's
 	// time.Duration and floored at config.MinActionProgressTimeout.
 	ActionProgressTimeoutMs *int `json:"actionProgressTimeoutMs,omitempty"`
+	// Max tool-call rounds override. Applied onto the env baseline and
+	// clamped to [config.MinMaxRounds, config.MaxMaxRounds].
+	MaxRounds *int `json:"maxRounds,omitempty"`
 }
 
 // StoredProviderSettings mirrors config.ProviderConfig with optional
@@ -173,6 +176,9 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 			ms = config.MinActionProgressTimeout
 		}
 		cfg.ActionProgressTimeout = ms
+	}
+	if stored.MaxRounds != nil {
+		cfg.MaxRounds = config.ClampMaxRounds(*stored.MaxRounds)
 	}
 }
 
@@ -359,6 +365,8 @@ type MaskedEffectiveCopilot struct {
 	DestructiveActionsEnabled bool `json:"destructiveActionsEnabled"`
 	// Action-progress timeout in effect, milliseconds (UI converts to seconds).
 	ActionProgressTimeoutMs int `json:"actionProgressTimeoutMs,omitempty"`
+	// Max tool-call rounds in effect.
+	MaxRounds int `json:"maxRounds,omitempty"`
 	// Auto-compact tunables. Surfaced in the API so the UI can display
 	// "what's in effect" without a second round-trip to the env-baseline
 	// endpoint. Nil pointers when the field is unset; the resolver
@@ -398,6 +406,7 @@ type MaskedStoredOtherCopilot struct {
 	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
 	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
 	ActionProgressTimeoutMs   *int  `json:"actionProgressTimeoutMs,omitempty"`
+	MaxRounds                 *int  `json:"maxRounds,omitempty"`
 }
 
 // RenderMaskedCopilot builds the GET response from a stored record + env
@@ -423,6 +432,7 @@ func (r *Runtime) RenderMaskedCopilot() (MaskedCopilot, error) {
 			ActionsEnabled:            effective.ActionsEnabled,
 			DestructiveActionsEnabled: effective.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   int(effective.ActionProgressTimeout.Milliseconds()),
+			MaxRounds:                 effective.MaxRounds,
 			SessionBudgetTokens:  effective.SessionBudgetTokens,
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 			CompactModel:         effective.CompactModel,
@@ -476,7 +486,7 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 		s.AutoCompactThreshold != nil || s.CompactModel != nil ||
 		s.CompactPreserveTurns != nil || s.ShowToolCalls != nil ||
 		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil ||
-		s.ActionProgressTimeoutMs != nil {
+		s.ActionProgressTimeoutMs != nil || s.MaxRounds != nil {
 		out.OtherFields = &MaskedStoredOtherCopilot{
 			MaxTokens:            s.MaxTokens,
 			AutoCompact:          s.AutoCompact,
@@ -488,6 +498,7 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 			ActionsEnabled:            s.ActionsEnabled,
 			DestructiveActionsEnabled: s.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   s.ActionProgressTimeoutMs,
+			MaxRounds:                 s.MaxRounds,
 		}
 	}
 	return out
@@ -557,6 +568,12 @@ func validateCopilotPatch(p *StoredCopilotSettings) error {
 	// and clamped to config.MinActionProgressTimeout in applyStoredCopilot.
 	if p.ActionProgressTimeoutMs != nil && *p.ActionProgressTimeoutMs <= 0 {
 		return &ValidationError{Field: "actionProgressTimeoutMs", Message: "must be > 0"}
+	}
+	// Out-of-range values are clamped in applyStoredCopilot; reject only the
+	// nonsensical (<= 0) so the UI surfaces a clear error rather than silently
+	// flooring a typo'd "0" up to MinMaxRounds.
+	if p.MaxRounds != nil && *p.MaxRounds <= 0 {
+		return &ValidationError{Field: "maxRounds", Message: "must be > 0"}
 	}
 	return nil
 }
@@ -640,6 +657,9 @@ func mergeCopilot(base, patch StoredCopilotSettings) StoredCopilotSettings {
 	}
 	if patch.ActionProgressTimeoutMs != nil {
 		out.ActionProgressTimeoutMs = patch.ActionProgressTimeoutMs
+	}
+	if patch.MaxRounds != nil {
+		out.MaxRounds = patch.MaxRounds
 	}
 	return out
 }
