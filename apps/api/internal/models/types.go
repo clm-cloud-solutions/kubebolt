@@ -4,35 +4,37 @@ import "time"
 
 // ClusterOverview is the top-level summary returned by GET /cluster/overview
 type ClusterOverview struct {
-	ClusterName        string              `json:"clusterName"`
-	ClusterUID         string              `json:"clusterUID,omitempty"` // kube-system namespace UID; used by the UI to scope metric queries
-	KubernetesVersion  string              `json:"kubernetesVersion"`
-	Platform           string              `json:"platform"`
-	Nodes              ResourceCount       `json:"nodes"`
-	Pods               ResourceCount       `json:"pods"`
-	Namespaces         ResourceCount       `json:"namespaces"`
-	Services           ResourceCount       `json:"services"`
-	Deployments        ResourceCount       `json:"deployments"`
-	StatefulSets       ResourceCount       `json:"statefulSets"`
-	DaemonSets         ResourceCount       `json:"daemonSets"`
-	Jobs               ResourceCount       `json:"jobs"`
-	CronJobs           ResourceCount       `json:"cronJobs"`
-	Ingresses          ResourceCount       `json:"ingresses"`
-	NetworkPolicies    ResourceCount       `json:"networkPolicies"`
-	PodDisruptionBudgets ResourceCount     `json:"podDisruptionBudgets"`
+	ClusterName          string        `json:"clusterName"`
+	ClusterUID           string        `json:"clusterUID,omitempty"` // kube-system namespace UID; used by the UI to scope metric queries
+	KubernetesVersion    string        `json:"kubernetesVersion"`
+	Platform             string        `json:"platform"`
+	Nodes                ResourceCount `json:"nodes"`
+	Pods                 ResourceCount `json:"pods"`
+	Namespaces           ResourceCount `json:"namespaces"`
+	Services             ResourceCount `json:"services"`
+	Deployments          ResourceCount `json:"deployments"`
+	StatefulSets         ResourceCount `json:"statefulSets"`
+	DaemonSets           ResourceCount `json:"daemonSets"`
+	Jobs                 ResourceCount `json:"jobs"`
+	CronJobs             ResourceCount `json:"cronJobs"`
+	Ingresses            ResourceCount `json:"ingresses"`
+	NetworkPolicies      ResourceCount `json:"networkPolicies"`
+	PodDisruptionBudgets ResourceCount `json:"podDisruptionBudgets"`
 	// Gateways / HTTPRoutes — present when Gateway API CRDs are
 	// installed. Zero on clusters that haven't installed the CRDs;
 	// the sidebar hides the counter chip when the value is zero
 	// (matches the existing behavior for other declarative kinds).
-	Gateways           ResourceCount       `json:"gateways"`
-	HTTPRoutes         ResourceCount       `json:"httpRoutes"`
+	Gateways   ResourceCount `json:"gateways"`
+	HTTPRoutes ResourceCount `json:"httpRoutes"`
 	// ServiceAccounts (core) + the optional CRDs (cert-manager / ArgoCD /
 	// VPA). Same zero-on-absent semantics as Gateways — the sidebar shows
 	// the counter once the type is present.
-	ServiceAccounts ResourceCount `json:"serviceAccounts"`
-	Certificates    ResourceCount `json:"certificates"`
-	ArgoCDApps      ResourceCount `json:"argocdApps"`
-	VPAs            ResourceCount `json:"vpas"`
+	ServiceAccounts                  ResourceCount `json:"serviceAccounts"`
+	Certificates                     ResourceCount `json:"certificates"`
+	ArgoCDApps                       ResourceCount `json:"argocdApps"`
+	VPAs                             ResourceCount `json:"vpas"`
+	CiliumNetworkPolicies            ResourceCount `json:"ciliumNetworkPolicies"`
+	CiliumClusterwideNetworkPolicies ResourceCount `json:"ciliumClusterwideNetworkPolicies"`
 	// HelmReleases — distinct Helm releases (counted from the owner=helm
 	// Secret labels, no payload decode). Powers the Applications counter.
 	HelmReleases ResourceCount `json:"helmReleases"`
@@ -153,8 +155,8 @@ type DeployEvent struct {
 type MetricPoint struct {
 	Timestamp time.Time `json:"timestamp"`
 	Resource  string    `json:"resource"`
-	CPUUsage  int64     `json:"cpuUsage"`   // millicores
-	MemUsage  int64     `json:"memUsage"`   // bytes
+	CPUUsage  int64     `json:"cpuUsage"` // millicores
+	MemUsage  int64     `json:"memUsage"` // bytes
 	CPULimit  int64     `json:"cpuLimit,omitempty"`
 	MemLimit  int64     `json:"memLimit,omitempty"`
 }

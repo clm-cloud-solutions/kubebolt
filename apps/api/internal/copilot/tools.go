@@ -40,7 +40,7 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "list_resources",
-			Description: "List Kubernetes resources by type with optional filtering. Types: pods, deployments, statefulsets, daemonsets, jobs, cronjobs, services, ingresses, gateways, httproutes, endpoints, pvcs, pvs, storageclasses, configmaps, secrets, hpas, nodes, namespaces, events",
+			Description: "List Kubernetes resources by type with optional filtering. Types: pods, deployments, statefulsets, daemonsets, jobs, cronjobs, services, ingresses, networkpolicies, ciliumnetworkpolicies, ciliumclusterwidenetworkpolicies, gateways, httproutes, endpoints, pvcs, pvs, storageclasses, configmaps, secrets, hpas, nodes, namespaces, events. Cilium policies (cilium.io/v2) carry the L3-L7 rules a standard NetworkPolicy can't; use them to confirm whether a deny rule actually blocks a flow.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
