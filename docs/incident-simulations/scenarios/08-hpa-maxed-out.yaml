@@ -1,0 +1,71 @@
+# Scenario 08 — HPA pinned at maxReplicas
+#
+# Symptom    : Each replica burns ~100% of its requested CPU, so the HPA scales
+#              up until it hits maxReplicas (2) and stays there — sustained
+#              pressure with no headroom left to absorb a spike.
+# Insight    : hpaMaxedOutRule (HPA at max with sustained desired > current)
+# Kobi action: propose_patch_hpa — RAISE maxReplicas. Lowering minReplicas is
+#              the wrong direction for a max-pinned HPA.
+#
+# Requires   : metrics-server (HPA reads CPU from metrics.k8s.io). It ships with
+#              most managed clusters; on kind install it manually if absent.
+#
+# Try in Kobi: "the hpa-victim autoscaler is stuck at max, what should I do?"
+#
+# Clean up   : kubectl delete -f 08-hpa-maxed-out.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hpa-victim
+  namespace: kobi-incident-lab
+  labels:
+    app: hpa-victim
+    incident: hpa-maxed-out
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hpa-victim
+  template:
+    metadata:
+      labels:
+        app: hpa-victim
+    spec:
+      containers:
+        - name: app
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "[hpa-victim] burning ~1 core so CPU sits at 100% of request..."
+              while true; do :; done
+          resources:
+            requests:
+              cpu: 50m
+              memory: 16Mi
+            limits:
+              cpu: 200m
+              memory: 64Mi
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: hpa-victim
+  namespace: kobi-incident-lab
+  labels:
+    app: hpa-victim
+    incident: hpa-maxed-out
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: hpa-victim
+  minReplicas: 1
+  maxReplicas: 2
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 50

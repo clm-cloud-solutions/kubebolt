@@ -1,0 +1,11 @@
+# Dedicated namespace for the single-workload Kobi incident lab.
+#
+# Everything in scenarios/ lands here so you can tear the whole lab
+# down with a single `kubectl delete ns kobi-incident-lab`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kobi-incident-lab
+  labels:
+    purpose: kobi-incident-demos
+    app.kubernetes.io/part-of: kobi-incident-lab

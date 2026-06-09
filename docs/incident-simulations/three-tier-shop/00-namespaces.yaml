@@ -1,0 +1,33 @@
+# Three-tier "KubeShop" demo — namespaces, one per tier.
+#
+#   shop-frontend  → the storefront the user hits (shop-web)
+#   shop-backend   → the APIs (orders-api, catalog-api)
+#   shop-data      → the data tier: a Service pointing at the EXTERNAL database
+#                    (a postgres container running outside the cluster)
+#
+# Splitting the tiers across namespaces is deliberate: it exercises Kobi's
+# cross-namespace topology + cascade reasoning, and lets NetworkPolicies gate
+# traffic between tiers (see 50-networkpolicies.yaml).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop-frontend
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+    tier: frontend
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop-backend
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+    tier: backend
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop-data
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+    tier: data

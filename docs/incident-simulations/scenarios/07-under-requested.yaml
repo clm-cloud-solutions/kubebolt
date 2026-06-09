@@ -1,0 +1,54 @@
+# Scenario 07 — Under-requested workload
+#
+# Symptom    : The container steadily uses ~150m CPU / ~80Mi memory but only
+#              REQUESTS 10m / 16Mi. The scheduler under-counts it, risking noisy-
+#              neighbor contention and bad bin-packing.
+# Insight    : resource-underrequest (request < 40% of observed usage)
+# Kobi action: propose_set_resources — raise REQUESTS to match steady-state
+#              usage. Kobi grounds the numbers in get_workload_metrics.
+#
+# Try in Kobi: "is under-sized requesting the right resources?"
+#
+# Clean up   : kubectl delete -f 07-under-requested.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: under-sized
+  namespace: kobi-incident-lab
+  labels:
+    app: under-sized
+    incident: under-requested
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: under-sized
+  template:
+    metadata:
+      labels:
+        app: under-sized
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              # Hold ~80 MiB resident and burn a steady fraction of a core so
+              # actual usage sits well above the tiny requests below.
+              import time
+              buf = bytearray(80 * 1024 * 1024)
+              for i in range(0, len(buf), 4096):
+                  buf[i] = 1
+              x = 0
+              while True:
+                  for _ in range(200000):
+                      x = (x * 1103515245 + 12345) & 0x7fffffff
+                  time.sleep(0.01)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi

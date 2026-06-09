@@ -1,0 +1,45 @@
+# Scenario 10 — Distroless pod, nothing to exec into
+#
+# Symptom    : The pod is running fine, but the image has NO shell and NO tools
+#              (pause is the minimal stand-in for a distroless app). When you
+#              need to poke at it — curl a dependency, list processes, check a
+#              socket — there's nothing to `kubectl exec` into.
+# Insight    : none (this is a triage workflow, not an alert)
+# Kobi action: propose_debug_pod — attach an ephemeral debug container
+#              (busybox/netshoot) sharing the pod's namespaces, so you get a
+#              shell and tools without rebuilding the image. The ephemeral
+#              container persists until the pod is recreated.
+#
+# Try in Kobi: "I need to debug inside no-shell-app but it has no shell"
+#
+# Clean up   : kubectl delete -f 10-distroless-debug.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: no-shell-app
+  namespace: kobi-incident-lab
+  labels:
+    app: no-shell-app
+    incident: distroless-debug
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: no-shell-app
+  template:
+    metadata:
+      labels:
+        app: no-shell-app
+    spec:
+      containers:
+        - name: app
+          # pause just sits there holding the pod sandbox — no shell, no tools,
+          # exactly the "distroless, can't exec" situation debug containers fix.
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

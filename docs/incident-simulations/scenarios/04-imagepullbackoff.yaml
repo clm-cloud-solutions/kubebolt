@@ -1,0 +1,43 @@
+# Scenario 04 — ImagePullBackOff
+#
+# Symptom    : Pod references a tag that does not exist in the registry, so the
+#              kubelet can never pull it → ErrImagePull → ImagePullBackOff. The
+#              pod never reaches Running.
+# Insight    : image-pull-backoff
+# Kobi action: propose_set_image — point the container at a real tag
+#              (e.g. nginx:1.27-alpine). If a known-good PRIOR revision existed,
+#              Kobi prefers propose_rollback_deployment (see scenario 05).
+#
+# Try in Kobi: "broken-image won't pull, fix the image"
+#
+# Clean up   : kubectl delete -f 04-imagepullbackoff.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: broken-image
+  namespace: kobi-incident-lab
+  labels:
+    app: broken-image
+    incident: image-pull-backoff
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: broken-image
+  template:
+    metadata:
+      labels:
+        app: broken-image
+    spec:
+      containers:
+        - name: app
+          image: nginx:does-not-exist-2099
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
