@@ -1,0 +1,270 @@
+# Backend tier — orders-api and catalog-api.
+#
+# Both run the SAME tiny Python HTTP server (no custom image — python:3.12-alpine
+# + a script from the ConfigMap). The server exposes:
+#   GET /        → 200, the "API response" (serves regardless, process-level)
+#   GET /livez   → 200 ALWAYS — liveness only proves the process is alive
+#   GET /healthz → opens a TCP socket to the database. 200 if it connects,
+#                  503 if it cannot. This is the dependency-validating readiness.
+#
+# Health model (the point of the demo):
+#   livenessProbe  → /livez   : never fails just because the DB is down, so a DB
+#                               outage does NOT trigger pointless pod restarts.
+#   readinessProbe → /healthz : fails the moment the DB is unreachable, so the
+#                               pod is pulled from its Service's endpoints and
+#                               stops receiving traffic. THIS is what cascades.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-server
+  namespace: shop-backend
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+data:
+  server.py: |
+    import os, socket, json, time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    DB_HOST = os.environ.get("DB_HOST", "shop-db.shop-data.svc.cluster.local")
+    DB_PORT = int(os.environ.get("DB_PORT", "5432"))
+    SERVICE = os.environ.get("SERVICE_NAME", "backend")
+
+    # Fault injection (set per-API via fault-api.sh, independent of the DB):
+    #   none    — healthy (default)
+    #   error   — pod stays Ready, but GET / returns 500 (buggy API, app-level 5xx)
+    #   unready — readiness fails even though the DB is fine → pod leaves endpoints
+    #   slow    — GET / sleeps FAULT_LATENCY_MS before responding (latency)
+    FAULT_MODE = os.environ.get("FAULT_MODE", "none")
+    FAULT_LATENCY_MS = int(os.environ.get("FAULT_LATENCY_MS", "3000"))
+
+    def log(level, msg):
+        print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [{SERVICE}] {level} {msg}", flush=True)
+
+    def db_ok():
+        try:
+            with socket.create_connection((DB_HOST, DB_PORT), timeout=2):
+                return True, None
+        except OSError as e:
+            return False, str(e)
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, code, payload):
+            body = json.dumps(payload).encode()
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client (probe / frontend) hung up early — not our problem
+
+        def do_GET(self):
+            start = time.time()
+            # Liveness: process-only, not logged (avoid probe spam).
+            if self.path == "/livez":
+                self._send(200, {"service": SERVICE, "live": True})
+                return
+            # Readiness: checks the DB. Logged ONLY when it fails, so a DB
+            # outage leaves a clear trail without flooding logs while healthy.
+            if self.path == "/healthz":
+                # Fault injection: force unready while the DB is fine — simulates a
+                # hung/failing API. The OTHER API staying Ready proves the DB is OK.
+                if FAULT_MODE == "unready":
+                    self._send(503, {"service": SERVICE, "ready": False,
+                                     "error": "fault-injected: unready"})
+                    log("WARN", "readiness failed: fault-injected (FAULT_MODE=unready)")
+                    return
+                ok, err = db_ok()
+                if ok:
+                    self._send(200, {"service": SERVICE, "ready": True,
+                                     "db": f"{DB_HOST}:{DB_PORT}"})
+                else:
+                    self._send(503, {"service": SERVICE, "ready": False,
+                                     "db": f"{DB_HOST}:{DB_PORT}",
+                                     "error": "cannot reach database"})
+                    log("WARN", f"readiness failed: cannot reach database "
+                                f"{DB_HOST}:{DB_PORT} ({err})")
+                return
+            # API request served to the frontend — logged on every call.
+            # Fault injection: app-level 5xx while the pod stays Ready (a buggy API,
+            # NOT an infra/DB problem — readiness is green, endpoints are present).
+            if FAULT_MODE == "error":
+                ms = int((time.time() - start) * 1000)
+                self._send(500, {"service": SERVICE, "path": self.path,
+                                 "error": "fault-injected: internal error"})
+                log("ERROR", f"GET {self.path} -> 500 fault-injected (FAULT_MODE=error) {ms}ms")
+                return
+            if FAULT_MODE == "slow":
+                time.sleep(FAULT_LATENCY_MS / 1000.0)
+            ok, err = db_ok()
+            ms = int((time.time() - start) * 1000)
+            if ok:
+                self._send(200, {"service": SERVICE, "path": self.path, "db": "ok"})
+                log("INFO", f"GET {self.path} -> 200 db=ok {ms}ms"
+                            + (" (FAULT_MODE=slow)" if FAULT_MODE == "slow" else ""))
+            else:
+                self._send(503, {"service": SERVICE, "path": self.path,
+                                 "error": "cannot reach database"})
+                log("ERROR", f"GET {self.path} -> 503 db=unreachable ({err}) {ms}ms")
+
+        def log_message(self, *args):
+            pass  # suppress BaseHTTPServer's default access log; we emit our own
+
+    log("INFO", f"listening on :8080, db target {DB_HOST}:{DB_PORT}"
+                + (f", FAULT_MODE={FAULT_MODE}" if FAULT_MODE != "none" else ""))
+    ThreadingHTTPServer(("0.0.0.0", 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: orders-api
+  namespace: shop-backend
+  labels:
+    app: orders-api
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: orders-api
+  template:
+    metadata:
+      labels:
+        app: orders-api
+        tier: backend
+    spec:
+      volumes:
+        - name: server
+          configMap:
+            name: backend-server
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "/app/server.py"]
+          env:
+            - name: SERVICE_NAME
+              value: orders-api
+            - name: DB_HOST
+              value: shop-db.shop-data.svc.cluster.local
+            - name: DB_PORT
+              value: "5432"
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: server
+              mountPath: /app
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: orders-api
+  namespace: shop-backend
+  labels:
+    app: orders-api
+    tier: backend
+spec:
+  selector:
+    app: orders-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: catalog-api
+  namespace: shop-backend
+  labels:
+    app: catalog-api
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: catalog-api
+  template:
+    metadata:
+      labels:
+        app: catalog-api
+        tier: backend
+    spec:
+      volumes:
+        - name: server
+          configMap:
+            name: backend-server
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "/app/server.py"]
+          env:
+            - name: SERVICE_NAME
+              value: catalog-api
+            - name: DB_HOST
+              value: shop-db.shop-data.svc.cluster.local
+            - name: DB_PORT
+              value: "5432"
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: server
+              mountPath: /app
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: catalog-api
+  namespace: shop-backend
+  labels:
+    app: catalog-api
+    tier: backend
+spec:
+  selector:
+    app: catalog-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

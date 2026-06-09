@@ -1,0 +1,51 @@
+# Scenario 01 — OOMKilled crash loop
+#
+# Symptom    : Python allocates 200 MiB of RSS under a 128 MiB memory limit.
+#              The kernel OOM-kills the container; it restarts and OOMs again.
+# Insight    : "OOMKilled" / memory pressure, frequent-restarts
+# Kobi action: propose_set_resources — raise the memory LIMIT. A plain restart
+#              is NOT a fix: the next pod OOMs on the same allocation.
+#
+# Try in Kobi: "oomy-killer in kobi-incident-lab keeps dying, fix it"
+#
+# Clean up   : kubectl delete -f 01-oomkilled.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oomy-killer
+  namespace: kobi-incident-lab
+  labels:
+    app: oomy-killer
+    incident: oomkilled
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oomy-killer
+  template:
+    metadata:
+      labels:
+        app: oomy-killer
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import time
+              size_mb = 200
+              print(f"[oomy-killer] allocating {size_mb} MiB of RSS under a 128Mi limit...", flush=True)
+              data = bytearray(size_mb * 1024 * 1024)
+              for i in range(0, len(data), 4096):
+                  data[i] = 1
+              print("[oomy-killer] allocated — this line never prints, we get OOMKilled first", flush=True)
+              while True:
+                  time.sleep(3600)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi

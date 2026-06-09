@@ -1,0 +1,75 @@
+# OPTIONAL — tier isolation via NetworkPolicies.
+#
+# Apply this only if you want the "least-privilege between tiers" story and, on
+# a Cilium+Hubble cluster, the dropped-traffic (verdict=dropped) signal in the
+# Reliability → Network Drops panel.
+#
+# Rules:
+#   shop-backend : default-deny ingress, then allow only from shop-frontend.
+#   shop-data    : default-deny ingress, then allow only from shop-backend.
+#                  (The external DB lives outside the cluster, but this gates any
+#                   in-cluster cache you add to the data tier.)
+#
+# These are stock networking.k8s.io NetworkPolicies — they work on any CNI that
+# enforces them (Cilium, Calico, ...). On a CNI that ignores NetworkPolicy they
+# are simply inert.
+#
+# Apply:  kubectl apply -f 50-networkpolicies.yaml
+# Remove: kubectl delete -f 50-networkpolicies.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: shop-backend
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: shop-backend
+spec:
+  podSelector:
+    matchLabels:
+      tier: backend
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              tier: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: shop-data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend-to-data
+  namespace: shop-data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              tier: backend
+      ports:
+        - protocol: TCP
+          port: 5432

@@ -1,0 +1,41 @@
+# Scenario 09 — Scaled to zero
+#
+# Symptom    : A Deployment that should be serving traffic is sitting at
+#              replicas: 0. Nothing is running; any Service in front of it has
+#              no endpoints.
+# Insight    : zeroReplicasRule
+# Kobi action: propose_scale_workload — scale back up to N > 0.
+#
+# Try in Kobi: "scaled-down has no pods, bring it back to 2 replicas"
+#
+# Clean up   : kubectl delete -f 09-zero-replicas.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: scaled-down
+  namespace: kobi-incident-lab
+  labels:
+    app: scaled-down
+    incident: zero-replicas
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: scaled-down
+  template:
+    metadata:
+      labels:
+        app: scaled-down
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

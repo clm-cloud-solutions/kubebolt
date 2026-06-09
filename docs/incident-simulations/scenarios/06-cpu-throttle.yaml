@@ -1,0 +1,45 @@
+# Scenario 06 — CPU throttling
+#
+# Symptom    : A busy loop wants a full core but the container is capped at
+#              50m CPU. The CFS scheduler throttles it hard; the workload is
+#              slow even though it never crashes.
+# Insight    : cpuThrottleRiskRule (sustained throttling)
+# Kobi action: propose_set_resources — raise the CPU limit (and/or request).
+#              Kobi reads get_workload_metrics over 15m to ground the new value.
+#
+# Try in Kobi: "cpu-throttled is sluggish, look at its metrics and right-size it"
+#
+# Clean up   : kubectl delete -f 06-cpu-throttle.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cpu-throttled
+  namespace: kobi-incident-lab
+  labels:
+    app: cpu-throttled
+    incident: cpu-throttle
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cpu-throttled
+  template:
+    metadata:
+      labels:
+        app: cpu-throttled
+    spec:
+      containers:
+        - name: app
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "[cpu-throttled] spinning a busy loop against a 50m CPU cap..."
+              while true; do :; done
+          resources:
+            requests:
+              cpu: 25m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 64Mi

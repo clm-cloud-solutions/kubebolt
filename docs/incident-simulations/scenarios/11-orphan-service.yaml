@@ -1,0 +1,28 @@
+# Scenario 11 — Service with zero ready endpoints
+#
+# Symptom    : A Service selects on app=ghost-backend, but no pod carries that
+#              label (the workload was renamed / never deployed). The Service
+#              exists and resolves in DNS, but every connection to it fails —
+#              no endpoints behind it.
+# Insight    : service-no-endpoints
+# Kobi action: diagnosis only. There is no single safe auto-remediation — the
+#              fix is either deploy the missing workload or correct the selector.
+#              Kobi explains the label/selector mismatch and points you at it.
+#
+# Try in Kobi: "ghost-svc has no endpoints, why?"
+#
+# Clean up   : kubectl delete -f 11-orphan-service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: ghost-svc
+  namespace: kobi-incident-lab
+  labels:
+    incident: orphan-service
+spec:
+  selector:
+    app: ghost-backend   # no pod has this label — zero endpoints
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

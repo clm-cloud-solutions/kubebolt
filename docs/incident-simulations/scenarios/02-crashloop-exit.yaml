@@ -1,0 +1,47 @@
+# Scenario 02 — CrashLoopBackOff (non-zero exit)
+#
+# Symptom    : Container boots, runs for 5s, then exits 1. Kubernetes restarts
+#              it with exponential backoff → CrashLoopBackOff.
+# Insight    : frequent-restarts / crash-loop
+# Kobi action: diagnosis first (reads logs, sees the deterministic exit), then
+#              propose_restart_workload only if it judges the cause transient.
+#              This scenario shows Kobi reasoning about WHETHER restart helps.
+#
+# Try in Kobi: "why is crashy-exit crash-looping?"
+#
+# Clean up   : kubectl delete -f 02-crashloop-exit.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crashy-exit
+  namespace: kobi-incident-lab
+  labels:
+    app: crashy-exit
+    incident: crashloop-exit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: crashy-exit
+  template:
+    metadata:
+      labels:
+        app: crashy-exit
+    spec:
+      containers:
+        - name: app
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "[crashy-exit] booting..."
+              sleep 5
+              echo "[crashy-exit] simulated fatal error: downstream check failed, exiting 1" >&2
+              exit 1
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

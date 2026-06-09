@@ -1,0 +1,42 @@
+# Data tier — a Service that points at the EXTERNAL postgres container.
+#
+# The database runs OUTSIDE the cluster (database/run-db.sh starts it as a
+# docker container on the `kind` network). Because there is no pod to select,
+# we declare the Service WITHOUT a selector and manage its Endpoints by hand,
+# pinning them to the container's IP.
+#
+# ${SHOP_DB_IP} is substituted by apply.sh, which reads the live container IP
+# with `docker inspect`. Do not apply this file directly — run ./apply.sh.
+#
+# When the DB container is stopped, this Service still resolves in DNS, but
+# every TCP connect to it fails — which is exactly what trips the backend
+# readiness probes and starts the cascade.
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-db
+  namespace: shop-data
+  labels:
+    app: shop-db
+    tier: data
+spec:
+  # No selector: endpoints are managed manually below (external workload).
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: Endpoints
+metadata:
+  name: shop-db          # MUST match the Service name for it to bind
+  namespace: shop-data
+  labels:
+    app: shop-db
+    tier: data
+subsets:
+  - addresses:
+      - ip: ${SHOP_DB_IP}   # filled in by apply.sh from the running container
+    ports:
+      - name: postgres
+        port: 5432

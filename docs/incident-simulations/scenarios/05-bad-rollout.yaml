@@ -1,0 +1,48 @@
+# Scenario 05 — Bad rollout, recoverable by rollback
+#
+# Symptom    : The deployment is healthy on revision 1 (nginx:1.27-alpine).
+#              You then push a bad image (revision 2) and it breaks. Because a
+#              KNOWN-GOOD prior revision exists, the safe fix is to roll back
+#              the whole pod template — not just hand-edit the image.
+# Insight    : image-pull-backoff / crash-loop WITH a healthy prior revision
+# Kobi action: propose_rollback_deployment (kubectl rollout undo). Kobi calls
+#              get_workload_history first; rollback needs >= 2 revisions.
+#
+# HOW TO ARM IT (two revisions are required for a rollback target):
+#   kubectl apply -f 05-bad-rollout.yaml        # revision 1 (healthy)
+#   ./break.sh                                  # revision 2 (broken)
+# Then ask Kobi: "shop-api just had a bad deploy, roll it back"
+#
+# Clean up   : kubectl delete -f 05-bad-rollout.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-api
+  namespace: kobi-incident-lab
+  labels:
+    app: shop-api
+    incident: bad-rollout
+  annotations:
+    kubernetes.io/change-cause: "rev1: healthy nginx 1.27-alpine"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shop-api
+  template:
+    metadata:
+      labels:
+        app: shop-api
+    spec:
+      containers:
+        - name: app
+          image: nginx:1.27-alpine
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

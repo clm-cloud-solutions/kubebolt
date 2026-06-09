@@ -1,0 +1,32 @@
+# Scenario 12 — NetworkPolicy that matches no pods
+#
+# Symptom    : A NetworkPolicy declares a podSelector (app=api-tier) that
+#              matches zero pods in its namespace — a typo, or the target
+#              workload was renamed. The policy's intent is unenforceable and
+#              silently does nothing, leaving traffic you THINK is gated wide open.
+# Insight    : policy-no-match (podSelector matches no pods)
+# Kobi action: diagnosis only. Kobi flags the dead selector and tells you to
+#              reconcile it against the labels of the pods you meant to gate.
+#
+# Try in Kobi: "does the api-isolation network policy actually protect anything?"
+#
+# Clean up   : kubectl delete -f 12-orphan-networkpolicy.yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-isolation
+  namespace: kobi-incident-lab
+  labels:
+    incident: orphan-networkpolicy
+spec:
+  # No pod in kobi-incident-lab carries app=api-tier → the policy matches nothing.
+  podSelector:
+    matchLabels:
+      app: api-tier
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend-tier

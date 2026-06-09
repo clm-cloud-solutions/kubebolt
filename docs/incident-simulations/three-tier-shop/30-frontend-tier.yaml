@@ -1,0 +1,204 @@
+# Frontend tier — shop-web, the storefront.
+#
+# A tiny Python HTTP server (python:3.12-alpine + script from ConfigMap) that:
+#   GET /        → renders the storefront, CALLING orders-api and catalog-api so
+#                  real front→backend traffic flows (feeds topology + Hubble L7).
+#                  Returns 503 to the USER when the orders API is unavailable —
+#                  the realistic failure mode for an e-commerce front.
+#   GET /livez   → 200 ALWAYS (process liveness)
+#   GET /healthz → 200 ALWAYS — readiness is SELF-CONTAINED. The storefront stays
+#                  in rotation even when the backend is down, so users keep
+#                  reaching it (and get a 5xx). It is NOT pulled from the Service.
+#
+# Why the frontend does NOT fail readiness on a backend outage (unlike the
+# backend on a DB outage): a backend with no database genuinely cannot serve, so
+# taking it out of rotation is correct. But a storefront with a degraded backend
+# should still answer the user — with an error — not vanish. Keeping shop-web
+# Ready is what makes the outage show up as ERROR TRAFFIC (5xx) on the Reliability
+# dashboard instead of the pods simply disappearing.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: frontend-server
+  namespace: shop-frontend
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+data:
+  server.py: |
+    import os, json, time, urllib.request, urllib.error
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    ORDERS = os.environ.get("ORDERS_URL", "http://orders-api.shop-backend.svc.cluster.local")
+    CATALOG = os.environ.get("CATALOG_URL", "http://catalog-api.shop-backend.svc.cluster.local")
+
+    def log(level, msg):
+        print(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} [shop-web] {level} {msg}", flush=True)
+
+    # Returns an HTTP status code, or 0 when the backend could not be reached at
+    # all (no response: refused / no endpoints / timeout). We deliberately do NOT
+    # surface the raw socket errno (e.g. "[Errno 1] Operation not permitted",
+    # which Cilium returns for a Service with zero endpoints) — leading a log line
+    # with that errno misdirects diagnosis toward a NetworkPolicy block when the
+    # real cause is an unready backend. The caller logs the cause in plain terms.
+    def get(url, timeout=2):
+        try:
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                r.read()   # drain the body so the upstream write completes cleanly
+                return r.status
+        except urllib.error.HTTPError as e:
+            return e.code          # reached it, but it answered with an error status
+        except Exception:
+            return 0               # could not reach it at all (no response)
+
+    PAGE = """<!doctype html><html><head><title>KubeShop</title></head>
+    <body style="font-family:system-ui;max-width:640px;margin:3rem auto">
+    <h1>🛒 KubeShop</h1>
+    <p>A three-tier demo storefront for KubeBolt / Kobi incident simulations.</p>
+    <ul>
+      <li>orders-api: <b>{orders}</b></li>
+      <li>catalog-api: <b>{catalog}</b></li>
+    </ul>
+    </body></html>"""
+
+    ERR_PAGE = """<!doctype html><html><head><title>KubeShop — unavailable</title></head>
+    <body style="font-family:system-ui;max-width:640px;margin:3rem auto">
+    <h1>🛒 KubeShop</h1>
+    <p style="color:#b00020"><b>503 — We're having trouble loading the store.</b></p>
+    <p>The orders service is unavailable right now. Please try again shortly.</p>
+    <ul>
+      <li>orders-api: <b>{orders}</b></li>
+      <li>catalog-api: <b>{catalog}</b></li>
+    </ul>
+    </body></html>"""
+
+    class H(BaseHTTPRequestHandler):
+        def _send(self, code, body, ctype="text/html"):
+            b = body.encode()
+            try:
+                self.send_response(code)
+                self.send_header("Content-Type", ctype)
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client (probe / loadgen) hung up early — not our problem
+
+        def do_GET(self):
+            if self.path == "/livez":
+                self._send(200, json.dumps({"service": "shop-web", "live": True}),
+                           "application/json")
+                return
+            if self.path == "/healthz":
+                # Self-contained: the front stays Ready regardless of the backend.
+                self._send(200, json.dumps({"service": "shop-web", "ready": True}),
+                           "application/json")
+                return
+            # Storefront. Call both backends so traffic flows; surface a 5xx to
+            # the user when the critical (orders) dependency is unavailable.
+            start = time.time()
+            oc = get(ORDERS + "/")
+            cc = get(CATALOG + "/")
+            ms = int((time.time() - start) * 1000)
+            if oc == 200:
+                if cc == 200:
+                    self._send(200, PAGE.format(orders="up", catalog="up"))
+                    log("INFO", f"GET / -> 200 orders=up catalog=up {ms}ms")
+                else:
+                    self._send(200, PAGE.format(orders="up", catalog="DOWN"))
+                    log("WARN", f"GET / -> 200 orders=up catalog=DOWN "
+                                f"(catalog-api had no successful response) {ms}ms")
+            else:
+                self._send(503, ERR_PAGE.format(orders="DOWN",
+                                                catalog="up" if cc == 200 else "DOWN"))
+                if oc == 0:
+                    # Couldn't reach orders-api at all — the cascade signature.
+                    # Name the actionable cause, not the raw socket errno.
+                    log("ERROR", f"GET / -> 503 orders-api unreachable: no successful "
+                                 f"response (check orders-api readiness / Service endpoints) {ms}ms")
+                else:
+                    log("ERROR", f"GET / -> 503 orders-api returned {oc} {ms}ms")
+
+        def log_message(self, *args):
+            pass  # suppress BaseHTTPServer's default access log; we emit our own
+
+    log("INFO", "listening on :8080")
+    ThreadingHTTPServer(("0.0.0.0", 8080), H).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shop-web
+  namespace: shop-frontend
+  labels:
+    app: shop-web
+    tier: frontend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: shop-web
+  template:
+    metadata:
+      labels:
+        app: shop-web
+        tier: frontend
+    spec:
+      volumes:
+        - name: server
+          configMap:
+            name: frontend-server
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "/app/server.py"]
+          env:
+            - name: ORDERS_URL
+              value: http://orders-api.shop-backend.svc.cluster.local
+            - name: CATALOG_URL
+              value: http://catalog-api.shop-backend.svc.cluster.local
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            - name: server
+              mountPath: /app
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          # Readiness is self-contained (/healthz always 200): the storefront
+          # stays in rotation during a backend outage and returns 5xx to users,
+          # rather than being pulled from the Service. That's what makes the
+          # failure visible as error traffic instead of disappearing pods.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            failureThreshold: 2
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: shop-web
+  namespace: shop-frontend
+  labels:
+    app: shop-web
+    tier: frontend
+spec:
+  selector:
+    app: shop-web
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
