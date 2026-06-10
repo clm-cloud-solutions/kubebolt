@@ -30,7 +30,11 @@ var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	"pvs":                      {Group: "", Kind: "PersistentVolume"},
 	"persistentvolumes":        {Group: "", Kind: "PersistentVolume"},
 	"events":                   {Group: "", Kind: "Event"},
-	"endpoints":                {Group: "", Kind: "Endpoints"},
+	// KubeBolt surfaces EndpointSlices under the `endpoints` type (the legacy
+	// core/v1 Endpoints API is deprecated). Describe must target EndpointSlice,
+	// or Kobi's get_resource_describe fails "endpoints not found" on the slice's
+	// hashed name. Mirrors internal/api/describe.go.
+	"endpoints":                {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
 	"deployments":              {Group: "apps", Kind: "Deployment"},
 	"statefulsets":             {Group: "apps", Kind: "StatefulSet"},
 	"daemonsets":               {Group: "apps", Kind: "DaemonSet"},
@@ -91,6 +95,12 @@ func describeResource(conn *cluster.Connector, resourceType, namespace, name str
 	}
 	if !found {
 		return "", fmt.Errorf("no describer available for: %s", resourceType)
+	}
+	// `endpoints` → EndpointSlices (named <service>-<hash>). The describer Gets by
+	// name, so resolve either key — the slice name (web UI) or the fronting Service
+	// name (Kobi / Autopilot) — to the real slice name before describing.
+	if resourceType == "endpoints" {
+		name = conn.ResolveEndpointsName(namespace, name)
 	}
 	return describer.Describe(namespace, name, describe.DescriberSettings{ShowEvents: true})
 }
