@@ -28,7 +28,14 @@ var resourceTypeToGroupKind = map[string]schema.GroupKind{
 	"pvs":                      {Group: "", Kind: "PersistentVolume"},
 	"persistentvolumes":        {Group: "", Kind: "PersistentVolume"},
 	"events":                   {Group: "", Kind: "Event"},
-	"endpoints":                {Group: "", Kind: "Endpoints"},
+	// `endpoints` is the user-facing type, but KubeBolt surfaces EndpointSlices
+	// under it everywhere (list, count, GVR → discovery/v1 endpointslices) since
+	// the legacy core/v1 Endpoints API is deprecated. So describe must target
+	// the EndpointSlice Kind too — otherwise kubectl's Endpoints describer looks
+	// up a non-existent core/v1 Endpoints object by the slice's name
+	// (`<svc>-<hash>`) and fails "endpoints not found". kubectl ships an
+	// EndpointSliceDescriber, so DescriberFor resolves this directly.
+	"endpoints":                {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
 	"deployments":              {Group: "apps", Kind: "Deployment"},
 	"statefulsets":             {Group: "apps", Kind: "StatefulSet"},
 	"daemonsets":               {Group: "apps", Kind: "DaemonSet"},
@@ -116,6 +123,14 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		respondError(w, http.StatusBadRequest, "no describer available for: "+resourceType)
 		return
+	}
+
+	// `endpoints` maps to EndpointSlices (named <service>-<hash>). The EndpointSlice
+	// describer Gets by name, so a lookup by the fronting Service name would 404.
+	// Resolve either key (slice name from the web UI, or service name from Kobi /
+	// Autopilot) to the real slice name before describing.
+	if resourceType == "endpoints" {
+		name = conn.ResolveEndpointsName(namespace, name)
 	}
 
 	output, err := describer.Describe(namespace, name, describe.DescriberSettings{ShowEvents: true})

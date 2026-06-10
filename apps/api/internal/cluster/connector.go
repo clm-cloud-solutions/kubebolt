@@ -2353,14 +2353,17 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			"age":               formatAge(rs.CreationTimestamp.Time),
 		}, nil
 	case "endpoints":
-		// EndpointSlices don't map 1:1 to a single "endpoint" resource;
-		// return the slice matching the given name.
+		// EndpointSlices don't map 1:1 to a single "endpoint" resource, and they
+		// are named <service>-<hash> — NOT the service name callers pass. Match on
+		// the kubernetes.io/service-name label (falling back to the literal slice
+		// name) so a lookup by service name resolves the backing slice instead of
+		// returning "not found".
 		slices, err := c.endpointSliceLister.EndpointSlices(namespace).List(everythingSelector())
 		if err != nil {
 			return nil, err
 		}
 		for _, es := range slices {
-			if es.Name == name {
+			if es.Name == name || es.Labels["kubernetes.io/service-name"] == name {
 				var endpoints []string
 				for _, ep := range es.Endpoints {
 					endpoints = append(endpoints, ep.Addresses...)
@@ -3869,6 +3872,34 @@ func parseLogLineTimestamp(line []byte) (time.Time, bool) {
 	return t, true
 }
 
+// ResolveEndpointsName maps a user-facing `endpoints` identifier to the real
+// EndpointSlice name. Callers may pass either the slice name (e.g. shop-db-abcde,
+// how the web UI navigates) or the fronting Service name (e.g. shop-db, how Kobi /
+// Autopilot navigate). Returns the resolved slice name, or the input unchanged
+// when nothing matches (so the caller's own not-found handling still fires).
+func (c *Connector) ResolveEndpointsName(namespace, name string) string {
+	if c.endpointSliceLister == nil {
+		return name
+	}
+	slices, err := c.endpointSliceLister.EndpointSlices(namespace).List(everythingSelector())
+	if err != nil {
+		return name
+	}
+	// A direct slice-name match wins (web UI path).
+	for _, es := range slices {
+		if es.Name == name {
+			return name
+		}
+	}
+	// Otherwise resolve by the service-name label (Kobi / Autopilot path).
+	for _, es := range slices {
+		if es.Labels["kubernetes.io/service-name"] == name {
+			return es.Name
+		}
+	}
+	return name
+}
+
 // GetResourceYAML fetches a single resource via the dynamic client and returns its YAML representation.
 func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byte, error) {
 	if c.dynamicClient == nil {
@@ -3884,9 +3915,27 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 
 	var obj *unstructured.Unstructured
 	var err error
-	if isClusterScoped(resourceType) {
+	switch {
+	case resourceType == "endpoints":
+		// EndpointSlices are named <service>-<hash>. The web UI navigates by that
+		// real slice name; Kobi / Autopilot navigate by the fronting Service name.
+		// Support BOTH: try a direct Get on the given name (slice name), then fall
+		// back to the kubernetes.io/service-name label (service name).
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			list, lerr := c.dynamicClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "kubernetes.io/service-name=" + name,
+			})
+			if lerr != nil {
+				return nil, fmt.Errorf("fetching resource: %w", lerr)
+			}
+			if len(list.Items) > 0 {
+				obj, err = &list.Items[0], nil
+			}
+		}
+	case isClusterScoped(resourceType):
 		obj, err = c.dynamicClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	} else {
+	default:
 		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	}
 	if err != nil {
