@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom'
 import { ArrowRight, ShieldOff } from 'lucide-react'
 import type { ClusterOverview, HealthCheck } from '@/types/kubernetes'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
+import { DonutGauge } from '@/components/shared/DonutGauge'
+import { LegendRow } from '@/components/shared/LegendRow'
 
 type Accent = 'ok' | 'warn' | 'err' | 'restricted'
 
@@ -17,16 +19,18 @@ interface KpiCardsProps {
 //   4. Is anything actionable?
 //
 // Layout: label top-left, status pill or "view all →" link top-right,
-// big numeric value with a subtle suffix, a one-line context caption,
-// and an at-a-glance signal block at the bottom that USES the data we
-// already have:
-//   - Health / Nodes / Pods → thin progress bar (score%, ready/total).
-//   - Insights              → severity breakdown chips (or muted text
-//                             when the count is zero).
+// then the same grammar the CPU/Memory usage cards use — anchor
+// element on the left, breakdown LegendRows filling the right column:
+//   - Health / Nodes / Pods → ring gauge (score%, ready/total) with
+//     the value at the center; beside it the colored headline plus
+//     dot-legend rows breaking the number down. The textual rows
+//     carry the actionable signal (a 57/58 ring is visually
+//     indistinguishable from 58/58 — same limit the old progress bar
+//     had).
+//   - Insights              → big numeric value + severity legend
+//     rows. A count has no natural 0-100 scale, so no ring.
 // We considered session-scoped sparklines but on a stable cluster they
-// degenerate to a flat horizontal line that conveys nothing. Progress
-// bars + severity chips read clearly even when the underlying value
-// hasn't changed.
+// degenerate to a flat horizontal line that conveys nothing.
 export function KpiCards({ overview }: KpiCardsProps) {
   const perms = overview.permissions
   const restricted = (key: string) => perms != null && perms[key] === false
@@ -41,15 +45,22 @@ export function KpiCards({ overview }: KpiCardsProps) {
   const podsTotal = overview.pods?.total ?? 0
   const nodesNotReady = overview.nodes?.notReady ?? 0
   const podsNotReady = overview.pods?.notReady ?? 0
+  // The connector buckets pods three ways: Ready (Running all-ready,
+  // or Succeeded), NotReady (Failed phase only), and Warning —
+  // everything in between (Pending, CrashLoopBackOff, partially
+  // ready). Without surfacing Warning the card claims "all running"
+  // while a pod is crash-looping, because that pod is neither Ready
+  // nor NotReady.
+  const podsDegraded = overview.pods?.warning ?? 0
 
   const healthAccent: Accent =
     health?.status === 'healthy' ? 'ok' : health?.status === 'warning' ? 'warn' : 'err'
 
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-      {/* Cluster Health — pill IS the headline state. Footer bar
-          renders the score itself as a proportion of 100 in the
-          accent color. The sub-line shows the single most actionable
+      {/* Cluster Health — pill IS the headline state. The ring gauge
+          renders the score as a proportion of 100 in the accent
+          color. The sub-line shows the single most actionable
           check, and the full check breakdown lives in a hover
           tooltip that matches the metric / cluster-map tooltip
           pattern (TooltipPanel + rows). */}
@@ -68,19 +79,35 @@ export function KpiCards({ overview }: KpiCardsProps) {
               ? `${nodesNotReady} not ready`
               : 'all ready'
         }
-        footer={
-          !restricted('nodes') && nodesTotal > 0 ? (
-            <ProgressBar
-              percent={(nodesReady / nodesTotal) * 100}
-              accent={nodesNotReady > 0 ? 'warn' : 'ok'}
-            />
-          ) : null
+        gaugePercent={
+          !restricted('nodes') && nodesTotal > 0 ? (nodesReady / nodesTotal) * 100 : undefined
+        }
+        rows={
+          restricted('nodes')
+            ? undefined
+            : [
+                { color: ACCENT_COLOR.ok, label: 'Ready', value: `${nodesReady}`, to: '/nodes?status=ready' },
+                {
+                  color: nodesNotReady > 0 ? ACCENT_COLOR.err : MUTED_DOT,
+                  label: 'Not ready',
+                  value: `${nodesNotReady}`,
+                  // Zero-count rows don't link — landing on an empty
+                  // filtered list is a dead end, not a shortcut.
+                  to: nodesNotReady > 0 ? '/nodes?status=notready' : undefined,
+                },
+              ]
         }
       />
 
       <Kpi
         label="Pods"
-        accent={restricted('pods') ? 'restricted' : podsNotReady > 0 ? 'warn' : 'ok'}
+        accent={
+          restricted('pods')
+            ? 'restricted'
+            : podsNotReady > 0 || podsDegraded > 0
+              ? 'warn'
+              : 'ok'
+        }
         pill={restricted('pods') ? null : { kind: 'link', text: 'view all', to: '/pods' }}
         value={restricted('pods') ? null : `${podsReady}`}
         valueSuffix={restricted('pods') ? undefined : `/ ${podsTotal}`}
@@ -89,15 +116,39 @@ export function KpiCards({ overview }: KpiCardsProps) {
             ? 'No access'
             : podsNotReady > 0
               ? `${podsNotReady} not running`
-              : 'all running'
+              : podsDegraded > 0
+                ? `${podsDegraded} degraded`
+                : 'all running'
         }
-        footer={
-          !restricted('pods') && podsTotal > 0 ? (
-            <ProgressBar
-              percent={(podsReady / podsTotal) * 100}
-              accent={podsNotReady > 0 ? 'warn' : 'ok'}
-            />
-          ) : null
+        gaugePercent={
+          !restricted('pods') && podsTotal > 0 ? (podsReady / podsTotal) * 100 : undefined
+        }
+        rows={
+          restricted('pods')
+            ? undefined
+            : [
+                { color: ACCENT_COLOR.ok, label: 'Running', value: `${podsReady}`, to: '/pods?status=running' },
+                {
+                  // Warning bucket: Pending / CrashLoopBackOff /
+                  // partially-ready. "degraded" is a backend
+                  // pseudo-status (connector GetResources) because
+                  // these pods carry heterogeneous status strings
+                  // that no single exact match captures.
+                  color: podsDegraded > 0 ? ACCENT_COLOR.warn : MUTED_DOT,
+                  label: 'Degraded',
+                  value: `${podsDegraded}`,
+                  to: podsDegraded > 0 ? '/pods?status=degraded' : undefined,
+                },
+                {
+                  color: podsNotReady > 0 ? ACCENT_COLOR.err : MUTED_DOT,
+                  label: 'Not running',
+                  value: `${podsNotReady}`,
+                  // The card's not-running count is the Failed-phase
+                  // bucket (see connector buildClusterOverview), so the
+                  // deep link filters by that same status.
+                  to: podsNotReady > 0 ? '/pods?status=failed' : undefined,
+                },
+              ]
         }
       />
 
@@ -108,8 +159,9 @@ export function KpiCards({ overview }: KpiCardsProps) {
         }
         pill={{ kind: 'link', text: 'view', to: '/insights' }}
         value={`${insightsTotal}`}
+        valueSuffix="active"
         sub={insightsTotal === 0 ? 'no issues detected' : undefined}
-        footer={insightsTotal > 0 ? <SeverityChips insights={insights} /> : null}
+        rows={insightsTotal > 0 ? severityRows(insights) : undefined}
       />
     </div>
   )
@@ -124,6 +176,28 @@ type Pill =
   // older standalone icon chip.
   | { kind: 'link'; text: string; to: string }
 
+// ACCENT_COLOR resolves an accent to the project's status hex
+// constants (same values as utils/colors statusColorMap) for SVG
+// strokes and legend dots, where Tailwind utility classes can't reach.
+const ACCENT_COLOR: Record<Exclude<Accent, 'restricted'>, string> = {
+  ok: '#22d68a',
+  warn: '#f5a623',
+  err: '#ef4056',
+}
+const INFO_COLOR = '#4c9aff'
+// Muted dot for zero-count rows ("Not ready 0") — present so the card
+// keeps its two-row rhythm, quiet so it doesn't read as a signal.
+const MUTED_DOT = 'var(--kb-text-tertiary)'
+
+interface KpiRow {
+  color: string
+  label: string
+  value: string
+  // Deep link into a pre-filtered list view (LegendRow renders the
+  // row as a Link). Omit on zero-count rows — see call sites.
+  to?: string
+}
+
 interface KpiProps {
   label: string
   accent: Accent
@@ -131,10 +205,18 @@ interface KpiProps {
   value: string | null
   valueSuffix?: string
   sub?: string
-  footer?: React.ReactNode
+  // gaugePercent switches the card body to the ring-gauge layout:
+  // value + suffix centered inside a DonutGauge stroked in the accent
+  // color. Omit (undefined) to keep the big-number layout — Insights
+  // uses that, a count has no 0-100 scale to draw a ring against.
+  gaugePercent?: number
+  // rows render as dot-legend lines in the right column — the same
+  // breakdown grammar the CPU/Memory usage cards use, so the whole
+  // top half of the dashboard reads as one family.
+  rows?: KpiRow[]
 }
 
-function Kpi({ label, accent, pill, value, valueSuffix, sub, footer }: KpiProps) {
+function Kpi({ label, accent, pill, value, valueSuffix, sub, gaugePercent, rows }: KpiProps) {
   const restricted = accent === 'restricted'
   const subColor =
     accent === 'err'
@@ -164,79 +246,115 @@ function Kpi({ label, accent, pill, value, valueSuffix, sub, footer }: KpiProps)
           </div>
           <div className="text-[10px] font-mono text-kb-text-tertiary">Insufficient permissions</div>
         </>
-      ) : (
-        <>
-          <div className="flex items-baseline gap-1.5 mb-1">
+      ) : gaugePercent != null ? (
+        // Same composition as the CPU/Memory usage cards: gauge
+        // anchored left, breakdown column filling the rest. 116px
+        // matches the Used donuts below, so the whole top half of the
+        // dashboard shares one gauge scale instead of two competing
+        // ones.
+        <div className="flex items-center gap-6 py-1">
+          <DonutGauge percent={gaugePercent} color={ACCENT_COLOR[accent]} size={116} strokeWidth={10}>
             <span className="text-3xl font-semibold text-kb-text-primary tabular-nums leading-none">
               {value}
             </span>
             {valueSuffix && (
-              <span className="text-[11px] font-mono text-kb-text-tertiary tabular-nums">
+              <span className="text-[11px] font-mono text-kb-text-tertiary tabular-nums mt-1">
+                {valueSuffix}
+              </span>
+            )}
+          </DonutGauge>
+          <div className="flex-1 min-w-0">
+            {sub && (
+              <div className={`text-sm font-mono ${subColor} ${rows?.length ? 'mb-2.5' : ''}`}>
+                {sub}
+              </div>
+            )}
+            {rows && rows.length > 0 && (
+              <div className="space-y-1.5">
+                {rows.map((r) => (
+                  <LegendRow key={r.label} color={r.color} label={r.label} value={r.value} labelWidth={88} to={r.to} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        // Numeric layout (Insights) — value anchored left where the
+        // gauge cards put their ring, severity legend filling the
+        // right column, so the KPI row reads as one family.
+        <div className="flex items-center gap-6 py-1 min-h-[124px]">
+          <div className="flex flex-col items-center shrink-0">
+            <span className="text-5xl font-semibold text-kb-text-primary tabular-nums leading-none">
+              {value}
+            </span>
+            {valueSuffix && (
+              <span className="text-[11px] font-mono text-kb-text-tertiary tabular-nums mt-1.5">
                 {valueSuffix}
               </span>
             )}
           </div>
-          {sub && <div className={`text-[11px] font-mono ${subColor}`}>{sub}</div>}
-          {footer && <div className="mt-2.5">{footer}</div>}
-        </>
+          <div className="flex-1 min-w-0">
+            {sub && (
+              <div className={`text-sm font-mono ${subColor} ${rows?.length ? 'mb-2.5' : ''}`}>
+                {sub}
+              </div>
+            )}
+            {rows && rows.length > 0 && (
+              <div className="space-y-1.5">
+                {rows.map((r) => (
+                  <LegendRow key={r.label} color={r.color} label={r.label} value={r.value} labelWidth={88} to={r.to} />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
       )}
     </div>
   )
 }
 
-// ProgressBar — thin horizontal fill used as the footer signal block.
-// Inline `var(--kb-accent)` only triggers for the ok accent because
-// it's the brand color; warn/err route through status-* utility
-// classes that resolve to the project's hex constants. Avoids the
-// Tailwind-opacity-on-hex-CSS-var pitfall that left the original
-// Top Workloads bars invisible.
-function ProgressBar({ percent, accent }: { percent: number; accent: Accent }) {
-  const clamped = Math.max(0, Math.min(100, percent))
-  const fill =
-    accent === 'err'
-      ? 'bg-status-error'
-      : accent === 'warn'
-        ? 'bg-status-warn'
-        : 'bg-status-ok'
-  return (
-    <div className="h-1 rounded-full bg-kb-elevated overflow-hidden">
-      <div className={`h-full rounded-full ${fill}`} style={{ width: `${clamped}%` }} />
-    </div>
-  )
-}
-
-// SeverityChips — replaces the generic "X warn · Y info" text line
-// with a denser breakdown that color-codes each severity. Skips
-// zero-count buckets so the chip strip stays readable when only one
-// severity has hits (e.g. "12 warn" alone instead of "0 critical · 12
-// warn · 0 info").
-function SeverityChips({
-  insights,
-}: {
-  insights?: { critical?: number; warning?: number; info?: number }
-}) {
-  const items: Array<{ count: number; label: string; color: string }> = []
+// severityRows — severity breakdown as LegendRows, skipping
+// zero-count buckets so the column stays readable when only one
+// severity has hits (e.g. "Warning 12" alone instead of three rows
+// padded with zeros).
+function severityRows(insights?: {
+  critical?: number
+  warning?: number
+  info?: number
+}): KpiRow[] {
+  const rows: KpiRow[] = []
   if ((insights?.critical ?? 0) > 0) {
-    items.push({ count: insights!.critical!, label: 'critical', color: 'text-status-error' })
+    rows.push({ color: ACCENT_COLOR.err, label: 'Critical', value: `${insights!.critical}`, to: '/insights?severity=critical' })
   }
   if ((insights?.warning ?? 0) > 0) {
-    items.push({ count: insights!.warning!, label: 'warn', color: 'text-status-warn' })
+    rows.push({ color: ACCENT_COLOR.warn, label: 'Warning', value: `${insights!.warning}`, to: '/insights?severity=warning' })
   }
   if ((insights?.info ?? 0) > 0) {
-    items.push({ count: insights!.info!, label: 'info', color: 'text-status-info' })
+    rows.push({ color: INFO_COLOR, label: 'Info', value: `${insights!.info}`, to: '/insights?severity=info' })
   }
-  if (items.length === 0) return null
-  return (
-    <div className="flex items-center gap-2 text-[11px] font-mono">
-      {items.map((it, i) => (
-        <span key={it.label} className="flex items-center gap-1">
-          <span className={it.color}>{it.count}</span>
-          <span className="text-kb-text-tertiary">{it.label}</span>
-          {i < items.length - 1 && <span className="text-kb-text-tertiary">·</span>}
-        </span>
-      ))}
-    </div>
-  )
+  return rows
+}
+
+// healthRows — breakdown column for the Cluster health card: the
+// component-check tally first, then the active-insight severities
+// (the same buckets the score deduction comes from, so the rows
+// visually audit the ring).
+function healthRows(health?: ClusterOverview['health']): KpiRow[] {
+  if (!health) return []
+  const rows: KpiRow[] = []
+  const checks = health.checks ?? []
+  if (checks.length > 0) {
+    const passing = checks.filter((c) => c.status === 'pass').length
+    const failing = checks.some((c) => c.status === 'fail')
+    const warning = checks.some((c) => c.status === 'warn')
+    rows.push({
+      color: failing ? ACCENT_COLOR.err : warning ? ACCENT_COLOR.warn : ACCENT_COLOR.ok,
+      label: 'Checks',
+      value: `${passing}/${checks.length} passing`,
+    })
+  }
+  rows.push(...severityRows(health.insights))
+  return rows
 }
 
 // summarizeHealth picks the single most actionable line for the
@@ -339,11 +457,8 @@ function HealthCard({
       value={health?.score != null ? `${health.score}` : '—'}
       valueSuffix={health?.score != null ? '/ 100' : undefined}
       sub={summarizeHealth(health)}
-      footer={
-        health?.score != null ? (
-          <ProgressBar percent={health.score} accent={accent} />
-        ) : null
-      }
+      gaugePercent={health?.score ?? undefined}
+      rows={healthRows(health)}
     />
   )
 

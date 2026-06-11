@@ -329,15 +329,24 @@ function NamespaceTile({
         </div>
       )}
 
-      {/* Bottom progress bar shows the ready/total fraction. The
-          floor for "critical" prevents a 0% bar from rendering as
-          empty — a sliver still signals "something exists, it's
-          just broken". */}
-      <div className="mt-2.5 h-[3px] rounded-full bg-kb-elevated overflow-hidden">
-        <div
-          className={`h-full ${barColor}`}
-          style={{ width: `${Math.max(ratio * 100, health === 'critical' ? 12 : 0)}%` }}
-        />
+      {/* Bottom bar shows the pod status mix as segments: ready
+          (green) + not-ready (amber when degraded, red when
+          critical — same ramp as the three-dot glyph). Unlike the
+          previous single green fill, the broken portion is drawn
+          instead of implied by missing bar, so "9 of 10 ready" and
+          "10 of 10 ready" stop looking identical at a glance. A 0%
+          ready namespace renders fully red — no floor sliver
+          needed. */}
+      <div className="mt-2.5 h-[3px] rounded-full bg-kb-elevated overflow-hidden flex">
+        {readyPods > 0 && (
+          <div className="h-full bg-status-ok" style={{ width: `${ratio * 100}%` }} />
+        )}
+        {totalPods - readyPods > 0 && (
+          <div
+            className={`h-full ${health === 'critical' ? 'bg-status-error' : 'bg-status-warn'}`}
+            style={{ width: `${(1 - ratio) * 100}%` }}
+          />
+        )}
       </div>
     </Link>
   )
