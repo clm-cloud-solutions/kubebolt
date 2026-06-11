@@ -39,6 +39,11 @@ interface ReferenceLineSpec {
   // space-separated word of `label`. Useful when the label has punctuation
   // that doesn't make a clean toggle pill (e.g. "request / limit 100m").
   shortLabel?: string
+  // Start with the line toggled off — the pill still renders, one
+  // click shows it. Use for context lines that sit an order of
+  // magnitude above the data (e.g. cluster capacity vs actual usage)
+  // and would squash the curves if drawn by default.
+  defaultHidden?: boolean
 }
 
 // Vertical event markers — used for "something happened at this
@@ -137,6 +142,24 @@ interface MetricChartProps {
   // cluster_id label. Default false keeps every existing dashboard
   // unchanged.
   bypassClusterScope?: boolean
+
+  // When set, the reference-line toggle state persists to
+  // localStorage under this key (e.g. "capacity-cpu") so a user who
+  // hides the limits line — or shows the defaultHidden capacity line
+  // — keeps that choice across visits. Stored as the pills' stable
+  // shortLabel keys, not the full labels (those embed live values
+  // like "limit 2800m" and would invalidate on every change). Omit
+  // for session-only toggles.
+  refsPersistKey?: string
+}
+
+const REFS_PERSIST_PREFIX = 'kb-chart-hidden-refs:'
+
+// Stable identity for a reference line's toggle pill — shortLabel
+// when provided, else the label's first word. Doubles as the
+// localStorage unit for refsPersistKey.
+function refKey(rl: ReferenceLineSpec): string {
+  return rl.shortLabel ?? rl.label.split(' ')[0]
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -310,6 +333,7 @@ export function MetricChart({
   accents,
   chartType = 'area',
   tooltipExtra,
+  refsPersistKey,
 }: MetricChartProps) {
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
@@ -319,15 +343,39 @@ export function MetricChart({
   const rangeMinutes = controlledRangeMinutes ?? internalRangeMinutes
   const setRangeMinutes = setInternalRangeMinutes
   const [hidden, setHidden] = useState<Set<string>>(new Set())
-  const [hiddenRefs, setHiddenRefs] = useState<Set<string>>(new Set())
+  // hiddenRefs holds refKey()s (stable pill identities), not full
+  // labels — labels embed live values and would reset the toggle
+  // every time the underlying number moves. A stored preference
+  // (refsPersistKey) wins over the specs' defaultHidden flags in both
+  // directions: the user's last explicit choice is the contract.
+  const [hiddenRefs, setHiddenRefs] = useState<Set<string>>(() => {
+    if (refsPersistKey) {
+      try {
+        const stored = JSON.parse(localStorage.getItem(REFS_PERSIST_PREFIX + refsPersistKey) ?? '')
+        if (Array.isArray(stored)) {
+          return new Set(stored.filter((k): k is string => typeof k === 'string'))
+        }
+      } catch {
+        // Missing / corrupt entry — fall through to defaults.
+      }
+    }
+    return new Set((referenceLines ?? []).filter(r => r.defaultHidden).map(refKey))
+  })
   const gradPrefix = useId().replace(/:/g, '') // unique prefix per chart instance
-  const effectiveRefs = referenceLines?.filter(rl => !hiddenRefs.has(rl.label))
+  const effectiveRefs = referenceLines?.filter(rl => !hiddenRefs.has(refKey(rl)))
 
-  const toggleRef = (label: string) => {
+  const toggleRef = (key: string) => {
     setHiddenRefs(prev => {
       const next = new Set(prev)
-      if (next.has(label)) next.delete(label)
-      else next.add(label)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      if (refsPersistKey) {
+        try {
+          localStorage.setItem(REFS_PERSIST_PREFIX + refsPersistKey, JSON.stringify(Array.from(next)))
+        } catch {
+          // Storage unavailable (private mode, quota) — toggle still works for the session.
+        }
+      }
       return next
     })
   }
@@ -484,13 +532,13 @@ export function MetricChart({
           {hasData && referenceLines && referenceLines.length > 0 && (
             <div className="flex items-center gap-1.5">
               {referenceLines.map((rl) => {
-                const shortLabel = rl.shortLabel ?? rl.label.split(' ')[0]
-                const visible = !hiddenRefs.has(rl.label)
+                const shortLabel = refKey(rl)
+                const visible = !hiddenRefs.has(shortLabel)
                 const color = rl.color ?? 'var(--kb-text-tertiary)'
                 return (
                   <button
-                    key={rl.label}
-                    onClick={() => toggleRef(rl.label)}
+                    key={shortLabel}
+                    onClick={() => toggleRef(shortLabel)}
                     className={`group flex items-center gap-1.5 px-2 py-1 rounded border text-[10px] font-mono transition-all ${
                       visible
                         ? 'border-kb-border bg-kb-elevated/40 text-kb-text-primary hover:border-kb-border-active'
