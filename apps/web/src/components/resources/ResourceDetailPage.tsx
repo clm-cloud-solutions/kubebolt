@@ -6,6 +6,7 @@ import { YamlViewer } from '@/components/shared/YamlViewer'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
+import { buildCpuRefs, buildMemRefs, formatMemoryShort } from '@/utils/metricRefs'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut, Bug } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
@@ -2761,40 +2762,9 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
-
-type RefSpec = { y: number; label: string; color?: string; shortLabel?: string }
-
-function buildCpuRefs(request: number | null, limit: number | null): RefSpec[] {
-  // When request === limit (common for guaranteed QoS pods), the two lines
-  // overlap and their labels collide. Render them as one combined line.
-  if (request != null && limit != null && Math.abs(request - limit) < 1e-9) {
-    return [{
-      y: limit,
-      label: `request / limit ${(limit * 1000).toFixed(0)}m`,
-      color: '#ef4444',
-      shortLabel: 'req/limit',
-    }]
-  }
-  const refs: RefSpec[] = []
-  if (request != null) refs.push({ y: request, label: `request ${(request * 1000).toFixed(0)}m` })
-  if (limit != null) refs.push({ y: limit, label: `limit ${(limit * 1000).toFixed(0)}m`, color: '#ef4444' })
-  return refs
-}
-
-function buildMemRefs(request: number | null, limit: number | null): RefSpec[] {
-  if (request != null && limit != null && request === limit) {
-    return [{
-      y: limit,
-      label: `request / limit ${formatMemoryShort(limit)}`,
-      color: '#ef4444',
-      shortLabel: 'req/limit',
-    }]
-  }
-  const refs: RefSpec[] = []
-  if (request != null) refs.push({ y: request, label: `request ${formatMemoryShort(request)}` })
-  if (limit != null) refs.push({ y: limit, label: `limit ${formatMemoryShort(limit)}`, color: '#ef4444' })
-  return refs
-}
+// buildCpuRefs / buildMemRefs / formatMemoryShort moved to
+// utils/metricRefs.ts — shared with the Capacity dashboard so both
+// surfaces render identical request/limit overlays.
 
 // escapeRegex quotes characters that are special in PromQL =~ matchers.
 // Resource names follow DNS-1123 (alphanumeric + dashes), but we still
@@ -2835,14 +2805,6 @@ function podResourceSums(item: ResourceItem): {
     memoryRequest: anyMemReq ? memReq : null,
     memoryLimit: anyMemLim ? memLim : null,
   }
-}
-
-function formatMemoryShort(bytes: number): string {
-  const abs = Math.abs(bytes)
-  if (abs < 1024) return `${bytes} B`
-  if (abs < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KiB`
-  if (abs < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(0)} MiB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`
 }
 
 // MonitorDonuts renders the snapshot view (current CPU/Memory from

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { useInsights } from '@/hooks/useInsights'
 import { InsightCard } from './InsightCard'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -19,7 +20,16 @@ const DEFAULT_PAGE_SIZE = 10
 const PAGE_SIZE_KEY = 'kb-insights-page-size'
 
 export function InsightsList() {
-  const [severity, setSeverity] = useState<SeverityFilter>('')
+  // Severity filter lives in the URL so dashboard deep links
+  // (/insights?severity=warning from the KPI legend rows) land
+  // pre-filtered and the view is bookmarkable. Unknown values fall
+  // back to '' (All) instead of silently filtering by garbage.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const rawSeverity = searchParams.get('severity') ?? ''
+  const severity: SeverityFilter =
+    rawSeverity === 'critical' || rawSeverity === 'warning' || rawSeverity === 'info'
+      ? rawSeverity
+      : ''
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
     const stored = Number(localStorage.getItem(PAGE_SIZE_KEY))
@@ -40,7 +50,15 @@ export function InsightsList() {
 
   // Changing the severity filter resets to page 1.
   function selectSeverity(v: SeverityFilter) {
-    setSeverity(v)
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev)
+        if (v) next.set('severity', v)
+        else next.delete('severity')
+        return next
+      },
+      { replace: true },
+    )
     setPage(1)
   }
 

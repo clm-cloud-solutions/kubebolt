@@ -1,4 +1,5 @@
-import { Layers } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Layers, ArrowRight, CheckCircle2 } from 'lucide-react'
 import type { ClusterOverview, WorkloadSummary } from '@/types/kubernetes'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
@@ -86,6 +87,21 @@ function HealthRow({ label, kind, ready, total, unhealthy }: HealthRowProps) {
   )
 }
 
+// Route segment per kind for the Needs-attention deep links —
+// matches the resource detail route shape /:type/:namespace/:name.
+const KIND_ROUTE: Record<string, string> = {
+  Deployment: 'deployments',
+  StatefulSet: 'statefulsets',
+  DaemonSet: 'daemonsets',
+}
+const KIND_SHORT: Record<string, string> = {
+  Deployment: 'dep',
+  StatefulSet: 'sts',
+  DaemonSet: 'ds',
+}
+
+const ATTENTION_CAP = 5
+
 export function WorkloadHealth({ overview }: WorkloadHealthProps) {
   // Walk namespaceWorkloads once and bucket by kind so each HealthRow
   // can pull its own list in O(1). The connector only populates
@@ -102,6 +118,13 @@ export function WorkloadHealth({ overview }: WorkloadHealthProps) {
       }
     }
   }
+  // Needs-attention list: every unhealthy workload across kinds, in
+  // the same kind order as the bars above. This fills the card's
+  // lower half with the names the bars only count — the "29/29 vs
+  // 28/29, but WHICH one?" gap.
+  const attention = ['Deployment', 'StatefulSet', 'DaemonSet'].flatMap(
+    (k) => unhealthyByKind.get(k) ?? [],
+  )
 
   return (
     <div className="bg-kb-card border border-kb-border rounded-[10px] p-4">
@@ -141,6 +164,62 @@ export function WorkloadHealth({ overview }: WorkloadHealthProps) {
           unhealthy={[]}
         />
       </div>
+
+      <div className="mt-4 pt-3 border-t border-kb-border/60">
+        <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary mb-2">
+          Needs attention
+        </div>
+        {attention.length === 0 ? (
+          <div className="flex items-center gap-1.5 text-xs font-mono text-kb-text-tertiary">
+            <CheckCircle2 className="w-3.5 h-3.5 text-status-ok" />
+            all workloads healthy
+          </div>
+        ) : (
+          <div className="space-y-1.5">
+            {attention.slice(0, ATTENTION_CAP).map((w) => (
+              <AttentionRow key={`${w.kind}/${w.namespace}/${w.name}`} workload={w} />
+            ))}
+            {attention.length > ATTENTION_CAP && (
+              <div className="text-[10px] font-mono text-kb-text-tertiary pt-0.5">
+                +{attention.length - ATTENTION_CAP} more degraded
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
+  )
+}
+
+// AttentionRow — one degraded workload: amber dot, kind tag, name
+// (links to the resource detail page), ready ratio. Hover brightens
+// and reveals the arrow, same affordance as the KPI legend rows.
+function AttentionRow({ workload: w }: { workload: WorkloadSummary }) {
+  const route = KIND_ROUTE[w.kind]
+  const ratio = `${w.readyReplicas ?? 0}/${w.replicas ?? 0}`
+  const inner = (
+    <>
+      <span className="w-2 h-2 rounded-full shrink-0 bg-status-warn" />
+      <span className="text-kb-text-tertiary shrink-0 w-7">{KIND_SHORT[w.kind] ?? w.kind.toLowerCase()}</span>
+      <span
+        className="text-kb-text-secondary group-hover:text-kb-text-primary transition-colors truncate"
+        title={`${w.namespace}/${w.name}`}
+      >
+        {w.name}
+      </span>
+      <span className="ml-auto tabular-nums text-status-warn shrink-0">{ratio}</span>
+      <ArrowRight className="w-3 h-3 shrink-0 text-kb-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity" />
+    </>
+  )
+  if (!route) {
+    return <div className="flex items-center gap-2 text-xs font-mono">{inner}</div>
+  }
+  return (
+    <Link
+      to={`/${route}/${w.namespace}/${w.name}`}
+      className="flex items-center gap-2 text-xs font-mono group"
+    >
+      {inner}
+    </Link>
   )
 }

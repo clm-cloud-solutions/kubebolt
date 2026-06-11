@@ -2039,13 +2039,29 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = filtered
 	}
 
-	// Filter by status
+	// Filter by status. The pseudo-status "degraded" mirrors the
+	// overview's Warning bucket (buildClusterOverview): everything
+	// that is neither healthy (Running fully-ready, Succeeded) nor
+	// terminal-failed. Needed because those pods carry heterogeneous
+	// status strings (Pending, CrashLoopBackOff, ImagePullBackOff,
+	// or plain "Running" with containers not ready) that no single
+	// exact match can capture — the dashboard's "Degraded" KPI row
+	// links here.
 	if status != "" {
 		status = strings.ToLower(status)
 		filtered := items[:0]
 		for _, item := range items {
 			s, _ := item["status"].(string)
-			if strings.ToLower(s) == status {
+			sl := strings.ToLower(s)
+			if status == "degraded" {
+				if sl == "succeeded" || sl == "completed" || sl == "failed" {
+					continue
+				}
+				if sl == "running" && itemFullyReady(item) {
+					continue
+				}
+				filtered = append(filtered, item)
+			} else if sl == status {
 				filtered = append(filtered, item)
 			}
 		}
@@ -2529,6 +2545,25 @@ func safeAnnotations(m map[string]string) map[string]string {
 		filtered[k] = v
 	}
 	return filtered
+}
+
+// itemFullyReady reports whether a list item's "ready" field ("2/2"
+// for pods) shows every container ready. Items without the field (or
+// with a shape we don't recognize) count as fully ready so the
+// "degraded" pseudo-status filter never catches resource types that
+// don't carry readiness.
+func itemFullyReady(item map[string]interface{}) bool {
+	readyStr, _ := item["ready"].(string)
+	parts := strings.Split(readyStr, "/")
+	if len(parts) != 2 {
+		return true
+	}
+	ready, err1 := strconv.Atoi(parts[0])
+	total, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return ready >= total
 }
 
 func podToMap(pod *corev1.Pod) map[string]interface{} {
