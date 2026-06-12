@@ -350,7 +350,7 @@ scrape:
     # kubebolt chart (deploy/helm/kubebolt). Both pins are listed in
     # CLAUDE.md "Third-party image pins" table; the release pipeline's
     # preflight-third-party-scan now Trivy-scans both and fails on drift.
-    tag: v1.145.0
+    tag: v1.145.0-scratch
     pullPolicy: IfNotPresent
   # Where vmagent ships scraped samples. Typically the kubebolt
   # backend's remote_write receiver:

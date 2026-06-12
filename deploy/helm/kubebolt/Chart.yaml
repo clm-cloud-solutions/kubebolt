@@ -2,8 +2,8 @@ apiVersion: v2
 name: kubebolt
 description: Instant Kubernetes Monitoring & Management — full cluster visibility in under 2 minutes
 type: application
-version: 1.15.0-rc.2
-appVersion: "1.15.0-rc.2"
+version: 1.15.0-rc.3
+appVersion: "1.15.0-rc.3"
 home: https://github.com/clm-cloud-solutions/kubebolt
 icon: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png
 sources:
