@@ -75,7 +75,7 @@ services:
     ports: ["3000:3000"]
     depends_on: [api]
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.145.0-rc0
+    image: victoriametrics/victoria-metrics:v1.145.0
     ports: ["8428:8428"]
     volumes:
       - kubebolt-vm-data:/victoria-metrics-data
