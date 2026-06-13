@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Unplug, ShieldAlert, Loader2, Cable } from 'lucide-react'
+import { Unplug, ShieldAlert, Loader2, Cable, X } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
@@ -106,6 +106,31 @@ export function Layout() {
   const totalResources = permissions ? Object.keys(permissions).length : undefined
   const isLimited = permittedCount != null && totalResources != null && permittedCount < totalResources
 
+  // The limited-access banner is dismissible, persisted per cluster + access
+  // shape — so dismissing one cluster's banner doesn't hide it on another, and
+  // it re-appears if this cluster's accessible-type count later changes (an RBAC
+  // shift the operator should notice).
+  const limitedDismissKey =
+    isLimited && overview
+      ? `kb-limited-access-dismissed:${overview.clusterUID ?? overview.clusterName ?? ''}:${permittedCount}/${totalResources}`
+      : ''
+  const [limitedBannerDismissed, setLimitedBannerDismissed] = useState(false)
+  useEffect(() => {
+    if (!limitedDismissKey) {
+      setLimitedBannerDismissed(false)
+      return
+    }
+    setLimitedBannerDismissed(localStorage.getItem(limitedDismissKey) === 'true')
+  }, [limitedDismissKey])
+  const dismissLimitedBanner = () => {
+    try {
+      if (limitedDismissKey) localStorage.setItem(limitedDismissKey, 'true')
+    } catch {
+      /* localStorage unavailable — dismiss for this session only */
+    }
+    setLimitedBannerDismissed(true)
+  }
+
   // Copilot layout — when the panel is docked AND open, give the
   // main content column a matching margin-right so it reflows to
   // the left instead of being hidden underneath the panel. The
@@ -125,10 +150,18 @@ export function Layout() {
             top:52 avoids covering it, so the cluster switcher,
             search and theme toggle stay reachable.*/}
         <Topbar overview={overview} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
-        {isLimited && (
+        {isLimited && !limitedBannerDismissed && (
           <div className="px-4 py-1.5 bg-status-warn-dim border-b border-kb-border text-xs text-status-warn flex items-center gap-2 shrink-0">
-            <ShieldAlert className="w-3.5 h-3.5" />
-            <span>Limited access — showing {permittedCount} of {totalResources} resource types</span>
+            <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1">Limited access — showing {permittedCount} of {totalResources} resource types</span>
+            <button
+              onClick={dismissLimitedBanner}
+              className="text-status-warn/70 hover:text-status-warn p-0.5 rounded hover:bg-status-warn/15 transition-colors shrink-0"
+              title="Dismiss"
+              aria-label="Dismiss limited-access banner"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
           </div>
         )}
         {/* Reservation lives on <main> instead of the column so the
