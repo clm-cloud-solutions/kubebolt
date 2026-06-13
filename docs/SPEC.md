@@ -1443,7 +1443,7 @@ Prompts are kept short deliberately — the LLM will call tools for more context
 Every triggered session logs a `trigger` field in the `copilot session` event. Enables:
 
 - **Adoption by entry point**: which triggers are used? If an entry point gets <5% of sessions, remove it — it's UI clutter earning nothing.
-- **Token cost by trigger type**: different triggers will have different average consumption. Feeds the credit calibration doc (`internal/copilot-credits-pricing-calibration.md`) with per-activity data.
+- **Token cost by trigger type**: different triggers will have different average consumption. Feeds the credit calibration doc (`internal/saas/copilot-credits-pricing-calibration.md`) with per-activity data.
 - **Conversion**: does a triggered session lead to follow-up questions from the same user (engagement) or is it a dead-end?
 
 ##### Guardrails
@@ -1818,7 +1818,7 @@ Priority: medium-low — covers specialized workload kinds that matter for speci
 
 ### Phase 3.0 — SaaS Platform
 
-Multi-tenant platform. OAuth2/SSO. Team collaboration. Custom dashboards. Billing. See `internal/ROADMAP-SAAS.md` for detailed planning.
+Multi-tenant platform. OAuth2/SSO. Team collaboration. Custom dashboards. Billing. See `internal/saas/ROADMAP-SAAS.md` for detailed planning.
 
 ---
 
