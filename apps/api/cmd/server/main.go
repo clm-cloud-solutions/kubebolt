@@ -519,7 +519,7 @@ func main() {
 		// restarts, scoped by tenant + cluster, feeding history + restart-safe
 		// notification dedup + Kobi/Autopilot provenance. Bucket created in
 		// auth.NewStore. tenantID = the auto-seeded "default" tenant in OSS.
-		insightStore = insights.NewBoltInsightStore(store.DB(), auth.InsightsBucket())
+		insightStore = newInsightStore(store.DB(), auth.InsightsBucket())
 		insightTenantID := auth.DefaultTenantName
 		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
 			insightTenantID = dt.ID
