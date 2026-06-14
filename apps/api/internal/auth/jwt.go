@@ -54,6 +54,12 @@ func (j *JWTService) GenerateAccessToken(user *User) (string, error) {
 		UserID:   user.ID,
 		Username: user.Username,
 		Role:     user.Role,
+		// TenantID stamps the user's org into the token so downstream
+		// (TenantResolver → ContextTenantID → cluster.RuntimeKey →
+		// Manager.resolveRuntime) routes per org. Empty in OSS (User.OrgID
+		// is never set → omitempty drops the claim → resolves to
+		// DefaultTenantName), so OSS tokens are byte-identical to pre-seam.
+		TenantID: user.OrgID,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

@@ -59,7 +59,13 @@ func ValidRole(r Role) bool {
 
 // User represents a KubeBolt user stored in the database.
 type User struct {
-	ID           string     `json:"id"`
+	ID string `json:"id"`
+	// OrgID is the tenant (organization) the user belongs to. Empty in OSS
+	// (single-tenant: callers resolve it to DefaultTenantName); the EE/SaaS
+	// Postgres store populates it from the users.org_id column so login can
+	// stamp it into the JWT tenant claim. omitempty keeps OSS BoltDB records
+	// and API payloads byte-identical to pre-seam.
+	OrgID        string     `json:"orgId,omitempty"`
 	Username     string     `json:"username"`
 	Email        string     `json:"email"`
 	Name         string     `json:"name"`
