@@ -1,0 +1,63 @@
+# L7 (HTTP) visibility for Hubble — Cilium clusters only.
+#
+# Cilium only emits L7/HTTP flows (which feed KubeBolt's Reliability dashboard
+# and the L7 edges on the cluster map) for traffic it redirects to its Envoy
+# proxy. That redirect happens ONLY when a CiliumNetworkPolicy with an L7 rule
+# (`rules: http`) selects the endpoint. A plain networking.k8s.io NetworkPolicy
+# (see 50-networkpolicies.yaml) enforces L3/L4 but does NOT enable L7 visibility.
+#
+# These policies are observability-only: the `http: [{}]` rule parses HTTP
+# without filtering anything. They mirror the `demo-web-http-visibility` policy
+# that ships with deploy/test/demo-workload.yaml.
+#
+# The shop tiers serve HTTP on container port 8080, so that's the port we make
+# visible. The data tier is plain TCP postgres (no HTTP) and runs no in-cluster
+# pods, so it gets no L7 policy.
+#
+# Side effect to know about: once any ingress rule selects an endpoint, Cilium
+# switches that endpoint to default-deny INGRESS. Because the shop pods only
+# ever receive HTTP on 8080, the visibility rule itself already permits all the
+# traffic they need; kubelet readiness probes (host→pod) stay allowed via
+# Cilium's allow-localhost. Egress is untouched (ingress-only policy), so the
+# backend can still reach the external database and the cascade still works.
+#
+# Requires Cilium + Hubble with L7 visibility enabled (the default on this repo's
+# kind dev cluster). On a non-Cilium CNI these CRDs won't exist — skip this file.
+#
+# Apply:  kubectl apply -f 55-l7-visibility.yaml
+# Remove: kubectl delete -f 55-l7-visibility.yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: frontend-http-visibility
+  namespace: shop-frontend
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+spec:
+  endpointSelector: {}        # every pod in the tier (shop-web, loadgen)
+  ingress:
+    - toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - {}            # parse HTTP for visibility, do not filter
+---
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: backend-http-visibility
+  namespace: shop-backend
+  labels:
+    app.kubernetes.io/part-of: kubeshop
+spec:
+  endpointSelector: {}        # every pod in the tier (orders-api, catalog-api)
+  ingress:
+    - toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - {}

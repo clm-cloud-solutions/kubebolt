@@ -1,0 +1,75 @@
+# Scenario 13 — Orphaned / zombie resources to clean up
+#
+# Symptom    : Leftovers nobody owns anymore — a ConfigMap and Service from a
+#              deleted app, plus a one-shot Job whose Completed pods linger. They
+#              clutter the namespace and the resource lists but do nothing.
+# Insight    : none directly; surfaces as orphaned objects + (optionally) the
+#              evicted/terminal-pods cleanup pathway.
+# Kobi action: propose_delete_resource — DESTRUCTIVE and IRREVERSIBLE. Kobi only
+#              proposes delete when you EXPLICITLY ask, or a resource is clearly
+#              orphaned AND you confirm it's no longer needed. The card computes
+#              a blast radius and forces you to type namespace/name to confirm.
+#
+# Try in Kobi: "the legacy-config configmap and legacy-svc are leftovers from a
+#              deleted app — delete them"
+#
+# NOTE on real Evicted pods: the evictedPodsRule fires on pods with
+#   status.reason=Evicted, which needs genuine node memory/disk pressure (hard
+#   to force reliably on kind). The completed Job pods below stand in as the
+#   "terminal pods piling up, just clean them" case.
+#
+# Clean up   : kubectl delete -f 13-orphaned-resources.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: legacy-config
+  namespace: kobi-incident-lab
+  labels:
+    incident: orphaned-resources
+    owner: deleted-app
+data:
+  note: "Left behind when legacy-app was removed. Safe to delete."
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: legacy-svc
+  namespace: kobi-incident-lab
+  labels:
+    incident: orphaned-resources
+    owner: deleted-app
+spec:
+  selector:
+    app: legacy-app   # the app is gone; this selector matches nothing
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: one-shot-migration
+  namespace: kobi-incident-lab
+  labels:
+    incident: orphaned-resources
+spec:
+  ttlSecondsAfterFinished: 86400   # keep the Completed pod around for the demo
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app: one-shot-migration
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: alpine:3.20
+          command: ["sh", "-c", "echo '[migration] done'; exit 0"]
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 50m
+              memory: 32Mi

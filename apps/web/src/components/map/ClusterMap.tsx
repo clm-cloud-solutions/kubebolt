@@ -1728,7 +1728,7 @@ function ClusterMapInner() {
                     No traffic observed (last 1m)
                   </h4>
                   <Link
-                    to="/admin/integrations"
+                    to="/admin/agents?tab=integrations"
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md border border-kb-border text-kb-text-secondary text-[11px] font-medium hover:bg-kb-elevated hover:text-kb-text-primary transition-colors shrink-0"
                   >
                     Check agent setup
@@ -1760,7 +1760,7 @@ function ClusterMapInner() {
                     Live traffic requires the KubeBolt Agent
                   </h4>
                   <Link
-                    to="/admin/integrations"
+                    to="/admin/agents?tab=integrations"
                     className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md bg-kb-accent text-white text-[11px] font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all shrink-0"
                   >
                     Install agent

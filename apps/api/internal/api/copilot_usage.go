@@ -36,58 +36,62 @@ func parseRange(q string) (from, to time.Time) {
 	return to.Add(-7 * 24 * time.Hour), to
 }
 
-// usageSummaryResponse is the shape consumed by the admin "Copilot Usage" tiles.
+// usageSummaryResponse is the shape consumed by the admin "Kobi Usage" tiles —
+// reused per breakdown group when ?groupBy= is set.
 type usageSummaryResponse struct {
-	Range         string  `json:"range"`
-	Sessions      int     `json:"sessions"`
-	ErrorSessions int     `json:"errorSessions"`
-	InputTokens   int     `json:"inputTokens"`
-	OutputTokens  int     `json:"outputTokens"`
-	CacheRead     int     `json:"cacheReadTokens"`
-	CacheCreation int     `json:"cacheCreationTokens"`
-	TotalBilled   int     `json:"totalBilledTokens"` // input + output (excludes cache read discount)
-	CacheHitPct   float64 `json:"cacheHitPct"`
-	AvgRounds     float64 `json:"avgRounds"`
-	AvgDurationMs int64   `json:"avgDurationMs"`
-	Compacts      int     `json:"compacts"`
-	EstimatedUSD  float64 `json:"estimatedUsd"`
-	TopTools      []toolSummary `json:"topTools"`
-	TopTriggers   map[string]int `json:"topTriggers"`
+	Range string `json:"range,omitempty"`
+	// Sessions counts every SessionRecord (incl. AUX records — auto_title /
+	// manual_compact — which are real spend). InteractiveSessions excludes
+	// those, for honest adoption metrics.
+	Sessions            int     `json:"sessions"`
+	InteractiveSessions int     `json:"interactiveSessions"`
+	ErrorSessions       int     `json:"errorSessions"`
+	MaxRoundsSessions   int     `json:"maxRoundsSessions"`
+	FallbackSessions    int     `json:"fallbackSessions"`
+	ErrorRate           float64 `json:"errorRate"`    // ErrorSessions / Sessions * 100
+	FallbackRate        float64 `json:"fallbackRate"` // FallbackSessions / Sessions * 100
+	InputTokens         int     `json:"inputTokens"`
+	OutputTokens        int     `json:"outputTokens"`
+	CacheRead           int     `json:"cacheReadTokens"`
+	CacheCreation       int     `json:"cacheCreationTokens"`
+	TotalBilled         int     `json:"totalBilledTokens"` // input + output (excludes cache read discount)
+	CacheHitPct         float64 `json:"cacheHitPct"`
+	AvgRounds           float64 `json:"avgRounds"`
+	AvgDurationMs       int64   `json:"avgDurationMs"`
+	Compacts            int     `json:"compacts"`
+	EstimatedUSD        float64 `json:"estimatedUsd"`
+	TopTools            []toolSummary  `json:"topTools"`
+	TopTriggers         map[string]int `json:"topTriggers"`
 }
 
-type toolSummary struct {
-	Name       string `json:"name"`
-	Calls      int    `json:"calls"`
-	Errors     int    `json:"errors"`
-	TotalBytes int    `json:"bytes"`
+// isAuxTrigger marks out-of-loop LLM calls (title generation, standalone
+// manual compaction). They are real token spend but NOT interactive sessions —
+// excluded from InteractiveSessions / adoption, included in cost/tokens.
+func isAuxTrigger(t string) bool {
+	return t == "auto_title" || t == "manual_compact"
 }
 
-func (h *handlers) handleCopilotUsageSummary(w http.ResponseWriter, r *http.Request) {
-	if h.copilotUsage == nil {
-		respondError(w, http.StatusServiceUnavailable, "copilot usage store not initialized (auth disabled)")
-		return
-	}
-	rng := r.URL.Query().Get("range")
-	from, to := parseRange(rng)
-
-	records, err := h.copilotUsage.Query(from, to, 0)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	resp := usageSummaryResponse{
-		Range:       rng,
-		TopTriggers: map[string]int{},
-	}
+// computeUsageSummary aggregates a set of session records into the summary
+// shape (rates finalized). Reused for the whole window and per breakdown group.
+func computeUsageSummary(records []copilot.SessionRecord) usageSummaryResponse {
+	resp := usageSummaryResponse{TopTriggers: map[string]int{}}
 	var durSum int64
 	var roundsSum int
 	toolAgg := map[string]*toolSummary{}
 
 	for _, rec := range records {
 		resp.Sessions++
+		if !isAuxTrigger(rec.Trigger) {
+			resp.InteractiveSessions++
+		}
 		if rec.Reason != "done" {
 			resp.ErrorSessions++
+		}
+		if rec.Reason == "max_rounds" {
+			resp.MaxRoundsSessions++
+		}
+		if rec.Fallback {
+			resp.FallbackSessions++
 		}
 		resp.InputTokens += rec.Usage.InputTokens
 		resp.OutputTokens += rec.Usage.OutputTokens
@@ -111,6 +115,8 @@ func (h *handlers) handleCopilotUsageSummary(w http.ResponseWriter, r *http.Requ
 			agg.TotalBytes += t.Bytes
 		}
 
+		// Per-record pricing (each session priced by its own model) so a mixed
+		// model group sums correctly.
 		if pricing, known := copilot.PricingFor(rec.Provider, rec.Model); known {
 			resp.EstimatedUSD += copilot.EstimateUSD(rec.Usage, pricing)
 		}
@@ -124,6 +130,8 @@ func (h *handlers) handleCopilotUsageSummary(w http.ResponseWriter, r *http.Requ
 	if resp.Sessions > 0 {
 		resp.AvgRounds = float64(roundsSum) / float64(resp.Sessions)
 		resp.AvgDurationMs = durSum / int64(resp.Sessions)
+		resp.ErrorRate = float64(resp.ErrorSessions) / float64(resp.Sessions) * 100
+		resp.FallbackRate = float64(resp.FallbackSessions) / float64(resp.Sessions) * 100
 	}
 
 	// Top 10 tools by call count.
@@ -136,8 +144,125 @@ func (h *handlers) handleCopilotUsageSummary(w http.ResponseWriter, r *http.Requ
 		tools = tools[:10]
 	}
 	resp.TopTools = tools
+	return resp
+}
 
-	respondJSON(w, http.StatusOK, resp)
+// usageBreakdownResponse is returned when ?groupBy= is set on the summary
+// endpoint — one summary per group, sorted by cost desc.
+type usageBreakdownResponse struct {
+	Range   string       `json:"range"`
+	GroupBy string       `json:"groupBy"`
+	Groups  []usageGroup `json:"groups"`
+}
+
+type usageGroup struct {
+	Key     string               `json:"key"`
+	Summary usageSummaryResponse `json:"summary"`
+}
+
+func validGroupBy(s string) bool {
+	switch s {
+	case "user", "trigger", "cluster", "model", "reason", "conversation":
+		return true
+	}
+	return false
+}
+
+// groupKeyFor extracts the breakdown key for a record. Empty values are
+// bucketed explicitly so they aren't silently dropped.
+func groupKeyFor(rec copilot.SessionRecord, groupBy string) string {
+	switch groupBy {
+	case "user":
+		if rec.UserID == "" {
+			return "(unknown)"
+		}
+		return rec.UserID
+	case "trigger":
+		if rec.Trigger == "" {
+			return "manual"
+		}
+		return rec.Trigger
+	case "cluster":
+		if rec.Cluster == "" {
+			return "(unattached)"
+		}
+		return rec.Cluster
+	case "model":
+		// Resolve empty model to the provider default so pricing + display
+		// reflect the model actually used.
+		m := copilot.ResolvedModel(rec.Provider, rec.Model)
+		if m == "" {
+			return rec.Provider
+		}
+		return rec.Provider + " · " + m
+	case "reason":
+		if rec.Reason == "" {
+			return "unknown"
+		}
+		return rec.Reason
+	case "conversation":
+		if rec.ConversationID == "" {
+			return "(aux)"
+		}
+		return rec.ConversationID
+	}
+	return ""
+}
+
+type toolSummary struct {
+	Name       string `json:"name"`
+	Calls      int    `json:"calls"`
+	Errors     int    `json:"errors"`
+	TotalBytes int    `json:"bytes"`
+}
+
+func (h *handlers) handleCopilotUsageSummary(w http.ResponseWriter, r *http.Request) {
+	if h.copilotUsage == nil {
+		respondError(w, http.StatusServiceUnavailable, "copilot usage store not initialized (auth disabled)")
+		return
+	}
+	rng := r.URL.Query().Get("range")
+	from, to := parseRange(rng)
+	groupBy := r.URL.Query().Get("groupBy")
+
+	records, err := h.copilotUsage.Query(from, to, 0)
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// No groupBy → the single window aggregate (backward-compatible).
+	if groupBy == "" {
+		resp := computeUsageSummary(records)
+		resp.Range = rng
+		respondJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	if !validGroupBy(groupBy) {
+		respondError(w, http.StatusBadRequest, "invalid groupBy (use user|trigger|cluster|model|reason|conversation)")
+		return
+	}
+
+	grouped := map[string][]copilot.SessionRecord{}
+	for _, rec := range records {
+		key := groupKeyFor(rec, groupBy)
+		grouped[key] = append(grouped[key], rec)
+	}
+	groups := make([]usageGroup, 0, len(grouped))
+	for key, recs := range grouped {
+		groups = append(groups, usageGroup{Key: key, Summary: computeUsageSummary(recs)})
+	}
+	// Cost desc, then sessions desc — the dashboard re-sorts client-side by the
+	// chosen metric, but a sensible server default keeps the top spenders first.
+	sort.Slice(groups, func(i, j int) bool {
+		if groups[i].Summary.EstimatedUSD != groups[j].Summary.EstimatedUSD {
+			return groups[i].Summary.EstimatedUSD > groups[j].Summary.EstimatedUSD
+		}
+		return groups[i].Summary.Sessions > groups[j].Summary.Sessions
+	})
+
+	respondJSON(w, http.StatusOK, usageBreakdownResponse{Range: rng, GroupBy: groupBy, Groups: groups})
 }
 
 type timeseriesBucket struct {

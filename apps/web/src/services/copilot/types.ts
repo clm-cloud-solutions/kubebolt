@@ -9,10 +9,10 @@ export interface CopilotMessage {
   toolCalls?: CopilotToolCall[]
   toolResults?: CopilotToolResult[]
   timestamp: Date
-  /** Optional message kind; 'compact-notice' renders as an inline banner
-   * marking where auto- or manual compaction happened and never gets sent
-   * to the provider. */
-  kind?: 'compact-notice'
+  /** Optional message kind. 'compact-notice' marks where compaction happened;
+   * 'maxrounds-notice' marks where a turn hit the tool-step limit and offers a
+   * Continue control. Neither is ever sent to the provider. */
+  kind?: 'compact-notice' | 'maxrounds-notice'
   compactMeta?: {
     turnsFolded: number
     toolResultsStubbed: number
@@ -21,6 +21,13 @@ export interface CopilotMessage {
     model?: string
     auto: boolean
   }
+  /** Set on a 'maxrounds-notice' message: the step limit that was reached, so
+   * the banner can show "reached the step limit (N)". */
+  maxRoundsLimit?: number
+  /** Set on the assistant turn the user stopped via the Stop button. The UI
+   * renders a "Stopped by you" marker so a half-finished (or empty) answer
+   * reads as a deliberate cancel, not a hang or a completed reply. */
+  cancelled?: boolean
 }
 
 export interface CopilotToolCall {
@@ -61,10 +68,18 @@ export interface CopilotStreamEvent {
   toolName?: string
   error?: string
   fallback?: boolean
+  // "meta" / "done" payload: the persisted conversation id. Sent early in a
+  // `meta` event (so a mid-stream refresh can still resume) and echoed on
+  // `done`. Empty/absent when persistence isn't wired (auth/BoltDB disabled).
+  conversationId?: string
   // "usage" event payload: per-round delta and running session totals
   round?: number
   turn?: CopilotUsage
   session?: CopilotUsage
+  // "meta" event payload: the turn hit the tool-call step limit; value is the
+  // limit N. The UI renders a deterministic "reached step limit" notice with a
+  // Continue control regardless of what the model's closing text says.
+  maxRoundsReached?: number
   // "compact" event payload: auto-compaction occurred mid-session
   turnsFolded?: number
   toolResultsStubbed?: number
@@ -79,6 +94,7 @@ export interface CopilotStreamEvent {
     content: string
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
+    timestamp?: string
   }>
 }
 
@@ -89,6 +105,7 @@ export interface CompactResponse {
     content: string
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
+    timestamp?: string
   }>
   tokensBefore: number
   tokensAfter: number
@@ -156,6 +173,16 @@ export interface ActionProposal {
   // scale was issued in the meantime) and report a confusing "still in
   // progress" line for an action that already finished cleanly.
   progressSettled?: boolean
+  // Terminal NON-convergence: the poller hit the configurable progress
+  // timeout while the action was applied-but-not-converged (e.g. scale 3→4
+  // blocked by a namespace ResourceQuota). Distinct from progressSettled
+  // (which also covers clean completion) so the card can render an honest
+  // "did not converge" state instead of a spinner that never resolves, and
+  // so re-mounts don't re-arm the poller. Set once, alongside progressSettled.
+  progressOutcome?: 'stalled'
+  // Human-readable last-observed progress at the moment of the stall, e.g.
+  // "Scale to 4: 2/4 ready". Surfaced in the terminal card + fed to Kobi.
+  progressDetail?: string
 }
 
 /**
@@ -293,6 +320,50 @@ export function parseWorkloadMetrics(content: string): WorkloadMetricsResponse |
   return null
 }
 
+// ─── Conversation history (persist + resume) ───────────────────────
+//
+// Conversations are personal (per user). The list endpoint returns metadata
+// only (ConversationSummary); the detail endpoint returns the full transcript
+// (ConversationDetail) so the panel can rehydrate and resume.
+
+export interface ConversationSummary {
+  id: string
+  title: string
+  clusterId: string
+  preview: string
+  messageCount: number
+  createdAt: string // RFC3339
+  updatedAt: string // RFC3339
+  provider?: string
+  model?: string
+  trigger?: string
+  originatingInsightId?: string
+  archived?: boolean
+}
+
+export interface ConversationDetail {
+  id: string
+  tenantId: string
+  userId: string
+  clusterId: string
+  title: string
+  createdAt: string
+  updatedAt: string
+  provider?: string
+  model?: string
+  messages: Array<{
+    role: CopilotRole
+    content?: string
+    toolCalls?: CopilotToolCall[]
+    toolResults?: CopilotToolResult[]
+    timestamp?: string
+  }>
+  lastRoundUsage?: CopilotUsage
+  trigger?: string
+  originatingInsightId?: string
+  archived?: boolean
+}
+
 export interface CopilotConfig {
   enabled: boolean
   provider: string
@@ -302,6 +373,11 @@ export interface CopilotConfig {
   sessionBudget?: number
   compactTrigger?: number
   autoCompact?: boolean
+  // How long (ms) the UI polls an executed action for convergence before
+  // declaring it stalled and asking Kobi to investigate. Server-side:
+  // KUBEBOLT_AI_ACTION_PROGRESS_TIMEOUT. Falls back to a client default
+  // when absent (older backend).
+  actionProgressTimeoutMs?: number
   // When true (default), the chat panel renders persistent collapsible
   // cards for each tool call (name + status + result). When false, the
   // panel keeps only the final assistant text and a transient loading

@@ -17,6 +17,7 @@ import (
 	"github.com/golang/snappy"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
 // promWriteEnabled returns true when the operator opted into the
@@ -247,25 +248,28 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusUnauthorized, "empty Bearer token")
 		return nil, false
 	}
-	tenant, tok, err := h.tenantsStore.LookupByToken(token)
-	if err != nil {
+	// Validate the token (ingest store), then gate on the owning tenant
+	// (the tenant store owns Disabled now that tokens aren't inlined).
+	tok, lookErr := h.ingestTokens.Lookup(token)
+	var tenant *auth.Tenant
+	if lookErr == nil {
+		tenant, lookErr = h.tenantsStore.GetTenant(tok.TenantID)
+		if lookErr == nil && tenant.Disabled {
+			lookErr = auth.ErrTenantDisabled
+		}
+	}
+	if lookErr != nil {
 		if mode == promWriteAuthPermissive {
-			logPromWriteFallback("bad-bearer", r.RemoteAddr, err.Error())
+			logPromWriteFallback("bad-bearer", r.RemoteAddr, lookErr.Error())
 			return h.resolveDefaultIngestTenant(), true
 		}
 		respondError(w, http.StatusUnauthorized, "invalid ingest token")
 		return nil, false
 	}
-	// Mark the token as recently used so the Prometheus integration
-	// card (and any future operator-facing heartbeat panel) can
-	// resolve "is this Prom currently pushing?" without needing the
-	// receiver's own /metrics counters. MarkUsed is debounced
-	// internally — high-rate ingest doesn't pound BoltDB.
-	if tok != nil {
-		// Best-effort: a debounce miss isn't worth failing the request
-		// over. The heartbeat is a hint, not a billing primitive.
-		_ = h.tenantsStore.MarkUsed(tenant.ID, tok.ID, time.Now())
-	}
+	// Mark the token recently used so the Prometheus integration card can
+	// resolve "is this Prom currently pushing?". Debounced internally —
+	// high-rate ingest doesn't pound BoltDB; a miss isn't worth failing on.
+	_ = h.ingestTokens.MarkUsed(tok.TenantID, tok.ID, time.Now())
 	return tenant, true
 }
 
@@ -517,6 +521,20 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	// client preserves the granular error.
 	h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusAccepted)
 	h.promWriteMetrics.RecordAcceptedSamples(tenantID, sampleCount, len(body))
+
+	// W1 metering: record the billable samples through the usage seam. OSS's
+	// no-op makes this free; EE's impl buffers it toward the monthly roll-up.
+	// Distinct from the Prometheus counter above (ephemeral observability) —
+	// this is the durable, invoice-reconciling signal. nil-guarded for raw
+	// test fixtures that build handlers without the seam.
+	if h.usage != nil && sampleCount > 0 {
+		_ = h.usage.Record(r.Context(), usage.UsageRecord{
+			TenantID: tenantID,
+			Metric:   usage.MetricSamplesIngested,
+			Quantity: int64(sampleCount),
+			At:       time.Now(),
+		})
+	}
 
 	// Forward the upstream response verbatim. vminsert returns 204 on
 	// success; on 4xx it includes a small text body explaining the

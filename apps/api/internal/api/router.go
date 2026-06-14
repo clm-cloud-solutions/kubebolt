@@ -13,9 +13,11 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcp"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -31,16 +33,25 @@ func NewRouter(
 	corsOrigins []string,
 	copilotCfg config.CopilotConfig,
 	copilotUsage *copilot.UsageStore,
+	// copilotConversations persists per-user Kobi transcripts for history +
+	// resume. Optional — nil when auth/persistence is disabled (chat stays
+	// ephemeral, the /copilot/conversations endpoints 503).
+	copilotConversations copilot.ConversationStore,
 	authHandlers *auth.Handlers,
 	tenantHandlers *auth.TenantHandlers,
 	notifManager *notifications.Manager,
 	integrationRegistry *integrations.Registry,
 	agentAuthEnforcement string,
 	tenantsStore *auth.TenantsStore,
+	ingestTokens auth.IngestTokenStore,
 	promWriteAuthMode string,
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
 	promWriteMetrics *PromWriteMetrics,
+	// usageStore is the W1 metering seam. Never nil — OSS passes the no-op,
+	// EE passes a Postgres-backed impl. Call sites (e.g. prom_write accepted
+	// samples) record billable usage through it unconditionally.
+	usageStore usage.UsageStore,
 	// settingsRuntime is the BoltDB-first config resolver introduced by
 	// spec #09. Optional — nil when auth/persistence is disabled (the
 	// /settings/* admin endpoints simply 503 in that mode, and the
@@ -78,18 +89,30 @@ func NewRouter(
 		settingsRuntime:      settingsRuntime,
 		bootEnv:              bootEnv,
 		copilotUsage:         copilotUsage,
+		copilotConversations: copilotConversations,
 		authHandlers:         authHandlers,
 		notifications:        notifManager,
 		integrations:         integrationRegistry,
 		agentAuthEnforcement: agentAuthEnforcement,
 		tenantsStore:         tenantsStore,
+		ingestTokens:         ingestTokens,
 		promWriteAuthMode:    promWriteAuthMode,
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
 		promWriteMetrics:     promWriteMetrics,
+		usage:                usageStore,
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
 	}
+
+	// Kobi MCP server (read-only). Built once — the executor is stateless
+	// (it only wraps the manager) and the read-only tool catalogue is
+	// static. Registered as a route inside the authenticated group below.
+	mcpServer := mcp.NewServer(
+		mcp.ServerInfo{Name: "kubebolt-kobi", Version: "1"},
+		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager)),
+		mcp.NewKobiPromptProvider(),
+	)
 
 	// Health check endpoint
 	r.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +158,20 @@ func NewRouter(
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
 			r.Use(authHandlers.RequireAuth)
+			// Restrict REST API-token callers (kbs_/kbk_) to their granted
+			// path scopes. No-op for user-session JWT callers. Must run
+			// after RequireAuth (which establishes the principal) — fail fast
+			// on out-of-scope paths before tenant/cluster resolution.
+			r.Use(authHandlers.EnforceAPITokenScope)
+			// Resolve the request's tenant (org) once, after auth, and
+			// stash it in context. OSS: always DefaultTenantName. EE swaps
+			// the resolver for real multi-tenant resolution. See
+			// auth.TenantResolver.
+			r.Use(authHandlers.ResolveTenant)
+			// Stash the request's (tenant, cluster) RuntimeKey for the
+			// connector pool (W2). Behavior-neutral until the pool reads
+			// it; threading it now keeps the pool additive to handlers.
+			r.Use(h.resolveCluster)
 
 			// Auth-protected user routes
 			r.Post("/auth/logout", authHandlers.Logout)
@@ -152,6 +189,21 @@ func NewRouter(
 				r.Delete("/{id}", authHandlers.DeleteUser)
 			})
 
+			// Teams — read-only view of the org → team → user hierarchy.
+			// OSS serves the single default team; POST is gated 409
+			// requires_ee. List/detail are open to any authenticated user
+			// (their own team); the member list is admin-only, matching the
+			// sensitivity of /users.
+			r.Route("/teams", func(r chi.Router) {
+				r.Get("/", authHandlers.ListTeams)
+				r.Get("/{id}", authHandlers.GetTeam)
+				r.Post("/", authHandlers.CreateTeam)
+				r.Group(func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Get("/{id}/members", authHandlers.ListTeamMembers)
+				})
+			})
+
 			// Cluster management — always available, no active connector required
 			r.Get("/clusters", h.listClusters)
 			r.Post("/clusters/switch", h.switchCluster)
@@ -161,6 +213,29 @@ func NewRouter(
 			// underlying poller via Settings → General. Returns
 			// {"enabled": false} when disabled at env or runtime.
 			r.Get("/update-check", h.handleUpdateCheck)
+
+			// Kobi conversation history — per-user, no active connector
+			// required (reads BoltDB) so operators can browse / resume past
+			// conversations even when the cluster is unreachable. Any logged-in
+			// role; every handler enforces (tenant, user) ownership so a user
+			// only ever sees their own. Writes happen inside /copilot/chat.
+			r.Get("/copilot/conversations", h.handleListConversations)
+			r.Get("/copilot/conversations/{id}", h.handleGetConversation)
+			r.Patch("/copilot/conversations/{id}", h.handlePatchConversation)
+			r.Delete("/copilot/conversations/{id}", h.handleDeleteConversation)
+
+			// Kobi MCP server (read-only) — exposes Kobi's read-only tool
+			// catalogue + guidance prompt to external MCP hosts (Claude Code,
+			// Cursor, CI/CD) over the Streamable HTTP transport. Mounted in the
+			// authenticated group but OUTSIDE requireConnector on purpose:
+			// initialize / tools/list must work even when the cluster is
+			// momentarily disconnected, and a tools/call then degrades to a
+			// graceful isError result. The request context already carries the
+			// (tenant, cluster) RuntimeKey from ResolveTenant + resolveCluster,
+			// so this one endpoint serves every tenant/cluster the API token is
+			// authorized for — single "default" tenant in OSS, many in EE/SaaS.
+			// Auth reuses the standard API tokens (kb_...).
+			r.Handle("/mcp", mcp.Handler(mcpServer))
 
 			// Metrics storage (VictoriaMetrics) PromQL pass-through — no cluster
 			// connection required. Data is queried from the TSDB directly.
@@ -206,6 +281,16 @@ func NewRouter(
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
 				r.Get("/admin/actions", h.handleListActions)
+			})
+
+			// REST API tokens — service tokens (kbs_) for Autopilot / EE
+			// machine callers, and customer keys (kbk_) later. Admin only.
+			// Plaintext is returned once at creation.
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/admin/api-tokens", authHandlers.ListAPITokens)
+				r.Post("/admin/api-tokens", authHandlers.CreateAPIToken)
+				r.Delete("/admin/api-tokens/{id}", authHandlers.DeleteAPIToken)
 			})
 
 			// Tenant + ingest token administration — global admin only.

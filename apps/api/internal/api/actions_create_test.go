@@ -137,6 +137,10 @@ func TestCreateKindByTypeCoverage(t *testing.T) {
 		"hpas", "horizontalpodautoscalers",
 		"storageclasses",
 		"roles", "clusterroles", "rolebindings", "clusterrolebindings",
+		// Optional CRDs + aliases the GVR map / + New picker support.
+		"pdbs", "serviceaccounts", "gateways", "httproutes",
+		"certificates", "argocdapps", "vpas",
+		"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies",
 	}
 	for _, rt := range expected {
 		if _, ok := createKindByType[rt]; !ok {

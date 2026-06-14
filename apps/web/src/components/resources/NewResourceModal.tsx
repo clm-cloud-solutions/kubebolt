@@ -47,33 +47,77 @@ const CLUSTER_SCOPED_TYPES = new Set([
   'storageclasses',
   'clusterroles',
   'clusterrolebindings',
+  'ciliumclusterwidenetworkpolicies',
 ])
 
-// Common kinds shown at the top of the picker. Order is the same as
-// the operator's typical mental model for "what do I create most?"
-const COMMON_KINDS: { type: string; label: string }[] = [
-  { type: 'pods', label: 'Pod' },
-  { type: 'deployments', label: 'Deployment' },
-  { type: 'services', label: 'Service' },
-  { type: 'configmaps', label: 'ConfigMap' },
-  { type: 'secrets', label: 'Secret' },
-  { type: 'jobs', label: 'Job' },
-  { type: 'cronjobs', label: 'CronJob' },
-  { type: 'ingresses', label: 'Ingress' },
-]
-
-const OTHER_KINDS: { type: string; label: string }[] = [
-  { type: 'statefulsets', label: 'StatefulSet' },
-  { type: 'daemonsets', label: 'DaemonSet' },
-  { type: 'persistentvolumeclaims', label: 'PersistentVolumeClaim' },
-  { type: 'horizontalpodautoscalers', label: 'HorizontalPodAutoscaler' },
-  { type: 'networkpolicies', label: 'NetworkPolicy' },
-  { type: 'namespaces', label: 'Namespace' },
-  { type: 'storageclasses', label: 'StorageClass' },
-  { type: 'roles', label: 'Role' },
-  { type: 'rolebindings', label: 'RoleBinding' },
-  { type: 'clusterroles', label: 'ClusterRole' },
-  { type: 'clusterrolebindings', label: 'ClusterRoleBinding' },
+// Kind picker, grouped by domain with the most-created kinds first. Each group
+// becomes an <optgroup>; "Common" leads because it answers "what do I create
+// most?" without scrolling. Adding a new creatable type means slotting it into
+// the right group here (and keeping createKindByType in the API in sync).
+const KIND_GROUPS: { label: string; kinds: { type: string; label: string }[] }[] = [
+  {
+    label: 'Common',
+    kinds: [
+      { type: 'pods', label: 'Pod' },
+      { type: 'deployments', label: 'Deployment' },
+      { type: 'services', label: 'Service' },
+      { type: 'configmaps', label: 'ConfigMap' },
+      { type: 'secrets', label: 'Secret' },
+      { type: 'jobs', label: 'Job' },
+      { type: 'cronjobs', label: 'CronJob' },
+      { type: 'ingresses', label: 'Ingress' },
+    ],
+  },
+  {
+    label: 'Workloads',
+    kinds: [
+      { type: 'statefulsets', label: 'StatefulSet' },
+      { type: 'daemonsets', label: 'DaemonSet' },
+    ],
+  },
+  {
+    label: 'Networking',
+    kinds: [
+      { type: 'networkpolicies', label: 'NetworkPolicy' },
+      { type: 'ciliumnetworkpolicies', label: 'CiliumNetworkPolicy' },
+      { type: 'ciliumclusterwidenetworkpolicies', label: 'CiliumClusterwideNetworkPolicy' },
+      { type: 'gateways', label: 'Gateway' },
+      { type: 'httproutes', label: 'HTTPRoute' },
+    ],
+  },
+  {
+    label: 'Storage',
+    kinds: [
+      { type: 'persistentvolumeclaims', label: 'PersistentVolumeClaim' },
+      { type: 'storageclasses', label: 'StorageClass' },
+    ],
+  },
+  {
+    label: 'Scaling & Availability',
+    kinds: [
+      { type: 'horizontalpodautoscalers', label: 'HorizontalPodAutoscaler' },
+      { type: 'vpas', label: 'VerticalPodAutoscaler' },
+      { type: 'pdbs', label: 'PodDisruptionBudget' },
+    ],
+  },
+  {
+    label: 'Access (RBAC)',
+    kinds: [
+      { type: 'serviceaccounts', label: 'ServiceAccount' },
+      { type: 'roles', label: 'Role' },
+      { type: 'rolebindings', label: 'RoleBinding' },
+      { type: 'clusterroles', label: 'ClusterRole' },
+      { type: 'clusterrolebindings', label: 'ClusterRoleBinding' },
+    ],
+  },
+  {
+    label: 'Platform',
+    kinds: [
+      { type: 'namespaces', label: 'Namespace' },
+      { type: 'certificates', label: 'Certificate' },
+      { type: 'argocdapps', label: 'ArgoCD Application' },
+    ],
+  },
 ]
 
 interface StarterTemplate {
@@ -344,6 +388,204 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+`,
+    },
+  ],
+  ciliumnetworkpolicies: [
+    {
+      id: 'cnp-l7-http',
+      label: 'Allow ingress with L7 HTTP rule',
+      manifest: `apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-frontend-l7
+spec:
+  endpointSelector:
+    matchLabels:
+      app: backend
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: frontend
+      toPorts:
+        - ports:
+            - port: "8080"
+              protocol: TCP
+          rules:
+            http:
+              - method: GET
+                path: /api/.*
+`,
+    },
+    {
+      id: 'cnp-default-deny',
+      label: 'Default deny (select all)',
+      manifest: `apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: default-deny
+spec:
+  # Empty endpointSelector selects every endpoint in the namespace; with an
+  # empty ingress/egress the default becomes deny.
+  endpointSelector: {}
+  ingress: []
+  egress: []
+`,
+    },
+  ],
+  ciliumclusterwidenetworkpolicies: [
+    {
+      id: 'ccnp-allow-dns',
+      label: 'Allow DNS to kube-dns (cluster-wide)',
+      manifest: `apiVersion: cilium.io/v2
+kind: CiliumClusterwideNetworkPolicy
+metadata:
+  name: allow-dns
+spec:
+  endpointSelector: {}
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - port: "53"
+              protocol: UDP
+          rules:
+            dns:
+              - matchPattern: "*"
+`,
+    },
+  ],
+  gateways: [
+    {
+      id: 'gw-http',
+      label: 'HTTP gateway',
+      manifest: `apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: web-gateway
+spec:
+  gatewayClassName: # your installed GatewayClass (e.g. istio, cilium, nginx)
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: Same
+`,
+    },
+  ],
+  httproutes: [
+    {
+      id: 'route-basic',
+      label: 'Route to a service',
+      manifest: `apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: web-route
+spec:
+  parentRefs:
+    - name: web-gateway
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: web
+          port: 80
+`,
+    },
+  ],
+  certificates: [
+    {
+      id: 'cert-basic',
+      label: 'cert-manager Certificate',
+      manifest: `apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: web-tls
+spec:
+  secretName: web-tls
+  dnsNames:
+    - web.example.com
+  issuerRef:
+    name: # your ClusterIssuer / Issuer name (e.g. letsencrypt-prod)
+    kind: ClusterIssuer
+`,
+    },
+  ],
+  vpas: [
+    {
+      id: 'vpa-recommend',
+      label: 'Recommendation only (Off)',
+      manifest: `apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: web-vpa
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web
+  updatePolicy:
+    # "Off" only surfaces recommendations; "Auto" applies them (restarts pods).
+    updateMode: "Off"
+`,
+    },
+  ],
+  pdbs: [
+    {
+      id: 'pdb-min-available',
+      label: 'Keep at least 1 available',
+      manifest: `apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-pdb
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: web
+`,
+    },
+  ],
+  serviceaccounts: [
+    {
+      id: 'sa-basic',
+      label: 'Blank',
+      manifest: `apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: my-serviceaccount
+`,
+    },
+  ],
+  argocdapps: [
+    {
+      id: 'argo-app',
+      label: 'ArgoCD Application',
+      manifest: `apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-app
+  # Pick the namespace ArgoCD watches (usually "argocd") in the selector above.
+spec:
+  project: default
+  source:
+    repoURL: https://github.com/org/repo
+    targetRevision: HEAD
+    path: manifests
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: false
+      selfHeal: false
 `,
     },
   ],
@@ -649,16 +891,13 @@ export function NewResourceModal({
               onChange={(e) => pickType(e.target.value)}
               className="text-xs font-mono bg-kb-bg border border-kb-border rounded px-2 py-1 text-kb-text-primary focus:border-kb-border-active outline-none"
             >
-              <optgroup label="Common">
-                {COMMON_KINDS.map((k) => (
-                  <option key={k.type} value={k.type}>{k.label}</option>
-                ))}
-              </optgroup>
-              <optgroup label="Other">
-                {OTHER_KINDS.map((k) => (
-                  <option key={k.type} value={k.type}>{k.label}</option>
-                ))}
-              </optgroup>
+              {KIND_GROUPS.map((g) => (
+                <optgroup key={g.label} label={g.label}>
+                  {g.kinds.map((k) => (
+                    <option key={k.type} value={k.type}>{k.label}</option>
+                  ))}
+                </optgroup>
+              ))}
             </select>
           </div>
 

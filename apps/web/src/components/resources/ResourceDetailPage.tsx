@@ -6,6 +6,7 @@ import { YamlViewer } from '@/components/shared/YamlViewer'
 import { oneDark } from '@codemirror/theme-one-dark'
 import { useParams, Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { canonicalListRoute } from '@/utils/routes'
+import { buildCpuRefs, buildMemRefs, formatMemoryShort } from '@/utils/metricRefs'
 import { ChevronRight, Lock, RotateCw, ArrowUpDown, ArrowRight, ChevronDown, Image as ImageIcon, Play, Pause, AlertCircle, Cpu, Variable, Tag, Eye, Trash2, RefreshCw, FileText, Search, Clock, X, LogOut, Bug } from 'lucide-react'
 import { SetImageModal } from '@/components/resources/SetImageModal'
 import { SetResourcesModal } from '@/components/resources/SetResourcesModal'
@@ -69,6 +70,7 @@ const kindToRoute: Record<string, string> = {
   PVC: 'pvcs', PV: 'pvs', PodDisruptionBudget: 'pdbs',
   Certificate: 'certificates', Application: 'argocdapps', VerticalPodAutoscaler: 'vpas',
   ServiceAccount: 'serviceaccounts',
+  CiliumNetworkPolicy: 'ciliumnetworkpolicies', CiliumClusterwideNetworkPolicy: 'ciliumclusterwidenetworkpolicies',
 }
 
 const routeToKind: Record<string, string> = Object.fromEntries(
@@ -82,8 +84,10 @@ const resourceLabels: Record<string, string> = {
   endpoints: 'Endpoints', pvcs: 'PVCs', pvs: 'PVs', storageclasses: 'Storage Classes',
   configmaps: 'ConfigMaps', secrets: 'Secrets', hpas: 'HPAs', nodes: 'Nodes',
   namespaces: 'Namespaces', replicasets: 'ReplicaSets', pdbs: 'Pod Disruption Budgets',
+  networkpolicies: 'Network Policies',
   certificates: 'Certificates', argocdapps: 'ArgoCD Applications', vpas: 'Vertical Pod Autoscalers',
   serviceaccounts: 'Service Accounts',
+  ciliumnetworkpolicies: 'Cilium Network Policies', ciliumclusterwidenetworkpolicies: 'Cilium Clusterwide Network Policies',
 }
 
 function ResourceLink({ name, namespace, resourceType }: { name: string; namespace?: string; resourceType: string }) {
@@ -274,6 +278,17 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
       // PDB carries the same matched-pods affordance as NetworkPolicy —
       // "which pods does this budget actually protect?" is the question
       // operators ask when an Evict 429s.
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
+        { id: 'related', label: 'Related' },
+        { id: 'events', label: 'Events' },
+      )
+      break
+    case 'ciliumnetworkpolicies':
+    case 'ciliumclusterwidenetworkpolicies':
+      // Same matched-pods affordance as NetworkPolicy — which endpoints does
+      // this policy's endpointSelector actually select right now.
       base.push(
         { id: 'yaml', label: 'YAML' },
         { id: 'np-matched-pods', label: 'Matched Pods', count: typeof item.matchedPodCount === 'number' ? item.matchedPodCount : 0 },
@@ -552,6 +567,15 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
           {type === 'storageclasses' && <InfoField label="Reclaim Policy">{String(item.reclaimPolicy ?? '-')}</InfoField>}
           {type === 'gateways' && <InfoField label="Class">{String(item.class ?? '-')}</InfoField>}
           {type === 'httproutes' && item.gateway != null && <InfoField label="Gateway"><ResourceLink name={String(item.gateway)} namespace={String(item.gatewayNamespace ?? item.namespace)} resourceType="gateways" /></InfoField>}
+          {(type === 'ciliumnetworkpolicies' || type === 'ciliumclusterwidenetworkpolicies') && (
+            <>
+              <InfoField label="Endpoint Selector"><span className="font-mono">{String(item.endpointSelector ?? '-')}</span></InfoField>
+              <InfoField label="Ingress / Egress Rules">{`${item.ingressRules ?? 0} / ${item.egressRules ?? 0}`}</InfoField>
+              {Array.isArray(item.l7Protocols) && (item.l7Protocols as string[]).length > 0 && (
+                <InfoField label="L7"><span className="font-mono">{(item.l7Protocols as string[]).join(', ')}</span></InfoField>
+              )}
+            </>
+          )}
         </div>
 
         {/* Labels & Annotations */}
@@ -573,9 +597,64 @@ function OverviewTab({ type, item }: { type: string; item: ResourceItem }) {
       <MetricsBar item={item} />
       {type === 'nodes' && <NodeTopConsumersSection item={item} />}
 
+      {(type === 'ciliumnetworkpolicies' || type === 'ciliumclusterwidenetworkpolicies') && (
+        <CiliumPolicyRulesSection item={item} />
+      )}
+
       {/* Conditions */}
       <ConditionsSection conditions={item.conditions} />
     </div>
+  )
+}
+
+// CiliumPolicyRulesSection renders the structured ingress/egress breakdown
+// (peers, ports, L7) the backend derives from a CNP/CCNP spec — the L3-L7 view
+// a standard NetworkPolicy can't express. Full edit happens in the YAML tab.
+function CiliumPolicyRulesSection({ item }: { item: ResourceItem }) {
+  const rules = Array.isArray(item.policyRules) ? (item.policyRules as Array<Record<string, unknown>>) : []
+  if (rules.length === 0) {
+    return (
+      <Section title="Policy Rules">
+        <p className="text-[12px] text-kb-text-tertiary">
+          No explicit ingress/egress rules — this policy selects endpoints without restricting traffic.
+        </p>
+      </Section>
+    )
+  }
+  return (
+    <Section title="Policy Rules">
+      <div className="space-y-2">
+        {rules.map((r, i) => {
+          const direction = String(r.direction ?? 'ingress')
+          const deny = Boolean(r.deny)
+          const peers = Array.isArray(r.peers) ? (r.peers as string[]) : []
+          const ports = Array.isArray(r.ports) ? (r.ports as string[]) : []
+          const l7 = Array.isArray(r.l7) ? (r.l7 as string[]) : []
+          return (
+            <div key={i} className="rounded border border-kb-border bg-kb-bg/60 p-3 text-[11px] font-mono space-y-1.5">
+              <div className="flex items-center gap-2">
+                <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded ${direction === 'ingress' ? 'bg-kb-accent-light text-kb-accent' : 'bg-kb-elevated text-kb-text-secondary'}`}>
+                  {direction}
+                </span>
+                {deny && (
+                  <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-status-error/15 text-status-error">deny</span>
+                )}
+                {l7.length > 0 && (
+                  <span className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-status-warn/15 text-status-warn">L7</span>
+                )}
+              </div>
+              <div><span className="text-kb-text-tertiary">{direction === 'ingress' ? 'from' : 'to'}:</span> <span className="text-kb-text-secondary">{peers.join(' · ')}</span></div>
+              {ports.length > 0 && (
+                <div><span className="text-kb-text-tertiary">ports:</span> <span className="text-kb-text-secondary">{ports.join(', ')}</span></div>
+              )}
+              {l7.map((rule, j) => (
+                <div key={j} className="text-kb-text-secondary pl-3 border-l border-kb-border">{rule}</div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+    </Section>
   )
 }
 
@@ -2683,40 +2762,9 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
-
-type RefSpec = { y: number; label: string; color?: string; shortLabel?: string }
-
-function buildCpuRefs(request: number | null, limit: number | null): RefSpec[] {
-  // When request === limit (common for guaranteed QoS pods), the two lines
-  // overlap and their labels collide. Render them as one combined line.
-  if (request != null && limit != null && Math.abs(request - limit) < 1e-9) {
-    return [{
-      y: limit,
-      label: `request / limit ${(limit * 1000).toFixed(0)}m`,
-      color: '#ef4444',
-      shortLabel: 'req/limit',
-    }]
-  }
-  const refs: RefSpec[] = []
-  if (request != null) refs.push({ y: request, label: `request ${(request * 1000).toFixed(0)}m` })
-  if (limit != null) refs.push({ y: limit, label: `limit ${(limit * 1000).toFixed(0)}m`, color: '#ef4444' })
-  return refs
-}
-
-function buildMemRefs(request: number | null, limit: number | null): RefSpec[] {
-  if (request != null && limit != null && request === limit) {
-    return [{
-      y: limit,
-      label: `request / limit ${formatMemoryShort(limit)}`,
-      color: '#ef4444',
-      shortLabel: 'req/limit',
-    }]
-  }
-  const refs: RefSpec[] = []
-  if (request != null) refs.push({ y: request, label: `request ${formatMemoryShort(request)}` })
-  if (limit != null) refs.push({ y: limit, label: `limit ${formatMemoryShort(limit)}`, color: '#ef4444' })
-  return refs
-}
+// buildCpuRefs / buildMemRefs / formatMemoryShort moved to
+// utils/metricRefs.ts — shared with the Capacity dashboard so both
+// surfaces render identical request/limit overlays.
 
 // escapeRegex quotes characters that are special in PromQL =~ matchers.
 // Resource names follow DNS-1123 (alphanumeric + dashes), but we still
@@ -2757,14 +2805,6 @@ function podResourceSums(item: ResourceItem): {
     memoryRequest: anyMemReq ? memReq : null,
     memoryLimit: anyMemLim ? memLim : null,
   }
-}
-
-function formatMemoryShort(bytes: number): string {
-  const abs = Math.abs(bytes)
-  if (abs < 1024) return `${bytes} B`
-  if (abs < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KiB`
-  if (abs < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(0)} MiB`
-  return `${(bytes / 1024 / 1024 / 1024).toFixed(1)} GiB`
 }
 
 // MonitorDonuts renders the snapshot view (current CPU/Memory from
@@ -2921,7 +2961,7 @@ function AgentTrendsCTA() {
           )}
         </div>
         <Link
-          to="/admin/integrations"
+          to="/admin/agents?tab=integrations"
           onClick={(e) => e.stopPropagation()}
           className="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-md bg-kb-accent text-white text-xs font-semibold shadow-sm shadow-kb-accent/30 ring-1 ring-inset ring-white/15 hover:opacity-95 hover:shadow-md hover:shadow-kb-accent/40 active:scale-[0.98] transition-all shrink-0"
         >

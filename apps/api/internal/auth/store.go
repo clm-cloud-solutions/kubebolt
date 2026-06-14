@@ -23,6 +23,7 @@ var (
 	clusterDisplayBucket   = []byte("cluster_display")  // display name overrides
 	clusterUIDBucket       = []byte("cluster_uid")      // kube-system UID per kubeconfig context (resolved at connect time)
 	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
+	copilotConvBucket      = []byte("copilot_conversations") // persistent Kobi conversation transcripts (per user)
 	agentsBucket           = []byte("agents")           // persistent agent registry records
 	insightsBucket         = []byte("insights")         // persistent insight records (Sprint 0)
 	kobiActionsBucket      = []byte("kobi_actions")     // durable mutation audit trail (Sprint 1)
@@ -122,7 +123,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, agentsBucket, insightsBucket, kobiActionsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -147,6 +148,12 @@ func (s *Store) Close() error {
 // across the codebase are created at Store initialization.
 func (s *Store) DB() *bolt.DB {
 	return s.db
+}
+
+// CopilotConversationsBucket returns the bucket name for persistent Kobi
+// conversation transcripts (per-user history + resume).
+func CopilotConversationsBucket() []byte {
+	return copilotConvBucket
 }
 
 // CopilotSessionsBucket returns the bucket name for copilot usage records.
@@ -187,6 +194,26 @@ func InsightsBucket() []byte {
 func KobiActionsBucket() []byte {
 	return kobiActionsBucket
 }
+
+// UserStore is the W1 seam for the User domain
+// (internal/saas/kubebolt-e1-multitenant-scoping.md §8). OSS uses the BoltDB
+// *Store (every user is an org member with a set Role); EE swaps a Postgres
+// impl where User.Role may be "" — a "team-only" user with no org-wide access,
+// the segmentation primitive. The interface covers user management; the
+// refresh-token methods on *Store are the TokenStore concern (W1 #5).
+type UserStore interface {
+	CreateUser(username, email, name, password string, role Role) (*User, error)
+	GetUser(id string) (*User, error)
+	GetUserByUsername(username string) (*User, error)
+	ListUsers() ([]User, error)
+	UpdateUser(id, username, email, name string, role Role) (*User, error)
+	UpdatePassword(id, newPassword string) error
+	UpdateLastLogin(id string) error
+	DeleteUser(id string) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ UserStore = (*Store)(nil)
 
 // CreateUser creates a new user with a bcrypt-hashed password.
 func (s *Store) CreateUser(username, email, name, password string, role Role) (*User, error) {
@@ -467,6 +494,23 @@ func (s *Store) SeedAdmin(password string) (bool, error) {
 	}
 	return true, nil
 }
+
+// RefreshTokenStore is the W1 seam for refresh-token persistence — the
+// rotating, hashed session tokens behind /auth/refresh (distinct from the
+// long-lived ingest "kb_" and REST "kbs_/kbk_" tokens, which have their own
+// stores). Split out from UserStore on purpose: a user's identity and their
+// active sessions are separate concerns, and EE may back sessions with a
+// different store (e.g. Redis/Postgres with TTL eviction) than user records.
+// OSS uses the BoltDB *Store for both.
+type RefreshTokenStore interface {
+	SaveRefreshToken(rt *RefreshToken) error
+	GetRefreshToken(tokenHash string) (*RefreshToken, error)
+	DeleteRefreshToken(tokenHash string) error
+	DeleteUserRefreshTokens(userID string) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ RefreshTokenStore = (*Store)(nil)
 
 // SaveRefreshToken stores a refresh token.
 func (s *Store) SaveRefreshToken(rt *RefreshToken) error {

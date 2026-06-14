@@ -102,7 +102,7 @@ func (h *handlers) handleSetHpaBounds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -149,7 +149,12 @@ func (h *handlers) handleSetHpaBounds(w http.ResponseWriter, r *http.Request) {
 
 	// Short-circuit if neither bound actually changed — saves a
 	// useless audit entry and frontend rollout-wait.
+	dryRun := dryRunRequested(r)
 	if to == from {
+		if dryRun {
+			respondDryRun(w, nil, "No change · HPA bounds already at the requested values")
+			return
+		}
 		respondJSON(w, http.StatusOK, map[string]any{
 			"status":     "unchanged",
 			"fromBounds": from,
@@ -170,8 +175,12 @@ func (h *handlers) handleSetHpaBounds(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_, err = clientset.AutoscalingV1().HorizontalPodAutoscalers(namespace).Patch(
-		ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{},
+		ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{DryRun: dryRunAll(dryRun)},
 	)
+	if dryRun {
+		respondDryRun(w, err, fmt.Sprintf("Would apply · HPA bounds %d/%d → %d/%d", from.MinReplicas, from.MaxReplicas, to.MinReplicas, to.MaxReplicas))
+		return
+	}
 	if err != nil {
 		auditMutation(r, "set_hpa_bounds", resourceType, namespace, name, params, err)
 		log.Printf("Set-HPA-bounds failed for %s/%s/%s: %v", resourceType, namespace, name, err)

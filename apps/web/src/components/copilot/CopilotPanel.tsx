@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   X,
   Send,
+  Square,
   Trash2,
   Loader2,
   AlertCircle,
@@ -13,7 +14,14 @@ import {
   User,
   Scissors,
   Sparkles,
+  History,
+  Plus,
+  Download,
+  Clock,
+  Hourglass,
+  ArrowRight,
 } from 'lucide-react'
+import { ConversationList } from './ConversationList'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useInsights } from '@/hooks/useInsights'
@@ -49,12 +57,73 @@ function formatUsageTooltip(u: CopilotUsage): string {
   return parts.join('\n')
 }
 
+// How old a resumed conversation must be before we warn that the cluster
+// state may have moved on. 30 minutes balances "stale enough to matter"
+// against not nagging on a conversation resumed minutes later.
+const STALE_RESUME_MS = 30 * 60 * 1000
+
+// Coarse single-unit relative time for the stale-resume banner.
+function relativeTimeShort(iso: string): string {
+  const then = new Date(iso).getTime()
+  if (!Number.isFinite(then)) return ''
+  const s = Math.max(0, Math.floor((Date.now() - then) / 1000))
+  if (s < 90) return 'a moment ago'
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m} minutes ago`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h} hour${h === 1 ? '' : 's'} ago`
+  const d = Math.floor(h / 24)
+  return `${d} day${d === 1 ? '' : 's'} ago`
+}
+
+// exportConversationMarkdown renders the visible transcript to a .md file and
+// triggers a browser download — for pasting into postmortems / RCA docs.
+function exportConversationMarkdown(messages: CopilotMessage[], title: string | null): void {
+  const lines: string[] = [`# ${title || 'Kobi conversation'}`, '']
+  // Per-message time turns the export into a real timeline (postmortems / RCA).
+  const stamp = (m: CopilotMessage) =>
+    m.timestamp instanceof Date && !Number.isNaN(m.timestamp.getTime())
+      ? ` · ${m.timestamp.toLocaleString()}`
+      : ''
+  for (const m of messages) {
+    if (m.kind === 'compact-notice') {
+      lines.push('> _(conversation compacted here)_', '')
+      continue
+    }
+    if (m.kind === 'maxrounds-notice') {
+      lines.push(`> _(reached the tool-step limit${m.maxRoundsLimit ? ` of ${m.maxRoundsLimit}` : ''} here — investigation paused)_`, '')
+      continue
+    }
+    if (m.role === 'user' && (m.content ?? '').trim()) {
+      lines.push(`## You${stamp(m)}`, '', m.content.trim(), '')
+    } else if (m.role === 'assistant' && (m.content ?? '').trim()) {
+      lines.push(`## Kobi${stamp(m)}`, '', m.content.trim(), '')
+    }
+    if (m.toolCalls?.length) {
+      for (const tc of m.toolCalls) {
+        lines.push(`- 🔧 \`${tc.name}\``)
+      }
+      lines.push('')
+    }
+  }
+  const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  const slug = (title || 'kobi-conversation').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+  a.href = url
+  a.download = `${slug || 'kobi-conversation'}.md`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
 // Approximate current context size using a 4-chars-per-token heuristic
 // (mirrors the backend's ApproxTokens). Excludes UI-only compact notices.
 function approxContextTokens(messages: CopilotMessage[]): number {
   let chars = 0
   for (const m of messages) {
-    if (m.kind === 'compact-notice') continue
+    if (m.kind === 'compact-notice' || m.kind === 'maxrounds-notice') continue
     chars += (m.content ?? '').length
     if (m.toolCalls) {
       for (const tc of m.toolCalls) {
@@ -83,15 +152,21 @@ export function CopilotPanel() {
     sessionRounds,
     closePanel,
     sendMessage,
+    cancelMessage,
     clearHistory,
     compactSession,
     isCompacting,
     lastRoundUsage,
     layout: layoutState,
+    conversationTitle,
+    staleResume,
+    newConversation,
+    dismissStaleResume,
   } = useCopilot()
   const { layout, toggleMode, setDockedWidth, setFloatingSize } = layoutState
 
   const [input, setInput] = useState('')
+  const [showHistory, setShowHistory] = useState(false)
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -122,6 +197,17 @@ export function CopilotPanel() {
     if (document.activeElement && document.activeElement.tagName === 'BUTTON') return
     inputRef.current?.focus({ preventScroll: true })
   }, [isLoading, isOpen])
+
+  // Focus the input when a fresh/blank conversation appears — clicking "New
+  // conversation" (header or history drawer) clears the transcript but doesn't
+  // change isOpen/isLoading, so the focus effects above don't fire. Keyed on
+  // the transcript going empty; guarded on the drawer being closed so it never
+  // steals focus from the history search box.
+  useEffect(() => {
+    if (!isOpen || isLoading || showHistory || messages.length > 0) return
+    const t = setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 60)
+    return () => clearTimeout(t)
+  }, [messages.length, isOpen, isLoading, showHistory])
 
   // Context-size indicator: how full the conversation is relative to the
   // auto-compact trigger. Source of truth is the provider-reported input
@@ -336,13 +422,27 @@ export function CopilotPanel() {
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <button
+            onClick={() => setShowHistory(true)}
+            title="Conversation history"
+            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <History className="w-3.5 h-3.5" />
+          </button>
+          <button
+            onClick={newConversation}
+            title="New conversation"
+            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          >
+            <Plus className="w-3.5 h-3.5" />
+          </button>
+          <button
             onClick={toggleMode}
             title={isDocked ? 'Switch to floating window' : 'Dock to right side'}
             className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
           >
             {isDocked ? <PanelRightOpen className="w-3.5 h-3.5" /> : <PanelRightClose className="w-3.5 h-3.5" />}
           </button>
-          {messages.filter((m) => m.kind !== 'compact-notice').length >= 2 && (
+          {messages.filter((m) => m.kind !== 'compact-notice' && m.kind !== 'maxrounds-notice').length >= 2 && (
             <button
               onClick={() => void compactSession(true)}
               disabled={isCompacting || isLoading}
@@ -350,6 +450,15 @@ export function CopilotPanel() {
               className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isCompacting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Scissors className="w-3.5 h-3.5" />}
+            </button>
+          )}
+          {messages.filter((m) => m.kind !== 'compact-notice' && m.kind !== 'maxrounds-notice').length > 0 && (
+            <button
+              onClick={() => exportConversationMarkdown(messages, conversationTitle)}
+              title="Export conversation (Markdown)"
+              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            >
+              <Download className="w-3.5 h-3.5" />
             </button>
           )}
           {messages.length > 0 && (
@@ -370,6 +479,38 @@ export function CopilotPanel() {
           </button>
         </div>
       </div>
+
+      {/* Active conversation title */}
+      {conversationTitle && messages.length > 0 && (
+        <div className="px-4 py-1.5 border-b border-kb-border flex items-center gap-1.5 shrink-0">
+          <Sparkles className="w-3 h-3 text-kb-text-tertiary shrink-0" />
+          <span className="text-xs text-kb-text-secondary truncate">{conversationTitle}</span>
+        </div>
+      )}
+
+      {/* Stale-resume banner — shown when a conversation older than the
+          threshold is resumed, so the operator knows the cluster state the
+          transcript reflects may have moved on. */}
+      {staleResume && Date.now() - new Date(staleResume.updatedAt).getTime() > STALE_RESUME_MS && (
+        <div className="px-4 py-2 bg-amber-50 dark:bg-amber-950/30 border-b border-amber-200 dark:border-amber-900/40 flex items-start gap-2 shrink-0">
+          <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
+          <p className="text-xs text-amber-700 dark:text-amber-300 leading-snug flex-1">
+            This conversation is from {relativeTimeShort(staleResume.updatedAt)}
+            {staleResume.clusterId ? ` · it ran against ${staleResume.clusterId}` : ''}. The cluster
+            state may have changed — Kobi will re-check the live state when you continue.
+          </p>
+          <button
+            onClick={dismissStaleResume}
+            title="Dismiss"
+            className="text-amber-500 hover:text-amber-700 dark:hover:text-amber-200 shrink-0"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Conversation history drawer — overlays the message area */}
+      {showHistory && <ConversationList onClose={() => setShowHistory(false)} />}
 
       {/* Messages */}
       <div ref={messagesContainerRef} className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
@@ -448,9 +589,11 @@ export function CopilotPanel() {
               // tool chip → chart (evidence) → analysis text. This keeps
               // the chart visually next to the prose that interprets it.
               const metricCards = hasText ? (metricChartAttachments.get(m.id) ?? []) : []
-              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0) {
+              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0 && !m.cancelled) {
                 // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
                 // don't render at all; the bottom indicator covers them.
+                // Exception: a cancelled turn renders even when empty so the
+                // "Stopped by you" marker shows (the user stopped before any token).
                 return null
               }
               return (
@@ -487,6 +630,17 @@ export function CopilotPanel() {
                         )
                       })}
                     </ToolCardLane>
+                  )}
+                  {m.cancelled && (
+                    // "Stopped by you" — aligned to the assistant content lane
+                    // (empty avatar slot + content), like the metric cards above.
+                    <div className="flex justify-start gap-2 max-w-[95%]">
+                      <div className="w-6 shrink-0" aria-hidden />
+                      <div className="flex items-center gap-1.5 text-[11px] text-kb-text-tertiary">
+                        <Square className="w-2.5 h-2.5 fill-current shrink-0" />
+                        <span className="font-mono">Stopped by you</span>
+                      </div>
+                    </div>
                   )}
                 </div>
               )
@@ -530,11 +684,7 @@ export function CopilotPanel() {
           })()
         )}
 
-        {isLoading &&
-          messages[messages.length - 1]?.role === 'assistant' &&
-          messages[messages.length - 1]?.content === '' && (
-            <ThinkingIndicator />
-          )}
+        {isLoading && <StreamStatusHint />}
 
         {error && (
           <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-[11px]">
@@ -544,8 +694,12 @@ export function CopilotPanel() {
         )}
 
         {usedFallback && (
-          <div className="text-[10px] font-mono text-kb-text-tertiary text-center">
-            via fallback model ({config.fallback?.provider} {config.fallback?.model})
+          <div className="mx-auto w-fit flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-amber-700 dark:text-amber-300 text-[11px]">
+            <AlertCircle className="w-3 h-3 shrink-0" />
+            <span>
+              Answered by the fallback model
+              {config.fallback ? ` · ${config.fallback.provider} ${config.fallback.model}` : ''}
+            </span>
           </div>
         )}
 
@@ -569,17 +723,28 @@ export function CopilotPanel() {
               placeholder="Ask about your cluster..."
               rows={1}
               disabled={isLoading}
-              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-xs text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 disabled:opacity-50"
+              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 disabled:opacity-50"
               style={{ minHeight: '36px' }}
             />
           </div>
-          <button
-            onClick={handleSend}
-            disabled={!input.trim() || isLoading}
-            className="w-9 h-9 rounded-lg bg-kb-accent hover:bg-kb-accent/90 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
-          >
-            <Send className="w-4 h-4" />
-          </button>
+          {isLoading ? (
+            <button
+              onClick={cancelMessage}
+              title="Stop generating"
+              aria-label="Stop generating"
+              className="w-9 h-9 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-secondary hover:text-kb-text-primary border border-kb-border flex items-center justify-center transition-colors shrink-0"
+            >
+              <Square className="w-3.5 h-3.5 fill-current" />
+            </button>
+          ) : (
+            <button
+              onClick={handleSend}
+              disabled={!input.trim()}
+              className="w-9 h-9 rounded-lg bg-kb-accent hover:bg-kb-accent/90 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+            >
+              <Send className="w-4 h-4" />
+            </button>
+          )}
         </div>
         <div className="text-[9px] font-mono text-kb-text-tertiary mt-1.5 text-center leading-relaxed">
           AI can make mistakes. Verify important information before acting on it.
@@ -642,7 +807,7 @@ function EmptyState() {
         <KobiSigil state="watching" size={56} />
       </div>
       <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Kobi</h3>
-      <p className="text-xs text-kb-text-tertiary mb-4 max-w-xs">
+      <p className="text-sm text-kb-text-tertiary mb-4 max-w-xs">
         Ask about your cluster, troubleshoot an issue, or learn about Kubernetes.
       </p>
       <div className="space-y-1.5 w-full max-w-md">
@@ -650,7 +815,7 @@ function EmptyState() {
           <button
             key={text}
             onClick={() => sendMessage(text)}
-            className="w-full text-left px-3 py-2 rounded-lg bg-kb-bg hover:bg-kb-elevated border border-kb-border text-[11px] text-kb-text-secondary hover:text-kb-text-primary transition-colors"
+            className="w-full text-left px-3 py-2 rounded-lg bg-kb-bg hover:bg-kb-elevated border border-kb-border text-xs text-kb-text-secondary hover:text-kb-text-primary transition-colors"
           >
             {text}
           </button>
@@ -669,10 +834,14 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
     return <CompactNoticeBubble meta={message.compactMeta} />
   }
 
+  if (message.kind === 'maxrounds-notice') {
+    return <MaxRoundsNoticeBubble limit={message.maxRoundsLimit} />
+  }
+
   if (message.role === 'user') {
     return (
       <div className="flex justify-end gap-2">
-        <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-xs text-kb-text-primary whitespace-pre-wrap break-words">
+        <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-sm text-kb-text-primary whitespace-pre-wrap break-words">
           {message.content}
         </div>
         <div className="w-6 h-6 rounded-full bg-kb-elevated flex items-center justify-center shrink-0 mt-0.5">
@@ -702,7 +871,7 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
         <KobiSigil state="static" size={14} />
       </div>
       <div className="flex flex-col items-start min-w-0 flex-1">
-        <div className="relative px-3 py-2 rounded-lg bg-kb-bg text-xs text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
+        <div className="relative px-3 py-2 rounded-lg bg-kb-bg text-sm text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
           {message.content ? (
             <MarkdownRenderer content={message.content} />
           ) : (
@@ -758,6 +927,48 @@ function ToolCallIndicator({ toolName }: { toolName: string }) {
   )
 }
 
+// StreamStatusHint — adaptive in-flight indicator. While the turn streams it
+// distinguishes three states off lastActivityAt (bumped on every stream event):
+//   • awaiting first token       → the "Thinking" dots
+//   • streaming, recent activity → nothing (the text itself is the progress)
+//   • stalled (no event for a while) → a subtle "Waiting…" / "Taking longer
+//     than usual…" line, so a slow network or a hung upstream doesn't read as
+//     a frozen response. Cancelling is always one click away via the input's
+//     Stop button. Ticks once a second so the thresholds advance on their own.
+const IDLE_HINT_MS = 4000
+const LONG_WAIT_MS = 15000
+
+function StreamStatusHint() {
+  const { isLoading, lastActivityAt, messages } = useCopilot()
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!isLoading) return
+    const id = window.setInterval(() => setTick((t) => t + 1), 1000)
+    return () => window.clearInterval(id)
+  }, [isLoading])
+
+  if (!isLoading) return null
+  const last = messages[messages.length - 1]
+  const awaitingFirstToken = last?.role === 'assistant' && last?.content === ''
+  const idleMs = lastActivityAt ? Date.now() - lastActivityAt : 0
+
+  // First token can legitimately take a few seconds (tool calls, cold model) —
+  // keep the dots until it's clearly unusual.
+  if (awaitingFirstToken && idleMs < LONG_WAIT_MS) return <ThinkingIndicator />
+  // Mid-stream and still flowing — the text is the signal, no extra chrome.
+  if (!awaitingFirstToken && idleMs < IDLE_HINT_MS) return null
+
+  const longWait = idleMs >= LONG_WAIT_MS
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border w-fit text-[11px] text-kb-text-tertiary">
+      <Loader2 className="w-3 h-3 animate-spin shrink-0" />
+      <span className="font-mono">
+        {longWait ? 'Taking longer than usual…' : 'Waiting for response…'}
+      </span>
+    </div>
+  )
+}
+
 // ThinkingIndicator — three staggered dots + a shimmering label,
 // shown while the assistant has emitted no content yet (between
 // the user submit and the first token / tool call). The single-
@@ -782,6 +993,38 @@ function ThinkingIndicator() {
         />
       </div>
       <span className="kb-ai-shimmer-text text-[11px] font-mono">Thinking</span>
+    </div>
+  )
+}
+
+// MaxRoundsNoticeBubble marks where a turn hit the tool-call step limit and
+// offers a Continue control that resumes the investigation with a fresh round
+// budget (a new user turn on the same conversation). Deterministic — it renders
+// regardless of what the model's closing text said, so the operator always sees
+// that Kobi paused on the limit rather than froze.
+function MaxRoundsNoticeBubble({ limit }: { limit?: number }) {
+  const { sendMessage, isLoading } = useCopilot()
+  return (
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-status-warn/40 bg-status-warn/5 text-[10px] font-mono text-kb-text-secondary">
+      <Hourglass className="w-3 h-3 text-status-warn shrink-0" />
+      <span className="text-status-warn font-semibold uppercase tracking-wider">Step limit reached</span>
+      <span className="text-kb-text-tertiary">·</span>
+      <span>
+        Kobi paused after {limit ?? 'the'} tool step{limit === 1 ? '' : 's'} before finishing.
+      </span>
+      <button
+        type="button"
+        disabled={isLoading}
+        onClick={() =>
+          sendMessage('Continue the investigation from where you left off — run the next step you named.', {
+            trigger: 'continue_after_max_rounds',
+          })
+        }
+        className="ml-auto inline-flex items-center gap-1 text-status-warn hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
+      >
+        Continue
+        <ArrowRight className="w-3 h-3" />
+      </button>
     </div>
   )
 }

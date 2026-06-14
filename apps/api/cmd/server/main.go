@@ -40,6 +40,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -254,6 +255,10 @@ func main() {
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
 	var copilotUsage *copilot.UsageStore
+	// copilotConversations persists per-user Kobi transcripts for history +
+	// resume. Wired alongside copilotUsage inside the authCfg.Enabled block
+	// (needs the open BoltDB). Interface type so it stays nil-safe.
+	var copilotConversations copilot.ConversationStore
 	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
 	// is disabled — same gate as the rest of the admin surface, since
 	// persistence requires BoltDB to be open. Constructed inside the
@@ -264,6 +269,11 @@ func main() {
 	// flow (router-level handler talks to the same store the agent
 	// gRPC interceptor validates against).
 	var tenantsStore *auth.TenantsStore
+	// Ingest tokens live in their own store now (no longer inlined in the
+	// tenant record) — the base for SaaS/EE per-token cluster scoping. Same
+	// BoltDB-only gating as tenantsStore. Interface type so the nil check in
+	// the factory / handlers is a true nil (not a typed-nil interface).
+	var ingestTokenStore auth.IngestTokenStore
 	// Persistent agent registry — only enabled when auth is on (the
 	// BoltDB file only exists in that path). When nil, the in-memory
 	// registry survives a backend restart by losing all state, same
@@ -275,6 +285,12 @@ func main() {
 	// Durable mutation-audit store (Sprint 1) — same BoltDB-only gating.
 	// nil → mutations are slog-audited only (pre-Sprint-1 behavior).
 	var actionAuditStore audit.Store
+
+	// W1 metering seam. OSS is free + unmetered, so this is the no-op impl;
+	// EE injects a Postgres-backed UsageStore here. Constructed unconditionally
+	// (no DB needed) so the handlers always hold a non-nil store and call sites
+	// record unconditionally. EE's wiring swaps this single assignment.
+	var usageStore usage.UsageStore = usage.NewNoopUsageStore()
 
 	// Fleet-wide Prom remote_write limit defaults (Phase 3 Day 1-3).
 	// Loaded once at startup from KUBEBOLT_PROM_WRITE_DEFAULT_* env
@@ -400,6 +416,14 @@ func main() {
 		// Shares the same BoltDB file; bucket created by auth.NewStore.
 		copilotUsage = copilot.NewUsageStore(store.DB(), auth.CopilotSessionsBucket())
 
+		// Persistent Kobi conversation store — full transcripts per user so
+		// the operator can refresh / re-login and resume. Same BoltDB file;
+		// bucket created by auth.NewStore. Retention + per-user cap come from
+		// the environment (KUBEBOLT_COPILOT_CONVERSATION_*), defaulting to
+		// 90d / 200 per user.
+		convRetention, convMaxPerUser := copilot.ConversationStoreConfigFromEnv()
+		copilotConversations = copilot.NewBoltConversationStore(store.DB(), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
+
 		// Tenants + ingest tokens (Sprint A). Auto-seeds the "default"
 		// tenant on first boot; the admin REST surface lets operators
 		// create more, issue tokens, and rotate / revoke them.
@@ -408,6 +432,80 @@ func main() {
 			fatal("failed to open tenants store", slog.String("error", err.Error()))
 		}
 		tenantsStore = ts
+
+		// W1 identity-model bootstrap invariant: every install has a default
+		// org (the auto-seeded "default" tenant) AND a default team under it.
+		// OSS stays single-org + single-team, so the cluster(s) are implicitly
+		// owned by this team — owner_team_id is an EE-only column (see the
+		// ClusterStore seam comment), not modeled here. EnsureDefaultTeam is
+		// idempotent: it returns the existing team on every boot after the first.
+		teamStore, err := auth.NewTeamStore(store.DB())
+		if err != nil {
+			fatal("failed to open team store", slog.String("error", err.Error()))
+		}
+		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
+			team, err := teamStore.EnsureDefaultTeam(dt.ID)
+			if err != nil {
+				fatal("failed to ensure default team", slog.String("error", err.Error()))
+			}
+			// Backfill: materialize membership for every existing user so the
+			// org → team → user hierarchy is real, not implicit. Idempotent
+			// (AddMember upserts), so this is a safe every-boot reconcile that
+			// also picks up the seeded admin and any users created while an
+			// older binary (pre-membership) was running. team_role "" = inherit
+			// the org role; OSS teams never elevate.
+			enrolled := 0
+			if users, err := store.ListUsers(); err == nil {
+				for i := range users {
+					if _, err := teamStore.AddMember(team.ID, users[i].ID, ""); err != nil {
+						slog.Warn("default-team backfill: could not enroll user",
+							slog.String("user_id", users[i].ID),
+							slog.String("error", err.Error()),
+						)
+						continue
+					}
+					enrolled++
+				}
+			}
+			slog.Info("default team ready",
+				slog.String("team_id", team.ID),
+				slog.String("org_id", dt.ID),
+				slog.Int("members", enrolled),
+			)
+			// Wire the org/team context into the auth handlers so CreateUser /
+			// DeleteUser keep membership in sync, /auth/me surfaces org+team,
+			// and the /teams endpoints resolve the default org/team.
+			authHandlers.SetOrgTeamContext(teamStore, tenantsStore, dt.ID, team.ID)
+		}
+
+		// Ingest-token store (Sprint A → W1 refactor). Tokens used to live
+		// inlined under Tenant.IngestTokens; they now have their own buckets.
+		// MigrateInlinedTokens is a one-time, idempotent cutover — it reads
+		// any legacy inlined tokens, re-keys them into the dedicated buckets
+		// stamping TenantID, and rewrites the tenant record clean. Safe to run
+		// on every boot (skips tokens already indexed).
+		its, err := auth.NewIngestTokenStore(store.DB())
+		if err != nil {
+			fatal("failed to open ingest token store", slog.String("error", err.Error()))
+		}
+		if migrated, err := its.MigrateInlinedTokens(); err != nil {
+			fatal("failed to migrate inlined ingest tokens", slog.String("error", err.Error()))
+		} else if migrated > 0 {
+			slog.Info("migrated inlined ingest tokens to dedicated store",
+				slog.Int("count", migrated),
+			)
+		}
+		ingestTokenStore = its
+
+		// REST API tokens — long-lived bearer tokens for non-interactive
+		// callers (service tokens kbs_ for Autopilot / EE; customer keys
+		// kbk_ later). Shares the same BoltDB file. Wiring it makes
+		// RequireAuth accept these in addition to the user-session JWT.
+		apiTokenStore, err := auth.NewAPITokenStore(store.DB())
+		if err != nil {
+			fatal("failed to open api token store", slog.String("error", err.Error()))
+		}
+		authHandlers.SetAPITokenStore(apiTokenStore)
 
 		// Persistent agent registry. Restart-survival for the
 		// agent-proxy cluster list — operators expect their dashboard
@@ -434,7 +532,7 @@ func main() {
 		// resolver stamps the active cluster onto each record.
 		actionAuditStore = audit.NewBoltStore(store.DB(), auth.KobiActionsBucket())
 		api.SetAuditStore(actionAuditStore, func() string {
-			if c := manager.Connector(); c != nil {
+			if c := manager.Connector(context.Background()); c != nil {
 				return c.ClusterUID()
 			}
 			return ""
@@ -453,6 +551,7 @@ func main() {
 			factoryOpts.TokenReviewAudience = settingsRuntime.IngestChannel().AgentTokenAudience
 		}
 		factoryOpts.TenantsStore = tenantsStore
+		factoryOpts.IngestTokenStore = ingestTokenStore
 		if c, err := agent.NewInClusterKubeClient(); err == nil {
 			factoryOpts.KubeClient = c
 		} else {
@@ -465,7 +564,7 @@ func main() {
 			fatal("agent auth bundle", slog.String("error", err.Error()))
 		}
 		agentAuthBundle = bundle
-		tenantHandlers = auth.NewTenantHandlers(tenantsStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
+		tenantHandlers = auth.NewTenantHandlers(tenantsStore, ingestTokenStore, promLimitsEffective, bundle.AsCacheInvalidators()...)
 
 		// Now that the JWT service + admin handlers are wired with the
 		// resolved authCfg, snapshot what the running process was built
@@ -531,6 +630,17 @@ func main() {
 	// Ensure the email digest flusher (if any) drains on shutdown
 	defer notifManager.Stop()
 
+	// Cluster cold-connects read the informer cache-sync deadline live, so an
+	// admin can bump it for slow/large clusters (Settings → General) with no
+	// restart. Falls back to the env baseline when settings are unavailable
+	// (auth disabled). Read per-connect; repeat switches stay instant (pool).
+	manager.SetCacheSyncTimeoutProvider(func() time.Duration {
+		if settingsRuntime != nil {
+			return time.Duration(settingsRuntime.General().CacheSyncTimeoutSeconds) * time.Second
+		}
+		return time.Duration(config.LoadGeneralConfig().CacheSyncTimeoutSeconds) * time.Second
+	})
+
 	// Integrations registry. Populated here so adding a new adapter
 	// is one line — the handlers pick it up automatically.
 	integrationRegistry := integrations.NewRegistry()
@@ -560,7 +670,7 @@ func main() {
 		if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
 			return uid
 		}
-		if conn := manager.Connector(); conn != nil {
+		if conn := manager.Connector(context.Background()); conn != nil {
 			return conn.ClusterUID()
 		}
 		return ""
@@ -589,6 +699,7 @@ func main() {
 		// GMP/AMP/AMW and would collide with the discriminator).
 		integrationRegistry.Register(integrations.NewPrometheus(
 			tenantsStore,
+			ingestTokenStore,
 			activeClusterUID,
 			vmProbeClient.PromSamplesForCluster,
 		))
@@ -721,7 +832,7 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel

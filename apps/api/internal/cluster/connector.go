@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"context"
@@ -27,7 +28,9 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	appslisters "k8s.io/client-go/listers/apps/v1"
@@ -39,8 +42,6 @@ import (
 	policylisters "k8s.io/client-go/listers/policy/v1"
 	rbaclisters "k8s.io/client-go/listers/rbac/v1"
 	storagelisters "k8s.io/client-go/listers/storage/v1"
-	"k8s.io/apimachinery/pkg/runtime/schema"
-	"k8s.io/client-go/dynamic"
 	rest "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/clientcmd"
@@ -71,7 +72,22 @@ type Connector struct {
 	nsFactories   []informers.SharedInformerFactory // per-namespace factories for namespace-scoped access
 	graph         *TopologyGraph
 	wsHub         *websocket.Hub
-	stopCh        chan struct{}
+	// broadcastGate, when non-nil and false, suppresses this connector's WS
+	// broadcasts — set by the manager when the connector's runtime is PARKED
+	// in the pool (W2). Parked informers keep syncing (so a switch back is
+	// instant) but their resource:updated / resource:deleted events shouldn't
+	// reach clients viewing a different cluster. nil = always broadcast.
+	broadcastGate *atomic.Bool
+	// wsTenant/wsCluster scope this connector's WS broadcasts (A.4). Empty =
+	// global (OSS-degenerate default). Set by the manager to (tenantID,
+	// contextName) — the context name, matching the dimension EE clients
+	// subscribe by (X-KubeBolt-Cluster), not the kube-system clusterUID.
+	wsTenant  string
+	wsCluster string
+	// cacheSyncTimeout overrides the Start() informer-sync deadline. Set by the
+	// manager per-connect from the live General setting; 0 → defaultCacheSyncTimeout.
+	cacheSyncTimeout time.Duration
+	stopCh           chan struct{}
 	// recentWrites bridges the read-after-write gap between an
 	// apiserver Patch landing and the informer cache catching up
 	// (~hundreds of ms). Mutation handlers Record(...) the field
@@ -80,40 +96,42 @@ type Connector struct {
 	// auto-expire (default 5s). Without this, a manual Refresh in
 	// the first second after Pause/Resume reads stale informer
 	// state and the UI looks like the action didn't take.
-	recentWrites *RecentWritesOverlay
+	recentWrites  *RecentWritesOverlay
 	mu            sync.RWMutex
-	clusterName    string
-	clusterUID     string // kube-system namespace UID, used to scope VM queries per cluster
-	collector      metricsCollector
-	topologyTimer  *time.Timer
-	permissions    ResourcePermissions
+	clusterName   string
+	clusterUID    string // kube-system namespace UID, used to scope VM queries per cluster
+	k8sVersion    string // cached GitVersion — ServerVersion() over agent-proxy is slow, and it never changes; fetch once
+	platform      string // cached, derived from k8sVersion
+	collector     metricsCollector
+	topologyTimer *time.Timer
+	permissions   ResourcePermissions
 
 	// Listers
-	podLister            corelisters.PodLister
-	nodeLister           corelisters.NodeLister
-	namespaceLister      corelisters.NamespaceLister
-	serviceLister        corelisters.ServiceLister
-	endpointSliceLister  discoverylisters.EndpointSliceLister
-	configMapLister      corelisters.ConfigMapLister
-	serviceAccountLister corelisters.ServiceAccountLister
-	secretLister         corelisters.SecretLister
-	pvcLister            corelisters.PersistentVolumeClaimLister
-	pvLister             corelisters.PersistentVolumeLister
-	eventLister          corelisters.EventLister
-	deploymentLister     appslisters.DeploymentLister
-	statefulSetLister    appslisters.StatefulSetLister
-	daemonSetLister      appslisters.DaemonSetLister
-	replicaSetLister     appslisters.ReplicaSetLister
-	jobLister            batchlisters.JobLister
-	cronJobLister        batchlisters.CronJobLister
-	ingressLister        networkinglisters.IngressLister
-	networkPolicyLister  networkinglisters.NetworkPolicyLister
-	pdbLister            policylisters.PodDisruptionBudgetLister
-	hpaLister            autoscalinglisters.HorizontalPodAutoscalerLister
-	storageClassLister   storagelisters.StorageClassLister
-	roleLister           rbaclisters.RoleLister
-	clusterRoleLister    rbaclisters.ClusterRoleLister
-	roleBindingLister    rbaclisters.RoleBindingLister
+	podLister                corelisters.PodLister
+	nodeLister               corelisters.NodeLister
+	namespaceLister          corelisters.NamespaceLister
+	serviceLister            corelisters.ServiceLister
+	endpointSliceLister      discoverylisters.EndpointSliceLister
+	configMapLister          corelisters.ConfigMapLister
+	serviceAccountLister     corelisters.ServiceAccountLister
+	secretLister             corelisters.SecretLister
+	pvcLister                corelisters.PersistentVolumeClaimLister
+	pvLister                 corelisters.PersistentVolumeLister
+	eventLister              corelisters.EventLister
+	deploymentLister         appslisters.DeploymentLister
+	statefulSetLister        appslisters.StatefulSetLister
+	daemonSetLister          appslisters.DaemonSetLister
+	replicaSetLister         appslisters.ReplicaSetLister
+	jobLister                batchlisters.JobLister
+	cronJobLister            batchlisters.CronJobLister
+	ingressLister            networkinglisters.IngressLister
+	networkPolicyLister      networkinglisters.NetworkPolicyLister
+	pdbLister                policylisters.PodDisruptionBudgetLister
+	hpaLister                autoscalinglisters.HorizontalPodAutoscalerLister
+	storageClassLister       storagelisters.StorageClassLister
+	roleLister               rbaclisters.RoleLister
+	clusterRoleLister        rbaclisters.ClusterRoleLister
+	roleBindingLister        rbaclisters.RoleBindingLister
 	clusterRoleBindingLister rbaclisters.ClusterRoleBindingLister
 }
 
@@ -357,7 +375,10 @@ func (c *Connector) setupInformers() {
 	if can("services") {
 		if isNS("services") {
 			var listers []corelisters.ServiceLister
-			for _, f := range nsFactories { listers = append(listers, f.Core().V1().Services().Lister()); f.Core().V1().Services().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().Services().Lister())
+				f.Core().V1().Services().Informer().AddEventHandler(handler)
+			}
 			c.serviceLister = &multiServiceLister{listers: listers}
 		} else {
 			c.serviceLister = c.factory.Core().V1().Services().Lister()
@@ -367,7 +388,10 @@ func (c *Connector) setupInformers() {
 	if can("endpointslices") {
 		if isNS("endpointslices") {
 			var listers []discoverylisters.EndpointSliceLister
-			for _, f := range nsFactories { listers = append(listers, f.Discovery().V1().EndpointSlices().Lister()); f.Discovery().V1().EndpointSlices().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Discovery().V1().EndpointSlices().Lister())
+				f.Discovery().V1().EndpointSlices().Informer().AddEventHandler(handler)
+			}
 			c.endpointSliceLister = &multiEndpointSliceLister{listers: listers}
 		} else {
 			c.endpointSliceLister = c.factory.Discovery().V1().EndpointSlices().Lister()
@@ -377,7 +401,10 @@ func (c *Connector) setupInformers() {
 	if can("configmaps") {
 		if isNS("configmaps") {
 			var listers []corelisters.ConfigMapLister
-			for _, f := range nsFactories { listers = append(listers, f.Core().V1().ConfigMaps().Lister()); f.Core().V1().ConfigMaps().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().ConfigMaps().Lister())
+				f.Core().V1().ConfigMaps().Informer().AddEventHandler(handler)
+			}
 			c.configMapLister = &multiConfigMapLister{listers: listers}
 		} else {
 			c.configMapLister = c.factory.Core().V1().ConfigMaps().Lister()
@@ -387,7 +414,10 @@ func (c *Connector) setupInformers() {
 	if can("serviceaccounts") {
 		if isNS("serviceaccounts") {
 			var listers []corelisters.ServiceAccountLister
-			for _, f := range nsFactories { listers = append(listers, f.Core().V1().ServiceAccounts().Lister()); f.Core().V1().ServiceAccounts().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().ServiceAccounts().Lister())
+				f.Core().V1().ServiceAccounts().Informer().AddEventHandler(handler)
+			}
 			c.serviceAccountLister = &multiServiceAccountLister{listers: listers}
 		} else {
 			c.serviceAccountLister = c.factory.Core().V1().ServiceAccounts().Lister()
@@ -397,7 +427,10 @@ func (c *Connector) setupInformers() {
 	if can("secrets") {
 		if isNS("secrets") {
 			var listers []corelisters.SecretLister
-			for _, f := range nsFactories { listers = append(listers, f.Core().V1().Secrets().Lister()); f.Core().V1().Secrets().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().Secrets().Lister())
+				f.Core().V1().Secrets().Informer().AddEventHandler(handler)
+			}
 			c.secretLister = &multiSecretLister{listers: listers}
 		} else {
 			c.secretLister = c.factory.Core().V1().Secrets().Lister()
@@ -407,7 +440,10 @@ func (c *Connector) setupInformers() {
 	if can("pvcs") {
 		if isNS("pvcs") {
 			var listers []corelisters.PersistentVolumeClaimLister
-			for _, f := range nsFactories { listers = append(listers, f.Core().V1().PersistentVolumeClaims().Lister()); f.Core().V1().PersistentVolumeClaims().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().PersistentVolumeClaims().Lister())
+				f.Core().V1().PersistentVolumeClaims().Informer().AddEventHandler(handler)
+			}
 			c.pvcLister = &multiPVCLister{listers: listers}
 		} else {
 			c.pvcLister = c.factory.Core().V1().PersistentVolumeClaims().Lister()
@@ -421,7 +457,10 @@ func (c *Connector) setupInformers() {
 	if can("events") {
 		if isNS("events") {
 			var listers []corelisters.EventLister
-			for _, f := range nsFactories { listers = append(listers, f.Core().V1().Events().Lister()); f.Core().V1().Events().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Core().V1().Events().Lister())
+				f.Core().V1().Events().Informer().AddEventHandler(handler)
+			}
 			c.eventLister = &multiEventLister{listers: listers}
 		} else {
 			c.eventLister = c.factory.Core().V1().Events().Lister()
@@ -433,7 +472,10 @@ func (c *Connector) setupInformers() {
 	if can("deployments") {
 		if isNS("deployments") {
 			var listers []appslisters.DeploymentLister
-			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().Deployments().Lister()); f.Apps().V1().Deployments().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Apps().V1().Deployments().Lister())
+				f.Apps().V1().Deployments().Informer().AddEventHandler(handler)
+			}
 			c.deploymentLister = &multiDeploymentLister{listers: listers}
 		} else {
 			c.deploymentLister = c.factory.Apps().V1().Deployments().Lister()
@@ -443,7 +485,10 @@ func (c *Connector) setupInformers() {
 	if can("statefulsets") {
 		if isNS("statefulsets") {
 			var listers []appslisters.StatefulSetLister
-			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().StatefulSets().Lister()); f.Apps().V1().StatefulSets().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Apps().V1().StatefulSets().Lister())
+				f.Apps().V1().StatefulSets().Informer().AddEventHandler(handler)
+			}
 			c.statefulSetLister = &multiStatefulSetLister{listers: listers}
 		} else {
 			c.statefulSetLister = c.factory.Apps().V1().StatefulSets().Lister()
@@ -453,7 +498,10 @@ func (c *Connector) setupInformers() {
 	if can("daemonsets") {
 		if isNS("daemonsets") {
 			var listers []appslisters.DaemonSetLister
-			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().DaemonSets().Lister()); f.Apps().V1().DaemonSets().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Apps().V1().DaemonSets().Lister())
+				f.Apps().V1().DaemonSets().Informer().AddEventHandler(handler)
+			}
 			c.daemonSetLister = &multiDaemonSetLister{listers: listers}
 		} else {
 			c.daemonSetLister = c.factory.Apps().V1().DaemonSets().Lister()
@@ -463,7 +511,10 @@ func (c *Connector) setupInformers() {
 	if can("replicasets") {
 		if isNS("replicasets") {
 			var listers []appslisters.ReplicaSetLister
-			for _, f := range nsFactories { listers = append(listers, f.Apps().V1().ReplicaSets().Lister()); f.Apps().V1().ReplicaSets().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Apps().V1().ReplicaSets().Lister())
+				f.Apps().V1().ReplicaSets().Informer().AddEventHandler(handler)
+			}
 			c.replicaSetLister = &multiReplicaSetLister{listers: listers}
 		} else {
 			c.replicaSetLister = c.factory.Apps().V1().ReplicaSets().Lister()
@@ -475,7 +526,10 @@ func (c *Connector) setupInformers() {
 	if can("jobs") {
 		if isNS("jobs") {
 			var listers []batchlisters.JobLister
-			for _, f := range nsFactories { listers = append(listers, f.Batch().V1().Jobs().Lister()); f.Batch().V1().Jobs().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Batch().V1().Jobs().Lister())
+				f.Batch().V1().Jobs().Informer().AddEventHandler(handler)
+			}
 			c.jobLister = &multiJobLister{listers: listers}
 		} else {
 			c.jobLister = c.factory.Batch().V1().Jobs().Lister()
@@ -485,7 +539,10 @@ func (c *Connector) setupInformers() {
 	if can("cronjobs") {
 		if isNS("cronjobs") {
 			var listers []batchlisters.CronJobLister
-			for _, f := range nsFactories { listers = append(listers, f.Batch().V1().CronJobs().Lister()); f.Batch().V1().CronJobs().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Batch().V1().CronJobs().Lister())
+				f.Batch().V1().CronJobs().Informer().AddEventHandler(handler)
+			}
 			c.cronJobLister = &multiCronJobLister{listers: listers}
 		} else {
 			c.cronJobLister = c.factory.Batch().V1().CronJobs().Lister()
@@ -497,7 +554,10 @@ func (c *Connector) setupInformers() {
 	if can("ingresses") {
 		if isNS("ingresses") {
 			var listers []networkinglisters.IngressLister
-			for _, f := range nsFactories { listers = append(listers, f.Networking().V1().Ingresses().Lister()); f.Networking().V1().Ingresses().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Networking().V1().Ingresses().Lister())
+				f.Networking().V1().Ingresses().Informer().AddEventHandler(handler)
+			}
 			c.ingressLister = &multiIngressLister{listers: listers}
 		} else {
 			c.ingressLister = c.factory.Networking().V1().Ingresses().Lister()
@@ -507,7 +567,10 @@ func (c *Connector) setupInformers() {
 	if can("networkpolicies") {
 		if isNS("networkpolicies") {
 			var listers []networkinglisters.NetworkPolicyLister
-			for _, f := range nsFactories { listers = append(listers, f.Networking().V1().NetworkPolicies().Lister()); f.Networking().V1().NetworkPolicies().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Networking().V1().NetworkPolicies().Lister())
+				f.Networking().V1().NetworkPolicies().Informer().AddEventHandler(handler)
+			}
 			c.networkPolicyLister = &multiNetworkPolicyLister{listers: listers}
 		} else {
 			c.networkPolicyLister = c.factory.Networking().V1().NetworkPolicies().Lister()
@@ -534,7 +597,10 @@ func (c *Connector) setupInformers() {
 	if can("hpas") {
 		if isNS("hpas") {
 			var listers []autoscalinglisters.HorizontalPodAutoscalerLister
-			for _, f := range nsFactories { listers = append(listers, f.Autoscaling().V1().HorizontalPodAutoscalers().Lister()); f.Autoscaling().V1().HorizontalPodAutoscalers().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Autoscaling().V1().HorizontalPodAutoscalers().Lister())
+				f.Autoscaling().V1().HorizontalPodAutoscalers().Informer().AddEventHandler(handler)
+			}
 			c.hpaLister = &multiHPALister{listers: listers}
 		} else {
 			c.hpaLister = c.factory.Autoscaling().V1().HorizontalPodAutoscalers().Lister()
@@ -552,7 +618,10 @@ func (c *Connector) setupInformers() {
 	if can("roles") {
 		if isNS("roles") {
 			var listers []rbaclisters.RoleLister
-			for _, f := range nsFactories { listers = append(listers, f.Rbac().V1().Roles().Lister()); f.Rbac().V1().Roles().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Rbac().V1().Roles().Lister())
+				f.Rbac().V1().Roles().Informer().AddEventHandler(handler)
+			}
 			c.roleLister = &multiRoleLister{listers: listers}
 		} else {
 			c.roleLister = c.factory.Rbac().V1().Roles().Lister()
@@ -566,7 +635,10 @@ func (c *Connector) setupInformers() {
 	if can("rolebindings") {
 		if isNS("rolebindings") {
 			var listers []rbaclisters.RoleBindingLister
-			for _, f := range nsFactories { listers = append(listers, f.Rbac().V1().RoleBindings().Lister()); f.Rbac().V1().RoleBindings().Informer().AddEventHandler(handler) }
+			for _, f := range nsFactories {
+				listers = append(listers, f.Rbac().V1().RoleBindings().Lister())
+				f.Rbac().V1().RoleBindings().Informer().AddEventHandler(handler)
+			}
 			c.roleBindingLister = &multiRoleBindingLister{listers: listers}
 		} else {
 			c.roleBindingLister = c.factory.Rbac().V1().RoleBindings().Lister()
@@ -584,11 +656,34 @@ func (c *Connector) setupInformers() {
 	}
 }
 
+// SetBroadcastGate wires the active/parked gate shared with this connector's
+// insights engine. Called once at runtime construction, before informers emit.
+func (c *Connector) SetBroadcastGate(g *atomic.Bool) {
+	c.broadcastGate = g
+}
+
+// SetWSScope tags this connector's WS broadcasts with (tenant, cluster-context)
+// so EE clients only receive their own cluster's resource events (A.4).
+func (c *Connector) SetWSScope(tenant, cluster string) {
+	c.wsTenant = tenant
+	c.wsCluster = cluster
+}
+
+// broadcast pushes to the WS hub unless this connector's runtime is parked. The
+// (wsTenant, wsCluster) scope is empty by default → global, identical to
+// pre-A.4; EE sets it so clients only see their own cluster's events.
+func (c *Connector) broadcast(msgType string, obj interface{}) {
+	if c.broadcastGate != nil && !c.broadcastGate.Load() {
+		return
+	}
+	c.wsHub.BroadcastScoped(c.wsTenant, c.wsCluster, msgType, obj)
+}
+
 func (c *Connector) onResourceChange(action string, obj interface{}) {
 	if action == "delete" {
-		c.wsHub.Broadcast(websocket.ResourceDeleted, obj)
+		c.broadcast(websocket.ResourceDeleted, obj)
 	} else {
-		c.wsHub.Broadcast(websocket.ResourceUpdated, obj)
+		c.broadcast(websocket.ResourceUpdated, obj)
 	}
 	// Debounced topology rebuild — coalesce rapid changes
 	c.scheduleTopologyRebuild()
@@ -849,15 +944,39 @@ func (c *Connector) addGatewayTopologyNodes() {
 	}
 }
 
-// Start begins the shared informer factory. Returns an error if cache sync
-// does not complete within 20 seconds (e.g. cluster is unreachable).
+// defaultCacheSyncTimeout is the fallback deadline Start() waits for informer
+// caches to sync when the manager hasn't injected a configured value (tests, or
+// before the settings provider is wired). 45s — a cold connect to a large
+// cluster can need 20-30s, so the old hard-coded 20s left big EKS/GKE clusters
+// at the edge and they flaked on the first switch after a restart. The warm
+// pool keeps repeat switches instant regardless.
+const defaultCacheSyncTimeout = 45 * time.Second
+
+// SetCacheSyncTimeout sets the informer cache-sync deadline for the NEXT Start()
+// of this connector. The manager calls it per-connect with the live General
+// setting (env baseline + UI override, hot-reloaded — no restart). Values below
+// 5s, or unset, fall back to defaultCacheSyncTimeout.
+func (c *Connector) SetCacheSyncTimeout(d time.Duration) {
+	c.cacheSyncTimeout = d
+}
+
+func (c *Connector) effectiveCacheSyncTimeout() time.Duration {
+	if c.cacheSyncTimeout >= 5*time.Second {
+		return c.cacheSyncTimeout
+	}
+	return defaultCacheSyncTimeout
+}
+
+// Start begins the shared informer factory. Returns an error if cache sync does
+// not complete within the configured timeout (default 45s; e.g. cluster
+// unreachable).
 func (c *Connector) Start() error {
 	c.factory.Start(c.stopCh)
 	for _, f := range c.nsFactories {
 		f.Start(c.stopCh)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), c.effectiveCacheSyncTimeout())
 	defer cancel()
 	for _, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
 		if !ok {
@@ -887,6 +1006,32 @@ func (c *Connector) Stop() {
 	close(c.stopCh) // stops both factory and nsFactories since they share stopCh
 }
 
+// serverVersionCached returns the cluster's k8s GitVersion + detected platform,
+// fetching ServerVersion() once and caching it. The version is immutable for a
+// connector's lifetime, and the discovery round-trip is expensive over the
+// agent-proxy channel (multiple seconds) — calling it on every GetOverview
+// (every refresh tick) dragged the overview, and with the switch overlay now
+// awaiting a fresh overview, dragged every cluster switch too. A failed lookup
+// isn't cached, so it retries on the next call.
+func (c *Connector) serverVersionCached() (version, platform string) {
+	c.mu.RLock()
+	version, platform = c.k8sVersion, c.platform
+	c.mu.RUnlock()
+	if version != "" {
+		return version, platform
+	}
+	sv, err := c.clientset.Discovery().ServerVersion()
+	if err != nil {
+		return "", ""
+	}
+	version = sv.GitVersion
+	platform = detectPlatform(sv.GitVersion)
+	c.mu.Lock()
+	c.k8sVersion, c.platform = version, platform
+	c.mu.Unlock()
+	return version, platform
+}
+
 // GetOverview aggregates counts from listers.
 func (c *Connector) GetOverview() models.ClusterOverview {
 	overview := models.ClusterOverview{}
@@ -894,11 +1039,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	// Cluster info
 	overview.ClusterName = c.clusterName
 	overview.ClusterUID = c.clusterUID
-	serverVersion, err := c.clientset.Discovery().ServerVersion()
-	if err == nil {
-		overview.KubernetesVersion = serverVersion.GitVersion
-		overview.Platform = detectPlatform(serverVersion.GitVersion)
-	}
+	overview.KubernetesVersion, overview.Platform = c.serverVersionCached()
 
 	// Nodes
 	var nodes []*corev1.Node
@@ -1126,6 +1267,10 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	overview.ArgoCDApps.Ready = overview.ArgoCDApps.Total
 	overview.VPAs.Total = len(c.listOptionalCRD("vpas", ""))
 	overview.VPAs.Ready = overview.VPAs.Total
+	overview.CiliumNetworkPolicies.Total = len(c.listOptionalCRD("ciliumnetworkpolicies", ""))
+	overview.CiliumNetworkPolicies.Ready = overview.CiliumNetworkPolicies.Total
+	overview.CiliumClusterwideNetworkPolicies.Total = len(c.listOptionalCRD("ciliumclusterwidenetworkpolicies", ""))
+	overview.CiliumClusterwideNetworkPolicies.Ready = overview.CiliumClusterwideNetworkPolicies.Total
 
 	// Helm releases — count DISTINCT releases (one release has N revision
 	// Secrets) via the owner=helm Secret's `name` label; no gzip/JSON decode
@@ -1825,7 +1970,8 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = c.listGatewayResources("gateways", namespace)
 	case "httproutes":
 		items = c.listGatewayResources("httproutes", namespace)
-	case "certificates", "argocdapps", "vpas":
+	case "certificates", "argocdapps", "vpas",
+		"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies":
 		items = c.listOptionalCRD(resourceType, namespace)
 	case "configmaps":
 		items = c.listConfigMaps(namespace)
@@ -1893,13 +2039,29 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 		items = filtered
 	}
 
-	// Filter by status
+	// Filter by status. The pseudo-status "degraded" mirrors the
+	// overview's Warning bucket (buildClusterOverview): everything
+	// that is neither healthy (Running fully-ready, Succeeded) nor
+	// terminal-failed. Needed because those pods carry heterogeneous
+	// status strings (Pending, CrashLoopBackOff, ImagePullBackOff,
+	// or plain "Running" with containers not ready) that no single
+	// exact match can capture — the dashboard's "Degraded" KPI row
+	// links here.
 	if status != "" {
 		status = strings.ToLower(status)
 		filtered := items[:0]
 		for _, item := range items {
 			s, _ := item["status"].(string)
-			if strings.ToLower(s) == status {
+			sl := strings.ToLower(s)
+			if status == "degraded" {
+				if sl == "succeeded" || sl == "completed" || sl == "failed" {
+					continue
+				}
+				if sl == "running" && itemFullyReady(item) {
+					continue
+				}
+				filtered = append(filtered, item)
+			} else if sl == status {
 				filtered = append(filtered, item)
 			}
 		}
@@ -2194,27 +2356,30 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			return nil, err
 		}
 		return map[string]interface{}{
-			"name":             rs.Name,
-			"namespace":        rs.Namespace,
-			"status":           fmt.Sprintf("%d/%d", rs.Status.ReadyReplicas, *rs.Spec.Replicas),
-			"replicas":         rs.Status.Replicas,
-			"readyReplicas":    rs.Status.ReadyReplicas,
+			"name":              rs.Name,
+			"namespace":         rs.Namespace,
+			"status":            fmt.Sprintf("%d/%d", rs.Status.ReadyReplicas, *rs.Spec.Replicas),
+			"replicas":          rs.Status.Replicas,
+			"readyReplicas":     rs.Status.ReadyReplicas,
 			"availableReplicas": rs.Status.AvailableReplicas,
-			"labels":           safeLabels(rs.Labels),
-			"annotations":      safeAnnotations(rs.Annotations),
-			"ownerReferences":  ownerRefsToSlice(rs.OwnerReferences),
-			"createdAt":        rs.CreationTimestamp.Time.Format(time.RFC3339),
-			"age":              formatAge(rs.CreationTimestamp.Time),
+			"labels":            safeLabels(rs.Labels),
+			"annotations":       safeAnnotations(rs.Annotations),
+			"ownerReferences":   ownerRefsToSlice(rs.OwnerReferences),
+			"createdAt":         rs.CreationTimestamp.Time.Format(time.RFC3339),
+			"age":               formatAge(rs.CreationTimestamp.Time),
 		}, nil
 	case "endpoints":
-		// EndpointSlices don't map 1:1 to a single "endpoint" resource;
-		// return the slice matching the given name.
+		// EndpointSlices don't map 1:1 to a single "endpoint" resource, and they
+		// are named <service>-<hash> — NOT the service name callers pass. Match on
+		// the kubernetes.io/service-name label (falling back to the literal slice
+		// name) so a lookup by service name resolves the backing slice instead of
+		// returning "not found".
 		slices, err := c.endpointSliceLister.EndpointSlices(namespace).List(everythingSelector())
 		if err != nil {
 			return nil, err
 		}
 		for _, es := range slices {
-			if es.Name == name {
+			if es.Name == name || es.Labels["kubernetes.io/service-name"] == name {
 				var endpoints []string
 				for _, ep := range es.Endpoints {
 					endpoints = append(endpoints, ep.Addresses...)
@@ -2249,7 +2414,8 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 			}
 		}
 		return nil, fmt.Errorf("%s %s/%s not found", resourceType, namespace, name)
-	case "certificates", "argocdapps", "vpas":
+	case "certificates", "argocdapps", "vpas",
+		"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies":
 		return c.getOptionalCRD(resourceType, namespace, name)
 	default:
 		return nil, fmt.Errorf("unsupported resource type: %s", resourceType)
@@ -2327,7 +2493,6 @@ func (c *Connector) GetNamespaces() models.ResourceList {
 	return c.GetResources("namespaces", "", "", "", "", "name", "asc", 1, 1000)
 }
 
-
 func everythingSelector() labels.Selector {
 	return labels.Everything()
 }
@@ -2380,6 +2545,25 @@ func safeAnnotations(m map[string]string) map[string]string {
 		filtered[k] = v
 	}
 	return filtered
+}
+
+// itemFullyReady reports whether a list item's "ready" field ("2/2"
+// for pods) shows every container ready. Items without the field (or
+// with a shape we don't recognize) count as fully ready so the
+// "degraded" pseudo-status filter never catches resource types that
+// don't carry readiness.
+func itemFullyReady(item map[string]interface{}) bool {
+	readyStr, _ := item["ready"].(string)
+	parts := strings.Split(readyStr, "/")
+	if len(parts) != 2 {
+		return true
+	}
+	ready, err1 := strconv.Atoi(parts[0])
+	total, err2 := strconv.Atoi(parts[1])
+	if err1 != nil || err2 != nil {
+		return true
+	}
+	return ready >= total
 }
 
 func podToMap(pod *corev1.Pod) map[string]interface{} {
@@ -2507,19 +2691,19 @@ func deploymentToMap(d *appsv1.Deployment) map[string]interface{} {
 		// has caught up to the latest spec when observedGeneration >= generation.
 		"generation":         d.Generation,
 		"observedGeneration": d.Status.ObservedGeneration,
-		"labels":            safeLabels(d.Labels),
-		"annotations":       safeAnnotations(d.Annotations),
-		"selector":          d.Spec.Selector,
-		"strategy":          string(d.Spec.Strategy.Type),
+		"labels":             safeLabels(d.Labels),
+		"annotations":        safeAnnotations(d.Annotations),
+		"selector":           d.Spec.Selector,
+		"strategy":           string(d.Spec.Strategy.Type),
 		// paused mirrors Deployment.Spec.Paused so the UI can show
 		// the rollout-paused badge and toggle Pause/Resume rollout
 		// buttons (Tier 2 #5). Same shape as cronjobs' "suspend" field.
-		"paused":            d.Spec.Paused,
-		"createdAt":         d.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":               formatAge(d.CreationTimestamp.Time),
-		"ownerReferences":   ownerRefsToSlice(d.OwnerReferences),
-		"conditions":        deploymentConditionsToSlice(d.Status.Conditions),
-		"containers":        templateContainerSpecs(d.Spec.Template.Spec.Containers),
+		"paused":          d.Spec.Paused,
+		"createdAt":       d.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":             formatAge(d.CreationTimestamp.Time),
+		"ownerReferences": ownerRefsToSlice(d.OwnerReferences),
+		"conditions":      deploymentConditionsToSlice(d.Status.Conditions),
+		"containers":      templateContainerSpecs(d.Spec.Template.Spec.Containers),
 	}
 }
 
@@ -2667,7 +2851,7 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		// detail) so the Nodes page can render the SchedulingDisabled
 		// badge + decide which action menu items to show without an
 		// extra round-trip per card.
-		"unschedulable":     node.Spec.Unschedulable,
+		"unschedulable": node.Spec.Unschedulable,
 	}
 }
 
@@ -2683,12 +2867,12 @@ func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
 		"updatedReplicas":    ss.Status.UpdatedReplicas,
 		"generation":         ss.Generation,
 		"observedGeneration": ss.Status.ObservedGeneration,
-		"labels":          safeLabels(ss.Labels),
-		"annotations":     safeAnnotations(ss.Annotations),
-		"createdAt":       ss.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":             formatAge(ss.CreationTimestamp.Time),
-		"ownerReferences": ownerRefsToSlice(ss.OwnerReferences),
-		"containers":      templateContainerSpecs(ss.Spec.Template.Spec.Containers),
+		"labels":             safeLabels(ss.Labels),
+		"annotations":        safeAnnotations(ss.Annotations),
+		"createdAt":          ss.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":                formatAge(ss.CreationTimestamp.Time),
+		"ownerReferences":    ownerRefsToSlice(ss.OwnerReferences),
+		"containers":         templateContainerSpecs(ss.Spec.Template.Spec.Containers),
 	}
 }
 
@@ -2704,12 +2888,12 @@ func daemonSetToMap(ds *appsv1.DaemonSet) map[string]interface{} {
 		"updatedNumber":      ds.Status.UpdatedNumberScheduled,
 		"generation":         ds.Generation,
 		"observedGeneration": ds.Status.ObservedGeneration,
-		"labels":          safeLabels(ds.Labels),
-		"annotations":     safeAnnotations(ds.Annotations),
-		"createdAt":       ds.CreationTimestamp.Time.Format(time.RFC3339),
-		"age":             formatAge(ds.CreationTimestamp.Time),
-		"ownerReferences": ownerRefsToSlice(ds.OwnerReferences),
-		"containers":      templateContainerSpecs(ds.Spec.Template.Spec.Containers),
+		"labels":             safeLabels(ds.Labels),
+		"annotations":        safeAnnotations(ds.Annotations),
+		"createdAt":          ds.CreationTimestamp.Time.Format(time.RFC3339),
+		"age":                formatAge(ds.CreationTimestamp.Time),
+		"ownerReferences":    ownerRefsToSlice(ds.OwnerReferences),
+		"containers":         templateContainerSpecs(ds.Spec.Template.Spec.Containers),
 	}
 }
 
@@ -2799,19 +2983,19 @@ func cronJobToMap(cj *batchv1.CronJob) map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"name":              cj.Name,
-		"namespace":         cj.Namespace,
-		"status":            cjStatus,
-		"schedule":          cj.Spec.Schedule,
+		"name":      cj.Name,
+		"namespace": cj.Namespace,
+		"status":    cjStatus,
+		"schedule":  cj.Spec.Schedule,
 		// `lastSchedule` is the friendly relative string (e.g. "3m")
 		// matching the column header "Last Run" in the list page.
 		// The TS field name on the frontend was lastSchedule; the
 		// pre-existing payload only had lastScheduleTime, so the
 		// column was always rendering "—".
-		"lastSchedule":      lastSchedule,
-		"lastScheduleTime":  lastScheduleTime,
-		"suspend":           cj.Spec.Suspend != nil && *cj.Spec.Suspend,
-		"activeJobs":        len(cj.Status.Active),
+		"lastSchedule":     lastSchedule,
+		"lastScheduleTime": lastScheduleTime,
+		"suspend":          cj.Spec.Suspend != nil && *cj.Spec.Suspend,
+		"activeJobs":       len(cj.Status.Active),
 		// concurrencyPolicy surfaces in the trigger modal banner —
 		// pre-existing UI uses cj.concurrencyPolicy from the detail
 		// payload; adding it to the list shape too lets a future
@@ -3392,49 +3576,57 @@ func ResourceTypeGVR(resourceType string) (schema.GroupVersionResource, bool) {
 	return resourceTypeToGVR(resourceType)
 }
 
+// IsClusterScoped is the exported scope check used by the describe paths to
+// pick the RESTMapping scope for the generic (CRD) describer fallback.
+func IsClusterScoped(resourceType string) bool {
+	return isClusterScoped(resourceType)
+}
+
 // resourceTypeToGVR maps a resource type string to its GroupVersionResource.
 func resourceTypeToGVR(resourceType string) (schema.GroupVersionResource, bool) {
 	m := map[string]schema.GroupVersionResource{
-		"pods":                  {Group: "", Version: "v1", Resource: "pods"},
-		"nodes":                 {Group: "", Version: "v1", Resource: "nodes"},
-		"namespaces":            {Group: "", Version: "v1", Resource: "namespaces"},
-		"services":              {Group: "", Version: "v1", Resource: "services"},
-		"configmaps":            {Group: "", Version: "v1", Resource: "configmaps"},
-		"secrets":               {Group: "", Version: "v1", Resource: "secrets"},
+		"pods":                   {Group: "", Version: "v1", Resource: "pods"},
+		"nodes":                  {Group: "", Version: "v1", Resource: "nodes"},
+		"namespaces":             {Group: "", Version: "v1", Resource: "namespaces"},
+		"services":               {Group: "", Version: "v1", Resource: "services"},
+		"configmaps":             {Group: "", Version: "v1", Resource: "configmaps"},
+		"secrets":                {Group: "", Version: "v1", Resource: "secrets"},
 		"persistentvolumeclaims": {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
-		"pvcs":                  {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
-		"persistentvolumes":     {Group: "", Version: "v1", Resource: "persistentvolumes"},
-		"pvs":                   {Group: "", Version: "v1", Resource: "persistentvolumes"},
-		"events":                {Group: "", Version: "v1", Resource: "events"},
-		"deployments":           {Group: "apps", Version: "v1", Resource: "deployments"},
-		"statefulsets":          {Group: "apps", Version: "v1", Resource: "statefulsets"},
-		"daemonsets":            {Group: "apps", Version: "v1", Resource: "daemonsets"},
-		"replicasets":           {Group: "apps", Version: "v1", Resource: "replicasets"},
-		"jobs":                  {Group: "batch", Version: "v1", Resource: "jobs"},
-		"cronjobs":              {Group: "batch", Version: "v1", Resource: "cronjobs"},
-		"ingresses":             {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
-		"networkpolicies":       {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
-		"pdbs":                  {Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"},
-		"serviceaccounts":       {Group: "", Version: "v1", Resource: "serviceaccounts"},
+		"pvcs":                   {Group: "", Version: "v1", Resource: "persistentvolumeclaims"},
+		"persistentvolumes":      {Group: "", Version: "v1", Resource: "persistentvolumes"},
+		"pvs":                    {Group: "", Version: "v1", Resource: "persistentvolumes"},
+		"events":                 {Group: "", Version: "v1", Resource: "events"},
+		"deployments":            {Group: "apps", Version: "v1", Resource: "deployments"},
+		"statefulsets":           {Group: "apps", Version: "v1", Resource: "statefulsets"},
+		"daemonsets":             {Group: "apps", Version: "v1", Resource: "daemonsets"},
+		"replicasets":            {Group: "apps", Version: "v1", Resource: "replicasets"},
+		"jobs":                   {Group: "batch", Version: "v1", Resource: "jobs"},
+		"cronjobs":               {Group: "batch", Version: "v1", Resource: "cronjobs"},
+		"ingresses":              {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
+		"networkpolicies":        {Group: "networking.k8s.io", Version: "v1", Resource: "networkpolicies"},
+		"pdbs":                   {Group: "policy", Version: "v1", Resource: "poddisruptionbudgets"},
+		"serviceaccounts":        {Group: "", Version: "v1", Resource: "serviceaccounts"},
 		// `endpoints` is the user-facing URL/type; underneath it maps
 		// to the discovery/v1 EndpointSlice API (legacy core/v1
 		// Endpoints is deprecated). Adding this entry enables the
 		// YAML view + Delete + PatchMetadata + ApplyYAML dispatchers
 		// for the resource type that the list + detail handlers
 		// already surface (via typed listers, separate code path).
-		"endpoints":             {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
-		"hpas":                  {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
-		"horizontalpodautoscalers": {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
-		"storageclasses":        {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
-		"roles":                 {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"},
-		"clusterroles":          {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
-		"rolebindings":          {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
-		"clusterrolebindings":   {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
-		"gateways":              {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
-		"httproutes":            {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
-		"certificates":          {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
-		"argocdapps":            {Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"},
-		"vpas":                  {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
+		"endpoints":                        {Group: "discovery.k8s.io", Version: "v1", Resource: "endpointslices"},
+		"hpas":                             {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
+		"horizontalpodautoscalers":         {Group: "autoscaling", Version: "v1", Resource: "horizontalpodautoscalers"},
+		"storageclasses":                   {Group: "storage.k8s.io", Version: "v1", Resource: "storageclasses"},
+		"roles":                            {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "roles"},
+		"clusterroles":                     {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterroles"},
+		"rolebindings":                     {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "rolebindings"},
+		"clusterrolebindings":              {Group: "rbac.authorization.k8s.io", Version: "v1", Resource: "clusterrolebindings"},
+		"gateways":                         {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "gateways"},
+		"httproutes":                       {Group: "gateway.networking.k8s.io", Version: "v1", Resource: "httproutes"},
+		"certificates":                     {Group: "cert-manager.io", Version: "v1", Resource: "certificates"},
+		"argocdapps":                       {Group: "argoproj.io", Version: "v1alpha1", Resource: "applications"},
+		"vpas":                             {Group: "autoscaling.k8s.io", Version: "v1", Resource: "verticalpodautoscalers"},
+		"ciliumnetworkpolicies":            {Group: "cilium.io", Version: "v2", Resource: "ciliumnetworkpolicies"},
+		"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Version: "v2", Resource: "ciliumclusterwidenetworkpolicies"},
 	}
 	gvr, ok := m[resourceType]
 	return gvr, ok
@@ -3497,7 +3689,8 @@ func looksLikeSensitiveValue(value string) bool {
 
 func isClusterScoped(resourceType string) bool {
 	switch resourceType {
-	case "nodes", "namespaces", "persistentvolumes", "pvs", "storageclasses", "clusterroles", "clusterrolebindings":
+	case "nodes", "namespaces", "persistentvolumes", "pvs", "storageclasses", "clusterroles", "clusterrolebindings",
+		"ciliumclusterwidenetworkpolicies":
 		return true
 	}
 	return false
@@ -3714,6 +3907,34 @@ func parseLogLineTimestamp(line []byte) (time.Time, bool) {
 	return t, true
 }
 
+// ResolveEndpointsName maps a user-facing `endpoints` identifier to the real
+// EndpointSlice name. Callers may pass either the slice name (e.g. shop-db-abcde,
+// how the web UI navigates) or the fronting Service name (e.g. shop-db, how Kobi /
+// Autopilot navigate). Returns the resolved slice name, or the input unchanged
+// when nothing matches (so the caller's own not-found handling still fires).
+func (c *Connector) ResolveEndpointsName(namespace, name string) string {
+	if c.endpointSliceLister == nil {
+		return name
+	}
+	slices, err := c.endpointSliceLister.EndpointSlices(namespace).List(everythingSelector())
+	if err != nil {
+		return name
+	}
+	// A direct slice-name match wins (web UI path).
+	for _, es := range slices {
+		if es.Name == name {
+			return name
+		}
+	}
+	// Otherwise resolve by the service-name label (Kobi / Autopilot path).
+	for _, es := range slices {
+		if es.Labels["kubernetes.io/service-name"] == name {
+			return es.Name
+		}
+	}
+	return name
+}
+
 // GetResourceYAML fetches a single resource via the dynamic client and returns its YAML representation.
 func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byte, error) {
 	if c.dynamicClient == nil {
@@ -3729,9 +3950,27 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 
 	var obj *unstructured.Unstructured
 	var err error
-	if isClusterScoped(resourceType) {
+	switch {
+	case resourceType == "endpoints":
+		// EndpointSlices are named <service>-<hash>. The web UI navigates by that
+		// real slice name; Kobi / Autopilot navigate by the fronting Service name.
+		// Support BOTH: try a direct Get on the given name (slice name), then fall
+		// back to the kubernetes.io/service-name label (service name).
+		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			list, lerr := c.dynamicClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{
+				LabelSelector: "kubernetes.io/service-name=" + name,
+			})
+			if lerr != nil {
+				return nil, fmt.Errorf("fetching resource: %w", lerr)
+			}
+			if len(list.Items) > 0 {
+				obj, err = &list.Items[0], nil
+			}
+		}
+	case isClusterScoped(resourceType):
 		obj, err = c.dynamicClient.Resource(gvr).Get(ctx, name, metav1.GetOptions{})
-	} else {
+	default:
 		obj, err = c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
 	}
 	if err != nil {
@@ -3777,7 +4016,7 @@ func (c *Connector) GetResourceYAML(resourceType, namespace, name string) ([]byt
 }
 
 // DeleteResource deletes a resource using the dynamic client.
-func (c *Connector) DeleteResource(resourceType, namespace, name string, propagation metav1.DeletionPropagation, gracePeriod *int64) error {
+func (c *Connector) DeleteResource(resourceType, namespace, name string, propagation metav1.DeletionPropagation, gracePeriod *int64, dryRun bool) error {
 	if c.dynamicClient == nil {
 		return fmt.Errorf("dynamic client not available")
 	}
@@ -3793,13 +4032,17 @@ func (c *Connector) DeleteResource(resourceType, namespace, name string, propaga
 	if gracePeriod != nil {
 		opts.GracePeriodSeconds = gracePeriod
 	}
+	if dryRun {
+		opts.DryRun = []string{"All"}
+	}
 	var err error
 	if isClusterScoped(resourceType) {
 		err = c.dynamicClient.Resource(gvr).Delete(ctx, name, opts)
 	} else {
 		err = c.dynamicClient.Resource(gvr).Namespace(namespace).Delete(ctx, name, opts)
 	}
-	if err == nil {
+	// A dry-run delete persists nothing, so don't tombstone the read path.
+	if err == nil && !dryRun {
 		// Record a tombstone so list/detail reads mask the deleted
 		// resource until the informer's deletion event propagates.
 		// 10s default TTL covers the typical informer lag (<1s) plus
@@ -4198,11 +4441,19 @@ func (c *Connector) listStatefulSets(namespace string) []map[string]interface{} 
 		m["memoryRequest"] = memReq
 		m["memoryLimit"] = memLim
 		denom := cpuLim
-		if denom == 0 { denom = cpuReq }
-		if denom > 0 { m["cpuPercent"] = float64(cpuUsed) / float64(denom) * 100 }
+		if denom == 0 {
+			denom = cpuReq
+		}
+		if denom > 0 {
+			m["cpuPercent"] = float64(cpuUsed) / float64(denom) * 100
+		}
 		denom = memLim
-		if denom == 0 { denom = memReq }
-		if denom > 0 { m["memoryPercent"] = float64(memUsed) / float64(denom) * 100 }
+		if denom == 0 {
+			denom = memReq
+		}
+		if denom > 0 {
+			m["memoryPercent"] = float64(memUsed) / float64(denom) * 100
+		}
 		items = append(items, m)
 	}
 	return items
@@ -4762,9 +5013,9 @@ func (c *Connector) listStorageClasses() []map[string]interface{} {
 	var items []map[string]interface{}
 	for _, sc := range list {
 		items = append(items, map[string]interface{}{
-			"name":      sc.Name,
-			"namespace": "",
-			"status":    "Active",
+			"name":        sc.Name,
+			"namespace":   "",
+			"status":      "Active",
 			"provisioner": sc.Provisioner,
 			"reclaimPolicy": func() string {
 				if sc.ReclaimPolicy != nil {
@@ -4851,29 +5102,41 @@ func (c *Connector) listNamespaces() []map[string]interface{} {
 	ssetCount := make(map[string]int)
 	dsetCount := make(map[string]int)
 	cmCount := make(map[string]int)
-	for _, p := range pods { podCount[p.Namespace]++ }
-	for _, d := range deploys { deployCount[d.Namespace]++ }
-	for _, s := range svcs { svcCount[s.Namespace]++ }
-	for _, s := range ssets { ssetCount[s.Namespace]++ }
-	for _, d := range dsets { dsetCount[d.Namespace]++ }
-	for _, c := range cms { cmCount[c.Namespace]++ }
+	for _, p := range pods {
+		podCount[p.Namespace]++
+	}
+	for _, d := range deploys {
+		deployCount[d.Namespace]++
+	}
+	for _, s := range svcs {
+		svcCount[s.Namespace]++
+	}
+	for _, s := range ssets {
+		ssetCount[s.Namespace]++
+	}
+	for _, d := range dsets {
+		dsetCount[d.Namespace]++
+	}
+	for _, c := range cms {
+		cmCount[c.Namespace]++
+	}
 
 	var items []map[string]interface{}
 	for _, ns := range list {
 		items = append(items, map[string]interface{}{
-			"name":            ns.Name,
-			"namespace":       "",
-			"status":          string(ns.Status.Phase),
-			"labels":          safeLabels(ns.Labels),
-			"annotations":     safeAnnotations(ns.Annotations),
-			"createdAt":       ns.CreationTimestamp.Time.Format(time.RFC3339),
-			"age":             formatAge(ns.CreationTimestamp.Time),
-			"podCount":        podCount[ns.Name],
-			"deploymentCount": deployCount[ns.Name],
-			"serviceCount":    svcCount[ns.Name],
+			"name":             ns.Name,
+			"namespace":        "",
+			"status":           string(ns.Status.Phase),
+			"labels":           safeLabels(ns.Labels),
+			"annotations":      safeAnnotations(ns.Annotations),
+			"createdAt":        ns.CreationTimestamp.Time.Format(time.RFC3339),
+			"age":              formatAge(ns.CreationTimestamp.Time),
+			"podCount":         podCount[ns.Name],
+			"deploymentCount":  deployCount[ns.Name],
+			"serviceCount":     svcCount[ns.Name],
 			"statefulSetCount": ssetCount[ns.Name],
-			"daemonSetCount":  dsetCount[ns.Name],
-			"configMapCount":  cmCount[ns.Name],
+			"daemonSetCount":   dsetCount[ns.Name],
+			"configMapCount":   cmCount[ns.Name],
 		})
 	}
 	return items
@@ -5148,7 +5411,7 @@ func (c *Connector) GetDeploymentHistory(namespace, deploymentName string) []map
 // annotations at the time of the call. Errors if the deployment has fewer
 // than 2 revisions, if the target revision can't be found, or if the
 // target equals the current (no-op).
-func (c *Connector) RollbackDeployment(namespace, name string, toRevision int) (int, int, error) {
+func (c *Connector) RollbackDeployment(namespace, name string, toRevision int, dryRun bool) (int, int, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -5226,7 +5489,11 @@ func (c *Connector) RollbackDeployment(namespace, name string, toRevision int) (
 	}
 	dep.Spec.Template = *newTemplate
 
-	if _, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, dep, metav1.UpdateOptions{}); err != nil {
+	upOpts := metav1.UpdateOptions{}
+	if dryRun {
+		upOpts.DryRun = []string{"All"}
+	}
+	if _, err := c.clientset.AppsV1().Deployments(namespace).Update(ctx, dep, upOpts); err != nil {
 		return fromRev, toRev, err
 	}
 	return fromRev, toRev, nil

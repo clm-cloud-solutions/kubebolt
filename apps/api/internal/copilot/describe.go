@@ -30,7 +30,11 @@ var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	"pvs":                      {Group: "", Kind: "PersistentVolume"},
 	"persistentvolumes":        {Group: "", Kind: "PersistentVolume"},
 	"events":                   {Group: "", Kind: "Event"},
-	"endpoints":                {Group: "", Kind: "Endpoints"},
+	// KubeBolt surfaces EndpointSlices under the `endpoints` type (the legacy
+	// core/v1 Endpoints API is deprecated). Describe must target EndpointSlice,
+	// or Kobi's get_resource_describe fails "endpoints not found" on the slice's
+	// hashed name. Mirrors internal/api/describe.go.
+	"endpoints":                {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
 	"deployments":              {Group: "apps", Kind: "Deployment"},
 	"statefulsets":             {Group: "apps", Kind: "StatefulSet"},
 	"daemonsets":               {Group: "apps", Kind: "DaemonSet"},
@@ -61,6 +65,9 @@ var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	"certificates": {Group: "cert-manager.io", Kind: "Certificate"},
 	"argocdapps":   {Group: "argoproj.io", Kind: "Application"},
 	"vpas":         {Group: "autoscaling.k8s.io", Kind: "VerticalPodAutoscaler"},
+	// Cilium policy CRDs — generic fallback; CCNP is cluster-scoped.
+	"ciliumnetworkpolicies":            {Group: "cilium.io", Kind: "CiliumNetworkPolicy"},
+	"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Kind: "CiliumClusterwideNetworkPolicy"},
 }
 
 // describeResource runs `kubectl describe` for the given resource and returns
@@ -74,16 +81,26 @@ func describeResource(conn *cluster.Connector, resourceType, namespace, name str
 	if !found {
 		// Generic describer fallback for dynamic CRDs (no built-in describer).
 		if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
+			scope := meta.RESTScope(meta.RESTScopeNamespace)
+			if cluster.IsClusterScoped(resourceType) {
+				scope = meta.RESTScopeRoot
+			}
 			mapping := &meta.RESTMapping{
 				Resource:         gvr,
 				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
-				Scope:            meta.RESTScopeNamespace,
+				Scope:            scope,
 			}
 			describer, found = describe.GenericDescriberFor(mapping, conn.RestConfig())
 		}
 	}
 	if !found {
 		return "", fmt.Errorf("no describer available for: %s", resourceType)
+	}
+	// `endpoints` → EndpointSlices (named <service>-<hash>). The describer Gets by
+	// name, so resolve either key — the slice name (web UI) or the fronting Service
+	// name (Kobi / Autopilot) — to the real slice name before describing.
+	if resourceType == "endpoints" {
+		name = conn.ResolveEndpointsName(namespace, name)
 	}
 	return describer.Describe(namespace, name, describe.DescriberSettings{ShowEvents: true})
 }

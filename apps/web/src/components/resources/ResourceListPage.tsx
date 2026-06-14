@@ -59,6 +59,8 @@ const resourceLabels: Record<string, string> = {
   certificates: 'Certificates',
   argocdapps: 'ArgoCD Applications',
   vpas: 'Vertical Pod Autoscalers',
+  ciliumnetworkpolicies: 'Cilium Network Policies',
+  ciliumclusterwidenetworkpolicies: 'Cilium Clusterwide Network Policies',
 }
 
 // Sort key for CPU/Memory columns: absolute usage (millicores / bytes).
@@ -395,6 +397,51 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     )
   }
 
+  if (resourceType === 'ciliumnetworkpolicies' || resourceType === 'ciliumclusterwidenetworkpolicies') {
+    base.push(
+      {
+        accessorKey: 'endpointSelector',
+        header: 'Endpoint Selector',
+        cell: (info) => {
+          const v = String(info.getValue() ?? '—')
+          const isCatchAll = v.startsWith('all pods')
+          return (
+            <span className={`font-mono text-[11px] ${isCatchAll ? 'text-status-warn' : 'text-kb-text-secondary'}`}>
+              {v}
+            </span>
+          )
+        },
+      },
+      {
+        accessorKey: 'ingressRules',
+        header: 'Ingress',
+        cell: (info) => (
+          <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
+        ),
+      },
+      {
+        accessorKey: 'egressRules',
+        header: 'Egress',
+        cell: (info) => (
+          <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? 0)}</span>
+        ),
+      },
+      {
+        accessorKey: 'l7Protocols',
+        header: 'L7',
+        cell: (info) => {
+          const raw = info.getValue() as string[] | undefined
+          if (!raw || raw.length === 0) return <span className="text-[11px] text-kb-text-tertiary">—</span>
+          return (
+            <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-kb-accent-light text-kb-accent">
+              {raw.join(', ')}
+            </span>
+          )
+        },
+      },
+    )
+  }
+
   if (resourceType === 'gateways') {
     base.push(
       { accessorKey: 'class', header: 'Class', cell: (info) => <span className="font-mono text-[11px] text-kb-text-secondary">{String(info.getValue() ?? '—')}</span> },
@@ -531,15 +578,18 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
   const params = useParams<{ type: string }>()
   const resourceType = propType || params.type || 'pods'
 
-  // URL drives the filter state for both `namespace` and `node` so
-  // deep links land on a pre-filtered list and bookmarks are
+  // URL drives the filter state for `namespace`, `node` and `status`
+  // so deep links land on a pre-filtered list and bookmarks are
   // shareable. `namespace` is set from NamespaceTiles on the
-  // dashboard; `node` is set by NodeCell's filter button below and
-  // cleared via the chip under the FilterBar. Search and page stay
-  // local — they're transient interactions, not shareable views.
+  // dashboard; `node` is set by NodeCell's filter button below;
+  // `status` is set by the KPI legend rows on the dashboard
+  // ("Not running" → /pods?status=failed). All cleared via chips
+  // under the FilterBar. Search and page stay local — they're
+  // transient interactions, not shareable views.
   const [searchParams, setSearchParams] = useSearchParams()
   const namespace = searchParams.get('namespace') ?? ''
   const node = searchParams.get('node') || ''
+  const status = searchParams.get('status') || ''
   const setNamespace = (v: string) => {
     setSearchParams(
       (prev) => {
@@ -566,14 +616,16 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
     return () => clearTimeout(timer)
   }, [search])
 
-  // Reset to page 1 whenever the node filter changes — otherwise we'd
-  // request "page 5 of an empty filtered list" and show nothing.
-  useEffect(() => { resetPage() }, [node])
+  // Reset to page 1 whenever the node/status filters change —
+  // otherwise we'd request "page 5 of an empty filtered list" and
+  // show nothing.
+  useEffect(() => { resetPage() }, [node, status])
 
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources(resourceType, {
     namespace: namespace || undefined,
     search: debouncedSearch || undefined,
     node: node || undefined,
+    status: status || undefined,
     page,
     limit: PAGE_SIZE,
   })
@@ -630,22 +682,39 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
         total={items.length}
         resourceName={label.toLowerCase()}
       />
-      {node && (
+      {(node || status) && (
         <div className="flex items-center gap-2 mb-2 px-1">
           <span className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Filter:</span>
-          <button
-            type="button"
-            onClick={() => {
-              const next = new URLSearchParams(searchParams)
-              next.delete('node')
-              setSearchParams(next)
-            }}
-            title="Clear node filter"
-            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-status-info/40 bg-status-info-dim/30 text-[11px] font-mono text-status-info hover:bg-status-info-dim/50 transition-colors"
-          >
-            node: {node}
-            <X className="w-3 h-3" />
-          </button>
+          {node && (
+            <button
+              type="button"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams)
+                next.delete('node')
+                setSearchParams(next)
+              }}
+              title="Clear node filter"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-status-info/40 bg-status-info-dim/30 text-[11px] font-mono text-status-info hover:bg-status-info-dim/50 transition-colors"
+            >
+              node: {node}
+              <X className="w-3 h-3" />
+            </button>
+          )}
+          {status && (
+            <button
+              type="button"
+              onClick={() => {
+                const next = new URLSearchParams(searchParams)
+                next.delete('status')
+                setSearchParams(next)
+              }}
+              title="Clear status filter"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border border-status-info/40 bg-status-info-dim/30 text-[11px] font-mono text-status-info hover:bg-status-info-dim/50 transition-colors"
+            >
+              status: {status}
+              <X className="w-3 h-3" />
+            </button>
+          )}
         </div>
       )}
       <div className="bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
@@ -654,17 +723,19 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
           // Filtered → tell the operator WHICH filters caused it and offer
           // a one-click recovery; un-filtered → neutral "no X in this
           // cluster" with no CTA (there's nothing for them to undo).
-          const hasFilters = !!(search || namespace || node)
+          const hasFilters = !!(search || namespace || node || status)
           const filterParts: string[] = []
           if (search) filterParts.push(`name matching "${search}"`)
           if (namespace) filterParts.push(`namespace ${namespace}`)
           if (node) filterParts.push(`node ${node}`)
+          if (status) filterParts.push(`status ${status}`)
           const clearFilters = () => {
             if (search) setSearch('')
             if (namespace) { setNamespace(''); resetPage() }
-            if (node) {
+            if (node || status) {
               const next = new URLSearchParams(searchParams)
               next.delete('node')
+              next.delete('status')
               setSearchParams(next)
             }
           }

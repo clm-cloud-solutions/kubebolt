@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -106,6 +107,17 @@ type CopilotChatRequest struct {
 	// Now block. Reserved for future drift detection / multi-region
 	// debugging without a schema change. Optional.
 	ClientNow string `json:"clientNow,omitempty"`
+	// ConversationID ties this turn to a persisted conversation so it can be
+	// resumed after a browser refresh / re-login. Empty on the first turn of
+	// a new conversation — the server generates one and returns it in the
+	// `meta` event. Persistence is skipped silently when no store is wired
+	// (auth/BoltDB disabled).
+	ConversationID string `json:"conversationId,omitempty"`
+	// OriginatingInsightID links a conversation that began from an insight
+	// (the insight's stable fingerprint) so the insight detail can deep-link
+	// "Kobi analyzed this" back to resume. Sent only on the first turn of an
+	// insight-triggered conversation; preserved across later turns.
+	OriginatingInsightID string `json:"originatingInsightId,omitempty"`
 }
 
 // HandleCopilotConfig returns the public copilot configuration (no API keys).
@@ -134,6 +146,10 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 		"compactTrigger": trigger,
 		"autoCompact":    cfg.AutoCompact,
 		"showToolCalls":  cfg.ShowToolCalls,
+		// How long the UI polls an executed action for convergence before
+		// declaring it stalled and auto-investigating. Milliseconds so the
+		// frontend can feed it straight into setInterval/Date math.
+		"actionProgressTimeoutMs": cfg.ActionProgressTimeout.Milliseconds(),
 	}
 	if cfg.Fallback != nil {
 		resp["fallback"] = map[string]string{
@@ -149,11 +165,12 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 // the handler executes them, appends results, and re-invokes the model.
 //
 // Response is streamed via Server-Sent Events with these event types:
-//   meta       — fallback used, model info
-//   tool_call  — emitted when the LLM invokes a tool (for UI indicator)
-//   text       — final assistant text
-//   error      — provider or tool error
-//   done       — stream complete
+//
+//	meta       — fallback used, model info
+//	tool_call  — emitted when the LLM invokes a tool (for UI indicator)
+//	text       — final assistant text
+//	error      — provider or tool error
+//	done       — stream complete
 func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// Snapshot the live config ONCE per request. Subsequent reads inside
 	// this handler use `cfg.X` (never re-read) so a concurrent admin
@@ -175,7 +192,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cluster must be connected for tool execution to work
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -214,6 +231,22 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		trigger = "manual"
 	}
 
+	// Resolve the conversation identity for persistence + resume. A brand-new
+	// conversation has no id yet — we mint one and hand it back in the `meta`
+	// event up-front, so a mid-stream refresh can still resume before `done`
+	// lands. Owner is the user (conversations are personal); fall back to a
+	// stable "local" id when auth is disabled so single-user installs persist.
+	convUserID := auth.ContextUserID(r)
+	if convUserID == "" {
+		convUserID = copilot.FallbackConversationUser
+	}
+	conversationID := strings.TrimSpace(req.ConversationID)
+	newConversation := conversationID == ""
+	if newConversation {
+		conversationID = copilot.NewConversationID()
+	}
+	writeSSEEvent(w, flusher, "meta", map[string]any{"conversationId": conversationID})
+
 	logger := slog.Default().With(
 		slog.String("component", "copilot"),
 		slog.String("user", auth.ContextUserID(r)),
@@ -223,8 +256,14 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		slog.String("trigger", trigger),
 	)
 
-	// Multi-step tool calling loop
-	const maxRounds = 10
+	// Multi-step tool calling loop. The round budget is configurable
+	// (KUBEBOLT_AI_MAX_ROUNDS / Settings → Copilot) because a small,
+	// sequential model (e.g. Haiku, which calls tools one at a time) needs
+	// more headroom to converge on a deep RCA than a model that batches calls.
+	maxRounds := cfg.MaxRounds
+	if maxRounds < config.MinMaxRounds {
+		maxRounds = config.DefaultMaxRounds
+	}
 	// Detach from req.Messages so subsequent appends in the round loop never
 	// reach back into the caller's slice via shared backing array.
 	messages := append([]copilot.Message(nil), req.Messages...)
@@ -261,6 +300,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	var sessionToolCalls int
 	sessionStart := time.Now()
 	roundsUsed := 0
+	// Provider-reported usage of the most recent round. Stored on the
+	// conversation as LastRoundUsage so a resumed chat seeds its first
+	// auto-compact decision accurately (same hint the frontend carries).
+	var lastTurnUsage copilot.Usage
 
 	// Per-tool breakdown: nombre → {calls, bytes, errors, duration}
 	type toolStats struct {
@@ -309,10 +352,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			rec := &copilot.SessionRecord{
-				Timestamp: time.Now(),
-				UserID:    auth.ContextUserID(r),
-				Cluster:   clusterName,
-				Provider:  cfg.Primary.Provider,
+				Timestamp:      time.Now(),
+				UserID:         auth.ContextUserID(r),
+				Cluster:        clusterName,
+				ConversationID: conversationID,
+				Provider:       cfg.Primary.Provider,
 				// Model is resolved through copilot.ResolvedModel so the
 				// stored value reflects the model the provider ACTUALLY
 				// uses. When KUBEBOLT_AI_MODEL is unset the raw
@@ -338,6 +382,53 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			if err := h.copilotUsage.Record(rec); err != nil {
 				logger.Warn("failed to persist copilot session", slog.String("error", err.Error()))
 			}
+		}
+	}
+
+	// persistConversation write-throughs the full transcript so the operator
+	// can resume after a refresh / re-login. Called once per request on every
+	// terminal path (done / error / max_rounds) — even an errored turn saves
+	// what happened so the user can pick it back up. No-op when no store is
+	// wired (auth/BoltDB disabled). Stays out of the stateless chat loop:
+	// resume just pre-populates `messages` the loop already consumes.
+	persistConversation := func(msgs []copilot.Message) {
+		if h.copilotConversations == nil || len(msgs) == 0 {
+			return
+		}
+		tenant := copilot.DefaultConversationTenant
+		var lru *copilot.Usage
+		if lastTurnUsage.Total() > 0 {
+			u := lastTurnUsage
+			lru = &u
+		}
+		// Load any prior copy so MergeConversationRecord can preserve the
+		// identity-stable fields (CreatedAt, refined Title, Archived, origin
+		// Trigger, insight provenance, last-round usage seed) across resumes.
+		existing, _, _ := h.copilotConversations.Get(tenant, convUserID, conversationID)
+		rec := copilot.MergeConversationRecord(copilot.ConversationUpsertInput{
+			ID:                   conversationID,
+			TenantID:             tenant,
+			UserID:               convUserID,
+			ClusterID:            clusterName,
+			Provider:             cfg.Primary.Provider,
+			Model:                copilot.ResolvedModel(cfg.Primary.Provider, cfg.Primary.Model),
+			Messages:             msgs,
+			Trigger:              trigger,
+			OriginatingInsightID: strings.TrimSpace(req.OriginatingInsightID),
+			LastRoundUsage:       lru,
+			Now:                  time.Now(),
+		}, existing)
+		if err := h.copilotConversations.Upsert(rec); err != nil {
+			logger.Warn("failed to persist conversation",
+				slog.String("error", err.Error()),
+				slog.String("conversationId", conversationID),
+			)
+			return
+		}
+		// Refine the heuristic title with the cheap model for a brand-new
+		// conversation — in the background so it never delays the response.
+		if newConversation && rec.FirstUserMessage() != "" {
+			go h.refineConversationTitle(convUserID, clusterName, conversationID, cfg.Primary, rec.FirstUserMessage(), rec.LastAssistantMessage())
 		}
 	}
 
@@ -375,6 +466,16 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	systemToolsOverhead := copilot.ApproxSystemToolsTokens(systemPrompt, tools)
 
 	for round := 0; round < maxRounds; round++ {
+		// Active provider for this round: the primary, unless an earlier round
+		// already fell over to the fallback — then we STICK with the fallback
+		// for the rest of the session instead of re-trying a degraded primary
+		// every round. Re-trying surfaced a confusing upstream error (e.g. a
+		// 502) AFTER the fallback had already answered the conversation.
+		activeProvider := cfg.Primary
+		if usedFallback && cfg.Fallback != nil {
+			activeProvider = *cfg.Fallback
+		}
+
 		// Auto-compact when the conversation approaches the budget.
 		// Uses a cheap-tier model of the same provider to summarize the
 		// older turns, then replaces them with a single summary message.
@@ -397,7 +498,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				)
 				cr, cerr := copilot.Compact(r.Context(), messages, copilot.CompactOptions{
 					PreserveTurns: cfg.CompactPreserveTurns,
-					Provider:      cfg.Primary,
+					Provider:      activeProvider,
 					CompactModel:  cfg.CompactModel,
 				})
 				if cerr != nil {
@@ -446,7 +547,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			System:    systemPrompt,
 			Messages:  withSessionContextPrefix(messages, sessionCtx),
 			Tools:     tools,
-			Provider:  cfg.Primary,
+			Provider:  activeProvider,
 			MaxTokens: cfg.MaxTokens,
 		}
 
@@ -475,12 +576,14 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			writeSSEEvent(w, flusher, "error", map[string]string{"error": friendlyCopilotError(err)})
 			writeSSEEvent(w, flusher, "done", nil)
 			roundsUsed = round + 1
+			persistConversation(messages)
 			finish("error")
 			return
 		}
 
 		// Accumulate token usage for the session
 		sessionUsage.Add(resp.Usage)
+		lastTurnUsage = resp.Usage
 		roundsUsed = round + 1
 
 		// Capture full input size (non-cached + cached) of this round for
@@ -520,8 +623,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			finalMessages := messages
 			if resp.Text != "" {
 				finalMessages = append(finalMessages, copilot.Message{
-					Role:    copilot.RoleAssistant,
-					Content: resp.Text,
+					Role:      copilot.RoleAssistant,
+					Content:   resp.Text,
+					Timestamp: time.Now(),
 				})
 			}
 
@@ -542,7 +646,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				)
 				cr, cerr := copilot.Compact(r.Context(), finalMessages, copilot.CompactOptions{
 					PreserveTurns: cfg.CompactPreserveTurns,
-					Provider:      cfg.Primary,
+					Provider:      activeProvider,
 					CompactModel:  cfg.CompactModel,
 				})
 				if cerr != nil {
@@ -584,8 +688,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			}
 
 			writeSSEEvent(w, flusher, "done", map[string]any{
-				"messages": finalMessages,
+				"messages":       finalMessages,
+				"conversationId": conversationID,
 			})
+			persistConversation(finalMessages)
 			finish("done")
 			return
 		}
@@ -595,6 +701,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			Role:      copilot.RoleAssistant,
 			Content:   resp.Text,
 			ToolCalls: resp.ToolCalls,
+			Timestamp: time.Now(),
 		})
 
 		// Execute each tool and append results
@@ -639,20 +746,159 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		messages = append(messages, copilot.Message{
 			Role:        copilot.RoleUser,
 			ToolResults: toolResults,
+			Timestamp:   time.Now(),
 		})
 
 		// Continue the loop — model will see tool results and produce its next response
 	}
 
-	// Hit the max rounds limit
+	// Hit the max rounds limit. Instead of a dead error that throws away
+	// everything Kobi gathered, run ONE final tools-free turn that summarizes
+	// what was found and tells the operator they can ask to continue. Small,
+	// sequential models exhaust the round budget mid-RCA precisely when they're
+	// being most useful — a bare "reached max tool call rounds" is the worst
+	// possible payload at that moment.
 	logger.Warn("copilot hit max rounds",
 		slog.Int("maxRounds", maxRounds),
 	)
-	writeSSEEvent(w, flusher, "error", map[string]string{
-		"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
+	// Forward-compatible signal so the UI can later offer a "Continue
+	// investigation" affordance (1.16). Unknown meta keys are ignored today.
+	writeSSEEvent(w, flusher, "meta", map[string]any{"maxRoundsReached": maxRounds})
+
+	// Same provider-selection rule the loop uses: stick with the fallback if an
+	// earlier round already fell over to it.
+	closeProvider := cfg.Primary
+	if usedFallback && cfg.Fallback != nil {
+		closeProvider = *cfg.Fallback
+	}
+	// Deliver the close directive as a final USER turn, not a system-prompt
+	// tail. In-vivo (maxRounds=5 on the 3-tier RCA) the system-tail directive
+	// was ignored — the model kept narrating "let me check…" instead of
+	// summarizing. A trailing instruction message is far more salient. It steers
+	// the close turn ONLY and is never persisted (closeMessages is a copy;
+	// finalMessages derives from `messages`).
+	closeMessages := append(append([]copilot.Message(nil), messages...), copilot.Message{
+		Role:      copilot.RoleUser,
+		Content:   copilot.MaxRoundsCloseDirective(maxRounds),
+		Timestamp: time.Now(),
 	})
-	writeSSEEvent(w, flusher, "done", nil)
+	closeReq := copilot.ChatRequest{
+		System:    systemPrompt,
+		Messages:  withSessionContextPrefix(closeMessages, sessionCtx),
+		Tools:     nil, // force a text-only answer — no more tool calls
+		Provider:  closeProvider,
+		MaxTokens: cfg.MaxTokens,
+	}
+	resp, err := h.callProvider(r, closeReq)
+	if err != nil && copilot.IsRecoverable(err) && cfg.Fallback != nil && !usedFallback {
+		closeReq.Provider = *cfg.Fallback
+		resp, err = h.callProvider(r, closeReq)
+		if err == nil {
+			usedFallback = true
+			writeSSEEvent(w, flusher, "meta", map[string]bool{"fallback": true})
+		}
+	}
+
+	finalMessages := messages
+	if err != nil {
+		// Even the close turn failed — fall back to the honest error, but keep
+		// the transcript we have so the next resume isn't empty.
+		logger.Error("copilot max-rounds close turn failed",
+			slog.String("error", err.Error()),
+		)
+		writeSSEEvent(w, flusher, "error", map[string]string{
+			"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
+		})
+		writeSSEEvent(w, flusher, "done", map[string]any{
+			"messages":       finalMessages,
+			"conversationId": conversationID,
+		})
+		persistConversation(finalMessages)
+		finish("max_rounds")
+		return
+	}
+
+	sessionUsage.Add(resp.Usage)
+	lastTurnUsage = resp.Usage
+	writeSSEEvent(w, flusher, "usage", map[string]any{
+		"round":   maxRounds,
+		"turn":    resp.Usage,
+		"session": sessionUsage,
+	})
+	if resp.Text != "" {
+		writeSSEEvent(w, flusher, "text", map[string]string{"text": resp.Text})
+		finalMessages = append(finalMessages, copilot.Message{
+			Role:      copilot.RoleAssistant,
+			Content:   resp.Text,
+			Timestamp: time.Now(),
+		})
+	}
+	writeSSEEvent(w, flusher, "done", map[string]any{
+		"messages":       finalMessages,
+		"conversationId": conversationID,
+	})
+	persistConversation(finalMessages)
 	finish("max_rounds")
+}
+
+// recordAuxUsage persists a SessionRecord for an LLM call made OUTSIDE the
+// main chat loop (auto-title, standalone manual compaction). The rule is "no
+// LLM consumption without a usage record" — these calls spend real tokens, so
+// they must show up in the admin cost analytics, attributed to the user (and
+// the conversation, when there is one). Best-effort; nil store = no-op.
+func (h *handlers) recordAuxUsage(userID, cluster, conversationID, trigger, provider, model string, usage copilot.Usage, dur time.Duration) {
+	if h.copilotUsage == nil {
+		return
+	}
+	if err := h.copilotUsage.Record(&copilot.SessionRecord{
+		Timestamp:      time.Now(),
+		UserID:         userID,
+		Cluster:        cluster,
+		ConversationID: conversationID,
+		Provider:       provider,
+		Model:          model,
+		Trigger:        trigger,
+		Reason:         "done",
+		Rounds:         1,
+		Usage:          usage,
+		DurationMs:     dur.Milliseconds(),
+	}); err != nil {
+		slog.Default().Warn("failed to record auxiliary copilot usage",
+			slog.String("trigger", trigger),
+			slog.String("error", err.Error()),
+		)
+	}
+}
+
+// refineConversationTitle asks the cheap model for a better title than the
+// first-prompt heuristic and persists it. Best-effort + detached: runs in its
+// own goroutine with a fresh context (the request's context is already
+// cancelled once the SSE stream closes), and silently keeps the heuristic on
+// any failure. SetTitle is a field-level load-modify-save so it never clobbers
+// a transcript append from a concurrent turn.
+//
+// The title call's token usage is always recorded (even when the reply is
+// unusable) so no LLM spend goes unaccounted.
+func (h *handlers) refineConversationTitle(userID, cluster, conversationID string, provider config.ProviderConfig, firstUser, assistantReply string) {
+	if h.copilotConversations == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	start := time.Now()
+	res, err := copilot.GenerateTitle(ctx, provider, firstUser, assistantReply)
+	if res != nil && res.Usage.Total() > 0 {
+		h.recordAuxUsage(userID, cluster, conversationID, "auto_title", provider.Provider, res.Model, res.Usage, time.Since(start))
+	}
+	if err != nil || res == nil || res.Title == "" {
+		return
+	}
+	if err := h.copilotConversations.SetTitle(copilot.DefaultConversationTenant, userID, conversationID, res.Title); err != nil {
+		slog.Default().Warn("failed to persist refined conversation title",
+			slog.String("error", err.Error()),
+			slog.String("conversationId", conversationID),
+		)
+	}
 }
 
 // callProvider invokes the configured provider for one chat turn.
@@ -687,6 +933,9 @@ type CopilotCompactRequest struct {
 	// ResetAll true → summarize everything and return a single summary
 	// message. False → preserve the last CompactPreserveTurns turns intact.
 	ResetAll bool `json:"resetAll,omitempty"`
+	// ConversationID lets the recorded compaction usage cross-reference the
+	// conversation it summarized. Optional.
+	ConversationID string `json:"conversationId,omitempty"`
 }
 
 // CopilotCompactResponse mirrors copilot.CompactResult with JSON naming.
@@ -726,6 +975,7 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 		slog.String("user", auth.ContextUserID(r)),
 	)
 
+	compactStart := time.Now()
 	cr, err := copilot.Compact(r.Context(), req.Messages, copilot.CompactOptions{
 		PreserveTurns: cfg.CompactPreserveTurns,
 		Provider:      cfg.Primary,
@@ -737,6 +987,13 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 		respondError(w, http.StatusBadGateway, friendlyCopilotError(err))
 		return
 	}
+
+	// A manual compaction is a real LLM call — record its token usage so it
+	// isn't invisible spend (the "no LLM consumption without a usage record"
+	// rule). Resolve the model the summarizer actually used for pricing.
+	compactModel := copilot.ResolvedModel(cfg.Primary.Provider, cr.UsedModel)
+	h.recordAuxUsage(auth.ContextUserID(r), h.manager.ActiveContext(), req.ConversationID,
+		"manual_compact", cfg.Primary.Provider, compactModel, cr.Usage, time.Since(compactStart))
 
 	logger.Info("copilot manual compact",
 		slog.Int("turnsFolded", cr.TurnsFolded),

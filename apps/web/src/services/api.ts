@@ -13,7 +13,8 @@ import type {
   HelmRelease,
   HelmReleaseDetail,
 } from '@/types/kubernetes'
-import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse } from '@/types/auth'
+import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
+import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
 
 const API_BASE = '/api/v1'
 
@@ -28,6 +29,16 @@ export class ApiError extends Error {
     this.name = 'ApiError'
     this.payload = payload
   }
+}
+
+/**
+ * isRequiresEE reports whether an error is the backend's "this needs SaaS/EE"
+ * boundary — a 409 carrying `code: "requires_ee"` (e.g. creating a second org
+ * or an additional team in OSS). The UI keys off this to render an upgrade CTA
+ * instead of a raw error.
+ */
+export function isRequiresEE(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 409 && err.payload?.code === 'requires_ee'
 }
 
 // --- Token management (in-memory, not localStorage) ---
@@ -189,6 +200,19 @@ async function putJSON<T>(url: string, body: unknown, headers?: Record<string, s
   return parseJSONOrEmpty<T>(res)
 }
 
+async function patchJSON<T>(url: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+  const res = await fetchWithAuth(url, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    const { message, payload } = await extractErrorPayload(res)
+    throw new ApiError(res.status, message, payload)
+  }
+  return parseJSONOrEmpty<T>(res)
+}
+
 // putJSONWithWarnings is the variant for endpoints that surface soft
 // validation warnings via the X-KubeBolt-Validation-Warnings response
 // header (currently: /admin/tenants/:id/limits). Body still parses as
@@ -206,6 +230,34 @@ async function putJSONWithWarnings<T>(url: string, body: unknown): Promise<{ dat
   const raw = res.headers.get('X-KubeBolt-Validation-Warnings') ?? ''
   const warnings = raw ? raw.split('; ').filter(Boolean) : []
   return { data, warnings }
+}
+
+// ActionAudit tags a mutation for the durable audit trail. Backward-compatible
+// with the legacy `source?: string` arg: a plain string is treated as
+// `{ source }`. Copilot proposal cards pass the conversationId so the audit
+// record cross-references the chat that produced the action.
+export type ActionAudit = { source?: string; conversationId?: string; originInsight?: string }
+
+function actionHeaders(a?: string | ActionAudit): Record<string, string> | undefined {
+  if (!a) return undefined
+  const ctx = typeof a === 'string' ? { source: a } : a
+  const h: Record<string, string> = {}
+  if (ctx.source) h['X-KubeBolt-Action-Source'] = ctx.source
+  if (ctx.conversationId) h['X-KubeBolt-Conversation-Id'] = ctx.conversationId
+  if (ctx.originInsight) h['X-KubeBolt-Origin-Insight'] = ctx.originInsight
+  return Object.keys(h).length ? h : undefined
+}
+
+// DryRunResult is the uniform envelope from a ?dryRun=true action call. ok=true
+// → the apiserver would accept the mutation (message = "Would …"); ok=false →
+// it would reject (message = human reason, + quota breakdown when a
+// ResourceQuota is the blocker). unsupported=true marks a verb with no server
+// dry-run (rollback) so the card renders no preview block.
+export interface DryRunResult {
+  ok: boolean
+  message: string
+  quota?: { name: string; requested: string; used: string; limited: string }
+  unsupported?: boolean
 }
 
 export const api = {
@@ -239,6 +291,22 @@ export const api = {
 
   deleteUser: (id: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/users/${id}`),
+
+  // --- Teams (org → team → user hierarchy) ---
+  //
+  // OSS is single-org + single-team: these read the auto-seeded "default"
+  // team and its members. Creating additional teams is gated server-side —
+  // createTeam returns 409 with payload.code === "requires_ee" so the UI can
+  // render an upgrade CTA. The member list requires admin.
+  listTeams: () => fetchJSON<Team[]>(`${API_BASE}/teams`),
+
+  getTeam: (id: string) => fetchJSON<Team>(`${API_BASE}/teams/${id}`),
+
+  listTeamMembers: (id: string) =>
+    fetchJSON<TeamMember[]>(`${API_BASE}/teams/${id}/members`),
+
+  createTeam: (data: { name: string }) =>
+    postJSON<Team>(`${API_BASE}/teams`, data),
 
   // --- Agent ingest tokens (admin) ---
   //
@@ -274,6 +342,15 @@ export const api = {
     deleteRequest<{ status: string }>(
       `${API_BASE}/admin/tenants/${tenantID}/tokens/${tokenID}`,
     ),
+
+  // --- REST API tokens (global, not tenant-scoped in OSS) ---
+  listAPITokens: () => fetchJSON<APIToken[]>(`${API_BASE}/admin/api-tokens`),
+
+  createAPIToken: (body: CreateAPITokenRequest) =>
+    postJSON<IssuedAPIToken>(`${API_BASE}/admin/api-tokens`, body),
+
+  revokeAPIToken: (id: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/admin/api-tokens/${id}`),
 
   // --- Per-tenant Prom remote_write limits (Phase 3) ---
   //
@@ -320,6 +397,14 @@ export const api = {
   getCopilotUsageSummary: (range: string) =>
     fetchJSON<import('@/types/copilotUsage').CopilotUsageSummary>(
       `${API_BASE}/admin/copilot/usage/summary?range=${range}`,
+    ),
+
+  getCopilotUsageBreakdown: (
+    range: string,
+    groupBy: import('@/types/copilotUsage').BreakdownDimension,
+  ) =>
+    fetchJSON<import('@/types/copilotUsage').CopilotUsageBreakdown>(
+      `${API_BASE}/admin/copilot/usage/summary?range=${range}&groupBy=${groupBy}`,
     ),
 
   getCopilotUsageTimeseries: (range: string) =>
@@ -472,7 +557,7 @@ export const api = {
     type: string,
     namespace: string,
     name: string,
-    options?: { orphan?: boolean; force?: boolean; source?: string },
+    options?: { orphan?: boolean; force?: boolean; source?: string | ActionAudit },
   ) => {
     const params = new URLSearchParams()
     if (options?.orphan) params.set('orphan', 'true')
@@ -480,7 +565,7 @@ export const api = {
     const query = params.toString()
     return deleteRequest<{ status: string }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}${query ? '?' + query : ''}`,
-      options?.source ? { 'X-KubeBolt-Action-Source': options.source } : undefined,
+      actionHeaders(options?.source),
     )
   },
 
@@ -490,11 +575,11 @@ export const api = {
   // The `resource` field carries the post-mutation object in the same
   // shape as `useResourceDetail`, so callers can call `setQueryData`
   // and reflect the change without waiting for a WS event or poll.
-  restartResource: (type: string, namespace: string, name: string, source?: string) =>
+  restartResource: (type: string, namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: string; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/restart`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Evict a Pod via the policy/v1 Eviction API — distinct from
@@ -503,11 +588,11 @@ export const api = {
   // surfaces a structured payload (`pdbBlocked: true`) the caller can
   // use to render an explicit "blocked by PDB" message instead of a
   // generic 429. Pod-only — the backend rejects other types.
-  evictPod: (namespace: string, name: string, source?: string) =>
+  evictPod: (namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: string }>(
       `${API_BASE}/resources/pods/${namespace}/${name}/evict`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Spawn an ephemeral debug container inside a running pod. Returns
@@ -518,28 +603,28 @@ export const api = {
     namespace: string,
     name: string,
     body: { image: string; targetContainer?: string; command?: string[]; shareProcessNamespace?: boolean },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{ status: string; ephemeralContainerName: string }>(
       `${API_BASE}/resources/pods/${namespace}/${name}/debug`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string) =>
+  scaleResource: (type: string, namespace: string, name: string, replicas: number, source?: string | ActionAudit) =>
     postJSON<{ status: string; fromReplicas: number; toReplicas: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/scale`,
       { replicas },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Rollback a Deployment to a previous revision (kubectl rollout undo).
   // toRevision = 0 (or omitted) means "previous revision".
-  rollbackResource: (type: string, namespace: string, name: string, toRevision?: number, source?: string) =>
+  rollbackResource: (type: string, namespace: string, name: string, toRevision?: number, source?: string | ActionAudit) =>
     postJSON<{ status: string; fromRevision: number; toRevision: number; resource: ResourceItem | null }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollback`,
       { toRevision: toRevision ?? 0 },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Set image — strategic merge patch on container images, equivalent
@@ -554,7 +639,7 @@ export const api = {
     namespace: string,
     name: string,
     images: { container: string; image: string }[],
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched' | 'unchanged'
@@ -564,7 +649,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-image`,
       { images },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Set resources — kubectl set resources. Strategic merge patch on
@@ -577,7 +662,7 @@ export const api = {
     namespace: string,
     name: string,
     containers: ContainerResourcesPatch[],
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched'
@@ -587,7 +672,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-resources`,
       { containers },
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Set env — kubectl set env. Strategic merge patch on each
@@ -600,7 +685,7 @@ export const api = {
     namespace: string,
     name: string,
     body: SetEnvBody,
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched'
@@ -611,7 +696,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/set-env`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Patch HPA bounds — strategic merge on spec.minReplicas /
@@ -623,7 +708,7 @@ export const api = {
     namespace: string,
     name: string,
     body: { minReplicas?: number; maxReplicas?: number },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched' | 'unchanged'
@@ -633,8 +718,74 @@ export const api = {
     }>(
       `${API_BASE}/resources/hpas/${namespace}/${name}/set-bounds`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
+
+  // Dry-run preview for a Kobi action proposal: re-issues the SAME mutation
+  // endpoint with ?dryRun=true so the apiserver runs full admission (quota,
+  // LimitRange, webhooks, validation) WITHOUT persisting, and the card can show
+  // "would apply" / "would be rejected: <reason>" before Execute. Mirrors
+  // runProposal()'s verb→endpoint+body dispatch — keep the two in sync. Verbs
+  // without a server dry-run (rollback) return {unsupported:true} so the card
+  // skips the preview block.
+  getDryRunPreview: (p: {
+    action: string
+    target: { type: string; namespace: string; name: string }
+    params: Record<string, unknown>
+  }): Promise<DryRunResult> => {
+    const t = p.target.type
+    const ns = p.target.namespace
+    const name = p.target.name
+    const src: ActionAudit = { source: 'copilot_proposal' }
+    const withDry = (path: string) => `${path}${path.includes('?') ? '&' : '?'}dryRun=true`
+    const post = (path: string, body: unknown) =>
+      postJSON<DryRunResult>(withDry(`${API_BASE}${path}`), body, actionHeaders(src))
+    switch (p.action) {
+      case 'restart_workload':
+        return post(`/resources/${t}/${ns}/${name}/restart`, {})
+      case 'scale_workload':
+        return post(`/resources/${t}/${ns}/${name}/scale`, { replicas: Number(p.params.replicas) })
+      case 'set_image':
+        return post(`/resources/${t}/${ns}/${name}/set-image`, { images: p.params.images ?? [] })
+      case 'set_resources':
+        return post(`/resources/${t}/${ns}/${name}/set-resources`, { containers: p.params.containers ?? [] })
+      case 'set_env':
+        return post(`/resources/${t}/${ns}/${name}/set-env`, {
+          containers: p.params.containers ?? [],
+          triggerRollout: p.params.triggerRollout !== false,
+        })
+      case 'patch_hpa':
+        return post(`/resources/hpas/${ns}/${name}/set-bounds`, {
+          minReplicas: typeof p.params.minReplicas === 'number' ? p.params.minReplicas : undefined,
+          maxReplicas: typeof p.params.maxReplicas === 'number' ? p.params.maxReplicas : undefined,
+        })
+      case 'debug_pod':
+        return post(`/resources/pods/${ns}/${name}/debug`, {
+          image: typeof p.params.image === 'string' && p.params.image ? p.params.image : 'busybox',
+          targetContainer:
+            typeof p.params.targetContainer === 'string' ? p.params.targetContainer : undefined,
+        })
+      case 'rollback_deployment': {
+        const toRevision = Number(p.params.toRevision)
+        return post(`/resources/${t}/${ns}/${name}/rollback`, {
+          toRevision: Number.isFinite(toRevision) && toRevision > 0 ? toRevision : 0,
+        })
+      }
+      case 'delete_resource': {
+        const q = new URLSearchParams()
+        if (p.params.orphan) q.set('orphan', 'true')
+        if (p.params.force) q.set('force', 'true')
+        q.set('dryRun', 'true')
+        return deleteRequest<DryRunResult>(
+          `${API_BASE}/resources/${t}/${ns}/${name}?${q.toString()}`,
+          actionHeaders(src),
+        )
+      }
+      default:
+        // Unknown verb — no dry-run; the card skips the preview block.
+        return Promise.resolve({ ok: true, message: '', unsupported: true })
+    }
+  },
 
   // Edit metadata — kubectl label / kubectl annotate equivalents.
   // JSON merge patch on metadata.labels + metadata.annotations via
@@ -645,7 +796,7 @@ export const api = {
     namespace: string,
     name: string,
     body: EditMetadataBody,
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'patched'
@@ -654,7 +805,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/edit-metadata`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Reveal a Secret's values. POST (not GET) so the request body —
@@ -666,12 +817,12 @@ export const api = {
     namespace: string,
     name: string,
     body: { keys?: string[]; reason: string },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<SecretRevealResponse>(
       `${API_BASE}/resources/secrets/${namespace}/${name}/reveal`,
       body,
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Create a new resource from a YAML or JSON manifest. Tier 2 #10
@@ -682,14 +833,13 @@ export const api = {
     type: string,
     namespace: string,
     manifest: string,
-    source?: string,
+    source?: string | ActionAudit,
   ) => {
     // Send the raw manifest bytes — the backend's sigs.k8s.io/yaml
     // decoder accepts both YAML and JSON, so a single content-type
     // (application/yaml) covers both. We don't go through postJSON
     // because the body isn't JSON-serialized; it's the raw text.
-    const headers: Record<string, string> = { 'Content-Type': 'application/yaml' }
-    if (source) headers['X-KubeBolt-Action-Source'] = source
+    const headers: Record<string, string> = { 'Content-Type': 'application/yaml', ...actionHeaders(source) }
     return fetchWithAuth(`${API_BASE}/resources/${type}/${namespace}`, {
       method: 'POST',
       headers,
@@ -707,18 +857,18 @@ export const api = {
   // because it streams SSE rather than returning a single JSON
   // response. Both use the same `_` placeholder for the namespace
   // segment of cluster-scoped resources.
-  cordonNode: (name: string, source?: string) =>
+  cordonNode: (name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'cordoned'; alreadyCordoned: boolean; node: ResourceItem | null }>(
       `${API_BASE}/resources/nodes/_/${name}/cordon`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  uncordonNode: (name: string, source?: string) =>
+  uncordonNode: (name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'uncordoned'; alreadyUncordoned: boolean; node: ResourceItem | null }>(
       `${API_BASE}/resources/nodes/_/${name}/uncordon`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Rollout pause / resume — kubectl rollout pause / resume.
@@ -729,7 +879,7 @@ export const api = {
   // Response carries the post-patch deployment so the panel can
   // re-render without an extra refetch round-trip, plus the
   // `alreadyPaused` / `alreadyActive` flag for no-op detection.
-  pauseRollout: (type: string, namespace: string, name: string, source?: string) =>
+  pauseRollout: (type: string, namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{
       status: 'paused'
       alreadyPaused: boolean
@@ -737,10 +887,10 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollout-pause`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  resumeRollout: (type: string, namespace: string, name: string, source?: string) =>
+  resumeRollout: (type: string, namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{
       status: 'resumed'
       alreadyActive: boolean
@@ -748,7 +898,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/${type}/${namespace}/${name}/rollout-resume`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Drain — long-running streaming operation. The POST body
@@ -767,14 +917,14 @@ export const api = {
       force: boolean
       disableEviction: boolean
     },
-    source?: string,
+    source?: string | ActionAudit,
     signal?: AbortSignal,
   ) =>
     fetchWithAuth(`${API_BASE}/resources/nodes/_/${name}/drain`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...(source ? { 'X-KubeBolt-Action-Source': source } : {}),
+        ...actionHeaders(source),
       },
       body: JSON.stringify(body),
       signal,
@@ -803,18 +953,18 @@ export const api = {
   // Suspend & resume mirror cordon/uncordon: the response includes
   // an `alreadySuspended`/`alreadyActive` flag so the UI can render
   // "no change" rather than a fake success toast on a no-op.
-  suspendCronJob: (namespace: string, name: string, source?: string) =>
+  suspendCronJob: (namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'suspended'; alreadySuspended: boolean; cronJob: ResourceItem | null }>(
       `${API_BASE}/resources/cronjobs/${namespace}/${name}/suspend`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
-  resumeCronJob: (namespace: string, name: string, source?: string) =>
+  resumeCronJob: (namespace: string, name: string, source?: string | ActionAudit) =>
     postJSON<{ status: 'resumed'; alreadyActive: boolean; cronJob: ResourceItem | null }>(
       `${API_BASE}/resources/cronjobs/${namespace}/${name}/resume`,
       {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Trigger creates a one-off Job from the CronJob's jobTemplate.
@@ -824,7 +974,7 @@ export const api = {
     namespace: string,
     name: string,
     body?: { jobName?: string; suspendAfterTrigger?: boolean },
-    source?: string,
+    source?: string | ActionAudit,
   ) =>
     postJSON<{
       status: 'triggered'
@@ -840,7 +990,7 @@ export const api = {
     }>(
       `${API_BASE}/resources/cronjobs/${namespace}/${name}/trigger`,
       body ?? {},
-      source ? { 'X-KubeBolt-Action-Source': source } : undefined,
+      actionHeaders(source),
     ),
 
   // Port forwarding
@@ -865,7 +1015,27 @@ export const api = {
       model: string
       proxyMode: boolean
       fallback?: { provider: string; model: string }
+      actionProgressTimeoutMs?: number
     }>(`${API_BASE}/copilot/config`),
+
+  // Kobi conversation history (per-user persist + resume).
+  listConversations: (params?: { cluster?: string; q?: string; archived?: boolean; limit?: number }) =>
+    fetchJSON<{ conversations: ConversationSummary[] }>(
+      `${API_BASE}/copilot/conversations${buildQuery({
+        cluster: params?.cluster,
+        q: params?.q,
+        archived: params?.archived ? 'true' : undefined,
+        limit: params?.limit,
+      })}`,
+    ).then((r) => r.conversations ?? []),
+  getConversation: (id: string) =>
+    fetchJSON<ConversationDetail>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
+  patchConversation: (
+    id: string,
+    body: { title?: string; archived?: boolean; messages?: unknown[] },
+  ) => patchJSON<ConversationSummary>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`, body),
+  deleteConversation: (id: string) =>
+    deleteRequest<{ ok: boolean }>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
 
   // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
   queryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>
@@ -1148,6 +1318,10 @@ export interface CopilotSettingsResponse {
     autoCompactThreshold?: number
     compactModel?: string
     compactPreserveTurns?: number
+    // Action-progress timeout in effect, milliseconds (UI shows seconds).
+    actionProgressTimeoutMs?: number
+    // Max tool-call rounds in effect.
+    maxRounds?: number
   }
   stored: {
     hasPrimaryOverride: boolean
@@ -1176,6 +1350,8 @@ export interface CopilotSettingsResponse {
       showToolCalls?: boolean
       actionsEnabled?: boolean
       destructiveActionsEnabled?: boolean
+      actionProgressTimeoutMs?: number
+      maxRounds?: number
     }
   }
   secretsReadable: boolean
@@ -1207,6 +1383,10 @@ export interface CopilotSettingsPutRequest {
     showToolCalls?: boolean
     actionsEnabled?: boolean
     destructiveActionsEnabled?: boolean
+    // Milliseconds on the wire; the form converts the seconds the admin types.
+    actionProgressTimeoutMs?: number
+    // Max tool-call rounds per Kobi turn. Clamped to [2, 40] server-side.
+    maxRounds?: number
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string
@@ -1362,6 +1542,7 @@ export interface GeneralSettingsResponse {
     defaultRefreshIntervalSeconds: number
     prodNamespacePattern: string
     updateCheckEnabled: boolean
+    cacheSyncTimeoutSeconds: number
   }
   stored: {
     hasOverride: boolean
@@ -1369,6 +1550,7 @@ export interface GeneralSettingsResponse {
     defaultRefreshIntervalSeconds?: number
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
+    cacheSyncTimeoutSeconds?: number
   }
 }
 
@@ -1378,6 +1560,7 @@ export interface GeneralSettingsPutRequest {
     defaultRefreshIntervalSeconds?: number
     prodNamespacePattern?: string
     updateCheckEnabled?: boolean
+    cacheSyncTimeoutSeconds?: number
   }
 }
 
@@ -1940,6 +2123,44 @@ export interface TenantWithTokens extends Tenant {
 export interface IssuedToken {
   token: string // plaintext — shown once
   info: IngestToken
+}
+
+// --- REST API tokens (kbs_ service / kbk_ customer key) ---
+//
+// Distinct from the ingest tokens above: these authenticate non-interactive
+// callers against the REST API (/api/v1/*). Service tokens (kbs_) are for
+// internal machine callers (Autopilot, EE) and are rejected over the public
+// edge; API tokens (kbk_) are for customer integrations / CI-CD and work
+// from anywhere. Mirrors apps/api/internal/auth/api_tokens_store.go.
+export type APITokenType = 'service' | 'apikey'
+
+export interface APIToken {
+  id: string
+  prefix: string // e.g. "kbs_7ixpmg36" — safe to display
+  label: string
+  type: APITokenType
+  role: string // admin | editor | viewer
+  scopes?: string[]
+  tenantId?: string
+  clusterId?: string
+  createdAt: string
+  createdBy: string
+  lastUsedAt?: string
+  expiresAt?: string
+  revokedAt?: string
+}
+
+export interface IssuedAPIToken {
+  token: string // plaintext — shown once
+  apiToken: APIToken
+}
+
+export interface CreateAPITokenRequest {
+  label: string
+  type?: APITokenType
+  role?: string
+  scopes?: string[]
+  ttlHours?: number
 }
 
 // --- Per-tenant Prom remote_write limits ---

@@ -10,12 +10,16 @@ import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlace
 import { RangeSelector } from '@/components/shared/RangeSelector'
 import { api } from '@/services/api'
 import type { EventMarker } from '@/components/shared/MetricChart'
+import { buildCpuRefs, buildMemRefs, formatMemoryShort, type RefSpec } from '@/utils/metricRefs'
+import { formatCPU } from '@/utils/formatters'
 import { DashboardSubTabs } from './DashboardSubTabs'
 import { OverviewHeader } from './OverviewHeader'
 import { TopWorkloadsCpu } from './TopWorkloadsCpu'
 import { DeploysList } from './DeploysList'
 import { RightSizingPanel } from './RightSizingPanel'
 import { RecentOOMKills } from './RecentOOMKills'
+
+const SHOW_DEPLOYS_KEY = 'kb-capacity-show-deploys'
 
 // CapacityPage answers "how is the cluster consuming, and is it
 // sized right for what it's actually doing?" — the investigative
@@ -39,7 +43,21 @@ export function CapacityPage() {
   // Deploy markers visible by default — they're the differentiating
   // feature of this tab. Off-state lets the user read raw curves
   // when investigating something whose root cause isn't a rollout.
-  const [showDeploys, setShowDeploys] = useState(true)
+  // Persisted so an investigator who turned them off doesn't re-do
+  // it every visit (same pattern as the refresh-interval selector).
+  const [showDeploys, setShowDeploys] = useState(
+    () => localStorage.getItem(SHOW_DEPLOYS_KEY) !== 'false',
+  )
+  const toggleDeploys = () => {
+    setShowDeploys((v) => {
+      try {
+        localStorage.setItem(SHOW_DEPLOYS_KEY, String(!v))
+      } catch {
+        // Storage unavailable — toggle still works for the session.
+      }
+      return !v
+    })
+  }
 
   const { data: agent, isLoading: agentLoading } = useQuery({
     queryKey: ['integration', 'agent'],
@@ -74,6 +92,52 @@ export function CapacityPage() {
   if (isLoading) return <LoadingSpinner />
   if (error || !overview) return <ErrorState message={error?.message} onRetry={() => refetch()} />
 
+  // Cluster-wide request/limit thresholds for the CPU and Memory
+  // trends — same overlay grammar (labels, colors, header toggle
+  // pills) as the workload Monitor tabs, via the shared builders.
+  // Overview reports CPU in millicores; the chart query
+  // (node_cpu_usage_seconds_total rate) is in cores, so convert.
+  // Zero means "nothing declared" (no workload sets it) — pass null
+  // so the builder omits that line instead of drawing one at y=0.
+  //
+  // The capacity (allocatable) line closes the tab's actual question
+  // — "is the cluster sized right?" — but typically sits an order of
+  // magnitude above usage, so it ships defaultHidden: the pill is in
+  // the header, one click draws it. Slate color matches the deploy
+  // markers' "annotation, not data" treatment.
+  const cpuAllocatable = overview.cpu?.allocatable ?? 0
+  const memAllocatable = overview.memory?.allocatable ?? 0
+  const cpuRefs: RefSpec[] = [
+    ...buildCpuRefs(
+      overview.cpu?.requested ? overview.cpu.requested / 1000 : null,
+      overview.cpu?.limit ? overview.cpu.limit / 1000 : null,
+    ),
+    ...(cpuAllocatable > 0
+      ? [{
+          y: cpuAllocatable / 1000,
+          label: `capacity ${formatCPU(cpuAllocatable)}`,
+          color: '#94a3b8',
+          shortLabel: 'capacity',
+          defaultHidden: true,
+        }]
+      : []),
+  ]
+  const memRefs: RefSpec[] = [
+    ...buildMemRefs(
+      overview.memory?.requested || null,
+      overview.memory?.limit || null,
+    ),
+    ...(memAllocatable > 0
+      ? [{
+          y: memAllocatable,
+          label: `capacity ${formatMemoryShort(memAllocatable)}`,
+          color: '#94a3b8',
+          shortLabel: 'capacity',
+          defaultHidden: true,
+        }]
+      : []),
+  ]
+
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -92,8 +156,10 @@ export function CapacityPage() {
         agentLoading={agentLoading}
         eventMarkers={eventMarkers}
         showDeploys={showDeploys}
-        onToggleDeploys={() => setShowDeploys((v) => !v)}
+        onToggleDeploys={toggleDeploys}
         deployCount={deployCount}
+        cpuRefs={cpuRefs}
+        memRefs={memRefs}
       />
 
       <DeploysList deploys={deploys ?? []} windowMinutes={rangeMinutes} />
@@ -133,6 +199,8 @@ function AgentTrendsBlock({
   showDeploys,
   onToggleDeploys,
   deployCount,
+  cpuRefs,
+  memRefs,
 }: {
   rangeMinutes: number
   agentInstalled: boolean
@@ -141,6 +209,8 @@ function AgentTrendsBlock({
   showDeploys: boolean
   onToggleDeploys: () => void
   deployCount: number
+  cpuRefs: RefSpec[]
+  memRefs: RefSpec[]
 }) {
   if (agentLoading) return null
 
@@ -221,6 +291,8 @@ function AgentTrendsBlock({
           height={180}
           controlledRangeMinutes={rangeMinutes}
           eventMarkers={eventMarkers}
+          referenceLines={cpuRefs}
+          refsPersistKey="capacity-cpu"
         />
         <MetricChart
           title="Memory Working Set"
@@ -234,6 +306,8 @@ function AgentTrendsBlock({
           height={180}
           controlledRangeMinutes={rangeMinutes}
           eventMarkers={eventMarkers}
+          referenceLines={memRefs}
+          refsPersistKey="capacity-mem"
         />
         <MetricChart
           title="Network Activity"

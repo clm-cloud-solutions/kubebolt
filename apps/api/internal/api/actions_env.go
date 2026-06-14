@@ -170,7 +170,7 @@ func (h *handlers) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -262,15 +262,25 @@ func (h *handlers) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 		"triggerRollout": body.TriggerRollout,
 	}
 
+	dryRun := dryRunRequested(r)
+	envOpts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
-		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, envOpts)
 	case "statefulsets":
-		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().StatefulSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, envOpts)
 	case "daemonsets":
-		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, metav1.PatchOptions{})
+		_, err = clientset.AppsV1().DaemonSets(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, envOpts)
 	}
 
+	if dryRun {
+		msg := "Would apply · environment variables updated"
+		if body.TriggerRollout {
+			msg += " (pods roll)"
+		}
+		respondDryRun(w, err, msg)
+		return
+	}
 	if err != nil {
 		auditMutation(r, "set_env", resourceType, namespace, name, params, err)
 		log.Printf("Set-env failed for %s/%s/%s: %v", resourceType, namespace, name, err)

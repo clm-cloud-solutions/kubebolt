@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -61,6 +62,70 @@ type Manager struct {
 	// scopes every persisted record ("default" in OSS single-tenant).
 	insightStore insights.InsightStore
 	tenantID     string
+
+	// cacheSyncTimeoutFn returns the live informer cache-sync deadline for a
+	// cold connect, read per-connect so a Settings → General change takes
+	// effect on the next switch with no restart. nil → connector uses its
+	// built-in default. Wired from main.go to settingsRuntime.General().
+	cacheSyncTimeoutFn func() time.Duration
+
+	// runtimes holds per-(tenant,cluster) runtimes for NON-active clusters
+	// (W2). The active cluster's runtime stays in the fields above
+	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
+	// lands in A.3b. nil until first use — reads of a nil map are safe.
+	runtimes map[poolKey]*clusterRuntime
+
+	// poolIdleTimeout / poolMaxRuntimes bound the parked-runtime pool (A.3d).
+	// Each pooled runtime keeps live informers (memory + apiserver watches),
+	// so the pool can't grow without bound: the reaper evicts runtimes idle
+	// longer than poolIdleTimeout, and parking evicts the LRU when the pool
+	// would exceed poolMaxRuntimes. Zero disables the respective limit (the
+	// active runtime is never pooled, so it's never evicted). reaperStop stops
+	// the reaper goroutine from Stop().
+	poolIdleTimeout time.Duration
+	poolMaxRuntimes int
+	reaperStop      chan struct{}
+
+	// activeGate is the broadcast gate of the CURRENTLY active runtime (the one
+	// in m.connector/m.engine). Held true while active; parking flips it false
+	// before stashing the runtime in the pool, and promoting flips the target's
+	// gate true. Lets parked runtimes keep their informers + eval loop alive
+	// (instant switch-back) without leaking WS events for a cluster nobody is
+	// viewing (A.4 OSS hole). nil when nothing is connected.
+	activeGate *atomic.Bool
+}
+
+// poolKey identifies a pooled runtime. tenant is "default" in OSS.
+type poolKey struct{ tenant, cluster string }
+
+// clusterRuntime bundles the live machinery for one (tenant,cluster): the
+// connector (informers), metrics collector, insights engine, and the cancel
+// that tears down their goroutines. The active cluster's runtime currently
+// lives in the Manager's own fields; pooled runtimes for non-active clusters
+// (EE/multi-tenant) populate Manager.runtimes in A.3b.
+// Design: internal/kubebolt-w2-connector-pool-design.md.
+type clusterRuntime struct {
+	connector *Connector
+	collector *metrics.Collector
+	engine    *insights.Engine
+	cancelFn  context.CancelFunc
+	connErr   error
+	// gate is the shared active/parked broadcast switch for this runtime's
+	// connector + engine (A.4 OSS hole). true = broadcasting (active), false =
+	// parked (informers + eval keep running, WS broadcasts suppressed). The
+	// manager flips it on park/promote; the connector and engine read it.
+	gate *atomic.Bool
+	// lastUsed is the wall-clock time this runtime was last parked or served
+	// from the pool (A.3d). The idle reaper evicts pooled runtimes whose
+	// lastUsed predates poolIdleTimeout; the cap evicts the LRU (oldest
+	// lastUsed). Zero/unused for the active runtime — it's never pooled.
+	// Guarded by Manager.mu.
+	lastUsed time.Time
+	// ready is closed when a pooled runtime finishes building (success or
+	// failure), so concurrent callers single-flight on the same spin instead
+	// of each launching a connector. nil for the active runtime (built
+	// synchronously under the lock).
+	ready chan struct{}
 }
 
 // SetInsightStore wires the persistent insights store + tenant scope. The
@@ -74,9 +139,23 @@ func (m *Manager) SetInsightStore(store insights.InsightStore, tenantID string) 
 	m.insightStore = store
 	m.tenantID = tenantID
 	eng := m.engine // capture under lock; call SetStore outside to avoid lock-ordering
+	// Generalize the boot-race fix to the pool (A.3d): pooled (parked) engines
+	// built before the store was wired must pick it up too, else a cluster you
+	// switched away from stops persisting insights. In OSS this list is empty
+	// at boot (SetInsightStore runs before any switch parks a runtime), so it's
+	// a no-op there — but it keeps the pool correct under EE multi-tenant.
+	var pooled []*insights.Engine
+	for _, rt := range m.runtimes {
+		if rt.engine != nil {
+			pooled = append(pooled, rt.engine)
+		}
+	}
 	m.mu.Unlock()
 	if eng != nil {
 		eng.SetStore(store, tenantID)
+	}
+	for _, e := range pooled {
+		e.SetStore(store, tenantID)
 	}
 }
 
@@ -127,6 +206,26 @@ func (m *Manager) wireInsightHookLocked() {
 			hook(activeCtx, insight)
 		})
 	}
+}
+
+// SetCacheSyncTimeoutProvider wires a provider for the informer cache-sync
+// deadline, read fresh on every cold connect (Settings → General changes apply
+// with no restart). Pass nil to fall back to the connector's built-in default.
+func (m *Manager) SetCacheSyncTimeoutProvider(fn func() time.Duration) {
+	m.mu.Lock()
+	m.cacheSyncTimeoutFn = fn
+	m.mu.Unlock()
+}
+
+// resolveCacheSyncTimeoutLocked returns the configured cache-sync deadline, or
+// 0 (connector falls back to its default) when no provider is wired. Caller
+// holds m.mu. The provider reads settingsRuntime, which has its own lock — no
+// lock-ordering issue.
+func (m *Manager) resolveCacheSyncTimeoutLocked() time.Duration {
+	if m.cacheSyncTimeoutFn != nil {
+		return m.cacheSyncTimeoutFn()
+	}
+	return 0
 }
 
 // SetAgentRegistry attaches the live AgentRegistry to the manager so
@@ -264,6 +363,7 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 		m.stopCurrent()
 		m.activeContext = ""
 	}
+	m.evictPooledContextLocked(contextName, "cluster removed")
 	delete(m.agentProxyContexts, contextName)
 	delete(m.kubeConfig.Contexts, contextName)
 	delete(m.kubeConfig.Clusters, contextName)
@@ -361,6 +461,16 @@ type ClusterInfo struct {
 	ClusterID string `json:"clusterId,omitempty"`
 }
 
+// Pool bounds (A.3d). A parked runtime keeps live informers, so the pool is
+// capped and idle-evicted. Defaults suit OSS (a handful of clusters in the
+// switcher); EE tunes them per-org. Switching back to an evicted cluster pays
+// the cold connect again — acceptable, since eviction only hits clusters left
+// untouched for poolIdleTimeout.
+const (
+	defaultPoolIdleTimeout = 30 * time.Minute
+	defaultPoolMaxRuntimes = 8
+)
+
 // NewManager creates a new cluster manager.
 func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, insightInterval time.Duration) (*Manager, error) {
 	// Try loading kubeconfig file first; fall back to in-cluster config
@@ -384,7 +494,11 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 				wsHub:           wsHub,
 				metricInterval:  metricInterval,
 				insightInterval: insightInterval,
+				poolIdleTimeout: defaultPoolIdleTimeout,
+				poolMaxRuntimes: defaultPoolMaxRuntimes,
+				reaperStop:      make(chan struct{}),
 			}
+			m.startPoolReaper()
 
 			go func() {
 				m.mu.Lock()
@@ -408,7 +522,11 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 		wsHub:           wsHub,
 		metricInterval:  metricInterval,
 		insightInterval: insightInterval,
+		poolIdleTimeout: defaultPoolIdleTimeout,
+		poolMaxRuntimes: defaultPoolMaxRuntimes,
+		reaperStop:      make(chan struct{}),
 	}
+	m.startPoolReaper()
 
 	// Connect asynchronously so the HTTP server can bind immediately.
 	// The manager starts in disconnected state; the UI will see 503s until ready.
@@ -527,12 +645,36 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return fmt.Errorf("context %q not found in kubeconfig", contextName)
 	}
 
-	// Stop existing connector and immediately mark new context as active.
-	// The user explicitly chose this cluster, so we stay on it even if unreachable.
-	m.stopCurrent()
-	m.activeContext = contextName
+	// Park the CURRENT active runtime in the pool instead of tearing it down,
+	// so switching BACK to it later is instant (no reconnect). Its informers,
+	// collector, and insight ticker stay live in the background.
+	m.parkActiveLocked()
 
-	// Connect to new context; on failure, stay disconnected on contextName (no fallback).
+	// If the target is already pooled (previously connected, informers still
+	// live), promote it — an INSTANT switch with no WaitForCacheSync. This is
+	// the whole point: re-selecting a cluster you've already connected to
+	// should be immediate, not a 20s reconnect every time.
+	pk := poolKey{tenant: m.tenantID, cluster: contextName}
+	if rt, ok := m.runtimes[pk]; ok && rt.connector != nil {
+		delete(m.runtimes, pk)
+		m.connector = rt.connector
+		m.collector = rt.collector
+		m.engine = rt.engine
+		m.cancelFn = rt.cancelFn
+		m.activeGate = rt.gate
+		if rt.gate != nil {
+			rt.gate.Store(true) // promoted → resume broadcasting
+		}
+		m.activeContext = contextName
+		m.connErr = nil
+		m.wireInsightHookLocked()
+		slog.Info("switched cluster context (pooled, instant)", slog.String("context", contextName))
+		return nil
+	}
+
+	// First connect to this cluster — the only slow path (~20s
+	// WaitForCacheSync). connectToContextLocked builds + installs the runtime.
+	m.activeContext = contextName
 	if err := m.connectToContextLocked(contextName); err != nil {
 		m.connErr = err
 		slog.Warn("failed to connect to context, staying disconnected",
@@ -541,8 +683,152 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return err
 	}
 
-	slog.Info("switched cluster context", slog.String("context", contextName))
+	slog.Info("switched cluster context (fresh connect)", slog.String("context", contextName))
 	return nil
+}
+
+// parkActiveLocked moves the current active runtime (if any) into the pool,
+// keyed by its context, so a later SwitchCluster back to it reuses the live,
+// already-synced runtime instead of reconnecting. The runtime keeps running.
+// Caller holds m.mu. Pool growth is bounded by the cap (enforced here) and the
+// idle reaper (A.3d).
+func (m *Manager) parkActiveLocked() {
+	if m.connector == nil || m.activeContext == "" {
+		return
+	}
+	if m.runtimes == nil {
+		m.runtimes = map[poolKey]*clusterRuntime{}
+	}
+	m.runtimes[poolKey{tenant: m.tenantID, cluster: m.activeContext}] = &clusterRuntime{
+		connector: m.connector,
+		collector: m.collector,
+		engine:    m.engine,
+		cancelFn:  m.cancelFn,
+		gate:      m.activeGate,
+		lastUsed:  time.Now(),
+	}
+	// Parked → stop broadcasting (informers + eval keep running for instant
+	// switch-back, but no WS noise for a cluster nobody is viewing).
+	if m.activeGate != nil {
+		m.activeGate.Store(false)
+	}
+	m.connector = nil
+	m.collector = nil
+	m.engine = nil
+	m.cancelFn = nil
+	m.activeGate = nil
+	m.connErr = nil
+	// Bound the pool: evict the LRU parked runtime(s) if we just went over cap.
+	// The one we parked above has the freshest lastUsed, so it's never the
+	// victim of its own park.
+	m.enforcePoolCapLocked()
+}
+
+// evictPoolEntryLocked tears down one pooled runtime and removes it from the
+// pool. Caller holds m.mu. Skips the goroutine teardown for placeholders still
+// building (connector nil) but still deletes the map entry so a removed cluster
+// doesn't linger. Never call this for the active runtime — it isn't pooled.
+func (m *Manager) evictPoolEntryLocked(pk poolKey, rt *clusterRuntime, reason string) {
+	if rt.cancelFn != nil {
+		rt.cancelFn()
+	}
+	if rt.connector != nil {
+		rt.connector.Stop()
+	}
+	delete(m.runtimes, pk)
+	slog.Info("evicted pooled cluster runtime",
+		slog.String("cluster", pk.cluster),
+		slog.String("reason", reason))
+}
+
+// enforcePoolCapLocked evicts the least-recently-used pooled runtime(s) until
+// the pool is within poolMaxRuntimes. Caller holds m.mu. Placeholders that are
+// still building (connector nil) are not eligible victims — they have no
+// informers to reclaim yet and a concurrent caller is blocked on their ready
+// channel.
+func (m *Manager) enforcePoolCapLocked() {
+	if m.poolMaxRuntimes <= 0 {
+		return
+	}
+	for {
+		// Count only fully-built runtimes against the cap, and track the LRU
+		// among them. Placeholders still building (connector nil) are exempt:
+		// they hold no informers yet and a caller is blocked on their ready.
+		built := 0
+		var victimKey poolKey
+		var victim *clusterRuntime
+		for pk, rt := range m.runtimes {
+			if rt.connector == nil {
+				continue
+			}
+			built++
+			if victim == nil || rt.lastUsed.Before(victim.lastUsed) {
+				victimKey, victim = pk, rt
+			}
+		}
+		if built <= m.poolMaxRuntimes || victim == nil {
+			return
+		}
+		m.evictPoolEntryLocked(victimKey, victim, "pool cap")
+	}
+}
+
+// evictPooledContextLocked evicts the pooled runtime for contextName, if one
+// exists, so removing a cluster doesn't leak its parked informers. Caller holds
+// m.mu. No-op when the context isn't pooled.
+func (m *Manager) evictPooledContextLocked(contextName, reason string) {
+	if m.runtimes == nil {
+		return
+	}
+	pk := poolKey{tenant: m.tenantID, cluster: contextName}
+	if rt, ok := m.runtimes[pk]; ok {
+		m.evictPoolEntryLocked(pk, rt, reason)
+	}
+}
+
+// reapIdlePooledRuntimes evicts pooled runtimes left untouched longer than
+// poolIdleTimeout. Runs on the reaper goroutine; takes m.mu itself.
+func (m *Manager) reapIdlePooledRuntimes() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.poolIdleTimeout <= 0 || len(m.runtimes) == 0 {
+		return
+	}
+	cutoff := time.Now().Add(-m.poolIdleTimeout)
+	for pk, rt := range m.runtimes {
+		if rt.connector == nil {
+			continue // still building
+		}
+		if rt.lastUsed.Before(cutoff) {
+			m.evictPoolEntryLocked(pk, rt, "idle timeout")
+		}
+	}
+}
+
+// startPoolReaper launches the background goroutine that idle-evicts pooled
+// runtimes. No-op when idle eviction is disabled (poolIdleTimeout <= 0) or the
+// stop channel was never created (directly-constructed Managers in tests). The
+// ticker fires at a quarter of the idle window, floored at 1m.
+func (m *Manager) startPoolReaper() {
+	if m.poolIdleTimeout <= 0 || m.reaperStop == nil {
+		return
+	}
+	interval := m.poolIdleTimeout / 4
+	if interval < time.Minute {
+		interval = time.Minute
+	}
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-m.reaperStop:
+				return
+			case <-ticker.C:
+				m.reapIdlePooledRuntimes()
+			}
+		}
+	}()
 }
 
 // ConnError returns the last connection error, or nil if connected.
@@ -575,32 +861,168 @@ func (m *Manager) ActiveAgentProxyClusterID() string {
 	return m.agentProxyContexts[m.activeContext]
 }
 
-// Connector returns the active cluster connector.
-func (m *Manager) Connector() *Connector {
+// resolveRuntime returns the runtime for the request's (tenant,cluster),
+// read from ctx's RuntimeKey (W2 A.1).
+//
+//   - Empty cluster, or the active context → the active runtime (today's
+//     single-cluster behavior, unchanged). This is the only branch OSS
+//     ever takes: the OSS frontend doesn't send X-KubeBolt-Cluster.
+//   - A non-active cluster (EE/multi-tenant) → the pooled runtime, lazily
+//     spun up on first request via single-flight (getOrSpinPooled).
+//
+// Returns nil when there is no runtime (startup before first connect, an
+// unknown context, or a failed spin). Callers use the snapshot lock-free.
+func (m *Manager) resolveRuntime(ctx context.Context) *clusterRuntime {
+	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.connector
+	active := key.Cluster == "" || key.Cluster == m.activeContext
+	if active {
+		rt := m.activeRuntimeLocked()
+		m.mu.RUnlock()
+		return rt
+	}
+	m.mu.RUnlock()
+	return m.getOrSpinPooled(key.Tenant, key.Cluster)
 }
 
-// Collector returns the active metrics collector.
-func (m *Manager) Collector() *metrics.Collector {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.collector
+// activeRuntimeLocked snapshots the active cluster's runtime. Caller holds
+// m.mu. Returns nil when nothing is connected yet.
+func (m *Manager) activeRuntimeLocked() *clusterRuntime {
+	if m.connector == nil {
+		return nil
+	}
+	return &clusterRuntime{
+		connector: m.connector,
+		collector: m.collector,
+		engine:    m.engine,
+		cancelFn:  m.cancelFn,
+		connErr:   m.connErr,
+	}
 }
 
-// Engine returns the insights engine.
-func (m *Manager) Engine() *insights.Engine {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	return m.engine
+// getOrSpinPooled returns the pooled runtime for a non-active
+// (tenant,cluster), lazily spinning it up on first request. Single-flight:
+// the first caller reserves a placeholder and builds the connector OUTSIDE
+// m.mu (Start can take ~20s); concurrent callers for the same key block on
+// the placeholder's ready channel instead of launching a second connector.
+// Returns nil on unknown context, no-agent-yet, or a failed build.
+//
+// NOTE (Fase B / EE): WS broadcasts are now (tenant,cluster)-tagged (A.4 seam)
+// and the hub filters by client scope, but pooled runtimes are still gated-off
+// in OSS (parkActiveLocked) and pooled engines don't get the notification hook
+// (wireInsightHookLocked). EE flips this: pooled runtimes broadcast scoped (gate
+// on), the frontend declares each client's active (tenant,cluster), and pooled
+// engines notify. Harmless in OSS — the pool is only populated by a switch and
+// Autopilot is single-cluster for now (internal/kubebolt-w2-connector-pool-design.md §4b).
+func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
+	pk := poolKey{tenant: tenant, cluster: contextName}
+
+	m.mu.Lock()
+	if m.runtimes == nil {
+		m.runtimes = map[poolKey]*clusterRuntime{}
+	}
+	if rt, ok := m.runtimes[pk]; ok {
+		rt.lastUsed = time.Now() // touch for LRU/idle accounting before releasing the lock
+		m.mu.Unlock()
+		<-rt.ready // wait if a concurrent caller is still building
+		if rt.connErr != nil {
+			return nil
+		}
+		return rt
+	}
+	// Same fast-fail as the active path: agent-proxy cluster with no agent.
+	if cid, ok := m.agentProxyContexts[contextName]; ok && m.agentRegistry != nil && m.agentRegistry.CountByCluster(cid) == 0 {
+		m.mu.Unlock()
+		return nil
+	}
+	access := m.accessForContextLocked(contextName)
+	if access == nil {
+		m.mu.Unlock()
+		return nil
+	}
+	// Snapshot the mutable bits startRuntime needs, reserve the placeholder.
+	agentProxyCID := m.agentProxyContexts[contextName]
+	insightStore := m.insightStore
+	tenantID := m.tenantID
+	cacheSyncTimeout := m.resolveCacheSyncTimeoutLocked()
+	placeholder := &clusterRuntime{ready: make(chan struct{})}
+	m.runtimes[pk] = placeholder
+	m.mu.Unlock()
+
+	// Build outside the lock (connector.Start ~20s).
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout)
+	if err != nil {
+		m.mu.Lock()
+		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
+		m.mu.Unlock()
+		placeholder.connErr = err
+		close(placeholder.ready)
+		return nil
+	}
+	placeholder.connector = built.connector
+	placeholder.collector = built.collector
+	placeholder.engine = built.engine
+	placeholder.cancelFn = built.cancelFn
+	placeholder.gate = built.gate
+	// A pooled (non-active) runtime doesn't broadcast in the OSS-degenerate
+	// world — only the active cluster's events reach the shared hub. Full
+	// per-(tenant,cluster) WS delivery for pooled runtimes is A.4.
+	if built.gate != nil {
+		built.gate.Store(false)
+	}
+	placeholder.lastUsed = time.Now()
+	close(placeholder.ready)
+	return placeholder
 }
 
-// Stop stops the active connector and collector.
+// Connector returns the *Connector for the request's (tenant,cluster).
+func (m *Manager) Connector(ctx context.Context) *Connector {
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		return rt.connector
+	}
+	return nil
+}
+
+// Collector returns the metrics collector for the request's (tenant,cluster).
+func (m *Manager) Collector(ctx context.Context) *metrics.Collector {
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		return rt.collector
+	}
+	return nil
+}
+
+// Engine returns the insights engine for the request's (tenant,cluster).
+func (m *Manager) Engine(ctx context.Context) *insights.Engine {
+	if rt := m.resolveRuntime(ctx); rt != nil {
+		return rt.engine
+	}
+	return nil
+}
+
+// Stop stops the active connector and collector, and tears down every
+// pooled (non-active) runtime.
 func (m *Manager) Stop() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	// Stop the idle reaper. Guard against a double Stop() (and the
+	// directly-constructed Managers in tests, which have a nil reaperStop).
+	if m.reaperStop != nil {
+		select {
+		case <-m.reaperStop: // already closed
+		default:
+			close(m.reaperStop)
+		}
+	}
 	m.stopCurrent()
+	for pk, rt := range m.runtimes {
+		if rt.cancelFn != nil {
+			rt.cancelFn()
+		}
+		if rt.connector != nil {
+			rt.connector.Stop()
+		}
+		delete(m.runtimes, pk)
+	}
 }
 
 func (m *Manager) stopCurrent() {
@@ -614,6 +1036,7 @@ func (m *Manager) stopCurrent() {
 	}
 	m.collector = nil
 	m.engine = nil
+	m.activeGate = nil
 	m.connErr = nil
 }
 
@@ -702,6 +1125,8 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 		m.stopCurrent()
 		m.activeContext = ""
 	}
+	// Drop any parked runtime for it so its informers don't linger in the pool.
+	m.evictPooledContextLocked(contextName, "cluster removed")
 
 	// Remove from BoltDB
 	if err := m.storage.DeleteKubeconfig(contextName); err != nil {
@@ -750,8 +1175,10 @@ func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 	if m.inCluster && contextName == "in-cluster" {
 		return NewInClusterAccess()
 	}
-	if _, ok := m.kubeConfig.Contexts[contextName]; ok {
-		return NewLocalAccess(m.kubeconfigPath, contextName)
+	if m.kubeConfig != nil {
+		if _, ok := m.kubeConfig.Contexts[contextName]; ok {
+			return NewLocalAccess(m.kubeconfigPath, contextName)
+		}
 	}
 	return nil
 }
@@ -771,39 +1198,82 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	if access == nil {
 		return fmt.Errorf("context %q is not registered", contextName)
 	}
+	// Build the active runtime. Holding m.mu across startRuntime keeps the
+	// prior behavior (the ~20s connector.Start runs under the lock for a
+	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
+	// lock instead.
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked())
+	if err != nil {
+		return err
+	}
+	m.connector = rt.connector
+	m.collector = rt.collector
+	m.engine = rt.engine
+	m.cancelFn = rt.cancelFn
+	m.activeGate = rt.gate // active runtime broadcasts (gate already true)
+	m.activeContext = contextName
+	m.connErr = nil
+
+	// Wire notification hook if one was registered before this connection
+	// was established (or if we just switched clusters).
+	m.wireInsightHookLocked()
+
+	return nil
+}
+
+// startRuntime connects to contextName and returns a fully-started runtime
+// (connector + collector + engine + the cancel that tears down their
+// goroutines). It takes NO lock and reads only effectively-immutable
+// Manager fields (wsHub, metricInterval, insightInterval, storage) plus the
+// snapshot params the caller resolves under m.mu — so the slow
+// connector.Start (~20s WaitForCacheSync) can run outside the lock for
+// pooled spins. The active path calls it while holding m.mu (unchanged).
+//
+// Mirrors what connectToContextLocked used to inline — keep the two in sync.
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout time.Duration) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
-		return fmt.Errorf("connecting to context %s: %w", contextName, err)
+		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
+	// Apply the live cache-sync deadline before Start() (default when 0).
+	connector.SetCacheSyncTimeout(cacheSyncTimeout)
 	if err := connector.Start(); err != nil {
 		connector.Stop()
-		return fmt.Errorf("starting connector for context %s: %w", contextName, err)
+		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, err)
 	}
+
+	// Shared broadcast gate for this runtime — starts enabled. The caller
+	// (connectToContextLocked / getOrSpinPooled) decides whether this runtime
+	// is active (keep enabled) or pooled (disable), and park/promote flip it.
+	gate := &atomic.Bool{}
+	gate.Store(true)
+	connector.SetBroadcastGate(gate)
+	// A.4: tag this runtime's WS broadcasts with (tenant, context) so EE
+	// clients only receive their own cluster's events. OSS clients carry no
+	// scope, so this is inert there.
+	connector.SetWSScope(tenantID, contextName)
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)
 
 	ctx, cancel := context.WithCancel(context.Background())
-
-	// Synchronous initial poll so metrics are available before first API request
-	collector.Poll(ctx)
-
+	collector.Poll(ctx) // synchronous initial poll so metrics are ready first
 	go collector.Start(ctx)
 
-	// Resolve a stable clusterID for persisted insights: prefer the
-	// kube-system UID, fall back to the agent-proxy cluster_id, then the
-	// context name — so records key consistently across restarts.
+	// Stable clusterID for persisted insights: kube-system UID, else the
+	// agent-proxy cluster_id, else the context name.
 	engineClusterID := connector.ClusterUID()
 	if engineClusterID == "" {
-		if cid := m.agentProxyContexts[contextName]; cid != "" {
-			engineClusterID = cid
+		if agentProxyCID != "" {
+			engineClusterID = agentProxyCID
 		} else {
 			engineClusterID = contextName
 		}
 	}
-	engine := insights.NewEngine(m.wsHub, m.insightStore, engineClusterID, m.tenantID)
+	engine := insights.NewEngine(m.wsHub, insightStore, engineClusterID, tenantID)
+	engine.SetBroadcastGate(gate)
+	engine.SetWSScope(tenantID, contextName)
 
-	// Start insight evaluation ticker
 	go func() {
 		ticker := time.NewTicker(m.insightInterval)
 		defer ticker.Stop()
@@ -818,30 +1288,16 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 		}
 	}()
 
-	m.connector = connector
-	m.collector = collector
-	m.engine = engine
-	m.cancelFn = cancel
-	m.activeContext = contextName
-
-	// Persist the resolved kube-system UID so subsequent ListClusters
-	// (potentially after a switch to a different cluster, or after a
-	// restart) can populate ClusterID for this context without a
-	// re-connect. Empty UID means the kube-system lookup failed
-	// during NewConnectorFromAccess — skip the write rather than
-	// overwriting a previously-good value with empty.
+	// Persist the resolved kube-system UID so ListClusters can populate
+	// ClusterID without a re-connect. Skip on empty (lookup failed) rather
+	// than overwriting a previously-good value.
 	if m.storage != nil {
 		if uid := connector.ClusterUID(); uid != "" {
 			_ = m.storage.SetClusterUID(contextName, uid)
 		}
 	}
-	m.connErr = nil
 
-	// Wire notification hook if one was registered before this connection
-	// was established (or if we just switched clusters).
-	m.wireInsightHookLocked()
-
-	return nil
+	return &clusterRuntime{connector: connector, collector: collector, engine: engine, cancelFn: cancel, gate: gate}, nil
 }
 
 func evaluateInsights(connector *Connector, collector *metrics.Collector, engine *insights.Engine) {

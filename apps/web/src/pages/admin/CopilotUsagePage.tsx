@@ -12,9 +12,12 @@ import {
   Scissors,
   Zap,
   RefreshCw,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { api } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
+import { ReliabilityStrip, BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
 import type {
   CopilotSessionEnriched,
   CopilotUsageBucket,
@@ -124,6 +127,10 @@ export function CopilotUsagePage() {
       </div>
 
       {summary && <SummaryTiles summary={summary} />}
+
+      {summary && <ReliabilityStrip summary={summary} />}
+
+      <BreakdownSection range={range} />
 
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mt-5">
         <TokensChart buckets={timeseries} range={range} />
@@ -380,17 +387,24 @@ function SessionsTable({
   onSelect: (s: CopilotSessionEnriched) => void
   isLoading: boolean
 }) {
+  const [page, setPage] = useState(1)
+  const pageSize = 20
+  const totalPages = Math.max(1, Math.ceil(sessions.length / pageSize))
+  const currentPage = Math.min(page, totalPages)
+  const start = (currentPage - 1) * pageSize
+  const pageItems = sessions.slice(start, start + pageSize)
   return (
     <div className="mt-5 bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
       <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between">
         <h3 className="text-xs font-semibold text-kb-text-primary">Recent sessions</h3>
-        <span className="text-[10px] font-mono text-kb-text-tertiary">{sessions.length} shown</span>
+        <span className="text-[10px] font-mono text-kb-text-tertiary">{sessions.length} total</span>
       </div>
       {isLoading ? (
         <div className="py-10"><LoadingSpinner /></div>
       ) : sessions.length === 0 ? (
         <div className="py-12 text-center text-xs text-kb-text-tertiary font-mono">no sessions yet</div>
       ) : (
+        <>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
@@ -407,7 +421,7 @@ function SessionsTable({
               </tr>
             </thead>
             <tbody>
-              {sessions.map((s) => {
+              {pageItems.map((s) => {
                 const billed = s.usage.inputTokens + s.usage.outputTokens
                 const cached = s.usage.cacheReadTokens ?? 0
                 return (
@@ -449,6 +463,37 @@ function SessionsTable({
             </tbody>
           </table>
         </div>
+        {sessions.length > pageSize && (
+          <div className="flex items-center justify-center gap-4 py-3 border-t border-kb-border">
+            <span className="text-[11px] font-mono text-kb-text-tertiary">
+              {start + 1}–{Math.min(start + pageSize, sessions.length)} of {sessions.length}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                title="Previous page"
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1 rounded border border-kb-border text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-[11px] font-mono text-kb-text-secondary px-2">
+                {currentPage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                title="Next page"
+                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="p-1 rounded border border-kb-border text-kb-text-secondary hover:text-kb-text-primary hover:border-kb-border-active disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+        </>
       )}
     </div>
   )

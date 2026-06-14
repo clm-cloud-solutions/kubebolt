@@ -36,7 +36,11 @@ export function AskCopilotButton({
     e.stopPropagation()
     const prompt = buildTriggerPrompt(payload)
     openPanel()
-    void sendMessage(prompt, { trigger: payload.type })
+    // When launched from an insight, stamp the conversation with the insight's
+    // stable fingerprint so it's attributable back (and the insight detail can
+    // deep-link "Kobi analyzed this" to resume).
+    const originatingInsightId = payload.type === 'insight' ? payload.insight.fingerprint : undefined
+    void sendMessage(prompt, { trigger: payload.type, originatingInsightId })
     onAfterSend?.()
   }
 

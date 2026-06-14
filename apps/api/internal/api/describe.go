@@ -17,33 +17,40 @@ import (
 // detail page, sidebar nav, route) needs to be expanded in lockstep before
 // these types can be navigated to from the operator's perspective.
 var resourceTypeToGroupKind = map[string]schema.GroupKind{
-	"pods":                {Group: "", Kind: "Pod"},
-	"nodes":              {Group: "", Kind: "Node"},
-	"namespaces":         {Group: "", Kind: "Namespace"},
-	"services":           {Group: "", Kind: "Service"},
-	"configmaps":         {Group: "", Kind: "ConfigMap"},
-	"secrets":            {Group: "", Kind: "Secret"},
-	"pvcs":               {Group: "", Kind: "PersistentVolumeClaim"},
-	"persistentvolumeclaims": {Group: "", Kind: "PersistentVolumeClaim"},
-	"pvs":                {Group: "", Kind: "PersistentVolume"},
-	"persistentvolumes":  {Group: "", Kind: "PersistentVolume"},
-	"events":             {Group: "", Kind: "Event"},
-	"endpoints":          {Group: "", Kind: "Endpoints"},
-	"deployments":        {Group: "apps", Kind: "Deployment"},
-	"statefulsets":       {Group: "apps", Kind: "StatefulSet"},
-	"daemonsets":         {Group: "apps", Kind: "DaemonSet"},
-	"replicasets":        {Group: "apps", Kind: "ReplicaSet"},
-	"jobs":               {Group: "batch", Kind: "Job"},
-	"cronjobs":           {Group: "batch", Kind: "CronJob"},
-	"ingresses":          {Group: "networking.k8s.io", Kind: "Ingress"},
-	"hpas":               {Group: "autoscaling", Kind: "HorizontalPodAutoscaler"},
+	"pods":                     {Group: "", Kind: "Pod"},
+	"nodes":                    {Group: "", Kind: "Node"},
+	"namespaces":               {Group: "", Kind: "Namespace"},
+	"services":                 {Group: "", Kind: "Service"},
+	"configmaps":               {Group: "", Kind: "ConfigMap"},
+	"secrets":                  {Group: "", Kind: "Secret"},
+	"pvcs":                     {Group: "", Kind: "PersistentVolumeClaim"},
+	"persistentvolumeclaims":   {Group: "", Kind: "PersistentVolumeClaim"},
+	"pvs":                      {Group: "", Kind: "PersistentVolume"},
+	"persistentvolumes":        {Group: "", Kind: "PersistentVolume"},
+	"events":                   {Group: "", Kind: "Event"},
+	// `endpoints` is the user-facing type, but KubeBolt surfaces EndpointSlices
+	// under it everywhere (list, count, GVR → discovery/v1 endpointslices) since
+	// the legacy core/v1 Endpoints API is deprecated. So describe must target
+	// the EndpointSlice Kind too — otherwise kubectl's Endpoints describer looks
+	// up a non-existent core/v1 Endpoints object by the slice's name
+	// (`<svc>-<hash>`) and fails "endpoints not found". kubectl ships an
+	// EndpointSliceDescriber, so DescriberFor resolves this directly.
+	"endpoints":                {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
+	"deployments":              {Group: "apps", Kind: "Deployment"},
+	"statefulsets":             {Group: "apps", Kind: "StatefulSet"},
+	"daemonsets":               {Group: "apps", Kind: "DaemonSet"},
+	"replicasets":              {Group: "apps", Kind: "ReplicaSet"},
+	"jobs":                     {Group: "batch", Kind: "Job"},
+	"cronjobs":                 {Group: "batch", Kind: "CronJob"},
+	"ingresses":                {Group: "networking.k8s.io", Kind: "Ingress"},
+	"hpas":                     {Group: "autoscaling", Kind: "HorizontalPodAutoscaler"},
 	"horizontalpodautoscalers": {Group: "autoscaling", Kind: "HorizontalPodAutoscaler"},
-	"storageclasses":     {Group: "storage.k8s.io", Kind: "StorageClass"},
-	"roles":              {Group: "rbac.authorization.k8s.io", Kind: "Role"},
-	"clusterroles":       {Group: "rbac.authorization.k8s.io", Kind: "ClusterRole"},
-	"rolebindings":       {Group: "rbac.authorization.k8s.io", Kind: "RoleBinding"},
-	"clusterrolebindings": {Group: "rbac.authorization.k8s.io", Kind: "ClusterRoleBinding"},
-	"endpointslices":     {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
+	"storageclasses":           {Group: "storage.k8s.io", Kind: "StorageClass"},
+	"roles":                    {Group: "rbac.authorization.k8s.io", Kind: "Role"},
+	"clusterroles":             {Group: "rbac.authorization.k8s.io", Kind: "ClusterRole"},
+	"rolebindings":             {Group: "rbac.authorization.k8s.io", Kind: "RoleBinding"},
+	"clusterrolebindings":      {Group: "rbac.authorization.k8s.io", Kind: "ClusterRoleBinding"},
+	"endpointslices":           {Group: "discovery.k8s.io", Kind: "EndpointSlice"},
 	// Describe-only support (added 2026-05-15): kubectl can describe these
 	// natively but the rest of the platform — informers, list pages,
 	// sidebar nav, detail tabs — still needs to catch up. See SPEC §3.2.1.
@@ -65,6 +72,11 @@ var resourceTypeToGroupKind = map[string]schema.GroupKind{
 	"certificates": {Group: "cert-manager.io", Kind: "Certificate"},
 	"argocdapps":   {Group: "argoproj.io", Kind: "Application"},
 	"vpas":         {Group: "autoscaling.k8s.io", Kind: "VerticalPodAutoscaler"},
+	// Cilium policy CRDs — no built-in describer (generic fallback below).
+	// CiliumClusterwideNetworkPolicy is cluster-scoped; the fallback picks the
+	// RESTScope from cluster.IsClusterScoped, so it must not be hardcoded.
+	"ciliumnetworkpolicies":            {Group: "cilium.io", Kind: "CiliumNetworkPolicy"},
+	"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Kind: "CiliumClusterwideNetworkPolicy"},
 }
 
 func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
@@ -76,7 +88,7 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 		namespace = ""
 	}
 
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -92,14 +104,18 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 	describer, found := describe.DescriberFor(gk, restConfig)
 	if !found {
 		// No built-in describer (dynamic CRDs like cert-manager / ArgoCD /
-		// VPA). Fall back to kubectl's generic describer via a RESTMapping
-		// built from the type's GVR + Kind. Namespaced scope — all 1.14
-		// first-class CRD types are namespaced.
+		// VPA / Cilium policies). Fall back to kubectl's generic describer via
+		// a RESTMapping built from the type's GVR + Kind. Scope comes from
+		// cluster.IsClusterScoped (CCNP is cluster-scoped; the rest namespaced).
 		if gvr, ok := cluster.ResourceTypeGVR(resourceType); ok {
+			scope := meta.RESTScope(meta.RESTScopeNamespace)
+			if cluster.IsClusterScoped(resourceType) {
+				scope = meta.RESTScopeRoot
+			}
 			mapping := &meta.RESTMapping{
 				Resource:         gvr,
 				GroupVersionKind: gvr.GroupVersion().WithKind(gk.Kind),
-				Scope:            meta.RESTScopeNamespace,
+				Scope:            scope,
 			}
 			describer, found = describe.GenericDescriberFor(mapping, restConfig)
 		}
@@ -107,6 +123,14 @@ func (h *handlers) getResourceDescribe(w http.ResponseWriter, r *http.Request) {
 	if !found {
 		respondError(w, http.StatusBadRequest, "no describer available for: "+resourceType)
 		return
+	}
+
+	// `endpoints` maps to EndpointSlices (named <service>-<hash>). The EndpointSlice
+	// describer Gets by name, so a lookup by the fronting Service name would 404.
+	// Resolve either key (slice name from the web UI, or service name from Kobi /
+	// Autopilot) to the real slice name before describing.
+	if resourceType == "endpoints" {
+		name = conn.ResolveEndpointsName(namespace, name)
 	}
 
 	output, err := describer.Describe(namespace, name, describe.DescriberSettings{ShowEvents: true})

@@ -40,7 +40,7 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name:        "list_resources",
-			Description: "List Kubernetes resources by type with optional filtering. Types: pods, deployments, statefulsets, daemonsets, jobs, cronjobs, services, ingresses, gateways, httproutes, endpoints, pvcs, pvs, storageclasses, configmaps, secrets, hpas, nodes, namespaces, events",
+			Description: "List Kubernetes resources by type with optional filtering. Types: pods, deployments, statefulsets, daemonsets, jobs, cronjobs, services, ingresses, networkpolicies, ciliumnetworkpolicies, ciliumclusterwidenetworkpolicies, gateways, httproutes, endpoints, pvcs, pvs, storageclasses, configmaps, secrets, hpas, nodes, namespaces, events. Cilium policies (cilium.io/v2) carry the L3-L7 rules a standard NetworkPolicy can't; use them to confirm whether a deny rule actually blocks a flow.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -239,7 +239,10 @@ func ToolDefinitions() []ToolDefinition {
 				"during triage when the target container is distroless / lacks a shell, or you need tools " +
 				"(curl, ps, netstat) inside the pod's namespaces. The debug container shares the pod's " +
 				"network + (optionally) process namespace. It persists until the pod is recreated — note " +
-				"that in the rationale.",
+				"that in the rationale. PREFER passing a non-interactive 'command': the container runs it, " +
+				"exits, and its output lands in the container logs so you can read it back with get_pod_logs. " +
+				"Without a command the container opens an interactive shell that only a human at the Terminal " +
+				"tab can drive — you cannot, and it produces no output you can read.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -247,6 +250,7 @@ func ToolDefinitions() []ToolDefinition {
 					"name":            strProp("Pod name"),
 					"image":           strProp("Debug container image (e.g. busybox, nicolaka/netshoot). Defaults to busybox if omitted."),
 					"targetContainer": strProp("Optional: the container whose process namespace to share (for inspecting that container's processes)."),
+					"command":         strProp("Recommended: a single non-interactive, READ-ONLY diagnostic to run (e.g. \"dig +short shop-db; nc -zv shop-db 5432; echo exit=$?\"). Runs via sh -c, exits, and leaves its output in the container logs for get_pod_logs to read back. Omit only when a human must drive the Terminal interactively. Must never be a mutation."),
 					"rationale":       strProp("Why a debug container is the right move here. Shown to the user in the confirmation card."),
 					"risk":            riskProp(),
 				},

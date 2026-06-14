@@ -61,7 +61,7 @@ func (h *handlers) refuseProxyWithoutAuth(id string, raw json.RawMessage) (strin
 // that entry rather than failing the whole list, so a single broken
 // adapter doesn't blank the page.
 func (h *handlers) handleListIntegrations(w http.ResponseWriter, r *http.Request) {
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		// No cluster connected — surface the catalog with metadata
 		// only so the user sees what's available. Status is the
@@ -97,7 +97,7 @@ func (h *handlers) handleGetIntegration(w http.ResponseWriter, r *http.Request) 
 	// List uses. Rides on every response so the frontend can branch
 	// on `installable` without a second round-trip.
 	_, installable := provider.(integrations.Installable)
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		// Mirror the list endpoint — surface metadata-only so the UI
 		// can render the detail panel. Install actions stay gated by
@@ -148,7 +148,7 @@ func (h *handlers) handleInstallIntegration(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusMethodNotAllowed, "integration does not support install")
 		return
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -214,7 +214,7 @@ func (h *handlers) handleGetIntegrationConfig(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusMethodNotAllowed, "integration does not support configure")
 		return
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -270,7 +270,7 @@ func (h *handlers) handlePutIntegrationConfig(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusMethodNotAllowed, "integration does not support configure")
 		return
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
@@ -329,7 +329,7 @@ func (h *handlers) handleUninstallIntegration(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusMethodNotAllowed, "integration does not support uninstall")
 		return
 	}
-	conn := h.manager.Connector()
+	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return

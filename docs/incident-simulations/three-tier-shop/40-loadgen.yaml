@@ -1,0 +1,46 @@
+# Load generator — keeps steady traffic flowing through the whole chain.
+#
+# A wget loop hitting the storefront once a second. Each request makes shop-web
+# call orders-api and catalog-api, so the loadgen drives pod→pod L7 traffic
+# across all three tiers. That gives:
+#   - topology edges Kobi can walk (loadgen → shop-web → {orders,catalog}-api → db)
+#   - real request/latency/error series for the Reliability dashboard (with Hubble)
+#   - a live 200→503 signal the moment the cascade hits
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: loadgen
+  namespace: shop-frontend
+  labels:
+    app: loadgen
+    tier: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: loadgen
+  template:
+    metadata:
+      labels:
+        app: loadgen
+        tier: frontend
+    spec:
+      containers:
+        - name: loadgen
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              echo "[loadgen] hammering http://shop-web.shop-frontend/ once a second"
+              while true; do
+                code=$(wget -q -O /dev/null -S "http://shop-web.shop-frontend/" 2>&1 | awk '/HTTP\//{print $2; exit}')
+                echo "[loadgen] shop-web -> ${code:-ERR}"
+                sleep 1
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

@@ -34,6 +34,9 @@ vi.mock('@/services/api', () => ({
     setEnvResource: (...args: unknown[]) => apiCalls.setEnvResource(...args),
     patchHpaBounds: (...args: unknown[]) => apiCalls.patchHpaBounds(...args),
     getResourceDetail: vi.fn().mockResolvedValue({}),
+    // Auto dry-run fires on mount of a pending card; default to "would apply"
+    // so it doesn't interfere with the execute-dispatch assertions.
+    getDryRunPreview: vi.fn().mockResolvedValue({ ok: true, message: 'Would apply' }),
   },
   ApiError: class ApiError extends Error {
     status = 0
@@ -47,7 +50,18 @@ vi.mock('@/contexts/CopilotContext', () => ({
   useCopilot: () => ({
     recordProposalOutcome: vi.fn(),
     recordProposalProgressSettled: vi.fn(),
+    recordProposalStalled: vi.fn(),
+    sendMessage: vi.fn(),
+    config: null,
+    isLoading: false,
+    conversationId: null,
   }),
+}))
+
+// The card reads the user's role to phrase a 403; stub it (not exercised by
+// these success-path dispatch tests).
+vi.mock('@/contexts/AuthContext', () => ({
+  useAuth: () => ({ user: null }),
 }))
 
 // useNavigate is exercised post-success; jsdom + MemoryRouter handle it.
@@ -158,7 +172,7 @@ describe('ActionProposalCard dispatch — new propose_* arms', () => {
       'default',
       'api',
       containers,
-      'copilot_proposal',
+      expect.objectContaining({ source: 'copilot_proposal' }),
     )
   })
 
@@ -181,7 +195,7 @@ describe('ActionProposalCard dispatch — new propose_* arms', () => {
       'default',
       'api',
       images,
-      'copilot_proposal',
+      expect.objectContaining({ source: 'copilot_proposal' }),
     )
   })
 
@@ -213,7 +227,7 @@ describe('ActionProposalCard dispatch — new propose_* arms', () => {
     expect(call[1]).toBe('default')
     expect(call[2]).toBe('api')
     expect(call[3]).toEqual({ containers, triggerRollout: true })
-    expect(call[4]).toBe('copilot_proposal')
+    expect(call[4]).toEqual(expect.objectContaining({ source: 'copilot_proposal' }))
   })
 
   it('patch_hpa calls patchHpaBounds with just the bounds the LLM provided', async () => {
@@ -234,7 +248,7 @@ describe('ActionProposalCard dispatch — new propose_* arms', () => {
       'default',
       'api',
       { minReplicas: undefined, maxReplicas: 10 },
-      'copilot_proposal',
+      expect.objectContaining({ source: 'copilot_proposal' }),
     )
   })
 

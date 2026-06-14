@@ -440,7 +440,7 @@ func extractImagesFromControllerRevision(raw []byte) ([]ImagePair, error) {
 // after summary. Errors map cleanly to the same HTTP layer that
 // already serves Deployment rollbacks: "no rollback history",
 // "target revision N not found", "no-op".
-func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64) (int64, int64, error) {
+func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64, dryRun bool) (int64, int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -482,7 +482,11 @@ func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64
 	}
 
 	sts.Spec.Template = *template
-	if _, err := c.clientset.AppsV1().StatefulSets(namespace).Update(ctx, sts, metav1.UpdateOptions{}); err != nil {
+	stsOpts := metav1.UpdateOptions{}
+	if dryRun {
+		stsOpts.DryRun = []string{"All"}
+	}
+	if _, err := c.clientset.AppsV1().StatefulSets(namespace).Update(ctx, sts, stsOpts); err != nil {
 		return currentRev, target.Revision, err
 	}
 	return currentRev, target.Revision, nil
@@ -492,7 +496,7 @@ func (c *Connector) RollbackStatefulSet(namespace, name string, toRevision int64
 // shape difference vs STS is that DaemonSets don't expose
 // status.{update,current}Revision — we identify the active
 // revision as max(Revision) among owned CRs.
-func (c *Connector) RollbackDaemonSet(namespace, name string, toRevision int64) (int64, int64, error) {
+func (c *Connector) RollbackDaemonSet(namespace, name string, toRevision int64, dryRun bool) (int64, int64, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
@@ -530,7 +534,11 @@ func (c *Connector) RollbackDaemonSet(namespace, name string, toRevision int64) 
 	}
 
 	ds.Spec.Template = *template
-	if _, err := c.clientset.AppsV1().DaemonSets(namespace).Update(ctx, ds, metav1.UpdateOptions{}); err != nil {
+	dsOpts := metav1.UpdateOptions{}
+	if dryRun {
+		dsOpts.DryRun = []string{"All"}
+	}
+	if _, err := c.clientset.AppsV1().DaemonSets(namespace).Update(ctx, ds, dsOpts); err != nil {
 		return currentRev, target.Revision, err
 	}
 	return currentRev, target.Revision, nil

@@ -1,0 +1,54 @@
+# Scenario 03 — CrashLoopBackOff caused by missing env config
+#
+# Symptom    : App refuses to boot because DATABASE_URL is unset. The log line
+#              literally says "panic: DATABASE_URL not set" — a config problem,
+#              not a transient one.
+# Insight    : frequent-restarts / crash-loop
+# Kobi action: propose_set_env — inject DATABASE_URL (literal value). Restart
+#              alone replays the same panic.
+#
+# NOTE: Kobi refuses credential-shaped values (password/secret/token/key) in
+#       a literal env. DATABASE_URL here is a plain connection string for the
+#       demo; real secrets get bound via Secret refs in the YAML editor.
+#
+# Try in Kobi: "config-missing won't start, what's wrong?"
+#
+# Clean up   : kubectl delete -f 03-crashloop-missing-env.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: config-missing
+  namespace: kobi-incident-lab
+  labels:
+    app: config-missing
+    incident: crashloop-missing-env
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: config-missing
+  template:
+    metadata:
+      labels:
+        app: config-missing
+    spec:
+      containers:
+        - name: app
+          image: alpine:3.20
+          command: ["sh", "-c"]
+          args:
+            - |
+              if [ -z "$DATABASE_URL" ]; then
+                echo "[config-missing] panic: DATABASE_URL not set" >&2
+                exit 1
+              fi
+              echo "[config-missing] connected to $DATABASE_URL — healthy"
+              while true; do sleep 3600; done
+          # No env block on purpose — Kobi proposes adding DATABASE_URL.
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi

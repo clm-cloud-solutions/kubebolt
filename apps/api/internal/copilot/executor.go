@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -41,13 +42,27 @@ func NewExecutor(manager *cluster.Manager) *Executor {
 	return &Executor{manager: manager}
 }
 
-// Execute runs a single tool call and returns its result as a JSON string.
-// Errors during execution are returned as ToolResult with IsError=true so the
-// LLM can react gracefully.
+// Execute runs a single tool call against the default-tenant + active-cluster
+// runtime. It is a thin shim over ExecuteCtx for callers that have no request
+// context (the OSS chat loop). New callers that DO carry a request context
+// — most notably the MCP server, where the context holds the resolved
+// (tenant, cluster) RuntimeKey — must call ExecuteCtx so per-tenant routing
+// works. See internal/kubebolt-w2-connector-pool-design.md.
 func (e *Executor) Execute(call ToolCall) ToolResult {
+	return e.ExecuteCtx(context.Background(), call)
+}
+
+// ExecuteCtx runs a single tool call and returns its result as a JSON string,
+// resolving the connector/engine for the (tenant, cluster) carried by ctx via
+// cluster.RuntimeKeyFromContext. When ctx has no RuntimeKey (the zero value),
+// it resolves to default-tenant + active-cluster — preserving the original
+// single-tenant OSS behavior. Errors during execution are returned as
+// ToolResult with IsError=true so the caller (LLM or MCP host) can react
+// gracefully.
+func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
 	res := ToolResult{ToolCallID: call.ID}
 
-	conn := e.manager.Connector()
+	conn := e.manager.Connector(ctx)
 	if conn == nil {
 		res.Content = `{"error":"cluster not connected"}`
 		res.IsError = true
@@ -340,7 +355,7 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		res.Content = jsonString(conn.GetTopology())
 
 	case "get_insights":
-		eng := e.manager.Engine()
+		eng := e.manager.Engine(ctx) // resolved for ctx's (tenant, cluster); see ExecuteCtx
 		if eng == nil {
 			res.Content = `{"error":"insights engine not available"}`
 			res.IsError = true
@@ -417,6 +432,7 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 			image = "busybox"
 		}
 		targetContainer := stringArg(args, "targetContainer")
+		command := stringArg(args, "command")
 		rationale := stringArg(args, "rationale")
 		if ns == "" || name == "" {
 			res.Content = `{"error":"namespace and name are required"}`
@@ -434,7 +450,19 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 		if targetContainer != "" {
 			p.Params["targetContainer"] = targetContainer
 		}
+		if command != "" {
+			// Wrap as sh -c so the LLM can pass a single shell line; the
+			// ephemeral container runs it, exits, and the output lands in the
+			// container logs for get_pod_logs to read back. The execution path
+			// (debugPodRequest.Command) honors this verbatim.
+			p.Params["command"] = []string{"sh", "-c", command}
+		}
 		p.Summary = fmt.Sprintf("Attach debug container (%s) to pod %s/%s", image, ns, name)
+		if command != "" {
+			// Surface the exact command in the card — it runs under the
+			// operator's RBAC, so they should see it before clicking Execute.
+			p.Summary += fmt.Sprintf(" — runs: %s", command)
+		}
 		p.Rationale = rationale
 		p.Risk = resolveRisk(stringArg(args, "risk"), "medium")
 		// Ephemeral containers can't be removed without recreating the pod.

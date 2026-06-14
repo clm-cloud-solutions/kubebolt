@@ -59,18 +59,17 @@ func newE2EHandler(t *testing.T, mode string, defaults auth.EffectiveLimits) (
 	withPromWriteEnabled(t)
 	pointStorageAt(t, ts)
 
-	store, plaintext := newTenantsStoreWithToken(t)
-	// LookupByToken plus a fresh-test cleanup so each E2E test
-	// runs against an isolated tenant identity.
-	tn, _, err := store.LookupByToken(plaintext)
-	if err != nil {
-		t.Fatalf("LookupByToken: %v", err)
-	}
+	store, its, plaintext := newTenantsStoreWithToken(t)
+	// Resolve the bearer's tenant via the ingest store (token → TenantID)
+	// then the tenant store, so each E2E test runs against an isolated
+	// tenant identity.
+	tn := lookupBearerTenant(t, store, its, plaintext)
 	tenantID = tn.ID
 
 	reg = prometheus.NewRegistry()
 	h = &handlers{
 		tenantsStore:      store,
+		ingestTokens:      its,
 		promWriteAuthMode: mode,
 		promRateLimiter:   NewPromRateLimiter(defaults),
 		// CardinalityTracker without a refresh loop: hasFresh stays
