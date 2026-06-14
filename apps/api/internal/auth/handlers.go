@@ -10,7 +10,7 @@ import (
 
 // Handlers provides HTTP handlers for authentication endpoints.
 type Handlers struct {
-	store       *Store
+	store       AuthStore
 	jwt         *JWTService
 	authEnabled bool
 	cfg         config.AuthConfig
@@ -52,8 +52,10 @@ func (h *Handlers) APITokens() *APITokenStore {
 	return h.apiTokens
 }
 
-// NewHandlers creates auth handlers with a store and JWT service.
-func NewHandlers(store *Store, jwt *JWTService, cfg config.AuthConfig) *Handlers {
+// NewHandlers creates auth handlers with a store and JWT service. Takes the
+// AuthStore interface (not *Store) so the EE build can inject a Postgres-backed
+// user/refresh store via the newAuthStore seam without editing this file.
+func NewHandlers(store AuthStore, jwt *JWTService, cfg config.AuthConfig) *Handlers {
 	return &Handlers{
 		store:       store,
 		jwt:         jwt,

@@ -210,6 +210,9 @@ type UserStore interface {
 	UpdatePassword(id, newPassword string) error
 	UpdateLastLogin(id string) error
 	DeleteUser(id string) error
+	// CountByRole counts users with a given role — used by the "can't delete /
+	// demote the last admin" guard in the admin user handlers.
+	CountByRole(role Role) (int, error)
 }
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
@@ -478,18 +481,25 @@ func (s *Store) CountByRole(role Role) (int, error) {
 	return count, err
 }
 
-// SeedAdmin creates the default admin user if no users exist.
+// SeedAdmin creates the default admin user if none exist. Kept for existing
+// callers; delegates to the package-level SeedAdmin so any UserStore impl
+// (BoltDB here, Postgres in EE) seeds identically.
 func (s *Store) SeedAdmin(password string) (bool, error) {
-	count, err := s.UserCount()
+	return SeedAdmin(s, password)
+}
+
+// SeedAdmin creates the default admin user on the given UserStore if it has no
+// users yet. Returns true when it seeded one. Backend-agnostic (the EE
+// Postgres UserStore reuses it via the newAuthStore seam).
+func SeedAdmin(s UserStore, password string) (bool, error) {
+	users, err := s.ListUsers()
 	if err != nil {
 		return false, err
 	}
-	if count > 0 {
+	if len(users) > 0 {
 		return false, nil
 	}
-
-	_, err = s.CreateUser("admin", "admin@localhost", "Admin", password, RoleAdmin)
-	if err != nil {
+	if _, err := s.CreateUser("admin", "admin@localhost", "Admin", password, RoleAdmin); err != nil {
 		return false, fmt.Errorf("seed admin user: %w", err)
 	}
 	return true, nil
@@ -511,6 +521,17 @@ type RefreshTokenStore interface {
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
 var _ RefreshTokenStore = (*Store)(nil)
+
+// AuthStore is the persistence surface the auth Handlers need: user records
+// (UserStore) + refresh tokens (RefreshTokenStore). *Store satisfies it
+// (BoltDB); the EE build supplies a Postgres implementation behind the
+// newAuthStore factory seam, so Handlers stay backend-agnostic.
+type AuthStore interface {
+	UserStore
+	RefreshTokenStore
+}
+
+var _ AuthStore = (*Store)(nil)
 
 // SaveRefreshToken stores a refresh token.
 func (s *Store) SaveRefreshToken(rt *RefreshToken) error {
