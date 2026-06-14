@@ -16,15 +16,16 @@ type Handlers struct {
 	cfg         config.AuthConfig
 	// apiTokens is optional. When wired (SetAPITokenStore), RequireAuth
 	// also accepts long-lived REST API tokens (kbs_/kbk_) in addition to
-	// the user-session JWT. nil → only JWT auth.
-	apiTokens *APITokenStore
+	// the user-session JWT. nil → only JWT auth. Interface-typed (W1 seam):
+	// OSS wires the BoltDB *APITokenStore, EE a Postgres impl.
+	apiTokens APITokenStorer
 
 	// Org/team context for the OSS single-org+single-team hierarchy. Wired
 	// via SetOrgTeamContext at boot (auth-enabled path only). When teams is
 	// nil the membership lifecycle is skipped — every handler nil-guards, so
 	// the auth-disabled / pre-W1 path behaves exactly as before.
 	teams         TeamStore
-	tenants       *TenantsStore
+	tenants       TenantStore
 	defaultOrgID  string
 	defaultTeamID string
 }
@@ -34,7 +35,7 @@ type Handlers struct {
 // hierarchy in /auth/me, and serve the read-only /teams endpoints. Called once
 // at boot from main.go after EnsureDefaultTeam. Optional — when unset the
 // membership lifecycle and /teams endpoints degrade gracefully.
-func (h *Handlers) SetOrgTeamContext(teams TeamStore, tenants *TenantsStore, defaultOrgID, defaultTeamID string) {
+func (h *Handlers) SetOrgTeamContext(teams TeamStore, tenants TenantStore, defaultOrgID, defaultTeamID string) {
 	h.teams = teams
 	h.tenants = tenants
 	h.defaultOrgID = defaultOrgID
@@ -43,12 +44,12 @@ func (h *Handlers) SetOrgTeamContext(teams TeamStore, tenants *TenantsStore, def
 
 // SetAPITokenStore wires the REST API-token store so RequireAuth accepts
 // kbs_/kbk_ bearer tokens. Optional; call once at boot from main.go.
-func (h *Handlers) SetAPITokenStore(s *APITokenStore) {
+func (h *Handlers) SetAPITokenStore(s APITokenStorer) {
 	h.apiTokens = s
 }
 
 // APITokens exposes the wired store (nil if unset) for the admin handlers.
-func (h *Handlers) APITokens() *APITokenStore {
+func (h *Handlers) APITokens() APITokenStorer {
 	return h.apiTokens
 }
 

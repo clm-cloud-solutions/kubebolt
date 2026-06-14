@@ -33,7 +33,7 @@ import (
 // Runtime is the per-process settings resolver. One instance for the
 // lifetime of the server, shared across handlers.
 type Runtime struct {
-	store *auth.Store
+	store auth.SettingStore
 
 	// envBase / envNotifications / envAuth / envGeneral / envIngestChannel
 	// are the env-driven baselines computed once at boot. Override values
@@ -88,7 +88,7 @@ type Runtime struct {
 // Returns an error if the JWT secret is too short to derive a key from
 // (must be at least 16 bytes — anything shorter is a misconfiguration we
 // fail loud about rather than silently accept).
-func NewRuntime(store *auth.Store, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, envAuth config.AuthConfig, envGeneral config.GeneralConfig, envIngestChannel config.IngestChannelConfig, jwtSecret []byte) (*Runtime, error) {
+func NewRuntime(store auth.SettingStore, envCopilot config.CopilotConfig, envNotifications config.NotificationsConfig, envAuth config.AuthConfig, envGeneral config.GeneralConfig, envIngestChannel config.IngestChannelConfig, jwtSecret []byte) (*Runtime, error) {
 	if store == nil {
 		return nil, errors.New("settings: store is required")
 	}

@@ -586,6 +586,34 @@ func (s *Store) DeleteUserRefreshTokens(userID string) error {
 	})
 }
 
+// SettingStore is the seam for the global key→value install settings
+// (jwt_secret + the UI-editable auth/copilot/notifications/general/ingest
+// config blobs). Global, NOT tenant-scoped. OSS uses the BoltDB *Store; EE
+// swaps a Postgres impl so a multi-replica Cloud deployment shares one settings
+// table (otherwise each replica would sign JWTs with a different secret).
+type SettingStore interface {
+	GetSetting(key string) ([]byte, error)
+	SetSetting(key string, value []byte) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ SettingStore = (*Store)(nil)
+
+// AllSettings returns every key→value pair in the settings bucket. Used by the
+// Bolt→Postgres migration to copy settings without enumerating known keys.
+func (s *Store) AllSettings() (map[string][]byte, error) {
+	out := map[string][]byte{}
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(settingsBucket).ForEach(func(k, v []byte) error {
+			cp := make([]byte, len(v))
+			copy(cp, v)
+			out[string(k)] = cp
+			return nil
+		})
+	})
+	return out, err
+}
+
 // GetSetting retrieves a setting value by key from the settings bucket.
 func (s *Store) GetSetting(key string) ([]byte, error) {
 	var val []byte

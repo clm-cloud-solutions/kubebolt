@@ -32,7 +32,7 @@ func NewRouter(
 	wsHub *websocket.Hub,
 	corsOrigins []string,
 	copilotCfg config.CopilotConfig,
-	copilotUsage *copilot.UsageStore,
+	copilotUsage copilot.SessionStore,
 	// copilotConversations persists per-user Kobi transcripts for history +
 	// resume. Optional — nil when auth/persistence is disabled (chat stays
 	// ephemeral, the /copilot/conversations endpoints 503).
@@ -42,7 +42,7 @@ func NewRouter(
 	notifManager *notifications.Manager,
 	integrationRegistry *integrations.Registry,
 	agentAuthEnforcement string,
-	tenantsStore *auth.TenantsStore,
+	tenantsStore auth.TenantStore,
 	ingestTokens auth.IngestTokenStore,
 	promWriteAuthMode string,
 	promRateLimiter *PromRateLimiter,

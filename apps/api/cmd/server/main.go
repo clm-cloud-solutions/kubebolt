@@ -6,6 +6,7 @@ import (
 	"embed"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -40,7 +41,6 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
-	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -125,6 +125,11 @@ func main() {
 	// can answer "what did Helm wire into this container?" without
 	// kubectl-exec to inspect /proc/1/environ.
 	bootEnv := api.SnapshotKubeboltEnv(os.Environ())
+
+	// Enterprise-only one-shot subcommands (e.g. migrate-bolt-to-pg). No-op in
+	// OSS; in EE it runs and exits the process if invoked, otherwise returns
+	// and normal boot continues.
+	runEESubcommands()
 
 	cfg := config.DefaultConfig()
 
@@ -254,7 +259,7 @@ func main() {
 	var authHandlers *auth.Handlers
 	var tenantHandlers *auth.TenantHandlers
 	var agentAuthBundle *agent.AuthenticatorBundle
-	var copilotUsage *copilot.UsageStore
+	var copilotUsage copilot.SessionStore
 	// copilotConversations persists per-user Kobi transcripts for history +
 	// resume. Wired alongside copilotUsage inside the authCfg.Enabled block
 	// (needs the open BoltDB). Interface type so it stays nil-safe.
@@ -268,7 +273,7 @@ func main() {
 	// it for the agent integration's "issue token + create Secret"
 	// flow (router-level handler talks to the same store the agent
 	// gRPC interceptor validates against).
-	var tenantsStore *auth.TenantsStore
+	var tenantsStore auth.TenantStore
 	// Ingest tokens live in their own store now (no longer inlined in the
 	// tenant record) — the base for SaaS/EE per-token cluster scoping. Same
 	// BoltDB-only gating as tenantsStore. Interface type so the nil check in
@@ -290,7 +295,8 @@ func main() {
 	// EE injects a Postgres-backed UsageStore here. Constructed unconditionally
 	// (no DB needed) so the handlers always hold a non-nil store and call sites
 	// record unconditionally. EE's wiring swaps this single assignment.
-	var usageStore usage.UsageStore = usage.NewNoopUsageStore()
+	// Metering seam: OSS no-op, EE Postgres when KUBEBOLT_DB_DSN is set.
+	usageStore := newUsageStore()
 
 	// Fleet-wide Prom remote_write limit defaults (Phase 3 Day 1-3).
 	// Loaded once at startup from KUBEBOLT_PROM_WRITE_DEFAULT_* env
@@ -322,20 +328,29 @@ func main() {
 	if authCfg.Enabled {
 		slog.Info("authentication enabled")
 
-		store, err := auth.NewStore(authCfg.DataDir)
+		// EE seam: when KUBEBOLT_DB_DSN is set, openBoltStore returns (nil, nil)
+		// — a fully Postgres-backed EE never opens (or locks) a kubebolt.db file.
+		// OSS always opens BoltDB. Downstream boltHandle(store) goes through boltHandle,
+		// which is nil-safe, and the factories ignore the nil handle under DSN.
+		store, err := openBoltStore(authCfg.DataDir)
 		if err != nil {
 			fatal("failed to open auth store", slog.String("error", err.Error()))
 		}
-		defer store.Close()
+		if store != nil {
+			defer store.Close()
+		}
 
 		// EE seam: user + refresh-token operations go through this AuthStore so
 		// the Enterprise build can back them with Postgres (KUBEBOLT_DB_DSN). In
 		// OSS it IS the bolt store. Settings/DB ops below stay on `store`.
 		authStore := newAuthStore(store)
+		// EE seam: global install settings (jwt_secret + UI config) go through
+		// this SettingStore so a multi-replica Cloud deployment shares one table.
+		settingStore := newSettingStore(store)
 
 		// Resolve JWT secret: env var > persisted in DB > generate and persist
 		if !authCfg.JWTSecretFromEnv {
-			if secret, err := store.GetSetting("jwt_secret"); err == nil {
+			if secret, err := settingStore.GetSetting("jwt_secret"); err == nil {
 				authCfg.JWTSecret = secret
 				slog.Info("JWT secret loaded from database")
 			} else {
@@ -343,13 +358,23 @@ func main() {
 				if _, err := crypto_rand.Read(secret); err != nil {
 					fatal("failed to generate JWT secret", slog.String("error", err.Error()))
 				}
-				if err := store.SetSetting("jwt_secret", secret); err != nil {
+				if err := settingStore.SetSetting("jwt_secret", secret); err != nil {
 					fatal("failed to persist JWT secret", slog.String("error", err.Error()))
 				}
 				authCfg.JWTSecret = secret
 				slog.Info("JWT secret generated and persisted to database")
 			}
 		}
+
+		// Tenants store FIRST — it auto-seeds the "default" tenant, which must
+		// exist before SeedAdmin: in EE the user's org_id resolves to the
+		// default tenant (the admin REST surface lets operators create more,
+		// issue tokens, rotate / revoke). In OSS the order is immaterial.
+		ts, err := newTenantStore(boltHandle(store))
+		if err != nil {
+			fatal("failed to open tenants store", slog.String("error", err.Error()))
+		}
+		tenantsStore = ts
 
 		seeded, err := auth.SeedAdmin(authStore, authCfg.InitialAdminPassword)
 		if err != nil {
@@ -390,7 +415,7 @@ func main() {
 		// settingsRuntime.IngestChannel() instead of os.Getenv directly.
 		envIngestChannelCfg := config.LoadIngestChannelConfig()
 
-		if rt, err := settings.NewRuntime(store, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
+		if rt, err := settings.NewRuntime(settingStore, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
 			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
 				slog.String("error", err.Error()))
 		} else {
@@ -411,7 +436,10 @@ func main() {
 		// Attach cluster storage (uses the same BoltDB for persistence of
 		// user-uploaded kubeconfigs and display name overrides).
 		configsBucket, displayBucket, uidBucket := auth.ClusterBuckets()
-		clusterStorage := cluster.NewStorage(store.DB(), configsBucket, displayBucket, uidBucket)
+		clusterStorage, err := newClusterStore(boltHandle(store), configsBucket, displayBucket, uidBucket)
+		if err != nil {
+			fatal("failed to open cluster store", slog.String("error", err.Error()))
+		}
 		if err := manager.SetStorage(clusterStorage); err != nil {
 			slog.Warn("failed to attach cluster storage, uploaded clusters won't persist",
 				slog.String("error", err.Error()))
@@ -419,7 +447,7 @@ func main() {
 
 		// Attach the copilot usage store so admin analytics survive restarts.
 		// Shares the same BoltDB file; bucket created by auth.NewStore.
-		copilotUsage = copilot.NewUsageStore(store.DB(), auth.CopilotSessionsBucket())
+		copilotUsage = newSessionStore(boltHandle(store), auth.CopilotSessionsBucket())
 
 		// Persistent Kobi conversation store — full transcripts per user so
 		// the operator can refresh / re-login and resume. Same BoltDB file;
@@ -427,16 +455,7 @@ func main() {
 		// the environment (KUBEBOLT_COPILOT_CONVERSATION_*), defaulting to
 		// 90d / 200 per user.
 		convRetention, convMaxPerUser := copilot.ConversationStoreConfigFromEnv()
-		copilotConversations = copilot.NewBoltConversationStore(store.DB(), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
-
-		// Tenants + ingest tokens (Sprint A). Auto-seeds the "default"
-		// tenant on first boot; the admin REST surface lets operators
-		// create more, issue tokens, and rotate / revoke them.
-		ts, err := auth.NewTenantsStore(store.DB())
-		if err != nil {
-			fatal("failed to open tenants store", slog.String("error", err.Error()))
-		}
-		tenantsStore = ts
+		copilotConversations = newConversationStore(boltHandle(store), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
 
 		// W1 identity-model bootstrap invariant: every install has a default
 		// org (the auto-seeded "default" tenant) AND a default team under it.
@@ -444,7 +463,7 @@ func main() {
 		// owned by this team — owner_team_id is an EE-only column (see the
 		// ClusterStore seam comment), not modeled here. EnsureDefaultTeam is
 		// idempotent: it returns the existing team on every boot after the first.
-		teamStore, err := auth.NewTeamStore(store.DB())
+		teamStore, err := newTeamStore(boltHandle(store))
 		if err != nil {
 			fatal("failed to open team store", slog.String("error", err.Error()))
 		}
@@ -485,28 +504,21 @@ func main() {
 
 		// Ingest-token store (Sprint A → W1 refactor). Tokens used to live
 		// inlined under Tenant.IngestTokens; they now have their own buckets.
-		// MigrateInlinedTokens is a one-time, idempotent cutover — it reads
-		// any legacy inlined tokens, re-keys them into the dedicated buckets
-		// stamping TenantID, and rewrites the tenant record clean. Safe to run
-		// on every boot (skips tokens already indexed).
-		its, err := auth.NewIngestTokenStore(store.DB())
+		// The newIngestTokenStore seam returns the BoltDB store (running the
+		// one-time, idempotent inlined-token cutover) in OSS, and a Postgres
+		// store in EE when KUBEBOLT_DB_DSN is set.
+		its, err := newIngestTokenStore(boltHandle(store))
 		if err != nil {
 			fatal("failed to open ingest token store", slog.String("error", err.Error()))
-		}
-		if migrated, err := its.MigrateInlinedTokens(); err != nil {
-			fatal("failed to migrate inlined ingest tokens", slog.String("error", err.Error()))
-		} else if migrated > 0 {
-			slog.Info("migrated inlined ingest tokens to dedicated store",
-				slog.Int("count", migrated),
-			)
 		}
 		ingestTokenStore = its
 
 		// REST API tokens — long-lived bearer tokens for non-interactive
 		// callers (service tokens kbs_ for Autopilot / EE; customer keys
-		// kbk_ later). Shares the same BoltDB file. Wiring it makes
-		// RequireAuth accept these in addition to the user-session JWT.
-		apiTokenStore, err := auth.NewAPITokenStore(store.DB())
+		// kbk_ later). The newAPITokenStore seam returns the BoltDB store in
+		// OSS, a Postgres store in EE when KUBEBOLT_DB_DSN is set. Wiring it
+		// makes RequireAuth accept these in addition to the user-session JWT.
+		apiTokenStore, err := newAPITokenStore(boltHandle(store))
 		if err != nil {
 			fatal("failed to open api token store", slog.String("error", err.Error()))
 		}
@@ -518,13 +530,13 @@ func main() {
 		// the backend, not to "blank" until each agent reconnects.
 		// Bucket already created in auth.NewStore; we just wire the
 		// store + registry binding here.
-		agentStore = channel.NewBoltAgentStore(store.DB(), auth.AgentsBucket())
+		agentStore = newAgentStore(boltHandle(store), auth.AgentsBucket())
 
 		// Persistent insights store (Sprint 0). Insight identities survive
 		// restarts, scoped by tenant + cluster, feeding history + restart-safe
 		// notification dedup + Kobi/Autopilot provenance. Bucket created in
 		// auth.NewStore. tenantID = the auto-seeded "default" tenant in OSS.
-		insightStore = newInsightStore(store.DB(), auth.InsightsBucket())
+		insightStore = newInsightStore(boltHandle(store), auth.InsightsBucket())
 		insightTenantID := auth.DefaultTenantName
 		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
 			insightTenantID = dt.ID
@@ -535,7 +547,7 @@ func main() {
 		// mutation (UI + Kobi-proposed) to the kobi_actions bucket so the
 		// admin action-history view survives restarts. The cluster-id
 		// resolver stamps the active cluster onto each record.
-		actionAuditStore = audit.NewBoltStore(store.DB(), auth.KobiActionsBucket())
+		actionAuditStore = newAuditStore(boltHandle(store), auth.KobiActionsBucket())
 		api.SetAuditStore(actionAuditStore, func() string {
 			if c := manager.Connector(context.Background()); c != nil {
 				return c.ClusterUID()
@@ -1322,6 +1334,14 @@ func main() {
 
 	agentCancel()
 
+	// Final drain of any buffered metering (EE Postgres usage store). No-op for
+	// the OSS no-op store, which isn't an io.Closer.
+	if c, ok := usageStore.(io.Closer); ok {
+		if err := c.Close(); err != nil {
+			slog.Warn("usage store flush on shutdown failed", slog.String("error", err.Error()))
+		}
+	}
+
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer shutdownCancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
@@ -1427,11 +1447,15 @@ func runResetAdminPassword(newPassword string) error {
 	if authCfg.DataDir == "" {
 		authCfg.DataDir = "./data"
 	}
-	store, err := auth.NewStore(authCfg.DataDir)
+	// Skips BoltDB entirely under KUBEBOLT_DB_DSN (EE on Postgres); newAuthStore
+	// then resets against Postgres with a nil Bolt handle.
+	store, err := openBoltStore(authCfg.DataDir)
 	if err != nil {
 		return fmt.Errorf("open auth store: %w (is another kubebolt-api process holding the DB? scale the deployment to 0 or run this from a Job)", err)
 	}
-	defer store.Close()
+	if store != nil {
+		defer store.Close()
+	}
 	// EE seam: reset against Postgres when KUBEBOLT_DB_DSN is set, else Bolt.
 	authStore := newAuthStore(store)
 	user, err := authStore.GetUserByUsername("admin")
