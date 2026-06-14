@@ -328,6 +328,11 @@ func main() {
 		}
 		defer store.Close()
 
+		// EE seam: user + refresh-token operations go through this AuthStore so
+		// the Enterprise build can back them with Postgres (KUBEBOLT_DB_DSN). In
+		// OSS it IS the bolt store. Settings/DB ops below stay on `store`.
+		authStore := newAuthStore(store)
+
 		// Resolve JWT secret: env var > persisted in DB > generate and persist
 		if !authCfg.JWTSecretFromEnv {
 			if secret, err := store.GetSetting("jwt_secret"); err == nil {
@@ -346,7 +351,7 @@ func main() {
 			}
 		}
 
-		seeded, err := store.SeedAdmin(authCfg.InitialAdminPassword)
+		seeded, err := auth.SeedAdmin(authStore, authCfg.InitialAdminPassword)
 		if err != nil {
 			fatal("failed to seed admin user", slog.String("error", err.Error()))
 		}
@@ -401,7 +406,7 @@ func main() {
 		}
 
 		jwtSvc := auth.NewJWTService(authCfg)
-		authHandlers = auth.NewHandlers(store, jwtSvc, authCfg)
+		authHandlers = auth.NewHandlers(authStore, jwtSvc, authCfg)
 
 		// Attach cluster storage (uses the same BoltDB for persistence of
 		// user-uploaded kubeconfigs and display name overrides).
@@ -455,7 +460,7 @@ func main() {
 			// older binary (pre-membership) was running. team_role "" = inherit
 			// the org role; OSS teams never elevate.
 			enrolled := 0
-			if users, err := store.ListUsers(); err == nil {
+			if users, err := authStore.ListUsers(); err == nil {
 				for i := range users {
 					if _, err := teamStore.AddMember(team.ID, users[i].ID, ""); err != nil {
 						slog.Warn("default-team backfill: could not enroll user",
@@ -1427,11 +1432,13 @@ func runResetAdminPassword(newPassword string) error {
 		return fmt.Errorf("open auth store: %w (is another kubebolt-api process holding the DB? scale the deployment to 0 or run this from a Job)", err)
 	}
 	defer store.Close()
-	user, err := store.GetUserByUsername("admin")
+	// EE seam: reset against Postgres when KUBEBOLT_DB_DSN is set, else Bolt.
+	authStore := newAuthStore(store)
+	user, err := authStore.GetUserByUsername("admin")
 	if err != nil {
 		return fmt.Errorf("admin user not found: %w (was the database ever seeded?)", err)
 	}
-	if err := store.UpdatePassword(user.ID, newPassword); err != nil {
+	if err := authStore.UpdatePassword(user.ID, newPassword); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
 	return nil

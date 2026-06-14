@@ -18,7 +18,7 @@ dev: install
 			set -a; \
 			[ -f .env ] && . ./.env; \
 			set +a; \
-			cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config \
+			cd apps/api && go run ./cmd/server --kubeconfig ~/.kube/config \
 		) & \
 		cd apps/web && npx vite --host & \
 		wait
@@ -29,7 +29,7 @@ dev-api:
 		set -a; \
 		[ -f .env ] && . ./.env; \
 		set +a; \
-		cd apps/api && go run cmd/server/main.go --kubeconfig ~/.kube/config \
+		cd apps/api && go run ./cmd/server --kubeconfig ~/.kube/config \
 	)
 
 # Path of the synthetic empty kubeconfig used by dev-clean / dev-api-clean.
@@ -51,7 +51,7 @@ dev-clean: install
 			set -a; \
 			[ -f .env ] && . ./.env; \
 			set +a; \
-			cd apps/api && go run cmd/server/main.go --kubeconfig $(EMPTY_KUBECONFIG) \
+			cd apps/api && go run ./cmd/server --kubeconfig $(EMPTY_KUBECONFIG) \
 		) & \
 		cd apps/web && npx vite --host & \
 		wait
@@ -64,7 +64,7 @@ dev-api-clean:
 		set -a; \
 		[ -f .env ] && . ./.env; \
 		set +a; \
-		cd apps/api && go run cmd/server/main.go --kubeconfig $(EMPTY_KUBECONFIG) \
+		cd apps/api && go run ./cmd/server --kubeconfig $(EMPTY_KUBECONFIG) \
 	)
 
 ## Run only the Web
@@ -356,7 +356,7 @@ build: build-api build-web
 
 ## Build the Go API binary (API-only, no embedded frontend)
 build-api:
-	cd apps/api && go build -o kubebolt cmd/server/main.go
+	cd apps/api && go build -o kubebolt ./cmd/server
 
 ## Build the standalone Kobi MCP (stdio) binary — a local CLI that speaks MCP
 ## over stdin/stdout against a kubeconfig (see docs/guides/kobi-mcp.md).
