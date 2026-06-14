@@ -423,3 +423,9 @@ clean:
 	rm -rf apps/web/dist
 	rm -rf apps/api/cmd/server/web/dist
 	rm -rf dist/
+
+# EE extension point — optional edition-specific targets (e.g. the Autopilot
+# dev targets). The leading '-' makes this a no-op when the file is absent, so
+# it's harmless in OSS (which doesn't ship Makefile.ee) and lets kubebolt-ee
+# keep this Makefile byte-identical while adding its targets in Makefile.ee.
+-include Makefile.ee
