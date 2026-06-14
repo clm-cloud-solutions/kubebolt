@@ -29,6 +29,7 @@ import { AgentsHub } from '@/pages/admin/AgentsHub'
 import { AIHub } from '@/pages/admin/AIHub'
 import { SystemHub } from '@/pages/admin/SystemHub'
 import { CopilotProvider } from '@/contexts/CopilotContext'
+import { eeRoutes } from '@/ee/registry'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -126,6 +127,10 @@ export default function App() {
               <Route path="/secrets" element={<ResourceListPage resourceType="secrets" />} />
               <Route path="/hpas" element={<ResourceListPage resourceType="hpas" />} />
               <Route path="/:type/:namespace/:name" element={<ResourceDetailPage />} />
+              {/* EE extension point — edition-specific routes (e.g. Autopilot).
+                  Empty in OSS via @/ee/registry; the Enterprise build overrides
+                  that module to inject its routes. Keeps App.tsx identical OSS↔EE. */}
+              {eeRoutes}
               <Route path="/clusters" element={<ClustersPage />} />
               <Route path="/namespaces" element={<NamespacesPage />} />
               <Route path="/events" element={<EventsPage />} />

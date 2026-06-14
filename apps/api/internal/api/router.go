@@ -155,6 +155,11 @@ func NewRouter(
 		// the env-var gate.
 		r.Post("/prom/write", h.handlePromWrite)
 
+		// EE extension point — register edition-specific unauthenticated
+		// routes (e.g. an internal service dispatch endpoint). No-op in OSS;
+		// the `ee` build tag supplies the real implementation.
+		registerEERoutes(r, h)
+
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
 			r.Use(authHandlers.RequireAuth)
