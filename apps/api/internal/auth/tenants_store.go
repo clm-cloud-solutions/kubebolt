@@ -352,6 +352,14 @@ func generateTokenPlaintext() (string, error) {
 	return TokenPrefix + enc, nil
 }
 
+// hashToken returns the SHA-256 of a token's plaintext, hex-encoded, for
+// storage + constant-time lookup. SHA-256 (not bcrypt/argon2) is deliberate
+// and correct here: the inputs are HIGH-ENTROPY random tokens minted by
+// generateTokenPlaintext (160 bits of crypto/rand), never human-chosen
+// passwords. A slow password hash buys nothing against a 160-bit random
+// secret and would only add latency to every token validation. (CodeQL's
+// go/weak-sensitive-data-hashing flags this as a password hash — it is not;
+// alert dismissed as a false positive.)
 func hashToken(plaintext string) string {
 	sum := sha256.Sum256([]byte(plaintext))
 	return hex.EncodeToString(sum[:])
