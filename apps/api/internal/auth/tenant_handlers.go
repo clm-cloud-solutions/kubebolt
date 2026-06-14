@@ -50,7 +50,7 @@ type CacheInvalidator interface {
 // default need a backend restart, which is the right semantic for a
 // system-wide policy change.
 type TenantHandlers struct {
-	store          *TenantsStore
+	store          TenantStore
 	ingestTokens   IngestTokenStore
 	invalidators   []CacheInvalidator
 	limitsDefaults EffectiveLimits
@@ -63,7 +63,7 @@ type TenantHandlers struct {
 // resolve per-tenant overrides on the /admin/tenants/:id/limits
 // surface. ingestTokens is the dedicated ingest-token store (tokens no
 // longer live inlined in the tenant record).
-func NewTenantHandlers(store *TenantsStore, ingestTokens IngestTokenStore, limitsDefaults EffectiveLimits, invalidators ...CacheInvalidator) *TenantHandlers {
+func NewTenantHandlers(store TenantStore, ingestTokens IngestTokenStore, limitsDefaults EffectiveLimits, invalidators ...CacheInvalidator) *TenantHandlers {
 	return &TenantHandlers{
 		store:          store,
 		ingestTokens:   ingestTokens,

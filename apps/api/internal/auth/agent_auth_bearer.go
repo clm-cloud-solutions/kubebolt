@@ -20,7 +20,7 @@ import (
 // trade we accept to keep the hot path lock-free.
 type BearerIngestAuth struct {
 	tokens  IngestTokenStore // token validity (revoked/expired)
-	tenants *TenantsStore    // owning tenant lookup + Disabled check
+	tenants TenantStore      // owning tenant lookup + Disabled check
 	cache   *authCache
 	nowFn   func() time.Time
 }
@@ -29,7 +29,7 @@ type BearerIngestAuth struct {
 // token validity) and the tenants store (to resolve + gate the owning tenant).
 // cacheTTL=0 disables caching (every call hits BoltDB) — useful in tests; in
 // production set 5*time.Minute.
-func NewBearerIngestAuth(tokens IngestTokenStore, tenants *TenantsStore, cacheTTL time.Duration) *BearerIngestAuth {
+func NewBearerIngestAuth(tokens IngestTokenStore, tenants TenantStore, cacheTTL time.Duration) *BearerIngestAuth {
 	return &BearerIngestAuth{
 		tokens:  tokens,
 		tenants: tenants,

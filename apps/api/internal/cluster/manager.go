@@ -35,8 +35,8 @@ type Manager struct {
 	metricInterval  time.Duration
 	insightInterval time.Duration
 	cancelFn        context.CancelFunc
-	connErr         error // set when the active context failed to connect
-	storage         *Storage // optional — nil when auth disabled; drives user-uploaded contexts and display names
+	connErr         error        // set when the active context failed to connect
+	storage         ClusterStore // optional — nil when auth disabled; drives user-uploaded contexts and display names. W1 seam: BoltDB *Storage (OSS), Postgres (EE).
 
 	// agentRegistry is the live registry of connected kubebolt-agents.
 	// Set by main.go via SetAgentRegistry once the gRPC server is up.
@@ -376,7 +376,7 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 // SetStorage attaches a cluster storage to the manager. This must be called
 // after NewManager but before the HTTP router starts serving. After attaching,
 // the manager merges any user-uploaded kubeconfigs into its in-memory config.
-func (m *Manager) SetStorage(s *Storage) error {
+func (m *Manager) SetStorage(s ClusterStore) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.storage = s
@@ -384,7 +384,7 @@ func (m *Manager) SetStorage(s *Storage) error {
 }
 
 // Storage returns the attached storage, or nil if none was set.
-func (m *Manager) Storage() *Storage {
+func (m *Manager) Storage() ClusterStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.storage

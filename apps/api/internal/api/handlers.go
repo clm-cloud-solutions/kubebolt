@@ -38,7 +38,7 @@ type handlers struct {
 	copilotConfig    config.CopilotConfig
 	settingsRuntime  *settings.Runtime   // nil when auth/persistence disabled — same gate as copilotUsage
 	bootEnv          map[string]string   // snapshot of KUBEBOLT_* env vars captured at process start
-	copilotUsage     *copilot.UsageStore // nil when auth/persistence disabled
+	copilotUsage     copilot.SessionStore // nil when auth/persistence disabled
 	// copilotConversations persists Kobi chat transcripts per user so the
 	// operator can refresh / re-login and resume. nil when auth/persistence
 	// disabled (same gate as copilotUsage) — chat still works, just ephemeral.
@@ -59,7 +59,7 @@ type handlers struct {
 	// namespace so the operator never has to copy the plaintext.
 	// nil when auth is disabled — the issue-token endpoint refuses
 	// in that case.
-	tenantsStore *auth.TenantsStore
+	tenantsStore auth.TenantStore
 	// ingestTokens validates "kb_" ingest tokens (now in their own store,
 	// not inlined in the tenant record). nil when auth is disabled.
 	ingestTokens auth.IngestTokenStore
