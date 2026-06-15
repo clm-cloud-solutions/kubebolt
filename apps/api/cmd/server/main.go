@@ -376,7 +376,16 @@ func main() {
 		}
 		tenantsStore = ts
 
-		seeded, err := auth.SeedAdmin(context.Background(), authStore, authCfg.InitialAdminPassword)
+		// With the per-request RLS model (no global org pin), boot-time writes to
+		// RLS-protected tables (users, team_members) must explicitly carry the
+		// default org so their inserts pass the org policy. OSS: WithTenantID is
+		// a harmless context value the BoltDB store ignores.
+		seedCtx := context.Background()
+		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
+			seedCtx = auth.WithTenantID(seedCtx, dt.ID)
+		}
+
+		seeded, err := auth.SeedAdmin(seedCtx, authStore, authCfg.InitialAdminPassword)
 		if err != nil {
 			fatal("failed to seed admin user", slog.String("error", err.Error()))
 		}
@@ -468,7 +477,10 @@ func main() {
 			fatal("failed to open team store", slog.String("error", err.Error()))
 		}
 		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
-			team, err := teamStore.EnsureDefaultTeam(context.Background(), dt.ID)
+			// Boot-time team + membership writes carry the default org explicitly
+			// (no global pin under per-request RLS). OSS ignores the ctx value.
+			octx := auth.WithTenantID(context.Background(), dt.ID)
+			team, err := teamStore.EnsureDefaultTeam(octx, dt.ID)
 			if err != nil {
 				fatal("failed to ensure default team", slog.String("error", err.Error()))
 			}
@@ -479,9 +491,9 @@ func main() {
 			// older binary (pre-membership) was running. team_role "" = inherit
 			// the org role; OSS teams never elevate.
 			enrolled := 0
-			if users, err := authStore.ListUsers(context.Background()); err == nil {
+			if users, err := authStore.ListUsers(octx); err == nil {
 				for i := range users {
-					if _, err := teamStore.AddMember(context.Background(), team.ID, users[i].ID, ""); err != nil {
+					if _, err := teamStore.AddMember(octx, team.ID, users[i].ID, ""); err != nil {
 						slog.Warn("default-team backfill: could not enroll user",
 							slog.String("user_id", users[i].ID),
 							slog.String("error", err.Error()),
