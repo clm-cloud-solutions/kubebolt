@@ -14,6 +14,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
@@ -278,7 +279,7 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	m.kubeConfig.Clusters[contextName] = &clientcmdapi.Cluster{Server: agentProxyAPIServerURL(clusterID)}
 	m.kubeConfig.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName}
 	if displayName != "" && m.storage != nil {
-		_ = m.storage.SetDisplayName(contextName, displayName)
+		_ = m.storage.SetDisplayName(m.storeCtx(), contextName, displayName)
 	}
 	slog.Info("registered agent-proxy cluster",
 		slog.String("cluster_id", clusterID),
@@ -368,7 +369,7 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	delete(m.kubeConfig.Contexts, contextName)
 	delete(m.kubeConfig.Clusters, contextName)
 	if m.storage != nil {
-		m.storage.DeleteDisplayName(contextName)
+		m.storage.DeleteDisplayName(m.storeCtx(), contextName)
 	}
 	slog.Info("removed agent-proxy cluster", slog.String("cluster_id", clusterID))
 }
@@ -390,13 +391,27 @@ func (m *Manager) Storage() ClusterStore {
 	return m.storage
 }
 
+// storeCtx returns the context the manager threads into ClusterStore calls.
+// Boot-time and manager-internal store access has no request org, so it carries
+// the manager's default-org tenant (m.tenantID — the default tenant UUID in EE,
+// "default"/empty in OSS) via auth.WithTenantID. The EE Postgres store reads
+// this off the ctx and runs each query inside eedb.WithOrg so single-org cluster
+// loading keeps working under RLS. The Bolt store ignores the ctx entirely.
+// Falls back to context.Background() when m.tenantID is empty.
+func (m *Manager) storeCtx() context.Context {
+	if m.tenantID == "" {
+		return context.Background()
+	}
+	return auth.WithTenantID(context.Background(), m.tenantID)
+}
+
 // reloadUploadedContextsLocked merges kubeconfigs from BoltDB into the in-memory
 // config. Called on startup and after CRUD operations. Assumes m.mu is held.
 func (m *Manager) reloadUploadedContextsLocked() error {
 	if m.storage == nil {
 		return nil
 	}
-	configs, err := m.storage.ListKubeconfigs()
+	configs, err := m.storage.ListKubeconfigs(m.storeCtx())
 	if err != nil {
 		return fmt.Errorf("listing stored kubeconfigs: %w", err)
 	}
@@ -556,15 +571,16 @@ func (m *Manager) ListClusters() []ClusterInfo {
 	displayNames := make(map[string]string)
 	cachedUIDs := make(map[string]string)
 	if m.storage != nil {
-		if configs, err := m.storage.ListKubeconfigs(); err == nil {
+		sctx := m.storeCtx()
+		if configs, err := m.storage.ListKubeconfigs(sctx); err == nil {
 			for _, c := range configs {
 				uploadedContexts[c.Context] = true
 			}
 		}
-		if names, err := m.storage.AllDisplayNames(); err == nil {
+		if names, err := m.storage.AllDisplayNames(sctx); err == nil {
 			displayNames = names
 		}
-		if uids, err := m.storage.AllClusterUIDs(); err == nil {
+		if uids, err := m.storage.AllClusterUIDs(sctx); err == nil {
 			cachedUIDs = uids
 		}
 	}
@@ -1066,7 +1082,7 @@ func (m *Manager) AddKubeconfig(rawYAML []byte, uploadedBy string) ([]string, er
 	// Check for name collisions with contexts already in the in-memory config
 	// that come from sources OTHER than the uploaded store (i.e., file).
 	existingUploaded := make(map[string]bool)
-	if configs, err := m.storage.ListKubeconfigs(); err == nil {
+	if configs, err := m.storage.ListKubeconfigs(m.storeCtx()); err == nil {
 		for _, c := range configs {
 			existingUploaded[c.Context] = true
 		}
@@ -1087,7 +1103,7 @@ func (m *Manager) AddKubeconfig(rawYAML []byte, uploadedBy string) ([]string, er
 			UploadedAt: now,
 			UploadedBy: uploadedBy,
 		}
-		if err := m.storage.SaveKubeconfig(stored); err != nil {
+		if err := m.storage.SaveKubeconfig(m.storeCtx(), stored); err != nil {
 			return nil, fmt.Errorf("persisting context %q: %w", ctxName, err)
 		}
 		added = append(added, ctxName)
@@ -1112,7 +1128,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 		return fmt.Errorf("cluster persistence is not available")
 	}
 
-	stored, err := m.storage.GetKubeconfig(contextName)
+	stored, err := m.storage.GetKubeconfig(m.storeCtx(), contextName)
 	if err != nil {
 		return fmt.Errorf("lookup failed: %w", err)
 	}
@@ -1129,7 +1145,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 	m.evictPooledContextLocked(contextName, "cluster removed")
 
 	// Remove from BoltDB
-	if err := m.storage.DeleteKubeconfig(contextName); err != nil {
+	if err := m.storage.DeleteKubeconfig(m.storeCtx(), contextName); err != nil {
 		return err
 	}
 
@@ -1138,7 +1154,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 	delete(m.kubeConfig.Contexts, contextName)
 
 	// Also remove any display name override
-	m.storage.DeleteDisplayName(contextName)
+	m.storage.DeleteDisplayName(m.storeCtx(), contextName)
 
 	slog.Info("removed uploaded cluster context", slog.String("context", contextName))
 	return nil
@@ -1156,7 +1172,7 @@ func (m *Manager) SetClusterDisplayName(contextName, displayName string) error {
 	if m.storage == nil {
 		return fmt.Errorf("cluster persistence is not available")
 	}
-	return m.storage.SetDisplayName(contextName, displayName)
+	return m.storage.SetDisplayName(m.storeCtx(), contextName, displayName)
 }
 
 func (m *Manager) connectToContext(contextName string) error {
@@ -1297,7 +1313,7 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// than overwriting a previously-good value.
 	if m.storage != nil {
 		if uid := connector.ClusterUID(); uid != "" {
-			_ = m.storage.SetClusterUID(contextName, uid)
+			_ = m.storage.SetClusterUID(m.storeCtx(), contextName, uid)
 		}
 	}
 
