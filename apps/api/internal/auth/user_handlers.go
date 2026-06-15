@@ -12,7 +12,7 @@ import (
 
 // ListUsers returns all users (admin only).
 func (h *Handlers) ListUsers(w http.ResponseWriter, r *http.Request) {
-	users, err := h.store.ListUsers()
+	users, err := h.store.ListUsers(r.Context())
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to list users")
 		return
@@ -59,7 +59,7 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.CreateUser(req.Username, req.Email, req.Name, req.Password, req.Role)
+	user, err := h.store.CreateUser(r.Context(), req.Username, req.Email, req.Name, req.Password, req.Role)
 	if err != nil {
 		respondError(w, http.StatusConflict, err.Error())
 		return
@@ -97,7 +97,7 @@ func (h *Handlers) enrollInDefaultTeam(userID string) {
 // GetUser returns a single user by ID (admin only).
 func (h *Handlers) GetUser(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	user, err := h.store.GetUser(id)
+	user, err := h.store.GetUser(r.Context(), id)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "user not found")
 		return
@@ -132,13 +132,13 @@ func (h *Handlers) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	// Prevent demoting the last admin
 	if req.Role != "" && req.Role != RoleAdmin {
-		existing, err := h.store.GetUser(id)
+		existing, err := h.store.GetUser(r.Context(), id)
 		if err != nil {
 			respondError(w, http.StatusNotFound, "user not found")
 			return
 		}
 		if existing.Role == RoleAdmin {
-			count, _ := h.store.CountByRole(RoleAdmin)
+			count, _ := h.store.CountByRole(r.Context(), RoleAdmin)
 			if count <= 1 {
 				respondError(w, http.StatusBadRequest, "cannot demote the last admin user")
 				return
@@ -146,7 +146,7 @@ func (h *Handlers) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	user, err := h.store.UpdateUser(id, req.Username, req.Email, req.Name, req.Role)
+	user, err := h.store.UpdateUser(r.Context(), id, req.Username, req.Email, req.Name, req.Role)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -181,13 +181,13 @@ func (h *Handlers) ResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.UpdatePassword(id, req.Password); err != nil {
+	if err := h.store.UpdatePassword(r.Context(), id, req.Password); err != nil {
 		respondError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	// Invalidate all refresh tokens for this user
-	h.store.DeleteUserRefreshTokens(id)
+	h.store.DeleteUserRefreshTokens(r.Context(), id)
 
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
@@ -206,21 +206,21 @@ func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Cannot delete the last admin
-	user, err := h.store.GetUser(id)
+	user, err := h.store.GetUser(r.Context(), id)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "user not found")
 		return
 	}
 
 	if user.Role == RoleAdmin {
-		count, _ := h.store.CountByRole(RoleAdmin)
+		count, _ := h.store.CountByRole(r.Context(), RoleAdmin)
 		if count <= 1 {
 			respondError(w, http.StatusBadRequest, "cannot delete the last admin user")
 			return
 		}
 	}
 
-	if err := h.store.DeleteUser(id); err != nil {
+	if err := h.store.DeleteUser(r.Context(), id); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete user")
 		return
 	}

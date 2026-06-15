@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -208,24 +209,24 @@ func KobiActionsBucket() []byte {
 // the segmentation primitive. The interface covers user management; the
 // refresh-token methods on *Store are the TokenStore concern (W1 #5).
 type UserStore interface {
-	CreateUser(username, email, name, password string, role Role) (*User, error)
-	GetUser(id string) (*User, error)
-	GetUserByUsername(username string) (*User, error)
-	ListUsers() ([]User, error)
-	UpdateUser(id, username, email, name string, role Role) (*User, error)
-	UpdatePassword(id, newPassword string) error
-	UpdateLastLogin(id string) error
-	DeleteUser(id string) error
+	CreateUser(ctx context.Context, username, email, name, password string, role Role) (*User, error)
+	GetUser(ctx context.Context, id string) (*User, error)
+	GetUserByUsername(ctx context.Context, username string) (*User, error)
+	ListUsers(ctx context.Context) ([]User, error)
+	UpdateUser(ctx context.Context, id, username, email, name string, role Role) (*User, error)
+	UpdatePassword(ctx context.Context, id, newPassword string) error
+	UpdateLastLogin(ctx context.Context, id string) error
+	DeleteUser(ctx context.Context, id string) error
 	// CountByRole counts users with a given role — used by the "can't delete /
 	// demote the last admin" guard in the admin user handlers.
-	CountByRole(role Role) (int, error)
+	CountByRole(ctx context.Context, role Role) (int, error)
 }
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
 var _ UserStore = (*Store)(nil)
 
 // CreateUser creates a new user with a bcrypt-hashed password.
-func (s *Store) CreateUser(username, email, name, password string, role Role) (*User, error) {
+func (s *Store) CreateUser(_ context.Context, username, email, name, password string, role Role) (*User, error) {
 	hash, err := bcrypt.GenerateFromPassword([]byte(password), 12)
 	if err != nil {
 		return nil, fmt.Errorf("hash password: %w", err)
@@ -267,7 +268,7 @@ func (s *Store) CreateUser(username, email, name, password string, role Role) (*
 }
 
 // GetUser retrieves a user by ID.
-func (s *Store) GetUser(id string) (*User, error) {
+func (s *Store) GetUser(_ context.Context, id string) (*User, error) {
 	var user User
 	err := s.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket(usersBucket).Get([]byte(id))
@@ -283,7 +284,7 @@ func (s *Store) GetUser(id string) (*User, error) {
 }
 
 // GetUserByUsername retrieves a user by username via the index.
-func (s *Store) GetUserByUsername(username string) (*User, error) {
+func (s *Store) GetUserByUsername(_ context.Context, username string) (*User, error) {
 	var user User
 	err := s.db.View(func(tx *bolt.Tx) error {
 		id := tx.Bucket(usernameIdxBucket).Get([]byte(username))
@@ -303,7 +304,7 @@ func (s *Store) GetUserByUsername(username string) (*User, error) {
 }
 
 // ListUsers returns all users in the store.
-func (s *Store) ListUsers() ([]User, error) {
+func (s *Store) ListUsers(_ context.Context) ([]User, error) {
 	var users []User
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(usersBucket).ForEach(func(k, v []byte) error {
@@ -319,7 +320,7 @@ func (s *Store) ListUsers() ([]User, error) {
 }
 
 // UpdateUser updates a user's mutable fields (username, email, name, role).
-func (s *Store) UpdateUser(id, username, email, name string, role Role) (*User, error) {
+func (s *Store) UpdateUser(_ context.Context, id, username, email, name string, role Role) (*User, error) {
 	var updated User
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(usersBucket)
@@ -369,7 +370,7 @@ func (s *Store) UpdateUser(id, username, email, name string, role Role) (*User, 
 }
 
 // UpdatePassword changes a user's password.
-func (s *Store) UpdatePassword(id, newPassword string) error {
+func (s *Store) UpdatePassword(_ context.Context, id, newPassword string) error {
 	hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), 12)
 	if err != nil {
 		return fmt.Errorf("hash password: %w", err)
@@ -399,7 +400,7 @@ func (s *Store) UpdatePassword(id, newPassword string) error {
 }
 
 // UpdateLastLogin sets the last login timestamp for a user.
-func (s *Store) UpdateLastLogin(id string) error {
+func (s *Store) UpdateLastLogin(_ context.Context, id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(usersBucket)
 		data := bucket.Get([]byte(id))
@@ -425,7 +426,7 @@ func (s *Store) UpdateLastLogin(id string) error {
 }
 
 // DeleteUser removes a user and their username index entry.
-func (s *Store) DeleteUser(id string) error {
+func (s *Store) DeleteUser(_ context.Context, id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(usersBucket)
 		data := bucket.Get([]byte(id))
@@ -470,7 +471,7 @@ func (s *Store) UserCount() (int, error) {
 }
 
 // CountByRole returns the number of users with the given role.
-func (s *Store) CountByRole(role Role) (int, error) {
+func (s *Store) CountByRole(_ context.Context, role Role) (int, error) {
 	var count int
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(usersBucket).ForEach(func(k, v []byte) error {
@@ -490,22 +491,22 @@ func (s *Store) CountByRole(role Role) (int, error) {
 // SeedAdmin creates the default admin user if none exist. Kept for existing
 // callers; delegates to the package-level SeedAdmin so any UserStore impl
 // (BoltDB here, Postgres in EE) seeds identically.
-func (s *Store) SeedAdmin(password string) (bool, error) {
-	return SeedAdmin(s, password)
+func (s *Store) SeedAdmin(ctx context.Context, password string) (bool, error) {
+	return SeedAdmin(ctx, s, password)
 }
 
 // SeedAdmin creates the default admin user on the given UserStore if it has no
 // users yet. Returns true when it seeded one. Backend-agnostic (the EE
 // Postgres UserStore reuses it via the newAuthStore seam).
-func SeedAdmin(s UserStore, password string) (bool, error) {
-	users, err := s.ListUsers()
+func SeedAdmin(ctx context.Context, s UserStore, password string) (bool, error) {
+	users, err := s.ListUsers(ctx)
 	if err != nil {
 		return false, err
 	}
 	if len(users) > 0 {
 		return false, nil
 	}
-	if _, err := s.CreateUser("admin", "admin@localhost", "Admin", password, RoleAdmin); err != nil {
+	if _, err := s.CreateUser(ctx, "admin", "admin@localhost", "Admin", password, RoleAdmin); err != nil {
 		return false, fmt.Errorf("seed admin user: %w", err)
 	}
 	return true, nil
@@ -519,10 +520,10 @@ func SeedAdmin(s UserStore, password string) (bool, error) {
 // different store (e.g. Redis/Postgres with TTL eviction) than user records.
 // OSS uses the BoltDB *Store for both.
 type RefreshTokenStore interface {
-	SaveRefreshToken(rt *RefreshToken) error
-	GetRefreshToken(tokenHash string) (*RefreshToken, error)
-	DeleteRefreshToken(tokenHash string) error
-	DeleteUserRefreshTokens(userID string) error
+	SaveRefreshToken(ctx context.Context, rt *RefreshToken) error
+	GetRefreshToken(ctx context.Context, tokenHash string) (*RefreshToken, error)
+	DeleteRefreshToken(ctx context.Context, tokenHash string) error
+	DeleteUserRefreshTokens(ctx context.Context, userID string) error
 }
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
@@ -540,7 +541,7 @@ type AuthStore interface {
 var _ AuthStore = (*Store)(nil)
 
 // SaveRefreshToken stores a refresh token.
-func (s *Store) SaveRefreshToken(rt *RefreshToken) error {
+func (s *Store) SaveRefreshToken(_ context.Context, rt *RefreshToken) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		data, err := json.Marshal(rt)
 		if err != nil {
@@ -551,7 +552,7 @@ func (s *Store) SaveRefreshToken(rt *RefreshToken) error {
 }
 
 // GetRefreshToken retrieves a refresh token by its hash.
-func (s *Store) GetRefreshToken(tokenHash string) (*RefreshToken, error) {
+func (s *Store) GetRefreshToken(_ context.Context, tokenHash string) (*RefreshToken, error) {
 	var rt RefreshToken
 	err := s.db.View(func(tx *bolt.Tx) error {
 		data := tx.Bucket(refreshTokenBucket).Get([]byte(tokenHash))
@@ -567,14 +568,14 @@ func (s *Store) GetRefreshToken(tokenHash string) (*RefreshToken, error) {
 }
 
 // DeleteRefreshToken removes a refresh token by its hash.
-func (s *Store) DeleteRefreshToken(tokenHash string) error {
+func (s *Store) DeleteRefreshToken(_ context.Context, tokenHash string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(refreshTokenBucket).Delete([]byte(tokenHash))
 	})
 }
 
 // DeleteUserRefreshTokens removes all refresh tokens for a user.
-func (s *Store) DeleteUserRefreshTokens(userID string) error {
+func (s *Store) DeleteUserRefreshTokens(_ context.Context, userID string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(refreshTokenBucket)
 		var toDelete [][]byte

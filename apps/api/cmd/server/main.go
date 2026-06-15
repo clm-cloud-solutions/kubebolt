@@ -376,7 +376,7 @@ func main() {
 		}
 		tenantsStore = ts
 
-		seeded, err := auth.SeedAdmin(authStore, authCfg.InitialAdminPassword)
+		seeded, err := auth.SeedAdmin(context.Background(), authStore, authCfg.InitialAdminPassword)
 		if err != nil {
 			fatal("failed to seed admin user", slog.String("error", err.Error()))
 		}
@@ -479,7 +479,7 @@ func main() {
 			// older binary (pre-membership) was running. team_role "" = inherit
 			// the org role; OSS teams never elevate.
 			enrolled := 0
-			if users, err := authStore.ListUsers(); err == nil {
+			if users, err := authStore.ListUsers(context.Background()); err == nil {
 				for i := range users {
 					if _, err := teamStore.AddMember(team.ID, users[i].ID, ""); err != nil {
 						slog.Warn("default-team backfill: could not enroll user",
@@ -1458,11 +1458,11 @@ func runResetAdminPassword(newPassword string) error {
 	}
 	// EE seam: reset against Postgres when KUBEBOLT_DB_DSN is set, else Bolt.
 	authStore := newAuthStore(store)
-	user, err := authStore.GetUserByUsername("admin")
+	user, err := authStore.GetUserByUsername(context.Background(), "admin")
 	if err != nil {
 		return fmt.Errorf("admin user not found: %w (was the database ever seeded?)", err)
 	}
-	if err := authStore.UpdatePassword(user.ID, newPassword); err != nil {
+	if err := authStore.UpdatePassword(context.Background(), user.ID, newPassword); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
 	return nil

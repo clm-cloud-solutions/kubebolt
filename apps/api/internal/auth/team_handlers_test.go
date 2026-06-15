@@ -93,7 +93,7 @@ func TestDeleteUser_RemovesMembership(t *testing.T) {
 	// Create an editor directly + enroll, then delete via the handler. Editor
 	// (not admin) avoids the last-admin protection; caller != target avoids the
 	// self-delete guard.
-	u, err := h.store.CreateUser("bob", "", "Bob", "password123", RoleEditor)
+	u, err := h.store.CreateUser(context.Background(), "bob", "", "Bob", "password123", RoleEditor)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestDeleteUser_RemovesMembership(t *testing.T) {
 
 func TestGetMe_IncludesOrgAndTeamWithEffectiveRole(t *testing.T) {
 	h, _, _ := newHierarchyHandlers(t)
-	u, err := h.store.CreateUser("carol", "", "Carol", "password123", RoleViewer)
+	u, err := h.store.CreateUser(context.Background(), "carol", "", "Carol", "password123", RoleViewer)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestGetMe_IncludesOrgAndTeamWithEffectiveRole(t *testing.T) {
 
 func TestListTeams_ReturnsDefaultTeamWithMemberCount(t *testing.T) {
 	h, _, _ := newHierarchyHandlers(t)
-	u, _ := h.store.CreateUser("dave", "", "Dave", "password123", RoleEditor)
+	u, _ := h.store.CreateUser(context.Background(), "dave", "", "Dave", "password123", RoleEditor)
 	h.enrollInDefaultTeam(u.ID)
 
 	rr := httptest.NewRecorder()

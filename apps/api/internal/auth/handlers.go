@@ -112,7 +112,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.GetUserByUsername(req.Username)
+	user, err := h.store.GetUserByUsername(r.Context(), req.Username)
 	if err != nil || !CheckPassword(user, req.Password) {
 		respondError(w, http.StatusUnauthorized, "invalid username or password")
 		return
@@ -137,7 +137,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: expiry,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := h.store.SaveRefreshToken(rt); err != nil {
+	if err := h.store.SaveRefreshToken(r.Context(), rt); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to store refresh token")
 		return
 	}
@@ -153,7 +153,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// Update last login
-	h.store.UpdateLastLogin(user.ID)
+	h.store.UpdateLastLogin(r.Context(), user.ID)
 
 	respondJSON(w, http.StatusOK, loginResponse{
 		AccessToken: accessToken,
@@ -177,22 +177,22 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 	}
 
 	tokenHash := HashToken(cookie.Value)
-	rt, err := h.store.GetRefreshToken(tokenHash)
+	rt, err := h.store.GetRefreshToken(r.Context(), tokenHash)
 	if err != nil {
 		respondError(w, http.StatusUnauthorized, "invalid refresh token")
 		return
 	}
 
 	if time.Now().After(rt.ExpiresAt) {
-		h.store.DeleteRefreshToken(tokenHash)
+		h.store.DeleteRefreshToken(r.Context(), tokenHash)
 		respondError(w, http.StatusUnauthorized, "refresh token expired")
 		return
 	}
 
 	// Rotate: delete old token
-	h.store.DeleteRefreshToken(tokenHash)
+	h.store.DeleteRefreshToken(r.Context(), tokenHash)
 
-	user, err := h.store.GetUser(rt.UserID)
+	user, err := h.store.GetUser(r.Context(), rt.UserID)
 	if err != nil {
 		respondError(w, http.StatusUnauthorized, "user not found")
 		return
@@ -217,7 +217,7 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt: expiry,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := h.store.SaveRefreshToken(newRT); err != nil {
+	if err := h.store.SaveRefreshToken(r.Context(), newRT); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to store refresh token")
 		return
 	}
@@ -239,7 +239,7 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 // Logout invalidates the refresh token and clears the cookie.
 func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
 	if cookie, err := r.Cookie("kb_refresh"); err == nil && cookie.Value != "" {
-		h.store.DeleteRefreshToken(HashToken(cookie.Value))
+		h.store.DeleteRefreshToken(r.Context(), HashToken(cookie.Value))
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -264,7 +264,7 @@ func (h *Handlers) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.GetUser(claims.UserID)
+	user, err := h.store.GetUser(r.Context(), claims.UserID)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "user not found")
 		return
@@ -364,7 +364,7 @@ func (h *Handlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.store.GetUser(claims.UserID)
+	user, err := h.store.GetUser(r.Context(), claims.UserID)
 	if err != nil {
 		respondError(w, http.StatusNotFound, "user not found")
 		return
@@ -375,7 +375,7 @@ func (h *Handlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.store.UpdatePassword(user.ID, req.NewPassword); err != nil {
+	if err := h.store.UpdatePassword(r.Context(), user.ID, req.NewPassword); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to update password")
 		return
 	}

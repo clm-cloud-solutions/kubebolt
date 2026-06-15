@@ -87,7 +87,7 @@ func (h *Handlers) ListTeamMembers(w http.ResponseWriter, r *http.Request) {
 		v := teamMemberView{UserID: m.UserID, TeamRole: m.TeamRole}
 		// Join the user record for display + effective-role resolution. Skip
 		// memberships whose user was deleted out from under us (defensive).
-		if u, err := h.store.GetUser(m.UserID); err == nil {
+		if u, err := h.store.GetUser(r.Context(), m.UserID); err == nil {
 			v.Username = u.Username
 			v.Name = u.Name
 			v.Role = EffectiveRole(u.Role, m.TeamRole)
