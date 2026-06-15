@@ -81,7 +81,9 @@ export function Layout() {
   // empty state), and /admin /settings are platform-level pages whose
   // backend endpoints are cluster-agnostic. For these we bypass BOTH
   // the no-clusters CTA and the cluster-unreachable error page.
-  const PLATFORM_ROUTE_PREFIXES = ['/clusters', '/admin', '/settings']
+  // /account (EE org plan + usage) is also cluster-agnostic — a brand-new org
+  // has no clusters yet but must still reach its plan page. Empty path in OSS.
+  const PLATFORM_ROUTE_PREFIXES = ['/clusters', '/admin', '/settings', '/account']
   const isPlatformRoute = PLATFORM_ROUTE_PREFIXES.some(p =>
     location.pathname === p || location.pathname.startsWith(p + '/')
   )

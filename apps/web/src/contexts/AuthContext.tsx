@@ -7,10 +7,13 @@ const ROLE_LEVELS: Record<UserRole, number> = { viewer: 1, editor: 2, admin: 3 }
 
 interface AuthContextValue {
   isAuthEnabled: boolean
+  /** True only on the multi-org edition — gates the self-service signup link. */
+  isSignupEnabled: boolean
   isAuthenticated: boolean
   isLoading: boolean
   user: AuthUser | null
   login: (username: string, password: string) => Promise<void>
+  signup: (data: { orgName: string; name: string; email: string; password: string }) => Promise<void>
   logout: () => Promise<void>
   hasRole: (minRole: UserRole) => boolean
   refreshUser: () => Promise<void>
@@ -21,6 +24,7 @@ const AuthContext = createContext<AuthContextValue | null>(null)
 export function AuthProvider({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient()
   const [isAuthEnabled, setIsAuthEnabled] = useState<boolean | null>(null)
+  const [isSignupEnabled, setIsSignupEnabled] = useState(false)
   const [user, setUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
 
@@ -34,6 +38,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         if (cancelled) return
 
         setIsAuthEnabled(config.enabled)
+        setIsSignupEnabled(!!config.signupEnabled)
 
         if (!config.enabled) {
           setIsLoading(false)
@@ -74,6 +79,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const signup = useCallback(
+    async (data: { orgName: string; name: string; email: string; password: string }) => {
+      const response = await api.signup(data)
+      setAccessToken(response.accessToken)
+      // Mirror login: the signup payload carries the bare user; /auth/me adds
+      // the org+team context the topbar renders. Fetch it now, falling back to
+      // the signup user if the follow-up call fails.
+      try {
+        setUser(await api.getMe())
+      } catch {
+        setUser(response.user)
+      }
+    },
+    [],
+  )
+
   const logout = useCallback(async () => {
     try {
       await api.logout()
@@ -109,10 +130,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const value: AuthContextValue = {
     isAuthEnabled: isAuthEnabled ?? true,
+    isSignupEnabled,
     isAuthenticated: !!user,
     isLoading,
     user,
     login,
+    signup,
     logout,
     hasRole,
     refreshUser,

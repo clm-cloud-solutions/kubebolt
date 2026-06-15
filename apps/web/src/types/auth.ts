@@ -49,6 +49,9 @@ export interface TeamMember {
 
 export interface AuthConfig {
   enabled: boolean
+  /** True only on the multi-org edition (EE/Cloud) — gates the self-service
+   *  "Create an organization" link. Absent/false on OSS, where signup 409s. */
+  signupEnabled?: boolean
 }
 
 export interface LoginResponse {

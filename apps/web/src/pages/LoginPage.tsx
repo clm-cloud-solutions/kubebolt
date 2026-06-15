@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from 'react'
-import { useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { useAuth } from '@/contexts/AuthContext'
@@ -12,7 +12,7 @@ export function LoginPage() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
 
-  const { login, isAuthEnabled, isAuthenticated } = useAuth()
+  const { login, isAuthEnabled, isSignupEnabled, isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
   const from = (location.state as { from?: string })?.from || '/'
@@ -107,6 +107,18 @@ export function LoginPage() {
           >
             {loading ? 'Signing in...' : 'Sign in'}
           </button>
+
+          {/* Self-service org signup — only when the backend reports it's
+              available (multi-org / EE edition). Inert in OSS, where the flag
+              is absent and the link never renders. */}
+          {isSignupEnabled && (
+            <p className="text-center text-xs text-kb-text-tertiary pt-1">
+              New to KubeBolt?{' '}
+              <Link to="/signup" className="text-kb-accent hover:underline">
+                Create an organization
+              </Link>
+            </p>
+          )}
         </form>
 
         <p className="text-center text-[10px] text-kb-text-tertiary mt-6 font-mono">

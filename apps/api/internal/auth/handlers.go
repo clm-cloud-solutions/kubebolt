@@ -83,11 +83,19 @@ func (h *Handlers) IsEnabled() bool {
 
 type authConfigResponse struct {
 	Enabled bool `json:"enabled"`
+	// SignupEnabled reports whether self-service org signup is reachable.
+	// True only on the multi-org edition (EE/Cloud) with auth on — the
+	// frontend gates the "Create an organization" link on this flag, so it
+	// stays inert in OSS where signup returns 409 requires_ee.
+	SignupEnabled bool `json:"signupEnabled"`
 }
 
 // GetAuthConfig returns whether auth is enabled (public endpoint).
 func (h *Handlers) GetAuthConfig(w http.ResponseWriter, r *http.Request) {
-	respondJSON(w, http.StatusOK, authConfigResponse{Enabled: h.authEnabled})
+	respondJSON(w, http.StatusOK, authConfigResponse{
+		Enabled:       h.authEnabled,
+		SignupEnabled: MultiTenantEnabled && h.authEnabled && h.tenants != nil && h.teams != nil,
+	})
 }
 
 // --- Login ---
