@@ -45,6 +45,13 @@ type AgentProxyTransport struct {
 	ClusterID string
 	Registry  *AgentRegistry
 
+	// TenantID is the org this transport serves — the hard isolation
+	// boundary (W4). RoundTrip resolves the proxy agent via
+	// GetProxyAgent(TenantID, ClusterID), so a transport built for org A
+	// can never tunnel to an agent that authenticated under org B. Empty
+	// in OSS (single-tenant) → matches any agent, preserving stock behavior.
+	TenantID string
+
 	// DefaultTimeout bounds non-watch RoundTrips when the caller's
 	// request context has no deadline. 0 means unbounded — discouraged
 	// outside tests because a hung agent would leak request_ids
@@ -77,9 +84,10 @@ const DefaultProxyTimeout = 30 * time.Second
 // NewAgentProxyTransport returns a transport ready to use with
 // rest.Config{Transport: t}. Setting DefaultTimeout=0 keeps the value
 // unbounded for tests; production callers should rely on the default.
-func NewAgentProxyTransport(clusterID string, registry *AgentRegistry) *AgentProxyTransport {
+func NewAgentProxyTransport(tenantID, clusterID string, registry *AgentRegistry) *AgentProxyTransport {
 	return &AgentProxyTransport{
 		ClusterID:         clusterID,
+		TenantID:          tenantID,
 		Registry:          registry,
 		DefaultTimeout:    DefaultProxyTimeout,
 		TunnelIdleTimeout: DefaultTunnelIdleTimeout,
@@ -143,7 +151,7 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	// GetProxyAgent (not Get) to filter out the Mode C promread
 	// Deployment pod that can't service kube_request payloads — see
 	// project_agent_eviction_loop follow-up in registry.go.
-	agent := t.Registry.GetProxyAgent(t.ClusterID)
+	agent := t.Registry.GetProxyAgent(t.TenantID, t.ClusterID)
 	if agent == nil {
 		return nil, fmt.Errorf("%w: %s", ErrAgentNotConnected, t.ClusterID)
 	}

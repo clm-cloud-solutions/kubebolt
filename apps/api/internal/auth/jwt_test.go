@@ -37,6 +37,32 @@ func TestGenerateAccessToken_Roundtrip(t *testing.T) {
 	}
 }
 
+func TestGenerateAccessToken_StampsTenantFromOrgID(t *testing.T) {
+	svc := testJWTService(time.Hour, 24*time.Hour)
+
+	// EE: a user carrying an org → the token's tenant claim mirrors it, so
+	// ContextTenantID/RuntimeKey route per org.
+	tok, err := svc.GenerateAccessToken(&User{ID: "u", Username: "x", Role: RoleViewer, OrgID: "org-acme"})
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	claims, err := svc.ValidateAccessToken(tok)
+	if err != nil {
+		t.Fatalf("ValidateAccessToken: %v", err)
+	}
+	if claims.TenantID != "org-acme" {
+		t.Errorf("TenantID = %q, want org-acme", claims.TenantID)
+	}
+
+	// OSS: no org → empty tenant claim (resolves to DefaultTenantName
+	// downstream), keeping stock tokens byte-identical to pre-seam.
+	tok, _ = svc.GenerateAccessToken(&User{ID: "u", Username: "x", Role: RoleViewer})
+	claims, _ = svc.ValidateAccessToken(tok)
+	if claims.TenantID != "" {
+		t.Errorf("TenantID = %q, want empty for org-less user", claims.TenantID)
+	}
+}
+
 func TestValidateAccessToken_RejectsTampered(t *testing.T) {
 	svc := testJWTService(time.Hour, 24*time.Hour)
 	tok, _ := svc.GenerateAccessToken(&User{ID: "u", Username: "x", Role: RoleViewer})

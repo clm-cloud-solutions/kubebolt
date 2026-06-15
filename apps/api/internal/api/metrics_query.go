@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 // metricsStorageURL returns the backing VictoriaMetrics (or any
@@ -43,6 +45,26 @@ func (h *handlers) activeClusterUID(ctx context.Context) string {
 		return ""
 	}
 	return conn.ClusterUID()
+}
+
+// activeTenantID returns the org whose series this request may read, or ""
+// when the request is not tenant-scoped. In EE the resolved tenant is a real
+// org UUID — the value the ingest path stamps as the tenant_id label — so it
+// flows straight into scopeQueryByTenant. In OSS it resolves to the
+// DefaultTenantName ("default") sentinel, which is a NAME, not a stamped label
+// value; returning "" there skips tenant scoping and leaves stock OSS
+// dashboards unchanged (their series carry no tenant_id to filter on).
+//
+// This name-vs-UUID discriminator (rather than auth.MultiTenantEnabled) is
+// deliberate: the edition flag is not flipped at runtime yet, whereas the
+// resolved org being a real UUID is exactly the signal that the ingest path
+// stamped a matching label.
+func (h *handlers) activeTenantID(r *http.Request) string {
+	tid := auth.ContextTenantID(r)
+	if tid == "" || tid == auth.DefaultTenantName {
+		return ""
+	}
+	return tid
 }
 
 // noClusterUIDSentinel is used in place of a real kube-system UID
@@ -128,11 +150,48 @@ func scopeQueryByCluster(promQL, uid string) string {
 		// Fail closed: an unknown UID becomes a sentinel that no real
 		// agent would ever emit, so the query returns 0 series instead
 		// of leaking data from other clusters in the same VM. Don't
-		// short-circuit return — we still need both passes to inject
-		// the sentinel everywhere, otherwise bare metrics slip through.
+		// short-circuit return — injectLabelMatcher still runs both
+		// passes so the sentinel reaches bare metrics too.
 		uid = noClusterUIDSentinel
 	}
-	injected := fmt.Sprintf(`cluster_id=%q`, uid)
+	return injectLabelMatcher(promQL, "cluster_id", uid)
+}
+
+// scopeQueryByTenant injects `tenant_id="<org>"` into every metric reference —
+// the READ half of the W3 tenant isolation. The ingest path stamps tenant_id
+// on every series (prom_write_injector.go for remote_write, agent/tenant_guard.go
+// for gRPC), and this constrains a read to its own org. Composes with
+// scopeQueryByCluster (run both: org is the hard boundary, cluster the
+// selector within it).
+//
+// No-op when tenantID == "" — the OSS / single-tenant signal (see
+// activeTenantID), where series carry no stamped tenant_id and a filter would
+// hide them. In EE the caller passes the resolved org UUID, which matches the
+// label the ingest path stamped.
+func scopeQueryByTenant(promQL, tenantID string) string {
+	if tenantID == "" {
+		return promQL
+	}
+	return injectLabelMatcher(promQL, TenantIDLabelName, tenantID)
+}
+
+// injectLabelMatcher injects `labelName="value"` into every metric reference in
+// a PromQL expression — the shared machinery behind scopeQueryByCluster
+// (cluster_id) and scopeQueryByTenant (tenant_id). Idempotent per label: a
+// selector that already carries labelName is left alone, so the two scopes
+// compose and re-running either is a no-op.
+//
+// Three passes (plus a mask/unmask for string literals):
+//
+//  0. Mask "..." quoted string literals so a regex-quantifier substring like
+//     `{6,12}` inside a label_replace argument isn't mistaken for a selector.
+//  1. Existing `{...}` selectors get labelName prepended (skipped if already
+//     present). Handles `metric{a="b"}` and bare `{source="hubble"}`.
+//  2. Bare metric references with no selector get a fresh `{labelName="value"}`
+//     appended, walking the string so label names inside selectors / `by(...)`
+//     clauses aren't mistaken for metrics.
+func injectLabelMatcher(promQL, labelName, value string) string {
+	injected := fmt.Sprintf("%s=%q", labelName, value)
 
 	// Pass 0: mask quoted string literals so their content can't be
 	// misread as braces or metric refs by the later passes.
@@ -141,7 +200,7 @@ func scopeQueryByCluster(promQL, uid string) string {
 	// Pass 1: existing `{...}` selectors.
 	masked = metricSelectorRE.ReplaceAllStringFunc(masked, func(sel string) string {
 		inner := sel[1 : len(sel)-1]
-		if strings.Contains(inner, "cluster_id") {
+		if strings.Contains(inner, labelName) {
 			return sel
 		}
 		if strings.TrimSpace(inner) == "" {
@@ -365,6 +424,7 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 	}
 
 	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
+	q = scopeQueryByTenant(q, h.activeTenantID(r))
 
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
@@ -415,6 +475,7 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
+	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {
@@ -446,23 +507,23 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// handleAdminMetricsQuery is the admin-only PromQL pass-through that
-// BYPASSES scopeQueryByCluster. Spec #09 V2 Item 5b — the
-// /admin/ingest-activity panel queries `kubebolt_*` observability
-// metrics which are tenant-scoped, not cluster-scoped. Injecting a
-// cluster_id label on these would return zero series (the labels
-// don't exist on these counters). Other dashboards (Capacity,
-// Reliability, Monitor) keep using the cluster-scoped endpoint
-// because their metrics ARE per-cluster.
-//
-// Otherwise identical to handleMetricsQuery — same proxy target, same
-// response shape, same params (just no scoping pass).
+// handleAdminMetricsQuery is the admin-only PromQL pass-through for the
+// /admin/ingest-activity panel's `kubebolt_*` observability metrics (Spec #09
+// V2 Item 5b). These are tenant-scoped, NOT cluster-scoped, so it BYPASSES
+// scopeQueryByCluster (a cluster_id label doesn't exist on these counters →
+// zero series) but STILL applies scopeQueryByTenant (W3b) — an org-admin must
+// see only their own org's ingest activity. Other dashboards (Capacity,
+// Reliability, Monitor) use the cluster-scoped endpoint because their metrics
+// ARE per-cluster.
 func (h *handlers) handleAdminMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query().Get("query")
 	if q == "" {
 		respondError(w, http.StatusBadRequest, "query is required")
 		return
 	}
+	// kubebolt_* are tenant-scoped: skip cluster scoping but still filter by
+	// org so an admin sees only their own ingest activity. No-op in OSS.
+	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {
@@ -505,6 +566,9 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 		respondError(w, http.StatusBadRequest, "query, start, end, and step are all required")
 		return
 	}
+	// Tenant-scope the kubebolt_* range query (cluster scoping skipped — see
+	// handleAdminMetricsQuery). No-op in OSS.
+	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "invalid storage URL")

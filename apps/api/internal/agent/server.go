@@ -386,6 +386,25 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 				batchAttrs = append(batchAttrs, slog.String("tenant_id", id.TenantID))
 			}
 			slog.Info("received metric batch", batchAttrs...)
+			// Anti-spoofing gate (W3a) — mirror the remote_write tenant
+			// check (prom_write.go): a sample asserting a tenant_id that
+			// isn't this agent's authenticated tenant is a cross-tenant
+			// write attempt. Reject the batch AND tear the stream down (a
+			// spoofing agent has no business staying connected); absent
+			// labels are stamped authoritatively from id.TenantID. No-op
+			// when unauthenticated (OSS / disabled mode → id nil/empty).
+			if id != nil && id.TenantID != "" {
+				if asserted, ok := enforceTenantLabel(batch.GetSamples(), id.TenantID); !ok {
+					slog.Warn("agent gRPC tenant_id mismatch — closing stream",
+						slog.String("agent_id", agentID),
+						slog.String("cluster_id", clusterID),
+						slog.String("asserted", asserted),
+						slog.String("bearer_tenant", id.TenantID))
+					s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamTenantMismatch)
+					return status.Errorf(codes.PermissionDenied,
+						"tenant_id label %q does not match authenticated tenant", asserted)
+				}
+			}
 			// Spec #09 V2 Item 5b — per-tenant samples counter that the
 			// /admin/ingest-activity panel renders as a rate-of-receive
 			// sparkline (`rate(kubebolt_agent_grpc_samples_received_total

@@ -39,6 +39,11 @@ const (
 	GRPCIngestStreamConnected    = "connected"
 	GRPCIngestStreamDisconnected = "disconnected"
 	GRPCIngestStreamAuthRejected = "auth_rejected"
+	// GRPCIngestStreamTenantMismatch is recorded when a metric batch asserts
+	// a tenant_id label that differs from the agent's authenticated tenant —
+	// an anti-spoofing reject mirroring the remote_write gate. The stream is
+	// torn down on the spot, so this also implies a disconnect.
+	GRPCIngestStreamTenantMismatch = "tenant_mismatch"
 )
 
 // AnonymousTenant is the synthetic tenant_id used when the auth

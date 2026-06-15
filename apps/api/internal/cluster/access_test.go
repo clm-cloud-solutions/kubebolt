@@ -22,7 +22,7 @@ func TestClusterAccess_LocalRestConfig_BadPath(t *testing.T) {
 
 func TestClusterAccess_AgentProxyRestConfig(t *testing.T) {
 	reg := channel.NewAgentRegistry()
-	a := NewAgentProxyAccess("c-prod", reg)
+	a := NewAgentProxyAccess("", "c-prod", reg)
 	cfg, err := a.RestConfig()
 	if err != nil {
 		t.Fatalf("RestConfig err = %v", err)
@@ -47,14 +47,14 @@ func TestClusterAccess_AgentProxyRestConfig(t *testing.T) {
 
 func TestClusterAccess_AgentProxy_RejectsEmptyClusterID(t *testing.T) {
 	reg := channel.NewAgentRegistry()
-	_, err := NewAgentProxyAccess("", reg).RestConfig()
+	_, err := NewAgentProxyAccess("", "", reg).RestConfig()
 	if err == nil || !strings.Contains(err.Error(), "cluster_id") {
 		t.Fatalf("err = %v, want empty-cluster_id failure", err)
 	}
 }
 
 func TestClusterAccess_AgentProxy_RejectsNilRegistry(t *testing.T) {
-	_, err := NewAgentProxyAccess("c1", nil).RestConfig()
+	_, err := NewAgentProxyAccess("", "c1", nil).RestConfig()
 	if err == nil || !strings.Contains(err.Error(), "registry") {
 		t.Fatalf("err = %v, want nil-registry failure", err)
 	}
@@ -83,7 +83,7 @@ func TestClusterAccess_Name(t *testing.T) {
 	if got := NewInClusterAccess().Name(); got != "in-cluster" {
 		t.Errorf("in-cluster Name = %q", got)
 	}
-	if got := NewAgentProxyAccess("c-edge", channel.NewAgentRegistry()).Name(); got != "c-edge" {
+	if got := NewAgentProxyAccess("", "c-edge", channel.NewAgentRegistry()).Name(); got != "c-edge" {
 		t.Errorf("agent-proxy Name = %q", got)
 	}
 }

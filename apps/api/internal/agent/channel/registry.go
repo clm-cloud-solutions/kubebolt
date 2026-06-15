@@ -256,18 +256,39 @@ func (r *AgentRegistry) Register(a *Agent) (evicted *Agent) {
 	return evicted
 }
 
-// Get returns one connected agent for cluster_id, or nil if none.
-// Multi-agent clusters: the choice is currently arbitrary (map
-// iteration order). Used by callers who only need a registered
-// agent reference (display, presence checks). For apiserver-proxy
-// requests use GetProxyAgent — it filters by capability so a
-// non-proxy-capable agent (e.g. the Mode C promread Deployment pod)
-// doesn't get picked for a request it can't service.
-func (r *AgentRegistry) Get(clusterID string) *Agent {
+// agentMatchesTenant reports whether agent a may be handed to a caller
+// scoped to tenantID. The org (tenant) is the HARD isolation boundary
+// (W4 — multi-tenant scoping §⚡): a request for org A must never resolve
+// an agent that authenticated under org B, even if A knows B's cluster_id.
+//
+// OSS-neutral by construction: an empty tenantID (single-tenant caller, OSS
+// resolves every request to "default") OR an agent with no authenticated
+// tenant (auth disabled — Identity nil or TenantID "") matches anything. So
+// in a stock OSS install, where neither side carries a real tenant, behavior
+// is identical to pre-guard. In EE every agent authenticates with a real
+// TenantID and every request carries the caller's org, so the guard bites.
+func agentMatchesTenant(a *Agent, tenantID string) bool {
+	if tenantID == "" || a == nil || a.Identity == nil || a.Identity.TenantID == "" {
+		return true
+	}
+	return a.Identity.TenantID == tenantID
+}
+
+// Get returns one connected agent for (tenant, cluster_id), or nil if
+// none match. tenantID is the caller's org — see agentMatchesTenant
+// (empty = OSS single-tenant, matches any). Multi-agent clusters: the
+// choice is currently arbitrary (map iteration order). Used by callers
+// who only need a registered agent reference (display, presence checks).
+// For apiserver-proxy requests use GetProxyAgent — it filters by
+// capability so a non-proxy-capable agent (e.g. the Mode C promread
+// Deployment pod) doesn't get picked for a request it can't service.
+func (r *AgentRegistry) Get(tenantID, clusterID string) *Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, a := range r.agents[clusterID] {
-		return a
+		if agentMatchesTenant(a, tenantID) {
+			return a
+		}
 	}
 	return nil
 }
@@ -288,12 +309,18 @@ func (r *AgentRegistry) Get(clusterID string) *Agent {
 // dispatch ~half the time, breaking the apiserver-proxy connector
 // with "cache sync timeout — cluster may be unreachable" because
 // the promread pod ignores KubeProxyRequest messages.
-func (r *AgentRegistry) GetProxyAgent(clusterID string) *Agent {
+func (r *AgentRegistry) GetProxyAgent(tenantID, clusterID string) *Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	bucket := r.agents[clusterID]
 	var fallback *Agent
 	for _, a := range bucket {
+		// Tenant guard first: an agent owned by another org is invisible
+		// for both the kube-proxy pick AND the fallback, so a cross-org
+		// cluster_id can never resolve a proxy target.
+		if !agentMatchesTenant(a, tenantID) {
+			continue
+		}
 		if fallback == nil {
 			fallback = a
 		}
@@ -307,13 +334,17 @@ func (r *AgentRegistry) GetProxyAgent(clusterID string) *Agent {
 }
 
 // GetByAgentID returns the agent with the exact (cluster_id, agent_id)
-// pair, or nil. Used by admin handlers that want to address a
-// specific node.
-func (r *AgentRegistry) GetByAgentID(clusterID, agentID string) *Agent {
+// pair, or nil — but only when it belongs to tenantID's org (see
+// agentMatchesTenant; empty = OSS single-tenant, matches any). Used by
+// admin handlers that want to address a specific node; the tenant guard
+// keeps one org's admin from addressing another org's node.
+func (r *AgentRegistry) GetByAgentID(tenantID, clusterID, agentID string) *Agent {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if bucket, ok := r.agents[clusterID]; ok {
-		return bucket[agentID]
+		if a := bucket[agentID]; agentMatchesTenant(a, tenantID) {
+			return a
+		}
 	}
 	return nil
 }
