@@ -212,6 +212,9 @@ type UserStore interface {
 	CreateUser(ctx context.Context, username, email, name, password string, role Role) (*User, error)
 	GetUser(ctx context.Context, id string) (*User, error)
 	GetUserByUsername(ctx context.Context, username string) (*User, error)
+	// GetUserByEmail resolves a user by their global-unique email — the login
+	// identity for multi-org (Track D). Returns "user not found" when absent.
+	GetUserByEmail(ctx context.Context, email string) (*User, error)
 	ListUsers(ctx context.Context) ([]User, error)
 	UpdateUser(ctx context.Context, id, username, email, name string, role Role) (*User, error)
 	UpdatePassword(ctx context.Context, id, newPassword string) error
@@ -301,6 +304,35 @@ func (s *Store) GetUserByUsername(_ context.Context, username string) (*User, er
 		return nil, err
 	}
 	return &user, nil
+}
+
+// GetUserByEmail resolves a user by email. Bolt has no email index (single-org
+// OSS keys by username), so this scans the users bucket — fine at OSS scale.
+func (s *Store) GetUserByEmail(_ context.Context, email string) (*User, error) {
+	if email == "" {
+		return nil, fmt.Errorf("user not found")
+	}
+	var found *User
+	err := s.db.View(func(tx *bolt.Tx) error {
+		return tx.Bucket(usersBucket).ForEach(func(_, data []byte) error {
+			var u User
+			if err := json.Unmarshal(data, &u); err != nil {
+				return nil // skip corrupt rows
+			}
+			if u.Email == email {
+				uu := u
+				found = &uu
+			}
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if found == nil {
+		return nil, fmt.Errorf("user not found")
+	}
+	return found, nil
 }
 
 // ListUsers returns all users in the store.
