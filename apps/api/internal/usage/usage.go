@@ -66,6 +66,18 @@ type UsageRecord struct {
 // logged and swallowed by the impl, never propagated to drop a customer's data.
 type UsageStore interface {
 	Record(ctx context.Context, rec UsageRecord) error
+	// Summary returns the all-time per-metric totals for one org — the read
+	// path behind GET /account/usage. OSS (NoopUsageStore) returns an empty
+	// slice (nothing is metered). EE sums usage_records for the org, RLS-scoped
+	// via app.current_org. Order is unspecified.
+	Summary(ctx context.Context, org string) ([]UsagePoint, error)
+}
+
+// UsagePoint is one metric's rolled-up total for an org, the read shape behind
+// GET /account/usage.
+type UsagePoint struct {
+	Metric Metric `json:"metric"`
+	Total  int64  `json:"total"`
 }
 
 // NoopUsageStore is the OSS default: metering is a no-op because OSS is a free,
@@ -78,6 +90,11 @@ func NewNoopUsageStore() *NoopUsageStore { return &NoopUsageStore{} }
 
 // Record discards the event and returns nil.
 func (NoopUsageStore) Record(context.Context, UsageRecord) error { return nil }
+
+// Summary returns an empty slice — OSS meters nothing.
+func (NoopUsageStore) Summary(context.Context, string) ([]UsagePoint, error) {
+	return []UsagePoint{}, nil
+}
 
 // Compile-time guarantees the no-op satisfies the seam — both as a value and a
 // pointer, so callers can wire either form.

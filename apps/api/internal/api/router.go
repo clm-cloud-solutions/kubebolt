@@ -136,6 +136,9 @@ func NewRouter(
 		// --- Public routes (no JWT required) ---
 		r.Get("/auth/config", authHandlers.GetAuthConfig)
 		r.Post("/auth/login", authHandlers.Login)
+		// Self-service org signup (multi-org / EE). Public, next to login.
+		// Returns 409 requires_ee in OSS (single auto-seeded org).
+		r.Post("/auth/signup", authHandlers.Signup)
 		r.Post("/auth/refresh", authHandlers.Refresh)
 		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
 		r.Get("/copilot/config", h.HandleCopilotConfig)
@@ -182,6 +185,12 @@ func NewRouter(
 			r.Post("/auth/logout", authHandlers.Logout)
 			r.Get("/auth/me", authHandlers.GetMe)
 			r.Put("/auth/me/password", authHandlers.ChangePassword)
+
+			// Account — the requesting org's plan + metering summary.
+			// Any authenticated role; scoped to the caller's org via the
+			// ResolveTenant-stamped context. No active cluster required.
+			r.Get("/account/plan", h.handleAccountPlan)
+			r.Get("/account/usage", h.handleAccountUsage)
 
 			// User management — admin only
 			r.Route("/users", func(r chi.Router) {

@@ -36,6 +36,22 @@ func TestNoopUsageStore_RecordIsSafeAndNil(t *testing.T) {
 	}
 }
 
+// TestNoopUsageStore_SummaryEmpty pins the OSS read-path contract: Summary
+// returns an empty (non-nil) slice and never errors — nothing is metered.
+func TestNoopUsageStore_SummaryEmpty(t *testing.T) {
+	var store UsageStore = NewNoopUsageStore()
+	pts, err := store.Summary(context.Background(), "any-org")
+	if err != nil {
+		t.Fatalf("Summary returned %v, want nil", err)
+	}
+	if pts == nil {
+		t.Fatal("Summary returned nil slice, want non-nil empty")
+	}
+	if len(pts) != 0 {
+		t.Fatalf("Summary returned %d points, want 0", len(pts))
+	}
+}
+
 // TestMetricConstants guards the dimension string values — EE roll-up SQL and
 // the OSS call sites must agree on these exact strings, so a rename is a
 // breaking change that should fail a test, not silently mis-bill.
