@@ -63,13 +63,13 @@ func newTestRig(t *testing.T) (*AgentProxyTransport, *Agent, *captureSender) {
 	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
-	tr := NewAgentProxyTransport("c1", reg)
+	tr := NewAgentProxyTransport("", "c1", reg)
 	tr.DefaultTimeout = 0 // tests bound their own timing
 	return tr, agent, sender
 }
 
 func TestAgentProxyTransport_NoAgent(t *testing.T) {
-	tr := NewAgentProxyTransport("c-missing", NewAgentRegistry())
+	tr := NewAgentProxyTransport("", "c-missing", NewAgentRegistry())
 	req := httptest.NewRequest("GET", "https://kube/api/v1/pods", nil)
 	_, err := tr.RoundTrip(req)
 	if !errors.Is(err, ErrAgentNotConnected) {
@@ -427,7 +427,7 @@ func TestAgentProxyTransport_SendError(t *testing.T) {
 	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
-	tr := NewAgentProxyTransport("c1", reg)
+	tr := NewAgentProxyTransport("", "c1", reg)
 
 	req := httptest.NewRequest("GET", "https://kube/api/v1/pods", nil)
 	_, err := tr.RoundTrip(req)

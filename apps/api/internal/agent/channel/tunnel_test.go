@@ -24,7 +24,7 @@ func upgradeRig(t *testing.T) (*AgentProxyTransport, *Agent, *captureSender) {
 	agent := NewAgent("c1", "agent-1", "node-a", nil, []string{"kube-proxy"}, sender)
 	reg := NewAgentRegistry()
 	reg.Register(agent)
-	tr := NewAgentProxyTransport("c1", reg)
+	tr := NewAgentProxyTransport("", "c1", reg)
 	tr.DefaultTimeout = 0
 	return tr, agent, sender
 }

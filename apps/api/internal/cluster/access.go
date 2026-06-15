@@ -52,6 +52,10 @@ type ClusterAccess struct {
 	// Agent-proxy mode fields.
 	ClusterID     string
 	AgentRegistry *channel.AgentRegistry
+	// TenantID is the org this access serves — threaded into the proxy
+	// transport so the agent registry's tenant guard (W4) only resolves
+	// agents owned by this org. Empty in OSS (single-tenant) → matches any.
+	TenantID string
 }
 
 // NewLocalAccess returns access for a kubeconfig context. An empty
@@ -76,10 +80,11 @@ func NewInClusterAccess() *ClusterAccess {
 // agent for the given cluster_id. The registry is consulted on every
 // RoundTrip — a reconnect mid-flight just means the next call lands
 // on the fresh Agent record, no transport reconfiguration needed.
-func NewAgentProxyAccess(clusterID string, registry *channel.AgentRegistry) *ClusterAccess {
+func NewAgentProxyAccess(tenantID, clusterID string, registry *channel.AgentRegistry) *ClusterAccess {
 	return &ClusterAccess{
 		Mode:          AccessModeAgentProxy,
 		ClusterID:     clusterID,
+		TenantID:      tenantID,
 		AgentRegistry: registry,
 	}
 }
@@ -161,7 +166,7 @@ func (a *ClusterAccess) RestConfig() (*rest.Config, error) {
 		}
 		return &rest.Config{
 			Host:      agentProxyAPIServerURL(a.ClusterID),
-			Transport: channel.NewAgentProxyTransport(a.ClusterID, a.AgentRegistry),
+			Transport: channel.NewAgentProxyTransport(a.TenantID, a.ClusterID, a.AgentRegistry),
 		}, nil
 	}
 	return nil, fmt.Errorf("unknown cluster access mode %q", a.Mode)

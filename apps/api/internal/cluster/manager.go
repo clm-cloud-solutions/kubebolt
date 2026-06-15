@@ -1170,7 +1170,11 @@ func (m *Manager) connectToContext(contextName string) error {
 // unknown.
 func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 	if cid, ok := m.agentProxyContexts[contextName]; ok {
-		return NewAgentProxyAccess(cid, m.agentRegistry)
+		// m.tenantID is the runtime's org (default tenant UUID today; the
+		// per-request org once the multi-org pooled threading lands). It
+		// flows into the proxy transport so the registry's tenant guard
+		// (W4) only resolves agents this org owns.
+		return NewAgentProxyAccess(m.tenantID, cid, m.agentRegistry)
 	}
 	if m.inCluster && contextName == "in-cluster" {
 		return NewInClusterAccess()
