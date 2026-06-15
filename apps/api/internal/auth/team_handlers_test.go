@@ -29,7 +29,7 @@ func newHierarchyHandlers(t *testing.T) (*Handlers, *BoltTeamStore, string) {
 	if err != nil {
 		t.Fatalf("GetDefaultTenant: %v", err)
 	}
-	team, err := teams.EnsureDefaultTeam(dt.ID)
+	team, err := teams.EnsureDefaultTeam(context.Background(), dt.ID)
 	if err != nil {
 		t.Fatalf("EnsureDefaultTeam: %v", err)
 	}
@@ -59,7 +59,7 @@ func mountUsers(h *Handlers, callerID string) http.Handler {
 
 func memberIDs(t *testing.T, teams *BoltTeamStore, teamID string) map[string]bool {
 	t.Helper()
-	members, err := teams.ListMembers(teamID)
+	members, err := teams.ListMembers(context.Background(), teamID)
 	if err != nil {
 		t.Fatalf("ListMembers: %v", err)
 	}
@@ -97,7 +97,7 @@ func TestDeleteUser_RemovesMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	h.enrollInDefaultTeam(u.ID)
+	h.enrollInDefaultTeam(context.Background(), u.ID)
 	if !memberIDs(t, teams, teamID)[u.ID] {
 		t.Fatalf("precondition: bob should be a member before delete")
 	}
@@ -119,7 +119,7 @@ func TestGetMe_IncludesOrgAndTeamWithEffectiveRole(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	h.enrollInDefaultTeam(u.ID)
+	h.enrollInDefaultTeam(context.Background(), u.ID)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
 	req = req.WithContext(context.WithValue(req.Context(), claimsKey, &Claims{
@@ -148,7 +148,7 @@ func TestGetMe_IncludesOrgAndTeamWithEffectiveRole(t *testing.T) {
 func TestListTeams_ReturnsDefaultTeamWithMemberCount(t *testing.T) {
 	h, _, _ := newHierarchyHandlers(t)
 	u, _ := h.store.CreateUser(context.Background(), "dave", "", "Dave", "password123", RoleEditor)
-	h.enrollInDefaultTeam(u.ID)
+	h.enrollInDefaultTeam(context.Background(), u.ID)
 
 	rr := httptest.NewRecorder()
 	h.ListTeams(rr, httptest.NewRequest(http.MethodGet, "/teams", nil))

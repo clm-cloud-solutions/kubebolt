@@ -16,6 +16,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -68,12 +69,12 @@ func (t *IngestToken) Active(now time.Time) bool {
 // only (revoked/expired); the caller validates the owning tenant (Disabled)
 // since that's the TenantStore's concern.
 type IngestTokenStore interface {
-	Issue(tenantID, clusterID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error)
-	Revoke(tenantID, tokenID string) error
-	Rotate(tenantID, tokenID, createdBy string) (string, *IngestToken, error)
-	Lookup(plaintext string) (*IngestToken, error)
-	MarkUsed(tenantID, tokenID string, when time.Time) error
-	ListByTenant(tenantID string) ([]IngestToken, error)
+	Issue(ctx context.Context, tenantID, clusterID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error)
+	Revoke(ctx context.Context, tenantID, tokenID string) error
+	Rotate(ctx context.Context, tenantID, tokenID, createdBy string) (string, *IngestToken, error)
+	Lookup(ctx context.Context, plaintext string) (*IngestToken, error)
+	MarkUsed(ctx context.Context, tenantID, tokenID string, when time.Time) error
+	ListByTenant(ctx context.Context, tenantID string) ([]IngestToken, error)
 }
 
 func ingestKey(tenantID, tokenID string) []byte { return []byte(tenantID + "/" + tokenID) }
@@ -107,7 +108,7 @@ func NewIngestTokenStore(db *bolt.DB) (*BoltIngestTokenStore, error) {
 	return &BoltIngestTokenStore{db: db, nowFn: time.Now, markUsedAt: map[string]time.Time{}}, nil
 }
 
-func (s *BoltIngestTokenStore) Issue(tenantID, clusterID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
+func (s *BoltIngestTokenStore) Issue(_ context.Context, tenantID, clusterID, label, createdBy string, ttl *time.Duration) (string, *IngestToken, error) {
 	if tenantID == "" {
 		return "", nil, fmt.Errorf("tenantID is required")
 	}
@@ -146,7 +147,7 @@ func (s *BoltIngestTokenStore) Issue(tenantID, clusterID, label, createdBy strin
 	return plaintext, tok, nil
 }
 
-func (s *BoltIngestTokenStore) Revoke(tenantID, tokenID string) error {
+func (s *BoltIngestTokenStore) Revoke(_ context.Context, tenantID, tokenID string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(ingestTokensBucket)
 		raw := b.Get(ingestKey(tenantID, tokenID))
@@ -173,7 +174,7 @@ func (s *BoltIngestTokenStore) Revoke(tenantID, tokenID string) error {
 	})
 }
 
-func (s *BoltIngestTokenStore) Rotate(tenantID, tokenID, createdBy string) (string, *IngestToken, error) {
+func (s *BoltIngestTokenStore) Rotate(ctx context.Context, tenantID, tokenID, createdBy string) (string, *IngestToken, error) {
 	old, ok, err := s.get(tenantID, tokenID)
 	if err != nil {
 		return "", nil, err
@@ -191,17 +192,17 @@ func (s *BoltIngestTokenStore) Rotate(tenantID, tokenID, createdBy string) (stri
 		d := old.ExpiresAt.Sub(old.CreatedAt)
 		ttl = &d
 	}
-	plaintext, newTok, err := s.Issue(tenantID, old.ClusterID, old.Label, createdBy, ttl)
+	plaintext, newTok, err := s.Issue(ctx, tenantID, old.ClusterID, old.Label, createdBy, ttl)
 	if err != nil {
 		return "", nil, err
 	}
-	if err := s.Revoke(tenantID, tokenID); err != nil {
+	if err := s.Revoke(ctx, tenantID, tokenID); err != nil {
 		return "", nil, err
 	}
 	return plaintext, newTok, nil
 }
 
-func (s *BoltIngestTokenStore) Lookup(plaintext string) (*IngestToken, error) {
+func (s *BoltIngestTokenStore) Lookup(_ context.Context, plaintext string) (*IngestToken, error) {
 	if !strings.HasPrefix(plaintext, TokenPrefix) {
 		return nil, ErrTokenMalformed
 	}
@@ -236,7 +237,7 @@ func (s *BoltIngestTokenStore) Lookup(plaintext string) (*IngestToken, error) {
 	return tok, nil
 }
 
-func (s *BoltIngestTokenStore) MarkUsed(tenantID, tokenID string, when time.Time) error {
+func (s *BoltIngestTokenStore) MarkUsed(_ context.Context, tenantID, tokenID string, when time.Time) error {
 	s.markUsedMu.Lock()
 	last, ok := s.markUsedAt[tokenID]
 	if ok && when.Sub(last) < time.Minute {
@@ -266,7 +267,7 @@ func (s *BoltIngestTokenStore) MarkUsed(tenantID, tokenID string, when time.Time
 	})
 }
 
-func (s *BoltIngestTokenStore) ListByTenant(tenantID string) ([]IngestToken, error) {
+func (s *BoltIngestTokenStore) ListByTenant(_ context.Context, tenantID string) ([]IngestToken, error) {
 	var out []IngestToken
 	err := s.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(ingestTokensBucket).Cursor()

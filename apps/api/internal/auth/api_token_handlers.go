@@ -64,7 +64,7 @@ func (h *Handlers) ListAPITokens(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "api tokens not configured")
 		return
 	}
-	toks, err := h.apiTokens.List()
+	toks, err := h.apiTokens.List(r.Context())
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "list api tokens")
 		return
@@ -118,7 +118,7 @@ func (h *Handlers) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	createdBy := ContextUserID(r)
-	plaintext, tok, err := h.apiTokens.Issue(typ, role, scopes, req.Label, createdBy, ttl)
+	plaintext, tok, err := h.apiTokens.Issue(r.Context(), typ, role, scopes, req.Label, createdBy, ttl)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "issue api token")
 		return
@@ -136,7 +136,7 @@ func (h *Handlers) DeleteAPIToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.apiTokens.Revoke(id); err != nil {
+	if err := h.apiTokens.Revoke(r.Context(), id); err != nil {
 		if err == ErrTokenNotFound {
 			respondError(w, http.StatusNotFound, "token not found")
 			return

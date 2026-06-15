@@ -10,6 +10,7 @@
 package auth
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -42,14 +43,14 @@ func (h *Handlers) ListTeams(w http.ResponseWriter, r *http.Request) {
 		respondJSON(w, http.StatusOK, []teamSummary{})
 		return
 	}
-	teams, err := h.teams.ListTeams(h.defaultOrgID)
+	teams, err := h.teams.ListTeams(r.Context(), h.defaultOrgID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	out := make([]teamSummary, 0, len(teams))
 	for i := range teams {
-		out = append(out, h.summarizeTeam(&teams[i]))
+		out = append(out, h.summarizeTeam(r.Context(), &teams[i]))
 	}
 	respondJSON(w, http.StatusOK, out)
 }
@@ -60,12 +61,12 @@ func (h *Handlers) GetTeam(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusNotFound, "team not found")
 		return
 	}
-	team, err := h.teams.GetTeam(chi.URLParam(r, "id"))
+	team, err := h.teams.GetTeam(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		respondError(w, http.StatusNotFound, "team not found")
 		return
 	}
-	respondJSON(w, http.StatusOK, h.summarizeTeam(team))
+	respondJSON(w, http.StatusOK, h.summarizeTeam(r.Context(), team))
 }
 
 // ListTeamMembers returns the team's members joined with their user record and
@@ -76,7 +77,7 @@ func (h *Handlers) ListTeamMembers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	teamID := chi.URLParam(r, "id")
-	members, err := h.teams.ListMembers(teamID)
+	members, err := h.teams.ListMembers(r.Context(), teamID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -114,9 +115,9 @@ func (h *Handlers) CreateTeam(w http.ResponseWriter, r *http.Request) {
 	respondError(w, http.StatusNotImplemented, "team creation not wired")
 }
 
-func (h *Handlers) summarizeTeam(t *Team) teamSummary {
+func (h *Handlers) summarizeTeam(ctx context.Context, t *Team) teamSummary {
 	count := 0
-	if members, err := h.teams.ListMembers(t.ID); err == nil {
+	if members, err := h.teams.ListMembers(ctx, t.ID); err == nil {
 		count = len(members)
 	}
 	return teamSummary{ID: t.ID, Name: t.Name, OrgID: t.OrgID, MemberCount: count}

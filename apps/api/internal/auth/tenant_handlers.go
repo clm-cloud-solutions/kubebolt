@@ -184,7 +184,7 @@ func (h *TenantHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]tenantResponse, 0, len(tenants))
 	for i := range tenants {
-		toks, _ := h.ingestTokens.ListByTenant(tenants[i].ID)
+		toks, _ := h.ingestTokens.ListByTenant(r.Context(), tenants[i].ID)
 		out = append(out, summarizeTenant(&tenants[i], toks))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -227,7 +227,7 @@ func (h *TenantHandlers) GetTenant(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	toks, _ := h.ingestTokens.ListByTenant(t.ID)
+	toks, _ := h.ingestTokens.ListByTenant(r.Context(), t.ID)
 	resp := tenantWithTokensResponse{tenantResponse: summarizeTenant(t, toks)}
 	now := time.Now().UTC()
 	resp.IngestTokens = make([]ingestTokenResponse, 0, len(toks))
@@ -279,7 +279,7 @@ func (h *TenantHandlers) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 	if !wasDisabled && nowDisabled {
 		h.onTokenChange()
 	}
-	toks, _ := h.ingestTokens.ListByTenant(updated.ID)
+	toks, _ := h.ingestTokens.ListByTenant(r.Context(), updated.ID)
 	writeJSON(w, http.StatusOK, summarizeTenant(updated, toks))
 }
 
@@ -312,7 +312,7 @@ func (h *TenantHandlers) ListTokens(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	toks, _ := h.ingestTokens.ListByTenant(t.ID)
+	toks, _ := h.ingestTokens.ListByTenant(r.Context(), t.ID)
 	now := time.Now().UTC()
 	out := make([]ingestTokenResponse, 0, len(toks))
 	for _, tok := range toks {
@@ -350,7 +350,7 @@ func (h *TenantHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.ingestTokens.Issue(id, req.ClusterID, req.Label, issuer, ttl)
+	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), id, req.ClusterID, req.Label, issuer, ttl)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -372,7 +372,7 @@ func (h *TenantHandlers) RotateToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.ingestTokens.Rotate(tenantID, tokenID, issuer)
+	plaintext, tok, err := h.ingestTokens.Rotate(r.Context(), tenantID, tokenID, issuer)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) || errors.Is(err, ErrTokenNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -391,7 +391,7 @@ func (h *TenantHandlers) RotateToken(w http.ResponseWriter, r *http.Request) {
 func (h *TenantHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "id")
 	tokenID := chi.URLParam(r, "tokenID")
-	if err := h.ingestTokens.Revoke(tenantID, tokenID); err != nil {
+	if err := h.ingestTokens.Revoke(r.Context(), tenantID, tokenID); err != nil {
 		if errors.Is(err, ErrTenantNotFound) || errors.Is(err, ErrTokenNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
 			return

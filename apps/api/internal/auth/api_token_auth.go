@@ -57,7 +57,7 @@ func (h *Handlers) validateAPIToken(r *http.Request, plaintext string) (*Claims,
 	if h.apiTokens == nil {
 		return nil, nil, errAPITokensUnavailable
 	}
-	tok, err := h.apiTokens.Lookup(plaintext)
+	tok, err := h.apiTokens.Lookup(r.Context(), plaintext)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,7 +65,7 @@ func (h *Handlers) validateAPIToken(r *http.Request, plaintext string) (*Claims,
 		return nil, nil, ErrTokenEdgeBlocked
 	}
 	// Best-effort last-used stamp (debounced in the store).
-	_ = h.apiTokens.MarkUsed(tok.ID, time.Now())
+	_ = h.apiTokens.MarkUsed(r.Context(), tok.ID, time.Now())
 
 	claims := &Claims{
 		UserID:   "svc:" + tok.ID,

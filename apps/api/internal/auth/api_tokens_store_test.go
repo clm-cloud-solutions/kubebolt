@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -26,7 +27,7 @@ func newTestAPIStore(t *testing.T) *APITokenStore {
 func TestAPIToken_IssueAndLookup(t *testing.T) {
 	s := newTestAPIStore(t)
 	scopes := []string{"/api/v1/resources", "/api/v1/insights"}
-	plaintext, tok, err := s.Issue(TokenTypeService, RoleEditor, scopes, "autopilot", "admin-1", nil)
+	plaintext, tok, err := s.Issue(context.Background(), TokenTypeService, RoleEditor, scopes, "autopilot", "admin-1", nil)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -37,7 +38,7 @@ func TestAPIToken_IssueAndLookup(t *testing.T) {
 		t.Fatalf("display prefix %q unexpected", tok.Prefix)
 	}
 
-	got, err := s.Lookup(plaintext)
+	got, err := s.Lookup(context.Background(), plaintext)
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
 	}
@@ -52,28 +53,28 @@ func TestAPIToken_IssueAndLookup(t *testing.T) {
 func TestAPIToken_LookupRejectsWrongPrefix(t *testing.T) {
 	s := newTestAPIStore(t)
 	// Ingest-token prefix (kb_) must NOT validate against the REST store.
-	if _, err := s.Lookup("kb_deadbeef"); err != ErrTokenMalformed {
+	if _, err := s.Lookup(context.Background(), "kb_deadbeef"); err != ErrTokenMalformed {
 		t.Fatalf("kb_ lookup err = %v, want ErrTokenMalformed", err)
 	}
-	if _, err := s.Lookup("not-a-token"); err != ErrTokenMalformed {
+	if _, err := s.Lookup(context.Background(), "not-a-token"); err != ErrTokenMalformed {
 		t.Fatalf("garbage lookup err = %v, want ErrTokenMalformed", err)
 	}
 	// Well-formed prefix but unknown secret.
-	if _, err := s.Lookup(ServiceTokenPrefix + "unknownsecret"); err != ErrTokenNotFound {
+	if _, err := s.Lookup(context.Background(), ServiceTokenPrefix + "unknownsecret"); err != ErrTokenNotFound {
 		t.Fatalf("unknown kbs_ lookup err = %v, want ErrTokenNotFound", err)
 	}
 }
 
 func TestAPIToken_Revoke(t *testing.T) {
 	s := newTestAPIStore(t)
-	plaintext, tok, _ := s.Issue(TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", nil)
-	if err := s.Revoke(tok.ID); err != nil {
+	plaintext, tok, _ := s.Issue(context.Background(), TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", nil)
+	if err := s.Revoke(context.Background(), tok.ID); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
-	if _, err := s.Lookup(plaintext); err != ErrTokenRevoked {
+	if _, err := s.Lookup(context.Background(), plaintext); err != ErrTokenRevoked {
 		t.Fatalf("post-revoke lookup err = %v, want ErrTokenRevoked", err)
 	}
-	if err := s.Revoke("no-such-id"); err != ErrTokenNotFound {
+	if err := s.Revoke(context.Background(), "no-such-id"); err != ErrTokenNotFound {
 		t.Fatalf("revoke unknown err = %v, want ErrTokenNotFound", err)
 	}
 }
@@ -83,24 +84,24 @@ func TestAPIToken_Expired(t *testing.T) {
 	base := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
 	s.nowFn = func() time.Time { return base }
 	ttl := time.Hour
-	plaintext, _, _ := s.Issue(TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", &ttl)
+	plaintext, _, _ := s.Issue(context.Background(), TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", &ttl)
 
 	// Within window: valid.
-	if _, err := s.Lookup(plaintext); err != nil {
+	if _, err := s.Lookup(context.Background(), plaintext); err != nil {
 		t.Fatalf("in-window lookup err = %v, want nil", err)
 	}
 	// After expiry: rejected.
 	s.nowFn = func() time.Time { return base.Add(2 * time.Hour) }
-	if _, err := s.Lookup(plaintext); err != ErrTokenExpired {
+	if _, err := s.Lookup(context.Background(), plaintext); err != ErrTokenExpired {
 		t.Fatalf("expired lookup err = %v, want ErrTokenExpired", err)
 	}
 }
 
 func TestAPIToken_List(t *testing.T) {
 	s := newTestAPIStore(t)
-	_, _, _ = s.Issue(TokenTypeService, RoleEditor, nil, "a", "admin", nil)
-	_, _, _ = s.Issue(TokenTypeAPIKey, RoleViewer, nil, "b", "admin", nil)
-	toks, err := s.List()
+	_, _, _ = s.Issue(context.Background(), TokenTypeService, RoleEditor, nil, "a", "admin", nil)
+	_, _, _ = s.Issue(context.Background(), TokenTypeAPIKey, RoleViewer, nil, "b", "admin", nil)
+	toks, err := s.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

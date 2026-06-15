@@ -77,7 +77,7 @@ type mockPromStore struct {
 
 func (m *mockPromStore) ListTenants() ([]auth.Tenant, error) { return m.tenants, m.err }
 
-func (m *mockPromStore) ListByTenant(tenantID string) ([]auth.IngestToken, error) {
+func (m *mockPromStore) ListByTenant(_ context.Context, tenantID string) ([]auth.IngestToken, error) {
 	if m.tokens == nil {
 		return nil, nil
 	}

@@ -63,7 +63,7 @@ type tenantsLister interface {
 // provider needs (ingest tokens live in their own store now, not inlined
 // in the tenant record).
 type ingestTokenLister interface {
-	ListByTenant(tenantID string) ([]auth.IngestToken, error)
+	ListByTenant(ctx context.Context, tenantID string) ([]auth.IngestToken, error)
 }
 
 // currentClusterIDFn returns the kube-system namespace UID of the
@@ -220,7 +220,7 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 		freshSenders     int
 	)
 	for _, tenant := range tenants {
-		toks, _ := p.ingestTokens.ListByTenant(tenant.ID)
+		toks, _ := p.ingestTokens.ListByTenant(ctx, tenant.ID)
 		for i := range toks {
 			tok := &toks[i]
 			if !tok.Active(now) {

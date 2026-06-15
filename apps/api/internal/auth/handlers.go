@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -273,7 +274,7 @@ func (h *Handlers) GetMe(w http.ResponseWriter, r *http.Request) {
 	respondJSON(w, http.StatusOK, meResponse{
 		UserResponse: user.ToResponse(),
 		Org:          h.orgBriefFor(user),
-		Team:         h.teamBriefFor(user),
+		Team:         h.teamBriefFor(r.Context(), user),
 	})
 }
 
@@ -318,16 +319,16 @@ func (h *Handlers) orgBriefFor(_ *User) *orgBrief {
 // Returns nil when the team context isn't wired or the user has no membership
 // (shouldn't happen in OSS — the lifecycle keeps everyone enrolled — but we
 // degrade gracefully rather than fabricate a team).
-func (h *Handlers) teamBriefFor(u *User) *teamBrief {
+func (h *Handlers) teamBriefFor(ctx context.Context, u *User) *teamBrief {
 	if h.teams == nil || h.defaultTeamID == "" {
 		return nil
 	}
-	team, err := h.teams.GetTeam(h.defaultTeamID)
+	team, err := h.teams.GetTeam(ctx, h.defaultTeamID)
 	if err != nil {
 		return nil
 	}
 	effective := u.Role
-	if m, ok, _ := h.teams.GetMembership(h.defaultTeamID, u.ID); ok {
+	if m, ok, _ := h.teams.GetMembership(ctx, h.defaultTeamID, u.ID); ok {
 		effective = EffectiveRole(u.Role, m.TeamRole)
 	}
 	return &teamBrief{ID: team.ID, Name: team.Name, Role: effective}

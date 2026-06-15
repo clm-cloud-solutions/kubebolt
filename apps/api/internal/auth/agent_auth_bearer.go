@@ -54,7 +54,7 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	if cached, ok := a.cache.get(hash); ok {
 		return cached, nil
 	}
-	tok, err := a.tokens.Lookup(plaintext)
+	tok, err := a.tokens.Lookup(ctx, plaintext)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +77,7 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	a.cache.put(hash, identity)
 	// Best-effort touch — the store debounces persistence to once per
 	// minute per token, so we can fire-and-forget every RPC.
-	_ = a.tokens.MarkUsed(tok.TenantID, tok.ID, now)
+	_ = a.tokens.MarkUsed(ctx, tok.TenantID, tok.ID, now)
 	return identity, nil
 }
 

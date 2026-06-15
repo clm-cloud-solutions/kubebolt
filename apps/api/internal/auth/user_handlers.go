@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -71,7 +72,7 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 	// effort: a membership write failure must not fail user creation — the
 	// boot backfill re-ensures it on next start. nil-guarded for the
 	// auth-disabled path where the team context isn't wired.
-	h.enrollInDefaultTeam(user.ID)
+	h.enrollInDefaultTeam(r.Context(), user.ID)
 
 	respondJSON(w, http.StatusCreated, user.ToResponse())
 }
@@ -79,11 +80,11 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 // enrollInDefaultTeam adds a user to the OSS default team (idempotent). No-op
 // when the team context isn't wired. team_role is "" — the user's access is
 // their org role; OSS teams never elevate.
-func (h *Handlers) enrollInDefaultTeam(userID string) {
+func (h *Handlers) enrollInDefaultTeam(ctx context.Context, userID string) {
 	if h.teams == nil || h.defaultTeamID == "" {
 		return
 	}
-	if _, err := h.teams.AddMember(h.defaultTeamID, userID, ""); err != nil {
+	if _, err := h.teams.AddMember(ctx, h.defaultTeamID, userID, ""); err != nil {
 		slog.Warn("could not enroll user in default team",
 			slog.String("user_id", userID),
 			slog.String("team_id", h.defaultTeamID),
@@ -228,7 +229,7 @@ func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	// Drop the user's default-team membership so no orphan membership lingers.
 	// Best effort + nil-guarded (auth-disabled path).
 	if h.teams != nil && h.defaultTeamID != "" {
-		if err := h.teams.RemoveMember(h.defaultTeamID, id); err != nil {
+		if err := h.teams.RemoveMember(r.Context(), h.defaultTeamID, id); err != nil {
 			slog.Warn("could not remove deleted user's team membership",
 				slog.String("user_id", id),
 				slog.String("team_id", h.defaultTeamID),

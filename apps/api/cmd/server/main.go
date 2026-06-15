@@ -468,7 +468,7 @@ func main() {
 			fatal("failed to open team store", slog.String("error", err.Error()))
 		}
 		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
-			team, err := teamStore.EnsureDefaultTeam(dt.ID)
+			team, err := teamStore.EnsureDefaultTeam(context.Background(), dt.ID)
 			if err != nil {
 				fatal("failed to ensure default team", slog.String("error", err.Error()))
 			}
@@ -481,7 +481,7 @@ func main() {
 			enrolled := 0
 			if users, err := authStore.ListUsers(context.Background()); err == nil {
 				for i := range users {
-					if _, err := teamStore.AddMember(team.ID, users[i].ID, ""); err != nil {
+					if _, err := teamStore.AddMember(context.Background(), team.ID, users[i].ID, ""); err != nil {
 						slog.Warn("default-team backfill: could not enroll user",
 							slog.String("user_id", users[i].ID),
 							slog.String("error", err.Error()),
