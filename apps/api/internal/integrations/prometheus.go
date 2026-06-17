@@ -207,11 +207,17 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 	// the older constructor signature.
 	currentClusterID := p.currentCluster()
 	now := time.Now()
+	// Org-scope: ListTenants() has no ctx, so it returns EVERY org's tenant
+	// (it can't be RLS-scoped). Counting all of them made a cluster-less org
+	// see "Streaming" whenever ANY other org pushed Prometheus. Resolve the
+	// caller's org from ctx and, in multi-tenant, only count ITS tokens. OSS /
+	// default tenant keeps iterating the single tenant unchanged.
+	callerOrg := auth.TenantIDFromContext(ctx)
+	scoped := callerOrg != "" && callerOrg != auth.DefaultTenantName
 	// Tenant-count drives source-label format below — when there's
-	// only one tenant in the store (the self-hosted single-tenant
-	// case), the "tenant_name/" prefix is pure noise and gets dropped.
-	// Multi-tenant SaaS keeps the prefix to disambiguate.
-	multiTenant := len(tenants) > 1
+	// only one tenant in scope (single-tenant self-hosted, or a scoped
+	// per-org view) the "tenant_name/" prefix is pure noise and gets dropped.
+	multiTenant := len(tenants) > 1 && !scoped
 	var (
 		mostRecent       time.Time
 		mostRecentTenant string
@@ -220,6 +226,9 @@ func (p *prometheusProvider) Detect(ctx context.Context, cs kubernetes.Interface
 		freshSenders     int
 	)
 	for _, tenant := range tenants {
+		if scoped && tenant.ID != callerOrg {
+			continue // per-org detection: another org's senders don't count
+		}
 		toks, _ := p.ingestTokens.ListByTenant(ctx, tenant.ID)
 		for i := range toks {
 			tok := &toks[i]
