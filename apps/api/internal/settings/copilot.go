@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,10 +67,11 @@ type StoredProviderSettings struct {
 // field falls back to the env baseline so the system stays usable even
 // if the stored secret can't be unwrapped — operator is alerted via the
 // /settings GET endpoint which surfaces the unreadable state explicitly.
-func (r *Runtime) Copilot() config.CopilotConfig {
+func (r *Runtime) Copilot(ctx context.Context) config.CopilotConfig {
+	org := orgKey(ctx)
 	r.mu.RLock()
-	if r.copilotValid {
-		cfg := r.copilot
+	if r.copilotValid[org] {
+		cfg := r.copilotByOrg[org]
 		r.mu.RUnlock()
 		return cfg
 	}
@@ -77,25 +79,26 @@ func (r *Runtime) Copilot() config.CopilotConfig {
 
 	// Re-resolve under the write lock. Double-check the valid bit in case
 	// another goroutine raced us — first writer wins, others read the
-	// resolved value without a second BoltDB hit.
+	// resolved value without a second store hit.
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.copilotValid {
-		return r.copilot
+	if r.copilotValid[org] {
+		return r.copilotByOrg[org]
 	}
-	r.copilot = r.resolveCopilotLocked()
-	r.copilotValid = true
-	return r.copilot
+	cfg := r.resolveCopilotLocked(ctx)
+	r.copilotByOrg[org] = cfg
+	r.copilotValid[org] = true
+	return cfg
 }
 
-// resolveCopilotLocked merges the BoltDB-persisted partial override onto
+// resolveCopilotLocked merges the per-org persisted partial override onto
 // the env baseline. Caller must hold r.mu (write or read). When the
-// BoltDB record is absent or malformed, returns the env baseline
-// unchanged.
-func (r *Runtime) resolveCopilotLocked() config.CopilotConfig {
+// stored record is absent or malformed, returns the env baseline
+// unchanged. The override is read scoped to the org in ctx.
+func (r *Runtime) resolveCopilotLocked(ctx context.Context) config.CopilotConfig {
 	cfg := r.envBase // value copy — safe to mutate
 
-	raw, err := r.store.GetSetting(copilotSettingsKey)
+	raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey)
 	if err != nil {
 		// "not found" is the no-override path — env baseline wins, all good.
 		return cfg
@@ -223,7 +226,7 @@ func applyStoredProvider(cfg *config.ProviderConfig, stored *StoredProviderSetti
 //   - CompactPreserveTurns, if set, must be >= 0
 //
 // Returns ValidationError on bad input — the handler maps that to 400.
-func (r *Runtime) PutCopilot(patch *StoredCopilotSettings, plaintextAPIKey, plaintextFallbackAPIKey *string) error {
+func (r *Runtime) PutCopilot(ctx context.Context, patch *StoredCopilotSettings, plaintextAPIKey, plaintextFallbackAPIKey *string) error {
 	if err := validateCopilotPatch(patch); err != nil {
 		return err
 	}
@@ -267,25 +270,25 @@ func (r *Runtime) PutCopilot(patch *StoredCopilotSettings, plaintextAPIKey, plai
 	// Read existing record (if any) so we MERGE the patch instead of
 	// overwriting unrelated fields. Pointer-field semantics: nil in the
 	// patch leaves the existing value alone.
-	existing, _ := r.loadCopilot()
+	existing, _ := r.loadCopilot(ctx)
 	merged := mergeCopilot(existing, *patch)
 
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := r.store.SetSetting(copilotSettingsKey, encoded); err != nil {
+	if err := r.orgStore.SetOrgSetting(ctx, copilotSettingsKey, encoded); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	r.InvalidateCopilot()
+	r.InvalidateCopilot(ctx)
 	return nil
 }
 
-// loadCopilot reads the existing BoltDB record without merging onto env.
+// loadCopilot reads the existing per-org record without merging onto env.
 // Used internally by PutCopilot for merge, and exported via GetCopilot
-// for the read-side handler to render the masked view.
-func (r *Runtime) loadCopilot() (StoredCopilotSettings, error) {
-	raw, err := r.store.GetSetting(copilotSettingsKey)
+// for the read-side handler to render the masked view. Scoped to ctx's org.
+func (r *Runtime) loadCopilot(ctx context.Context) (StoredCopilotSettings, error) {
+	raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey)
 	if err != nil {
 		// Not-found is normal (no overrides yet) — return zero value.
 		return StoredCopilotSettings{}, nil
@@ -301,8 +304,8 @@ func (r *Runtime) loadCopilot() (StoredCopilotSettings, error) {
 // decrypted in-memory) AND the env baseline, so the handler can render
 // a comparison view. The decrypted API keys are NOT included in the
 // response shape; callers use MaskedCopilot for that.
-func (r *Runtime) GetCopilot() (stored StoredCopilotSettings, baseline config.CopilotConfig, secretReadable bool, err error) {
-	stored, err = r.loadCopilot()
+func (r *Runtime) GetCopilot(ctx context.Context) (stored StoredCopilotSettings, baseline config.CopilotConfig, secretReadable bool, err error) {
+	stored, err = r.loadCopilot(ctx)
 	if err != nil {
 		return StoredCopilotSettings{}, r.envBase, false, err
 	}
@@ -412,12 +415,12 @@ type MaskedStoredOtherCopilot struct {
 // RenderMaskedCopilot builds the GET response from a stored record + env
 // baseline + crypto. Secrets are masked using the prefix+tail convention
 // from crypto.go's maskSecret.
-func (r *Runtime) RenderMaskedCopilot() (MaskedCopilot, error) {
-	stored, _, secretsReadable, err := r.GetCopilot()
+func (r *Runtime) RenderMaskedCopilot(ctx context.Context) (MaskedCopilot, error) {
+	stored, _, secretsReadable, err := r.GetCopilot(ctx)
 	if err != nil {
 		return MaskedCopilot{}, err
 	}
-	effective := r.Copilot() // forces a fresh resolve via the cache path
+	effective := r.Copilot(ctx) // forces a fresh resolve via the cache path
 
 	out := MaskedCopilot{
 		Effective: MaskedEffectiveCopilot{
@@ -507,12 +510,37 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 // ResetCopilot clears the BoltDB override entirely so the system falls
 // back to the env baseline for every field. Used by POST /settings/reset
 // when the admin chooses "reset to env defaults" on the Copilot tab.
-func (r *Runtime) ResetCopilot() error {
-	if err := r.store.SetSetting(copilotSettingsKey, []byte("null")); err != nil {
+func (r *Runtime) ResetCopilot(ctx context.Context) error {
+	if err := r.orgStore.SetOrgSetting(ctx, copilotSettingsKey, []byte("null")); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
-	r.InvalidateCopilot()
+	r.InvalidateCopilot(ctx)
 	return nil
+}
+
+// MigrateLegacyCopilot is a one-time, best-effort upgrade shim. Before Copilot
+// settings became per-org, a single global "copilot" record lived in the
+// install-global SettingStore. If the org in ctx has no per-org override yet but
+// a legacy global record exists, copy it across so an upgrading install doesn't
+// silently lose its UI-configured AI key (and fall back to the env baseline).
+//
+// No-op when the org already has a per-org override, when there's no legacy
+// global record (fresh / greenfield installs), or when the legacy record is the
+// reset sentinel "null". Safe to call on every boot — it only acts once, then
+// the per-org override shadows it. Returns true when a migration was performed.
+func (r *Runtime) MigrateLegacyCopilot(ctx context.Context) bool {
+	if _, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey); err == nil {
+		return false // already has a per-org override — nothing to migrate
+	}
+	legacy, err := r.store.GetSetting(copilotSettingsKey)
+	if err != nil || len(legacy) == 0 || string(legacy) == "null" {
+		return false // no usable legacy global record
+	}
+	if err := r.orgStore.SetOrgSetting(ctx, copilotSettingsKey, legacy); err != nil {
+		return false
+	}
+	r.InvalidateCopilot(ctx)
+	return true
 }
 
 // ─── Validation ──────────────────────────────────────────────────────

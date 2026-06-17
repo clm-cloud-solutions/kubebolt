@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -132,7 +133,7 @@ type handlers struct {
 // the request's logging / accounting / chat fields.
 func (h *handlers) liveCopilotConfig() config.CopilotConfig {
 	if h.settingsRuntime != nil {
-		return h.settingsRuntime.Copilot()
+		return h.settingsRuntime.Copilot(context.Background())
 	}
 	return h.copilotConfig
 }

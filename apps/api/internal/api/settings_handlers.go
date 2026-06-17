@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -138,7 +139,7 @@ func (h *handlers) handleGetSettingsCopilot(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
 		return
 	}
-	masked, err := h.settingsRuntime.RenderMaskedCopilot()
+	masked, err := h.settingsRuntime.RenderMaskedCopilot(r.Context())
 	if err != nil {
 		slog.Error("settings copilot get failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "failed to read copilot settings")
@@ -173,7 +174,7 @@ func (h *handlers) handlePutSettingsCopilot(w http.ResponseWriter, r *http.Reque
 		req.Patch = &settings.StoredCopilotSettings{}
 	}
 
-	if err := h.settingsRuntime.PutCopilot(req.Patch, req.PlaintextAPIKey, req.PlaintextFallbackAPIKey); err != nil {
+	if err := h.settingsRuntime.PutCopilot(r.Context(), req.Patch, req.PlaintextAPIKey, req.PlaintextFallbackAPIKey); err != nil {
 		if settings.IsValidation(err) {
 			var ve *settings.ValidationError
 			if errors.As(err, &ve) {
@@ -205,7 +206,7 @@ func (h *handlers) handlePutSettingsCopilot(w http.ResponseWriter, r *http.Reque
 
 	// Re-read the masked view so the UI can update its form state
 	// without a separate GET round-trip after save.
-	masked, err := h.settingsRuntime.RenderMaskedCopilot()
+	masked, err := h.settingsRuntime.RenderMaskedCopilot(r.Context())
 	if err != nil {
 		slog.Warn("settings copilot post-write render failed", slog.String("error", err.Error()))
 		// Still report success — the write happened.
@@ -224,7 +225,7 @@ func (h *handlers) handleResetSettingsCopilot(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
 		return
 	}
-	if err := h.settingsRuntime.ResetCopilot(); err != nil {
+	if err := h.settingsRuntime.ResetCopilot(r.Context()); err != nil {
 		slog.Error("settings copilot reset failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "failed to reset copilot settings")
 		return
@@ -266,7 +267,7 @@ func (h *handlers) handleGetSettingsNotifications(w http.ResponseWriter, r *http
 		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
 		return
 	}
-	masked, err := h.settingsRuntime.RenderMaskedNotifications()
+	masked, err := h.settingsRuntime.RenderMaskedNotifications(r.Context())
 	if err != nil {
 		slog.Error("settings notifications get failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "failed to read notifications settings")
@@ -313,7 +314,7 @@ func (h *handlers) handlePutSettingsNotifications(w http.ResponseWriter, r *http
 		}
 	}
 
-	if err := h.settingsRuntime.PutNotifications(req.Patch, req.PlaintextSlackURL, req.PlaintextDiscordURL, req.PlaintextSMTPPassword); err != nil {
+	if err := h.settingsRuntime.PutNotifications(r.Context(), req.Patch, req.PlaintextSlackURL, req.PlaintextDiscordURL, req.PlaintextSMTPPassword); err != nil {
 		if settings.IsValidation(err) {
 			var ve *settings.ValidationError
 			if errors.As(err, &ve) {
@@ -342,7 +343,7 @@ func (h *handlers) handlePutSettingsNotifications(w http.ResponseWriter, r *http
 		)
 	}
 
-	masked, err := h.settingsRuntime.RenderMaskedNotifications()
+	masked, err := h.settingsRuntime.RenderMaskedNotifications(r.Context())
 	if err != nil {
 		slog.Warn("settings notifications post-write render failed", slog.String("error", err.Error()))
 		respondJSON(w, http.StatusOK, map[string]any{"status": "saved"})
@@ -356,7 +357,7 @@ func (h *handlers) handleResetSettingsNotifications(w http.ResponseWriter, r *ht
 		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
 		return
 	}
-	if err := h.settingsRuntime.ResetNotifications(); err != nil {
+	if err := h.settingsRuntime.ResetNotifications(r.Context()); err != nil {
 		slog.Error("settings notifications reset failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "failed to reset notifications settings")
 		return
@@ -385,7 +386,7 @@ func (h *handlers) applyNotificationsHotReload() {
 	if h.settingsRuntime == nil || h.notifications == nil {
 		return
 	}
-	resolved := h.settingsRuntime.Notifications()
+	resolved := h.settingsRuntime.Notifications(context.Background())
 	h.notifications.SetConfig(notifications.ConfigFromNotifications(resolved))
 	h.notifications.SetNotifiers(notifications.BuildNotifiers(resolved))
 }
@@ -505,7 +506,7 @@ func (h *handlers) handleGetSettingsGeneral(w http.ResponseWriter, r *http.Reque
 		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
 		return
 	}
-	masked, err := h.settingsRuntime.RenderMaskedGeneral()
+	masked, err := h.settingsRuntime.RenderMaskedGeneral(r.Context())
 	if err != nil {
 		slog.Error("settings general get failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "failed to read general settings")
@@ -527,7 +528,7 @@ func (h *handlers) handlePutSettingsGeneral(w http.ResponseWriter, r *http.Reque
 	if req.Patch == nil {
 		req.Patch = &settings.StoredGeneralSettings{}
 	}
-	if err := h.settingsRuntime.PutGeneral(req.Patch); err != nil {
+	if err := h.settingsRuntime.PutGeneral(r.Context(), req.Patch); err != nil {
 		if settings.IsValidation(err) {
 			var ve *settings.ValidationError
 			if errors.As(err, &ve) {
@@ -552,7 +553,7 @@ func (h *handlers) handlePutSettingsGeneral(w http.ResponseWriter, r *http.Reque
 			slog.String("source", "admin_settings_ui"),
 		)
 	}
-	masked, err := h.settingsRuntime.RenderMaskedGeneral()
+	masked, err := h.settingsRuntime.RenderMaskedGeneral(r.Context())
 	if err != nil {
 		slog.Warn("settings general post-write render failed", slog.String("error", err.Error()))
 		respondJSON(w, http.StatusOK, map[string]any{"status": "saved"})
@@ -566,7 +567,7 @@ func (h *handlers) handleResetSettingsGeneral(w http.ResponseWriter, r *http.Req
 		respondError(w, http.StatusServiceUnavailable, "settings runtime not available (persistence disabled)")
 		return
 	}
-	if err := h.settingsRuntime.ResetGeneral(); err != nil {
+	if err := h.settingsRuntime.ResetGeneral(r.Context()); err != nil {
 		slog.Error("settings general reset failed", slog.String("error", err.Error()))
 		respondError(w, http.StatusInternalServerError, "failed to reset general settings")
 		return
@@ -645,7 +646,7 @@ func (h *handlers) handleGetUIConfig(w http.ResponseWriter, r *http.Request) {
 	var displayName string
 	refresh := 30
 	if h.settingsRuntime != nil {
-		cfg := h.settingsRuntime.General()
+		cfg := h.settingsRuntime.General(r.Context())
 		displayName = cfg.DisplayName
 		refresh = cfg.DefaultRefreshIntervalSeconds
 	}

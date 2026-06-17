@@ -347,6 +347,11 @@ func main() {
 		// EE seam: global install settings (jwt_secret + UI config) go through
 		// this SettingStore so a multi-replica Cloud deployment shares one table.
 		settingStore := newSettingStore(store)
+		// EE seam: PER-ORG UI settings (Copilot today) go through this
+		// OrgSettingStore — an RLS table in EE so a second org's config is
+		// invisible at the engine level; the Bolt store (single default tenant)
+		// in OSS.
+		orgSettingStore := newOrgSettingStore(store)
 
 		// Resolve JWT secret: env var > persisted in DB > generate and persist
 		if !authCfg.JWTSecretFromEnv {
@@ -424,7 +429,7 @@ func main() {
 		// settingsRuntime.IngestChannel() instead of os.Getenv directly.
 		envIngestChannelCfg := config.LoadIngestChannelConfig()
 
-		if rt, err := settings.NewRuntime(settingStore, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
+		if rt, err := settings.NewRuntime(settingStore, orgSettingStore, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
 			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
 				slog.String("error", err.Error()))
 		} else {
@@ -619,7 +624,7 @@ func main() {
 		// disabled (no settingsRuntime), env is the only layer.
 		bootNotifCfg := envNotifCfg
 		if settingsRuntime != nil {
-			bootNotifCfg = settingsRuntime.Notifications()
+			bootNotifCfg = settingsRuntime.Notifications(context.Background())
 		}
 		notifiers := notifications.BuildNotifiers(bootNotifCfg)
 		if bootNotifCfg.SlackWebhookURL != "" {
@@ -665,7 +670,7 @@ func main() {
 	// (auth disabled). Read per-connect; repeat switches stay instant (pool).
 	manager.SetCacheSyncTimeoutProvider(func() time.Duration {
 		if settingsRuntime != nil {
-			return time.Duration(settingsRuntime.General().CacheSyncTimeoutSeconds) * time.Second
+			return time.Duration(settingsRuntime.General(context.Background()).CacheSyncTimeoutSeconds) * time.Second
 		}
 		return time.Duration(config.LoadGeneralConfig().CacheSyncTimeoutSeconds) * time.Second
 	})
