@@ -2055,6 +2055,13 @@ export interface AgentInstallConfig {
   authMode?: '' | 'ingest-token' | 'tokenreview'
   authTokenSecret?: string
 
+  // Transport TLS to the backend's gRPC channel. Maps to the helm chart's
+  // tls.enabled. Only consumed by the copy-paste helm flow (AddClusterWizard);
+  // the backend-applied install (installIntegration) decides transport itself.
+  // Default OFF — a dev/plaintext backend is the common first install; the
+  // operator flips it on when the backend terminates TLS.
+  tlsEnabled?: boolean
+
   imageRepo?: string
   imageTag?: string
   imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never'
