@@ -96,6 +96,14 @@ func (h *Handlers) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "type must be 'service' or 'apikey'")
 		return
 	}
+	// Service tokens (kbs_) are install-global machine credentials for internal
+	// integrations (e.g. Autopilot↔API) — a PLATFORM concern. No single org may
+	// mint one. API keys (kbk_) are per-org and stay org-admin. Edition-aware:
+	// in OSS the lone admin is the platform admin.
+	if typ == TokenTypeService && !IsPlatformAdminRequest(r) {
+		respondError(w, http.StatusForbidden, "service tokens are platform-level; only a platform admin may create them")
+		return
+	}
 
 	role := Role(req.Role)
 	if req.Role == "" {

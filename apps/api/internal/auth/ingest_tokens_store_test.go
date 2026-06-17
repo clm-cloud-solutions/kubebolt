@@ -21,7 +21,7 @@ func newTestIngestTokenStore(t *testing.T) *BoltIngestTokenStore {
 
 func TestIngestIssue_ReturnsPlaintextWithPrefixAndStoresHash(t *testing.T) {
 	its := newTestIngestTokenStore(t)
-	plaintext, tok, err := its.Issue(context.Background(), "tenant-1", "", "prod-east", "admin", nil)
+	plaintext, tok, err := its.Issue(context.Background(), "tenant-1", "", "", "prod-east", "admin", nil)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -49,7 +49,7 @@ func TestIngestIssue_TTLSetsExpiration(t *testing.T) {
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	its.nowFn = func() time.Time { return fixed }
 	ttl := 24 * time.Hour
-	_, tok, err := its.Issue(context.Background(), "tenant-1", "", "short", "admin", &ttl)
+	_, tok, err := its.Issue(context.Background(), "tenant-1", "", "", "short", "admin", &ttl)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestIngestIssue_TTLSetsExpiration(t *testing.T) {
 
 func TestIngestLookup_HappyPath(t *testing.T) {
 	its := newTestIngestTokenStore(t)
-	plaintext, tok, _ := its.Issue(context.Background(), "tenant-1", "", "prod", "admin", nil)
+	plaintext, tok, _ := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", nil)
 	gotTok, err := its.Lookup(context.Background(), plaintext)
 	if err != nil {
 		t.Fatalf("Lookup: %v", err)
@@ -92,7 +92,7 @@ func TestIngestLookup_AfterRevoke(t *testing.T) {
 	// ErrTokenNotFound (fail-fast). The token record is kept (RevokedAt set)
 	// for audit. This test pins the contract.
 	its := newTestIngestTokenStore(t)
-	plaintext, tok, _ := its.Issue(context.Background(), "tenant-1", "", "prod", "admin", nil)
+	plaintext, tok, _ := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", nil)
 	if err := its.Revoke(context.Background(), "tenant-1", tok.ID); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
@@ -111,7 +111,7 @@ func TestIngestLookup_Expired(t *testing.T) {
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	its.nowFn = func() time.Time { return fixed }
 	ttl := time.Hour
-	plaintext, _, _ := its.Issue(context.Background(), "tenant-1", "", "prod", "admin", &ttl)
+	plaintext, _, _ := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", &ttl)
 
 	its.nowFn = func() time.Time { return fixed.Add(2 * time.Hour) }
 	if _, err := its.Lookup(context.Background(), plaintext); !errors.Is(err, ErrTokenExpired) {
@@ -121,7 +121,7 @@ func TestIngestLookup_Expired(t *testing.T) {
 
 func TestIngestRotate_PreservesLabelAndIssuesNew(t *testing.T) {
 	its := newTestIngestTokenStore(t)
-	plain1, tok1, _ := its.Issue(context.Background(), "tenant-1", "", "prod", "admin", nil)
+	plain1, tok1, _ := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", nil)
 
 	plain2, tok2, err := its.Rotate(context.Background(), "tenant-1", tok1.ID, "admin")
 	if err != nil {
@@ -149,7 +149,7 @@ func TestIngestRotate_PreservesTTLWindow(t *testing.T) {
 	fixed := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	its.nowFn = func() time.Time { return fixed }
 	ttl := 7 * 24 * time.Hour
-	_, tok1, _ := its.Issue(context.Background(), "tenant-1", "", "prod", "admin", &ttl)
+	_, tok1, _ := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", &ttl)
 
 	its.nowFn = func() time.Time { return fixed.Add(time.Hour) }
 	_, tok2, err := its.Rotate(context.Background(), "tenant-1", tok1.ID, "admin")
@@ -167,7 +167,7 @@ func TestIngestRotate_PreservesTTLWindow(t *testing.T) {
 
 func TestIngestMarkUsed_DebouncedToOncePerMinute(t *testing.T) {
 	its := newTestIngestTokenStore(t)
-	_, tok, _ := its.Issue(context.Background(), "tenant-1", "", "prod", "admin", nil)
+	_, tok, _ := its.Issue(context.Background(), "tenant-1", "", "", "prod", "admin", nil)
 	base := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
 
 	if err := its.MarkUsed(context.Background(), "tenant-1", tok.ID, base); err != nil {
@@ -202,7 +202,7 @@ func TestConcurrentIngestIssue_NoCollisions(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			p, _, err := its.Issue(context.Background(), "tenant-1", "", "concurrent", "admin", nil)
+			p, _, err := its.Issue(context.Background(), "tenant-1", "", "", "concurrent", "admin", nil)
 			plains[i] = p
 			errs[i] = err
 		}(i)

@@ -4,9 +4,9 @@
 //
 // Layout (three buckets, sharing the same kubebolt.db file as the user store):
 //
-//   tenants               key: tenant_id (uuid)        value: Tenant JSON
-//   tenant_token_index    key: hex(sha256(plaintext))  value: tenant_id
-//   tenant_name_index     key: lower(tenant.name)      value: tenant_id
+//	tenants               key: tenant_id (uuid)        value: Tenant JSON
+//	tenant_token_index    key: hex(sha256(plaintext))  value: tenant_id
+//	tenant_name_index     key: lower(tenant.name)      value: tenant_id
 //
 // The token index makes LookupByToken O(1) without scanning every tenant.
 // The name index enforces uniqueness on Tenant.Name.
@@ -72,13 +72,13 @@ var (
 // preserves wire compatibility with pre-Phase-3 tenant records (they
 // unmarshal cleanly with Limits == nil).
 type Tenant struct {
-	ID           string        `json:"id"`
-	Name         string        `json:"name"`
-	Plan         string        `json:"plan"`
-	CreatedAt    time.Time     `json:"createdAt"`
-	UpdatedAt    time.Time     `json:"updatedAt"`
-	Disabled     bool          `json:"disabled"`
-	Limits       *TenantLimits `json:"limits,omitempty"`
+	ID        string        `json:"id"`
+	Name      string        `json:"name"`
+	Plan      string        `json:"plan"`
+	CreatedAt time.Time     `json:"createdAt"`
+	UpdatedAt time.Time     `json:"updatedAt"`
+	Disabled  bool          `json:"disabled"`
+	Limits    *TenantLimits `json:"limits,omitempty"`
 }
 
 // (IngestToken + its store moved to ingest_tokens_store.go — tokens are no
@@ -135,8 +135,14 @@ func NewTenantsStore(db *bolt.DB) (*TenantsStore, error) {
 		db:    db,
 		nowFn: func() time.Time { return time.Now().UTC() },
 	}
-	if _, err := s.ensureDefaultTenant(); err != nil {
-		return nil, fmt.Errorf("seed default tenant: %w", err)
+	// Single-tenant (OSS / self-hosted) auto-seeds the canonical "default"
+	// tenant. The multi-tenant edition does NOT: there is no magic default —
+	// the operator's org is a normal org created at first boot via BootstrapOrg
+	// (cmd/server operator bootstrap). See Track D §2.6.
+	if !MultiTenantEnabled {
+		if _, err := s.ensureDefaultTenant(); err != nil {
+			return nil, fmt.Errorf("seed default tenant: %w", err)
+		}
 	}
 	return s, nil
 }
@@ -148,12 +154,39 @@ func (s *TenantsStore) ensureDefaultTenant() (*Tenant, error) {
 	return s.CreateTenant(DefaultTenantName, "self-hosted")
 }
 
-// GetDefaultTenant returns the auto-seeded "default" tenant. Callers
-// in self-hosted single-cluster paths use this as the canonical tenant
-// for TokenReview-authenticated agents (where the credential identifies
-// the cluster, not a tenant).
+// GetDefaultTenant returns the canonical/primary org — the home for data that
+// isn't explicitly tenant-stamped (the directly-connected kubeconfig cluster,
+// TokenReview agents, the unauthenticated-ingest fallback). In single-tenant
+// (OSS) that's the auto-seeded "default" tenant. In multi-tenant (cloud) there
+// is no "default" tenant (Track D §2.6), so it resolves to the OPERATOR org —
+// the earliest-created tenant (created first at first-boot bootstrap). This
+// keeps every legacy "default tenant" caller working uniformly across editions.
 func (s *TenantsStore) GetDefaultTenant() (*Tenant, error) {
-	return s.getTenantByName(DefaultTenantName)
+	if t, err := s.getTenantByName(DefaultTenantName); err == nil {
+		return t, nil
+	}
+	all, err := s.ListTenants()
+	if err != nil {
+		return nil, err
+	}
+	return earliestTenant(all)
+}
+
+// earliestTenant returns the oldest tenant — the operator/primary org in the
+// multi-tenant edition (created first at bootstrap). ErrTenantNotFound if none
+// exist yet (a brand-new DB before the operator org is bootstrapped).
+func earliestTenant(ts []Tenant) (*Tenant, error) {
+	if len(ts) == 0 {
+		return nil, ErrTenantNotFound
+	}
+	idx := 0
+	for i := range ts {
+		if ts[i].CreatedAt.Before(ts[idx].CreatedAt) {
+			idx = i
+		}
+	}
+	t := ts[idx]
+	return &t, nil
 }
 
 func (s *TenantsStore) getTenantByName(name string) (*Tenant, error) {

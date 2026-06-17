@@ -25,10 +25,7 @@ func newSignupHandlers(t *testing.T) *Handlers {
 	if err != nil {
 		t.Fatalf("NewTeamStore: %v", err)
 	}
-	dt, err := tenants.GetDefaultTenant()
-	if err != nil {
-		t.Fatalf("GetDefaultTenant: %v", err)
-	}
+	dt := ensureFixtureDefaultTenant(t, tenants)
 	team, err := teams.EnsureDefaultTeam(context.Background(), dt.ID)
 	if err != nil {
 		t.Fatalf("EnsureDefaultTeam: %v", err)

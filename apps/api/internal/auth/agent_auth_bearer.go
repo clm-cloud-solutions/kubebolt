@@ -71,6 +71,7 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	identity := &AgentIdentity{
 		Mode:        ModeIngestToken,
 		TenantID:    tenant.ID,
+		TeamID:      tok.TeamID,
 		TLSVerified: peerHasVerifiedClientCert(p),
 		AuthedAt:    now,
 	}

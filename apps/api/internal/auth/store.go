@@ -28,7 +28,19 @@ var (
 	agentsBucket           = []byte("agents")           // persistent agent registry records
 	insightsBucket         = []byte("insights")         // persistent insight records (Sprint 0)
 	kobiActionsBucket      = []byte("kobi_actions")     // durable mutation audit trail (Sprint 1)
+	orgSettingsBucket      = []byte("org_settings")     // per-org UI settings blobs (keyed org\x00key)
 )
+
+// orgSettingKey composes the BoltDB key for a per-org setting: the org id, a
+// NUL separator, then the domain key. The NUL byte can't appear in a UUID or a
+// domain key, so it's an unambiguous separator. OSS resolves org to
+// DefaultTenantName, so its keys are stable single-tenant values.
+func orgSettingKey(org, key string) []byte {
+	if org == "" {
+		org = DefaultTenantName
+	}
+	return []byte(org + "\x00" + key)
+}
 
 // Role represents a KubeBolt application-level role.
 type Role string
@@ -109,6 +121,11 @@ type RefreshToken struct {
 	UserID    string    `json:"userId"`
 	ExpiresAt time.Time `json:"expiresAt"`
 	CreatedAt time.Time `json:"createdAt"`
+	// OrgID is the owning user's organization, resolved at lookup time so the
+	// pre-auth refresh-token rotation (where the request carries no org yet)
+	// can scope the follow-up GetUser/rotation writes to the right tenant under
+	// RLS. Derived on read (not a stored column); always "" in single-tenant OSS.
+	OrgID string `json:"orgId,omitempty"`
 }
 
 // Store manages user and token persistence with BoltDB.
@@ -130,7 +147,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -637,6 +654,48 @@ type SettingStore interface {
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
 var _ SettingStore = (*Store)(nil)
+
+// OrgSettingStore is the seam for PER-ORG UI settings blobs (Copilot today;
+// general/notifications later). Unlike SettingStore (global install settings:
+// jwt_secret etc.), these are tenant-scoped: each org configures its own. The
+// org is taken from ctx (auth.TenantIDFromContext), like every other ctx-scoped
+// EE store. OSS uses the BoltDB *Store (single default tenant → one row per
+// key, identical to the old global behavior); EE swaps a Postgres impl backed
+// by an RLS table so a second org's settings are invisible at the engine level.
+type OrgSettingStore interface {
+	GetOrgSetting(ctx context.Context, key string) ([]byte, error)
+	SetOrgSetting(ctx context.Context, key string, value []byte) error
+}
+
+// Compile-time guarantee the Bolt impl satisfies the per-org seam.
+var _ OrgSettingStore = (*Store)(nil)
+
+// GetOrgSetting retrieves a per-org setting value, scoped to the org resolved
+// from ctx. Mirrors GetSetting's not-found error so the settings Runtime treats
+// a miss as "no override → env baseline".
+func (s *Store) GetOrgSetting(ctx context.Context, key string) ([]byte, error) {
+	org := TenantIDFromContext(ctx)
+	var val []byte
+	err := s.db.View(func(tx *bolt.Tx) error {
+		v := tx.Bucket(orgSettingsBucket).Get(orgSettingKey(org, key))
+		if v == nil {
+			return fmt.Errorf("setting %q not found", key)
+		}
+		val = make([]byte, len(v))
+		copy(val, v)
+		return nil
+	})
+	return val, err
+}
+
+// SetOrgSetting stores a per-org setting value, scoped to the org resolved from
+// ctx.
+func (s *Store) SetOrgSetting(ctx context.Context, key string, value []byte) error {
+	org := TenantIDFromContext(ctx)
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return tx.Bucket(orgSettingsBucket).Put(orgSettingKey(org, key), value)
+	})
+}
 
 // AllSettings returns every key→value pair in the settings bucket. Used by the
 // Bolt→Postgres migration to copy settings without enumerating known keys.

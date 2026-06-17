@@ -25,10 +25,7 @@ func newHierarchyHandlers(t *testing.T) (*Handlers, *BoltTeamStore, string) {
 	if err != nil {
 		t.Fatalf("NewTeamStore: %v", err)
 	}
-	dt, err := tenants.GetDefaultTenant()
-	if err != nil {
-		t.Fatalf("GetDefaultTenant: %v", err)
-	}
+	dt := ensureFixtureDefaultTenant(t, tenants)
 	team, err := teams.EnsureDefaultTeam(context.Background(), dt.ID)
 	if err != nil {
 		t.Fatalf("EnsureDefaultTeam: %v", err)
@@ -70,7 +67,13 @@ func memberIDs(t *testing.T, teams *BoltTeamStore, teamID string) map[string]boo
 	return out
 }
 
-func TestCreateUser_EnrollsInDefaultTeam(t *testing.T) {
+// TestCreateUser_DefaultTeamEnrolment pins the edition-specific behavior of
+// create-without-a-team:
+//   - OSS: every user is auto-enrolled in the single default team.
+//   - Multi-tenant: the user is org-only (no team) — the admin assigns teams
+//     explicitly. (Auto-enrolling cross-org against a boot-pinned default team
+//     UUID was the bug this change fixes.)
+func TestCreateUser_DefaultTeamEnrolment(t *testing.T) {
 	h, teams, teamID := newHierarchyHandlers(t)
 	srv := mountUsers(h, "caller-admin")
 
@@ -83,8 +86,56 @@ func TestCreateUser_EnrollsInDefaultTeam(t *testing.T) {
 	var created UserResponse
 	decodeJSON(t, rr.Body.Bytes(), &created)
 
-	if !memberIDs(t, teams, teamID)[created.ID] {
-		t.Errorf("new user %s was not enrolled in the default team", created.ID)
+	enrolled := memberIDs(t, teams, teamID)[created.ID]
+	if MultiTenantEnabled {
+		if enrolled {
+			t.Errorf("multi-tenant: new user %s should be org-only (no auto-enrol), but was enrolled", created.ID)
+		}
+	} else if !enrolled {
+		t.Errorf("OSS: new user %s was not enrolled in the default team", created.ID)
+	}
+}
+
+// TestCreateUser_WithTeamID enrolls the new user in an explicitly chosen team
+// at creation — the org-level "create user" modal's optional team selector and
+// the team-level "create user" path. Edition-agnostic on membership; the
+// team_role elevation is honored only in multi-tenant (OSS teams never elevate).
+func TestCreateUser_WithTeamID(t *testing.T) {
+	h, teams, teamID := newHierarchyHandlers(t)
+	srv := mountUsers(h, "caller-admin")
+
+	rr := httptest.NewRecorder()
+	body := `{"username":"erin","password":"password123","name":"Erin","role":"viewer","teamId":"` + teamID + `","teamRole":"editor"}`
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body)))
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("CreateUser status = %d, body=%s", rr.Code, rr.Body)
+	}
+	var created UserResponse
+	decodeJSON(t, rr.Body.Bytes(), &created)
+
+	m, ok, err := teams.GetMembership(context.Background(), teamID, created.ID)
+	if err != nil || !ok {
+		t.Fatalf("expected membership in team %s, ok=%v err=%v", teamID, ok, err)
+	}
+	if MultiTenantEnabled && m.TeamRole != RoleEditor {
+		t.Errorf("team role = %q, want editor", m.TeamRole)
+	}
+}
+
+// TestCreateUser_InvalidTeamID rejects an unknown / cross-org team id up front
+// (multi-tenant). OSS ignores teamId entirely, so this guard is multi-tenant.
+func TestCreateUser_InvalidTeamID(t *testing.T) {
+	if !MultiTenantEnabled {
+		t.Skip("team-id validation is a multi-tenant path")
+	}
+	h, _, _ := newHierarchyHandlers(t)
+	srv := mountUsers(h, "caller-admin")
+
+	rr := httptest.NewRecorder()
+	body := `{"username":"frank","password":"password123","name":"Frank","role":"viewer","teamId":"does-not-exist"}`
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodPost, "/users", strings.NewReader(body)))
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body=%s", rr.Code, rr.Body)
 	}
 }
 
@@ -97,7 +148,7 @@ func TestDeleteUser_RemovesMembership(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	h.enrollInDefaultTeam(context.Background(), u.ID)
+	h.enrollNewUser(context.Background(), u.ID, teamID, "")
 	if !memberIDs(t, teams, teamID)[u.ID] {
 		t.Fatalf("precondition: bob should be a member before delete")
 	}
@@ -113,13 +164,45 @@ func TestDeleteUser_RemovesMembership(t *testing.T) {
 	}
 }
 
+// TestDeleteUser_RemovesAllMemberships guards the orphan-row regression: a user
+// in MULTIPLE teams must be removed from every one on delete (not just the
+// default), or the team list shows a blank "ghost" member.
+func TestDeleteUser_RemovesAllMemberships(t *testing.T) {
+	h, teams, teamA := newHierarchyHandlers(t)
+	teamB, err := teams.CreateTeam(context.Background(), h.defaultOrgID, "team-b")
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	u, err := h.store.CreateUser(context.Background(), "grace", "", "Grace", "password123", RoleEditor)
+	if err != nil {
+		t.Fatalf("CreateUser: %v", err)
+	}
+	for _, tid := range []string{teamA, teamB.ID} {
+		if _, err := teams.AddMember(context.Background(), tid, u.ID, ""); err != nil {
+			t.Fatalf("AddMember %s: %v", tid, err)
+		}
+	}
+
+	srv := mountUsers(h, "caller-admin")
+	rr := httptest.NewRecorder()
+	srv.ServeHTTP(rr, httptest.NewRequest(http.MethodDelete, "/users/"+u.ID, nil))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("DeleteUser status = %d, body=%s", rr.Code, rr.Body)
+	}
+	if memberIDs(t, teams, teamA)[u.ID] || memberIDs(t, teams, teamB.ID)[u.ID] {
+		t.Errorf("deleted user %s should be removed from ALL teams (no orphan rows)", u.ID)
+	}
+}
+
 func TestGetMe_IncludesOrgAndTeamWithEffectiveRole(t *testing.T) {
-	h, _, _ := newHierarchyHandlers(t)
+	h, _, teamID := newHierarchyHandlers(t)
 	u, err := h.store.CreateUser(context.Background(), "carol", "", "Carol", "password123", RoleViewer)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
-	h.enrollInDefaultTeam(context.Background(), u.ID)
+	// Enroll explicitly in the default team: multi-tenant no longer auto-enrolls
+	// (org-only is valid), so a "has a team" assertion must put them in one.
+	h.enrollNewUser(context.Background(), u.ID, teamID, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
 	req = req.WithContext(context.WithValue(req.Context(), claimsKey, &Claims{
@@ -146,9 +229,9 @@ func TestGetMe_IncludesOrgAndTeamWithEffectiveRole(t *testing.T) {
 }
 
 func TestListTeams_ReturnsDefaultTeamWithMemberCount(t *testing.T) {
-	h, _, _ := newHierarchyHandlers(t)
+	h, _, teamID := newHierarchyHandlers(t)
 	u, _ := h.store.CreateUser(context.Background(), "dave", "", "Dave", "password123", RoleEditor)
-	h.enrollInDefaultTeam(context.Background(), u.ID)
+	h.enrollNewUser(context.Background(), u.ID, teamID, "")
 
 	rr := httptest.NewRecorder()
 	h.ListTeams(rr, httptest.NewRequest(http.MethodGet, "/teams", nil))
@@ -181,5 +264,46 @@ func TestCreateTeam_OSSGuardrailRequiresEE(t *testing.T) {
 	}
 	if body["code"] != ErrCodeRequiresEE {
 		t.Errorf("expected code %q, got %q", ErrCodeRequiresEE, body["code"])
+	}
+}
+
+// reqWithPrincipal builds a request whose context carries an authenticated
+// principal, the way RequireAuth would in production.
+func reqWithPrincipal(userID string, role Role) *http.Request {
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	return r.WithContext(context.WithValue(r.Context(), claimsKey, &Claims{UserID: userID, Role: role}))
+}
+
+// TestCanManageTeam pins the team-admin authorization (Track D §11): org admins
+// manage any team; a team's own admin manages that team; a plain member cannot.
+func TestCanManageTeam(t *testing.T) {
+	h, teams, teamID := newHierarchyHandlers(t)
+
+	// Org admin → manages any team in the org.
+	if !h.canManageTeam(reqWithPrincipal("admin-uid", RoleAdmin), teamID) {
+		t.Error("org admin should manage any team")
+	}
+
+	// A viewer who is the team's admin (team_role admin) → manages it.
+	ta, _ := h.store.CreateUser(context.Background(), "ta", "", "TA", "password123", RoleViewer)
+	if _, err := teams.AddMember(context.Background(), teamID, ta.ID, RoleAdmin); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if !h.canManageTeam(reqWithPrincipal(ta.ID, RoleViewer), teamID) {
+		t.Error("team-admin should manage their own team")
+	}
+
+	// A viewer who is a plain member (inherits org role) → cannot manage.
+	tm, _ := h.store.CreateUser(context.Background(), "tm", "", "TM", "password123", RoleViewer)
+	if _, err := teams.AddMember(context.Background(), teamID, tm.ID, ""); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	if h.canManageTeam(reqWithPrincipal(tm.ID, RoleViewer), teamID) {
+		t.Error("a plain member must not manage the team")
+	}
+
+	// A non-member viewer → cannot manage.
+	if h.canManageTeam(reqWithPrincipal("stranger", RoleViewer), teamID) {
+		t.Error("a non-member must not manage the team")
 	}
 }

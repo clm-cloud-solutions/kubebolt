@@ -39,7 +39,7 @@ func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, *auth.BoltInges
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	plaintext, _, err := its.Issue(context.Background(), tn.ID, "", "scrape", "admin", nil)
+	plaintext, _, err := its.Issue(context.Background(), tn.ID, "", "", "scrape", "admin", nil)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}

@@ -153,7 +153,7 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), req.TenantID, "", label, issuer, nil)
+	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), req.TenantID, "", "", label, issuer, nil)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
