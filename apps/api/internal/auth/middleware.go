@@ -103,6 +103,45 @@ func ContextUserID(r *http.Request) string {
 	return claims.UserID
 }
 
+// RequirePlatformAdmin gates platform-tier surfaces — the isolated /platform
+// portal AND the install-global settings (auth, ingest-channel, setup, service
+// tokens) that no single ORG may modify. It is EDITION-AWARE:
+//
+//   - Multi-tenant (Cloud): only a token carrying the `plat` claim passes;
+//     everyone else gets 404 — not 403 — so the surface is not even disclosed
+//     to a customer org admin. This is the real security boundary: an org admin
+//     must never toggle install-wide auth or agent ingest.
+//   - OSS / EE self-hosted single-tenant: there is no separate platform
+//     operator — the lone ADMIN is the platform admin. So the gate degrades to
+//     "must be an org admin": RoleAdmin passes, lower roles 404. Auth-disabled
+//     dev passes (ContextRole → RoleAdmin).
+//
+// The non-disclosure 404 (vs 403) is deliberate in both editions.
+func RequirePlatformAdmin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !IsPlatformAdminRequest(r) {
+			http.Error(w, `{"error":"not found"}`, http.StatusNotFound)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// IsPlatformAdminRequest reports whether the request may act as a platform admin
+// (see RequirePlatformAdmin for the edition rules). Exposed so handlers that mix
+// platform and org fields in one payload (e.g. the General settings PUT) can
+// gate per-field instead of per-route.
+func IsPlatformAdminRequest(r *http.Request) bool {
+	claims := ContextClaims(r)
+	if MultiTenantEnabled {
+		// Cloud: the explicit `plat` claim is required. nil claims means
+		// auth-disabled (dev) — pass, mirroring ContextRole → RoleAdmin.
+		return claims == nil || claims.Plat
+	}
+	// Single-tenant: the lone admin is the platform admin.
+	return ContextRole(r) == RoleAdmin
+}
+
 func extractBearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if auth == "" {

@@ -6,6 +6,7 @@ import { api, ApiError, type Integration } from '@/services/api'
 import { StatusBadge } from '@/pages/admin/IntegrationsPage'
 import { AgentConfigureDialog } from '@/components/admin/AgentConfigureDialog'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
+import { useAuth } from '@/contexts/AuthContext'
 
 interface Props {
   integration: Integration
@@ -586,6 +587,7 @@ function PrometheusSetupSnippet() {
   // OSS surfaces only the auto-seeded "default" tenant — same
   // pattern AgentTokensPage uses. Multi-tenant SaaS adds a picker
   // here when that flow lands.
+  const { user } = useAuth()
   const { data: tenants } = useQuery({
     queryKey: ['tenants'],
     queryFn: api.listTenants,
@@ -607,11 +609,13 @@ function PrometheusSetupSnippet() {
   // value is display-only.
   const clusterName = overview?.clusterName ?? '<your-cluster-name>'
 
-  // Pick the default tenant in OSS; multi-tenant SaaS would surface
-  // a selector here. Sentinel placeholder if the tenants endpoint
-  // failed — the operator can still see the snippet shape, just
-  // needs to fill the tenant UUID manually.
-  const tenantID = tenants?.find((t) => t.name === 'default')?.id
+  // The token's tenant = the caller's own org (the /tenants list is scoped to
+  // it). Prefer the user's org id; fall back to the OSS auto-seeded "default"
+  // tenant, then the only listed tenant. Sentinel placeholder if the tenants
+  // endpoint failed — the operator can still see the snippet shape and fill the
+  // tenant UUID manually. (Multi-tenant cloud has no "default" tenant.)
+  const tenantID = tenants?.find((t) => t.id === user?.org?.id)?.id
+    ?? tenants?.find((t) => t.name === 'default')?.id
     ?? tenants?.[0]?.id
     ?? '<TENANT_ID>'
 

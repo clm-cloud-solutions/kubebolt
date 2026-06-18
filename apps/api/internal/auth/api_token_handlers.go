@@ -64,7 +64,7 @@ func (h *Handlers) ListAPITokens(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "api tokens not configured")
 		return
 	}
-	toks, err := h.apiTokens.List()
+	toks, err := h.apiTokens.List(r.Context())
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "list api tokens")
 		return
@@ -96,6 +96,14 @@ func (h *Handlers) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "type must be 'service' or 'apikey'")
 		return
 	}
+	// Service tokens (kbs_) are install-global machine credentials for internal
+	// integrations (e.g. Autopilot↔API) — a PLATFORM concern. No single org may
+	// mint one. API keys (kbk_) are per-org and stay org-admin. Edition-aware:
+	// in OSS the lone admin is the platform admin.
+	if typ == TokenTypeService && !IsPlatformAdminRequest(r) {
+		respondError(w, http.StatusForbidden, "service tokens are platform-level; only a platform admin may create them")
+		return
+	}
 
 	role := Role(req.Role)
 	if req.Role == "" {
@@ -118,7 +126,7 @@ func (h *Handlers) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	createdBy := ContextUserID(r)
-	plaintext, tok, err := h.apiTokens.Issue(typ, role, scopes, req.Label, createdBy, ttl)
+	plaintext, tok, err := h.apiTokens.Issue(r.Context(), typ, role, scopes, req.Label, createdBy, ttl)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "issue api token")
 		return
@@ -136,7 +144,7 @@ func (h *Handlers) DeleteAPIToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.apiTokens.Revoke(id); err != nil {
+	if err := h.apiTokens.Revoke(r.Context(), id); err != nil {
 		if err == ErrTokenNotFound {
 			respondError(w, http.StatusNotFound, "token not found")
 			return

@@ -21,6 +21,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,21 +79,21 @@ func EffectiveRole(orgRole, teamRole Role) Role {
 // PostgresTeamStore (multi-team). MemoryTeamStore backs tests.
 type TeamStore interface {
 	// EnsureDefaultTeam returns the org's "default" team, creating it if absent.
-	EnsureDefaultTeam(orgID string) (*Team, error)
-	CreateTeam(orgID, name string) (*Team, error)
-	GetTeam(id string) (*Team, error)
-	ListTeams(orgID string) ([]Team, error)
-	UpdateTeam(id string, mut func(*Team) error) (*Team, error)
-	DeleteTeam(id string) error
+	EnsureDefaultTeam(ctx context.Context, orgID string) (*Team, error)
+	CreateTeam(ctx context.Context, orgID, name string) (*Team, error)
+	GetTeam(ctx context.Context, id string) (*Team, error)
+	ListTeams(ctx context.Context, orgID string) ([]Team, error)
+	UpdateTeam(ctx context.Context, id string, mut func(*Team) error) (*Team, error)
+	DeleteTeam(ctx context.Context, id string) error
 
 	// AddMember adds (or updates the team_role of) a user in a team. Idempotent.
-	AddMember(teamID, userID string, teamRole Role) (*Membership, error)
-	RemoveMember(teamID, userID string) error
-	GetMembership(teamID, userID string) (*Membership, bool, error)
-	ListMembers(teamID string) ([]Membership, error)
+	AddMember(ctx context.Context, teamID, userID string, teamRole Role) (*Membership, error)
+	RemoveMember(ctx context.Context, teamID, userID string) error
+	GetMembership(ctx context.Context, teamID, userID string) (*Membership, bool, error)
+	ListMembers(ctx context.Context, teamID string) ([]Membership, error)
 	// ListUserTeams returns every membership for a user — drives role/access
 	// resolution across the teams they belong to.
-	ListUserTeams(userID string) ([]Membership, error)
+	ListUserTeams(ctx context.Context, userID string) ([]Membership, error)
 }
 
 func teamNameKey(orgID, name string) []byte {
@@ -126,7 +127,7 @@ func NewTeamStore(db *bolt.DB) (*BoltTeamStore, error) {
 	return &BoltTeamStore{db: db}, nil
 }
 
-func (s *BoltTeamStore) EnsureDefaultTeam(orgID string) (*Team, error) {
+func (s *BoltTeamStore) EnsureDefaultTeam(ctx context.Context, orgID string) (*Team, error) {
 	var found *Team
 	if err := s.db.View(func(tx *bolt.Tx) error {
 		if id := tx.Bucket(teamNameIndexBucket).Get(teamNameKey(orgID, DefaultTeamName)); id != nil {
@@ -146,10 +147,10 @@ func (s *BoltTeamStore) EnsureDefaultTeam(orgID string) (*Team, error) {
 	if found != nil {
 		return found, nil
 	}
-	return s.CreateTeam(orgID, DefaultTeamName)
+	return s.CreateTeam(ctx, orgID, DefaultTeamName)
 }
 
-func (s *BoltTeamStore) CreateTeam(orgID, name string) (*Team, error) {
+func (s *BoltTeamStore) CreateTeam(_ context.Context, orgID, name string) (*Team, error) {
 	name = strings.TrimSpace(name)
 	if orgID == "" || name == "" {
 		return nil, fmt.Errorf("orgID and name are required")
@@ -175,7 +176,7 @@ func (s *BoltTeamStore) CreateTeam(orgID, name string) (*Team, error) {
 	return team, nil
 }
 
-func (s *BoltTeamStore) GetTeam(id string) (*Team, error) {
+func (s *BoltTeamStore) GetTeam(_ context.Context, id string) (*Team, error) {
 	var team *Team
 	err := s.db.View(func(tx *bolt.Tx) error {
 		raw := tx.Bucket(teamsBucket).Get([]byte(id))
@@ -192,7 +193,7 @@ func (s *BoltTeamStore) GetTeam(id string) (*Team, error) {
 	return team, err
 }
 
-func (s *BoltTeamStore) ListTeams(orgID string) ([]Team, error) {
+func (s *BoltTeamStore) ListTeams(_ context.Context, orgID string) ([]Team, error) {
 	var out []Team
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(teamsBucket).ForEach(func(_, v []byte) error {
@@ -209,7 +210,7 @@ func (s *BoltTeamStore) ListTeams(orgID string) ([]Team, error) {
 	return out, err
 }
 
-func (s *BoltTeamStore) UpdateTeam(id string, mut func(*Team) error) (*Team, error) {
+func (s *BoltTeamStore) UpdateTeam(_ context.Context, id string, mut func(*Team) error) (*Team, error) {
 	var team *Team
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(teamsBucket)
@@ -248,7 +249,7 @@ func (s *BoltTeamStore) UpdateTeam(id string, mut func(*Team) error) (*Team, err
 	return team, err
 }
 
-func (s *BoltTeamStore) DeleteTeam(id string) error {
+func (s *BoltTeamStore) DeleteTeam(_ context.Context, id string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		b := tx.Bucket(teamsBucket)
 		raw := b.Get([]byte(id))
@@ -279,7 +280,7 @@ func (s *BoltTeamStore) DeleteTeam(id string) error {
 	})
 }
 
-func (s *BoltTeamStore) AddMember(teamID, userID string, teamRole Role) (*Membership, error) {
+func (s *BoltTeamStore) AddMember(_ context.Context, teamID, userID string, teamRole Role) (*Membership, error) {
 	if teamRole != "" && !ValidRole(teamRole) {
 		return nil, fmt.Errorf("invalid team role %q", teamRole)
 	}
@@ -307,13 +308,13 @@ func (s *BoltTeamStore) AddMember(teamID, userID string, teamRole Role) (*Member
 	return m, nil
 }
 
-func (s *BoltTeamStore) RemoveMember(teamID, userID string) error {
+func (s *BoltTeamStore) RemoveMember(_ context.Context, teamID, userID string) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		return tx.Bucket(teamMembersBucket).Delete(memberKey(teamID, userID))
 	})
 }
 
-func (s *BoltTeamStore) GetMembership(teamID, userID string) (*Membership, bool, error) {
+func (s *BoltTeamStore) GetMembership(_ context.Context, teamID, userID string) (*Membership, bool, error) {
 	var m *Membership
 	err := s.db.View(func(tx *bolt.Tx) error {
 		raw := tx.Bucket(teamMembersBucket).Get(memberKey(teamID, userID))
@@ -333,7 +334,7 @@ func (s *BoltTeamStore) GetMembership(teamID, userID string) (*Membership, bool,
 	return m, m != nil, nil
 }
 
-func (s *BoltTeamStore) ListMembers(teamID string) ([]Membership, error) {
+func (s *BoltTeamStore) ListMembers(_ context.Context, teamID string) ([]Membership, error) {
 	var out []Membership
 	err := s.db.View(func(tx *bolt.Tx) error {
 		c := tx.Bucket(teamMembersBucket).Cursor()
@@ -352,7 +353,7 @@ func (s *BoltTeamStore) ListMembers(teamID string) ([]Membership, error) {
 
 // ListUserTeams scans memberships filtering by user. OSS scale (one default
 // team, all users) makes the scan trivial; the EE Postgres impl indexes user_id.
-func (s *BoltTeamStore) ListUserTeams(userID string) ([]Membership, error) {
+func (s *BoltTeamStore) ListUserTeams(_ context.Context, userID string) ([]Membership, error) {
 	var out []Membership
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(teamMembersBucket).ForEach(func(_, v []byte) error {

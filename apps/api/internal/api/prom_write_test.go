@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -38,7 +39,7 @@ func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, *auth.BoltInges
 	if err != nil {
 		t.Fatalf("CreateTenant: %v", err)
 	}
-	plaintext, _, err := its.Issue(tn.ID, "", "scrape", "admin", nil)
+	plaintext, _, err := its.Issue(context.Background(), tn.ID, "", "", "scrape", "admin", nil)
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
@@ -51,7 +52,7 @@ func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, *auth.BoltInges
 // directly when tokens were inlined.
 func lookupBearerTenant(t *testing.T, ts *auth.TenantsStore, its *auth.BoltIngestTokenStore, plaintext string) *auth.Tenant {
 	t.Helper()
-	tok, err := its.Lookup(plaintext)
+	tok, err := its.Lookup(context.Background(), plaintext)
 	if err != nil {
 		t.Fatalf("ingest Lookup: %v", err)
 	}

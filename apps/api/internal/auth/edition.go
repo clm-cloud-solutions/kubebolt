@@ -1,22 +1,23 @@
 package auth
 
-// edition.go holds the OSS↔EE capability seam for org/team management.
+// edition.go holds the edition seam for multi-org / multi-tenant management.
 //
-// OSS operates a single, fixed hierarchy: ONE organization (the auto-seeded
-// "default" tenant) with ONE team ("default") under it, and every user is a
-// member of both. Creating additional tenants or teams is an EE/SaaS feature.
-// The line is drawn HERE, server-side, behind a build-tag seam — the OSS
-// backend returns 409 + code "requires_ee" so the UI can surface an upgrade
-// CTA, while EE flips the switch to unlock the management endpoints.
+// Multi-tenant (multiple organizations) is a CLOUD-ONLY capability. There are
+// three editions, separated by build tags:
 //
-// This replaces the earlier "expose everything, let the frontend hide it"
-// policy: a UI-only guard is not a real boundary (the REST surface was still
-// reachable). The seam mirrors DefaultTenantResolver (tenant_context.go) — OSS
-// ships the default value; EE overrides it from a build-tagged file that lives
-// only in the private repo:
+//	OSS            (no tags)        → single-tenant
+//	EE Self-Hosted (-tags ee)       → single-tenant, FORCED
+//	Cloud SaaS     (-tags ee,saas)  → multi-tenant
 //
-//	//go:build ee
-//	func init() { MultiTenantEnabled = true }
+// OSS and EE Self-Hosted operate a single, fixed organization (the auto-seeded
+// "default" tenant) with its team(s) under it. Standing up a SECOND organization
+// is a Cloud-only feature: the multi-org endpoints (tenant CRUD, self-service
+// signup) return 409 + code "requires_ee" when MultiTenantEnabled is false, and
+// the flag is flipped ONLY by edition_saas.go (//go:build saas) — never by `ee`
+// alone. That makes single-tenant a hard, build-level guarantee for OSS and EE
+// Self-Hosted: no env var or runtime switch can create a second tenant; only a
+// fork + rebuild could. The `saas` tag is meaningful only with `ee`, which
+// provides the Postgres stores multi-tenancy relies on.
 //
 // See internal/saas/kubebolt-oss-ee-split-runbook.md §2.1.
 var MultiTenantEnabled = false

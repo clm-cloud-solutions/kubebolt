@@ -17,6 +17,7 @@ func newTestTenantsStore(t *testing.T) *TenantsStore {
 }
 
 func TestNewTenantsStore_SeedsDefault(t *testing.T) {
+	withMultiTenant(t, false) // auto-seed of "default" is the single-tenant behavior
 	ts := newTestTenantsStore(t)
 	tenants, err := ts.ListTenants()
 	if err != nil {
@@ -30,7 +31,30 @@ func TestNewTenantsStore_SeedsDefault(t *testing.T) {
 	}
 }
 
+// TestGetDefaultTenant_OperatorOrgFallback pins the no-default-tenant model
+// (Track D §2.6): in multi-tenant mode there is no auto-seeded "default" tenant,
+// so GetDefaultTenant resolves to the OPERATOR org (the earliest-created
+// tenant). Empty store → ErrTenantNotFound.
+func TestGetDefaultTenant_OperatorOrgFallback(t *testing.T) {
+	withMultiTenant(t, true) // no auto-seeded "default"
+	ts := newTestTenantsStore(t)
+
+	if _, err := ts.GetDefaultTenant(); err == nil {
+		t.Fatal("expected ErrTenantNotFound on an empty multi-tenant store (no default, no orgs)")
+	}
+
+	op, err := ts.CreateTenant("CLM Cloud Solutions SL", "free")
+	if err != nil {
+		t.Fatalf("CreateTenant: %v", err)
+	}
+	got, err := ts.GetDefaultTenant()
+	if err != nil || got.ID != op.ID {
+		t.Fatalf("GetDefaultTenant = %+v (err %v), want operator org %s", got, err, op.ID)
+	}
+}
+
 func TestNewTenantsStore_DefaultIdempotent(t *testing.T) {
+	withMultiTenant(t, false) // auto-seed of "default" is the single-tenant behavior
 	s := newTestStore(t)
 	ts1, err := NewTenantsStore(s.DB())
 	if err != nil {

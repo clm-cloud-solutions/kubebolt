@@ -11,5 +11,8 @@ import type { NavItem } from '@/components/layout/Sidebar'
 // <Route>s or null; React Router flattens fragments.
 export const eeRoutes: ReactNode = null
 
+// Public (pre-auth) EE routes — signup/onboarding. Empty in OSS.
+export const eePublicRoutes: ReactNode = null
+
 // Extra items appended to the sidebar's "Pinned" section (Sidebar.tsx).
 export const eePinnedNavItems: NavItem[] = []

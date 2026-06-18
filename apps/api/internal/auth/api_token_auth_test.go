@@ -26,7 +26,7 @@ func bearerReq(token string, edge string) *http.Request {
 
 func TestValidateAPIToken_ServiceTokenOK(t *testing.T) {
 	h, s := handlersWithAPIStore(t)
-	plaintext, tok, _ := s.Issue(TokenTypeService, RoleEditor, []string{"/api/v1/resources"}, "autopilot", "admin", nil)
+	plaintext, tok, _ := s.Issue(context.Background(), TokenTypeService, RoleEditor, []string{"/api/v1/resources"}, "autopilot", "admin", nil)
 
 	claims, p, err := h.validateAPIToken(bearerReq(plaintext, ""), plaintext)
 	if err != nil {
@@ -45,7 +45,7 @@ func TestValidateAPIToken_ServiceTokenOK(t *testing.T) {
 
 func TestValidateAPIToken_ServiceRejectedOverPublicEdge(t *testing.T) {
 	h, s := handlersWithAPIStore(t)
-	plaintext, _, _ := s.Issue(TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", nil)
+	plaintext, _, _ := s.Issue(context.Background(), TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", nil)
 
 	_, _, err := h.validateAPIToken(bearerReq(plaintext, EdgeValuePublic), plaintext)
 	if err != ErrTokenEdgeBlocked {
@@ -56,7 +56,7 @@ func TestValidateAPIToken_ServiceRejectedOverPublicEdge(t *testing.T) {
 func TestValidateAPIToken_APIKeyNotEdgeBound(t *testing.T) {
 	h, s := handlersWithAPIStore(t)
 	// Customer API keys work over the public edge (that's the point).
-	plaintext, _, _ := s.Issue(TokenTypeAPIKey, RoleViewer, []string{ScopeAll}, "x", "admin", nil)
+	plaintext, _, _ := s.Issue(context.Background(), TokenTypeAPIKey, RoleViewer, []string{ScopeAll}, "x", "admin", nil)
 
 	if _, _, err := h.validateAPIToken(bearerReq(plaintext, EdgeValuePublic), plaintext); err != nil {
 		t.Fatalf("apikey over edge err = %v, want nil", err)
@@ -65,8 +65,8 @@ func TestValidateAPIToken_APIKeyNotEdgeBound(t *testing.T) {
 
 func TestValidateAPIToken_Revoked(t *testing.T) {
 	h, s := handlersWithAPIStore(t)
-	plaintext, tok, _ := s.Issue(TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", nil)
-	_ = s.Revoke(tok.ID)
+	plaintext, tok, _ := s.Issue(context.Background(), TokenTypeService, RoleEditor, []string{ScopeAll}, "x", "admin", nil)
+	_ = s.Revoke(context.Background(), tok.ID)
 	if _, _, err := h.validateAPIToken(bearerReq(plaintext, ""), plaintext); err != ErrTokenRevoked {
 		t.Fatalf("err = %v, want ErrTokenRevoked", err)
 	}

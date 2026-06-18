@@ -347,6 +347,11 @@ func main() {
 		// EE seam: global install settings (jwt_secret + UI config) go through
 		// this SettingStore so a multi-replica Cloud deployment shares one table.
 		settingStore := newSettingStore(store)
+		// EE seam: PER-ORG UI settings (Copilot today) go through this
+		// OrgSettingStore — an RLS table in EE so a second org's config is
+		// invisible at the engine level; the Bolt store (single default tenant)
+		// in OSS.
+		orgSettingStore := newOrgSettingStore(store)
 
 		// Resolve JWT secret: env var > persisted in DB > generate and persist
 		if !authCfg.JWTSecretFromEnv {
@@ -376,7 +381,16 @@ func main() {
 		}
 		tenantsStore = ts
 
-		seeded, err := auth.SeedAdmin(authStore, authCfg.InitialAdminPassword)
+		// With the per-request RLS model (no global org pin), boot-time writes to
+		// RLS-protected tables (users, team_members) must explicitly carry the
+		// default org so their inserts pass the org policy. OSS: WithTenantID is
+		// a harmless context value the BoltDB store ignores.
+		seedCtx := context.Background()
+		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
+			seedCtx = auth.WithTenantID(seedCtx, dt.ID)
+		}
+
+		seeded, err := auth.SeedAdmin(seedCtx, authStore, authCfg.InitialAdminPassword)
 		if err != nil {
 			fatal("failed to seed admin user", slog.String("error", err.Error()))
 		}
@@ -415,7 +429,7 @@ func main() {
 		// settingsRuntime.IngestChannel() instead of os.Getenv directly.
 		envIngestChannelCfg := config.LoadIngestChannelConfig()
 
-		if rt, err := settings.NewRuntime(settingStore, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
+		if rt, err := settings.NewRuntime(settingStore, orgSettingStore, copilotCfg, envNotifCfg, authCfg, envGeneralCfg, envIngestChannelCfg, authCfg.JWTSecret); err != nil {
 			slog.Warn("settings runtime disabled — admin /settings endpoints unavailable",
 				slog.String("error", err.Error()))
 		} else {
@@ -468,7 +482,10 @@ func main() {
 			fatal("failed to open team store", slog.String("error", err.Error()))
 		}
 		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
-			team, err := teamStore.EnsureDefaultTeam(dt.ID)
+			// Boot-time team + membership writes carry the default org explicitly
+			// (no global pin under per-request RLS). OSS ignores the ctx value.
+			octx := auth.WithTenantID(context.Background(), dt.ID)
+			team, err := teamStore.EnsureDefaultTeam(octx, dt.ID)
 			if err != nil {
 				fatal("failed to ensure default team", slog.String("error", err.Error()))
 			}
@@ -479,9 +496,9 @@ func main() {
 			// older binary (pre-membership) was running. team_role "" = inherit
 			// the org role; OSS teams never elevate.
 			enrolled := 0
-			if users, err := authStore.ListUsers(); err == nil {
+			if users, err := authStore.ListUsers(octx); err == nil {
 				for i := range users {
-					if _, err := teamStore.AddMember(team.ID, users[i].ID, ""); err != nil {
+					if _, err := teamStore.AddMember(octx, team.ID, users[i].ID, ""); err != nil {
 						slog.Warn("default-team backfill: could not enroll user",
 							slog.String("user_id", users[i].ID),
 							slog.String("error", err.Error()),
@@ -607,7 +624,7 @@ func main() {
 		// disabled (no settingsRuntime), env is the only layer.
 		bootNotifCfg := envNotifCfg
 		if settingsRuntime != nil {
-			bootNotifCfg = settingsRuntime.Notifications()
+			bootNotifCfg = settingsRuntime.Notifications(context.Background())
 		}
 		notifiers := notifications.BuildNotifiers(bootNotifCfg)
 		if bootNotifCfg.SlackWebhookURL != "" {
@@ -653,7 +670,7 @@ func main() {
 	// (auth disabled). Read per-connect; repeat switches stay instant (pool).
 	manager.SetCacheSyncTimeoutProvider(func() time.Duration {
 		if settingsRuntime != nil {
-			return time.Duration(settingsRuntime.General().CacheSyncTimeoutSeconds) * time.Second
+			return time.Duration(settingsRuntime.General(context.Background()).CacheSyncTimeoutSeconds) * time.Second
 		}
 		return time.Duration(config.LoadGeneralConfig().CacheSyncTimeoutSeconds) * time.Second
 	})
@@ -1458,11 +1475,11 @@ func runResetAdminPassword(newPassword string) error {
 	}
 	// EE seam: reset against Postgres when KUBEBOLT_DB_DSN is set, else Bolt.
 	authStore := newAuthStore(store)
-	user, err := authStore.GetUserByUsername("admin")
+	user, err := authStore.GetUserByUsername(context.Background(), "admin")
 	if err != nil {
 		return fmt.Errorf("admin user not found: %w (was the database ever seeded?)", err)
 	}
-	if err := authStore.UpdatePassword(user.ID, newPassword); err != nil {
+	if err := authStore.UpdatePassword(context.Background(), user.ID, newPassword); err != nil {
 		return fmt.Errorf("update password: %w", err)
 	}
 	return nil

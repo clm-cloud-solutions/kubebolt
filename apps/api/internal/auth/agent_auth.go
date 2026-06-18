@@ -62,8 +62,12 @@ const (
 // via DeriveAgentID — Sprint B replaces that derivation with a ULID
 // stored in the agents bucket.
 type AgentIdentity struct {
-	Mode        AgentAuthMode
-	TenantID    string
+	Mode     AgentAuthMode
+	TenantID string
+	// TeamID is the cluster's owner team carried by the ingest token (Track D —
+	// team-scoped clusters). Empty for non-ingest auth and team-less tokens; the
+	// first agent registration seeds cluster_ownership from it.
+	TeamID      string
 	ClusterID   string
 	AgentID     string
 	SAName      string // tokenreview only

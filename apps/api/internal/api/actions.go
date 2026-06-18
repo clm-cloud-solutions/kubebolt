@@ -138,7 +138,7 @@ func (h *handlers) copilotDestructiveBlocked(r *http.Request) bool {
 // UI without a restart.
 func (h *handlers) resolvedCopilotConfig() config.CopilotConfig {
 	if h.settingsRuntime != nil {
-		return h.settingsRuntime.Copilot()
+		return h.settingsRuntime.Copilot(context.Background())
 	}
 	return h.copilotConfig
 }

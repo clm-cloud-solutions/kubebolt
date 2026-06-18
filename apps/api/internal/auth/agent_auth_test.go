@@ -179,7 +179,7 @@ func newTestBearerStores(t *testing.T) (*TenantsStore, *BoltIngestTokenStore) {
 func TestBearerIngestAuth_HappyPath(t *testing.T) {
 	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+	plain, _, _ := its.Issue(context.Background(), tn.ID, "", "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -233,7 +233,7 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 	// calling InvalidateCache after a RevokeToken mutation.
 	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, tok, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+	plain, tok, _ := its.Issue(context.Background(), tn.ID, "", "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -241,7 +241,7 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 	if _, err := auth.Authenticate(context.Background(), md, nil); err != nil {
 		t.Fatalf("initial auth: %v", err)
 	}
-	if err := its.Revoke(tn.ID, tok.ID); err != nil {
+	if err := its.Revoke(context.Background(), tn.ID, tok.ID); err != nil {
 		t.Fatalf("RevokeToken: %v", err)
 	}
 	if _, err := auth.Authenticate(context.Background(), md, nil); err != nil {
@@ -256,7 +256,7 @@ func TestBearerIngestAuth_RevokeRequiresInvalidateCache(t *testing.T) {
 func TestBearerIngestAuth_DisabledTenant(t *testing.T) {
 	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+	plain, _, _ := its.Issue(context.Background(), tn.ID, "", "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(its, ts, 0) // cache disabled — every call hits store
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -274,7 +274,7 @@ func TestBearerIngestAuth_DisabledTenant(t *testing.T) {
 func TestBearerIngestAuth_TLSVerifiedFromPeer(t *testing.T) {
 	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+	plain, _, _ := its.Issue(context.Background(), tn.ID, "", "", "prod", "admin", nil)
 
 	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
@@ -293,7 +293,7 @@ func TestBearerIngestAuth_TLSVerifiedFromPeer(t *testing.T) {
 func TestBearerIngestAuth_ConcurrentAuth(t *testing.T) {
 	ts, its := newTestBearerStores(t)
 	tn, _ := ts.CreateTenant("acme", "team")
-	plain, _, _ := its.Issue(tn.ID, "", "prod", "admin", nil)
+	plain, _, _ := its.Issue(context.Background(), tn.ID, "", "", "prod", "admin", nil)
 	auth := NewBearerIngestAuth(its, ts, time.Minute)
 	md := mdWith(MetadataAuthorization, "Bearer "+plain)
 

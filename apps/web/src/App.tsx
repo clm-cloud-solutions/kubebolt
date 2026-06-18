@@ -29,7 +29,7 @@ import { AgentsHub } from '@/pages/admin/AgentsHub'
 import { AIHub } from '@/pages/admin/AIHub'
 import { SystemHub } from '@/pages/admin/SystemHub'
 import { CopilotProvider } from '@/contexts/CopilotContext'
-import { eeRoutes } from '@/ee/registry'
+import { eeRoutes, eePublicRoutes } from '@/ee/registry'
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -90,6 +90,10 @@ export default function App() {
           <Routes>
             {/* Login page — outside Layout */}
             <Route path="/login" element={<LoginPage />} />
+
+            {/* EE public routes — outside Layout, alongside /login (signup,
+                onboarding). Empty in OSS via @/ee/registry. */}
+            {eePublicRoutes}
 
             {/* All app routes — require auth when enabled */}
             <Route element={<RequireAuth><Layout /></RequireAuth>}>

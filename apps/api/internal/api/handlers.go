@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -132,14 +133,64 @@ type handlers struct {
 // the request's logging / accounting / chat fields.
 func (h *handlers) liveCopilotConfig() config.CopilotConfig {
 	if h.settingsRuntime != nil {
-		return h.settingsRuntime.Copilot()
+		return h.settingsRuntime.Copilot(context.Background())
 	}
 	return h.copilotConfig
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	clusters := h.manager.ListClusters()
-	respondJSON(w, http.StatusOK, clusters)
+	respondJSON(w, http.StatusOK, h.filterClustersByOrg(r, clusters))
+}
+
+// filterClustersByOrg drops clusters the requesting org may not see (A.5).
+//
+// OSS-neutral: returns the list unchanged when multi-tenancy is off OR the
+// resolved org is the OSS sentinel. The org gate mirrors activeTenantID in
+// metrics_query.go — ContextTenantID resolves to DefaultTenantName ("default",
+// a NAME not a stamped org UUID) in OSS, so we treat "" and DefaultTenantName as
+// "no real org" and skip filtering entirely. In EE the resolver returns a real
+// org UUID and the filter bites.
+//
+// What it keeps:
+//   - agent-proxy clusters: only if the live agent registry has an agent for
+//     that cluster_id whose authenticated tenant matches this org. Reuses the
+//     registry's tenant guard (GetProxyAgent), the same HARD isolation boundary
+//     the apiserver-proxy path enforces — so one org can never see another org's
+//     agent-backed cluster even if it knows the cluster_id.
+//   - every other source (uploaded / in-cluster / file): kept as-is. The
+//     org-scoped Postgres ClusterStore already returns only this org's uploaded
+//     configs (RLS), and in-cluster / file contexts are local to this process.
+func (h *handlers) filterClustersByOrg(r *http.Request, clusters []cluster.ClusterInfo) []cluster.ClusterInfo {
+	if !auth.MultiTenantEnabled {
+		return clusters
+	}
+	org := auth.ContextTenantID(r)
+	if org == "" || org == auth.DefaultTenantName {
+		return clusters
+	}
+	if h.agentRegistry == nil {
+		// No registry to consult — agent-proxy clusters can't be org-verified,
+		// so they shouldn't be exposed cross-org. But without a registry there
+		// are no agent-proxy clusters at all; pass non-agent clusters through.
+		out := clusters[:0:0]
+		for _, c := range clusters {
+			if c.Source != "agent-proxy" {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	out := make([]cluster.ClusterInfo, 0, len(clusters))
+	for _, c := range clusters {
+		if c.Source == "agent-proxy" {
+			if c.ClusterID == "" || h.agentRegistry.GetProxyAgent(org, c.ClusterID) == nil {
+				continue
+			}
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {

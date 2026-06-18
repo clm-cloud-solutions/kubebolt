@@ -23,6 +23,22 @@ func withMultiTenant(t *testing.T, v bool) {
 	t.Cleanup(func() { MultiTenantEnabled = prev })
 }
 
+// ensureFixtureDefaultTenant makes the canonical "default" tenant exist for
+// tests that use it as a fixture. In multi-tenant mode the store no longer
+// auto-seeds it (Track D §2.6 — no default tenant in cloud), so tests that need
+// one create it explicitly. Idempotent.
+func ensureFixtureDefaultTenant(t *testing.T, tenants TenantStore) *Tenant {
+	t.Helper()
+	if dt, err := tenants.GetDefaultTenant(); err == nil && dt != nil {
+		return dt
+	}
+	dt, err := tenants.CreateTenant(DefaultTenantName, "self-hosted")
+	if err != nil {
+		t.Fatalf("ensure fixture default tenant: %v", err)
+	}
+	return dt
+}
+
 // mockInvalidator counts InvalidateCache invocations so tests can pin
 // the contract: every mutating endpoint must trigger a cache flush.
 type mockInvalidator struct{ calls atomic.Int32 }
@@ -46,6 +62,9 @@ func newTestHandlers(t *testing.T) (*TenantHandlers, *mockInvalidator) {
 	if err != nil {
 		t.Fatalf("NewIngestTokenStore: %v", err)
 	}
+	// Multi-tenant mode (forced on above) no longer auto-seeds the default
+	// tenant; the management tests below use it as a fixture, so ensure it.
+	ensureFixtureDefaultTenant(t, ts)
 	inv := &mockInvalidator{}
 	// Synthetic defaults distinct from real production values so tests
 	// asserting limits behavior can pin them deterministically.
