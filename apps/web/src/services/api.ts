@@ -428,6 +428,12 @@ export const api = {
   deleteCluster: (context: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/clusters/${encodeURIComponent(context)}`),
 
+  // Delete an agent-proxy cluster by cluster_id (durable clusters need an
+  // explicit delete). Distinct from deleteCluster, which is keyed by context
+  // name (uploaded kubeconfigs).
+  deleteAgentProxyCluster: (clusterId: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/clusters/by-id/${encodeURIComponent(clusterId)}`),
+
   // --- Notifications (admin) ---
   getNotificationsConfig: () =>
     fetchJSON<import('@/types/auth').NotificationsConfig>(`${API_BASE}/notifications/config`),

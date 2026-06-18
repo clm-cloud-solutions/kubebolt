@@ -357,6 +357,16 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	contextName := AgentProxyContextName(clusterID)
+
+	// Persistent cleanup — runs even when the in-memory context isn't registered,
+	// so a disconnected cluster's lingering display name + cached UID can still be
+	// deleted.
+	if m.storage != nil {
+		m.storage.DeleteDisplayName(m.storeCtx(), contextName)
+		_ = m.storage.SetClusterUID(m.storeCtx(), contextName, "") // "" → delete the cached UID row
+	}
+
+	// In-memory teardown — nothing to do if the context isn't registered.
 	if _, ok := m.agentProxyContexts[contextName]; !ok {
 		return
 	}
@@ -368,9 +378,6 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	delete(m.agentProxyContexts, contextName)
 	delete(m.kubeConfig.Contexts, contextName)
 	delete(m.kubeConfig.Clusters, contextName)
-	if m.storage != nil {
-		m.storage.DeleteDisplayName(m.storeCtx(), contextName)
-	}
 	slog.Info("removed agent-proxy cluster", slog.String("cluster_id", clusterID))
 }
 

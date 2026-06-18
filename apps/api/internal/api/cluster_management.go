@@ -80,6 +80,28 @@ func (h *handlers) handleAddCluster(w http.ResponseWriter, r *http.Request) {
 
 // --- DELETE /clusters/:context — remove an uploaded cluster ---
 
+// handleDeleteAgentProxyCluster removes an agent-proxy cluster. Clusters are
+// durable (they persist across agent disconnects), so this is the explicit
+// operator delete — it drops the cluster's display name + cached UID and tears
+// down the proxy context. {clusterId} is the cluster_id (kube-system UID), which
+// is why this is a distinct route from the context-name keyed handleDeleteCluster
+// (uploaded kubeconfig contexts).
+//
+// Caveat: if the agent is still connected, the cluster reappears on its next
+// Hello (auto-register re-creates it) — same as a disconnect/reconnect today.
+func (h *handlers) handleDeleteAgentProxyCluster(w http.ResponseWriter, r *http.Request) {
+	clusterID := chi.URLParam(r, "clusterId")
+	if clusterID == "" {
+		respondError(w, http.StatusBadRequest, "clusterId is required")
+		return
+	}
+	h.manager.RemoveAgentProxyCluster(clusterID)
+	if h.wsHub != nil {
+		h.wsHub.Broadcast("clusters.changed", nil)
+	}
+	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
 func (h *handlers) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 	contextName := chi.URLParam(r, "context")
 	if contextName == "" {

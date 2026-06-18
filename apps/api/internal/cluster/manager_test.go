@@ -1,6 +1,7 @@
 package cluster
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -83,6 +84,38 @@ func TestManager_AddAgentProxyCluster_Idempotent(t *testing.T) {
 	}
 	if got := len(m.ListClusters()); got != 1 {
 		t.Errorf("ListClusters count = %d, want 1 (no duplicates)", got)
+	}
+}
+
+func TestManager_RemoveAgentProxyCluster_CleansStorage(t *testing.T) {
+	// Delete must clean the cluster's persistent state: display name AND cached
+	// UID (durable clusters need an explicit, complete delete).
+	m := newBareManager()
+	st := newBoltStorage(t)
+	if err := m.SetStorage(st); err != nil {
+		t.Fatal(err)
+	}
+	m.SetAgentRegistry(channel.NewAgentRegistry())
+
+	const cid = "cid-1"
+	contextName := AgentProxyContextName(cid)
+	if _, err := m.AddAgentProxyCluster(cid, "My cluster"); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_ = st.SetClusterUID(ctx, contextName, "uid-xyz") // normally written on connect
+
+	if st.GetDisplayName(ctx, contextName) == "" || st.GetClusterUID(ctx, contextName) == "" {
+		t.Fatal("precondition: display name + uid should exist before delete")
+	}
+
+	m.RemoveAgentProxyCluster(cid)
+
+	if got := st.GetDisplayName(ctx, contextName); got != "" {
+		t.Errorf("display name not cleaned: %q", got)
+	}
+	if got := st.GetClusterUID(ctx, contextName); got != "" {
+		t.Errorf("cached UID not cleaned: %q", got)
 	}
 }
 

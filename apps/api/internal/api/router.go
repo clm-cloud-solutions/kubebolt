@@ -272,6 +272,10 @@ func NewRouter(
 				r.Post("/clusters", h.handleAddCluster)
 				r.Delete("/clusters/{context}", h.handleDeleteCluster)
 				r.Put("/clusters/{context}/rename", h.handleRenameCluster)
+				// Delete an agent-proxy cluster by cluster_id (durable clusters
+				// need an explicit operator delete). Static "by-id" prefix avoids
+				// colliding with the context-name DELETE above.
+				r.Delete("/clusters/by-id/{clusterId}", h.handleDeleteAgentProxyCluster)
 			})
 
 			// Notifications — admin only (config read + test send)
