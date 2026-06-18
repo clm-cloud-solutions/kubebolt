@@ -21,7 +21,6 @@ import (
 	"log/slog"
 	"net"
 
-	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -513,13 +512,24 @@ func resolveAgentID(id *auth.AgentIdentity, nodeName, clusterHint, role string) 
 	if cluster == "" {
 		cluster = "local"
 	}
-	if id == nil || id.Mode == auth.ModeDisabled || id.TenantID == "" {
-		// No auth identity → can't derive a stable agent_id, fresh UUID
-		// each connect. The cluster label is still honored from the hint
-		// so multi-cluster OSS deployments don't collapse to one entry.
-		return uuid.NewString(), cluster
+	// Derive a STABLE agent_id from (tenant, cluster, node, role) so a
+	// reconnecting agent reuses its registry slot + persisted record instead of
+	// leaking a brand-new one on every reconnect.
+	//
+	// The no-auth / disabled path used to mint a uuid.NewString() per connect.
+	// Because an UNCLEAN disconnect never sets disconnected_at (only a clean
+	// Unregister does), every reconnect left a permanent "connected" record that
+	// never got pruned — hundreds accumulated for a single long-lived agent when
+	// auth is disabled. Deriving the id means the reconnect updates the one
+	// record instead. The tenant component falls back to "" when the agent
+	// didn't authenticate, keeping the hash well-defined; (cluster, node, role)
+	// still uniquely identifies the physical agent, so distinct agents never
+	// collapse into one slot.
+	tenant := ""
+	if id != nil {
+		tenant = id.TenantID
 	}
-	return auth.DeriveAgentID(id.TenantID, cluster, nodeName, role), cluster
+	return auth.DeriveAgentID(tenant, cluster, nodeName, role), cluster
 }
 
 // agentRoleFromHello extracts the role tag used as the 4th
