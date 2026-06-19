@@ -183,6 +183,10 @@ func NewRouter(
 			// the resolver for real multi-tenant resolution. See
 			// auth.TenantResolver.
 			r.Use(authHandlers.ResolveTenant)
+			// Meter one api_requests per authenticated call against the resolved
+			// org. Real in EE (records through the usage seam); identity
+			// pass-through in OSS (see usage_meter_*.go).
+			r.Use(h.meterAPIRequest)
 			// Stash the request's (tenant, cluster) RuntimeKey for the
 			// connector pool (W2). Behavior-neutral until the pool reads
 			// it; threading it now keeps the pool additive to handlers.
