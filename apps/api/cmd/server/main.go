@@ -882,6 +882,10 @@ func main() {
 		go api.SelfWriteMetricsToVM(context.Background(), prometheus.DefaultGatherer, vmURL)
 	}
 
+	// Meter per-org active-series cardinality from VM on a ticker. No-op unless
+	// the edition + config support it (see cardinality_*.go).
+	startCardinalityCollector(context.Background(), usageStore, vmURL)
+
 	// Mount embedded frontend if available
 	if frontendFS != nil {
 		api.MountFrontend(router, frontendFS)
