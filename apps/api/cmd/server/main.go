@@ -29,10 +29,10 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
+	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
-	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
@@ -1218,6 +1218,9 @@ func main() {
 		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
 		agent.WithGRPCIngestMetrics(agentGrpcMetrics),
 		agent.WithSelfClusterID(selfClusterID),
+		// Meter agent-ingested samples per tenant through the same usage seam
+		// the remote_write path uses. No-op store by default.
+		agent.WithUsageStore(usageStore),
 	)
 
 	// Sprint A migration window: enforcement defaults to "disabled" so

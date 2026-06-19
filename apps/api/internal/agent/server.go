@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"time"
 
 	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
@@ -30,6 +31,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
@@ -88,6 +90,11 @@ type Server struct {
 	// when WithGRPCIngestMetrics wasn't passed — all RecordX methods
 	// nil-guard so call sites stay terse.
 	metrics *GRPCIngestMetrics
+	// usage meters billable samples per authenticated tenant, mirroring the
+	// remote_write path (prom_write.go). nil when the metering seam isn't wired
+	// (tests); main.go passes the no-op store. Record is non-blocking (the store
+	// buffers in-memory), so it is safe to call on the ingest hot path.
+	usage usage.UsageStore
 }
 
 // Option configures a Server. Functional-options pattern keeps NewServer
@@ -139,6 +146,13 @@ func WithGRPCIngestMetrics(m *GRPCIngestMetrics) Option {
 	return func(s *Server) { s.metrics = m }
 }
 
+// WithUsageStore plugs the metering seam so accepted ingest samples are metered
+// per authenticated tenant. nil is tolerated — the Record call site nil-guards,
+// so unset (tests) means "don't meter". main.go passes the no-op store.
+func WithUsageStore(u usage.UsageStore) Option {
+	return func(s *Server) { s.usage = u }
+}
+
 // resolveAutoRegister centralizes the "is the flag enabled right now"
 // check. nil getter → false (the safe default for the option-not-set
 // case in tests + the auth-disabled boot path).
@@ -147,6 +161,24 @@ func (s *Server) resolveAutoRegister() bool {
 		return false
 	}
 	return s.autoRegisterClusters()
+}
+
+// meterSamples records billable ingested samples through the usage seam,
+// attributed to the AUTHENTICATED tenant — never a sample's self-asserted
+// label, which the anti-spoofing gate enforces upstream. No-op when the seam is
+// unwired (tests; the no-op store is passed explicitly), when there is no
+// authenticated tenant (unattributed ingest isn't billed), or when the batch is
+// empty. The store buffers in-memory, so this never blocks the ingest hot path.
+func (s *Server) meterSamples(ctx context.Context, tenantID string, n int) {
+	if s.usage == nil || tenantID == "" || n <= 0 {
+		return
+	}
+	_ = s.usage.Record(ctx, usage.UsageRecord{
+		TenantID: tenantID,
+		Metric:   usage.MetricSamplesIngested,
+		Quantity: int64(n),
+		At:       time.Now(),
+	})
 }
 
 // WithSelfClusterID configures the cluster_id the backend itself runs
@@ -197,8 +229,8 @@ func (s streamSender) Send(msg *agentv2.BackendMessage) error {
 //     - Heartbeat       → log + reply HeartbeatAck.
 //     - Metrics batch   → forward to MetricsWriter.
 //     - kube_response / kube_event / stream_closed
-//                       → unsolicited until commit 5 wires the proxy
-//                         dispatcher; log at debug + drop.
+//     → unsolicited until commit 5 wires the proxy
+//     dispatcher; log at debug + drop.
 //     - second Hello    → protocol violation, close the stream.
 //  4. EOF or error → return.
 func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
@@ -412,6 +444,9 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			// shows ingest IS arriving even when downstream storage is
 			// down, which is useful diagnostically.
 			s.metrics.RecordSamplesReceived(tenantIDLabel, len(batch.GetSamples()))
+			// Meter accepted samples per authenticated tenant, like the
+			// remote_write path (prom_write.go). See meterSamples.
+			s.meterSamples(ctx, tenantIDLabel, len(batch.GetSamples()))
 			if werr := s.writer.Write(ctx, batch.GetSamples()); werr != nil {
 				// v1 surfaced rejections via IngestAck. v2 omits the ack —
 				// the agent's buffer + heartbeat already give the operator
