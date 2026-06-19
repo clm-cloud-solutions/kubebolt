@@ -638,6 +638,16 @@ func (h *handlers) getPermissions(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) requireConnector(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.manager.Connector(r.Context()) == nil {
+			// No cluster is selected at all (fresh boot, or a restart that reset
+			// the in-memory active context). The underlying connect error is the
+			// raw `context "" is not registered`, which reads to the user like an
+			// uncontrolled crash — surface a clean, actionable message instead.
+			// Real connection failures (cache-sync timeout, unreachable) keep
+			// their specific ConnError below.
+			if h.manager.ActiveContext() == "" {
+				respondError(w, http.StatusServiceUnavailable, "no cluster selected — choose a cluster to continue")
+				return
+			}
 			msg := "cluster not connected"
 			if err := h.manager.ConnError(); err != nil {
 				msg = err.Error()
