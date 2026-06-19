@@ -140,8 +140,15 @@ func NewRouter(
 		// Returns 409 requires_ee in OSS (single auto-seeded org).
 		r.Post("/auth/signup", authHandlers.Signup)
 		r.Post("/auth/refresh", authHandlers.Refresh)
-		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
-		r.Get("/copilot/config", h.HandleCopilotConfig)
+		// Copilot config is public — no API keys exposed, the frontend needs
+		// it before auth to decide whether to render the chat panel. But when
+		// the caller IS authenticated (the chat panel re-fetches it from inside
+		// an active session), resolve their tenant best-effort so the panel
+		// title reflects the resolved Copilot config instead of the process
+		// baseline. OptionalAuth never rejects, so the pre-auth login-page fetch
+		// still succeeds anonymously and falls back to the baseline.
+		r.With(authHandlers.OptionalAuth, authHandlers.ResolveTenant).
+			Get("/copilot/config", h.HandleCopilotConfig)
 
 		// UI config (display name, default refresh interval) is public —
 		// the login page renders the display name, and the
