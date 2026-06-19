@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
@@ -98,6 +99,26 @@ func (r *Runtime) Copilot(ctx context.Context) config.CopilotConfig {
 func (r *Runtime) resolveCopilotLocked(ctx context.Context) config.CopilotConfig {
 	cfg := r.envBase // value copy — safe to mutate
 
+	if auth.MultiTenantEnabled {
+		// When the multi-tenant seam is on, the AI provider, model, key and
+		// cost/context tunables come from the install-global PLATFORM override
+		// (see copilot_platform.go); the per-org record contributes ONLY the
+		// governance + display fields (actions on/off, tool-call display,
+		// action-progress timeout). Mirrors the other MultiTenantEnabled seams
+		// (auth, teams). The seam is false here, so this branch is inert.
+		r.applyCopilotPlatformOverride(&cfg)
+		if raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey); err == nil {
+			var stored StoredCopilotSettings
+			if json.Unmarshal(raw, &stored) == nil {
+				applyCopilotOrgFields(&cfg, &stored)
+			}
+		}
+		cfg.Enabled = cfg.Primary.APIKey != ""
+		return cfg
+	}
+
+	// Single-tenant: the per-org record governs everything (BYOK) — the lone
+	// admin is the platform admin.
 	raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey)
 	if err != nil {
 		// "not found" is the no-override path — env baseline wins, all good.
@@ -351,21 +372,21 @@ type MaskedCopilot struct {
 }
 
 type MaskedEffectiveCopilot struct {
-	Enabled              bool   `json:"enabled"`
-	Provider             string `json:"provider"`
-	Model                string `json:"model"`
-	APIKeyMasked         string `json:"apiKeyMasked"`
-	BaseURL              string `json:"baseURL,omitempty"`
-	HasFallback          bool   `json:"hasFallback"`
-	FallbackProvider     string `json:"fallbackProvider,omitempty"`
-	FallbackModel        string `json:"fallbackModel,omitempty"`
-	FallbackAPIKeyMasked string `json:"fallbackApiKeyMasked,omitempty"`
-	FallbackBaseURL      string `json:"fallbackBaseURL,omitempty"`
-	MaxTokens            int    `json:"maxTokens"`
-	AutoCompact          bool   `json:"autoCompact"`
-	ShowToolCalls        bool   `json:"showToolCalls"`
-	ActionsEnabled            bool `json:"actionsEnabled"`
-	DestructiveActionsEnabled bool `json:"destructiveActionsEnabled"`
+	Enabled                   bool   `json:"enabled"`
+	Provider                  string `json:"provider"`
+	Model                     string `json:"model"`
+	APIKeyMasked              string `json:"apiKeyMasked"`
+	BaseURL                   string `json:"baseURL,omitempty"`
+	HasFallback               bool   `json:"hasFallback"`
+	FallbackProvider          string `json:"fallbackProvider,omitempty"`
+	FallbackModel             string `json:"fallbackModel,omitempty"`
+	FallbackAPIKeyMasked      string `json:"fallbackApiKeyMasked,omitempty"`
+	FallbackBaseURL           string `json:"fallbackBaseURL,omitempty"`
+	MaxTokens                 int    `json:"maxTokens"`
+	AutoCompact               bool   `json:"autoCompact"`
+	ShowToolCalls             bool   `json:"showToolCalls"`
+	ActionsEnabled            bool   `json:"actionsEnabled"`
+	DestructiveActionsEnabled bool   `json:"destructiveActionsEnabled"`
 	// Action-progress timeout in effect, milliseconds (UI converts to seconds).
 	ActionProgressTimeoutMs int `json:"actionProgressTimeoutMs,omitempty"`
 	// Max tool-call rounds in effect.
@@ -383,33 +404,33 @@ type MaskedEffectiveCopilot struct {
 }
 
 type MaskedStoredCopilot struct {
-	HasPrimaryOverride  bool                    `json:"hasPrimaryOverride"`
-	HasFallbackOverride bool                    `json:"hasFallbackOverride"`
-	Primary             *MaskedStoredProvider   `json:"primary,omitempty"`
-	Fallback            *MaskedStoredProvider   `json:"fallback,omitempty"`
+	HasPrimaryOverride  bool                      `json:"hasPrimaryOverride"`
+	HasFallbackOverride bool                      `json:"hasFallbackOverride"`
+	Primary             *MaskedStoredProvider     `json:"primary,omitempty"`
+	Fallback            *MaskedStoredProvider     `json:"fallback,omitempty"`
 	OtherFields         *MaskedStoredOtherCopilot `json:"otherFields,omitempty"`
 }
 
 type MaskedStoredProvider struct {
-	Provider          *string `json:"provider,omitempty"`
-	APIKeyMasked      string  `json:"apiKeyMasked,omitempty"`
-	APIKeyConfigured  bool    `json:"apiKeyConfigured"`
-	Model             *string `json:"model,omitempty"`
-	BaseURL           *string `json:"baseURL,omitempty"`
+	Provider         *string `json:"provider,omitempty"`
+	APIKeyMasked     string  `json:"apiKeyMasked,omitempty"`
+	APIKeyConfigured bool    `json:"apiKeyConfigured"`
+	Model            *string `json:"model,omitempty"`
+	BaseURL          *string `json:"baseURL,omitempty"`
 }
 
 type MaskedStoredOtherCopilot struct {
-	MaxTokens            *int     `json:"maxTokens,omitempty"`
-	AutoCompact          *bool    `json:"autoCompact,omitempty"`
-	SessionBudgetTokens  *int     `json:"sessionBudgetTokens,omitempty"`
-	AutoCompactThreshold *float64 `json:"autoCompactThreshold,omitempty"`
-	CompactModel         *string  `json:"compactModel,omitempty"`
-	CompactPreserveTurns *int     `json:"compactPreserveTurns,omitempty"`
-	ShowToolCalls        *bool    `json:"showToolCalls,omitempty"`
-	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
-	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
-	ActionProgressTimeoutMs   *int  `json:"actionProgressTimeoutMs,omitempty"`
-	MaxRounds                 *int  `json:"maxRounds,omitempty"`
+	MaxTokens                 *int     `json:"maxTokens,omitempty"`
+	AutoCompact               *bool    `json:"autoCompact,omitempty"`
+	SessionBudgetTokens       *int     `json:"sessionBudgetTokens,omitempty"`
+	AutoCompactThreshold      *float64 `json:"autoCompactThreshold,omitempty"`
+	CompactModel              *string  `json:"compactModel,omitempty"`
+	CompactPreserveTurns      *int     `json:"compactPreserveTurns,omitempty"`
+	ShowToolCalls             *bool    `json:"showToolCalls,omitempty"`
+	ActionsEnabled            *bool    `json:"actionsEnabled,omitempty"`
+	DestructiveActionsEnabled *bool    `json:"destructiveActionsEnabled,omitempty"`
+	ActionProgressTimeoutMs   *int     `json:"actionProgressTimeoutMs,omitempty"`
+	MaxRounds                 *int     `json:"maxRounds,omitempty"`
 }
 
 // RenderMaskedCopilot builds the GET response from a stored record + env
@@ -424,22 +445,22 @@ func (r *Runtime) RenderMaskedCopilot(ctx context.Context) (MaskedCopilot, error
 
 	out := MaskedCopilot{
 		Effective: MaskedEffectiveCopilot{
-			Enabled:              effective.Enabled,
-			Provider:             effective.Primary.Provider,
-			Model:                effective.Primary.Model,
-			APIKeyMasked:         maskSecret(effective.Primary.APIKey),
-			BaseURL:              effective.Primary.BaseURL,
-			MaxTokens:            effective.MaxTokens,
-			AutoCompact:          effective.AutoCompact,
-			ShowToolCalls:        effective.ShowToolCalls,
+			Enabled:                   effective.Enabled,
+			Provider:                  effective.Primary.Provider,
+			Model:                     effective.Primary.Model,
+			APIKeyMasked:              maskSecret(effective.Primary.APIKey),
+			BaseURL:                   effective.Primary.BaseURL,
+			MaxTokens:                 effective.MaxTokens,
+			AutoCompact:               effective.AutoCompact,
+			ShowToolCalls:             effective.ShowToolCalls,
 			ActionsEnabled:            effective.ActionsEnabled,
 			DestructiveActionsEnabled: effective.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   int(effective.ActionProgressTimeout.Milliseconds()),
 			MaxRounds:                 effective.MaxRounds,
-			SessionBudgetTokens:  effective.SessionBudgetTokens,
-			AutoCompactThreshold: effective.AutoCompactThreshold,
-			CompactModel:         effective.CompactModel,
-			CompactPreserveTurns: effective.CompactPreserveTurns,
+			SessionBudgetTokens:       effective.SessionBudgetTokens,
+			AutoCompactThreshold:      effective.AutoCompactThreshold,
+			CompactModel:              effective.CompactModel,
+			CompactPreserveTurns:      effective.CompactPreserveTurns,
 		},
 		Stored:          renderStoredMask(stored),
 		SecretsReadable: secretsReadable,
@@ -491,13 +512,13 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil ||
 		s.ActionProgressTimeoutMs != nil || s.MaxRounds != nil {
 		out.OtherFields = &MaskedStoredOtherCopilot{
-			MaxTokens:            s.MaxTokens,
-			AutoCompact:          s.AutoCompact,
-			SessionBudgetTokens:  s.SessionBudgetTokens,
-			AutoCompactThreshold: s.AutoCompactThreshold,
-			CompactModel:         s.CompactModel,
-			CompactPreserveTurns: s.CompactPreserveTurns,
-			ShowToolCalls:        s.ShowToolCalls,
+			MaxTokens:                 s.MaxTokens,
+			AutoCompact:               s.AutoCompact,
+			SessionBudgetTokens:       s.SessionBudgetTokens,
+			AutoCompactThreshold:      s.AutoCompactThreshold,
+			CompactModel:              s.CompactModel,
+			CompactPreserveTurns:      s.CompactPreserveTurns,
+			ShowToolCalls:             s.ShowToolCalls,
 			ActionsEnabled:            s.ActionsEnabled,
 			DestructiveActionsEnabled: s.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   s.ActionProgressTimeoutMs,
