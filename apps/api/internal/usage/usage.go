@@ -71,6 +71,12 @@ type UsageStore interface {
 	// slice (nothing is metered). EE sums usage_records for the org, RLS-scoped
 	// via app.current_org. Order is unspecified.
 	Summary(ctx context.Context, org string) ([]UsagePoint, error)
+	// UsedSince returns the SUM of one metric for an org since `since`
+	// (inclusive) — the read behind a period roll-up (e.g. credits used this
+	// calendar month). OSS (NoopUsageStore) returns 0 (nothing is metered). EE
+	// sums usage_records RLS-scoped via app.current_org. An org with no rows in
+	// the window returns 0, not an error.
+	UsedSince(ctx context.Context, org string, m Metric, since time.Time) (int64, error)
 }
 
 // UsagePoint is one metric's rolled-up total for an org, the read shape behind
@@ -94,6 +100,11 @@ func (NoopUsageStore) Record(context.Context, UsageRecord) error { return nil }
 // Summary returns an empty slice — OSS meters nothing.
 func (NoopUsageStore) Summary(context.Context, string) ([]UsagePoint, error) {
 	return []UsagePoint{}, nil
+}
+
+// UsedSince returns 0 — OSS meters nothing, so no org is ever over a cap.
+func (NoopUsageStore) UsedSince(context.Context, string, Metric, time.Time) (int64, error) {
+	return 0, nil
 }
 
 // Compile-time guarantees the no-op satisfies the seam — both as a value and a
