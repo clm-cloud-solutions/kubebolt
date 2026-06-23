@@ -53,6 +53,11 @@ type ClusterOverview struct {
 	Events             []KubeEvent         `json:"events"`
 	NamespaceWorkloads []NamespaceWorkload `json:"namespaceWorkloads"`
 	Permissions        map[string]bool     `json:"permissions,omitempty"`
+	// AbsentResources are optional-CRD keys that RBAC grants but the cluster
+	// doesn't have installed. They're CanList=false in Permissions (UI shows them
+	// "not available") but must be excluded from the limited-access banner — a
+	// missing optional CRD is not a permission restriction.
+	AbsentResources []string `json:"absentResources,omitempty"`
 }
 
 // ResourceCount tracks totals and health for a resource type.

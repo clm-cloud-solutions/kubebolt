@@ -1354,6 +1354,12 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 		overview.Permissions = make(map[string]bool, len(c.permissions))
 		for key, perm := range c.permissions {
 			overview.Permissions[key] = perm.CanList && perm.CanWatch
+			// Absent optional CRDs are CanList=false (so the UI dims them as "not
+			// available") but they're not a permission restriction — surface them
+			// separately so the limited-access banner can exclude them.
+			if perm.Absent {
+				overview.AbsentResources = append(overview.AbsentResources, key)
+			}
 		}
 	}
 

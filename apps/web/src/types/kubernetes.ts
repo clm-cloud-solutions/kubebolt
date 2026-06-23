@@ -154,6 +154,9 @@ export interface ClusterOverview {
   events?: KubeEvent[]
   namespaceWorkloads?: NamespaceWorkload[]
   permissions?: Record<string, boolean>
+  // Optional-CRD keys RBAC grants but the cluster lacks — dimmed "not available"
+  // in the UI, but excluded from the limited-access banner (not a restriction).
+  absentResources?: string[]
 }
 
 // Events
