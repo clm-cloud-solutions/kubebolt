@@ -281,9 +281,9 @@ export function AgentConfigFields({
             {/* Resources */}
             <section className="space-y-2 pt-3 border-t border-kb-border/60">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Resources</div>
-              <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 30Mi, limits 100m / 80Mi.</p>
+              <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 64Mi, limits 100m / 128Mi. Bump the limit (e.g. 256Mi) on busy nodes — Hubble flow parsing is the main driver.</p>
               <div className="grid grid-cols-2 gap-3">
-                {([['cpuRequest', 'CPU request', '10m'], ['cpuLimit', 'CPU limit', '100m'], ['memoryRequest', 'Memory request', '30Mi'], ['memoryLimit', 'Memory limit', '80Mi']] as const).map(([key, label, ph]) => (
+                {([['cpuRequest', 'CPU request', '10m'], ['cpuLimit', 'CPU limit', '100m'], ['memoryRequest', 'Memory request', '64Mi'], ['memoryLimit', 'Memory limit', '128Mi']] as const).map(([key, label, ph]) => (
                   <div key={key}>
                     <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">{label}</label>
                     <input type="text" placeholder={ph} value={cfg.resources?.[key] ?? ''}

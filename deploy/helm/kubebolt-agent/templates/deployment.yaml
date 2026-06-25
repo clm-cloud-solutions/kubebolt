@@ -193,6 +193,10 @@ spec:
               value: /etc/kubebolt-tls/tls.key
             {{- end }}
             {{- end }}
+            {{- with (include "kubebolt-agent.gomemlimit" (dict "limit" .Values.agent.promRead.deployment.resources.limits.memory "override" .Values.gomemlimit)) }}
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
