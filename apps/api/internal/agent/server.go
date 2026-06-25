@@ -644,7 +644,23 @@ func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) e
 	go func() {
 		<-ctx.Done()
 		slog.Info("agent gRPC server stopping")
-		grpcSrv.GracefulStop()
+		// GracefulStop blocks until all in-flight RPCs finish, but the agent
+		// streams are long-lived bidi RPCs that never end on their own, so it
+		// hangs shutdown and leaves agents on a half-open connection they only
+		// notice tens of seconds later (~48s without client keepalive). Give
+		// graceful a short window to drain quick unary calls, then force-close so
+		// the streams drop CLEANLY and agents reconnect promptly on the next boot.
+		stopped := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(2 * time.Second):
+			slog.Info("agent gRPC graceful stop timed out — forcing close so agent streams drop")
+			grpcSrv.Stop()
+		}
 	}()
 
 	if err := grpcSrv.Serve(lis); err != nil {

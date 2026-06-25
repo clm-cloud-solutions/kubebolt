@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -315,39 +316,64 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 // runs, the user could have switched away or another concurrent
 // register-triggered retry could have already recovered the connector.
 func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if contextName != m.activeContext || m.connector != nil {
-		return
+	// The agent can land in the registry just AFTER the proxy-cluster hook that
+	// spawned us, so the first CountByCluster can briefly read 0 ("no agent
+	// connected yet") even though the agent is alive. A single shot then strands
+	// the cluster forever — there's no later trigger — which is fatal for an
+	// install with ONE cluster (no other cluster to switch to and re-fire a
+	// connect). So retry a few times with a short backoff, releasing the lock
+	// between tries, until the registration settles. Only the registration race
+	// is retried; a real connect error (cache-sync, etc.) returns immediately.
+	const maxAttempts = 12
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		m.mu.Lock()
+		if contextName != m.activeContext || m.connector != nil {
+			m.mu.Unlock()
+			return // switched away, or another goroutine already recovered it
+		}
+		if attempt == 0 {
+			slog.Info("retrying connector after agent registered",
+				slog.String("cluster_id", clusterID),
+				slog.String("context", contextName),
+			)
+		}
+		err := m.connectToContextLocked(contextName)
+		if err == nil {
+			m.connErr = nil
+			m.mu.Unlock()
+			slog.Info("connector recovered for agent-proxy cluster",
+				slog.String("context", contextName),
+				slog.Int("attempt", attempt+1),
+			)
+			// Push the recovery to connected UIs so they invalidate
+			// `['clusters']` + `['cluster-overview']` immediately instead of
+			// waiting up to 30s for TanStack Query's refetch tick.
+			if m.wsHub != nil {
+				m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
+					"context":   contextName,
+					"clusterId": clusterID,
+				})
+			}
+			return
+		}
+		m.connErr = err
+		m.mu.Unlock()
+		// Only the "agent not visible in the registry yet" race is worth waiting
+		// out (the message comes from connectToContextLocked's fast-fail just
+		// above). Any other error won't fix itself by retrying.
+		if !strings.Contains(err.Error(), "no agent connected yet") {
+			slog.Warn("connector retry failed (not a registration race)",
+				slog.String("context", contextName),
+				slog.String("error", err.Error()),
+			)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	slog.Info("retrying connector after agent registered",
+	slog.Warn("connector retry exhausted — agent never became visible in the registry",
 		slog.String("cluster_id", clusterID),
 		slog.String("context", contextName),
 	)
-	if err := m.connectToContextLocked(contextName); err != nil {
-		m.connErr = err
-		slog.Warn("connector retry still failed",
-			slog.String("context", contextName),
-			slog.String("error", err.Error()),
-		)
-		return
-	}
-	m.connErr = nil
-	slog.Info("connector recovered for agent-proxy cluster",
-		slog.String("context", contextName),
-	)
-	// Push the recovery to connected UIs so they invalidate
-	// `['clusters']` + `['cluster-overview']` immediately, instead of
-	// waiting up to 30s for TanStack Query's refetch tick. Without
-	// this nudge a user who saw the "Cluster unreachable" page right
-	// after boot keeps seeing it long after the backend recovered,
-	// and concludes the fix didn't work.
-	if m.wsHub != nil {
-		m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
-			"context":   contextName,
-			"clusterId": clusterID,
-		})
-	}
 }
 
 // RemoveAgentProxyCluster removes the agent-proxy registration for
