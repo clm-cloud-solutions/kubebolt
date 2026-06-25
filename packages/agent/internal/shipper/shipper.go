@@ -144,9 +144,12 @@ func (s *Shipper) AgentID() string { return s.agentID }
 // blank in the UI for a full minute every iteration.
 func (s *Shipper) Run(ctx context.Context) {
 	backoff := time.Second
+	var lastHealthy time.Time // last time a session ran healthy; zero = never
 	const (
 		backoffMax           = 60 * time.Second
+		restartBackoffMax    = 3 * time.Second // cap the WAIT while recently healthy
 		healthySessionMinAge = 10 * time.Second
+		recentHealthyWindow  = 2 * time.Minute
 	)
 
 	for {
@@ -164,15 +167,28 @@ func (s *Shipper) Run(ctx context.Context) {
 		// any prior backoff state into the reconnect.
 		if time.Since(sessionStart) >= healthySessionMinAge {
 			backoff = time.Second
+			lastHealthy = time.Now()
+		}
+		// A failure within recentHealthyWindow of a healthy session is almost
+		// always a backend RESTART, not a genuine outage. Cap the wait low so we
+		// reconnect within a few seconds once the backend is back — the
+		// exponential climb to 60s would otherwise pin the cluster blank for ~a
+		// minute every restart (the agent detects a clean shutdown immediately
+		// and then backs off against the backend that's still booting). Only a
+		// SUSTAINED failure (window elapsed) lets the wait climb to backoffMax,
+		// preserving the gentle behavior for a real outage.
+		wait := backoff
+		if !lastHealthy.IsZero() && time.Since(lastHealthy) < recentHealthyWindow && wait > restartBackoffMax {
+			wait = restartBackoffMax
 		}
 		slog.Warn("shipper session ended, will reconnect",
 			slog.String("error", err.Error()),
-			slog.Duration("backoff", backoff),
+			slog.Duration("backoff", wait),
 		)
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(backoff):
+		case <-time.After(wait):
 		}
 		backoff *= 2
 		if backoff > backoffMax {
