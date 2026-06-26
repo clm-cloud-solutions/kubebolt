@@ -240,6 +240,10 @@ spec:
                    above tells the agent binary to skip the promread
                    bootstrap even if the env vars happen to be present
                    (e.g. via extraEnv). */ -}}
+            {{- with (include "kubebolt-agent.gomemlimit" (dict "limit" .Values.resources.limits.memory "override" .Values.gomemlimit)) }}
+            - name: GOMEMLIMIT
+              value: {{ . | quote }}
+            {{- end }}
             {{- with .Values.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

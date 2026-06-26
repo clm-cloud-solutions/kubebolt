@@ -29,10 +29,10 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent"
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/api"
+	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
-	"github.com/kubebolt/kubebolt/apps/api/internal/audit"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
@@ -828,6 +828,10 @@ func main() {
 	// (the panel queries them via PromQL after they're scraped into VM).
 	agentGrpcMetrics := agent.NewGRPCIngestMetrics(prometheus.DefaultRegisterer)
 
+	// Always-on (W2 §10.3): expose the connector-pool size on /metrics so
+	// operators can watch the resident-runtime cost as agents connect.
+	api.NewPoolMetricsCollector(prometheus.DefaultRegisterer, manager)
+
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
 	// ({tenant_id!=""})` and caches the result. Pre-forward gate
@@ -881,6 +885,10 @@ func main() {
 	if vmURL != "" {
 		go api.SelfWriteMetricsToVM(context.Background(), prometheus.DefaultGatherer, vmURL)
 	}
+
+	// Meter per-org active-series cardinality from VM on a ticker. No-op unless
+	// the edition + config support it (see cardinality_*.go).
+	startCardinalityCollector(context.Background(), usageStore, vmURL)
 
 	// Mount embedded frontend if available
 	if frontendFS != nil {
@@ -1218,6 +1226,9 @@ func main() {
 		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
 		agent.WithGRPCIngestMetrics(agentGrpcMetrics),
 		agent.WithSelfClusterID(selfClusterID),
+		// Meter agent-ingested samples per tenant through the same usage seam
+		// the remote_write path uses. No-op store by default.
+		agent.WithUsageStore(usageStore),
 	)
 
 	// Sprint A migration window: enforcement defaults to "disabled" so

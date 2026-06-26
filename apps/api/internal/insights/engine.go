@@ -207,9 +207,11 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			e.insights[i].ResolvedAt = &now
 			e.persistResolved(e.insights[i], now)
 			e.broadcast(websocket.InsightResolved, e.insights[i])
-			// Parked runtimes still persist (above) but don't notify — see the
-			// TEMPORARY note on broadcastGate.
-			if e.outboundEnabled() && e.onResolved != nil {
+			// Always-on (W2 §10): notify regardless of active/parked — an insight
+			// resolving on ANY connected cluster fires its notification. The WS
+			// broadcast above stays gated (parked OSS runtimes don't WS-broadcast);
+			// only this notification hook is un-gated.
+			if e.onResolved != nil {
 				e.onResolved(e.insights[i])
 			}
 		}
@@ -242,10 +244,10 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			// (brand-new identity or reopen-after-resolve). An insight that
 			// merely survived a backend restart is a continuation, not a new
 			// finding — firing onNew there is the restart-renotify spam bug.
-			// outboundEnabled gates parked runtimes (TEMPORARY — see the
-			// broadcastGate note; notifications shouldn't depend on the active
-			// cluster long-term).
-			if freshEpisode && e.outboundEnabled() && e.onNew != nil {
+			// Always-on (W2 §10): NOT gated on the active cluster — a new insight
+			// on ANY connected cluster notifies (the engine runs on parked runtimes
+			// too). freshEpisode is the only gate that stays.
+			if freshEpisode && e.onNew != nil {
 				e.onNew(newIns)
 			}
 		}

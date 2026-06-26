@@ -20,8 +20,8 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"time"
 
-	"github.com/google/uuid"
 	"golang.org/x/mod/semver"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -31,6 +31,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
@@ -89,6 +90,11 @@ type Server struct {
 	// when WithGRPCIngestMetrics wasn't passed — all RecordX methods
 	// nil-guard so call sites stay terse.
 	metrics *GRPCIngestMetrics
+	// usage meters billable samples per authenticated tenant, mirroring the
+	// remote_write path (prom_write.go). nil when the metering seam isn't wired
+	// (tests); main.go passes the no-op store. Record is non-blocking (the store
+	// buffers in-memory), so it is safe to call on the ingest hot path.
+	usage usage.UsageStore
 }
 
 // Option configures a Server. Functional-options pattern keeps NewServer
@@ -140,6 +146,13 @@ func WithGRPCIngestMetrics(m *GRPCIngestMetrics) Option {
 	return func(s *Server) { s.metrics = m }
 }
 
+// WithUsageStore plugs the metering seam so accepted ingest samples are metered
+// per authenticated tenant. nil is tolerated — the Record call site nil-guards,
+// so unset (tests) means "don't meter". main.go passes the no-op store.
+func WithUsageStore(u usage.UsageStore) Option {
+	return func(s *Server) { s.usage = u }
+}
+
 // resolveAutoRegister centralizes the "is the flag enabled right now"
 // check. nil getter → false (the safe default for the option-not-set
 // case in tests + the auth-disabled boot path).
@@ -148,6 +161,24 @@ func (s *Server) resolveAutoRegister() bool {
 		return false
 	}
 	return s.autoRegisterClusters()
+}
+
+// meterSamples records billable ingested samples through the usage seam,
+// attributed to the AUTHENTICATED tenant — never a sample's self-asserted
+// label, which the anti-spoofing gate enforces upstream. No-op when the seam is
+// unwired (tests; the no-op store is passed explicitly), when there is no
+// authenticated tenant (unattributed ingest isn't billed), or when the batch is
+// empty. The store buffers in-memory, so this never blocks the ingest hot path.
+func (s *Server) meterSamples(ctx context.Context, tenantID string, n int) {
+	if s.usage == nil || tenantID == "" || n <= 0 {
+		return
+	}
+	_ = s.usage.Record(ctx, usage.UsageRecord{
+		TenantID: tenantID,
+		Metric:   usage.MetricSamplesIngested,
+		Quantity: int64(n),
+		At:       time.Now(),
+	})
 }
 
 // WithSelfClusterID configures the cluster_id the backend itself runs
@@ -198,8 +229,8 @@ func (s streamSender) Send(msg *agentv2.BackendMessage) error {
 //     - Heartbeat       → log + reply HeartbeatAck.
 //     - Metrics batch   → forward to MetricsWriter.
 //     - kube_response / kube_event / stream_closed
-//                       → unsolicited until commit 5 wires the proxy
-//                         dispatcher; log at debug + drop.
+//     → unsolicited until commit 5 wires the proxy
+//     dispatcher; log at debug + drop.
 //     - second Hello    → protocol violation, close the stream.
 //  4. EOF or error → return.
 func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
@@ -413,6 +444,9 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			// shows ingest IS arriving even when downstream storage is
 			// down, which is useful diagnostically.
 			s.metrics.RecordSamplesReceived(tenantIDLabel, len(batch.GetSamples()))
+			// Meter accepted samples per authenticated tenant, like the
+			// remote_write path (prom_write.go). See meterSamples.
+			s.meterSamples(ctx, tenantIDLabel, len(batch.GetSamples()))
 			if werr := s.writer.Write(ctx, batch.GetSamples()); werr != nil {
 				// v1 surfaced rejections via IngestAck. v2 omits the ack —
 				// the agent's buffer + heartbeat already give the operator
@@ -513,13 +547,24 @@ func resolveAgentID(id *auth.AgentIdentity, nodeName, clusterHint, role string) 
 	if cluster == "" {
 		cluster = "local"
 	}
-	if id == nil || id.Mode == auth.ModeDisabled || id.TenantID == "" {
-		// No auth identity → can't derive a stable agent_id, fresh UUID
-		// each connect. The cluster label is still honored from the hint
-		// so multi-cluster OSS deployments don't collapse to one entry.
-		return uuid.NewString(), cluster
+	// Derive a STABLE agent_id from (tenant, cluster, node, role) so a
+	// reconnecting agent reuses its registry slot + persisted record instead of
+	// leaking a brand-new one on every reconnect.
+	//
+	// The no-auth / disabled path used to mint a uuid.NewString() per connect.
+	// Because an UNCLEAN disconnect never sets disconnected_at (only a clean
+	// Unregister does), every reconnect left a permanent "connected" record that
+	// never got pruned — hundreds accumulated for a single long-lived agent when
+	// auth is disabled. Deriving the id means the reconnect updates the one
+	// record instead. The tenant component falls back to "" when the agent
+	// didn't authenticate, keeping the hash well-defined; (cluster, node, role)
+	// still uniquely identifies the physical agent, so distinct agents never
+	// collapse into one slot.
+	tenant := ""
+	if id != nil {
+		tenant = id.TenantID
 	}
-	return auth.DeriveAgentID(id.TenantID, cluster, nodeName, role), cluster
+	return auth.DeriveAgentID(tenant, cluster, nodeName, role), cluster
 }
 
 // agentRoleFromHello extracts the role tag used as the 4th
@@ -599,7 +644,23 @@ func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) e
 	go func() {
 		<-ctx.Done()
 		slog.Info("agent gRPC server stopping")
-		grpcSrv.GracefulStop()
+		// GracefulStop blocks until all in-flight RPCs finish, but the agent
+		// streams are long-lived bidi RPCs that never end on their own, so it
+		// hangs shutdown and leaves agents on a half-open connection they only
+		// notice tens of seconds later (~48s without client keepalive). Give
+		// graceful a short window to drain quick unary calls, then force-close so
+		// the streams drop CLEANLY and agents reconnect promptly on the next boot.
+		stopped := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-time.After(2 * time.Second):
+			slog.Info("agent gRPC graceful stop timed out — forcing close so agent streams drop")
+			grpcSrv.Stop()
+		}
 	}()
 
 	if err := grpcSrv.Serve(lis); err != nil {

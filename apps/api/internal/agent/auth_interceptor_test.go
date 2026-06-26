@@ -536,19 +536,27 @@ func TestInterceptor_E2E_EnforcedAcceptsValidCredentials(t *testing.T) {
 // ─── resolveAgentID ───────────────────────────────────────────────────
 
 func TestResolveAgentID(t *testing.T) {
-	t.Run("nil identity falls back to UUID + local cluster", func(t *testing.T) {
+	t.Run("nil identity derives a stable id (no per-connect UUID)", func(t *testing.T) {
 		id, cluster := resolveAgentID(nil, "node-a", "", "metrics")
 		if cluster != "local" {
 			t.Errorf("cluster = %s, want local", cluster)
 		}
-		if len(id) != 36 { // UUID canonical length
-			t.Errorf("expected UUID-shaped id, got %s (len=%d)", id, len(id))
+		// Stable 16-hex derive from ("", "local", node, role) — NOT a fresh UUID
+		// per connect, which leaked a permanent "connected" ghost record on every
+		// reconnect when auth is disabled.
+		want := auth.DeriveAgentID("", "local", "node-a", "metrics")
+		if id != want {
+			t.Errorf("id = %s, want stable derive %s", id, want)
+		}
+		if again, _ := resolveAgentID(nil, "node-a", "", "metrics"); again != id {
+			t.Errorf("id must be stable across reconnects, got %s then %s", id, again)
 		}
 	})
-	t.Run("disabled mode falls back to UUID", func(t *testing.T) {
+	t.Run("disabled mode derives a stable id (no per-connect UUID)", func(t *testing.T) {
 		id, _ := resolveAgentID(&auth.AgentIdentity{Mode: auth.ModeDisabled}, "node-a", "", "metrics")
-		if len(id) != 36 {
-			t.Errorf("expected UUID-shaped id, got %s", id)
+		want := auth.DeriveAgentID("", "local", "node-a", "metrics")
+		if id != want {
+			t.Errorf("id = %s, want stable derive %s", id, want)
 		}
 	})
 	t.Run("authenticated identity yields stable derived id", func(t *testing.T) {

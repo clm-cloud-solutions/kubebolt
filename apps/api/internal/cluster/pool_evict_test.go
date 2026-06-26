@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
 )
 
@@ -146,5 +147,27 @@ func TestEvictPooledContext_DropsParkedRuntime(t *testing.T) {
 	}
 	if _, ok := m.runtimes[poolKey{"default", "stays"}]; !ok {
 		t.Fatalf("unrelated pooled runtime should be untouched")
+	}
+}
+
+// A connected agent-proxy runtime is pinned (always-on, W2 §10), but a proxy whose
+// agent has DISCONNECTED is no longer pinned — it must still be reaped when idle so
+// a dead runtime never leaks. (The connected→survives path is covered in-vivo;
+// registering a real agent isn't worth mocking here.)
+func TestReapIdle_DisconnectedProxyStillReaped(t *testing.T) {
+	now := time.Now()
+	m := &Manager{
+		tenantID:           "default",
+		poolIdleTimeout:    10 * time.Minute,
+		runtimes:           map[poolKey]*clusterRuntime{},
+		agentRegistry:      channel.NewAgentRegistry(), // empty → CountByCluster == 0
+		agentProxyContexts: map[string]string{"agent:gone": "cid-gone"},
+	}
+	m.runtimes[poolKey{"default", "agent:gone"}] = fakePooledRuntime(now.Add(-20 * time.Minute))
+
+	m.reapIdlePooledRuntimes()
+
+	if _, ok := m.runtimes[poolKey{"default", "agent:gone"}]; ok {
+		t.Fatalf("idle agent-proxy runtime with no connected agent must be reaped (no leak)")
 	}
 }

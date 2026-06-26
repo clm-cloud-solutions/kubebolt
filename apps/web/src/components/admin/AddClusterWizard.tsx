@@ -109,7 +109,7 @@ export function AddClusterWizard({ onClose }: Props) {
     ? `kubectl -n ${defaults.agentIngestService.namespace} patch svc ${defaults.agentIngestService.name} -p '{"spec":{"type":"LoadBalancer"}}'`
     : ''
 
-  const helmCommand = buildHelmCommand(cfg)
+  const helmCommand = buildHelmCommand(cfg, nodeSelector)
 
   function copyHelm() {
     const done = () => {
@@ -237,6 +237,7 @@ export function AddClusterWizard({ onClose }: Props) {
           advancedOpen={advancedOpen}
           setAdvancedOpen={setAdvancedOpen}
           showTransportTls
+          showFullCapabilities
           tokenSlot={tokenSlot}
         />
         </div>
@@ -317,8 +318,10 @@ function copyViaTextarea(text: string, done: () => void) {
 // --set flags (chart value paths verified against deploy/helm/kubebolt-agent).
 // The optional advanced fields only emit a flag when set, keeping the command
 // readable for the common case.
-function buildHelmCommand(cfg: AgentInstallConfig): string {
+function buildHelmCommand(cfg: AgentInstallConfig, nodeSelector: Array<{ k: string; v: string }>): string {
   const ns = cfg.namespace?.trim() || 'kubebolt-system'
+  const escKey = (s: string) => s.replace(/\./g, '\\.') // dots are helm path separators
+  const escVal = (s: string) => s.replace(/,/g, '\\,')  // commas separate --set entries
   const flags: string[] = [
     `backendUrl=${cfg.backendUrl.trim() || '<BACKEND_URL>'}`,
     `cluster.name=${cfg.clusterName?.trim() || '<cluster-name>'}`,
@@ -332,10 +335,30 @@ function buildHelmCommand(cfg: AgentInstallConfig): string {
   } else {
     flags.push('auth.mode=disabled')
   }
+  // Metrics source — scrape XOR promread (kubelet is always on).
+  if (cfg.metricsSource === 'scrape') {
+    flags.push('scrape.enabled=true')
+  } else if (cfg.metricsSource === 'promread') {
+    flags.push('scrape.enabled=false')
+    flags.push('agent.promRead.enabled=true')
+    flags.push(`agent.promRead.url=${cfg.promRead?.url?.trim() || '<PROMETHEUS_URL>'}`)
+    const pAuth = cfg.promRead?.authMode ?? 'none'
+    if (pAuth !== 'none') {
+      flags.push(`agent.promRead.auth.mode=${pAuth}`)
+      if (pAuth === 'basicAuth' && cfg.promRead?.basicAuthUsername?.trim()) flags.push(`agent.promRead.auth.basicAuthUsername=${escVal(cfg.promRead.basicAuthUsername.trim())}`)
+      if (pAuth === 'bearer' && cfg.promRead?.bearerToken?.trim()) flags.push(`agent.promRead.auth.bearerToken=${escVal(cfg.promRead.bearerToken.trim())}`)
+      if (pAuth === 'awsSigV4') flags.push(`agent.promRead.auth.awsRegion=${cfg.promRead?.awsRegion?.trim() || '<AWS_REGION>'}`)
+    }
+  }
+  // mTLS — only meaningful when transport TLS is on.
+  if (cfg.tlsEnabled && cfg.tlsCaSecret?.trim()) flags.push(`tls.caSecret=${cfg.tlsCaSecret.trim()}`)
+  if (cfg.tlsEnabled && cfg.tlsClientCertSecret?.trim()) flags.push(`tls.clientCertSecret=${cfg.tlsClientCertSecret.trim()}`)
   if (cfg.imageRepo?.trim()) flags.push(`image.repository=${cfg.imageRepo.trim()}`)
   if (cfg.imageTag?.trim()) flags.push(`image.tag=${cfg.imageTag.trim()}`)
   if (cfg.imagePullPolicy) flags.push(`image.pullPolicy=${cfg.imagePullPolicy}`)
   if (cfg.priorityClassName?.trim()) flags.push(`priorityClassName=${cfg.priorityClassName.trim()}`)
+  if (cfg.tolerateAll) flags.push('tolerations[0].operator=Exists')
+  if (cfg.gomemlimit?.trim()) flags.push(`gomemlimit=${cfg.gomemlimit.trim()}`)
   if (cfg.logLevel && cfg.logLevel !== 'info') flags.push(`logLevel=${cfg.logLevel}`)
   const r = cfg.resources
   if (r?.cpuRequest?.trim()) flags.push(`resources.requests.cpu=${r.cpuRequest.trim()}`)
@@ -343,9 +366,23 @@ function buildHelmCommand(cfg: AgentInstallConfig): string {
   if (r?.cpuLimit?.trim()) flags.push(`resources.limits.cpu=${r.cpuLimit.trim()}`)
   if (r?.memoryLimit?.trim()) flags.push(`resources.limits.memory=${r.memoryLimit.trim()}`)
   if (cfg.hubbleRelayAddress?.trim()) flags.push(`hubble.relay.address=${cfg.hubbleRelayAddress.trim()}`)
-  for (const [k, v] of Object.entries(cfg.nodeSelector ?? {})) {
-    flags.push(`nodeSelector.${k.replace(/\./g, '\\.')}=${v}`)
+  // Relay TLS — previously collected in the UI but never emitted (bug).
+  if (cfg.hubbleRelayTls?.existingSecret?.trim()) flags.push(`hubble.relay.tls.existingSecret=${cfg.hubbleRelayTls.existingSecret.trim()}`)
+  if (cfg.hubbleRelayTls?.serverName?.trim()) flags.push(`hubble.relay.tls.serverName=${cfg.hubbleRelayTls.serverName.trim()}`)
+  // Node selector — fed from the wizard's separate array state. The old
+  // cfg.nodeSelector read never received it, so selectors were silently dropped.
+  for (const { k, v } of nodeSelector) {
+    if (k.trim()) flags.push(`nodeSelector.${escKey(k.trim())}=${escVal(v.trim())}`)
   }
+  // ServiceAccount annotations (IRSA / Workload Identity).
+  for (const { k, v } of cfg.serviceAccountAnnotations ?? []) {
+    if (k.trim()) flags.push(`serviceAccount.annotations.${escKey(k.trim())}=${escVal(v.trim())}`)
+  }
+  // Extra env vars — re-indexed contiguously so a blank row doesn't leave a gap.
+  ;(cfg.extraEnv ?? []).filter((e) => e.name.trim()).forEach((e, i) => {
+    flags.push(`extraEnv[${i}].name=${e.name.trim()}`)
+    flags.push(`extraEnv[${i}].value=${escVal(e.value.trim())}`)
+  })
 
   const head = [
     'helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent',

@@ -697,28 +697,29 @@ logLevel: info  # debug | info | warn | error
 # Inject arbitrary env vars into the agent container. Useful for
 # features we don't have first-class Helm fields for yet.
 #
-# GOMEMLIMIT default — added 2026-05-17 to address a memory retention
-# pattern surfaced in the field: high allocation churn from Hubble
-# flow parsing (~200 MB/min steady-state) makes Go expand HeapSys but
-# the scavenger is lazy returning idle pages to the OS without an
-# explicit memory target. Setting GOMEMLIMIT slightly below
-# resources.limits.memory makes GC + scavenger aggressive enough that
-# working_set stabilizes well under the limit. Costs ~5-10% extra CPU
-# in GC under load — acceptable since the agent's CPU baseline is
-# ~5-10m. Remove this entry only when overriding limits.memory
-# significantly higher (eg. >256Mi) where the scavenger pressure
-# becomes counterproductive.
-extraEnv:
-  - name: GOMEMLIMIT
-    value: "100MiB"
-# Append your own env vars below the chart default — operators who
-# want to OVERRIDE GOMEMLIMIT entirely should set this list directly.
-# Example to add log-level override alongside the default:
+# GOMEMLIMIT — added 2026-05-17 to address a memory retention pattern surfaced
+# in the field: high allocation churn from Hubble flow parsing (~200 MB/min
+# steady-state) makes Go expand HeapSys but the scavenger is lazy returning idle
+# pages to the OS without an explicit memory target. Setting GOMEMLIMIT slightly
+# below resources.limits.memory makes GC + scavenger aggressive enough that
+# working_set stabilizes well under the limit (~5-10% extra GC CPU, acceptable
+# at the agent's ~5-10m baseline).
+#
+# It is now DERIVED automatically: each Go container (DaemonSet agent + promread)
+# gets GOMEMLIMIT = 90% of ITS own limits.memory, computed in the templates (see
+# the kubebolt-agent.gomemlimit helper). This keeps it coupled to the limit — the
+# old hardcoded 100MiB silently exceeded the limit and OOM-looped whenever an
+# operator lowered limits.memory below it. Leave `gomemlimit` empty to auto-derive;
+# set it to pin an explicit value (e.g. "200MiB") across all containers.
+gomemlimit: ""
+
+# Inject arbitrary env vars into the agent container — features we don't have
+# first-class Helm fields for yet. GOMEMLIMIT is no longer set here (it's derived
+# above); override it via `gomemlimit`, not extraEnv.
 #   extraEnv:
-#     - name: GOMEMLIMIT
-#       value: "100MiB"
 #     - name: KUBEBOLT_AGENT_LOG_LEVEL
 #       value: debug
+extraEnv: []
 
 # Override chart-derived names when needed.
 nameOverride: ""

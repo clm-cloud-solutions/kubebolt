@@ -53,6 +53,12 @@ interface Props {
   // Render the transport-TLS toggle (helm copy-paste flow only). Backed by
   // cfg.tlsEnabled. The backend-applied install decides transport itself.
   showTransportTls?: boolean
+  // Render the full agent capability surface in Advanced (Prometheus
+  // integration, mTLS, ServiceAccount annotations, tolerations, GOMEMLIMIT,
+  // extraEnv). Only the helm-command flow (AddClusterWizard) sets this; the
+  // backend-applied install wizard leaves it off so it isn't shown knobs its
+  // submit path can't carry yet.
+  showFullCapabilities?: boolean
   // Extra control rendered right under Backend URL (e.g. owner-team selector).
   topExtra?: ReactNode
 }
@@ -63,8 +69,11 @@ interface Props {
 // can never drift apart on which knobs they expose.
 export function AgentConfigFields({
   cfg, setCfg, nodeSelector, setNodeSelector, authInfo,
-  advancedOpen, setAdvancedOpen, tokenSlot, showTransportTls, topExtra,
+  advancedOpen, setAdvancedOpen, tokenSlot, showTransportTls, showFullCapabilities, topExtra,
 }: Props) {
+  const saAnnotations = cfg.serviceAccountAnnotations ?? []
+  const extraEnv = cfg.extraEnv ?? []
+  const promReadAuth = cfg.promRead?.authMode ?? 'none'
   return (
     <>
       {/* Backend URL */}
@@ -152,22 +161,40 @@ export function AgentConfigFields({
         })()}
       </div>
 
-      {/* Transport TLS (helm copy-paste flow only) */}
+      {/* Transport TLS (helm copy-paste flow only) — mTLS certs reveal inline */}
       {showTransportTls && (
-        <div className="flex items-start justify-between gap-3 p-3 rounded-lg bg-kb-elevated border border-kb-border">
-          <div>
-            <div className="text-sm text-kb-text-primary font-medium">Transport TLS to backend</div>
-            <p className="text-[11px] text-kb-text-secondary mt-0.5">
-              Encrypts the agent's gRPC dial. Turn ON when the backend terminates TLS on its agent-ingest port; leave OFF for a plaintext backend (dev / Docker Desktop). Mismatch → <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">first record does not look like a TLS handshake</code>.
-            </p>
+        <div className="p-3 rounded-lg bg-kb-elevated border border-kb-border space-y-3">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <div className="text-sm text-kb-text-primary font-medium">Transport TLS to backend</div>
+              <p className="text-[11px] text-kb-text-secondary mt-0.5">
+                Encrypts the agent's gRPC dial. Turn ON when the backend terminates TLS on its agent-ingest port; leave OFF for a plaintext backend (dev / Docker Desktop). Mismatch → <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">first record does not look like a TLS handshake</code>.
+              </p>
+            </div>
+            <button
+              type="button" role="switch" aria-checked={!!cfg.tlsEnabled}
+              onClick={() => setCfg({ ...cfg, tlsEnabled: !cfg.tlsEnabled })}
+              className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.tlsEnabled ? 'bg-kb-accent' : 'bg-kb-border'}`}
+            >
+              <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.tlsEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`} />
+            </button>
           </div>
-          <button
-            type="button" role="switch" aria-checked={!!cfg.tlsEnabled}
-            onClick={() => setCfg({ ...cfg, tlsEnabled: !cfg.tlsEnabled })}
-            className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${cfg.tlsEnabled ? 'bg-kb-accent' : 'bg-kb-border'}`}
-          >
-            <span className={`inline-block h-4 w-4 rounded-full bg-white transition-transform ${cfg.tlsEnabled ? 'translate-x-[18px]' : 'translate-x-0.5'} mt-0.5`} />
-          </button>
+          {showFullCapabilities && cfg.tlsEnabled && (
+            <div className="space-y-2 pt-2 border-t border-kb-border/60">
+              <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Mutual TLS (optional)</div>
+              <p className="text-[10px] text-kb-text-tertiary">Only when the backend verifies client certs. Secrets must pre-exist in the target namespace.</p>
+              <div>
+                <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">CA Secret (verify backend)</label>
+                <input type="text" placeholder="name of a Secret holding ca.crt" value={cfg.tlsCaSecret ?? ''}
+                  onChange={(e) => setCfg({ ...cfg, tlsCaSecret: e.target.value })} className={subInput} />
+              </div>
+              <div>
+                <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Client cert Secret (mutual TLS)</label>
+                <input type="text" placeholder="name of a Secret holding tls.crt + tls.key" value={cfg.tlsClientCertSecret ?? ''}
+                  onChange={(e) => setCfg({ ...cfg, tlsClientCertSecret: e.target.value })} className={subInput} />
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -201,6 +228,75 @@ export function AgentConfigFields({
         </button>
         {advancedOpen && (
           <div className="mt-3 space-y-4 p-3 rounded-lg bg-kb-elevated border border-kb-border">
+            {/* Prometheus integration (full-capability flow only) */}
+            {showFullCapabilities && (
+              <section className="space-y-2">
+                <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Prometheus integration</div>
+                <p className="text-[10px] text-kb-text-tertiary">Kubelet/cAdvisor metrics always ship. Optionally add ONE more source (mutually exclusive):</p>
+                <div className="space-y-1.5">
+                  {([
+                    ['kubelet', 'None — kubelet metrics only'],
+                    ['scrape', 'Scrape annotated pods (prometheus.io/scrape)'],
+                    ['promread', 'Read from existing Prometheus (AMP / GMP / Azure Monitor / self-hosted)'],
+                  ] as const).map(([val, label]) => (
+                    <label key={val} className="flex items-center gap-2 text-xs text-kb-text-secondary cursor-pointer">
+                      <input type="radio" name="metricsSource" checked={(cfg.metricsSource ?? 'kubelet') === val}
+                        onChange={() => setCfg({ ...cfg, metricsSource: val })} className="accent-kb-accent" />
+                      {label}
+                    </label>
+                  ))}
+                </div>
+                {cfg.metricsSource === 'promread' && (
+                  <div className="space-y-2 pt-2 pl-3 border-l-2 border-kb-border">
+                    <div>
+                      <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Prometheus URL <span className="text-status-error">*</span></label>
+                      <input type="text" placeholder="https://prometheus.monitoring.svc:9090" value={cfg.promRead?.url ?? ''}
+                        onChange={(e) => setCfg({ ...cfg, promRead: { ...(cfg.promRead ?? {}), url: e.target.value } })} className={subInput} />
+                    </div>
+                    <div>
+                      <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Auth</label>
+                      <select value={promReadAuth}
+                        onChange={(e) => setCfg({ ...cfg, promRead: { ...(cfg.promRead ?? {}), authMode: e.target.value as NonNullable<AgentInstallConfig['promRead']>['authMode'] } })}
+                        className={subInput}>
+                        <option value="none">None</option>
+                        <option value="basicAuth">Basic auth</option>
+                        <option value="bearer">Bearer token</option>
+                        <option value="awsSigV4">AWS SigV4 — Amazon Managed Prometheus</option>
+                        <option value="gcpIam">GCP IAM — Google Managed Prometheus</option>
+                        <option value="azureWorkloadIdentity">Azure Workload Identity — Azure Monitor</option>
+                      </select>
+                    </div>
+                    {promReadAuth === 'basicAuth' && (
+                      <div>
+                        <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Username</label>
+                        <input type="text" placeholder="prometheus" value={cfg.promRead?.basicAuthUsername ?? ''}
+                          onChange={(e) => setCfg({ ...cfg, promRead: { ...(cfg.promRead ?? {}), basicAuthUsername: e.target.value } })} className={subInput} />
+                        <p className="text-[10px] text-kb-text-tertiary mt-1">Supply the password via a Secret + extraEnv valueFrom in production — see docs.</p>
+                      </div>
+                    )}
+                    {promReadAuth === 'bearer' && (
+                      <div>
+                        <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Bearer token</label>
+                        <input type="text" placeholder="prefer a Secret in production — see docs" value={cfg.promRead?.bearerToken ?? ''}
+                          onChange={(e) => setCfg({ ...cfg, promRead: { ...(cfg.promRead ?? {}), bearerToken: e.target.value } })} className={subInput} />
+                      </div>
+                    )}
+                    {promReadAuth === 'awsSigV4' && (
+                      <div>
+                        <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">AWS region <span className="text-status-error">*</span></label>
+                        <input type="text" placeholder="us-east-1" value={cfg.promRead?.awsRegion ?? ''}
+                          onChange={(e) => setCfg({ ...cfg, promRead: { ...(cfg.promRead ?? {}), awsRegion: e.target.value } })} className={subInput} />
+                      </div>
+                    )}
+                    {(promReadAuth === 'awsSigV4' || promReadAuth === 'gcpIam' || promReadAuth === 'azureWorkloadIdentity') && (
+                      <p className="text-[10px] text-status-warn">Uses the pod's cloud identity — set the ServiceAccount annotations below (IRSA / Workload Identity).</p>
+                    )}
+                    <p className="text-[10px] text-kb-text-tertiary">Adds KSM + load + PSI + disk + network-errs lanes the UI can't get from kubelet. Surgical default matchers — customize via the chart (docs).</p>
+                  </div>
+                )}
+              </section>
+            )}
+
             {/* Image */}
             <section className="space-y-2">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Image</div>
@@ -276,14 +372,38 @@ export function AgentConfigFields({
                     className="text-[10px] font-mono text-kb-accent hover:underline">+ Add selector</button>
                 </div>
               </div>
+              {showFullCapabilities && (
+                <label className="flex items-center gap-2 text-xs text-kb-text-secondary cursor-pointer pt-1">
+                  <input type="checkbox" checked={!!cfg.tolerateAll}
+                    onChange={() => setCfg({ ...cfg, tolerateAll: !cfg.tolerateAll })} className="accent-kb-accent" />
+                  Tolerate all taints (run on every node, incl. control-plane)
+                </label>
+              )}
             </section>
+
+            {/* ServiceAccount annotations (full-capability flow only) */}
+            {showFullCapabilities && (
+              <section className="space-y-2 pt-3 border-t border-kb-border/60">
+                <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">ServiceAccount annotations</div>
+                <p className="text-[10px] text-kb-text-tertiary">IRSA (EKS) / Workload Identity (GKE/AKS) — required when promRead auth uses the cloud's ambient credentials.</p>
+                <div className="space-y-1.5">
+                  {saAnnotations.map((pair, i) => (
+                    <KVRow key={i} k={pair.k} v={pair.v}
+                      onChange={(k, v) => { const next = [...saAnnotations]; next[i] = { k, v }; setCfg({ ...cfg, serviceAccountAnnotations: next }) }}
+                      onRemove={() => setCfg({ ...cfg, serviceAccountAnnotations: saAnnotations.filter((_, j) => j !== i) })} />
+                  ))}
+                  <button type="button" onClick={() => setCfg({ ...cfg, serviceAccountAnnotations: [...saAnnotations, { k: '', v: '' }] })}
+                    className="text-[10px] font-mono text-kb-accent hover:underline">+ Add annotation</button>
+                </div>
+              </section>
+            )}
 
             {/* Resources */}
             <section className="space-y-2 pt-3 border-t border-kb-border/60">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Resources</div>
-              <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 30Mi, limits 100m / 80Mi.</p>
+              <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 64Mi, limits 100m / 128Mi. Bump the limit (e.g. 256Mi) on busy nodes — Hubble flow parsing is the main driver.</p>
               <div className="grid grid-cols-2 gap-3">
-                {([['cpuRequest', 'CPU request', '10m'], ['cpuLimit', 'CPU limit', '100m'], ['memoryRequest', 'Memory request', '30Mi'], ['memoryLimit', 'Memory limit', '80Mi']] as const).map(([key, label, ph]) => (
+                {([['cpuRequest', 'CPU request', '10m'], ['cpuLimit', 'CPU limit', '100m'], ['memoryRequest', 'Memory request', '64Mi'], ['memoryLimit', 'Memory limit', '128Mi']] as const).map(([key, label, ph]) => (
                   <div key={key}>
                     <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">{label}</label>
                     <input type="text" placeholder={ph} value={cfg.resources?.[key] ?? ''}
@@ -292,6 +412,14 @@ export function AgentConfigFields({
                   </div>
                 ))}
               </div>
+              {showFullCapabilities && (
+                <div>
+                  <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">GOMEMLIMIT override</label>
+                  <input type="text" placeholder="e.g. 200MiB" value={cfg.gomemlimit ?? ''}
+                    onChange={(e) => setCfg({ ...cfg, gomemlimit: e.target.value })} className={subInput} />
+                  <p className="text-[10px] text-kb-text-tertiary mt-1">Blank = auto (90% of the memory limit). Format: digits + <span className="font-mono">MiB</span> or <span className="font-mono">GiB</span> (e.g. <span className="font-mono">200MiB</span>).</p>
+                </div>
+              )}
             </section>
 
             {/* Logging */}
@@ -307,6 +435,28 @@ export function AgentConfigFields({
                 </select>
               </div>
             </section>
+
+            {/* Extra env vars (full-capability flow only) */}
+            {showFullCapabilities && (
+              <section className="space-y-2 pt-3 border-t border-kb-border/60">
+                <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Extra env vars</div>
+                <p className="text-[10px] text-kb-text-tertiary">Escape hatch for knobs without a first-class field (e.g. KUBEBOLT_AGENT_PPROF_ADDR).</p>
+                <div className="space-y-1.5">
+                  {extraEnv.map((pair, i) => (
+                    <div key={i} className="flex gap-2">
+                      <input type="text" placeholder="NAME" value={pair.name}
+                        onChange={(e) => { const next = [...extraEnv]; next[i] = { ...next[i], name: e.target.value }; setCfg({ ...cfg, extraEnv: next }) }} className={subInput} />
+                      <input type="text" placeholder="value" value={pair.value}
+                        onChange={(e) => { const next = [...extraEnv]; next[i] = { ...next[i], value: e.target.value }; setCfg({ ...cfg, extraEnv: next }) }} className={subInput} />
+                      <button type="button" onClick={() => setCfg({ ...cfg, extraEnv: extraEnv.filter((_, j) => j !== i) })}
+                        className="px-2 py-1 rounded bg-kb-card border border-kb-border text-xs text-kb-text-tertiary hover:text-status-error">×</button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => setCfg({ ...cfg, extraEnv: [...extraEnv, { name: '', value: '' }] })}
+                    className="text-[10px] font-mono text-kb-accent hover:underline">+ Add env var</button>
+                </div>
+              </section>
+            )}
           </div>
         )}
       </div>

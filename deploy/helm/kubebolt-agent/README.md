@@ -253,20 +253,28 @@ Full reference with every knob the chart exposes is in
 
 ### Memory and observability
 
-The chart sets `GOMEMLIMIT=100MiB` as a default `extraEnv` entry. The
-Go runtime targets this value as a soft total-memory cap — when the
-process approaches it, GC runs more frequently and the page scavenger
-becomes more aggressive about returning idle heap pages to the OS.
-This addresses a memory-retention pattern surfaced during the 1.10
+The chart **derives** `GOMEMLIMIT` as 90% of each Go container's
+`limits.memory` — the DaemonSet agent and the promread Deployment each
+get their own, computed by the `kubebolt-agent.gomemlimit` template
+helper. The Go runtime targets this value as a soft total-memory cap —
+as the process approaches it, GC runs more frequently and the page
+scavenger becomes more aggressive about returning idle heap pages to the
+OS. This addresses a memory-retention pattern surfaced during the 1.10
 validation campaign: high allocation churn from Hubble flow proto
 parsing (~200 MB/min steady-state on an active node) made `HeapSys`
-ratchet up without `GOMEMLIMIT` pressure. CPU cost: ~5-10% more time
-in GC under load — immaterial against the agent's 5-10m CPU baseline.
+ratchet up without `GOMEMLIMIT` pressure. CPU cost: ~5-10% more time in
+GC under load — immaterial against the agent's 5-10m CPU baseline.
 
-Operators who bump `resources.limits.memory` significantly higher (e.g.
-above 256Mi for very large clusters) should remove or raise the
-`GOMEMLIMIT` entry in `extraEnv` so the scavenger pressure doesn't
-become counterproductive.
+Deriving it from the limit keeps the two coupled. A hardcoded
+`GOMEMLIMIT` (the chart's earlier 100MiB default) silently *exceeds* the
+container limit — and OOM-loops, because the scavenger never triggers
+before the cgroup killer — the moment an operator lowers
+`resources.limits.memory` below it. To override the derivation, pin an
+explicit value across all containers with the `gomemlimit` value:
+
+```yaml
+gomemlimit: "200MiB"
+```
 
 The agent emits a deep set of `kubebolt_agent_heap_*` and
 `kubebolt_agent_*_sys_bytes` gauges so the same investigation pattern
@@ -275,8 +283,6 @@ endpoint:
 
 ```yaml
 extraEnv:
-  - name: GOMEMLIMIT
-    value: "100MiB"
   - name: KUBEBOLT_AGENT_PPROF_ADDR
     value: "127.0.0.1:6060"  # loopback only — port-forward to access
 ```
@@ -303,7 +309,8 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 |-------|---------|---------|
 | `logLevel` | `info` | `debug` / `info` / `warn` / `error`. |
 | `agent.deferNodeNetwork` | `false` | Suppress agent's `node_network_*` emission when an external Prometheus is the canonical scraper of node-exporter. Avoids 2× counts on `sum(rate(node_network_*[1m]))` queries (kubelet `/stats/summary` and node-exporter emit the same metric names from the same `/proc/net/dev` counters). The bundled `scrape.discovery.nodeExporter.enabled=true` path auto-sets this when the chart's vmagent sidecar scrapes node-exporter; flip it explicitly to `true` when a SEPARATE external Prom does the scraping. |
-| `extraEnv` | _GOMEMLIMIT preset_ | List of additional env vars. The chart's default already includes `GOMEMLIMIT=100MiB` — see "Memory and observability" above. To add operator-provided env vars, set the list directly with the default re-included: `extraEnv: [{name: GOMEMLIMIT, value: "100MiB"}, {name: KUBEBOLT_AGENT_LOG_LEVEL, value: debug}]`. |
+| `gomemlimit` | `""` _(derived)_ | Overrides the auto-derived `GOMEMLIMIT` (90% of each Go container's `limits.memory`). Empty = derive — see "Memory and observability" above. Set e.g. `"200MiB"` to pin it across all containers. |
+| `extraEnv` | `[]` | List of additional env vars appended to the agent container. `GOMEMLIMIT` is no longer set here — override it via `gomemlimit` above. |
 | `podAnnotations` | `{}` | Useful for external scrapers or policy engines. |
 | `podLabels` | `{}` | |
 

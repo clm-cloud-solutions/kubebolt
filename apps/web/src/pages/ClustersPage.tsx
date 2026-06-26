@@ -79,6 +79,7 @@ function ClusterCard({
   const isConnected = cluster.status === 'connected'
   const hasError = cluster.status === 'error'
   const isUploaded = cluster.source === 'uploaded'
+  const isAgentProxy = cluster.source === 'agent-proxy'
   const displayName = parseClusterDisplayName(cluster)
 
   return (
@@ -203,11 +204,11 @@ function ClusterCard({
             <Pencil className="w-3 h-3" />
             Rename
           </button>
-          {isUploaded && (
+          {(isUploaded || (isAgentProxy && cluster.clusterId)) && (
             <button
               onClick={() => onDelete(cluster)}
               className="flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[10px] font-mono text-status-error hover:bg-status-error-dim transition-colors ml-auto"
-              title="Remove uploaded cluster"
+              title={isUploaded ? 'Remove uploaded cluster' : 'Remove this cluster from KubeBolt'}
             >
               <Trash2 className="w-3 h-3" />
               Delete
@@ -399,13 +400,23 @@ function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
 
-  const isConfirmed = confirmText === cluster.context
+  const isAgentProxy = cluster.source === 'agent-proxy'
+  // Agent-proxy clusters aren't keyed by a context name; confirm by the friendly
+  // display name (falls back to the context if unnamed).
+  const confirmTarget = isAgentProxy ? (cluster.displayName || cluster.context) : cluster.context
+  const isConfirmed = confirmText === confirmTarget
 
   async function handleDelete() {
     setDeleting(true)
     setError(null)
     try {
-      await api.deleteCluster(cluster.context)
+      if (isAgentProxy && cluster.clusterId) {
+        await api.deleteAgentProxyCluster(cluster.clusterId)
+        // The deleted cluster may be the active one — refresh the overview too.
+        queryClient.invalidateQueries({ queryKey: ['cluster-overview'] })
+      } else {
+        await api.deleteCluster(cluster.context)
+      }
       queryClient.invalidateQueries({ queryKey: ['clusters'] })
       onClose()
     } catch (err) {
@@ -416,20 +427,24 @@ function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
   }
 
   return (
-    <Modal badge="Delete cluster" title={cluster.context} onClose={onClose} size="sm">
+    <Modal badge="Delete cluster" title={confirmTarget} onClose={onClose} size="sm">
         <div className="p-6 space-y-4">
           <div className="px-3 py-2 rounded-lg bg-status-error-dim/50 border border-status-error/20">
             <div className="flex items-start gap-2">
               <AlertTriangle className="w-3.5 h-3.5 text-status-error shrink-0 mt-0.5" />
               <p className="text-[11px] text-kb-text-primary">
-                This will remove the context <code className="text-status-error font-mono">{cluster.context}</code> from KubeBolt. The cluster itself is not affected.
+                {isAgentProxy ? (
+                  <>This removes <code className="text-status-error font-mono">{confirmTarget}</code> from KubeBolt. The cluster itself is not affected. If its agent is still running, the cluster may reappear when it next reconnects.</>
+                ) : (
+                  <>This will remove the context <code className="text-status-error font-mono">{cluster.context}</code> from KubeBolt. The cluster itself is not affected.</>
+                )}
               </p>
             </div>
           </div>
 
           <div>
             <label className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider block mb-1.5">
-              Type <code className="text-kb-text-primary">{cluster.context}</code> to confirm
+              Type <code className="text-kb-text-primary">{confirmTarget}</code> to confirm
             </label>
             <input
               type="text"

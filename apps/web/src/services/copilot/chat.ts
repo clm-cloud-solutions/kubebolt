@@ -88,6 +88,18 @@ export async function* sendCopilotChat(
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
+    // The chat panel renders a thrown error's message verbatim, so prefer the
+    // backend's structured { error } body (e.g. 503 "no cluster selected —
+    // choose a cluster to continue") over the raw "chat failed (status): {...}".
+    let parsed: { error?: string } | null = null
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      parsed = null
+    }
+    if (parsed?.error) {
+      throw new Error(parsed.error)
+    }
     throw new Error(`copilot chat failed (${res.status}): ${text}`)
   }
   if (!res.body) {

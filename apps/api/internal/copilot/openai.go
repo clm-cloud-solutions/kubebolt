@@ -41,8 +41,14 @@ type openaiToolCall struct {
 }
 
 type openaiMessage struct {
-	Role             string           `json:"role"`
-	Content          string           `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content is ALWAYS serialized (no omitempty): OpenAI requires a string and
+	// rejects a missing/null content with "expected a string, got null". An
+	// empty content (a tool result with no output, or an assistant turn that was
+	// tool-calls-only) must go on the wire as "" — Anthropic tolerates the
+	// omission, OpenAI does not. Surfaces when a conversation built on Anthropic
+	// is routed to an OpenAI-compatible model (the error fallback).
+	Content          string           `json:"content"`
 	ReasoningContent string           `json:"reasoning_content,omitempty"` // for reasoning models (Qwen, DeepSeek-R1, etc.)
 	ToolCalls        []openaiToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string           `json:"tool_call_id,omitempty"`

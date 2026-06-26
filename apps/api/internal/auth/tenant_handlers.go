@@ -275,6 +275,9 @@ func (h *TenantHandlers) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 			t.Name = *req.Name
 		}
 		if req.Plan != nil {
+			if err := ValidatePlan(*req.Plan); err != nil {
+				return err
+			}
 			t.Plan = *req.Plan
 		}
 		if req.Disabled != nil {

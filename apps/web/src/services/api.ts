@@ -428,6 +428,12 @@ export const api = {
   deleteCluster: (context: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/clusters/${encodeURIComponent(context)}`),
 
+  // Delete an agent-proxy cluster by cluster_id (durable clusters need an
+  // explicit delete). Distinct from deleteCluster, which is keyed by context
+  // name (uploaded kubeconfigs).
+  deleteAgentProxyCluster: (clusterId: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/clusters/by-id/${encodeURIComponent(clusterId)}`),
+
   // --- Notifications (admin) ---
   getNotificationsConfig: () =>
     fetchJSON<import('@/types/auth').NotificationsConfig>(`${API_BASE}/notifications/config`),
@@ -2090,6 +2096,35 @@ export interface AgentInstallConfig {
   }
 
   logLevel?: string
+
+  // ─── Full-capability surface (AddClusterWizard helm-command flow) ───
+  // Metrics source beyond the always-on kubelet stats. scrape and promread
+  // are mutually exclusive (the chart double-emits otherwise) — the wizard
+  // models them as one radio.
+  //   kubelet  — kubelet/cAdvisor only (default)
+  //   scrape   — add the vmagent sidecar (scrapes prometheus.io/scrape pods)
+  //   promread — Mode C: read from an existing Prometheus (AMP/GMP/Azure/...)
+  metricsSource?: 'kubelet' | 'scrape' | 'promread'
+  promRead?: {
+    url?: string
+    authMode?: 'none' | 'basicAuth' | 'bearer' | 'awsSigV4' | 'gcpIam' | 'azureWorkloadIdentity'
+    basicAuthUsername?: string
+    bearerToken?: string
+    awsRegion?: string
+  }
+  // mTLS material (only meaningful when tlsEnabled). Secrets must pre-exist in
+  // the target namespace.
+  tlsCaSecret?: string
+  tlsClientCertSecret?: string
+  // ServiceAccount annotations — IRSA (EKS) / Workload Identity (GKE/AKS),
+  // required when promRead auth uses the cloud's ambient credentials.
+  serviceAccountAnnotations?: Array<{ k: string; v: string }>
+  // Tolerate every taint so the DaemonSet lands on all nodes (control-plane etc).
+  tolerateAll?: boolean
+  // Override the chart's derived GOMEMLIMIT (empty = derive 90% of the limit).
+  gomemlimit?: string
+  // Free-form extra env vars — escape hatch for knobs without a first-class field.
+  extraEnv?: Array<{ name: string; value: string }>
 }
 
 export interface FlowEdge {

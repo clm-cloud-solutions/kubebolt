@@ -38,6 +38,13 @@ func TestValidateAPIToken_ServiceTokenOK(t *testing.T) {
 	if claims.UserID != "svc:"+tok.ID {
 		t.Fatalf("claims.UserID = %q, want svc:%s", claims.UserID, tok.ID)
 	}
+	// The synthetic Claims must carry the token's org so ResolveTenant resolves
+	// API-token callers to their real tenant (not the DefaultTenantName
+	// fallback). Empty here (OSS single-tenant store), but the propagation is
+	// what matters — under the EE store the token's UUID flows through.
+	if claims.TenantID != tok.TenantID {
+		t.Fatalf("claims.TenantID = %q, want %q (token org must reach ResolveTenant)", claims.TenantID, tok.TenantID)
+	}
 	if p == nil || p.Type != TokenTypeService || len(p.Scopes) != 1 {
 		t.Fatalf("principal unexpected: %+v", p)
 	}
