@@ -12,6 +12,7 @@ permissions:
   contents: write
   packages: write
   id-token: write  # Cosign keyless signing
+  security-events: write  # Trivy SARIF upload to code scanning
 
 env:
   REGISTRY: ghcr.io
@@ -20,6 +21,8 @@ env:
 jobs:
   build-agent:
     runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
     steps:
       - uses: actions/checkout@v4
 
@@ -67,7 +70,60 @@ jobs:
       - name: Sign image with Cosign
         run: cosign sign --yes ${{ env.AGENT_IMAGE }}@${{ steps.build.outputs.digest }}
 
+  # Post-build gate: scan the immutable digest of the agent image we just
+  # pushed. Failure here prevents publish-agent-chart and the GitHub
+  # Release from being created (the image is already on GHCR — see
+  # docs/RELEASE.md for the retract/cleanup procedure). Scanning by
+  # @sha256 digest guarantees we audit the exact bits that would ship.
+  # Mirrors the image-scan gate in release.yml for the product images.
+  image-scan:
+    needs: build-agent
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Trivy scan agent image (by digest)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.AGENT_IMAGE }}@${{ needs.build-agent.outputs.digest }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      # SARIF runs with continue-on-error so a HIGH/CRITICAL in the gating
+      # step above still fails the job, but we always upload to code
+      # scanning for visibility.
+      - name: Trivy SARIF — agent
+        if: always()
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.AGENT_IMAGE }}@${{ needs.build-agent.outputs.digest }}
+          format: sarif
+          output: trivy-agent.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Upload Trivy SARIF — agent
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-agent.sarif
+          category: trivy-release-agent
+
   publish-agent-chart:
+    needs: image-scan
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -105,7 +161,7 @@ jobs:
         run: cosign sign --yes ghcr.io/${{ github.repository }}/helm/kubebolt-agent:${{ steps.chart_version.outputs.version }}
 
   release:
-    needs: [build-agent, publish-agent-chart]
+    needs: [build-agent, image-scan, publish-agent-chart]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
