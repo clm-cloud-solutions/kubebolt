@@ -22,17 +22,18 @@ func crashLoopState() *ClusterState {
 	return &ClusterState{Pods: []*corev1.Pod{p}}
 }
 
-// A parked engine (gate false) must NOT fire the notification hook — TEMPORARY
-// active-cluster-only behavior (see broadcastGate doc). An active engine must.
-func TestEngineNotify_GatedRuntimeDoesNotNotify(t *testing.T) {
+// Always-on (W2 §10): a parked engine (gate false) MUST still fire the notification
+// hook — an insight on ANY connected cluster notifies, regardless of which is active
+// in the UI. (Was gated active-only; that stopgap is removed.)
+func TestEngineNotify_ParkedRuntimeStillNotifies(t *testing.T) {
 	parked := NewEngine(websocket.NewHub(), nil, "c", "t")
-	gate := &atomic.Bool{} // false
+	gate := &atomic.Bool{} // false = parked
 	parked.SetBroadcastGate(gate)
 	parkedNotified := false
 	parked.SetOnNewInsight(func(models.Insight) { parkedNotified = true })
 	parked.Evaluate(crashLoopState())
-	if parkedNotified {
-		t.Fatalf("parked engine must not fire onNew (notifications gated to active cluster)")
+	if !parkedNotified {
+		t.Fatalf("parked engine must fire onNew (always-on — notifications not gated to active)")
 	}
 
 	active := NewEngine(websocket.NewHub(), nil, "c", "t")

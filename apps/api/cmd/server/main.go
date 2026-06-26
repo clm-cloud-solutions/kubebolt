@@ -828,6 +828,10 @@ func main() {
 	// (the panel queries them via PromQL after they're scraped into VM).
 	agentGrpcMetrics := agent.NewGRPCIngestMetrics(prometheus.DefaultRegisterer)
 
+	// Always-on (W2 §10.3): expose the connector-pool size on /metrics so
+	// operators can watch the resident-runtime cost as agents connect.
+	api.NewPoolMetricsCollector(prometheus.DefaultRegisterer, manager)
+
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
 	// ({tenant_id!=""})` and caches the result. Pre-forward gate
