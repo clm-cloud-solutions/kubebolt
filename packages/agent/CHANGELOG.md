@@ -11,6 +11,28 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.4] — 2026-06-27
+
+A reliability fix for large clusters — same v1.0 metric/label schema, no behavior
+change otherwise. Drop-in within the 1.1.x line.
+
+### Fixed
+
+- **Raised the AgentChannel gRPC max message size from gRPC's 4 MiB default to
+  64 MiB** (override with `KUBEBOLT_AGENT_MAX_MSG_BYTES`), on **both** the agent
+  client (`MaxCallRecvMsgSize`/`MaxCallSendMsgSize`) and the backend server
+  (`MaxRecvMsgSize`/`MaxSendMsgSize`). On large production clusters the apiserver
+  responses the backend proxies over the channel exceed 4 MiB, failing the recv
+  with `ResourceExhausted: received message larger than max` and tearing down the
+  **whole** session — metrics included — in a reconnect loop. Surfaced on a
+  multi-node prod EKS during pre-E1 benchmarking.
+
+### Compatibility
+
+- Compatible with KubeBolt backend **>= 1.13.0** (same as 1.1.x); the matching
+  backend-side limit ships with api **>= 1.16.x**.
+- Tag pattern remains `agent-vX.Y.Z`. This release: `agent-v1.1.4`.
+
 ## [1.1.3] — 2026-06-26
 
 A security-patch release on the **same v1.0 metric/label schema** — no
