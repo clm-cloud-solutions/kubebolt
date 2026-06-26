@@ -589,7 +589,7 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 	m := &Manager{
 		kubeconfigPath:  kubeconfigPath,
 		kubeConfig:      kubeConfig,
-		activeContext:    kubeConfig.CurrentContext,
+		activeContext:   kubeConfig.CurrentContext,
 		wsHub:           wsHub,
 		metricInterval:  metricInterval,
 		insightInterval: insightInterval,
