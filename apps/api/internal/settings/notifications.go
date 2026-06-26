@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,10 +79,11 @@ type StoredEmailSettings struct {
 // Notifications returns the live NotificationsConfig (env baseline +
 // BoltDB override merged). Caches the resolved value until
 // InvalidateNotifications is called. Safe for concurrent use.
-func (r *Runtime) Notifications() config.NotificationsConfig {
+func (r *Runtime) Notifications(ctx context.Context) config.NotificationsConfig {
+	org := orgKey(ctx)
 	r.mu.RLock()
-	if r.notificationsValid {
-		cfg := r.notifications
+	if r.notificationsValid[org] {
+		cfg := r.notificationsByOrg[org]
 		r.mu.RUnlock()
 		return cfg
 	}
@@ -89,30 +91,32 @@ func (r *Runtime) Notifications() config.NotificationsConfig {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.notificationsValid {
-		return r.notifications
+	if r.notificationsValid[org] {
+		return r.notificationsByOrg[org]
 	}
-	r.notifications = r.resolveNotificationsLocked()
-	r.notificationsValid = true
-	return r.notifications
+	cfg := r.resolveNotificationsLocked(ctx)
+	r.notificationsByOrg[org] = cfg
+	r.notificationsValid[org] = true
+	return cfg
 }
 
-// InvalidateNotifications marks the cached Notifications config as
-// stale. Called by PUT and reset handlers. Safe to call from any
+// InvalidateNotifications marks one org's cached Notifications config stale.
+// Called by PUT and reset handlers with the request ctx. Safe to call from any
 // goroutine.
-func (r *Runtime) InvalidateNotifications() {
+func (r *Runtime) InvalidateNotifications(ctx context.Context) {
+	org := orgKey(ctx)
 	r.mu.Lock()
-	r.notificationsValid = false
+	delete(r.notificationsValid, org)
 	r.mu.Unlock()
 }
 
-// resolveNotificationsLocked merges the BoltDB-persisted partial
-// override onto the env baseline. Caller must hold r.mu (write or
-// read). On any decode error, returns the env baseline unchanged.
-func (r *Runtime) resolveNotificationsLocked() config.NotificationsConfig {
+// resolveNotificationsLocked merges the per-org persisted partial override onto
+// the env baseline. Caller must hold r.mu (write or read). On any decode error,
+// returns the env baseline unchanged. Scoped to the org in ctx.
+func (r *Runtime) resolveNotificationsLocked(ctx context.Context) config.NotificationsConfig {
 	cfg := r.envNotifications
 
-	raw, err := r.store.GetSetting(notificationsSettingsKey)
+	raw, err := r.orgStore.GetOrgSetting(ctx, notificationsSettingsKey)
 	if err != nil {
 		return cfg
 	}
@@ -206,7 +210,7 @@ func applyStoredEmail(cfg *config.EmailDeliveryConfig, stored *StoredEmailSettin
 // "unchanged"; non-nil pointer to empty string means "clear it".
 //
 // Returns ValidationError on bad input — the handler maps that to 400.
-func (r *Runtime) PutNotifications(patch *StoredNotificationsSettings, plaintextSlackURL, plaintextDiscordURL, plaintextSMTPPassword *string) error {
+func (r *Runtime) PutNotifications(ctx context.Context, patch *StoredNotificationsSettings, plaintextSlackURL, plaintextDiscordURL, plaintextSMTPPassword *string) error {
 	if err := validateNotificationsPatch(patch); err != nil {
 		return err
 	}
@@ -242,23 +246,24 @@ func (r *Runtime) PutNotifications(patch *StoredNotificationsSettings, plaintext
 		patch.Email.PasswordEncoded = &enc
 	}
 
-	existing, _ := r.loadNotifications()
+	existing, _ := r.loadNotifications(ctx)
 	merged := mergeNotifications(existing, *patch)
 
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := r.store.SetSetting(notificationsSettingsKey, encoded); err != nil {
+	if err := r.orgStore.SetOrgSetting(ctx, notificationsSettingsKey, encoded); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	r.InvalidateNotifications()
+	r.InvalidateNotifications(ctx)
 	return nil
 }
 
-// loadNotifications reads the existing BoltDB record (no env merge).
-func (r *Runtime) loadNotifications() (StoredNotificationsSettings, error) {
-	raw, err := r.store.GetSetting(notificationsSettingsKey)
+// loadNotifications reads the existing per-org record (no env merge), scoped to
+// ctx's org.
+func (r *Runtime) loadNotifications(ctx context.Context) (StoredNotificationsSettings, error) {
+	raw, err := r.orgStore.GetOrgSetting(ctx, notificationsSettingsKey)
 	if err != nil {
 		return StoredNotificationsSettings{}, nil
 	}
@@ -272,8 +277,8 @@ func (r *Runtime) loadNotifications() (StoredNotificationsSettings, error) {
 // GetNotifications returns the BoltDB record (decrypted in memory) +
 // the env baseline + a secret-readability flag — same shape as the
 // Copilot GET path so the UI can render "this overrides env" hints.
-func (r *Runtime) GetNotifications() (stored StoredNotificationsSettings, baseline config.NotificationsConfig, secretsReadable bool, err error) {
-	stored, err = r.loadNotifications()
+func (r *Runtime) GetNotifications(ctx context.Context) (stored StoredNotificationsSettings, baseline config.NotificationsConfig, secretsReadable bool, err error) {
+	stored, err = r.loadNotifications(ctx)
 	if err != nil {
 		return StoredNotificationsSettings{}, r.envNotifications, false, err
 	}
@@ -300,12 +305,31 @@ func (r *Runtime) GetNotifications() (stored StoredNotificationsSettings, baseli
 
 // ResetNotifications clears the BoltDB record so every field falls
 // back to env baseline.
-func (r *Runtime) ResetNotifications() error {
-	if err := r.store.SetSetting(notificationsSettingsKey, []byte("null")); err != nil {
+func (r *Runtime) ResetNotifications(ctx context.Context) error {
+	if err := r.orgStore.SetOrgSetting(ctx, notificationsSettingsKey, []byte("null")); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
-	r.InvalidateNotifications()
+	r.InvalidateNotifications(ctx)
 	return nil
+}
+
+// MigrateLegacyNotifications copies a pre-per-org global "notifications" record
+// from the install-global SettingStore into the org in ctx (the default tenant)
+// so an upgrading install keeps its configured channels. One-time, best-effort,
+// no-op on fresh installs / once migrated.
+func (r *Runtime) MigrateLegacyNotifications(ctx context.Context) bool {
+	if _, err := r.orgStore.GetOrgSetting(ctx, notificationsSettingsKey); err == nil {
+		return false
+	}
+	legacy, err := r.store.GetSetting(notificationsSettingsKey)
+	if err != nil || len(legacy) == 0 || string(legacy) == "null" {
+		return false
+	}
+	if err := r.orgStore.SetOrgSetting(ctx, notificationsSettingsKey, legacy); err != nil {
+		return false
+	}
+	r.InvalidateNotifications(ctx)
+	return true
 }
 
 // ─── Masked render shapes ─────────────────────────────────────────────
@@ -405,12 +429,12 @@ type MaskedStoredEmail struct {
 
 // RenderMaskedNotifications builds the GET response from the stored
 // record + env baseline + crypto.
-func (r *Runtime) RenderMaskedNotifications() (MaskedNotifications, error) {
-	stored, _, secretsReadable, err := r.GetNotifications()
+func (r *Runtime) RenderMaskedNotifications(ctx context.Context) (MaskedNotifications, error) {
+	stored, _, secretsReadable, err := r.GetNotifications(ctx)
 	if err != nil {
 		return MaskedNotifications{}, err
 	}
-	effective := r.Notifications()
+	effective := r.Notifications(ctx)
 
 	emailCfg := effective.Email
 

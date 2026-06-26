@@ -11,6 +11,44 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.2] — 2026-06-26
+
+A reliability-only release on the **same v1.0 metric/label schema** — no
+UI-visible behavior change. Stays in the **1.1.x generation**; drop-in
+upgrade from 1.1.0 / 1.1.1.
+
+### Fixed — connection & identity reliability
+
+- **Bounded reconnection** — the gRPC shutdown is time-boxed and the
+  connector retry is resilient, so a stuck teardown can't wedge a
+  reconnect.
+- **Reconnect backoff capped at 3s** after a recently-healthy session —
+  it no longer escalates the backoff after a brief blip.
+- **Stable agent id** — derived deterministically so reconnections stop
+  accumulating ghost records in the backend agent registry.
+- **kube-system UID read retried** before falling back to `"local"` —
+  more stable cluster identity on boots behind a slow apiserver.
+
+### Changed — memory defaults
+
+- **Homologated memory defaults** across all install paths, with
+  `GOMEMLIMIT` derived automatically to drive the Go scavenger.
+
+### Compatibility
+
+- Compatible with KubeBolt backend **>= 1.13.0** (same as 1.1.0).
+- Tag pattern remains `agent-vX.Y.Z`. This release: `agent-v1.1.2`.
+
+## [1.1.1] — 2026-06-14
+
+### Changed — security
+
+- **Bundled vmagent → `v1.145.0-scratch`** — moves the scrape sidecar
+  to VictoriaMetrics' application-binary-only scratch variant (no OS
+  packages, no OpenSSL), matching the backend's bundled VictoriaMetrics
+  pin and clearing the Go-stdlib / OpenSSL Trivy findings. No schema or
+  behavior change.
+
 ## [1.1.0] — 2026-05-28
 
 The 1.13 cycle's flagship — agent gains **Mode C** (reads metrics

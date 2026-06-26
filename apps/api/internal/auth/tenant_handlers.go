@@ -50,7 +50,7 @@ type CacheInvalidator interface {
 // default need a backend restart, which is the right semantic for a
 // system-wide policy change.
 type TenantHandlers struct {
-	store          *TenantsStore
+	store          TenantStore
 	ingestTokens   IngestTokenStore
 	invalidators   []CacheInvalidator
 	limitsDefaults EffectiveLimits
@@ -63,7 +63,7 @@ type TenantHandlers struct {
 // resolve per-tenant overrides on the /admin/tenants/:id/limits
 // surface. ingestTokens is the dedicated ingest-token store (tokens no
 // longer live inlined in the tenant record).
-func NewTenantHandlers(store *TenantsStore, ingestTokens IngestTokenStore, limitsDefaults EffectiveLimits, invalidators ...CacheInvalidator) *TenantHandlers {
+func NewTenantHandlers(store TenantStore, ingestTokens IngestTokenStore, limitsDefaults EffectiveLimits, invalidators ...CacheInvalidator) *TenantHandlers {
 	return &TenantHandlers{
 		store:          store,
 		ingestTokens:   ingestTokens,
@@ -176,15 +176,35 @@ func writeErrCode(w http.ResponseWriter, code int, errCode, msg string) {
 
 // ─── Handlers ─────────────────────────────────────────────────────────
 
+// resolvedTenantOrg returns the caller's real org, or "" for the default-tenant
+// / OSS path (left unrestricted — there is only ever the one tenant there).
+// Mirrors the metric-query activeTenantID discriminator: the default-tenant
+// NAME sentinel and an unauthenticated request are NOT a real, stamped org.
+func resolvedTenantOrg(r *http.Request) string {
+	tid := ContextTenantID(r)
+	if tid == "" || tid == DefaultTenantName {
+		return ""
+	}
+	return tid
+}
+
 func (h *TenantHandlers) ListTenants(w http.ResponseWriter, r *http.Request) {
 	tenants, err := h.store.ListTenants()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Tenant isolation: a real org sees only its OWN tenant record (its ingest
+	// activity, tokens, limits). Without this an org admin saw every other org's
+	// tenant card on the Agents & Ingest activity page. Default/OSS ("") is
+	// unrestricted (single tenant).
+	org := resolvedTenantOrg(r)
 	out := make([]tenantResponse, 0, len(tenants))
 	for i := range tenants {
-		toks, _ := h.ingestTokens.ListByTenant(tenants[i].ID)
+		if org != "" && tenants[i].ID != org {
+			continue
+		}
+		toks, _ := h.ingestTokens.ListByTenant(r.Context(), tenants[i].ID)
 		out = append(out, summarizeTenant(&tenants[i], toks))
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -227,7 +247,7 @@ func (h *TenantHandlers) GetTenant(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	toks, _ := h.ingestTokens.ListByTenant(t.ID)
+	toks, _ := h.ingestTokens.ListByTenant(r.Context(), t.ID)
 	resp := tenantWithTokensResponse{tenantResponse: summarizeTenant(t, toks)}
 	now := time.Now().UTC()
 	resp.IngestTokens = make([]ingestTokenResponse, 0, len(toks))
@@ -255,6 +275,9 @@ func (h *TenantHandlers) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 			t.Name = *req.Name
 		}
 		if req.Plan != nil {
+			if err := ValidatePlan(*req.Plan); err != nil {
+				return err
+			}
 			t.Plan = *req.Plan
 		}
 		if req.Disabled != nil {
@@ -279,7 +302,7 @@ func (h *TenantHandlers) UpdateTenant(w http.ResponseWriter, r *http.Request) {
 	if !wasDisabled && nowDisabled {
 		h.onTokenChange()
 	}
-	toks, _ := h.ingestTokens.ListByTenant(updated.ID)
+	toks, _ := h.ingestTokens.ListByTenant(r.Context(), updated.ID)
 	writeJSON(w, http.StatusOK, summarizeTenant(updated, toks))
 }
 
@@ -312,7 +335,7 @@ func (h *TenantHandlers) ListTokens(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err.Error())
 		return
 	}
-	toks, _ := h.ingestTokens.ListByTenant(t.ID)
+	toks, _ := h.ingestTokens.ListByTenant(r.Context(), t.ID)
 	now := time.Now().UTC()
 	out := make([]ingestTokenResponse, 0, len(toks))
 	for _, tok := range toks {
@@ -332,6 +355,9 @@ func (h *TenantHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 		// cluster, and any integration card that wants
 		// cross-cluster visibility.
 		ClusterID string `json:"clusterId,omitempty"`
+		// TeamID is the team that will own the cluster registered with this
+		// token (Track D — team-scoped clusters). Empty = unassigned.
+		TeamID string `json:"teamId,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "invalid JSON body")
@@ -350,7 +376,7 @@ func (h *TenantHandlers) IssueToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.ingestTokens.Issue(id, req.ClusterID, req.Label, issuer, ttl)
+	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), id, req.ClusterID, req.TeamID, req.Label, issuer, ttl)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -372,7 +398,7 @@ func (h *TenantHandlers) RotateToken(w http.ResponseWriter, r *http.Request) {
 	if issuer == "" {
 		issuer = "system"
 	}
-	plaintext, tok, err := h.ingestTokens.Rotate(tenantID, tokenID, issuer)
+	plaintext, tok, err := h.ingestTokens.Rotate(r.Context(), tenantID, tokenID, issuer)
 	if err != nil {
 		if errors.Is(err, ErrTenantNotFound) || errors.Is(err, ErrTokenNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
@@ -391,7 +417,7 @@ func (h *TenantHandlers) RotateToken(w http.ResponseWriter, r *http.Request) {
 func (h *TenantHandlers) RevokeToken(w http.ResponseWriter, r *http.Request) {
 	tenantID := chi.URLParam(r, "id")
 	tokenID := chi.URLParam(r, "tokenID")
-	if err := h.ingestTokens.Revoke(tenantID, tokenID); err != nil {
+	if err := h.ingestTokens.Revoke(r.Context(), tenantID, tokenID); err != nil {
 		if errors.Is(err, ErrTenantNotFound) || errors.Is(err, ErrTokenNotFound) {
 			writeErr(w, http.StatusNotFound, err.Error())
 			return
@@ -511,22 +537,43 @@ func joinWarnings(ws []string) string {
 	return out
 }
 
+// requireOwnTenant blocks cross-tenant access to the /{id} subtree: for a real
+// resolved org the URL {id} MUST equal it, otherwise 404 (not 403 — a 404 won't
+// confirm that another org's id exists, so it's not an enumeration oracle). The
+// default-tenant / OSS path (resolvedTenantOrg=="") is unrestricted. This stops
+// an org admin from reading or mutating another org's tokens/limits by guessing
+// its tenant UUID.
+func (h *TenantHandlers) requireOwnTenant(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if org := resolvedTenantOrg(r); org != "" && chi.URLParam(r, "id") != org {
+			writeErr(w, http.StatusNotFound, "tenant not found")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // RegisterRoutes mounts the handlers on r. The caller is responsible
 // for wrapping with RequireAuth + RequireRole(RoleAdmin) — see
 // router.go for the integration site.
 func (h *TenantHandlers) RegisterRoutes(r chi.Router) {
 	r.Get("/", h.ListTenants)
 	r.Post("/", h.CreateTenant)
-	r.Get("/{id}", h.GetTenant)
-	r.Put("/{id}", h.UpdateTenant)
-	r.Delete("/{id}", h.DeleteTenant)
-	r.Get("/{id}/tokens", h.ListTokens)
-	r.Post("/{id}/tokens", h.IssueToken)
-	r.Post("/{id}/tokens/{tokenID}/rotate", h.RotateToken)
-	r.Delete("/{id}/tokens/{tokenID}", h.RevokeToken)
-	// Per-tenant Prom remote_write limits (Phase 3 of the Universal
-	// Data Plane Plan).
-	r.Get("/{id}/limits", h.GetTenantLimits)
-	r.Put("/{id}/limits", h.SetTenantLimits)
-	r.Delete("/{id}/limits", h.ResetTenantLimits)
+	// Every /{id} route is tenant-guarded so an org can only touch its own
+	// record (paths are unchanged: /{id}, /{id}/tokens, /{id}/limits, …).
+	r.Route("/{id}", func(r chi.Router) {
+		r.Use(h.requireOwnTenant)
+		r.Get("/", h.GetTenant)
+		r.Put("/", h.UpdateTenant)
+		r.Delete("/", h.DeleteTenant)
+		r.Get("/tokens", h.ListTokens)
+		r.Post("/tokens", h.IssueToken)
+		r.Post("/tokens/{tokenID}/rotate", h.RotateToken)
+		r.Delete("/tokens/{tokenID}", h.RevokeToken)
+		// Per-tenant Prom remote_write limits (Phase 3 of the Universal
+		// Data Plane Plan).
+		r.Get("/limits", h.GetTenantLimits)
+		r.Put("/limits", h.SetTenantLimits)
+		r.Delete("/limits", h.ResetTenantLimits)
+	})
 }

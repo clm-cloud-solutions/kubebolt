@@ -644,17 +644,35 @@ func resolveClusterIdent(ctx context.Context) (clusterID, clusterName string) {
 			slog.String("error", err.Error()))
 		return "local", clusterName
 	}
-	// 5s is plenty for a single GET against the local apiserver; longer
-	// would delay agent startup on a cluster with a flaky control plane.
-	discoverCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-	ns, err := client.CoreV1().Namespaces().Get(discoverCtx, "kube-system", metav1.GetOptions{})
-	if err != nil {
-		slog.Warn("cluster_id: failed to read kube-system UID, falling back to 'local'",
-			slog.String("error", err.Error()))
-		return "local", clusterName
+	// Retry the UID read for up to ~30s before the "local" fallback. A freshly
+	// booting control plane (kind on a cold start, a managed cluster mid-
+	// provision, or an agent that races the apiserver) may not answer on the
+	// first try — and a single 5s timeout there would permanently mislabel the
+	// cluster as "local", which then mismatches insight routing / ownership.
+	// A ready apiserver answers the first attempt, so this adds no startup delay
+	// in the normal case.
+	deadline := time.Now().Add(30 * time.Second)
+	var lastErr error
+	for {
+		getCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		ns, err := client.CoreV1().Namespaces().Get(getCtx, "kube-system", metav1.GetOptions{})
+		cancel()
+		if err == nil {
+			return string(ns.UID), clusterName
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return "local", clusterName
+		case <-time.After(3 * time.Second):
+		}
 	}
-	return string(ns.UID), clusterName
+	slog.Warn("cluster_id: failed to read kube-system UID after retrying ~30s, falling back to 'local'",
+		slog.String("error", lastErr.Error()))
+	return "local", clusterName
 }
 
 // liveAggregatorSizer adapts the package-level flows.ActiveAggregator()

@@ -184,6 +184,60 @@ func TestScopeQueryByCluster(t *testing.T) {
 	}
 }
 
+func TestScopeQueryByTenant(t *testing.T) {
+	const org = "e84d526e-org"
+	tests := []struct {
+		name, in, want string
+		tenant         string
+	}{
+		{
+			name: "empty tenant is a no-op (OSS / single-tenant)",
+			in:   `sum(rate(node_cpu_usage_seconds_total[1m]))`,
+			want: `sum(rate(node_cpu_usage_seconds_total[1m]))`,
+			// tenant left "" — series carry no stamped tenant_id to filter on.
+		},
+		{
+			name:   "bare metric gets tenant_id",
+			in:     `sum(rate(node_cpu_usage_seconds_total[1m]))`,
+			want:   `sum(rate(node_cpu_usage_seconds_total{tenant_id="e84d526e-org"}[1m]))`,
+			tenant: org,
+		},
+		{
+			name:   "selector gets tenant_id prepended",
+			in:     `container_memory_working_set_bytes{pod="p"}`,
+			want:   `container_memory_working_set_bytes{tenant_id="e84d526e-org",pod="p"}`,
+			tenant: org,
+		},
+		{
+			name:   "existing tenant_id left alone (idempotent)",
+			in:     `node_load1{tenant_id="e84d526e-org"}`,
+			want:   `node_load1{tenant_id="e84d526e-org"}`,
+			tenant: org,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := scopeQueryByTenant(tc.in, tc.tenant); got != tc.want {
+				t.Errorf("\n in:   %s\n want: %s\n got:  %s", tc.in, tc.want, got)
+			}
+		})
+	}
+}
+
+// org is the hard boundary, cluster the selector within it — the two scopes
+// must compose without clobbering each other, and re-running either is a no-op.
+func TestScopeQueryComposesClusterAndTenant(t *testing.T) {
+	q := scopeQueryByCluster(`sum(rate(node_cpu_usage_seconds_total[1m]))`, "uid-1")
+	q = scopeQueryByTenant(q, "org-9")
+	const want = `sum(rate(node_cpu_usage_seconds_total{tenant_id="org-9",cluster_id="uid-1"}[1m]))`
+	if q != want {
+		t.Fatalf("compose\n want: %s\n got:  %s", want, q)
+	}
+	if again := scopeQueryByTenant(q, "org-9"); again != q {
+		t.Errorf("tenant scoping not idempotent over a cluster-scoped query\n once:  %s\n twice: %s", q, again)
+	}
+}
+
 // Idempotency: running the function twice should be a no-op after the
 // first pass (cluster_id is already present everywhere it should be).
 func TestScopeQueryByClusterIdempotent(t *testing.T) {

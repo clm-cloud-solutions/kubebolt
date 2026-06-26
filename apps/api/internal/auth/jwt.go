@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -23,6 +24,11 @@ type Claims struct {
 	// edition populates it at login for multi-tenant deployments. Read it
 	// via ContextTenantID; override resolution via TenantResolver.
 	TenantID string `json:"tid,omitempty"`
+	// Plat marks a platform administrator (cloud/SaaS operator). It gates the
+	// isolated /platform portal via RequirePlatformAdmin. Set at token-issue
+	// time when the user's email is in KUBEBOLT_PLATFORM_ADMINS. Omitted
+	// (false) for every normal org/team user and in OSS.
+	Plat bool `json:"plat,omitempty"`
 }
 
 // JWTService handles JWT token generation and validation.
@@ -30,15 +36,35 @@ type JWTService struct {
 	secret        []byte
 	accessExpiry  time.Duration
 	refreshExpiry time.Duration
+	// platformAdmins is the lowercased email set whose tokens get the `plat`
+	// claim. nil/empty in OSS / self-hosted (no platform tier).
+	platformAdmins map[string]bool
 }
 
 // NewJWTService creates a new JWT service from auth config.
 func NewJWTService(cfg config.AuthConfig) *JWTService {
-	return &JWTService{
-		secret:        cfg.JWTSecret,
-		accessExpiry:  cfg.AccessTokenExpiry,
-		refreshExpiry: cfg.RefreshTokenExpiry,
+	var plat map[string]bool
+	if len(cfg.PlatformAdmins) > 0 {
+		plat = make(map[string]bool, len(cfg.PlatformAdmins))
+		for _, e := range cfg.PlatformAdmins {
+			plat[strings.ToLower(strings.TrimSpace(e))] = true
+		}
 	}
+	return &JWTService{
+		secret:         cfg.JWTSecret,
+		accessExpiry:   cfg.AccessTokenExpiry,
+		refreshExpiry:  cfg.RefreshTokenExpiry,
+		platformAdmins: plat,
+	}
+}
+
+// IsPlatformAdmin reports whether the given email is a configured platform
+// administrator. Case-insensitive; false when none are configured.
+func (j *JWTService) IsPlatformAdmin(email string) bool {
+	if j.platformAdmins == nil || email == "" {
+		return false
+	}
+	return j.platformAdmins[strings.ToLower(strings.TrimSpace(email))]
 }
 
 // GenerateAccessToken creates a signed JWT access token for a user.
@@ -54,6 +80,15 @@ func (j *JWTService) GenerateAccessToken(user *User) (string, error) {
 		UserID:   user.ID,
 		Username: user.Username,
 		Role:     user.Role,
+		// TenantID stamps the user's org into the token so downstream
+		// (TenantResolver → ContextTenantID → cluster.RuntimeKey →
+		// Manager.resolveRuntime) routes per org. Empty in OSS (User.OrgID
+		// is never set → omitempty drops the claim → resolves to
+		// DefaultTenantName), so OSS tokens are byte-identical to pre-seam.
+		TenantID: user.OrgID,
+		// Stamp the platform-admin capability so the isolated /platform portal
+		// (RequirePlatformAdmin) can gate purely off the token.
+		Plat: j.IsPlatformAdmin(user.Email),
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

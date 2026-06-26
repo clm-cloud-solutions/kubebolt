@@ -294,6 +294,19 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 	usedFallback := false
 
+	// effectiveProviderModel returns the provider + resolved model the session
+	// ACTUALLY used — the fallback when it kicked in, else the primary. Shared by
+	// the analytics SessionRecord and the conversation record so both label the
+	// SAME model. Reads usedFallback at call time (every terminal path runs after
+	// the round loop has set it).
+	effectiveProviderModel := func() (provider, model string) {
+		prov, mdl := cfg.Primary.Provider, cfg.Primary.Model
+		if usedFallback && cfg.Fallback != nil {
+			prov, mdl = cfg.Fallback.Provider, cfg.Fallback.Model
+		}
+		return prov, copilot.ResolvedModel(prov, mdl)
+	}
+
 	// Session-level accounting
 	var sessionUsage copilot.Usage
 	var sessionToolBytes int
@@ -351,33 +364,30 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					DurationMs: s.DurationMs,
 				}
 			}
+			// Provider/Model reflect what the session ACTUALLY ran on — the
+			// fallback when it kicked in, not always the primary — so the admin
+			// Copilot Usage page attributes the session (and its pricing) to the
+			// right model. Model is resolved through copilot.ResolvedModel so an
+			// unset cfg model still stores the provider's real default (else
+			// PricingFor returns no-match → "no known pricing" despite real cost).
+			sessProvider, sessModel := effectiveProviderModel()
 			rec := &copilot.SessionRecord{
 				Timestamp:      time.Now(),
 				UserID:         auth.ContextUserID(r),
 				Cluster:        clusterName,
 				ConversationID: conversationID,
-				Provider:       cfg.Primary.Provider,
-				// Model is resolved through copilot.ResolvedModel so the
-				// stored value reflects the model the provider ACTUALLY
-				// uses. When KUBEBOLT_AI_MODEL is unset the raw
-				// cfg.Primary.Model is empty, but the provider
-				// applies its own default (claude-sonnet-4-6 / gpt-4o).
-				// Persisting the empty string here makes the admin Copilot
-				// Usage page lose pricing — PricingFor("anthropic", "")
-				// returns no-match → estimatedUsd=0 → "no known pricing"
-				// even though real cost was incurred. ResolvedModel
-				// centralises the same fallback the providers do.
-				Model:      copilot.ResolvedModel(cfg.Primary.Provider, cfg.Primary.Model),
-				Trigger:    trigger,
-				Reason:     reason,
-				Rounds:     roundsUsed,
-				Usage:      sessionUsage,
-				ToolCalls:  sessionToolCalls,
-				ToolBytes:  sessionToolBytes,
-				DurationMs: time.Since(sessionStart).Milliseconds(),
-				Fallback:   usedFallback,
-				Tools:      tools,
-				Compacts:   sessionCompacts,
+				Provider:       sessProvider,
+				Model:          sessModel,
+				Trigger:        trigger,
+				Reason:         reason,
+				Rounds:         roundsUsed,
+				Usage:          sessionUsage,
+				ToolCalls:      sessionToolCalls,
+				ToolBytes:      sessionToolBytes,
+				DurationMs:     time.Since(sessionStart).Milliseconds(),
+				Fallback:       usedFallback,
+				Tools:          tools,
+				Compacts:       sessionCompacts,
 			}
 			if err := h.copilotUsage.Record(rec); err != nil {
 				logger.Warn("failed to persist copilot session", slog.String("error", err.Error()))
@@ -405,13 +415,16 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// identity-stable fields (CreatedAt, refined Title, Archived, origin
 		// Trigger, insight provenance, last-round usage seed) across resumes.
 		existing, _, _ := h.copilotConversations.Get(tenant, convUserID, conversationID)
+		// Record the provider/model the conversation ACTUALLY ran on (the
+		// fallback when it kicked in) so history + resume show the right one.
+		convProvider, convModel := effectiveProviderModel()
 		rec := copilot.MergeConversationRecord(copilot.ConversationUpsertInput{
 			ID:                   conversationID,
 			TenantID:             tenant,
 			UserID:               convUserID,
 			ClusterID:            clusterName,
-			Provider:             cfg.Primary.Provider,
-			Model:                copilot.ResolvedModel(cfg.Primary.Provider, cfg.Primary.Model),
+			Provider:             convProvider,
+			Model:                convModel,
 			Messages:             msgs,
 			Trigger:              trigger,
 			OriginatingInsightID: strings.TrimSpace(req.OriginatingInsightID),

@@ -32,7 +32,7 @@ func NewRouter(
 	wsHub *websocket.Hub,
 	corsOrigins []string,
 	copilotCfg config.CopilotConfig,
-	copilotUsage *copilot.UsageStore,
+	copilotUsage copilot.SessionStore,
 	// copilotConversations persists per-user Kobi transcripts for history +
 	// resume. Optional — nil when auth/persistence is disabled (chat stays
 	// ephemeral, the /copilot/conversations endpoints 503).
@@ -42,7 +42,7 @@ func NewRouter(
 	notifManager *notifications.Manager,
 	integrationRegistry *integrations.Registry,
 	agentAuthEnforcement string,
-	tenantsStore *auth.TenantsStore,
+	tenantsStore auth.TenantStore,
 	ingestTokens auth.IngestTokenStore,
 	promWriteAuthMode string,
 	promRateLimiter *PromRateLimiter,
@@ -136,9 +136,19 @@ func NewRouter(
 		// --- Public routes (no JWT required) ---
 		r.Get("/auth/config", authHandlers.GetAuthConfig)
 		r.Post("/auth/login", authHandlers.Login)
+		// Self-service org signup (multi-org / EE). Public, next to login.
+		// Returns 409 requires_ee in OSS (single auto-seeded org).
+		r.Post("/auth/signup", authHandlers.Signup)
 		r.Post("/auth/refresh", authHandlers.Refresh)
-		// Copilot config is public — no API keys exposed, frontend needs it before auth to decide whether to render the chat panel
-		r.Get("/copilot/config", h.HandleCopilotConfig)
+		// Copilot config is public — no API keys exposed, the frontend needs
+		// it before auth to decide whether to render the chat panel. But when
+		// the caller IS authenticated (the chat panel re-fetches it from inside
+		// an active session), resolve their tenant best-effort so the panel
+		// title reflects the resolved Copilot config instead of the process
+		// baseline. OptionalAuth never rejects, so the pre-auth login-page fetch
+		// still succeeds anonymously and falls back to the baseline.
+		r.With(authHandlers.OptionalAuth, authHandlers.ResolveTenant).
+			Get("/copilot/config", h.HandleCopilotConfig)
 
 		// UI config (display name, default refresh interval) is public —
 		// the login page renders the display name, and the
@@ -155,6 +165,11 @@ func NewRouter(
 		// the env-var gate.
 		r.Post("/prom/write", h.handlePromWrite)
 
+		// EE extension point — register edition-specific unauthenticated
+		// routes (e.g. an internal service dispatch endpoint). No-op in OSS;
+		// the `ee` build tag supplies the real implementation.
+		registerEERoutes(r, h)
+
 		// --- All routes below require auth (when enabled) ---
 		r.Group(func(r chi.Router) {
 			r.Use(authHandlers.RequireAuth)
@@ -168,6 +183,10 @@ func NewRouter(
 			// the resolver for real multi-tenant resolution. See
 			// auth.TenantResolver.
 			r.Use(authHandlers.ResolveTenant)
+			// Meter one api_requests per authenticated call against the resolved
+			// org. Real in EE (records through the usage seam); identity
+			// pass-through in OSS (see usage_meter_*.go).
+			r.Use(h.meterAPIRequest)
 			// Stash the request's (tenant, cluster) RuntimeKey for the
 			// connector pool (W2). Behavior-neutral until the pool reads
 			// it; threading it now keeps the pool additive to handlers.
@@ -177,6 +196,12 @@ func NewRouter(
 			r.Post("/auth/logout", authHandlers.Logout)
 			r.Get("/auth/me", authHandlers.GetMe)
 			r.Put("/auth/me/password", authHandlers.ChangePassword)
+
+			// Account — the requesting org's plan + metering summary.
+			// Any authenticated role; scoped to the caller's org via the
+			// ResolveTenant-stamped context. No active cluster required.
+			r.Get("/account/plan", h.handleAccountPlan)
+			r.Get("/account/usage", h.handleAccountUsage)
 
 			// User management — admin only
 			r.Route("/users", func(r chi.Router) {
@@ -258,6 +283,10 @@ func NewRouter(
 				r.Post("/clusters", h.handleAddCluster)
 				r.Delete("/clusters/{context}", h.handleDeleteCluster)
 				r.Put("/clusters/{context}/rename", h.handleRenameCluster)
+				// Delete an agent-proxy cluster by cluster_id (durable clusters
+				// need an explicit operator delete). Static "by-id" prefix avoids
+				// colliding with the context-name DELETE above.
+				r.Delete("/clusters/by-id/{clusterId}", h.handleDeleteAgentProxyCluster)
 			})
 
 			// Notifications — admin only (config read + test send)

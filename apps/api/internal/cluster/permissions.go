@@ -9,6 +9,7 @@ import (
 
 	authorizationv1 "k8s.io/api/authorization/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -21,6 +22,11 @@ type ResourcePermission struct {
 	CanGet          bool     `json:"canGet"`
 	NamespaceScoped bool     `json:"namespaceScoped,omitempty"` // true if access is via RoleBindings, not cluster-wide
 	Namespaces      []string `json:"namespaces,omitempty"`      // namespaces where access is granted
+	// Absent marks an optional CRD that RBAC grants but the cluster doesn't have
+	// installed. It's CanList=false (so it reads as "not available", not listed),
+	// but it must NOT count toward the "limited access" banner — a missing optional
+	// CRD is not a permission restriction.
+	Absent bool `json:"absent,omitempty"`
 }
 
 // ResourcePermissions maps resource type keys to their permission results.
@@ -75,28 +81,29 @@ type resourceDef struct {
 	group        string
 	resource     string
 	clusterScope bool // true for cluster-scoped resources (no namespace fallback)
+	optional     bool // CRD that may be absent — gate CanList on real API discovery, not just RBAC
 }
 
 // resourceDefs maps internal keys to their K8s API group and resource name.
 // This must stay in sync with setupInformers().
 var resourceDefs = map[string]resourceDef{
 	// Core v1
-	"pods":           {group: "", resource: "pods"},
-	"nodes":          {group: "", resource: "nodes", clusterScope: true},
-	"namespaces":     {group: "", resource: "namespaces", clusterScope: true},
-	"services":       {group: "", resource: "services"},
-	"endpointslices": {group: "discovery.k8s.io", resource: "endpointslices"},
-	"configmaps":     {group: "", resource: "configmaps"},
+	"pods":            {group: "", resource: "pods"},
+	"nodes":           {group: "", resource: "nodes", clusterScope: true},
+	"namespaces":      {group: "", resource: "namespaces", clusterScope: true},
+	"services":        {group: "", resource: "services"},
+	"endpointslices":  {group: "discovery.k8s.io", resource: "endpointslices"},
+	"configmaps":      {group: "", resource: "configmaps"},
 	"serviceaccounts": {group: "", resource: "serviceaccounts"},
-	"secrets":        {group: "", resource: "secrets"},
-	"pvcs":           {group: "", resource: "persistentvolumeclaims"},
-	"pvs":            {group: "", resource: "persistentvolumes", clusterScope: true},
-	"events":         {group: "", resource: "events"},
+	"secrets":         {group: "", resource: "secrets"},
+	"pvcs":            {group: "", resource: "persistentvolumeclaims"},
+	"pvs":             {group: "", resource: "persistentvolumes", clusterScope: true},
+	"events":          {group: "", resource: "events"},
 	// Apps v1
 	"deployments":  {group: "apps", resource: "deployments"},
-	"statefulsets":  {group: "apps", resource: "statefulsets"},
-	"daemonsets":    {group: "apps", resource: "daemonsets"},
-	"replicasets":   {group: "apps", resource: "replicasets"},
+	"statefulsets": {group: "apps", resource: "statefulsets"},
+	"daemonsets":   {group: "apps", resource: "daemonsets"},
+	"replicasets":  {group: "apps", resource: "replicasets"},
 	// Batch v1
 	"jobs":     {group: "batch", resource: "jobs"},
 	"cronjobs": {group: "batch", resource: "cronjobs"},
@@ -105,13 +112,16 @@ var resourceDefs = map[string]resourceDef{
 	"networkpolicies": {group: "networking.k8s.io", resource: "networkpolicies"},
 	// Policy v1
 	"pdbs": {group: "policy", resource: "poddisruptionbudgets"},
-	// Optional CRDs (1.14) — probed so RBAC discovery reflects real access.
-	"certificates": {group: "cert-manager.io", resource: "certificates"},
-	"argocdapps":   {group: "argoproj.io", resource: "applications"},
-	"vpas":         {group: "autoscaling.k8s.io", resource: "verticalpodautoscalers"},
+	// Optional CRDs (1.14) — SSAR alone reports them as accessible whenever the
+	// agent's ClusterRole grants the GVR, even on clusters where the CRD isn't
+	// installed; `optional` gates CanList on real discovery so they read as "not
+	// available" when truly absent.
+	"certificates": {group: "cert-manager.io", resource: "certificates", optional: true},
+	"argocdapps":   {group: "argoproj.io", resource: "applications", optional: true},
+	"vpas":         {group: "autoscaling.k8s.io", resource: "verticalpodautoscalers", optional: true},
 	// Cilium policy CRDs (present only on Cilium clusters). CCNP is cluster-scoped.
-	"ciliumnetworkpolicies":            {group: "cilium.io", resource: "ciliumnetworkpolicies"},
-	"ciliumclusterwidenetworkpolicies": {group: "cilium.io", resource: "ciliumclusterwidenetworkpolicies", clusterScope: true},
+	"ciliumnetworkpolicies":            {group: "cilium.io", resource: "ciliumnetworkpolicies", optional: true},
+	"ciliumclusterwidenetworkpolicies": {group: "cilium.io", resource: "ciliumclusterwidenetworkpolicies", clusterScope: true, optional: true},
 	// Autoscaling v1
 	"hpas": {group: "autoscaling", resource: "horizontalpodautoscalers"},
 	// Storage v1
@@ -285,6 +295,25 @@ func probePermissions(clientset kubernetes.Interface) ResourcePermissions {
 		}
 	}
 
+	// Optional CRDs: SSAR only answers "is the SA allowed to list this GVR?", which
+	// a broad reader/operator ClusterRole grants for cilium.io / cert-manager.io /
+	// argoproj.io / autoscaling.k8s.io even on a cluster where those CRDs aren't
+	// installed — so they'd show as "available" (with 0 items) instead of "not
+	// available". Gate them on actual API discovery: drop CanList when the GVR isn't
+	// registered. Only downgrade when discovery returned something — a total
+	// discovery failure leaves the SSAR result intact rather than hiding everything.
+	if registered := discoverRegisteredResources(clientset); len(registered) > 0 {
+		for key, def := range resourceDefs {
+			if def.optional && perms[key] != nil && perms[key].CanList && !registered[def.group+"/"+def.resource] {
+				perms[key].CanList = false
+				perms[key].CanWatch = false
+				perms[key].CanGet = false
+				perms[key].Absent = true // not a restriction — exclude from the limited-access banner
+				log.Printf("Optional CRD %s.%s granted by RBAC but not installed — marking unavailable", def.resource, def.group)
+			}
+		}
+	}
+
 	// Log summary
 	permitted := 0
 	for _, p := range perms {
@@ -295,4 +324,25 @@ func probePermissions(clientset kubernetes.Interface) ResourcePermissions {
 	log.Printf("Permission probe complete: %d/%d resource types accessible", permitted, len(perms))
 
 	return perms
+}
+
+// discoverRegisteredResources returns the set of "group/resource" pairs the
+// cluster actually serves, via aggregated API discovery. Partial failures (a
+// flaky aggregated APIService such as metrics.k8s.io) still yield the groups
+// that did resolve — regular CRD groups like cilium.io are served by the core
+// apiserver and resolve reliably. An empty result means total discovery failure,
+// which the caller treats as "can't tell" and keeps the SSAR verdict.
+func discoverRegisteredResources(clientset kubernetes.Interface) map[string]bool {
+	out := map[string]bool{}
+	_, lists, _ := clientset.Discovery().ServerGroupsAndResources()
+	for _, rl := range lists {
+		gv, err := schema.ParseGroupVersion(rl.GroupVersion)
+		if err != nil {
+			continue
+		}
+		for _, r := range rl.APIResources {
+			out[gv.Group+"/"+r.Name] = true
+		}
+	}
+	return out
 }

@@ -59,9 +59,27 @@ func (h *Handlers) ResolveTenant(next http.Handler) http.Handler {
 		if tid == "" {
 			tid = DefaultTenantName
 		}
-		ctx := context.WithValue(r.Context(), tenantKey, tid)
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, r.WithContext(WithTenantID(r.Context(), tid)))
 	})
+}
+
+// WithTenantID returns ctx carrying tid as the resolved tenant (org), readable
+// by TenantIDFromContext / ContextTenantID. ResolveTenant uses it; EE Postgres
+// stores and tests can stamp a tenant directly onto a context.
+func WithTenantID(ctx context.Context, tid string) context.Context {
+	return context.WithValue(ctx, tenantKey, tid)
+}
+
+// TenantIDFromContext is the context-based counterpart of ContextTenantID: it
+// returns the tenant (org) stamped by ResolveTenant/WithTenantID, or "" if
+// absent. EE Postgres stores read this to scope each query's RLS org via
+// eedb.WithOrg — "" means "no request org" (system/ingest paths), where the
+// caller falls back to the connection's default.
+func TenantIDFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(tenantKey).(string); ok {
+		return v
+	}
+	return ""
 }
 
 // ContextTenantID returns the tenant ID resolved for the request. It reads

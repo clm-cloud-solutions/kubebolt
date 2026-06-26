@@ -61,6 +61,19 @@ type CompactEvent struct {
 // 16-byte big-endian uint64 timestamp prefix + 8 random bytes, giving
 // natural chronological ordering on iteration and avoiding id collisions
 // even at very high session rates.
+
+// SessionStore is the seam for Kobi usage/cost analytics records. OSS uses the
+// BoltDB *UsageStore; EE swaps a Postgres impl so the analytics survive in a
+// shared, multi-replica store. Global history (no per-tenant RLS this iter).
+type SessionStore interface {
+	Record(rec *SessionRecord) error
+	Query(from, to time.Time, limit int) ([]SessionRecord, error)
+	Count() (int, error)
+}
+
+// Compile-time guarantee the Bolt impl satisfies the seam.
+var _ SessionStore = (*UsageStore)(nil)
+
 type UsageStore struct {
 	db     *bolt.DB
 	bucket []byte

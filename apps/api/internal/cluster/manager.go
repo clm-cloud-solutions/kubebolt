@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,6 +15,7 @@ import (
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/helm"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/metrics"
@@ -35,8 +37,8 @@ type Manager struct {
 	metricInterval  time.Duration
 	insightInterval time.Duration
 	cancelFn        context.CancelFunc
-	connErr         error // set when the active context failed to connect
-	storage         *Storage // optional — nil when auth disabled; drives user-uploaded contexts and display names
+	connErr         error        // set when the active context failed to connect
+	storage         ClusterStore // optional — nil when auth disabled; drives user-uploaded contexts and display names. W1 seam: BoltDB *Storage (OSS), Postgres (EE).
 
 	// agentRegistry is the live registry of connected kubebolt-agents.
 	// Set by main.go via SetAgentRegistry once the gRPC server is up.
@@ -185,26 +187,39 @@ func (m *Manager) SetOnResolvedInsight(fn func(clusterContext string, insight mo
 	}
 }
 
-// wireInsightHookLocked attaches m.onNewInsight and m.onResolvedInsight to
-// the current engine. Assumes m.mu is held.
-func (m *Manager) wireInsightHookLocked() {
-	if m.engine == nil {
+// bindInsightHooks wires this manager's notification dispatchers onto one engine,
+// stamping the given cluster context into every call. Always-on (W2 §10): EVERY
+// runtime — active or parked — gets the hook, so an insight on ANY connected
+// cluster notifies (parked engines keep evaluating). Assumes m.mu is held (reads
+// m.onNewInsight/m.onResolvedInsight).
+func (m *Manager) bindInsightHooks(eng *insights.Engine, ctxName string) {
+	if eng == nil {
 		return
 	}
-	activeCtx := m.activeContext
 	if m.onNewInsight != nil {
 		hook := m.onNewInsight
-		m.engine.SetOnNewInsight(func(insight models.Insight) {
-			// Called with engine lock held — keep this fast, the notification
-			// manager already dispatches async.
-			hook(activeCtx, insight)
+		eng.SetOnNewInsight(func(insight models.Insight) {
+			// Called with engine lock held — keep fast; the notification manager
+			// dispatches async.
+			hook(ctxName, insight)
 		})
 	}
 	if m.onResolvedInsight != nil {
 		hook := m.onResolvedInsight
-		m.engine.SetOnResolvedInsight(func(insight models.Insight) {
-			hook(activeCtx, insight)
+		eng.SetOnResolvedInsight(func(insight models.Insight) {
+			hook(ctxName, insight)
 		})
+	}
+}
+
+// wireInsightHookLocked (re)attaches the notification hooks to EVERY runtime's
+// engine: the active one (stamped with m.activeContext) and all parked pool
+// runtimes (each stamped with its own context). Always-on (W2 §10) — parked
+// clusters notify too, routed by context/tenant downstream. Assumes m.mu held.
+func (m *Manager) wireInsightHookLocked() {
+	m.bindInsightHooks(m.engine, m.activeContext)
+	for pk, rt := range m.runtimes {
+		m.bindInsightHooks(rt.engine, pk.cluster)
 	}
 }
 
@@ -278,7 +293,7 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	m.kubeConfig.Clusters[contextName] = &clientcmdapi.Cluster{Server: agentProxyAPIServerURL(clusterID)}
 	m.kubeConfig.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName}
 	if displayName != "" && m.storage != nil {
-		_ = m.storage.SetDisplayName(contextName, displayName)
+		_ = m.storage.SetDisplayName(m.storeCtx(), contextName, displayName)
 	}
 	slog.Info("registered agent-proxy cluster",
 		slog.String("cluster_id", clusterID),
@@ -302,6 +317,16 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	if contextName == m.activeContext && m.connector == nil {
 		go m.retryAgentProxyConnect(contextName, clusterID)
 	}
+	// Always-on (W2 §10): eager-spin this cluster's runtime into the pool as soon
+	// as its agent connects, so it monitors (evaluates + notifies) even if nobody
+	// opens it in the UI — and so monitoring resumes after a backend restart
+	// without a manual view. The active context is covered by the retry above;
+	// here we cover the non-active connected clusters. Skip if already pooled.
+	if contextName != m.activeContext {
+		if _, ok := m.runtimes[poolKey{tenant: m.tenantID, cluster: contextName}]; !ok {
+			go m.eagerSpinPooledRuntime(contextName, clusterID)
+		}
+	}
 	return contextName, nil
 }
 
@@ -314,39 +339,64 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 // runs, the user could have switched away or another concurrent
 // register-triggered retry could have already recovered the connector.
 func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if contextName != m.activeContext || m.connector != nil {
-		return
+	// The agent can land in the registry just AFTER the proxy-cluster hook that
+	// spawned us, so the first CountByCluster can briefly read 0 ("no agent
+	// connected yet") even though the agent is alive. A single shot then strands
+	// the cluster forever — there's no later trigger — which is fatal for an
+	// install with ONE cluster (no other cluster to switch to and re-fire a
+	// connect). So retry a few times with a short backoff, releasing the lock
+	// between tries, until the registration settles. Only the registration race
+	// is retried; a real connect error (cache-sync, etc.) returns immediately.
+	const maxAttempts = 12
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		m.mu.Lock()
+		if contextName != m.activeContext || m.connector != nil {
+			m.mu.Unlock()
+			return // switched away, or another goroutine already recovered it
+		}
+		if attempt == 0 {
+			slog.Info("retrying connector after agent registered",
+				slog.String("cluster_id", clusterID),
+				slog.String("context", contextName),
+			)
+		}
+		err := m.connectToContextLocked(contextName)
+		if err == nil {
+			m.connErr = nil
+			m.mu.Unlock()
+			slog.Info("connector recovered for agent-proxy cluster",
+				slog.String("context", contextName),
+				slog.Int("attempt", attempt+1),
+			)
+			// Push the recovery to connected UIs so they invalidate
+			// `['clusters']` + `['cluster-overview']` immediately instead of
+			// waiting up to 30s for TanStack Query's refetch tick.
+			if m.wsHub != nil {
+				m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
+					"context":   contextName,
+					"clusterId": clusterID,
+				})
+			}
+			return
+		}
+		m.connErr = err
+		m.mu.Unlock()
+		// Only the "agent not visible in the registry yet" race is worth waiting
+		// out (the message comes from connectToContextLocked's fast-fail just
+		// above). Any other error won't fix itself by retrying.
+		if !strings.Contains(err.Error(), "no agent connected yet") {
+			slog.Warn("connector retry failed (not a registration race)",
+				slog.String("context", contextName),
+				slog.String("error", err.Error()),
+			)
+			return
+		}
+		time.Sleep(500 * time.Millisecond)
 	}
-	slog.Info("retrying connector after agent registered",
+	slog.Warn("connector retry exhausted — agent never became visible in the registry",
 		slog.String("cluster_id", clusterID),
 		slog.String("context", contextName),
 	)
-	if err := m.connectToContextLocked(contextName); err != nil {
-		m.connErr = err
-		slog.Warn("connector retry still failed",
-			slog.String("context", contextName),
-			slog.String("error", err.Error()),
-		)
-		return
-	}
-	m.connErr = nil
-	slog.Info("connector recovered for agent-proxy cluster",
-		slog.String("context", contextName),
-	)
-	// Push the recovery to connected UIs so they invalidate
-	// `['clusters']` + `['cluster-overview']` immediately, instead of
-	// waiting up to 30s for TanStack Query's refetch tick. Without
-	// this nudge a user who saw the "Cluster unreachable" page right
-	// after boot keeps seeing it long after the backend recovered,
-	// and concludes the fix didn't work.
-	if m.wsHub != nil {
-		m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
-			"context":   contextName,
-			"clusterId": clusterID,
-		})
-	}
 }
 
 // RemoveAgentProxyCluster removes the agent-proxy registration for
@@ -356,6 +406,16 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	contextName := AgentProxyContextName(clusterID)
+
+	// Persistent cleanup — runs even when the in-memory context isn't registered,
+	// so a disconnected cluster's lingering display name + cached UID can still be
+	// deleted.
+	if m.storage != nil {
+		m.storage.DeleteDisplayName(m.storeCtx(), contextName)
+		_ = m.storage.SetClusterUID(m.storeCtx(), contextName, "") // "" → delete the cached UID row
+	}
+
+	// In-memory teardown — nothing to do if the context isn't registered.
 	if _, ok := m.agentProxyContexts[contextName]; !ok {
 		return
 	}
@@ -367,16 +427,13 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	delete(m.agentProxyContexts, contextName)
 	delete(m.kubeConfig.Contexts, contextName)
 	delete(m.kubeConfig.Clusters, contextName)
-	if m.storage != nil {
-		m.storage.DeleteDisplayName(contextName)
-	}
 	slog.Info("removed agent-proxy cluster", slog.String("cluster_id", clusterID))
 }
 
 // SetStorage attaches a cluster storage to the manager. This must be called
 // after NewManager but before the HTTP router starts serving. After attaching,
 // the manager merges any user-uploaded kubeconfigs into its in-memory config.
-func (m *Manager) SetStorage(s *Storage) error {
+func (m *Manager) SetStorage(s ClusterStore) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.storage = s
@@ -384,10 +441,24 @@ func (m *Manager) SetStorage(s *Storage) error {
 }
 
 // Storage returns the attached storage, or nil if none was set.
-func (m *Manager) Storage() *Storage {
+func (m *Manager) Storage() ClusterStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.storage
+}
+
+// storeCtx returns the context the manager threads into ClusterStore calls.
+// Boot-time and manager-internal store access has no request org, so it carries
+// the manager's default-org tenant (m.tenantID — the default tenant UUID in EE,
+// "default"/empty in OSS) via auth.WithTenantID. The EE Postgres store reads
+// this off the ctx and runs each query inside eedb.WithOrg so single-org cluster
+// loading keeps working under RLS. The Bolt store ignores the ctx entirely.
+// Falls back to context.Background() when m.tenantID is empty.
+func (m *Manager) storeCtx() context.Context {
+	if m.tenantID == "" {
+		return context.Background()
+	}
+	return auth.WithTenantID(context.Background(), m.tenantID)
 }
 
 // reloadUploadedContextsLocked merges kubeconfigs from BoltDB into the in-memory
@@ -396,7 +467,7 @@ func (m *Manager) reloadUploadedContextsLocked() error {
 	if m.storage == nil {
 		return nil
 	}
-	configs, err := m.storage.ListKubeconfigs()
+	configs, err := m.storage.ListKubeconfigs(m.storeCtx())
 	if err != nil {
 		return fmt.Errorf("listing stored kubeconfigs: %w", err)
 	}
@@ -518,7 +589,7 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 	m := &Manager{
 		kubeconfigPath:  kubeconfigPath,
 		kubeConfig:      kubeConfig,
-		activeContext:    kubeConfig.CurrentContext,
+		activeContext:   kubeConfig.CurrentContext,
 		wsHub:           wsHub,
 		metricInterval:  metricInterval,
 		insightInterval: insightInterval,
@@ -556,15 +627,16 @@ func (m *Manager) ListClusters() []ClusterInfo {
 	displayNames := make(map[string]string)
 	cachedUIDs := make(map[string]string)
 	if m.storage != nil {
-		if configs, err := m.storage.ListKubeconfigs(); err == nil {
+		sctx := m.storeCtx()
+		if configs, err := m.storage.ListKubeconfigs(sctx); err == nil {
 			for _, c := range configs {
 				uploadedContexts[c.Context] = true
 			}
 		}
-		if names, err := m.storage.AllDisplayNames(); err == nil {
+		if names, err := m.storage.AllDisplayNames(sctx); err == nil {
 			displayNames = names
 		}
-		if uids, err := m.storage.AllClusterUIDs(); err == nil {
+		if uids, err := m.storage.AllClusterUIDs(sctx); err == nil {
 			cachedUIDs = uids
 		}
 	}
@@ -762,6 +834,12 @@ func (m *Manager) enforcePoolCapLocked() {
 				continue
 			}
 			built++
+			// Always-on (W2 §10): connected agent-proxy runtimes are pinned — never
+			// the LRU victim. Bounded by the per-org cluster cap, not the pool cap;
+			// if every built runtime is pinned, no victim is chosen.
+			if m.runtimeIsConnectedProxyLocked(pk) {
+				continue
+			}
 			if victim == nil || rt.lastUsed.Before(victim.lastUsed) {
 				victimKey, victim = pk, rt
 			}
@@ -786,6 +864,54 @@ func (m *Manager) evictPooledContextLocked(contextName, reason string) {
 	}
 }
 
+// runtimeIsConnectedProxyLocked reports whether the pooled runtime at key pk is an
+// agent-proxy cluster whose agent is currently registered. Always-on (W2 §10):
+// such runtimes are PINNED — kept resident (no idle reap, no LRU evict) so they
+// keep evaluating + notifying. They become reapable again the moment the agent
+// disconnects (CountByCluster drops to 0), so a dead proxy runtime never leaks.
+// Assumes m.mu held.
+func (m *Manager) runtimeIsConnectedProxyLocked(pk poolKey) bool {
+	if m.agentRegistry == nil {
+		return false
+	}
+	cid, ok := m.agentProxyContexts[pk.cluster]
+	if !ok {
+		return false // local-kubeconfig context — normal idle/LRU eviction applies
+	}
+	return m.agentRegistry.CountByCluster(cid) > 0
+}
+
+// eagerSpinPooledRuntime spins (and keeps) the pooled runtime for a freshly-
+// connected agent-proxy cluster, so always-on monitoring starts at connect time
+// rather than at first UI view (W2 §10). It waits out the register/visibility
+// race cheaply (the agent can land in the registry just after this hook fires —
+// same race as retryAgentProxyConnect), then spins ONCE: a real connect error
+// shouldn't be retried for ~20s × 12. No lock held across the spin. Idempotent —
+// getOrSpinPooled returns the existing runtime if a concurrent view already spun
+// it. The reaper keeps the runtime resident while the agent stays connected.
+func (m *Manager) eagerSpinPooledRuntime(contextName, clusterID string) {
+	const maxWait = 12
+	for attempt := 0; attempt < maxWait; attempt++ {
+		m.mu.RLock()
+		cid := m.agentProxyContexts[contextName]
+		visible := m.agentRegistry != nil && cid != "" && m.agentRegistry.CountByCluster(cid) > 0
+		m.mu.RUnlock()
+		if visible {
+			break
+		}
+		if attempt == maxWait-1 {
+			return // agent never became visible — a later view or re-Hello will spin it
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	if rt := m.getOrSpinPooled(m.tenantID, contextName); rt != nil && rt.connErr == nil {
+		slog.Info("eager-spun agent-proxy runtime for always-on",
+			slog.String("context", contextName),
+			slog.String("cluster_id", clusterID),
+		)
+	}
+}
+
 // reapIdlePooledRuntimes evicts pooled runtimes left untouched longer than
 // poolIdleTimeout. Runs on the reaper goroutine; takes m.mu itself.
 func (m *Manager) reapIdlePooledRuntimes() {
@@ -798,6 +924,12 @@ func (m *Manager) reapIdlePooledRuntimes() {
 	for pk, rt := range m.runtimes {
 		if rt.connector == nil {
 			continue // still building
+		}
+		// Always-on (W2 §10): a connected agent-proxy runtime is pinned — kept
+		// resident so it keeps evaluating + notifying even when nobody's viewing
+		// it. Reapable again the instant its agent disconnects.
+		if m.runtimeIsConnectedProxyLocked(pk) {
+			continue
 		}
 		if rt.lastUsed.Before(cutoff) {
 			m.evictPoolEntryLocked(pk, rt, "idle timeout")
@@ -829,6 +961,33 @@ func (m *Manager) startPoolReaper() {
 			}
 		}
 	}()
+}
+
+// PoolStats is a snapshot of the connector-runtime pool for observability
+// (always-on, W2 §10.3): how many cluster runtimes are resident.
+type PoolStats struct {
+	Active   int // the global active runtime (0 or 1)
+	Parked   int // built, pooled (non-active) runtimes — incl. eager-spun/pinned
+	Building int // placeholders mid-spin (no informers yet)
+}
+
+// PoolStats returns a live snapshot of the runtime pool. Cheap (counts under the
+// read lock); safe to call on every /metrics scrape.
+func (m *Manager) PoolStats() PoolStats {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	var s PoolStats
+	if m.connector != nil {
+		s.Active = 1
+	}
+	for _, rt := range m.runtimes {
+		if rt.connector == nil {
+			s.Building++
+		} else {
+			s.Parked++
+		}
+	}
+	return s
 }
 
 // ConnError returns the last connection error, or nil if connected.
@@ -970,6 +1129,12 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	if built.gate != nil {
 		built.gate.Store(false)
 	}
+	// Always-on (W2 §10): wire the notification hook onto this pooled (parked)
+	// runtime's engine so an insight on this cluster notifies even though it's not
+	// the active one. Re-read the manager hooks under the lock.
+	m.mu.Lock()
+	m.bindInsightHooks(placeholder.engine, contextName)
+	m.mu.Unlock()
 	placeholder.lastUsed = time.Now()
 	close(placeholder.ready)
 	return placeholder
@@ -1066,7 +1231,7 @@ func (m *Manager) AddKubeconfig(rawYAML []byte, uploadedBy string) ([]string, er
 	// Check for name collisions with contexts already in the in-memory config
 	// that come from sources OTHER than the uploaded store (i.e., file).
 	existingUploaded := make(map[string]bool)
-	if configs, err := m.storage.ListKubeconfigs(); err == nil {
+	if configs, err := m.storage.ListKubeconfigs(m.storeCtx()); err == nil {
 		for _, c := range configs {
 			existingUploaded[c.Context] = true
 		}
@@ -1087,7 +1252,7 @@ func (m *Manager) AddKubeconfig(rawYAML []byte, uploadedBy string) ([]string, er
 			UploadedAt: now,
 			UploadedBy: uploadedBy,
 		}
-		if err := m.storage.SaveKubeconfig(stored); err != nil {
+		if err := m.storage.SaveKubeconfig(m.storeCtx(), stored); err != nil {
 			return nil, fmt.Errorf("persisting context %q: %w", ctxName, err)
 		}
 		added = append(added, ctxName)
@@ -1112,7 +1277,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 		return fmt.Errorf("cluster persistence is not available")
 	}
 
-	stored, err := m.storage.GetKubeconfig(contextName)
+	stored, err := m.storage.GetKubeconfig(m.storeCtx(), contextName)
 	if err != nil {
 		return fmt.Errorf("lookup failed: %w", err)
 	}
@@ -1129,7 +1294,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 	m.evictPooledContextLocked(contextName, "cluster removed")
 
 	// Remove from BoltDB
-	if err := m.storage.DeleteKubeconfig(contextName); err != nil {
+	if err := m.storage.DeleteKubeconfig(m.storeCtx(), contextName); err != nil {
 		return err
 	}
 
@@ -1138,7 +1303,7 @@ func (m *Manager) RemoveUploadedContext(contextName string) error {
 	delete(m.kubeConfig.Contexts, contextName)
 
 	// Also remove any display name override
-	m.storage.DeleteDisplayName(contextName)
+	m.storage.DeleteDisplayName(m.storeCtx(), contextName)
 
 	slog.Info("removed uploaded cluster context", slog.String("context", contextName))
 	return nil
@@ -1156,7 +1321,7 @@ func (m *Manager) SetClusterDisplayName(contextName, displayName string) error {
 	if m.storage == nil {
 		return fmt.Errorf("cluster persistence is not available")
 	}
-	return m.storage.SetDisplayName(contextName, displayName)
+	return m.storage.SetDisplayName(m.storeCtx(), contextName, displayName)
 }
 
 func (m *Manager) connectToContext(contextName string) error {
@@ -1170,7 +1335,11 @@ func (m *Manager) connectToContext(contextName string) error {
 // unknown.
 func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 	if cid, ok := m.agentProxyContexts[contextName]; ok {
-		return NewAgentProxyAccess(cid, m.agentRegistry)
+		// m.tenantID is the runtime's org (default tenant UUID today; the
+		// per-request org once the multi-org pooled threading lands). It
+		// flows into the proxy transport so the registry's tenant guard
+		// (W4) only resolves agents this org owns.
+		return NewAgentProxyAccess(m.tenantID, cid, m.agentRegistry)
 	}
 	if m.inCluster && contextName == "in-cluster" {
 		return NewInClusterAccess()
@@ -1293,7 +1462,7 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// than overwriting a previously-good value.
 	if m.storage != nil {
 		if uid := connector.ClusterUID(); uid != "" {
-			_ = m.storage.SetClusterUID(contextName, uid)
+			_ = m.storage.SetClusterUID(m.storeCtx(), contextName, uid)
 		}
 	}
 

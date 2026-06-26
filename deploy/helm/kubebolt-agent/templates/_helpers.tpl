@@ -115,3 +115,28 @@ with itself. Called from the top of templates/daemonset.yaml so
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+GOMEMLIMIT for the Go agent container, DERIVED from its memory limit so the Go
+scavenger's soft target always sits below the cgroup limit. If GOMEMLIMIT ever
+lands ABOVE the limit (the old hardcoded 100MiB once anyone lowered
+limits.memory), the scavenger never triggers before the OOM killer — the
+crash-loop this derivation makes impossible. Pass {limit, override}: override
+(.Values.gomemlimit) wins verbatim; otherwise take 90% of the limit. Handles
+Mi / Gi; an unrecognised unit is passed through verbatim; an empty limit yields
+"" so the caller emits no GOMEMLIMIT env.
+*/}}
+{{- define "kubebolt-agent.gomemlimit" -}}
+{{- if .override -}}
+{{- .override -}}
+{{- else if .limit -}}
+{{- $lim := .limit | toString -}}
+{{- if hasSuffix "Mi" $lim -}}
+{{- printf "%dMiB" (mulf (trimSuffix "Mi" $lim | float64) 0.9 | floor | int) -}}
+{{- else if hasSuffix "Gi" $lim -}}
+{{- printf "%dMiB" (mulf (mulf (trimSuffix "Gi" $lim | float64) 1024.0) 0.9 | floor | int) -}}
+{{- else -}}
+{{- $lim -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

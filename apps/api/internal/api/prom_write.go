@@ -250,7 +250,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	}
 	// Validate the token (ingest store), then gate on the owning tenant
 	// (the tenant store owns Disabled now that tokens aren't inlined).
-	tok, lookErr := h.ingestTokens.Lookup(token)
+	tok, lookErr := h.ingestTokens.Lookup(r.Context(), token)
 	var tenant *auth.Tenant
 	if lookErr == nil {
 		tenant, lookErr = h.tenantsStore.GetTenant(tok.TenantID)
@@ -269,7 +269,7 @@ func (h *handlers) authenticatePromWrite(w http.ResponseWriter, r *http.Request)
 	// Mark the token recently used so the Prometheus integration card can
 	// resolve "is this Prom currently pushing?". Debounced internally —
 	// high-rate ingest doesn't pound BoltDB; a miss isn't worth failing on.
-	_ = h.ingestTokens.MarkUsed(tok.TenantID, tok.ID, time.Now())
+	_ = h.ingestTokens.MarkUsed(r.Context(), tok.TenantID, tok.ID, time.Now())
 	return tenant, true
 }
 

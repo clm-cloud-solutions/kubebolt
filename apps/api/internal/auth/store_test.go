@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"testing"
 
 	"golang.org/x/crypto/bcrypt"
@@ -43,7 +44,7 @@ func TestValidRole(t *testing.T) {
 
 func TestCreateUser_HashesPassword(t *testing.T) {
 	store := newTestStore(t)
-	u, err := store.CreateUser("alice", "a@x", "Alice", "supersecret", RoleEditor)
+	u, err := store.CreateUser(context.Background(), "alice", "a@x", "Alice", "supersecret", RoleEditor)
 	if err != nil {
 		t.Fatalf("CreateUser: %v", err)
 	}
@@ -62,43 +63,43 @@ func TestCreateUser_HashesPassword(t *testing.T) {
 
 func TestCreateUser_RejectsDuplicate(t *testing.T) {
 	store := newTestStore(t)
-	if _, err := store.CreateUser("alice", "a@x", "Alice", "p1", RoleViewer); err != nil {
+	if _, err := store.CreateUser(context.Background(), "alice", "a@x", "Alice", "p1", RoleViewer); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	if _, err := store.CreateUser("alice", "b@y", "Alice 2", "p2", RoleViewer); err == nil {
+	if _, err := store.CreateUser(context.Background(), "alice", "b@y", "Alice 2", "p2", RoleViewer); err == nil {
 		t.Error("duplicate username should fail")
 	}
 }
 
 func TestGetUser_ByIDAndUsername(t *testing.T) {
 	store := newTestStore(t)
-	u, _ := store.CreateUser("bob", "b@x", "Bob", "pwd12345", RoleAdmin)
+	u, _ := store.CreateUser(context.Background(), "bob", "b@x", "Bob", "pwd12345", RoleAdmin)
 
-	got, err := store.GetUser(u.ID)
+	got, err := store.GetUser(context.Background(), u.ID)
 	if err != nil || got.Username != "bob" {
 		t.Errorf("GetUser failed: %v / %+v", err, got)
 	}
 
-	got2, err := store.GetUserByUsername("bob")
+	got2, err := store.GetUserByUsername(context.Background(), "bob")
 	if err != nil || got2.ID != u.ID {
 		t.Errorf("GetUserByUsername failed: %v / %+v", err, got2)
 	}
 
-	if _, err := store.GetUser("nope"); err == nil {
+	if _, err := store.GetUser(context.Background(), "nope"); err == nil {
 		t.Error("GetUser of missing id should fail")
 	}
-	if _, err := store.GetUserByUsername("ghost"); err == nil {
+	if _, err := store.GetUserByUsername(context.Background(), "ghost"); err == nil {
 		t.Error("GetUserByUsername of missing name should fail")
 	}
 }
 
 func TestListUsers(t *testing.T) {
 	store := newTestStore(t)
-	store.CreateUser("a", "a@x", "A", "p12345678", RoleAdmin)
-	store.CreateUser("b", "b@x", "B", "p12345678", RoleEditor)
-	store.CreateUser("c", "c@x", "C", "p12345678", RoleViewer)
+	store.CreateUser(context.Background(), "a", "a@x", "A", "p12345678", RoleAdmin)
+	store.CreateUser(context.Background(), "b", "b@x", "B", "p12345678", RoleEditor)
+	store.CreateUser(context.Background(), "c", "c@x", "C", "p12345678", RoleViewer)
 
-	users, err := store.ListUsers()
+	users, err := store.ListUsers(context.Background())
 	if err != nil {
 		t.Fatalf("ListUsers: %v", err)
 	}
@@ -109,11 +110,11 @@ func TestListUsers(t *testing.T) {
 
 func TestUpdatePassword(t *testing.T) {
 	store := newTestStore(t)
-	u, _ := store.CreateUser("carol", "c@x", "Carol", "oldpassword", RoleViewer)
-	if err := store.UpdatePassword(u.ID, "newpassword"); err != nil {
+	u, _ := store.CreateUser(context.Background(), "carol", "c@x", "Carol", "oldpassword", RoleViewer)
+	if err := store.UpdatePassword(context.Background(), u.ID, "newpassword"); err != nil {
 		t.Fatalf("UpdatePassword: %v", err)
 	}
-	got, _ := store.GetUser(u.ID)
+	got, _ := store.GetUser(context.Background(), u.ID)
 	if bcrypt.CompareHashAndPassword([]byte(got.PasswordHash), []byte("oldpassword")) == nil {
 		t.Error("old password should no longer match")
 	}
@@ -124,30 +125,30 @@ func TestUpdatePassword(t *testing.T) {
 
 func TestDeleteUser(t *testing.T) {
 	store := newTestStore(t)
-	u, _ := store.CreateUser("dave", "d@x", "Dave", "p12345678", RoleViewer)
-	if err := store.DeleteUser(u.ID); err != nil {
+	u, _ := store.CreateUser(context.Background(), "dave", "d@x", "Dave", "p12345678", RoleViewer)
+	if err := store.DeleteUser(context.Background(), u.ID); err != nil {
 		t.Fatalf("DeleteUser: %v", err)
 	}
-	if _, err := store.GetUser(u.ID); err == nil {
+	if _, err := store.GetUser(context.Background(), u.ID); err == nil {
 		t.Error("user should be gone after delete")
 	}
 	// Username index also cleared → a new user with the same name can be created
-	if _, err := store.CreateUser("dave", "d2@x", "Dave 2", "p12345678", RoleViewer); err != nil {
+	if _, err := store.CreateUser(context.Background(), "dave", "d2@x", "Dave 2", "p12345678", RoleViewer); err != nil {
 		t.Errorf("username should be reusable after delete: %v", err)
 	}
 }
 
 func TestCountByRole(t *testing.T) {
 	store := newTestStore(t)
-	store.CreateUser("a1", "a1@x", "", "p12345678", RoleAdmin)
-	store.CreateUser("a2", "a2@x", "", "p12345678", RoleAdmin)
-	store.CreateUser("e1", "e1@x", "", "p12345678", RoleEditor)
+	store.CreateUser(context.Background(), "a1", "a1@x", "", "p12345678", RoleAdmin)
+	store.CreateUser(context.Background(), "a2", "a2@x", "", "p12345678", RoleAdmin)
+	store.CreateUser(context.Background(), "e1", "e1@x", "", "p12345678", RoleEditor)
 
-	n, _ := store.CountByRole(RoleAdmin)
+	n, _ := store.CountByRole(context.Background(), RoleAdmin)
 	if n != 2 {
 		t.Errorf("CountByRole(admin) = %d, want 2", n)
 	}
-	n, _ = store.CountByRole(RoleViewer)
+	n, _ = store.CountByRole(context.Background(), RoleViewer)
 	if n != 0 {
 		t.Errorf("CountByRole(viewer) = %d, want 0", n)
 	}
@@ -156,7 +157,7 @@ func TestCountByRole(t *testing.T) {
 func TestSeedAdmin_OnlyWhenEmpty(t *testing.T) {
 	store := newTestStore(t)
 
-	seeded, err := store.SeedAdmin("admin123")
+	seeded, err := store.SeedAdmin(context.Background(), "admin123")
 	if err != nil || !seeded {
 		t.Fatalf("initial SeedAdmin: seeded=%v err=%v", seeded, err)
 	}
@@ -164,7 +165,7 @@ func TestSeedAdmin_OnlyWhenEmpty(t *testing.T) {
 		t.Errorf("want 1 user after seed, got %d", n)
 	}
 	// Second call is a no-op
-	seeded, err = store.SeedAdmin("different")
+	seeded, err = store.SeedAdmin(context.Background(), "different")
 	if err != nil {
 		t.Fatalf("second SeedAdmin: %v", err)
 	}

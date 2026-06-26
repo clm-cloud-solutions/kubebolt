@@ -153,7 +153,7 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	plaintext, tok, err := h.ingestTokens.Issue(req.TenantID, "", label, issuer, nil)
+	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), req.TenantID, "", "", label, issuer, nil)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
@@ -164,7 +164,7 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		// after we failed to wire it into the cluster. RevokeToken
 		// errors are logged but don't override the underlying
 		// failure that brought us here.
-		if revokeErr := h.ingestTokens.Revoke(req.TenantID, tok.ID); revokeErr != nil {
+		if revokeErr := h.ingestTokens.Revoke(r.Context(), req.TenantID, tok.ID); revokeErr != nil {
 			slog.Warn("issue-token: failed to revoke after Secret apply error",
 				slog.String("error", revokeErr.Error()),
 			)

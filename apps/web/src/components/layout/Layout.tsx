@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Unplug, ShieldAlert, Loader2, Cable, X } from 'lucide-react'
+import { Unplug, ShieldAlert, Loader2, Cable, X, Info } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
@@ -15,6 +15,16 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { SetupWizard } from '@/components/setup/SetupWizard'
 
 const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
+
+// Friendly names for optional-CRD permission keys, so the "not detected" note
+// reads in product terms. Both Cilium CRDs collapse to one "Cilium".
+const ABSENT_INTEGRATION_NAMES: Record<string, string> = {
+  certificates: 'cert-manager',
+  argocdapps: 'ArgoCD',
+  vpas: 'VPA',
+  ciliumnetworkpolicies: 'Cilium',
+  ciliumclusterwidenetworkpolicies: 'Cilium',
+}
 
 export function Layout() {
   const { data: rawOverview, error, refetch } = useClusterOverview()
@@ -81,7 +91,9 @@ export function Layout() {
   // empty state), and /admin /settings are platform-level pages whose
   // backend endpoints are cluster-agnostic. For these we bypass BOTH
   // the no-clusters CTA and the cluster-unreachable error page.
-  const PLATFORM_ROUTE_PREFIXES = ['/clusters', '/admin', '/settings']
+  // /account (EE org plan + usage) is also cluster-agnostic — a brand-new org
+  // has no clusters yet but must still reach its plan page. Empty path in OSS.
+  const PLATFORM_ROUTE_PREFIXES = ['/clusters', '/admin', '/settings', '/account']
   const isPlatformRoute = PLATFORM_ROUTE_PREFIXES.some(p =>
     location.pathname === p || location.pathname.startsWith(p + '/')
   )
@@ -99,12 +111,23 @@ export function Layout() {
   const overview = isUnavailable ? undefined : rawOverview
 
   // Detect limited permissions
+  // Optional CRDs the cluster lacks (absentResources) are CanList=false but NOT a
+  // permission restriction — exclude them from the banner count.
   const permissions = overview?.permissions
+  const absent = new Set(overview?.absentResources ?? [])
   const permittedCount = permissions
-    ? Object.values(permissions).filter(Boolean).length
+    ? Object.entries(permissions).filter(([k, v]) => !absent.has(k) && Boolean(v)).length
     : undefined
-  const totalResources = permissions ? Object.keys(permissions).length : undefined
+  const totalResources = permissions
+    ? Object.keys(permissions).filter((k) => !absent.has(k)).length
+    : undefined
   const isLimited = permittedCount != null && totalResources != null && permittedCount < totalResources
+
+  // Case B: optional integrations RBAC grants but the cluster lacks. Informational,
+  // not a problem. Map keys to friendly names, deduped (Cilium has two CRDs).
+  const absentIntegrations = [
+    ...new Set((overview?.absentResources ?? []).map((k) => ABSENT_INTEGRATION_NAMES[k] ?? k)),
+  ]
 
   // The limited-access banner is dismissible, persisted per cluster + access
   // shape — so dismissing one cluster's banner doesn't hide it on another, and
@@ -131,6 +154,29 @@ export function Layout() {
     setLimitedBannerDismissed(true)
   }
 
+  // Separate dismiss state for the (neutral) optional-integrations note — keyed
+  // per cluster + the set absent, so it re-appears if that set changes.
+  const absentDismissKey =
+    absentIntegrations.length > 0 && overview
+      ? `kb-absent-integrations-dismissed:${overview.clusterUID ?? overview.clusterName ?? ''}:${absentIntegrations.slice().sort().join(',')}`
+      : ''
+  const [absentNoteDismissed, setAbsentNoteDismissed] = useState(false)
+  useEffect(() => {
+    if (!absentDismissKey) {
+      setAbsentNoteDismissed(false)
+      return
+    }
+    setAbsentNoteDismissed(localStorage.getItem(absentDismissKey) === 'true')
+  }, [absentDismissKey])
+  const dismissAbsentNote = () => {
+    try {
+      if (absentDismissKey) localStorage.setItem(absentDismissKey, 'true')
+    } catch {
+      /* localStorage unavailable — dismiss for this session only */
+    }
+    setAbsentNoteDismissed(true)
+  }
+
   // Copilot layout — when the panel is docked AND open, give the
   // main content column a matching margin-right so it reflows to
   // the left instead of being hidden underneath the panel. The
@@ -153,12 +199,30 @@ export function Layout() {
         {isLimited && !limitedBannerDismissed && (
           <div className="px-4 py-1.5 bg-status-warn-dim border-b border-kb-border text-xs text-status-warn flex items-center gap-2 shrink-0">
             <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
-            <span className="flex-1">Limited access — showing {permittedCount} of {totalResources} resource types</span>
+            <span className="flex-1">
+              Limited access — {permittedCount} of {totalResources} resource types restricted by RBAC. The agent&apos;s ClusterRole may have been narrowed.
+            </span>
             <button
               onClick={dismissLimitedBanner}
               className="text-status-warn/70 hover:text-status-warn p-0.5 rounded hover:bg-status-warn/15 transition-colors shrink-0"
               title="Dismiss"
               aria-label="Dismiss limited-access banner"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        )}
+        {/* Case B — optional integrations not installed. Neutral + dismissible,
+            NOT the amber RBAC banner: a missing optional CRD isn't a problem. */}
+        {absentIntegrations.length > 0 && !absentNoteDismissed && (
+          <div className="px-4 py-1.5 bg-kb-card border-b border-kb-border text-xs text-kb-text-tertiary flex items-center gap-2 shrink-0">
+            <Info className="w-3.5 h-3.5 shrink-0" />
+            <span className="flex-1">Optional integrations not detected: {absentIntegrations.join(', ')}</span>
+            <button
+              onClick={dismissAbsentNote}
+              className="text-kb-text-tertiary/70 hover:text-kb-text-secondary p-0.5 rounded hover:bg-kb-card-hover transition-colors shrink-0"
+              title="Dismiss"
+              aria-label="Dismiss optional-integrations note"
             >
               <X className="w-3.5 h-3.5" />
             </button>

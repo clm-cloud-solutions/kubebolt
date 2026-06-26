@@ -41,6 +41,7 @@ import { VERSION } from '@/version'
 import { AboutModal } from '@/components/layout/AboutModal'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import type { ClusterOverview } from '@/types/kubernetes'
+import { eePinnedNavItems } from '@/ee/registry'
 
 interface SidebarProps {
   overview?: ClusterOverview
@@ -51,7 +52,7 @@ interface SidebarProps {
   collapsed: boolean
 }
 
-interface NavItem {
+export interface NavItem {
   label: string
   path: string
   icon: React.ReactNode
@@ -69,6 +70,9 @@ const sections: NavSection[] = [
     title: 'Pinned',
     items: [
       { label: 'Insights', path: '/insights', icon: <Lightbulb className="w-4 h-4" /> },
+      // EE extension point — edition-specific pinned items (e.g. Autopilot).
+      // Empty in OSS via @/ee/registry; the Enterprise build overrides it.
+      ...eePinnedNavItems,
       { label: 'Applications', path: '/applications', icon: <Package className="w-4 h-4" />, countKey: 'helmReleases' },
       { label: 'Pods', path: '/pods', icon: <Box className="w-4 h-4" />, countKey: 'pods', permissionKey: 'pods' },
       { label: 'Nodes', path: '/nodes', icon: <Server className="w-4 h-4" />, countKey: 'nodes', permissionKey: 'nodes' },

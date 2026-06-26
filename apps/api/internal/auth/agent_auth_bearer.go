@@ -20,7 +20,7 @@ import (
 // trade we accept to keep the hot path lock-free.
 type BearerIngestAuth struct {
 	tokens  IngestTokenStore // token validity (revoked/expired)
-	tenants *TenantsStore    // owning tenant lookup + Disabled check
+	tenants TenantStore      // owning tenant lookup + Disabled check
 	cache   *authCache
 	nowFn   func() time.Time
 }
@@ -29,7 +29,7 @@ type BearerIngestAuth struct {
 // token validity) and the tenants store (to resolve + gate the owning tenant).
 // cacheTTL=0 disables caching (every call hits BoltDB) — useful in tests; in
 // production set 5*time.Minute.
-func NewBearerIngestAuth(tokens IngestTokenStore, tenants *TenantsStore, cacheTTL time.Duration) *BearerIngestAuth {
+func NewBearerIngestAuth(tokens IngestTokenStore, tenants TenantStore, cacheTTL time.Duration) *BearerIngestAuth {
 	return &BearerIngestAuth{
 		tokens:  tokens,
 		tenants: tenants,
@@ -54,7 +54,7 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	if cached, ok := a.cache.get(hash); ok {
 		return cached, nil
 	}
-	tok, err := a.tokens.Lookup(plaintext)
+	tok, err := a.tokens.Lookup(ctx, plaintext)
 	if err != nil {
 		return nil, err
 	}
@@ -71,13 +71,14 @@ func (a *BearerIngestAuth) Authenticate(ctx context.Context, md metadata.MD, p *
 	identity := &AgentIdentity{
 		Mode:        ModeIngestToken,
 		TenantID:    tenant.ID,
+		TeamID:      tok.TeamID,
 		TLSVerified: peerHasVerifiedClientCert(p),
 		AuthedAt:    now,
 	}
 	a.cache.put(hash, identity)
 	// Best-effort touch — the store debounces persistence to once per
 	// minute per token, so we can fire-and-forget every RPC.
-	_ = a.tokens.MarkUsed(tok.TenantID, tok.ID, now)
+	_ = a.tokens.MarkUsed(ctx, tok.TenantID, tok.ID, now)
 	return identity, nil
 }
 

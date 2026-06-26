@@ -1,6 +1,7 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -8,7 +9,22 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
-const generalSettingsKey = "general"
+// General is a MIXED domain (Track D — per-tenant settings). It splits across
+// two stores by field class:
+//
+//   - ORG fields — per-org, in the OrgSettingStore under generalOrgKey:
+//     DisplayName, DefaultRefreshIntervalSeconds, ProdNamespacePattern. Each org
+//     configures its own; ProdNamespacePattern is read per request from the
+//     resolved org. DisplayName is per-org branding (plan-gated editable later;
+//     read-only in the UI for now).
+//   - PLATFORM fields — install-global, in the SettingStore under
+//     generalGlobalKey: UpdateCheckEnabled (the background GitHub poll) and
+//     CacheSyncTimeoutSeconds (applied at cluster connect, no request org). One
+//     value per install — these have no request context to scope by.
+const (
+	generalOrgKey    = "general"        // per-org ORG fields (OrgSettingStore)
+	generalGlobalKey = "general_global" // install-global PLATFORM fields (SettingStore)
+)
 
 // StoredGeneralSettings is the on-disk shape for the General domain.
 // Pointer fields so nil means "fall back to env baseline" — same
@@ -21,22 +37,48 @@ type StoredGeneralSettings struct {
 	// rule. Validated at PUT — invalid regex returns 400.
 	ProdNamespacePattern *string `json:"prodNamespacePattern,omitempty"`
 	// UpdateCheckEnabled toggles the GitHub releases poller that
-	// drives the "new version available" chip. Nil = inherit env
-	// baseline (KUBEBOLT_UPDATE_CHECK_ENABLED, default true).
+	// drives the "new version available" chip. PLATFORM (install-global).
 	UpdateCheckEnabled *bool `json:"updateCheckEnabled,omitempty"`
 	// CacheSyncTimeoutSeconds is the cold-connect informer cache-sync
-	// deadline. Nil = inherit env baseline
-	// (KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS, default 45). Applies on the
-	// next cluster connect — no restart.
+	// deadline. PLATFORM (install-global) — applies on the next cluster
+	// connect, no request org.
 	CacheSyncTimeoutSeconds *int `json:"cacheSyncTimeoutSeconds,omitempty"`
 }
 
-// General returns the resolved GeneralConfig (env + BoltDB override).
-// Cached until InvalidateGeneral.
-func (r *Runtime) General() config.GeneralConfig {
+// orgFields / platformFields project a stored record onto the two field classes
+// so PUT can route each to the right store and the masked view can recombine.
+func (s StoredGeneralSettings) orgFields() StoredGeneralSettings {
+	return StoredGeneralSettings{
+		DisplayName:                   s.DisplayName,
+		DefaultRefreshIntervalSeconds: s.DefaultRefreshIntervalSeconds,
+		ProdNamespacePattern:          s.ProdNamespacePattern,
+	}
+}
+
+func (s StoredGeneralSettings) platformFields() StoredGeneralSettings {
+	return StoredGeneralSettings{
+		UpdateCheckEnabled:      s.UpdateCheckEnabled,
+		CacheSyncTimeoutSeconds: s.CacheSyncTimeoutSeconds,
+	}
+}
+
+func (s StoredGeneralSettings) hasOrgFields() bool {
+	return s.DisplayName != nil || s.DefaultRefreshIntervalSeconds != nil || s.ProdNamespacePattern != nil
+}
+
+func (s StoredGeneralSettings) hasPlatformFields() bool {
+	return s.UpdateCheckEnabled != nil || s.CacheSyncTimeoutSeconds != nil
+}
+
+// General returns the resolved GeneralConfig for the request's org: the env
+// baseline, the install-global PLATFORM override, then the per-org ORG override
+// on top. Cached per org until InvalidateGeneral. OSS resolves every request to
+// the single default tenant → one cache entry, identical to the old behavior.
+func (r *Runtime) General(ctx context.Context) config.GeneralConfig {
+	org := orgKey(ctx)
 	r.mu.RLock()
-	if r.generalValid {
-		cfg := r.general
+	if r.generalValid[org] {
+		cfg := r.generalByOrg[org]
 		r.mu.RUnlock()
 		return cfg
 	}
@@ -44,33 +86,68 @@ func (r *Runtime) General() config.GeneralConfig {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.generalValid {
-		return r.general
+	if r.generalValid[org] {
+		return r.generalByOrg[org]
 	}
-	r.general = r.resolveGeneralLocked()
-	r.generalValid = true
-	return r.general
+	cfg := r.resolveGeneralLocked(ctx)
+	r.generalByOrg[org] = cfg
+	r.generalValid[org] = true
+	return cfg
 }
 
-func (r *Runtime) InvalidateGeneral() {
+// GeneralGlobal returns the env baseline with ONLY the PLATFORM override applied
+// (UpdateCheckEnabled, CacheSyncTimeoutSeconds). For background / boot consumers
+// that have no request org — the update-check poller and the cluster manager's
+// cache-sync deadline. Not cached (called rarely).
+func (r *Runtime) GeneralGlobal() config.GeneralConfig {
+	cfg := r.envGeneral
+	r.applyGeneralGlobalOverride(&cfg)
+	return cfg
+}
+
+// InvalidateGeneral marks one org's cached General config stale (org-level PUT /
+// reset). The platform-field PUT invalidates ALL orgs instead (see PutGeneral).
+func (r *Runtime) InvalidateGeneral(ctx context.Context) {
+	org := orgKey(ctx)
 	r.mu.Lock()
-	r.generalValid = false
+	delete(r.generalValid, org)
 	r.mu.Unlock()
 }
 
-func (r *Runtime) resolveGeneralLocked() config.GeneralConfig {
-	cfg := r.envGeneral
+// invalidateGeneralAllOrgs clears every org's cached General config — used when
+// an install-global PLATFORM field changes, since every org's resolved config
+// layers onto it.
+func (r *Runtime) invalidateGeneralAllOrgs() {
+	r.mu.Lock()
+	r.generalValid = map[string]bool{}
+	r.mu.Unlock()
+}
 
-	raw, err := r.store.GetSetting(generalSettingsKey)
+func (r *Runtime) resolveGeneralLocked(ctx context.Context) config.GeneralConfig {
+	cfg := r.envGeneral
+	r.applyGeneralGlobalOverride(&cfg)
+	// Per-org ORG override on top.
+	if raw, err := r.orgStore.GetOrgSetting(ctx, generalOrgKey); err == nil {
+		var stored StoredGeneralSettings
+		if json.Unmarshal(raw, &stored) == nil {
+			org := stored.orgFields()
+			applyStoredGeneral(&cfg, &org)
+		}
+	}
+	return cfg
+}
+
+// applyGeneralGlobalOverride layers the install-global PLATFORM override onto cfg.
+func (r *Runtime) applyGeneralGlobalOverride(cfg *config.GeneralConfig) {
+	raw, err := r.store.GetSetting(generalGlobalKey)
 	if err != nil {
-		return cfg
+		return
 	}
 	var stored StoredGeneralSettings
-	if err := json.Unmarshal(raw, &stored); err != nil {
-		return cfg
+	if json.Unmarshal(raw, &stored) == nil {
+		p := stored.platformFields()
+		applyStoredGeneral(cfg, &p)
 	}
-	applyStoredGeneral(&cfg, &stored)
-	return cfg
 }
 
 func applyStoredGeneral(cfg *config.GeneralConfig, stored *StoredGeneralSettings) {
@@ -91,43 +168,129 @@ func applyStoredGeneral(cfg *config.GeneralConfig, stored *StoredGeneralSettings
 	}
 }
 
-// PutGeneral validates and persists a partial General settings patch.
-func (r *Runtime) PutGeneral(patch *StoredGeneralSettings) error {
+// PutGeneral validates and persists a partial General settings patch, routing
+// ORG fields to the per-org store and PLATFORM fields to the install-global
+// store. Org-admin only (gated at the route).
+func (r *Runtime) PutGeneral(ctx context.Context, patch *StoredGeneralSettings) error {
 	if err := validateGeneralPatch(patch); err != nil {
 		return err
 	}
-	existing, _ := r.loadGeneral()
-	merged := mergeGeneral(existing, *patch)
-
-	encoded, err := json.Marshal(merged)
-	if err != nil {
-		return fmt.Errorf("marshal: %w", err)
+	if patch.hasOrgFields() {
+		existing := r.loadGeneralOrg(ctx)
+		merged := mergeGeneral(existing, patch.orgFields())
+		encoded, err := json.Marshal(merged)
+		if err != nil {
+			return fmt.Errorf("marshal: %w", err)
+		}
+		if err := r.orgStore.SetOrgSetting(ctx, generalOrgKey, encoded); err != nil {
+			return fmt.Errorf("persist org: %w", err)
+		}
 	}
-	if err := r.store.SetSetting(generalSettingsKey, encoded); err != nil {
-		return fmt.Errorf("persist: %w", err)
+	if patch.hasPlatformFields() {
+		existing := r.loadGeneralGlobal()
+		merged := mergeGeneral(existing, patch.platformFields())
+		encoded, err := json.Marshal(merged)
+		if err != nil {
+			return fmt.Errorf("marshal: %w", err)
+		}
+		if err := r.store.SetSetting(generalGlobalKey, encoded); err != nil {
+			return fmt.Errorf("persist platform: %w", err)
+		}
 	}
-	r.InvalidateGeneral()
+	// A platform change affects every org's resolved config; an org-only change
+	// affects just this org.
+	if patch.hasPlatformFields() {
+		r.invalidateGeneralAllOrgs()
+	} else {
+		r.InvalidateGeneral(ctx)
+	}
 	return nil
 }
 
-func (r *Runtime) loadGeneral() (StoredGeneralSettings, error) {
-	raw, err := r.store.GetSetting(generalSettingsKey)
+// loadGeneralOrg reads the per-org ORG override record (no env merge).
+func (r *Runtime) loadGeneralOrg(ctx context.Context) StoredGeneralSettings {
+	raw, err := r.orgStore.GetOrgSetting(ctx, generalOrgKey)
 	if err != nil {
-		return StoredGeneralSettings{}, nil
+		return StoredGeneralSettings{}
 	}
 	var out StoredGeneralSettings
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return StoredGeneralSettings{}, fmt.Errorf("decode: %w", err)
+	if json.Unmarshal(raw, &out) != nil {
+		return StoredGeneralSettings{}
 	}
-	return out, nil
+	return out.orgFields()
 }
 
-func (r *Runtime) ResetGeneral() error {
-	if err := r.store.SetSetting(generalSettingsKey, []byte("null")); err != nil {
+// loadGeneralGlobal reads the install-global PLATFORM override record.
+func (r *Runtime) loadGeneralGlobal() StoredGeneralSettings {
+	raw, err := r.store.GetSetting(generalGlobalKey)
+	if err != nil {
+		return StoredGeneralSettings{}
+	}
+	var out StoredGeneralSettings
+	if json.Unmarshal(raw, &out) != nil {
+		return StoredGeneralSettings{}
+	}
+	return out.platformFields()
+}
+
+// loadGeneral returns the combined stored override (per-org ORG fields +
+// install-global PLATFORM fields) for the masked GET view.
+func (r *Runtime) loadGeneral(ctx context.Context) StoredGeneralSettings {
+	org := r.loadGeneralOrg(ctx)
+	plat := r.loadGeneralGlobal()
+	org.UpdateCheckEnabled = plat.UpdateCheckEnabled
+	org.CacheSyncTimeoutSeconds = plat.CacheSyncTimeoutSeconds
+	return org
+}
+
+// ResetGeneral clears the caller-org's ORG override so its fields fall back to
+// the env/platform baseline. The install-global PLATFORM fields are unaffected.
+func (r *Runtime) ResetGeneral(ctx context.Context) error {
+	if err := r.orgStore.SetOrgSetting(ctx, generalOrgKey, []byte("null")); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
-	r.InvalidateGeneral()
+	r.InvalidateGeneral(ctx)
 	return nil
+}
+
+// MigrateLegacyGeneral is a one-time, best-effort upgrade shim. Before General
+// split per-org, a single global "general" record (all 5 fields) lived in the
+// SettingStore. Copy its ORG fields into the org in ctx (the default tenant) and
+// its PLATFORM fields into the new global key, so an upgrading install keeps its
+// values. No-op on fresh installs / once migrated.
+func (r *Runtime) MigrateLegacyGeneral(ctx context.Context) bool {
+	// If the new keys already exist, nothing to migrate.
+	if _, err := r.orgStore.GetOrgSetting(ctx, generalOrgKey); err == nil {
+		return false
+	}
+	legacy, err := r.store.GetSetting(generalOrgKey) // old global "general"
+	if err != nil || len(legacy) == 0 || string(legacy) == "null" {
+		return false
+	}
+	var stored StoredGeneralSettings
+	if json.Unmarshal(legacy, &stored) != nil {
+		return false
+	}
+	migrated := false
+	if org := stored.orgFields(); org.hasOrgFields() {
+		if enc, e := json.Marshal(org); e == nil {
+			if r.orgStore.SetOrgSetting(ctx, generalOrgKey, enc) == nil {
+				migrated = true
+			}
+		}
+	}
+	if plat := stored.platformFields(); plat.hasPlatformFields() {
+		if _, e := r.store.GetSetting(generalGlobalKey); e != nil { // don't clobber
+			if enc, e2 := json.Marshal(plat); e2 == nil {
+				_ = r.store.SetSetting(generalGlobalKey, enc)
+			}
+		}
+	}
+	if migrated {
+		r.InvalidateGeneral(ctx)
+		r.invalidateGeneralAllOrgs()
+	}
+	return migrated
 }
 
 // MaskedGeneral is the GET response shape. No secrets to mask — every
@@ -155,12 +318,9 @@ type MaskedStoredGeneral struct {
 	CacheSyncTimeoutSeconds       *int    `json:"cacheSyncTimeoutSeconds,omitempty"`
 }
 
-func (r *Runtime) RenderMaskedGeneral() (MaskedGeneral, error) {
-	stored, err := r.loadGeneral()
-	if err != nil {
-		return MaskedGeneral{}, err
-	}
-	resolved := r.General()
+func (r *Runtime) RenderMaskedGeneral(ctx context.Context) (MaskedGeneral, error) {
+	stored := r.loadGeneral(ctx)
+	resolved := r.General(ctx)
 	out := MaskedGeneral{
 		Effective: MaskedEffectiveGeneral{
 			DisplayName:                   resolved.DisplayName,

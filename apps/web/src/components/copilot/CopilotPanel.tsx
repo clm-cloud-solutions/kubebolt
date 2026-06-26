@@ -723,7 +723,7 @@ export function CopilotPanel() {
               placeholder="Ask about your cluster..."
               rows={1}
               disabled={isLoading}
-              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 disabled:opacity-50"
+              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 overflow-y-auto overflow-x-hidden disabled:opacity-50"
               style={{ minHeight: '36px' }}
             />
           </div>

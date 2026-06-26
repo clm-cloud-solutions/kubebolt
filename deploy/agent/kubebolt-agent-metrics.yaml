@@ -176,6 +176,11 @@ spec:
               value: "PLACEHOLDER:9090"
             - name: KUBEBOLT_AGENT_LOG_LEVEL
               value: "info"
+            - name: GOMEMLIMIT
+              # Keep below limits.memory (128Mi) so the Go scavenger reclaims
+              # idle pages before the cgroup OOM-kills. Hubble flow parsing
+              # churns ~200MB/min; without this HeapSys ratchets past the limit.
+              value: "100MiB"
             - name: KUBEBOLT_AGENT_NODE_NAME
               valueFrom: { fieldRef: { fieldPath: spec.nodeName } }
             - name: KUBEBOLT_AGENT_NODE_IP
@@ -200,7 +205,7 @@ spec:
           resources:
             requests:
               cpu: 10m
-              memory: 30Mi
+              memory: 64Mi
             limits:
               cpu: 100m
-              memory: 80Mi
+              memory: 128Mi

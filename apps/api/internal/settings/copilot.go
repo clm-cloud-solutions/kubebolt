@@ -1,12 +1,14 @@
 package settings
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
@@ -66,10 +68,11 @@ type StoredProviderSettings struct {
 // field falls back to the env baseline so the system stays usable even
 // if the stored secret can't be unwrapped — operator is alerted via the
 // /settings GET endpoint which surfaces the unreadable state explicitly.
-func (r *Runtime) Copilot() config.CopilotConfig {
+func (r *Runtime) Copilot(ctx context.Context) config.CopilotConfig {
+	org := orgKey(ctx)
 	r.mu.RLock()
-	if r.copilotValid {
-		cfg := r.copilot
+	if r.copilotValid[org] {
+		cfg := r.copilotByOrg[org]
 		r.mu.RUnlock()
 		return cfg
 	}
@@ -77,25 +80,46 @@ func (r *Runtime) Copilot() config.CopilotConfig {
 
 	// Re-resolve under the write lock. Double-check the valid bit in case
 	// another goroutine raced us — first writer wins, others read the
-	// resolved value without a second BoltDB hit.
+	// resolved value without a second store hit.
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.copilotValid {
-		return r.copilot
+	if r.copilotValid[org] {
+		return r.copilotByOrg[org]
 	}
-	r.copilot = r.resolveCopilotLocked()
-	r.copilotValid = true
-	return r.copilot
+	cfg := r.resolveCopilotLocked(ctx)
+	r.copilotByOrg[org] = cfg
+	r.copilotValid[org] = true
+	return cfg
 }
 
-// resolveCopilotLocked merges the BoltDB-persisted partial override onto
+// resolveCopilotLocked merges the per-org persisted partial override onto
 // the env baseline. Caller must hold r.mu (write or read). When the
-// BoltDB record is absent or malformed, returns the env baseline
-// unchanged.
-func (r *Runtime) resolveCopilotLocked() config.CopilotConfig {
+// stored record is absent or malformed, returns the env baseline
+// unchanged. The override is read scoped to the org in ctx.
+func (r *Runtime) resolveCopilotLocked(ctx context.Context) config.CopilotConfig {
 	cfg := r.envBase // value copy — safe to mutate
 
-	raw, err := r.store.GetSetting(copilotSettingsKey)
+	if auth.MultiTenantEnabled {
+		// When the multi-tenant seam is on, the AI provider, model, key and
+		// cost/context tunables come from the install-global PLATFORM override
+		// (see copilot_platform.go); the per-org record contributes ONLY the
+		// governance + display fields (actions on/off, tool-call display,
+		// action-progress timeout). Mirrors the other MultiTenantEnabled seams
+		// (auth, teams). The seam is false here, so this branch is inert.
+		r.applyCopilotPlatformOverride(&cfg)
+		if raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey); err == nil {
+			var stored StoredCopilotSettings
+			if json.Unmarshal(raw, &stored) == nil {
+				applyCopilotOrgFields(&cfg, &stored)
+			}
+		}
+		cfg.Enabled = cfg.Primary.APIKey != ""
+		return cfg
+	}
+
+	// Single-tenant: the per-org record governs everything (BYOK) — the lone
+	// admin is the platform admin.
+	raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey)
 	if err != nil {
 		// "not found" is the no-override path — env baseline wins, all good.
 		return cfg
@@ -223,7 +247,7 @@ func applyStoredProvider(cfg *config.ProviderConfig, stored *StoredProviderSetti
 //   - CompactPreserveTurns, if set, must be >= 0
 //
 // Returns ValidationError on bad input — the handler maps that to 400.
-func (r *Runtime) PutCopilot(patch *StoredCopilotSettings, plaintextAPIKey, plaintextFallbackAPIKey *string) error {
+func (r *Runtime) PutCopilot(ctx context.Context, patch *StoredCopilotSettings, plaintextAPIKey, plaintextFallbackAPIKey *string) error {
 	if err := validateCopilotPatch(patch); err != nil {
 		return err
 	}
@@ -267,25 +291,25 @@ func (r *Runtime) PutCopilot(patch *StoredCopilotSettings, plaintextAPIKey, plai
 	// Read existing record (if any) so we MERGE the patch instead of
 	// overwriting unrelated fields. Pointer-field semantics: nil in the
 	// patch leaves the existing value alone.
-	existing, _ := r.loadCopilot()
+	existing, _ := r.loadCopilot(ctx)
 	merged := mergeCopilot(existing, *patch)
 
 	encoded, err := json.Marshal(merged)
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
-	if err := r.store.SetSetting(copilotSettingsKey, encoded); err != nil {
+	if err := r.orgStore.SetOrgSetting(ctx, copilotSettingsKey, encoded); err != nil {
 		return fmt.Errorf("persist: %w", err)
 	}
-	r.InvalidateCopilot()
+	r.InvalidateCopilot(ctx)
 	return nil
 }
 
-// loadCopilot reads the existing BoltDB record without merging onto env.
+// loadCopilot reads the existing per-org record without merging onto env.
 // Used internally by PutCopilot for merge, and exported via GetCopilot
-// for the read-side handler to render the masked view.
-func (r *Runtime) loadCopilot() (StoredCopilotSettings, error) {
-	raw, err := r.store.GetSetting(copilotSettingsKey)
+// for the read-side handler to render the masked view. Scoped to ctx's org.
+func (r *Runtime) loadCopilot(ctx context.Context) (StoredCopilotSettings, error) {
+	raw, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey)
 	if err != nil {
 		// Not-found is normal (no overrides yet) — return zero value.
 		return StoredCopilotSettings{}, nil
@@ -301,8 +325,8 @@ func (r *Runtime) loadCopilot() (StoredCopilotSettings, error) {
 // decrypted in-memory) AND the env baseline, so the handler can render
 // a comparison view. The decrypted API keys are NOT included in the
 // response shape; callers use MaskedCopilot for that.
-func (r *Runtime) GetCopilot() (stored StoredCopilotSettings, baseline config.CopilotConfig, secretReadable bool, err error) {
-	stored, err = r.loadCopilot()
+func (r *Runtime) GetCopilot(ctx context.Context) (stored StoredCopilotSettings, baseline config.CopilotConfig, secretReadable bool, err error) {
+	stored, err = r.loadCopilot(ctx)
 	if err != nil {
 		return StoredCopilotSettings{}, r.envBase, false, err
 	}
@@ -348,21 +372,21 @@ type MaskedCopilot struct {
 }
 
 type MaskedEffectiveCopilot struct {
-	Enabled              bool   `json:"enabled"`
-	Provider             string `json:"provider"`
-	Model                string `json:"model"`
-	APIKeyMasked         string `json:"apiKeyMasked"`
-	BaseURL              string `json:"baseURL,omitempty"`
-	HasFallback          bool   `json:"hasFallback"`
-	FallbackProvider     string `json:"fallbackProvider,omitempty"`
-	FallbackModel        string `json:"fallbackModel,omitempty"`
-	FallbackAPIKeyMasked string `json:"fallbackApiKeyMasked,omitempty"`
-	FallbackBaseURL      string `json:"fallbackBaseURL,omitempty"`
-	MaxTokens            int    `json:"maxTokens"`
-	AutoCompact          bool   `json:"autoCompact"`
-	ShowToolCalls        bool   `json:"showToolCalls"`
-	ActionsEnabled            bool `json:"actionsEnabled"`
-	DestructiveActionsEnabled bool `json:"destructiveActionsEnabled"`
+	Enabled                   bool   `json:"enabled"`
+	Provider                  string `json:"provider"`
+	Model                     string `json:"model"`
+	APIKeyMasked              string `json:"apiKeyMasked"`
+	BaseURL                   string `json:"baseURL,omitempty"`
+	HasFallback               bool   `json:"hasFallback"`
+	FallbackProvider          string `json:"fallbackProvider,omitempty"`
+	FallbackModel             string `json:"fallbackModel,omitempty"`
+	FallbackAPIKeyMasked      string `json:"fallbackApiKeyMasked,omitempty"`
+	FallbackBaseURL           string `json:"fallbackBaseURL,omitempty"`
+	MaxTokens                 int    `json:"maxTokens"`
+	AutoCompact               bool   `json:"autoCompact"`
+	ShowToolCalls             bool   `json:"showToolCalls"`
+	ActionsEnabled            bool   `json:"actionsEnabled"`
+	DestructiveActionsEnabled bool   `json:"destructiveActionsEnabled"`
 	// Action-progress timeout in effect, milliseconds (UI converts to seconds).
 	ActionProgressTimeoutMs int `json:"actionProgressTimeoutMs,omitempty"`
 	// Max tool-call rounds in effect.
@@ -380,63 +404,63 @@ type MaskedEffectiveCopilot struct {
 }
 
 type MaskedStoredCopilot struct {
-	HasPrimaryOverride  bool                    `json:"hasPrimaryOverride"`
-	HasFallbackOverride bool                    `json:"hasFallbackOverride"`
-	Primary             *MaskedStoredProvider   `json:"primary,omitempty"`
-	Fallback            *MaskedStoredProvider   `json:"fallback,omitempty"`
+	HasPrimaryOverride  bool                      `json:"hasPrimaryOverride"`
+	HasFallbackOverride bool                      `json:"hasFallbackOverride"`
+	Primary             *MaskedStoredProvider     `json:"primary,omitempty"`
+	Fallback            *MaskedStoredProvider     `json:"fallback,omitempty"`
 	OtherFields         *MaskedStoredOtherCopilot `json:"otherFields,omitempty"`
 }
 
 type MaskedStoredProvider struct {
-	Provider          *string `json:"provider,omitempty"`
-	APIKeyMasked      string  `json:"apiKeyMasked,omitempty"`
-	APIKeyConfigured  bool    `json:"apiKeyConfigured"`
-	Model             *string `json:"model,omitempty"`
-	BaseURL           *string `json:"baseURL,omitempty"`
+	Provider         *string `json:"provider,omitempty"`
+	APIKeyMasked     string  `json:"apiKeyMasked,omitempty"`
+	APIKeyConfigured bool    `json:"apiKeyConfigured"`
+	Model            *string `json:"model,omitempty"`
+	BaseURL          *string `json:"baseURL,omitempty"`
 }
 
 type MaskedStoredOtherCopilot struct {
-	MaxTokens            *int     `json:"maxTokens,omitempty"`
-	AutoCompact          *bool    `json:"autoCompact,omitempty"`
-	SessionBudgetTokens  *int     `json:"sessionBudgetTokens,omitempty"`
-	AutoCompactThreshold *float64 `json:"autoCompactThreshold,omitempty"`
-	CompactModel         *string  `json:"compactModel,omitempty"`
-	CompactPreserveTurns *int     `json:"compactPreserveTurns,omitempty"`
-	ShowToolCalls        *bool    `json:"showToolCalls,omitempty"`
-	ActionsEnabled            *bool `json:"actionsEnabled,omitempty"`
-	DestructiveActionsEnabled *bool `json:"destructiveActionsEnabled,omitempty"`
-	ActionProgressTimeoutMs   *int  `json:"actionProgressTimeoutMs,omitempty"`
-	MaxRounds                 *int  `json:"maxRounds,omitempty"`
+	MaxTokens                 *int     `json:"maxTokens,omitempty"`
+	AutoCompact               *bool    `json:"autoCompact,omitempty"`
+	SessionBudgetTokens       *int     `json:"sessionBudgetTokens,omitempty"`
+	AutoCompactThreshold      *float64 `json:"autoCompactThreshold,omitempty"`
+	CompactModel              *string  `json:"compactModel,omitempty"`
+	CompactPreserveTurns      *int     `json:"compactPreserveTurns,omitempty"`
+	ShowToolCalls             *bool    `json:"showToolCalls,omitempty"`
+	ActionsEnabled            *bool    `json:"actionsEnabled,omitempty"`
+	DestructiveActionsEnabled *bool    `json:"destructiveActionsEnabled,omitempty"`
+	ActionProgressTimeoutMs   *int     `json:"actionProgressTimeoutMs,omitempty"`
+	MaxRounds                 *int     `json:"maxRounds,omitempty"`
 }
 
 // RenderMaskedCopilot builds the GET response from a stored record + env
 // baseline + crypto. Secrets are masked using the prefix+tail convention
 // from crypto.go's maskSecret.
-func (r *Runtime) RenderMaskedCopilot() (MaskedCopilot, error) {
-	stored, _, secretsReadable, err := r.GetCopilot()
+func (r *Runtime) RenderMaskedCopilot(ctx context.Context) (MaskedCopilot, error) {
+	stored, _, secretsReadable, err := r.GetCopilot(ctx)
 	if err != nil {
 		return MaskedCopilot{}, err
 	}
-	effective := r.Copilot() // forces a fresh resolve via the cache path
+	effective := r.Copilot(ctx) // forces a fresh resolve via the cache path
 
 	out := MaskedCopilot{
 		Effective: MaskedEffectiveCopilot{
-			Enabled:              effective.Enabled,
-			Provider:             effective.Primary.Provider,
-			Model:                effective.Primary.Model,
-			APIKeyMasked:         maskSecret(effective.Primary.APIKey),
-			BaseURL:              effective.Primary.BaseURL,
-			MaxTokens:            effective.MaxTokens,
-			AutoCompact:          effective.AutoCompact,
-			ShowToolCalls:        effective.ShowToolCalls,
+			Enabled:                   effective.Enabled,
+			Provider:                  effective.Primary.Provider,
+			Model:                     effective.Primary.Model,
+			APIKeyMasked:              maskSecret(effective.Primary.APIKey),
+			BaseURL:                   effective.Primary.BaseURL,
+			MaxTokens:                 effective.MaxTokens,
+			AutoCompact:               effective.AutoCompact,
+			ShowToolCalls:             effective.ShowToolCalls,
 			ActionsEnabled:            effective.ActionsEnabled,
 			DestructiveActionsEnabled: effective.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   int(effective.ActionProgressTimeout.Milliseconds()),
 			MaxRounds:                 effective.MaxRounds,
-			SessionBudgetTokens:  effective.SessionBudgetTokens,
-			AutoCompactThreshold: effective.AutoCompactThreshold,
-			CompactModel:         effective.CompactModel,
-			CompactPreserveTurns: effective.CompactPreserveTurns,
+			SessionBudgetTokens:       effective.SessionBudgetTokens,
+			AutoCompactThreshold:      effective.AutoCompactThreshold,
+			CompactModel:              effective.CompactModel,
+			CompactPreserveTurns:      effective.CompactPreserveTurns,
 		},
 		Stored:          renderStoredMask(stored),
 		SecretsReadable: secretsReadable,
@@ -488,13 +512,13 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 		s.ActionsEnabled != nil || s.DestructiveActionsEnabled != nil ||
 		s.ActionProgressTimeoutMs != nil || s.MaxRounds != nil {
 		out.OtherFields = &MaskedStoredOtherCopilot{
-			MaxTokens:            s.MaxTokens,
-			AutoCompact:          s.AutoCompact,
-			SessionBudgetTokens:  s.SessionBudgetTokens,
-			AutoCompactThreshold: s.AutoCompactThreshold,
-			CompactModel:         s.CompactModel,
-			CompactPreserveTurns: s.CompactPreserveTurns,
-			ShowToolCalls:        s.ShowToolCalls,
+			MaxTokens:                 s.MaxTokens,
+			AutoCompact:               s.AutoCompact,
+			SessionBudgetTokens:       s.SessionBudgetTokens,
+			AutoCompactThreshold:      s.AutoCompactThreshold,
+			CompactModel:              s.CompactModel,
+			CompactPreserveTurns:      s.CompactPreserveTurns,
+			ShowToolCalls:             s.ShowToolCalls,
 			ActionsEnabled:            s.ActionsEnabled,
 			DestructiveActionsEnabled: s.DestructiveActionsEnabled,
 			ActionProgressTimeoutMs:   s.ActionProgressTimeoutMs,
@@ -507,12 +531,37 @@ func renderStoredMask(s StoredCopilotSettings) MaskedStoredCopilot {
 // ResetCopilot clears the BoltDB override entirely so the system falls
 // back to the env baseline for every field. Used by POST /settings/reset
 // when the admin chooses "reset to env defaults" on the Copilot tab.
-func (r *Runtime) ResetCopilot() error {
-	if err := r.store.SetSetting(copilotSettingsKey, []byte("null")); err != nil {
+func (r *Runtime) ResetCopilot(ctx context.Context) error {
+	if err := r.orgStore.SetOrgSetting(ctx, copilotSettingsKey, []byte("null")); err != nil {
 		return fmt.Errorf("reset: %w", err)
 	}
-	r.InvalidateCopilot()
+	r.InvalidateCopilot(ctx)
 	return nil
+}
+
+// MigrateLegacyCopilot is a one-time, best-effort upgrade shim. Before Copilot
+// settings became per-org, a single global "copilot" record lived in the
+// install-global SettingStore. If the org in ctx has no per-org override yet but
+// a legacy global record exists, copy it across so an upgrading install doesn't
+// silently lose its UI-configured AI key (and fall back to the env baseline).
+//
+// No-op when the org already has a per-org override, when there's no legacy
+// global record (fresh / greenfield installs), or when the legacy record is the
+// reset sentinel "null". Safe to call on every boot — it only acts once, then
+// the per-org override shadows it. Returns true when a migration was performed.
+func (r *Runtime) MigrateLegacyCopilot(ctx context.Context) bool {
+	if _, err := r.orgStore.GetOrgSetting(ctx, copilotSettingsKey); err == nil {
+		return false // already has a per-org override — nothing to migrate
+	}
+	legacy, err := r.store.GetSetting(copilotSettingsKey)
+	if err != nil || len(legacy) == 0 || string(legacy) == "null" {
+		return false // no usable legacy global record
+	}
+	if err := r.orgStore.SetOrgSetting(ctx, copilotSettingsKey, legacy); err != nil {
+		return false
+	}
+	r.InvalidateCopilot(ctx)
+	return true
 }
 
 // ─── Validation ──────────────────────────────────────────────────────

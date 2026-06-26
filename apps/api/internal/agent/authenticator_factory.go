@@ -19,7 +19,7 @@ import (
 // Zero value yields BearerIngestAuth-only; pass KubeClient to enable
 // TokenReview mode.
 type AuthenticatorOptions struct {
-	TenantsStore *auth.TenantsStore
+	TenantsStore auth.TenantStore
 
 	// IngestTokenStore validates the long-lived "kb_" ingest tokens (these
 	// live in their own store now, not inlined in the tenant record).

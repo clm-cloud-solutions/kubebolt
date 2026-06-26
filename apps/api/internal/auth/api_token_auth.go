@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strings"
@@ -49,6 +50,13 @@ func ContextAPIPrincipal(r *http.Request) *APIPrincipal {
 	return p
 }
 
+// WithAPIPrincipal stamps an API-token principal onto ctx, readable via
+// ContextAPIPrincipal. Mirrors WithTenantID — lets tests simulate a kbs_/kbk_
+// token caller without driving the full auth chain.
+func WithAPIPrincipal(ctx context.Context, p *APIPrincipal) context.Context {
+	return context.WithValue(ctx, apiPrincipalKey, p)
+}
+
 // validateAPIToken authenticates a REST API token (kbs_/kbk_). It returns a
 // synthetic *Claims (so the existing role machinery works) and an
 // *APIPrincipal (for scope enforcement). Service tokens are rejected when
@@ -57,7 +65,7 @@ func (h *Handlers) validateAPIToken(r *http.Request, plaintext string) (*Claims,
 	if h.apiTokens == nil {
 		return nil, nil, errAPITokensUnavailable
 	}
-	tok, err := h.apiTokens.Lookup(plaintext)
+	tok, err := h.apiTokens.Lookup(r.Context(), plaintext)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -65,12 +73,18 @@ func (h *Handlers) validateAPIToken(r *http.Request, plaintext string) (*Claims,
 		return nil, nil, ErrTokenEdgeBlocked
 	}
 	// Best-effort last-used stamp (debounced in the store).
-	_ = h.apiTokens.MarkUsed(tok.ID, time.Now())
+	_ = h.apiTokens.MarkUsed(r.Context(), tok.ID, time.Now())
 
 	claims := &Claims{
 		UserID:   "svc:" + tok.ID,
 		Username: tok.Label,
 		Role:     tok.Role,
+		// Carry the token's org so ResolveTenant resolves API-token callers to
+		// their real tenant instead of the DefaultTenantName fallback. Without
+		// this every API-token request resolves to "default" — per-org RLS
+		// reads, cluster scoping, and usage metering all attribute to the wrong
+		// org. Empty in OSS (single-tenant tokens), so behavior is unchanged.
+		TenantID: tok.TenantID,
 	}
 	p := &APIPrincipal{
 		TokenID:   tok.ID,

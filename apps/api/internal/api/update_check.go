@@ -35,7 +35,7 @@ func (h *handlers) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
 
 	enabled := true
 	if h.settingsRuntime != nil {
-		enabled = h.settingsRuntime.General().UpdateCheckEnabled
+		enabled = h.settingsRuntime.General(r.Context()).UpdateCheckEnabled
 	}
 	if !enabled {
 		respondJSON(w, http.StatusOK, updateCheckResponse{Enabled: false})

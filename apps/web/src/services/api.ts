@@ -260,6 +260,32 @@ export interface DryRunResult {
   unsupported?: boolean
 }
 
+// Account plan/limits — mirrors apps/api/internal/api/account.go's
+// accountPlanResponse + auth.TenantLimits. Every limits field is optional
+// ("inherit system default" when absent).
+export interface AccountPlanLimits {
+  writeSamplesPerSec?: number
+  writeBurstSamples?: number
+  maxActiveSeries?: number
+}
+
+export interface AccountPlan {
+  id: string
+  name: string
+  plan: string
+  limits?: AccountPlanLimits
+}
+
+// Account usage — accountUsageResponse. One row per metered metric.
+export interface AccountUsagePoint {
+  metric: string
+  total: number
+}
+
+export interface AccountUsage {
+  usage: AccountUsagePoint[]
+}
+
 export const api = {
   // --- Auth ---
   getAuthConfig: () =>
@@ -267,6 +293,12 @@ export const api = {
 
   login: (username: string, password: string) =>
     postJSON<LoginResponse>(`${API_BASE}/auth/login`, { username, password }),
+
+  // Self-service org signup (EE / multi-org edition). Provisions a brand-new
+  // org + default team + admin user and logs them in — same response shape as
+  // login (accessToken + user, refresh cookie set). 409 requires_ee in OSS.
+  signup: (data: { orgName: string; name: string; email: string; password: string }) =>
+    postJSON<LoginResponse>(`${API_BASE}/auth/signup`, data),
 
   refresh: () => tryRefreshToken(),
 
@@ -276,6 +308,16 @@ export const api = {
 
   changePassword: (currentPassword: string, newPassword: string) =>
     putJSON<{ status: string }>(`${API_BASE}/auth/me/password`, { currentPassword, newPassword }),
+
+  // --- Account (org plan + metered usage) ---
+  //
+  // The requesting org is resolved server-side from the JWT — no id needed.
+  // /account/plan returns the org's tenant view (id, name, plan, optional
+  // limits). /account/usage returns per-metric totals (empty list on OSS,
+  // Postgres-backed on EE).
+  getAccountPlan: () => fetchJSON<AccountPlan>(`${API_BASE}/account/plan`),
+
+  getAccountUsage: () => fetchJSON<AccountUsage>(`${API_BASE}/account/usage`),
 
   // --- User management (admin) ---
   listUsers: () => fetchJSON<AuthUser[]>(`${API_BASE}/users`),
@@ -385,6 +427,12 @@ export const api = {
 
   deleteCluster: (context: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/clusters/${encodeURIComponent(context)}`),
+
+  // Delete an agent-proxy cluster by cluster_id (durable clusters need an
+  // explicit delete). Distinct from deleteCluster, which is keyed by context
+  // name (uploaded kubeconfigs).
+  deleteAgentProxyCluster: (clusterId: string) =>
+    deleteRequest<{ status: string }>(`${API_BASE}/clusters/by-id/${encodeURIComponent(clusterId)}`),
 
   // --- Notifications (admin) ---
   getNotificationsConfig: () =>
@@ -2013,6 +2061,13 @@ export interface AgentInstallConfig {
   authMode?: '' | 'ingest-token' | 'tokenreview'
   authTokenSecret?: string
 
+  // Transport TLS to the backend's gRPC channel. Maps to the helm chart's
+  // tls.enabled. Only consumed by the copy-paste helm flow (AddClusterWizard);
+  // the backend-applied install (installIntegration) decides transport itself.
+  // Default OFF — a dev/plaintext backend is the common first install; the
+  // operator flips it on when the backend terminates TLS.
+  tlsEnabled?: boolean
+
   imageRepo?: string
   imageTag?: string
   imagePullPolicy?: 'Always' | 'IfNotPresent' | 'Never'
@@ -2041,6 +2096,35 @@ export interface AgentInstallConfig {
   }
 
   logLevel?: string
+
+  // ─── Full-capability surface (AddClusterWizard helm-command flow) ───
+  // Metrics source beyond the always-on kubelet stats. scrape and promread
+  // are mutually exclusive (the chart double-emits otherwise) — the wizard
+  // models them as one radio.
+  //   kubelet  — kubelet/cAdvisor only (default)
+  //   scrape   — add the vmagent sidecar (scrapes prometheus.io/scrape pods)
+  //   promread — Mode C: read from an existing Prometheus (AMP/GMP/Azure/...)
+  metricsSource?: 'kubelet' | 'scrape' | 'promread'
+  promRead?: {
+    url?: string
+    authMode?: 'none' | 'basicAuth' | 'bearer' | 'awsSigV4' | 'gcpIam' | 'azureWorkloadIdentity'
+    basicAuthUsername?: string
+    bearerToken?: string
+    awsRegion?: string
+  }
+  // mTLS material (only meaningful when tlsEnabled). Secrets must pre-exist in
+  // the target namespace.
+  tlsCaSecret?: string
+  tlsClientCertSecret?: string
+  // ServiceAccount annotations — IRSA (EKS) / Workload Identity (GKE/AKS),
+  // required when promRead auth uses the cloud's ambient credentials.
+  serviceAccountAnnotations?: Array<{ k: string; v: string }>
+  // Tolerate every taint so the DaemonSet lands on all nodes (control-plane etc).
+  tolerateAll?: boolean
+  // Override the chart's derived GOMEMLIMIT (empty = derive 90% of the limit).
+  gomemlimit?: string
+  // Free-form extra env vars — escape hatch for knobs without a first-class field.
+  extraEnv?: Array<{ name: string; value: string }>
 }
 
 export interface FlowEdge {

@@ -25,6 +25,7 @@
 package auth
 
 import (
+	"context"
 	"encoding/base32"
 	"encoding/json"
 	"errors"
@@ -106,11 +107,11 @@ func (t *APIToken) Active(now time.Time) bool {
 // IngestTokenStore/BoltIngestTokenStore split without renaming the type
 // every caller already references).
 type APITokenStorer interface {
-	Issue(typ APITokenType, role Role, scopes []string, label, createdBy string, ttl *time.Duration) (string, *APIToken, error)
-	Lookup(plaintext string) (*APIToken, error)
-	List() ([]APIToken, error)
-	Revoke(id string) error
-	MarkUsed(id string, when time.Time) error
+	Issue(ctx context.Context, typ APITokenType, role Role, scopes []string, label, createdBy string, ttl *time.Duration) (string, *APIToken, error)
+	Lookup(ctx context.Context, plaintext string) (*APIToken, error)
+	List(ctx context.Context) ([]APIToken, error)
+	Revoke(ctx context.Context, id string) error
+	MarkUsed(ctx context.Context, id string, when time.Time) error
 }
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
@@ -162,7 +163,7 @@ func prefixForType(t APITokenType) (string, error) {
 
 // Issue generates a fresh token, persists its hash, and returns the plaintext
 // once (unrecoverable afterwards). ttl=nil means no expiration.
-func (s *APITokenStore) Issue(typ APITokenType, role Role, scopes []string, label, createdBy string, ttl *time.Duration) (string, *APIToken, error) {
+func (s *APITokenStore) Issue(_ context.Context, typ APITokenType, role Role, scopes []string, label, createdBy string, ttl *time.Duration) (string, *APIToken, error) {
 	prefix, err := prefixForType(typ)
 	if err != nil {
 		return "", nil, err
@@ -206,7 +207,7 @@ func (s *APITokenStore) Issue(typ APITokenType, role Role, scopes []string, labe
 // Lookup validates a plaintext token: malformed prefix, unknown hash,
 // revoked and expired all return distinct sentinel errors (shared with
 // tenants_store.go).
-func (s *APITokenStore) Lookup(plaintext string) (*APIToken, error) {
+func (s *APITokenStore) Lookup(_ context.Context, plaintext string) (*APIToken, error) {
 	if !IsAPIToken(plaintext) {
 		return nil, ErrTokenMalformed
 	}
@@ -238,7 +239,7 @@ func (s *APITokenStore) Lookup(plaintext string) (*APIToken, error) {
 
 // List returns every token (metadata only — the Hash is internal). Order is
 // BoltDB key order (uuid).
-func (s *APITokenStore) List() ([]APIToken, error) {
+func (s *APITokenStore) List(_ context.Context) ([]APIToken, error) {
 	var out []APIToken
 	err := s.db.View(func(tx *bolt.Tx) error {
 		return tx.Bucket(apiTokensBucket).ForEach(func(_, v []byte) error {
@@ -255,7 +256,7 @@ func (s *APITokenStore) List() ([]APIToken, error) {
 
 // Revoke marks a token revoked and removes it from the lookup index so future
 // Lookup calls fail fast. The record (RevokedAt) stays for audit.
-func (s *APITokenStore) Revoke(id string) error {
+func (s *APITokenStore) Revoke(_ context.Context, id string) error {
 	now := s.nowFn()
 	return s.db.Update(func(tx *bolt.Tx) error {
 		bucket := tx.Bucket(apiTokensBucket)
@@ -282,7 +283,7 @@ func (s *APITokenStore) Revoke(id string) error {
 }
 
 // MarkUsed updates LastUsedAt, debounced to one persistence per (token, minute).
-func (s *APITokenStore) MarkUsed(id string, when time.Time) error {
+func (s *APITokenStore) MarkUsed(_ context.Context, id string, when time.Time) error {
 	s.markUsedMu.Lock()
 	last, ok := s.markUsedAt[id]
 	if ok && when.Sub(last) < time.Minute {

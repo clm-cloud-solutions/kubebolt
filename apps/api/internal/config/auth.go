@@ -24,6 +24,12 @@ type AuthConfig struct {
 	// password" banner: when the operator already knows the password,
 	// we don't need to broadcast it to every log aggregator.
 	AdminPasswordFromEnv bool
+	// PlatformAdmins is the set of emails (lowercased) whose access tokens
+	// carry the `plat` claim. It marks platform-administration capability;
+	// single-tenant treats the lone admin as the platform admin regardless,
+	// so this is effectively inert here (empty by default). Loaded from
+	// KUBEBOLT_PLATFORM_ADMINS (comma-separated).
+	PlatformAdmins []string
 }
 
 // LoadAuthConfig reads authentication configuration from environment variables.
@@ -79,6 +85,15 @@ func LoadAuthConfig() AuthConfig {
 		cfg.AdminPasswordFromEnv = true
 	} else {
 		cfg.InitialAdminPassword = generateRandomPassword(16)
+	}
+
+	// Platform admins — comma-separated emails, lowercased.
+	if v := os.Getenv("KUBEBOLT_PLATFORM_ADMINS"); strings.TrimSpace(v) != "" {
+		for _, e := range strings.Split(v, ",") {
+			if e = strings.ToLower(strings.TrimSpace(e)); e != "" {
+				cfg.PlatformAdmins = append(cfg.PlatformAdmins, e)
+			}
+		}
 	}
 
 	return cfg

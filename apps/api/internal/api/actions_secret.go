@@ -141,7 +141,7 @@ func (h *handlers) isProductionNamespaceNow(namespace string) bool {
 		return false
 	}
 	if h.settingsRuntime != nil {
-		pat := h.settingsRuntime.General().ProdNamespacePattern
+		pat := h.settingsRuntime.General(context.Background()).ProdNamespacePattern
 		if pat != "" {
 			re, err := regexp.Compile(pat)
 			if err != nil {

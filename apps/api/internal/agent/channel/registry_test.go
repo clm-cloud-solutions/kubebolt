@@ -14,10 +14,10 @@ func TestAgentRegistry_RegisterAndGet(t *testing.T) {
 	if evicted := r.Register(a); evicted != nil {
 		t.Errorf("first Register should not evict, got %+v", evicted)
 	}
-	if got := r.Get("c1"); got != a {
+	if got := r.Get("", "c1"); got != a {
 		t.Errorf("Get returned %p, want %p", got, a)
 	}
-	if got := r.Get("c-other"); got != nil {
+	if got := r.Get("", "c-other"); got != nil {
 		t.Errorf("Get(unknown) = %p, want nil", got)
 	}
 	if got := r.Count(); got != 1 {
@@ -37,7 +37,7 @@ func TestAgentRegistry_ReconnectEvictsPrevious(t *testing.T) {
 	if evicted != a1 {
 		t.Errorf("Register should return a1 as evicted on same-agent_id reconnect")
 	}
-	if got := r.GetByAgentID("c1", "agent-1"); got != a2 {
+	if got := r.GetByAgentID("", "c1", "agent-1"); got != a2 {
 		t.Errorf("GetByAgentID returned the wrong agent after eviction")
 	}
 	if got := r.CountByCluster("c1"); got != 1 {
@@ -72,16 +72,16 @@ func TestAgentRegistry_AllowsMultipleAgentsPerCluster(t *testing.T) {
 	}
 
 	// GetByAgentID addresses each peer individually.
-	if got := r.GetByAgentID("c1", "agent-1"); got != a1 {
+	if got := r.GetByAgentID("", "c1", "agent-1"); got != a1 {
 		t.Errorf("GetByAgentID(agent-1) returned wrong record")
 	}
-	if got := r.GetByAgentID("c1", "agent-2"); got != a2 {
+	if got := r.GetByAgentID("", "c1", "agent-2"); got != a2 {
 		t.Errorf("GetByAgentID(agent-2) returned wrong record")
 	}
 
 	// Get() still returns *some* peer — the choice is arbitrary, but
 	// it must be one of them.
-	picked := r.Get("c1")
+	picked := r.Get("", "c1")
 	if picked != a1 && picked != a2 && picked != a3 {
 		t.Errorf("Get returned an unknown agent: %p", picked)
 	}
@@ -106,7 +106,7 @@ func TestAgentRegistry_GetProxyAgent(t *testing.T) {
 	// so a single call could "accidentally" pick the right one. The
 	// invariant is that GetProxyAgent is deterministically correct.
 	for i := 0; i < 100; i++ {
-		if got := r.GetProxyAgent("c1"); got != dsAgent {
+		if got := r.GetProxyAgent("", "c1"); got != dsAgent {
 			t.Fatalf("iter %d: GetProxyAgent returned %p (agent_id=%s caps=%v), want dsAgent (%p)",
 				i, got, got.AgentID, got.Capabilities, dsAgent)
 		}
@@ -116,13 +116,63 @@ func TestAgentRegistry_GetProxyAgent(t *testing.T) {
 	r2 := NewAgentRegistry()
 	onlyMetrics := NewAgent("c2", "agent-m", "node", nil, []string{"metrics"}, nil)
 	r2.Register(onlyMetrics)
-	if got := r2.GetProxyAgent("c2"); got != onlyMetrics {
+	if got := r2.GetProxyAgent("", "c2"); got != onlyMetrics {
 		t.Errorf("fallback: GetProxyAgent should return any agent when none have kube-proxy; got %p, want %p", got, onlyMetrics)
 	}
 
 	// Empty cluster: nil.
-	if got := r2.GetProxyAgent("c-nonexistent"); got != nil {
+	if got := r2.GetProxyAgent("", "c-nonexistent"); got != nil {
 		t.Errorf("GetProxyAgent on empty cluster should return nil, got %p", got)
+	}
+}
+
+func TestAgentRegistry_TenantGuard(t *testing.T) {
+	// W4 leak test: an agent that authenticated under org B must never be
+	// resolved by a caller scoped to org A, even though both share the same
+	// cluster_id (A knows or guesses B's cluster_id). The org is the hard
+	// isolation boundary; the registry guard enforces it on every lookup.
+	r := NewAgentRegistry()
+	agentB := NewAgent("shared-cid", "agent-b", "node",
+		&auth.AgentIdentity{TenantID: "org-b", Mode: auth.ModeIngestToken},
+		[]string{"kube-proxy"}, nil)
+	r.Register(agentB)
+
+	// Cross-org (A asking for B's cluster) → invisible on all three lookups.
+	if got := r.Get("org-a", "shared-cid"); got != nil {
+		t.Errorf("Get(org-a) leaked org-b's agent: %p", got)
+	}
+	if got := r.GetProxyAgent("org-a", "shared-cid"); got != nil {
+		t.Errorf("GetProxyAgent(org-a) leaked org-b's agent: %p", got)
+	}
+	if got := r.GetByAgentID("org-a", "shared-cid", "agent-b"); got != nil {
+		t.Errorf("GetByAgentID(org-a) leaked org-b's agent: %p", got)
+	}
+
+	// The owning org resolves it on all three.
+	if got := r.Get("org-b", "shared-cid"); got != agentB {
+		t.Errorf("Get(org-b) = %p, want owning agent", got)
+	}
+	if got := r.GetProxyAgent("org-b", "shared-cid"); got != agentB {
+		t.Errorf("GetProxyAgent(org-b) = %p, want owning agent", got)
+	}
+	if got := r.GetByAgentID("org-b", "shared-cid", "agent-b"); got != agentB {
+		t.Errorf("GetByAgentID(org-b) = %p, want owning agent", got)
+	}
+
+	// OSS-neutral: an empty tenant (single-tenant caller) matches any agent,
+	// so stock OSS — which resolves every request to "default" and never
+	// threads a real org — keeps resolving agents exactly as before.
+	if got := r.GetProxyAgent("", "shared-cid"); got != agentB {
+		t.Errorf("GetProxyAgent(\"\") = %p, want owning agent (OSS-neutral)", got)
+	}
+
+	// And an agent with no authenticated tenant (auth disabled) is visible
+	// to any caller — the other half of OSS-neutrality.
+	r2 := NewAgentRegistry()
+	anon := NewAgent("c-anon", "a", "node", &auth.AgentIdentity{Mode: auth.ModeDisabled}, []string{"kube-proxy"}, nil)
+	r2.Register(anon)
+	if got := r2.GetProxyAgent("org-a", "c-anon"); got != anon {
+		t.Errorf("GetProxyAgent(org-a) on untenanted agent = %p, want it visible", got)
 	}
 }
 
@@ -138,12 +188,12 @@ func TestAgentRegistry_StaleUnregisterIsNoop(t *testing.T) {
 	r.Register(a2) // evicts a1
 
 	r.Unregister(a1) // stale call — must NOT remove a2
-	if got := r.GetByAgentID("c1", "agent-1"); got != a2 {
+	if got := r.GetByAgentID("", "c1", "agent-1"); got != a2 {
 		t.Errorf("stale Unregister silently removed the live agent")
 	}
 
 	r.Unregister(a2) // legitimate cleanup
-	if got := r.GetByAgentID("c1", "agent-1"); got != nil {
+	if got := r.GetByAgentID("", "c1", "agent-1"); got != nil {
 		t.Errorf("Unregister did not clear the live agent")
 	}
 	if got := r.CountByCluster("c1"); got != 0 {
