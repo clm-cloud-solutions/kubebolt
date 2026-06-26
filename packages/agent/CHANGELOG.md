@@ -11,6 +11,29 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.3] — 2026-06-26
+
+A security-patch release on the **same v1.0 metric/label schema** — no
+behavior change. Drop-in within the 1.1.x line.
+
+### Security
+
+- **Bumped `golang.org/x/crypto` v0.47.0 → v0.52.0 and
+  `golang.org/x/net` v0.49.0 → v0.55.0**, clearing the same 16 HIGH
+  CVEs that gated the kubebolt 1.16.0 api image (9 `x/crypto/ssh`, 7
+  `x/net` HTML-parse/idna/http2). `go mod tidy` also moved
+  x/sys/x/term/x/text forward.
+- **The agent release pipeline now Trivy-scans the agent image by
+  `@sha256` digest** (`CRITICAL,HIGH`, `--ignore-unfixed`) before the
+  chart is published or the GitHub Release is cut — the same gate the
+  kubebolt product images already had. A vulnerable agent image can no
+  longer ship.
+
+### Compatibility
+
+- Compatible with KubeBolt backend **>= 1.13.0** (same as 1.1.x).
+- Tag pattern remains `agent-vX.Y.Z`. This release: `agent-v1.1.3`.
+
 ## [1.1.2] — 2026-06-26
 
 A reliability-only release on the **same v1.0 metric/label schema** — no
