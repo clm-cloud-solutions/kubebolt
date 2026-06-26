@@ -433,3 +433,26 @@ body,
   cursor: grabbing;
 }
 
+/* Auth pages — breathing aurora glow on the branding panel (ported from the
+   site's "3am" hero). Base position via inline transform; the keyframe nudges
+   scale + opacity. Honors reduced-motion. */
+@keyframes auth-aurora {
+  0%,
+  100% {
+    transform: translateX(-50%) scaleX(1);
+    opacity: 0.72;
+  }
+  50% {
+    transform: translateX(-48%) scaleX(1.06);
+    opacity: 0.94;
+  }
+}
+.auth-aurora-anim {
+  animation: auth-aurora 14s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-aurora-anim {
+    animation: none;
+  }
+}
+
