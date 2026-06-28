@@ -210,7 +210,14 @@ func (s *Shipper) runSession(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("transport credentials: %w", err)
 	}
-	dialOpts := []grpc.DialOption{grpc.WithTransportCredentials(transport)}
+	maxMsg := maxMsgBytes()
+	dialOpts := []grpc.DialOption{
+		grpc.WithTransportCredentials(transport),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(maxMsg),
+			grpc.MaxCallSendMsgSize(maxMsg),
+		),
+	}
 	if creds := NewTokenCreds(s.auth); creds != nil {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(creds))
 	}
