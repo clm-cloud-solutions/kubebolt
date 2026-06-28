@@ -70,6 +70,11 @@ services:
       # clusters that flake on first switch. Runtime-overridable via
       # Settings → General (no restart). Default 45.
       - KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS=${KUBEBOLT_CACHE_SYNC_TIMEOUT_SECONDS:-45}
+      # AgentChannel gRPC max message size (bytes). Large clusters proxy
+      # apiserver responses over the channel that exceed gRPC's 4 MiB
+      # default. Must match the agent's KUBEBOLT_AGENT_MAX_MSG_BYTES.
+      # Default 67108864 (64 MiB).
+      - KUBEBOLT_AGENT_MAX_MSG_BYTES=${KUBEBOLT_AGENT_MAX_MSG_BYTES:-67108864}
   web:
     build: ../apps/web
     ports: ["3000:3000"]

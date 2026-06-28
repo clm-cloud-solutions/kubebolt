@@ -624,7 +624,10 @@ func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) e
 	}
 	LogStartupMode(opts.Auth)
 
+	maxMsg := maxMsgBytes()
 	serverOpts := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(maxMsg),
+		grpc.MaxSendMsgSize(maxMsg),
 		grpc.UnaryInterceptor(UnaryAuthInterceptor(opts.Auth)),
 		grpc.StreamInterceptor(StreamAuthInterceptor(opts.Auth)),
 	}
