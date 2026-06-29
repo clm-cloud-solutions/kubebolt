@@ -31,15 +31,18 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/channel"
+	"github.com/kubebolt/kubebolt/packages/agent/internal/channellimit"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
-// MaxBodyBytes caps the size of unary request and response bodies the
-// proxy will materialize in memory. 10 MiB is comfortable for any
-// regular K8s payload (a Pod with status sub-resource is ~5-15 KiB; a
-// list of 1000 pods is ~3-5 MiB) while preventing OOM if a misbehaving
-// caller streams something huge through.
-const MaxBodyBytes = 10 * 1024 * 1024
+// MaxBodyBytes caps unary request/response bodies the proxy materializes in
+// memory. Derived from the channel's max message size (channellimit) minus
+// headroom, so it tracks the gRPC limit automatically and a full-size body
+// never overflows a single AgentChannel message — raise
+// KUBEBOLT_AGENT_MAX_MSG_BYTES and both move together. (A large-cluster Secret
+// list exceeded the old fixed 10 MiB and stalled the whole connector's cache
+// sync, which is what surfaced this.)
+var MaxBodyBytes = int64(channellimit.MaxBodyBytes())
 
 // KubeAPIProxy executes KubeProxyRequest against the local apiserver.
 //
@@ -329,7 +332,11 @@ func (p *KubeAPIProxy) HandleWatch(ctx context.Context, req *agentv2.KubeProxyRe
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, fmt.Errorf("watch HTTP %d: %s", resp.StatusCode, string(body))
+		// The apiserver returns errors as a metav1.Status; with a protobuf Accept
+		// header the body is BINARY (magic "k8s\x00…"), so it is NOT valid UTF-8.
+		// It rides into KubeProxyResponse.error below — sanitize it or the gRPC
+		// marshal of the whole AgentMessage fails and tears down the session.
+		return nil, fmt.Errorf("watch HTTP %d: %s", resp.StatusCode, safeUTF8(string(body)))
 	}
 
 	out := make(chan *agentv2.KubeProxyWatchEvent, 64)
@@ -669,7 +676,7 @@ func (h *Handler) handleWatch(ctx context.Context, client *channel.Client, reque
 		_ = client.Send(&agentv2.AgentMessage{
 			RequestId: requestID,
 			Kind: &agentv2.AgentMessage_KubeResponse{
-				KubeResponse: &agentv2.KubeProxyResponse{Error: err.Error()},
+				KubeResponse: &agentv2.KubeProxyResponse{Error: safeUTF8(err.Error())},
 			},
 		})
 		return
