@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/kubelet"
@@ -118,7 +119,7 @@ func (c *PodsCache) Enrich(samples []*agentv2.Sample) {
 			s.Labels["workload_name"] = meta.WorkloadName
 		}
 		for k, v := range meta.Labels {
-			s.Labels["label_"+sanitizeLabel(k)] = v
+			s.Labels["label_"+sanitizeLabel(k)] = safeUTF8(v)
 		}
 	}
 }
@@ -132,6 +133,14 @@ func filterLabels(in map[string]string) map[string]string {
 		}
 	}
 	return out
+}
+
+// safeUTF8 replaces invalid UTF-8 byte runs with the replacement char so a pod
+// label value is safe in the Sample.labels protobuf map<string,string> (proto3
+// rejects invalid UTF-8). k8s validates label values today, so this is
+// belt-and-suspenders against anything that slips past validation.
+func safeUTF8(s string) string {
+	return strings.ToValidUTF8(s, "�")
 }
 
 // sanitizeLabel replaces characters that would be invalid in Prometheus label

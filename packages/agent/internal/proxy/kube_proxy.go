@@ -448,10 +448,23 @@ func flattenHeaders(h http.Header) map[string]string {
 	out := make(map[string]string, len(h))
 	for k, vs := range h {
 		if len(vs) > 0 {
-			out[k] = vs[0]
+			// HTTP header keys/values are NOT UTF-8-validated, but
+			// KubeProxyResponse.headers is a protobuf map<string,string> —
+			// a single invalid byte fails proto.Marshal of the whole message
+			// and tears down the AgentChannel session (observed against a
+			// Datadog-instrumented apiserver). Sanitize to valid UTF-8.
+			out[safeUTF8(k)] = safeUTF8(vs[0])
 		}
 	}
 	return out
+}
+
+// safeUTF8 replaces every run of invalid UTF-8 bytes with the Unicode
+// replacement character so the value is safe to marshal into a protobuf
+// string field. strings.ToValidUTF8 returns s unchanged (no allocation)
+// when it is already valid, so the common path is free.
+func safeUTF8(s string) string {
+	return strings.ToValidUTF8(s, "�")
 }
 
 // ─── channel.Handler adapter ─────────────────────────────────────────

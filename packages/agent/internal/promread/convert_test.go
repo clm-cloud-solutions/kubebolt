@@ -2,6 +2,7 @@ package promread
 
 import (
 	"testing"
+	"unicode/utf8"
 )
 
 func newQueryResp(seriesMetric map[string]string, values [][]interface{}) *QueryRangeResponse {
@@ -35,6 +36,43 @@ func (f fakeNodeIndex) IsKnownNode(name string) bool {
 		}
 	}
 	return false
+}
+
+// TestConvert_SanitizesInvalidUTF8 guards against a misbehaving customer
+// exporter emitting a label value (or metric name) with invalid UTF-8 — the
+// same class as the apiserver-header bug. Without sanitization it fails
+// proto.Marshal of the Sample and tears down the AgentChannel session.
+func TestConvert_SanitizesInvalidUTF8(t *testing.T) {
+	resp := newQueryResp(
+		map[string]string{
+			"__name__": "node_cpu_seconds_total",
+			"mode":     "idle",
+			// 0xff/0xfe are never valid UTF-8 start bytes.
+			"bad": "x" + string([]byte{0xff, 0xfe}) + "y",
+		},
+		[][]interface{}{{float64(1700000000), "1.5"}},
+	)
+
+	samples, err := Convert(resp, "cid", "cname", "tid", nil)
+	if err != nil {
+		t.Fatalf("Convert: %v", err)
+	}
+	if len(samples) == 0 {
+		t.Fatal("no samples produced")
+	}
+	for _, s := range samples {
+		if !utf8.ValidString(s.MetricName) {
+			t.Errorf("MetricName %q is not valid UTF-8", s.MetricName)
+		}
+		for k, v := range s.Labels {
+			if !utf8.ValidString(k) {
+				t.Errorf("label key %q is not valid UTF-8", k)
+			}
+			if !utf8.ValidString(v) {
+				t.Errorf("label value for %q (%q) is not valid UTF-8", k, v)
+			}
+		}
+	}
 }
 
 func TestConvert_HappyPath(t *testing.T) {

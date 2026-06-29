@@ -11,6 +11,33 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.5] — 2026-06-29
+
+A robustness fix — same v1.0 metric/label schema, no behavior change otherwise.
+Drop-in within the 1.1.x line.
+
+### Fixed
+
+- **Sanitize invalid UTF-8 in every external string that reaches a protobuf field on
+  the AgentChannel.** A single invalid-UTF-8 byte made `proto.Marshal` fail and tore
+  down the **whole** session in a reconnect loop (metrics included). Now run through
+  `strings.ToValidUTF8` at every external-string source, with regression tests for each:
+  - apiserver **response headers** proxied back in `KubeProxyResponse.headers`
+    (`flattenHeaders`) — the confirmed trigger, on a Datadog-instrumented EKS cluster.
+  - pod **label values** copied into `Sample.labels` during enrichment (`PodsCache.Enrich`).
+  - **label keys/values and metric names** from the customer's Prometheus in
+    promread / Mode C (`Convert`).
+- **Stamp `tenant_id` on every remote_write series at the output stage** —
+  `-remoteWrite.label=tenant_id=<tenant.id>` on vmagent when `tenant.id` is set. The
+  scrape-stage `global.external_labels.tenant_id` was observed not reaching the wire on
+  some clusters, so an **enforced** backend rejected every sample with
+  `tenant_id label required`. The output-stage label overwrites and reliably lands.
+
+### Compatibility
+
+- Compatible with KubeBolt backend **>= 1.13.0** (same as 1.1.x).
+- Tag pattern remains `agent-vX.Y.Z`. This release: `agent-v1.1.5`.
+
 ## [1.1.4] — 2026-06-27
 
 A reliability fix for large clusters — same v1.0 metric/label schema, no behavior
