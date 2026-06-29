@@ -13,6 +13,14 @@ import (
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
+// safeUTF8 replaces invalid UTF-8 byte runs with the replacement char so a
+// string from the customer's Prometheus (metric name or label) is safe in the
+// Sample protobuf string fields (proto3 rejects invalid UTF-8). Returns s
+// unchanged (no allocation) when already valid.
+func safeUTF8(s string) string {
+	return strings.ToValidUTF8(s, "�")
+}
+
 // Convert turns a Prometheus query_range matrix response into the
 // agent's wire-format Sample slice. The agent's existing buffer.Ring
 // and shipper then forward via the AgentChannel exactly as they do
@@ -44,7 +52,7 @@ func Convert(
 
 	var out []*agentv2.Sample
 	for _, series := range resp.Data.Result {
-		metricName := series.Metric["__name__"]
+		metricName := safeUTF8(series.Metric["__name__"])
 		if metricName == "" {
 			// Series without a __name__ has no agent-side
 			// interpretation — skip rather than emit blank rows.
@@ -55,7 +63,10 @@ func Convert(
 			if k == "__name__" {
 				continue
 			}
-			baseLabels[k] = v
+			// Labels come from the customer's Prometheus (external) — sanitize
+			// to valid UTF-8 so a misbehaving exporter can't fail proto.Marshal
+			// of the Sample and tear down the AgentChannel session.
+			baseLabels[safeUTF8(k)] = safeUTF8(v)
 		}
 		if clusterID != "" {
 			baseLabels["cluster_id"] = clusterID
