@@ -11,6 +11,36 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.6] — 2026-06-29
+
+Completes the agent-proxy UTF-8 hardening from 1.1.5 (which fixed headers/labels but not
+the actual sucal trigger) and lifts the proxy body cap for large clusters. Same v1.0
+schema, drop-in within the 1.1.x line.
+
+### Fixed
+
+- **The real sucal reconnect-loop trigger: invalid UTF-8 in `KubeProxyResponse.error`.**
+  When the apiserver rejects a watch (e.g. `sendInitialEvents` / WatchList feature gate
+  not enabled → HTTP 422) it returns a `metav1.Status`; under a protobuf `Accept` header
+  that body is **binary** (`k8s\x00…`, non-UTF-8). The proxy embedded it raw into the
+  proto3 `error` string → `proto.Marshal` failed → the **whole** AgentChannel session
+  tore down in a reconnect loop. 1.1.5 sanitized headers + sample labels (real defensive
+  work) but **not** this field, so the crash persisted until now. Fixed: `safeUTF8` on
+  the watch error body and the watch-error response (`kube_proxy.go`), plus a defensive
+  `metric_name` + label sanitize at the ship layer.
+- **Agent-proxy body cap no longer hard-coded at 10 MiB.** On large clusters a single
+  list page (e.g. Secrets) exceeded the cap → the response was rejected → the backend
+  connector's `WaitForCacheSync` timed out → the cluster showed **offline**.
+  `MaxBodyBytes` now **derives from the channel's max message size** (new `channellimit`
+  package — 64 MiB default, `KUBEBOLT_AGENT_MAX_MSG_BYTES`) minus headroom, so it tracks
+  the gRPC limit automatically. Note: a proxy pod relaying large bodies needs
+  proportional memory — size `resources.limits.memory` accordingly.
+
+### Compatibility
+
+- Compatible with KubeBolt backend **>= 1.13.0** (same as 1.1.x).
+- Tag pattern remains `agent-vX.Y.Z`. This release: `agent-v1.1.6`.
+
 ## [1.1.5] — 2026-06-29
 
 A robustness fix — same v1.0 metric/label schema, no behavior change otherwise.
