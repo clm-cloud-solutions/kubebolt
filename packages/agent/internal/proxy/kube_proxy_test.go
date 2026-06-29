@@ -207,6 +207,9 @@ func TestHandleRequest_HTTPErrorIsNotProxyError(t *testing.T) {
 }
 
 func TestHandleRequest_RequestBodyTooLarge(t *testing.T) {
+	orig := MaxBodyBytes
+	MaxBodyBytes = 1024
+	defer func() { MaxBodyBytes = orig }()
 	p := newProxyWith(&stubRoundTripper{resp: okResponse(200, "")})
 	huge := make([]byte, MaxBodyBytes+1)
 	resp := p.HandleRequest(context.Background(), &agentv2.KubeProxyRequest{
@@ -220,7 +223,10 @@ func TestHandleRequest_RequestBodyTooLarge(t *testing.T) {
 }
 
 func TestHandleRequest_ResponseBodyTooLarge(t *testing.T) {
-	huge := strings.Repeat("a", MaxBodyBytes+10)
+	orig := MaxBodyBytes
+	MaxBodyBytes = 1024
+	defer func() { MaxBodyBytes = orig }()
+	huge := strings.Repeat("a", int(MaxBodyBytes)+10)
 	rt := &stubRoundTripper{resp: okResponse(200, huge)}
 	p := newProxyWith(rt)
 	resp := p.HandleRequest(context.Background(), &agentv2.KubeProxyRequest{Path: "/api"})
@@ -230,6 +236,31 @@ func TestHandleRequest_ResponseBodyTooLarge(t *testing.T) {
 }
 
 // ─── HandleWatch ──────────────────────────────────────────────────────
+
+// TestHandleWatch_BinaryErrorBodyIsValidUTF8 guards the confirmed sucal regression:
+// the apiserver rejects a watch (e.g. sendInitialEvents/WatchList gate off → HTTP 422)
+// with a metav1.Status body that, under a protobuf Accept, is BINARY (k8s\x00…). Those
+// bytes must not reach the proto3 KubeProxyResponse.error string, or proto.Marshal fails
+// and the whole AgentChannel session tears down (the original reconnect loop).
+func TestHandleWatch_BinaryErrorBodyIsValidUTF8(t *testing.T) {
+	binary := "k8s\x00\n\f\n\x02v1\x12\x06Status\xea\x9a sendInitialEvents forbidden"
+	rt := &stubRoundTripper{resp: okResponse(422, binary)}
+	p := newProxyWith(rt)
+
+	_, err := p.HandleWatch(context.Background(), &agentv2.KubeProxyRequest{
+		Method: "GET",
+		Path:   "/api/v1/secrets?watch=true",
+	})
+	if err == nil {
+		t.Fatal("expected an error for the HTTP 422 watch response")
+	}
+	if !strings.Contains(err.Error(), "422") {
+		t.Fatalf("expected the 422 watch-error path, got: %q", err.Error())
+	}
+	if !utf8.ValidString(err.Error()) {
+		t.Fatalf("watch error is not valid UTF-8 (would poison kube_response.error): %q", err.Error())
+	}
+}
 
 // watchBody is a *bytes.Buffer-like body that emits NDJSON one line at
 // a time so we can exercise streaming + ctx cancellation.

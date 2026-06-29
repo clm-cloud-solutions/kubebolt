@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -323,6 +325,7 @@ func (c *Client) flushOnce(stream agentv2.AgentChannel_ChannelClient) error {
 	if len(samples) == 0 {
 		return nil
 	}
+	sanitizeSamples(samples)
 	return c.sendOnStream(stream, &agentv2.AgentMessage{
 		Kind: &agentv2.AgentMessage_Metrics{
 			Metrics: &agentv2.MetricBatch{
@@ -340,6 +343,53 @@ func (c *Client) sendOnStream(stream agentv2.AgentChannel_ChannelClient, msg *ag
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	return stream.Send(msg)
+}
+
+// sanitizeSamples rewrites any invalid-UTF-8 bytes (with U+FFFD) in a sample's
+// metric_name AND its label keys/values before the batch hits the wire. A single
+// invalid byte in ANY proto3 string field fails the gRPC marshal of the whole
+// MetricBatch and tears down the AgentChannel session; because the bad sample
+// stays buffered, every reconnect re-sends it and the agent never recovers.
+// metric_name is a dedicated field (proto #2) separate from the labels map (#4) —
+// both must be scrubbed. External sources (pod metadata, kubelet/cadvisor fields,
+// the customer's Prometheus metric names) can carry arbitrary bytes, so this is
+// the last line of defense across every collector. The offender is logged.
+func sanitizeSamples(samples []*agentv2.Sample) {
+	for _, s := range samples {
+		if s == nil {
+			continue
+		}
+		if !utf8.ValidString(s.MetricName) {
+			slog.Warn("agent: sanitized invalid UTF-8 in sample metric_name",
+				slog.String("metric_name", fmt.Sprintf("%q", s.MetricName)))
+			s.MetricName = strings.ToValidUTF8(s.MetricName, "�")
+		}
+		bad := false
+		for k, v := range s.Labels {
+			if !utf8.ValidString(k) || !utf8.ValidString(v) {
+				bad = true
+				break
+			}
+		}
+		if !bad {
+			continue
+		}
+		clean := make(map[string]string, len(s.Labels))
+		logged := false
+		for k, v := range s.Labels {
+			ck := strings.ToValidUTF8(k, "�")
+			cv := strings.ToValidUTF8(v, "�")
+			if (ck != k || cv != v) && !logged {
+				slog.Warn("agent: sanitized invalid UTF-8 in sample label",
+					slog.String("metric", s.MetricName),
+					slog.String("key", fmt.Sprintf("%q", k)),
+					slog.String("value", fmt.Sprintf("%q", v)))
+				logged = true
+			}
+			clean[ck] = cv
+		}
+		s.Labels = clean
+	}
 }
 
 func helloProto(h HelloInfo) *agentv2.Hello {
