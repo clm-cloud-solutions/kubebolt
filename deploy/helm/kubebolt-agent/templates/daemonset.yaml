@@ -295,6 +295,16 @@ spec:
             {{- if eq .Values.auth.mode "ingest-token" }}
             - "-remoteWrite.bearerTokenFile=/var/run/secrets/kubebolt/token"
             {{- end }}
+            {{- /* Stamp tenant_id on EVERY remote_write series at the OUTPUT
+                   stage. This is the reliable path: scrape-stage
+                   global.external_labels.tenant_id (configmap-vmagent.yaml)
+                   was observed NOT reaching the wire on some clusters, so an
+                   enforced receiver rejected every sample with
+                   "tenant_id label required". -remoteWrite.label overwrites any
+                   existing tenant_id, so it is safe alongside external_labels. */ -}}
+            {{- if and .Values.tenant .Values.tenant.id }}
+            - "-remoteWrite.label=tenant_id={{ .Values.tenant.id }}"
+            {{- end }}
             # vmagent's persistent queue lives on disk; without an
             # emptyDir mount it'd try to write to the read-only
             # rootfs. The path matches `tmpDataPath` below.

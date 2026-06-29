@@ -8,9 +8,36 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
+
+// TestFlattenHeaders_SanitizesInvalidUTF8 guards the regression where an
+// apiserver response header carrying invalid UTF-8 (observed on a Datadog-
+// instrumented cluster) made proto.Marshal of KubeProxyResponse fail and tore
+// down the AgentChannel session. Every key/value must be valid UTF-8.
+func TestFlattenHeaders_SanitizesInvalidUTF8(t *testing.T) {
+	h := http.Header{}
+	h.Set("Warning", "299 - deprecated")
+	// 0xff/0xfe are never valid UTF-8 start bytes.
+	h["X-Bad-Bytes"] = []string{"prefix-" + string([]byte{0xff, 0xfe}) + "-suffix"}
+
+	out := flattenHeaders(h)
+
+	for k, v := range out {
+		if !utf8.ValidString(k) {
+			t.Errorf("header key %q is not valid UTF-8", k)
+		}
+		if !utf8.ValidString(v) {
+			t.Errorf("header value for %q (%q) is not valid UTF-8", k, v)
+		}
+	}
+	// The bad header must survive (sanitized), not be dropped.
+	if _, ok := out["X-Bad-Bytes"]; !ok {
+		t.Error("X-Bad-Bytes header was dropped during sanitization")
+	}
+}
 
 // stubRoundTripper returns a canned response (or error) for whatever
 // request lands on RoundTrip. Tests inspect `lastReq` to assert what
