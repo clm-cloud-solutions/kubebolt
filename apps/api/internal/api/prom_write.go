@@ -422,26 +422,15 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if !found {
-				// Missing tenant_id label. Behavior is mode-sensitive
-				// (Day 4.3): enforced mode rejects — operator must
-				// configure tenant.id via helm at install. Permissive
-				// auto-stamps as a transitional safety net for
-				// legacy agents / external Prom installs that
-				// haven't been migrated yet.
-				if h.promWriteAuthMode == promWriteAuthEnforced {
-					slog.Warn("prom remote_write tenant_id label missing in enforced mode",
-						slog.String("bearer_tenant", tenant.ID),
-						slog.String("remote", r.RemoteAddr))
-					h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedTenantMissing)
-					respondError(w, http.StatusUnauthorized,
-						"tenant_id label required in enforced mode — set helm value `tenant.id` "+
-							"on kubebolt-agent or `external_labels.tenant_id` on your external Prometheus")
-					return
-				}
-				// Permissive mode auto-stamp. Day 4.2 makes the
-				// agent stamp proactively, after which this path
-				// becomes rare — used only for legacy installs
-				// that haven't redeployed with `tenant.id` set.
+				// Missing tenant_id label -> STAMP it from the authenticated bearer, in
+				// BOTH modes (Finding #5). The security boundary is the bearer, which
+				// enforced already requires up in authenticatePromWrite (tenant != nil
+				// here => a validated token); the label is just that tenant echoed back.
+				// Rejecting valid-token samples whose first series lacked the label was a
+				// footgun: a label that didn't reach the wire (e.g. vmagent not applying
+				// external_labels) silently dropped ALL of a tenant's node-exporter/KSM
+				// metrics. We stamp it instead; a real spoof (asserted != bearer) is still
+				// rejected above, and a missing/empty/bad bearer is still 401'd in enforced.
 				stamped, injErr := injectTenantID(decoded, tenant.ID)
 				if injErr != nil {
 					slog.Warn("prom remote_write tenant_id auto-stamp failed",

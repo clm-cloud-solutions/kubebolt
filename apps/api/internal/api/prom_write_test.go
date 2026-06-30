@@ -19,8 +19,20 @@ import (
 // IngestTokenStore in t.TempDir() and issues a single non-expiring ingest
 // token. Returns both stores + the plaintext token for use in Authorization
 // headers. (Tokens live in their own store now, not inlined in the tenant.)
+// forceSingleTenant pins single-tenant mode for the duration of a test so the
+// tenant store auto-seeds the canonical "default" tenant. The default-tenant
+// fallback these tests exercise is a single-tenant concept; multi-tenant mode
+// (Track D §2.6) has no default tenant. Restores on cleanup.
+func forceSingleTenant(t *testing.T) {
+	t.Helper()
+	prev := auth.MultiTenantEnabled
+	auth.MultiTenantEnabled = false
+	t.Cleanup(func() { auth.MultiTenantEnabled = prev })
+}
+
 func newTenantsStoreWithToken(t *testing.T) (*auth.TenantsStore, *auth.BoltIngestTokenStore, string) {
 	t.Helper()
+	forceSingleTenant(t)
 	dir := t.TempDir()
 	store, err := auth.NewStore(dir)
 	if err != nil {
@@ -508,21 +520,26 @@ func buildSnappyWriteRequest(t *testing.T, labels [][2]string) []byte {
 	return snappy.Encode(nil, body)
 }
 
-func TestHandlePromWrite_Enforced_MissingTenantIDReturns401(t *testing.T) {
-	// Day 4.3: in enforced mode, samples WITHOUT a tenant_id label
-	// are rejected outright (no auto-stamp fallback). Operator must
-	// configure tenant.id via helm.
+func TestHandlePromWrite_Enforced_MissingTenantIDStampsFromBearer(t *testing.T) {
+	// Finding #5: in enforced mode a valid-token agent whose first series
+	// lacks the tenant_id label must NOT be rejected. The bearer is the
+	// security boundary (enforced already 401s a missing/empty/bad bearer), so
+	// the receiver stamps tenant_id from the validated bearer, same as
+	// permissive. Rejecting it silently dropped a tenant's node-exporter/KSM
+	// metrics whenever the label did not reach the wire.
+	upstream := &fakeUpstream{respStatus: http.StatusNoContent}
+	ts := httptest.NewServer(upstream.handler())
+	defer ts.Close()
 	withPromWriteEnabled(t)
+	pointStorageAt(t, ts)
+
 	store, its, plaintext := newTenantsStoreWithToken(t)
 
 	h := &handlers{
 		tenantsStore:      store,
 		ingestTokens:      its,
 		promWriteAuthMode: promWriteAuthEnforced,
-		// promRateLimiter MUST be non-nil to activate the decode +
-		// validation path. Day 4.1 wires the entire tenant_id check
-		// inside `if h.promRateLimiter != nil`.
-		promRateLimiter: NewPromRateLimiter(limitDefaultsForTest()),
+		promRateLimiter:   NewPromRateLimiter(limitDefaultsForTest()),
 	}
 
 	// Body has labels but NO tenant_id.
@@ -533,11 +550,20 @@ func TestHandlePromWrite_Enforced_MissingTenantIDReturns401(t *testing.T) {
 
 	h.handlePromWrite(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("enforced + missing tenant_id should 401, got %d (body=%q)", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("enforced + valid bearer + missing tenant_id should stamp and forward (204), got %d (body=%q)", rec.Code, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "tenant_id label required in enforced mode") {
-		t.Errorf("error body should explain the missing tenant_id requirement, got %q", rec.Body.String())
+	// Confirm the receiver stamped tenant_id from the bearer before forwarding.
+	upstream.mu.Lock()
+	defer upstream.mu.Unlock()
+	decoded, err := snappy.Decode(nil, upstream.lastBody)
+	if err != nil {
+		t.Fatalf("upstream body should be valid snappy, got: %v", err)
+	}
+	bearerTenant := lookupBearerTenant(t, store, its, plaintext)
+	tid, found := readTenantIDFromFirstSeries(decoded)
+	if !found || tid != bearerTenant.ID {
+		t.Errorf("enforced stamp-on-missing: tenant_id should be the bearer's %q, got found=%v tid=%q", bearerTenant.ID, found, tid)
 	}
 }
 
