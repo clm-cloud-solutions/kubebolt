@@ -106,6 +106,26 @@ type Connector struct {
 	topologyTimer *time.Timer
 	permissions   ResourcePermissions
 
+	// k8sVersionFetching guards the async ServerVersion() warm (Finding #4) so the
+	// overview never blocks on the slow agent-proxy round-trip; the same warm also
+	// refreshes apiServerReachable on a TTL for the health check (warmServerVersion).
+	k8sVersionFetching bool
+	apiServerReachable bool
+	apiServerCheckedAt time.Time
+	// helmReleaseSecrets caches the owner=helm Secrets once per ~60s so the overview
+	// count AND the Applications list both read them instead of a live (seconds,
+	// over-the-agent-proxy) LIST of every large gzipped release Secret on every
+	// request. Warmed async; the list syncs once on a cold cache so it isn't empty.
+	helmReleaseSecrets []corev1.Secret
+	helmCountCheckedAt time.Time
+	helmCountFetching  bool
+	// optionalCounts caches the overview's gateway + optional-CRD COUNTS — each is
+	// a live cluster-wide dynamic LIST (the helm-detail failure mode on cert-manager
+	// / Cilium-heavy clusters, on the hottest endpoint). Warmed async.
+	optionalCounts          map[string]int
+	optionalCountsCheckedAt time.Time
+	optionalCountsFetching  bool
+
 	// Listers
 	podLister                corelisters.PodLister
 	nodeLister               corelisters.NodeLister
@@ -176,8 +196,14 @@ func NewConnectorFromAccess(access *ClusterAccess, wsHub *websocket.Hub) (*Conne
 // newConnectorFromConfig creates a connector from an existing rest.Config.
 func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *websocket.Hub) (*Connector, error) {
 	// Bound individual K8s API calls so the server doesn't hang if a cluster
-	// becomes unreachable mid-session (e.g. laptop closed, VPN dropped).
-	restConfig.Timeout = 15 * time.Second
+	// becomes unreachable mid-session (e.g. laptop closed, VPN dropped). SKIP
+	// this for configs that bring their own Transport (agent-proxy): Timeout
+	// wraps the WHOLE request including streaming watch body reads, so a 15s cap
+	// would chop every long-lived agent-proxy watch at 15s (relist storm). The
+	// AgentProxyTransport enforces its own per-call timeout instead.
+	if restConfig.Transport == nil {
+		restConfig.Timeout = 15 * time.Second
+	}
 
 	clientset, err := kubernetes.NewForConfig(restConfig)
 	if err != nil {
@@ -267,6 +293,24 @@ func (c *Connector) ListHelmReleaseSecrets(ctx context.Context) ([]corev1.Secret
 	}
 	list, err := c.clientset.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
 		LabelSelector: "owner=helm",
+	})
+	if err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// ListHelmReleaseSecretsForRelease returns only ONE release's storage Secrets (all of
+// its revisions), scoped to its namespace + name label. The detail view used to pull
+// EVERY release's (large, gzipped-manifest) Secret cluster-wide just to decode one —
+// seconds over the agent-proxy. Scoping to owner=helm,name=<release> in the release's
+// namespace returns a handful of small records.
+func (c *Connector) ListHelmReleaseSecretsForRelease(ctx context.Context, namespace, name string) ([]corev1.Secret, error) {
+	if c.clientset == nil {
+		return nil, fmt.Errorf("no clientset")
+	}
+	list, err := c.clientset.CoreV1().Secrets(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "owner=helm,name=" + name,
 	})
 	if err != nil {
 		return nil, err
@@ -1006,13 +1050,12 @@ func (c *Connector) Stop() {
 	close(c.stopCh) // stops both factory and nsFactories since they share stopCh
 }
 
-// serverVersionCached returns the cluster's k8s GitVersion + detected platform,
-// fetching ServerVersion() once and caching it. The version is immutable for a
-// connector's lifetime, and the discovery round-trip is expensive over the
-// agent-proxy channel (multiple seconds) — calling it on every GetOverview
-// (every refresh tick) dragged the overview, and with the switch overlay now
-// awaiting a fresh overview, dragged every cluster switch too. A failed lookup
-// isn't cached, so it retries on the next call.
+// serverVersionCached returns the cluster's cached k8s GitVersion + platform, or
+// empty if not yet warmed. The version is immutable for a connector's lifetime but
+// the discovery round-trip is expensive over the agent-proxy channel (multiple
+// seconds). It is NEVER fetched on the request path: a cold cache kicks an async
+// warm and returns empty, so GetOverview (and the cluster-switch overlay awaiting
+// it) never blocks — the version lands on a later refresh tick. (Finding #4.)
 func (c *Connector) serverVersionCached() (version, platform string) {
 	c.mu.RLock()
 	version, platform = c.k8sVersion, c.platform
@@ -1020,16 +1063,140 @@ func (c *Connector) serverVersionCached() (version, platform string) {
 	if version != "" {
 		return version, platform
 	}
-	sv, err := c.clientset.Discovery().ServerVersion()
-	if err != nil {
-		return "", ""
-	}
-	version = sv.GitVersion
-	platform = detectPlatform(sv.GitVersion)
 	c.mu.Lock()
-	c.k8sVersion, c.platform = version, platform
+	if c.k8sVersion == "" && !c.k8sVersionFetching {
+		c.k8sVersionFetching = true
+		go c.warmServerVersion()
+	}
 	c.mu.Unlock()
-	return version, platform
+	return "", ""
+}
+
+// warmServerVersion fetches ServerVersion() once OFF the request path and caches the
+// GitVersion + platform. Best-effort: a failed lookup isn't cached, so a later
+// overview retries. Guarded by k8sVersionFetching so only one fetch is in flight.
+func (c *Connector) warmServerVersion() {
+	sv, err := c.clientset.Discovery().ServerVersion()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.k8sVersionFetching = false
+	c.apiServerReachable = err == nil
+	c.apiServerCheckedAt = time.Now()
+	if err != nil {
+		return
+	}
+	c.k8sVersion = sv.GitVersion
+	c.platform = detectPlatform(sv.GitVersion)
+}
+
+// helmReleaseCountCached returns the distinct-helm-release count from the cached
+// owner=helm Secrets, warming them asynchronously off the request path. It NEVER lists
+// synchronously — a live LIST over the agent-proxy pulls every large gzipped release
+// Secret and cost seconds on every overview. Cold cache → 0 now, real count next tick.
+func (c *Connector) helmReleaseCountCached() int {
+	c.mu.RLock()
+	secrets, checkedAt, fetching := c.helmReleaseSecrets, c.helmCountCheckedAt, c.helmCountFetching
+	c.mu.RUnlock()
+	if !fetching && (checkedAt.IsZero() || time.Since(checkedAt) > 60*time.Second) {
+		c.mu.Lock()
+		if !c.helmCountFetching && (c.helmCountCheckedAt.IsZero() || time.Since(c.helmCountCheckedAt) > 60*time.Second) {
+			c.helmCountFetching = true
+			go c.warmHelmReleaseSecrets()
+		}
+		c.mu.Unlock()
+	}
+	return distinctHelmReleaseCount(secrets)
+}
+
+// ListHelmReleaseSecretsCached serves the owner=helm Secrets from the same ~60s cache
+// for the Applications LIST, so it no longer does a live (seconds, large-payload) LIST
+// over the agent-proxy on every page load + 30s refetch. Unlike the count, a COLD cache
+// lists ONCE synchronously so the first list view is correct (not empty); the result is
+// cached (the count reuses it) and refreshed async on a TTL afterward.
+func (c *Connector) ListHelmReleaseSecretsCached(ctx context.Context) ([]corev1.Secret, error) {
+	c.mu.RLock()
+	secrets, checkedAt, fetching := c.helmReleaseSecrets, c.helmCountCheckedAt, c.helmCountFetching
+	c.mu.RUnlock()
+	if !checkedAt.IsZero() {
+		if !fetching && time.Since(checkedAt) > 60*time.Second {
+			c.mu.Lock()
+			if !c.helmCountFetching && time.Since(c.helmCountCheckedAt) > 60*time.Second {
+				c.helmCountFetching = true
+				go c.warmHelmReleaseSecrets()
+			}
+			c.mu.Unlock()
+		}
+		return secrets, nil
+	}
+	fresh, err := c.ListHelmReleaseSecrets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	c.helmReleaseSecrets = fresh
+	c.helmCountCheckedAt = time.Now()
+	c.mu.Unlock()
+	return fresh, nil
+}
+
+// warmHelmReleaseSecrets refreshes the cached Secrets off the request path. Best-effort:
+// a failed list isn't cached past the checkedAt stamp, so a later request retries.
+func (c *Connector) warmHelmReleaseSecrets() {
+	fresh, err := c.ListHelmReleaseSecrets(context.Background())
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.helmCountFetching = false
+	c.helmCountCheckedAt = time.Now()
+	if err != nil {
+		return
+	}
+	c.helmReleaseSecrets = fresh
+}
+
+// distinctHelmReleaseCount counts distinct releases (namespace/name) across owner=helm
+// revision Secrets.
+func distinctHelmReleaseCount(secrets []corev1.Secret) int {
+	distinct := make(map[string]struct{}, len(secrets))
+	for i := range secrets {
+		distinct[secrets[i].Namespace+"/"+secrets[i].Labels["name"]] = struct{}{}
+	}
+	return len(distinct)
+}
+
+// optionalResourceCountCached returns the cached count for a gateway/optional-CRD
+// type, warming ALL of them async off the request path — each is a live cluster-wide
+// dynamic LIST that cost seconds on big cert-manager/Cilium clusters, on the hottest
+// endpoint. Cold cache -> 0 now, real counts next tick.
+func (c *Connector) optionalResourceCountCached(rtype string) int {
+	c.mu.RLock()
+	counts, checkedAt, fetching := c.optionalCounts, c.optionalCountsCheckedAt, c.optionalCountsFetching
+	c.mu.RUnlock()
+	if !fetching && (checkedAt.IsZero() || time.Since(checkedAt) > 60*time.Second) {
+		c.mu.Lock()
+		if !c.optionalCountsFetching && (c.optionalCountsCheckedAt.IsZero() || time.Since(c.optionalCountsCheckedAt) > 60*time.Second) {
+			c.optionalCountsFetching = true
+			go c.warmOptionalCounts()
+		}
+		c.mu.Unlock()
+	}
+	return counts[rtype]
+}
+
+// warmOptionalCounts refreshes the gateway + optional-CRD counts off the request path.
+func (c *Connector) warmOptionalCounts() {
+	fresh := map[string]int{}
+	fresh["gateways"] = len(c.listGatewayResources("gateways", "", ""))
+	fresh["httproutes"] = len(c.listGatewayResources("httproutes", "", ""))
+	fresh["certificates"] = len(c.listOptionalCRD("certificates", ""))
+	fresh["argocdapps"] = len(c.listOptionalCRD("argocdapps", ""))
+	fresh["vpas"] = len(c.listOptionalCRD("vpas", ""))
+	fresh["ciliumnetworkpolicies"] = len(c.listOptionalCRD("ciliumnetworkpolicies", ""))
+	fresh["ciliumclusterwidenetworkpolicies"] = len(c.listOptionalCRD("ciliumclusterwidenetworkpolicies", ""))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.optionalCountsFetching = false
+	c.optionalCountsCheckedAt = time.Now()
+	c.optionalCounts = fresh
 }
 
 // GetOverview aggregates counts from listers.
@@ -1248,9 +1415,9 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	// because the CRDs are optional; when absent, listGatewayResources
 	// returns nil and the counts stay at 0, which the sidebar
 	// renders by hiding the count chip.
-	overview.Gateways.Total = len(c.listGatewayResources("gateways", ""))
+	overview.Gateways.Total = c.optionalResourceCountCached("gateways")
 	overview.Gateways.Ready = overview.Gateways.Total
-	overview.HTTPRoutes.Total = len(c.listGatewayResources("httproutes", ""))
+	overview.HTTPRoutes.Total = c.optionalResourceCountCached("httproutes")
 	overview.HTTPRoutes.Ready = overview.HTTPRoutes.Total
 
 	// ServiceAccounts (typed lister) + the optional CRDs (dynamic list; nil
@@ -1261,28 +1428,24 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	}
 	overview.ServiceAccounts.Total = len(serviceAccounts)
 	overview.ServiceAccounts.Ready = len(serviceAccounts)
-	overview.Certificates.Total = len(c.listOptionalCRD("certificates", ""))
+	overview.Certificates.Total = c.optionalResourceCountCached("certificates")
 	overview.Certificates.Ready = overview.Certificates.Total
-	overview.ArgoCDApps.Total = len(c.listOptionalCRD("argocdapps", ""))
+	overview.ArgoCDApps.Total = c.optionalResourceCountCached("argocdapps")
 	overview.ArgoCDApps.Ready = overview.ArgoCDApps.Total
-	overview.VPAs.Total = len(c.listOptionalCRD("vpas", ""))
+	overview.VPAs.Total = c.optionalResourceCountCached("vpas")
 	overview.VPAs.Ready = overview.VPAs.Total
-	overview.CiliumNetworkPolicies.Total = len(c.listOptionalCRD("ciliumnetworkpolicies", ""))
+	overview.CiliumNetworkPolicies.Total = c.optionalResourceCountCached("ciliumnetworkpolicies")
 	overview.CiliumNetworkPolicies.Ready = overview.CiliumNetworkPolicies.Total
-	overview.CiliumClusterwideNetworkPolicies.Total = len(c.listOptionalCRD("ciliumclusterwidenetworkpolicies", ""))
+	overview.CiliumClusterwideNetworkPolicies.Total = c.optionalResourceCountCached("ciliumclusterwidenetworkpolicies")
 	overview.CiliumClusterwideNetworkPolicies.Ready = overview.CiliumClusterwideNetworkPolicies.Total
 
 	// Helm releases — count DISTINCT releases (one release has N revision
 	// Secrets) via the owner=helm Secret's `name` label; no gzip/JSON decode
 	// needed for a count. Same source the Applications page lists.
-	if helmSecrets, err := c.ListHelmReleaseSecrets(context.Background()); err == nil {
-		distinct := make(map[string]struct{}, len(helmSecrets))
-		for i := range helmSecrets {
-			distinct[helmSecrets[i].Namespace+"/"+helmSecrets[i].Labels["name"]] = struct{}{}
-		}
-		overview.HelmReleases.Total = len(distinct)
-		overview.HelmReleases.Ready = len(distinct)
-	}
+	// Async-cached — never a live owner=helm Secrets LIST on the overview path.
+	helmCount := c.helmReleaseCountCached()
+	overview.HelmReleases.Total = helmCount
+	overview.HelmReleases.Ready = helmCount
 
 	// Endpoints — count of EndpointSlice objects, matching what the
 	// list endpoint returns (KubeBolt surfaces EndpointSlices under
@@ -1486,8 +1649,21 @@ func (c *Connector) buildHealth() models.ClusterHealth {
 		}
 	}
 
-	// API server — 25 pts binary.
-	if _, err := c.clientset.Discovery().ServerVersion(); err == nil {
+	// API server — reachability is cached + refreshed off the request path on a TTL.
+	// A live Discovery().ServerVersion() over the agent-proxy costs seconds and dragged
+	// every overview/switch (Finding #4); warmServerVersion updates apiServerReachable.
+	c.mu.RLock()
+	reachable, checkedAt, fetching := c.apiServerReachable, c.apiServerCheckedAt, c.k8sVersionFetching
+	c.mu.RUnlock()
+	if !fetching && time.Since(checkedAt) > 30*time.Second {
+		c.mu.Lock()
+		if !c.k8sVersionFetching && time.Since(c.apiServerCheckedAt) > 30*time.Second {
+			c.k8sVersionFetching = true
+			go c.warmServerVersion()
+		}
+		c.mu.Unlock()
+	}
+	if checkedAt.IsZero() || reachable {
 		health.Score += 25
 		health.Checks = append(health.Checks, models.HealthCheck{
 			Name: "api-server", Status: "pass", Message: "API server is responsive",
@@ -1973,9 +2149,9 @@ func (c *Connector) GetResources(resourceType, namespace, search, status, node, 
 	case "endpoints":
 		items = c.listEndpoints(namespace)
 	case "gateways":
-		items = c.listGatewayResources("gateways", namespace)
+		items = c.listGatewayResources("gateways", namespace, "")
 	case "httproutes":
-		items = c.listGatewayResources("httproutes", namespace)
+		items = c.listGatewayResources("httproutes", namespace, "")
 	case "certificates", "argocdapps", "vpas",
 		"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies":
 		items = c.listOptionalCRD(resourceType, namespace)
@@ -2413,11 +2589,9 @@ func (c *Connector) GetResourceDetail(resourceType, namespace, name string) (map
 		}
 		return nil, fmt.Errorf("endpoint %s/%s not found", namespace, name)
 	case "gateways", "httproutes":
-		items := c.listGatewayResources(resourceType, namespace)
-		for _, item := range items {
-			if item["name"] == name {
-				return item, nil
-			}
+		items := c.listGatewayResources(resourceType, namespace, name)
+		if len(items) > 0 {
+			return items[0], nil
 		}
 		return nil, fmt.Errorf("%s %s/%s not found", resourceType, namespace, name)
 	case "certificates", "argocdapps", "vpas",
@@ -4807,7 +4981,7 @@ func (c *Connector) podsMatchingSelector(namespace string, sel *metav1.LabelSele
 	return out
 }
 
-func (c *Connector) listGatewayResources(resource, namespace string) []map[string]interface{} {
+func (c *Connector) listGatewayResources(resource, namespace, name string) []map[string]interface{} {
 	if c.dynamicClient == nil {
 		return nil
 	}
@@ -4820,9 +4994,17 @@ func (c *Connector) listGatewayResources(resource, namespace string) []map[strin
 	defer cancel()
 	var list *unstructured.UnstructuredList
 	var err error
-	if namespace != "" {
+	switch {
+	case name != "":
+		// Detail view: scoped Get of ONE resource, not list-all-then-filter.
+		obj, gerr := c.dynamicClient.Resource(gvr).Namespace(namespace).Get(ctx, name, metav1.GetOptions{})
+		if gerr != nil {
+			return nil
+		}
+		list = &unstructured.UnstructuredList{Items: []unstructured.Unstructured{*obj}}
+	case namespace != "":
 		list, err = c.dynamicClient.Resource(gvr).Namespace(namespace).List(ctx, metav1.ListOptions{})
-	} else {
+	default:
 		list, err = c.dynamicClient.Resource(gvr).List(ctx, metav1.ListOptions{})
 	}
 	if err != nil {

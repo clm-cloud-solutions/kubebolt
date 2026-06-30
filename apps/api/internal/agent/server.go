@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -630,6 +631,24 @@ func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) e
 		grpc.MaxSendMsgSize(maxMsg),
 		grpc.UnaryInterceptor(UnaryAuthInterceptor(opts.Auth)),
 		grpc.StreamInterceptor(StreamAuthInterceptor(opts.Auth)),
+		// Server keepalive: actively PING an idle agent so the backend detects a
+		// dead/half-open connection in ~30s (Time+Timeout) instead of blocking on the
+		// kernel TCP retransmit (~15 min). Without this, an abrupt agent death never
+		// returns stream.Recv() → Agent.Close never fires → the agent-proxy watch
+		// reflectors freeze and the connector serves stale/empty data (HTTP 200) until
+		// an API restart. The keepalive ping firing makes the existing recovery path
+		// (Close → agentClosed → watch EOF → reflector relist → RoundTrip re-resolves
+		// the live agent) actually run.
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    20 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+		// Permit the agent's client-side keepalive pings (~15s) without flagging them
+		// as too-aggressive and killing the stream.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	}
 	if opts.TLS != nil && opts.TLS.Config != nil {
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(opts.TLS.Config)))
