@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -347,11 +346,19 @@ func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
 	// connect). So retry a few times with a short backoff, releasing the lock
 	// between tries, until the registration settles. Only the registration race
 	// is retried; a real connect error (cache-sync, etc.) returns immediately.
+	//
+	// CRITICAL (isolation): spin the runtime OUTSIDE the global lock. getOrSpinPooled
+	// runs the slow connector.Start()/WaitForCacheSync (~20s) WITHOUT holding m.mu, then
+	// we promote the built runtime to active under a BRIEF lock. The old path called
+	// connectToContextLocked UNDER m.mu for the whole sync, so a single reconnecting
+	// agent — or a metrics→operator upgrade — froze the API for every other cluster until
+	// the sync finished.
 	const maxAttempts = 12
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		m.mu.Lock()
-		if contextName != m.activeContext || m.connector != nil {
-			m.mu.Unlock()
+		m.mu.RLock()
+		stillNeeded := contextName == m.activeContext && m.connector == nil
+		m.mu.RUnlock()
+		if !stillNeeded {
 			return // switched away, or another goroutine already recovered it
 		}
 		if attempt == 0 {
@@ -360,38 +367,46 @@ func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
 				slog.String("context", contextName),
 			)
 		}
-		err := m.connectToContextLocked(contextName)
-		if err == nil {
-			m.connErr = nil
-			m.mu.Unlock()
-			slog.Info("connector recovered for agent-proxy cluster",
-				slog.String("context", contextName),
-				slog.Int("attempt", attempt+1),
-			)
-			// Push the recovery to connected UIs so they invalidate
-			// `['clusters']` + `['cluster-overview']` immediately instead of
-			// waiting up to 30s for TanStack Query's refetch tick.
-			if m.wsHub != nil {
-				m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
-					"context":   contextName,
-					"clusterId": clusterID,
-				})
+		// Slow build, lock-free — never blocks other clusters.
+		rt := m.getOrSpinPooled(m.tenantID, contextName)
+		if rt == nil || rt.connector == nil {
+			// Registration race (agent not visible in the registry yet) or a transient
+			// connect error — both worth a short wait + retry; a hard error settles to
+			// nil and the loop gives up after maxAttempts.
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		// Promote the spun runtime to active under a BRIEF lock — fast, no I/O held.
+		// Mirrors SwitchCluster's pooled-promotion path.
+		m.mu.Lock()
+		if contextName == m.activeContext && m.connector == nil {
+			delete(m.runtimes, poolKey{tenant: m.tenantID, cluster: contextName})
+			m.connector = rt.connector
+			m.collector = rt.collector
+			m.engine = rt.engine
+			m.cancelFn = rt.cancelFn
+			m.activeGate = rt.gate
+			if rt.gate != nil {
+				rt.gate.Store(true) // promoted → resume broadcasting
 			}
-			return
+			m.activeContext = contextName
+			m.connErr = nil
+			m.wireInsightHookLocked()
 		}
-		m.connErr = err
 		m.mu.Unlock()
-		// Only the "agent not visible in the registry yet" race is worth waiting
-		// out (the message comes from connectToContextLocked's fast-fail just
-		// above). Any other error won't fix itself by retrying.
-		if !strings.Contains(err.Error(), "no agent connected yet") {
-			slog.Warn("connector retry failed (not a registration race)",
-				slog.String("context", contextName),
-				slog.String("error", err.Error()),
-			)
-			return
+		slog.Info("connector recovered for agent-proxy cluster",
+			slog.String("context", contextName),
+			slog.Int("attempt", attempt+1),
+		)
+		// Push the recovery to connected UIs so they invalidate `['clusters']` +
+		// `['cluster-overview']` immediately instead of waiting on the 30s refetch.
+		if m.wsHub != nil {
+			m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
+				"context":   contextName,
+				"clusterId": clusterID,
+			})
 		}
-		time.Sleep(500 * time.Millisecond)
+		return
 	}
 	slog.Warn("connector retry exhausted — agent never became visible in the registry",
 		slog.String("cluster_id", clusterID),
@@ -744,17 +759,41 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return nil
 	}
 
-	// First connect to this cluster — the only slow path (~20s
-	// WaitForCacheSync). connectToContextLocked builds + installs the runtime.
+	// First connect to this cluster — the only slow path (~20s WaitForCacheSync).
+	// CRITICAL (isolation): do NOT hold m.mu across the sync. Claim the active context,
+	// RELEASE the lock, spin the runtime via getOrSpinPooled (which runs connector.Start()
+	// lock-free), then re-acquire briefly to promote it. Holding m.mu across the ~20s
+	// connect froze every OTHER cluster during a switch. The defer'd Unlock balances the
+	// Lock re-acquired below.
 	m.activeContext = contextName
-	if err := m.connectToContextLocked(contextName); err != nil {
-		m.connErr = err
-		slog.Warn("failed to connect to context, staying disconnected",
-			slog.String("context", contextName),
-			slog.String("error", err.Error()))
-		return err
-	}
+	m.mu.Unlock()
 
+	rt := m.getOrSpinPooled(m.tenantID, contextName)
+
+	m.mu.Lock()
+	if rt == nil || rt.connector == nil {
+		if m.activeContext == contextName {
+			m.connErr = fmt.Errorf("could not connect to cluster %q — agent not connected yet, or cache sync failed", contextName)
+		}
+		slog.Warn("failed to connect to context, staying disconnected",
+			slog.String("context", contextName))
+		return fmt.Errorf("connecting to context %q failed", contextName)
+	}
+	// Promote the spun runtime to active only if this switch still owns the active
+	// context and nothing connected it first.
+	if m.activeContext == contextName && m.connector == nil {
+		delete(m.runtimes, pk)
+		m.connector = rt.connector
+		m.collector = rt.collector
+		m.engine = rt.engine
+		m.cancelFn = rt.cancelFn
+		m.activeGate = rt.gate
+		if rt.gate != nil {
+			rt.gate.Store(true) // promoted → resume broadcasting
+		}
+		m.connErr = nil
+		m.wireInsightHookLocked()
+	}
 	slog.Info("switched cluster context (fresh connect)", slog.String("context", contextName))
 	return nil
 }
