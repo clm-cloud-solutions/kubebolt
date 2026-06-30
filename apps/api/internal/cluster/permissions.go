@@ -170,6 +170,15 @@ func checkSSAR(clientset kubernetes.Interface, group, resource, verb, namespace 
 	return err == nil && resp.Status.Allowed
 }
 
+// probeCanWrite reports whether the connected ServiceAccount has WRITE access to a
+// representative workload — the marker that separates an agent-proxy "operator" RBAC
+// tier (the chart grants create/update/patch/delete on * for operator) from "reader"
+// (get/list/watch only). One SSAR; on error or denial it reads as read-only, the safe
+// default, so a narrowed ClusterRole never reads as operator.
+func probeCanWrite(clientset kubernetes.Interface) bool {
+	return checkSSAR(clientset, "apps", "deployments", "update", "")
+}
+
 // probePermissions uses SelfSubjectAccessReview to check permissions for all resource types.
 // For namespace-scoped resources denied at cluster level, it retries in a known namespace
 // to detect RoleBinding-based access (e.g., SA with view in specific namespaces).

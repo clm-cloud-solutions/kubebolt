@@ -49,6 +49,12 @@ type Manager struct {
 	// Lookup-on-connect lets the manager pick the right ClusterAccess
 	// without bolting a new field onto every kubeconfig entry.
 	agentProxyContexts map[string]string
+	// metricsOnlyContexts maps the synthetic contextName of a cluster whose agent
+	// ships metrics but does NOT advertise kube-proxy → cluster_id. Parallel to
+	// agentProxyContexts but NEVER gets a connector: connectToContextLocked skips
+	// the WaitForCacheSync for these, ListClusters flags them Mode="metrics-only",
+	// and requireConnector degrades the resource views instead of 503-ing.
+	metricsOnlyContexts map[string]string
 
 	// onNewInsight is invoked for each newly detected insight; wired to the
 	// notifications manager from main.go. Nil when notifications are disabled.
@@ -283,6 +289,12 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 		m.agentProxyContexts = make(map[string]string)
 	}
 	m.agentProxyContexts[contextName] = clusterID
+	// Mutually exclusive with metrics-only: an agent that (re)registers WITH kube-proxy
+	// — a metrics-only cluster upgraded to reader/operator (the happy path of the
+	// "enable the agent-proxy" notice) — must drop its metrics-only flag so ListClusters
+	// stops reporting Mode="metrics-only" and connectToContextLocked stops skipping the
+	// connector. delete on a nil/absent map is a safe no-op.
+	delete(m.metricsOnlyContexts, contextName)
 	if m.kubeConfig.Contexts == nil {
 		m.kubeConfig.Contexts = map[string]*clientcmdapi.Context{}
 	}
@@ -326,6 +338,49 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 			go m.eagerSpinPooledRuntime(contextName, clusterID)
 		}
 	}
+	return contextName, nil
+}
+
+// AddMetricsOnlyCluster registers a cluster whose agent ships metrics but does NOT
+// advertise kube-proxy — so it has no live-resource connector. It surfaces the cluster
+// in ListClusters (switchable, flagged Mode="metrics-only") via the same synthetic-
+// context machinery as AddAgentProxyCluster, but routes into metricsOnlyContexts so
+// connectToContextLocked skips the connector entirely (no WaitForCacheSync, no 503).
+// The metrics/Capacity dashboards query VictoriaMetrics directly; the resource views
+// degrade behind requireConnector's metrics-only signal. No auto-retry connect (there
+// is nothing to connect). Idempotent.
+func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, error) {
+	if clusterID == "" {
+		return "", fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	if m.metricsOnlyContexts == nil {
+		m.metricsOnlyContexts = make(map[string]string)
+	}
+	m.metricsOnlyContexts[contextName] = clusterID
+	// Mutually exclusive with agent-proxy: an agent that (re)registers WITHOUT kube-proxy
+	// — a downgrade — drops the agent-proxy registration so the cluster flips to
+	// metrics-only. (Tearing down a now-stale active connector is a deferred refinement;
+	// this at least flips the mode immediately.)
+	delete(m.agentProxyContexts, contextName)
+	if m.kubeConfig.Contexts == nil {
+		m.kubeConfig.Contexts = map[string]*clientcmdapi.Context{}
+	}
+	if m.kubeConfig.Clusters == nil {
+		m.kubeConfig.Clusters = map[string]*clientcmdapi.Cluster{}
+	}
+	m.kubeConfig.Clusters[contextName] = &clientcmdapi.Cluster{Server: agentProxyAPIServerURL(clusterID)}
+	m.kubeConfig.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName}
+	if displayName != "" && m.storage != nil {
+		_ = m.storage.SetDisplayName(m.storeCtx(), contextName, displayName)
+	}
+	slog.Info("registered metrics-only cluster",
+		slog.String("cluster_id", clusterID),
+		slog.String("context", contextName),
+		slog.String("display_name", displayName),
+	)
 	return contextName, nil
 }
 
@@ -545,6 +600,13 @@ type ClusterInfo struct {
 	// specific cluster at issue-time (5a.1.a — Prometheus integration
 	// per-cluster filtering).
 	ClusterID string `json:"clusterId,omitempty"`
+
+	// Mode distinguishes a metrics-only cluster ("metrics-only" — the agent ships
+	// metrics but advertises no kube-proxy, so there is no live-resource connector),
+	// a connected agent-proxy cluster's RBAC tier ("reader" / "operator"), or a normal
+	// connector-backed cluster (""). The UI shows the metrics dashboards and degrades
+	// the resource views when Mode == "metrics-only", and badges the connection type.
+	Mode string `json:"mode,omitempty"`
 }
 
 // Pool bounds (A.3d). A parked runtime keeps live informers, so the pool is
@@ -631,6 +693,32 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 }
 
 // ListClusters returns all available clusters from the kubeconfig.
+// resolveConnectorLocked returns the live Connector backing a cluster context,
+// mirroring the status="connected" determination in ListClusters: the global connector
+// when this is the active context, else the pooled runtime's connector. Returns nil when
+// no connector is up. Caller holds m.mu.
+func (m *Manager) resolveConnectorLocked(ctxName string, isActive bool) *Connector {
+	if isActive && ctxName == m.activeContext && m.connector != nil {
+		return m.connector
+	}
+	if rt, ok := m.runtimes[poolKey{tenant: m.tenantID, cluster: ctxName}]; ok {
+		return rt.connector
+	}
+	return nil
+}
+
+// MetricsOnlyClusterID returns the cluster_id when the request's resolved (active)
+// cluster is a metrics-only cluster (the agent ships metrics but advertises no
+// kube-proxy, so there is no connector), else "". Single-tenant: resolves to the active
+// context. Lets requireConnector degrade (not 503) and the metrics query path scope to
+// VM by UID without a connector. The ctx param is kept for signature parity with the
+// EE multi-tenant variant; OSS resolves the single active context.
+func (m *Manager) MetricsOnlyClusterID(_ context.Context) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.metricsOnlyContexts[m.activeContext]
+}
+
 func (m *Manager) ListClusters() []ClusterInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -663,9 +751,16 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			server = cl.Server
 		}
 		isActive := ctxName == m.activeContext
+		metricsOnlyCID := m.metricsOnlyContexts[ctxName]
 		status := "disconnected"
 		connErrMsg := ""
-		if isActive {
+		if metricsOnlyCID != "" {
+			// Metrics-only cluster: no connector, so liveness IS the agent shipping
+			// metrics. "connected" when an agent is live, "disconnected" otherwise.
+			if m.agentRegistry != nil && m.agentRegistry.CountByCluster(metricsOnlyCID) > 0 {
+				status = "connected"
+			}
+		} else if isActive {
 			if m.connector != nil {
 				status = "connected"
 			} else if m.connErr != nil {
@@ -677,6 +772,8 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		switch {
 		case m.agentProxyContexts[ctxName] != "":
 			source = "agent-proxy"
+		case metricsOnlyCID != "":
+			source = "agent-proxy" // still an agent connection, just metrics-only (see Mode)
 		case m.inCluster && ctxName == "in-cluster":
 			source = "in-cluster"
 		case uploadedContexts[ctxName]:
@@ -693,11 +790,30 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		// Empty otherwise; the admin UI treats empty as "unknown,
 		// pick Any cluster".
 		clusterID := m.agentProxyContexts[ctxName]
+		if clusterID == "" {
+			clusterID = metricsOnlyCID
+		}
 		if clusterID == "" && isActive && m.connector != nil {
 			clusterID = m.connector.ClusterUID()
 		}
 		if clusterID == "" {
 			clusterID = cachedUIDs[ctxName]
+		}
+		mode := ""
+		switch {
+		case metricsOnlyCID != "":
+			mode = "metrics-only"
+		case source == "agent-proxy" && status == "connected":
+			// Reader vs operator: probe the live connector's write-RBAC marker. Only
+			// agent-proxy clusters with a connector up can be told apart; metrics-only
+			// (handled above) and disconnected stay unlabeled.
+			if conn := m.resolveConnectorLocked(ctxName, isActive); conn != nil {
+				if conn.CanWrite() {
+					mode = "operator"
+				} else {
+					mode = "reader"
+				}
+			}
 		}
 		clusters = append(clusters, ClusterInfo{
 			Name:        ctx.Cluster,
@@ -709,6 +825,7 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			DisplayName: displayNames[ctxName],
 			Source:      source,
 			ClusterID:   clusterID,
+			Mode:        mode,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -1392,6 +1509,21 @@ func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 }
 
 func (m *Manager) connectToContextLocked(contextName string) error {
+	// Metrics-only cluster: no connector. The agent ships metrics (queried straight from
+	// VM) but advertises no kube-proxy, so there's nothing to WaitForCacheSync. Mark it
+	// active with a nil runtime — requireConnector degrades the resource views and the
+	// metrics path scopes by UID via MetricsOnlyClusterID. SwitchCluster already parked
+	// the prior active runtime, so no connector teardown is needed here.
+	if _, ok := m.metricsOnlyContexts[contextName]; ok {
+		m.connector = nil
+		m.collector = nil
+		m.engine = nil
+		m.cancelFn = nil
+		m.activeGate = nil
+		m.activeContext = contextName
+		m.connErr = nil
+		return nil
+	}
 	// Fast-fail for agent-proxy contexts when no agent is connected.
 	// Without this short-circuit, Connector.Start() spends the full
 	// WaitForCacheSync(20s) timeout listing resources that all return

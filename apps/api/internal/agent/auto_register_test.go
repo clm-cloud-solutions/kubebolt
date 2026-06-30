@@ -12,10 +12,11 @@ import (
 // are concurrency-safe in case the helper later runs from multiple
 // goroutines.
 type fakeRegistrar struct {
-	mu      sync.Mutex
-	added   []addCall
-	removed []string
-	addErr  error
+	mu           sync.Mutex
+	added        []addCall
+	metricsAdded []addCall
+	removed      []string
+	addErr       error
 }
 
 type addCall struct {
@@ -30,6 +31,16 @@ func (r *fakeRegistrar) AddAgentProxyCluster(clusterID, displayName string) (str
 	}
 	r.added = append(r.added, addCall{clusterID, displayName})
 	return "agent:" + clusterID, nil
+}
+
+func (r *fakeRegistrar) AddMetricsOnlyCluster(clusterID, displayName string) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.addErr != nil {
+		return "", r.addErr
+	}
+	r.metricsAdded = append(r.metricsAdded, addCall{clusterID, displayName})
+	return "metrics:" + clusterID, nil
 }
 
 func (r *fakeRegistrar) RemoveAgentProxyCluster(clusterID string) {
@@ -99,14 +110,21 @@ func TestMaybeAutoRegister_SkipsWhenFlagOff(t *testing.T) {
 	}
 }
 
-func TestMaybeAutoRegister_SkipsWithoutKubeProxyCapability(t *testing.T) {
+func TestMaybeAutoRegister_MetricsOnlyRegistersAsMonitored(t *testing.T) {
+	// An agent WITHOUT kube-proxy is no longer skipped — it registers as a metrics-only
+	// cluster (surfaced monitored-only, no connector) so the cluster isn't invisible.
+	// AddAgentProxyCluster must NOT fire (there's no connector); it lands via
+	// AddMetricsOnlyCluster instead.
 	reg := &fakeRegistrar{}
 	got := maybeAutoRegisterCluster(reg, channel.NewAgentRegistry(), true, "c1", "x", []string{"metrics"}, "")
-	if got {
-		t.Fatal("agent without kube-proxy capability must skip registration")
+	if !got {
+		t.Fatal("metrics-only agent must register (as monitored-only), not skip")
 	}
 	if len(reg.added) != 0 {
-		t.Errorf("got unexpected AddAgentProxyCluster call: %+v", reg.added)
+		t.Errorf("AddAgentProxyCluster must NOT be called for a metrics-only agent, got %+v", reg.added)
+	}
+	if len(reg.metricsAdded) != 1 || reg.metricsAdded[0].clusterID != "c1" {
+		t.Errorf("expected one AddMetricsOnlyCluster call for c1, got %+v", reg.metricsAdded)
 	}
 }
 

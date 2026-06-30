@@ -1028,11 +1028,12 @@ func main() {
 		if err != nil {
 			slog.Warn("failed to list persisted agent records on boot", slog.String("error", err.Error()))
 		} else {
-			seen := make(map[string]string) // cluster_id → display name
+			seen := make(map[string]string)      // cluster_id → display name
+			kubeProxyKeys := make(map[string]bool) // cluster_ids whose agent advertised kube-proxy
 			for i := range records {
 				rec := &records[i]
-				if !rec.HasKubeProxy() {
-					continue
+				if rec.HasKubeProxy() {
+					kubeProxyKeys[rec.ClusterID] = true
 				}
 				// Last-write-wins on display name — records are
 				// sorted (cluster_id, agent_id) so any of the
@@ -1060,7 +1061,16 @@ func main() {
 					skipped++
 					continue
 				}
-				if _, err := manager.AddAgentProxyCluster(clusterID, displayName); err != nil {
+				var err error
+				if kubeProxyKeys[clusterID] {
+					_, err = manager.AddAgentProxyCluster(clusterID, displayName)
+				} else {
+					// Metrics-only cluster (agent shipped metrics, never advertised
+					// kube-proxy) — restore it as monitored-only so it stays in the
+					// selector across restarts.
+					_, err = manager.AddMetricsOnlyCluster(clusterID, displayName)
+				}
+				if err != nil {
 					slog.Warn("failed to restore agent-proxy cluster",
 						slog.String("cluster_id", clusterID),
 						slog.String("display_name", displayName),

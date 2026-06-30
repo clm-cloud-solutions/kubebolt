@@ -105,6 +105,7 @@ type Connector struct {
 	collector     metricsCollector
 	topologyTimer *time.Timer
 	permissions   ResourcePermissions
+	canWrite      bool // SA has write RBAC (operator tier) vs read-only (reader); probed at Start
 
 	// k8sVersionFetching guards the async ServerVersion() warm (Finding #4) so the
 	// overview never blocks on the slow agent-proxy round-trip; the same warm also
@@ -252,6 +253,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	}
 
 	c.permissions = probePermissions(clientset)
+	c.canWrite = probeCanWrite(clientset)
 	c.setupInformers()
 	return c, nil
 }
@@ -268,6 +270,12 @@ func (c *Connector) ClusterUID() string {
 // Permissions returns the probed resource permissions for this cluster.
 func (c *Connector) Permissions() ResourcePermissions {
 	return c.permissions
+}
+
+// CanWrite reports whether the connected ServiceAccount has write RBAC — the marker
+// that distinguishes an agent-proxy "operator" cluster from a read-only "reader" one.
+func (c *Connector) CanWrite() bool {
+	return c.canWrite
 }
 
 // RestConfig returns the Kubernetes REST config for this cluster connection.

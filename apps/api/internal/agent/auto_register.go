@@ -21,6 +21,10 @@ type ClusterRegistrar interface {
 	// agent-proxy transport. Returns the contextName under which the
 	// cluster is exposed in the manager's listing.
 	AddAgentProxyCluster(clusterID, displayName string) (string, error)
+	// AddMetricsOnlyCluster registers cluster_id as a metrics-only cluster (the agent
+	// ships metrics but advertises no kube-proxy, so there is no connector). Surfaces
+	// it in ListClusters flagged Mode="metrics-only"; never starts a connector.
+	AddMetricsOnlyCluster(clusterID, displayName string) (string, error)
 	// RemoveAgentProxyCluster removes the agent-proxy registration.
 	// Idempotent — a no-op if cluster_id wasn't registered.
 	RemoveAgentProxyCluster(clusterID string)
@@ -92,7 +96,22 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 		return false
 	}
 	if !hasCapability(capabilities, "kube-proxy") {
-		return false
+		// Metrics-only agent (no kube-proxy): surface the cluster as monitored-only
+		// instead of leaving it invisible. Its metrics reach VM independently of the
+		// proxy, so it gets a switchable, connector-less entry in the selector — the UI
+		// shows the metrics dashboards and degrades the resource views.
+		if _, err := reg.AddMetricsOnlyCluster(clusterID, displayName); err != nil {
+			slog.Warn("auto-register metrics-only cluster failed",
+				slog.String("cluster_id", clusterID),
+				slog.String("error", err.Error()),
+			)
+			return false
+		}
+		slog.Info("auto-registered metrics-only cluster",
+			slog.String("cluster_id", clusterID),
+			slog.String("display_name", displayName),
+		)
+		return true
 	}
 	contextName, err := reg.AddAgentProxyCluster(clusterID, displayName)
 	if err != nil {
