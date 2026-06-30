@@ -100,6 +100,14 @@ type Manager struct {
 	// (instant switch-back) without leaking WS events for a cluster nobody is
 	// viewing (A.4 OSS hole). nil when nothing is connected.
 	activeGate *atomic.Bool
+
+	// metricsFreshness answers "is this metrics-only cluster shipping samples
+	// into VM right now?" off the request path (its own mutex, never m.mu). The
+	// robust liveness signal for metrics-only clusters: vmagent's HTTP ingest is
+	// independent of the gRPC AgentChannel, so a flapping/absent channel mustn't
+	// show OFFLINE while metrics still flow. nil in direct-struct test managers
+	// (fresh() is nil-safe).
+	metricsFreshness *metricsFreshnessCache
 }
 
 // poolKey identifies a pooled runtime. tenant is "default" in OSS.
@@ -638,13 +646,14 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 					},
 					CurrentContext: "in-cluster",
 				},
-				activeContext:   "in-cluster",
-				wsHub:           wsHub,
-				metricInterval:  metricInterval,
-				insightInterval: insightInterval,
-				poolIdleTimeout: defaultPoolIdleTimeout,
-				poolMaxRuntimes: defaultPoolMaxRuntimes,
-				reaperStop:      make(chan struct{}),
+				activeContext:    "in-cluster",
+				wsHub:            wsHub,
+				metricInterval:   metricInterval,
+				insightInterval:  insightInterval,
+				poolIdleTimeout:  defaultPoolIdleTimeout,
+				poolMaxRuntimes:  defaultPoolMaxRuntimes,
+				reaperStop:       make(chan struct{}),
+				metricsFreshness: newMetricsFreshnessCache(),
 			}
 			m.startPoolReaper()
 
@@ -664,15 +673,16 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 	}
 
 	m := &Manager{
-		kubeconfigPath:  kubeconfigPath,
-		kubeConfig:      kubeConfig,
-		activeContext:   kubeConfig.CurrentContext,
-		wsHub:           wsHub,
-		metricInterval:  metricInterval,
-		insightInterval: insightInterval,
-		poolIdleTimeout: defaultPoolIdleTimeout,
-		poolMaxRuntimes: defaultPoolMaxRuntimes,
-		reaperStop:      make(chan struct{}),
+		kubeconfigPath:   kubeconfigPath,
+		kubeConfig:       kubeConfig,
+		activeContext:    kubeConfig.CurrentContext,
+		wsHub:            wsHub,
+		metricInterval:   metricInterval,
+		insightInterval:  insightInterval,
+		poolIdleTimeout:  defaultPoolIdleTimeout,
+		poolMaxRuntimes:  defaultPoolMaxRuntimes,
+		reaperStop:       make(chan struct{}),
+		metricsFreshness: newMetricsFreshnessCache(),
 	}
 	m.startPoolReaper()
 
@@ -755,9 +765,14 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		status := "disconnected"
 		connErrMsg := ""
 		if metricsOnlyCID != "" {
-			// Metrics-only cluster: no connector, so liveness IS the agent shipping
-			// metrics. "connected" when an agent is live, "disconnected" otherwise.
-			if m.agentRegistry != nil && m.agentRegistry.CountByCluster(metricsOnlyCID) > 0 {
+			// Metrics-only cluster: no connector, so liveness IS "are metrics
+			// arriving?" — NOT a live gRPC AgentChannel session. vmagent ships over
+			// HTTP remote_write independently of the channel, so a flapping/absent
+			// channel must NOT show OFFLINE while VM is still ingesting. Prefer the
+			// live-channel signal (instant, no VM round-trip); fall back to VM
+			// freshness so durable ingest reads as connected on its own.
+			channelLive := m.agentRegistry != nil && m.agentRegistry.CountByCluster(metricsOnlyCID) > 0
+			if channelLive || m.metricsFresh(metricsOnlyCID) {
 				status = "connected"
 			}
 		} else if isActive {
