@@ -589,6 +589,13 @@ func queryInstant(ctx context.Context, promQL string, at time.Time) (float64, bo
 	return v, true, nil
 }
 
+// QueryInstant exposes the package-internal instant VM query to other packages — the
+// metrics-only cluster overview (api package) builds resource counts + health from KSM
+// via scoped instant queries. Same contract as queryInstant: (value, found, error).
+func QueryInstant(ctx context.Context, promQL string, at time.Time) (float64, bool, error) {
+	return queryInstant(ctx, promQL, at)
+}
+
 // convertVMValues turns VM's [[ts, "value"], ...] shape into typed points.
 // Bad rows are skipped silently — VM almost never produces them and a single
 // bad row shouldn't kill the whole response.

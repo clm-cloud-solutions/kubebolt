@@ -10,6 +10,8 @@ import { EventsFeed } from './EventsFeed'
 import { NamespaceTiles } from './NamespaceTiles'
 import { DashboardSubTabs } from './DashboardSubTabs'
 import { CoverageBanner } from './CoverageBanner'
+import { useMetricsOnly } from '@/hooks/useMetricsOnly'
+import { MetricsOnlyBanner } from '@/components/shared/MetricsOnlyNotice'
 
 // OverviewPage is the "abro el dashboard en la mañana" scan: 4 KPIs,
 // commitment bars, the events + workload-health pair, and namespace
@@ -23,6 +25,7 @@ import { CoverageBanner } from './CoverageBanner'
 // Overview fast to read and free of interactive sliders that would
 // distract from the scan.
 export function OverviewPage() {
+  const isMetricsOnly = useMetricsOnly()
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
 
   if (isLoading) return <LoadingSpinner />
@@ -30,6 +33,7 @@ export function OverviewPage() {
 
   return (
     <div className="space-y-5">
+      {isMetricsOnly && <MetricsOnlyBanner />}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <OverviewHeader overview={overview} />
         <div className="flex items-center gap-3 mt-1">

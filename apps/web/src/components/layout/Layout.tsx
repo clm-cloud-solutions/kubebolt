@@ -86,6 +86,11 @@ export function Layout() {
   // "no clusters" state surfaces as null here. Treat both as empty;
   // only `undefined` means "still loading first fetch".
   const noClusters = clusters !== undefined && (clusters === null || clusters.length === 0)
+  // Metrics-only cluster: the agent ships metrics but advertises no kube-proxy, so it
+  // has no live-resource connector. We render the metrics dashboards (VM-direct) and
+  // degrade the resource views, rather than treating the overview's "monitored-only"
+  // 503 as "cluster unreachable".
+  const isMetricsOnly = (clusters ?? []).find(c => c.active)?.mode === 'metrics-only'
   // Routes that don't depend on a connected cluster. /clusters owns the
   // add-cluster wizard (must render so the user has a way out of the
   // empty state), and /admin /settings are platform-level pages whose
@@ -98,7 +103,9 @@ export function Layout() {
     location.pathname === p || location.pathname.startsWith(p + '/')
   )
 
-  const isUnavailable = error instanceof ApiError && error.status === 503
+  // A metrics-only cluster's resource endpoints 503 by design (no connector) — that is
+  // NOT "unreachable", so don't route it to the error page; it renders the dashboards.
+  const isUnavailable = error instanceof ApiError && error.status === 503 && !isMetricsOnly
   // "Waiting for agent" is the transient post-restart state where the
   // backend's agent-proxy connector fast-fails because no agent has
   // dialed in yet. Distinct from a real "cluster unreachable" because

@@ -191,9 +191,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cluster must be connected for tool execution to work
+	// A metrics-only cluster has no connector, but Kobi can still do metrics + docs
+	// analysis — the executor gates the resource/action tools per-tool. Only 503 the
+	// chat for the genuine no-connector case (no cluster selected / unreachable).
 	conn := h.manager.Connector(r.Context())
-	if conn == nil {
+	if conn == nil && h.manager.MetricsOnlyClusterID(r.Context()) == "" {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}

@@ -414,12 +414,16 @@ func NewRouter(
 			r.Get("/integrations", h.handleListIntegrations)
 			r.Get("/integrations/{id}", h.handleGetIntegration)
 
+			// Cluster overview lives OUTSIDE requireConnector: for a metrics-only cluster
+			// it serves a KSM-derived overview (no connector needed) and owns its own
+			// genuine no-connector 503.
+			r.Get("/cluster/overview", h.getClusterOverview)
+
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
 				r.Use(h.requireConnector)
 
 				// Read endpoints — any authenticated role (Viewer+)
-				r.Get("/cluster/overview", h.getClusterOverview)
 				r.Get("/cluster/health", h.getClusterHealth)
 				r.Get("/cluster/permissions", h.getPermissions)
 				r.Get("/resources/{type}", h.getResources)

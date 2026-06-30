@@ -63,10 +63,21 @@ func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
 	res := ToolResult{ToolCallID: call.ID}
 
 	conn := e.manager.Connector(ctx)
+	// Metrics-only / disconnected: every tool except the knowledge-base lookup reads
+	// live cluster objects through the connector — resource reads, per-workload metrics
+	// (which resolve a workload→pods via the API + the cluster UID), and the propose_*
+	// actions. Gate them per-tool with an actionable message instead of failing opaquely,
+	// so Kobi stays usable for docs + guidance on a monitored-only cluster. (Full metrics
+	// RCA needs the connector's workload→pod resolution — that's the Phase-2 KSM path.)
 	if conn == nil {
-		res.Content = `{"error":"cluster not connected"}`
-		res.IsError = true
-		return res
+		switch call.Name {
+		case "get_kubebolt_docs":
+			// knowledge-base lookup — no connector needed; fall through.
+		default:
+			res.Content = `{"error":"This needs live cluster access. Enable the KubeBolt agent-proxy (rbac.mode=reader or operator) or connect the cluster's API directly — the metrics dashboards still work.","needsProxy":true}`
+			res.IsError = true
+			return res
+		}
 	}
 
 	args := parseArgs(call.Input)

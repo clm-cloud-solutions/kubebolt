@@ -103,8 +103,17 @@ func (h *handlers) handleGetIntegration(w http.ResponseWriter, r *http.Request) 
 		// can render the detail panel. Install actions stay gated by
 		// the requireConnector group on the install routes.
 		meta := provider.Meta()
-		meta.Status = integrations.StatusNotInstalled
-		meta.Health = &integrations.Health{Message: "No cluster connected"}
+		// Metrics-only cluster: the agent IS connected (it's shipping metrics) — there's
+		// just no connector to Detect() through. Report the agent integration as installed
+		// so the metrics dashboards (Capacity trends etc., which DO work) don't gate behind
+		// an "install the agent" prompt.
+		if id == "agent" && h.manager.MetricsOnlyClusterID(r.Context()) != "" {
+			meta.Status = integrations.StatusInstalled
+			meta.Health = &integrations.Health{Message: "Monitored-only — the agent is shipping metrics (no agent-proxy)"}
+		} else {
+			meta.Status = integrations.StatusNotInstalled
+			meta.Health = &integrations.Health{Message: "No cluster connected"}
+		}
 		meta.Installable = installable
 		respondJSON(w, http.StatusOK, meta)
 		return

@@ -67,6 +67,9 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
   })
 
   const activeCluster = clusters?.find(c => c.active)
+  // Metrics-only active cluster has no connector → the Cluster Map (live resource
+  // graph) can't render, so hide its toggle.
+  const isMetricsOnly = activeCluster?.mode === 'metrics-only'
   // /clusters returns `null` (not `[]`) when there are zero contexts —
   // Go's nil-slice JSON shape. Treat null and [] identically.
   const noClusters = clusters !== undefined && (clusters === null || clusters.length === 0)
@@ -210,7 +213,14 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
                     >
                       <span className={`w-2 h-2 rounded-full shrink-0 ${cl.active ? 'bg-status-ok' : 'bg-kb-text-tertiary'}`} />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs text-kb-text-primary truncate">{parseClusterDisplayName(cl)}</div>
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="text-xs text-kb-text-primary truncate">{parseClusterDisplayName(cl)}</span>
+                          {cl.mode === 'metrics-only' && (
+                            <span className="shrink-0 px-1.5 py-0.5 rounded-full text-[8px] font-mono uppercase tracking-wider bg-status-info-dim text-status-info">
+                              Monitored-only
+                            </span>
+                          )}
+                        </div>
                         <div className="text-[10px] font-mono text-kb-text-tertiary truncate">{cl.server}</div>
                       </div>
                       {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}
@@ -256,16 +266,18 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
           >
             Dashboard
           </NavLink>
-          <NavLink
-            to="/map"
-            className={({ isActive }) =>
-              `px-3 py-1.5 text-xs font-semibold transition-colors border-l border-kb-border ${
-                isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-secondary hover:text-kb-text-primary'
-              }`
-            }
-          >
-            Cluster Map
-          </NavLink>
+          {!isMetricsOnly && (
+            <NavLink
+              to="/map"
+              className={({ isActive }) =>
+                `px-3 py-1.5 text-xs font-semibold transition-colors border-l border-kb-border ${
+                  isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-secondary hover:text-kb-text-primary'
+                }`
+              }
+            >
+              Cluster Map
+            </NavLink>
+          )}
         </div>
       </div>
 

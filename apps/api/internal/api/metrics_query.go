@@ -42,7 +42,9 @@ func (h *handlers) activeClusterUID(ctx context.Context) string {
 	}
 	conn := h.manager.Connector(ctx)
 	if conn == nil {
-		return ""
+		// Metrics-only cluster: no connector, but the agent ships metrics under its
+		// cluster_id. Scope VM queries by that UID so the dashboards still resolve.
+		return h.manager.MetricsOnlyClusterID(ctx)
 	}
 	return conn.ClusterUID()
 }

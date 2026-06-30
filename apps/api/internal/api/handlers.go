@@ -235,7 +235,24 @@ func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
 	conn := h.manager.Connector(r.Context())
 	if conn == nil {
-		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
+		// Metrics-only cluster: no connector, but KSM metrics in VM let us build a real
+		// overview (counts + pod health + CPU/Mem) instead of failing. This route lives
+		// OUTSIDE requireConnector so it can serve that case.
+		if uid := h.manager.MetricsOnlyClusterID(r.Context()); uid != "" {
+			respondJSON(w, http.StatusOK, h.buildMetricsOnlyOverview(r.Context(), uid))
+			return
+		}
+		// Genuine no-connector — mirror requireConnector's messages (the middleware no
+		// longer guards this route).
+		if h.manager.ActiveContext() == "" {
+			respondError(w, http.StatusServiceUnavailable, "no cluster selected — choose a cluster to continue")
+			return
+		}
+		msg := "cluster not connected"
+		if err := h.manager.ConnError(); err != nil {
+			msg = err.Error()
+		}
+		respondError(w, http.StatusServiceUnavailable, msg)
 		return
 	}
 	overview := conn.GetOverview()
@@ -638,6 +655,14 @@ func (h *handlers) getPermissions(w http.ResponseWriter, r *http.Request) {
 func (h *handlers) requireConnector(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if h.manager.Connector(r.Context()) == nil {
+			// Metrics-only cluster: reachable (the agent ships metrics) but with no
+			// live-resource connector, so resource endpoints can't be served. Return a
+			// distinct signal so the UI degrades to the metrics dashboards rather than
+			// rendering "cluster unreachable".
+			if h.manager.MetricsOnlyClusterID(r.Context()) != "" {
+				respondError(w, http.StatusServiceUnavailable, "cluster is monitored-only — enable the agent-proxy (rbac.mode=reader|operator) for resource views")
+				return
+			}
 			// No cluster is selected at all (fresh boot, or a restart that reset
 			// the in-memory active context). The underlying connect error is the
 			// raw `context "" is not registered`, which reads to the user like an

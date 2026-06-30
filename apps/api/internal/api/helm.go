@@ -18,7 +18,7 @@ func (h *handlers) handleListHelmReleases(w http.ResponseWriter, r *http.Request
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	secrets, err := conn.ListHelmReleaseSecrets(r.Context())
+	secrets, err := conn.ListHelmReleaseSecretsCached(r.Context())
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			respondError(w, http.StatusForbidden, "not permitted to list Helm release secrets")
@@ -42,7 +42,7 @@ func (h *handlers) handleGetHelmRelease(w http.ResponseWriter, r *http.Request) 
 	}
 	namespace := chi.URLParam(r, "namespace")
 	name := chi.URLParam(r, "name")
-	secrets, err := conn.ListHelmReleaseSecrets(r.Context())
+	secrets, err := conn.ListHelmReleaseSecretsForRelease(r.Context(), namespace, name)
 	if err != nil {
 		if apierrors.IsForbidden(err) {
 			respondError(w, http.StatusForbidden, "not permitted to list Helm release secrets")

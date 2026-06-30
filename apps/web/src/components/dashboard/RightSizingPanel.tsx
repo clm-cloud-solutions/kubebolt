@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { Scale } from 'lucide-react'
 import { api } from '@/services/api'
+import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
@@ -119,6 +120,7 @@ const CPU_P95_QUERY = buildP95Query((m) => `rate(container_cpu_usage_seconds_tot
 const MEM_P95_QUERY = buildP95Query((m) => `container_memory_working_set_bytes{${m}}`)
 
 export function RightSizingPanel({ installed, overview }: Props) {
+  const isMetricsOnly = useMetricsOnly()
   // P95 queries are heavy (subqueries over 7d), so cache 5m and
   // only refetch on user-driven invalidation. Polling like the
   // other panels would saturate VM for marginal value — these
@@ -201,6 +203,28 @@ export function RightSizingPanel({ installed, overview }: Props) {
   const overflow = recs.length - visible.length
 
   if (!isLoading && !error && recs.length === 0) {
+    // Metrics-only: there are no per-workload request/limit specs to evaluate (the
+    // overview's namespaceWorkloads is connector-derived, empty here). Show a note
+    // instead of an empty grid cell — full right-sizing from KSM is a Phase-2 capability.
+    if (isMetricsOnly) {
+      return (
+        <div className="rounded-lg border border-kb-border bg-kb-card p-4">
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-kb-text-secondary shrink-0">
+              <Scale className="w-4 h-4" />
+            </span>
+            <h4 className="text-sm font-semibold text-kb-text-primary">Right-sizing Recommendations</h4>
+          </div>
+          <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
+            Right-sizing needs per-workload resource specs (requests/limits), which aren't
+            available on a monitored-only cluster. Enable the agent-proxy (
+            <code className="text-kb-text-secondary">rbac.mode=reader</code> or{' '}
+            <code className="text-kb-text-secondary">operator</code>) or connect the cluster's API
+            directly to surface recommendations.
+          </p>
+        </div>
+      )
+    }
     // Healthy cluster, nothing to recommend. Hide entirely rather
     // than show a "no recommendations" empty state — the absence
     // of the panel IS the all-clear signal in a dashboard already
