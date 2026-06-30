@@ -42,6 +42,7 @@ import { AboutModal } from '@/components/layout/AboutModal'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import type { ClusterOverview } from '@/types/kubernetes'
 import { eePinnedNavItems } from '@/ee/registry'
+import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 
 interface SidebarProps {
   overview?: ClusterOverview
@@ -175,6 +176,10 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
   const { hasRole, isAuthEnabled } = useAuth()
   const location = useLocation()
   const uiConfig = useUIConfig()
+  // Metrics-only active cluster → dim + disable the resource-view nav (Pods, workloads,
+  // etc.); those endpoints have no connector. The metrics dashboards stay reachable via
+  // the Overview link.
+  const isMetricsOnly = useMetricsOnly()
   const brandLabel = uiConfig.displayName?.trim() || 'KubeBolt'
   // Overview is the entry point for the whole dashboard surface
   // (Overview / Capacity / Reliability sub-tabs). All three should
@@ -287,6 +292,25 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                 const isRestricted = item.permissionKey != null
                   && overview?.permissions != null
                   && overview.permissions[item.permissionKey] === false
+                // Metrics-only: every resource view needs a live API (connector), so dim +
+                // disable them — except /clusters, the platform escape hatch. The metrics
+                // dashboards stay reachable via the Overview link above.
+                const metricsBlocked = isMetricsOnly && item.path !== '/clusters'
+
+                if (metricsBlocked) {
+                  return (
+                    <div
+                      key={item.path}
+                      title="Monitored-only — needs the agent-proxy or a direct API connection"
+                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-primary opacity-40 cursor-not-allowed relative"
+                    >
+                      <span className="shrink-0">{item.icon}</span>
+                      {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                      {!collapsed && <ShieldOff className="w-3 h-3 text-status-warn" />}
+                    </div>
+                  )
+                }
+
                 return (
                   <NavLink
                     key={item.path}

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText, ChevronDown, Cable } from 'lucide-react'
+import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText, ChevronDown, Cable, Eye, Wrench } from 'lucide-react'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -48,6 +48,48 @@ function SourceBadge({ source }: { source?: string }) {
     return (
       <span className="px-2 py-0.5 rounded-full bg-status-info-dim text-status-info text-[9px] font-mono font-semibold uppercase tracking-wider">
         In-Cluster
+      </span>
+    )
+  }
+  return null
+}
+
+// ConnectionModeBadge surfaces HOW KubeBolt talks to an agent-proxy cluster: an
+// "Operator" agent (write RBAC — restart/scale/delete/exec available), a read-only
+// "Reader" agent, or a "Metrics-only" agent (ships metrics, no live-resource API).
+// Derived server-side (cluster.mode) from a write-RBAC probe of the live connector,
+// so it only renders once the agent is connected and the mode is known.
+function ConnectionModeBadge({ mode }: { mode?: string }) {
+  if (mode === 'operator') {
+    return (
+      <span
+        title="Agent has write access — restart, scale, delete and exec are available"
+        className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-warn-dim text-status-warn text-[9px] font-mono font-semibold uppercase tracking-wider"
+      >
+        <Wrench className="w-2.5 h-2.5" />
+        Operator
+      </span>
+    )
+  }
+  if (mode === 'reader') {
+    return (
+      <span
+        title="Agent has read-only access — live resources are visible but cannot be changed"
+        className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-info-dim text-status-info text-[9px] font-mono font-semibold uppercase tracking-wider"
+      >
+        <Eye className="w-2.5 h-2.5" />
+        Reader
+      </span>
+    )
+  }
+  if (mode === 'metrics-only') {
+    return (
+      <span
+        title="Agent ships metrics only — dashboards work, but there is no live-resource API"
+        className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-kb-elevated text-kb-text-tertiary text-[9px] font-mono font-semibold uppercase tracking-wider"
+      >
+        <Activity className="w-2.5 h-2.5" />
+        Metrics-only
       </span>
     )
   }
@@ -106,6 +148,7 @@ function ClusterCard({
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-sm font-semibold text-kb-text-primary truncate">{displayName}</span>
               <SourceBadge source={cluster.source} />
+              {isAgentProxy && <ConnectionModeBadge mode={cluster.mode} />}
             </div>
             <div className="text-[10px] font-mono text-kb-text-tertiary truncate" title={cluster.context}>{cluster.context}</div>
           </div>

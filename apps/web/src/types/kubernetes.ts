@@ -275,6 +275,13 @@ export interface ClusterInfo {
   // agent-proxy contexts (we get it via the Hello message);
   // empty for direct-kubeconfig contexts we haven't probed.
   clusterId?: string
+  // Connection mode of an agent-proxy cluster, derived server-side:
+  //   'metrics-only' — agent ships metrics but advertises no kube-proxy, so there is
+  //     no live-resource connector; the UI shows dashboards and degrades resource views.
+  //   'reader' — agent-proxy with read-only RBAC (live resources visible, no mutations).
+  //   'operator' — agent-proxy with write RBAC (restart/scale/delete/exec available).
+  // Undefined for disconnected clusters or direct kubeconfig/in-cluster connections.
+  mode?: 'metrics-only' | 'reader' | 'operator'
 }
 
 // API params
