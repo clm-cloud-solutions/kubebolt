@@ -79,7 +79,9 @@ type AgentProxyTransport struct {
 // caller's context nor an explicit DefaultTimeout bounds the call.
 // Matches the 30s rest.Config.Timeout the manager uses for local
 // clusters so behavior is symmetric across access modes.
-const DefaultProxyTimeout = 30 * time.Second
+// Package var (not const) so main.go can override it from
+// KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT.
+var DefaultProxyTimeout = 30 * time.Second
 
 // NewAgentProxyTransport returns a transport ready to use with
 // rest.Config{Transport: t}. Setting DefaultTimeout=0 keeps the value

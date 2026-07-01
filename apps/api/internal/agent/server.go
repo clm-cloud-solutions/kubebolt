@@ -361,6 +361,42 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			evicted.Close()
 		}
 		defer s.registry.Unregister(registeredAgent)
+
+		// Stuck-agent watchdog: a live-but-stuck agent keeps its gRPC stream healthy
+		// (keepalive pings pass) but stops answering kube_requests — the pipeline
+		// wedges. Detect it (pending requests + no delivery for StuckTimeout) and
+		// Close() the agent; the handler loop below returns on Closed(), tearing the
+		// stream down so the agent reconnects with a fresh tunnel. 0 disables.
+		if st := channel.StuckTimeout; st > 0 {
+			go func() {
+				interval := st / 4
+				if interval > 10*time.Second {
+					interval = 10 * time.Second
+				}
+				if interval < time.Second {
+					interval = time.Second
+				}
+				ticker := time.NewTicker(interval)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-registeredAgent.Closed():
+						return
+					case <-ticker.C:
+						if registeredAgent.Pending.Pending() > 0 && registeredAgent.Pending.SinceLastDelivery() > st {
+							slog.Warn("agent stuck — force-closing channel to trigger reconnect",
+								slog.String("cluster_id", clusterID),
+								slog.String("agent_id", agentID),
+								slog.Int("pending", registeredAgent.Pending.Pending()),
+								slog.Duration("since_last_delivery", registeredAgent.Pending.SinceLastDelivery()),
+							)
+							registeredAgent.Close()
+							return
+						}
+					}
+				}
+			}()
+		}
 	}
 
 	// Spec #09 V2 Item 5b — emit stream lifecycle counters that the
@@ -376,13 +412,42 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamConnected)
 	defer s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamDisconnected)
 
-	for {
-		msg, err := stream.Recv()
-		if err == io.EOF {
-			return nil
+	// Recv() is blocking, so pump it to a channel and let the main loop also watch the
+	// agent's Closed() signal — that way the stuck-watchdog's Close() (or an eviction)
+	// returns this handler, closing the gRPC stream so the agent reconnects with a fresh
+	// tunnel instead of staying registered-but-wedged. The pump exits when the stream
+	// closes (Recv errors) or the agent is Closed.
+	type recvResult struct {
+		msg *agentv2.AgentMessage
+		err error
+	}
+	recvCh := make(chan recvResult, 1)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			select {
+			case recvCh <- recvResult{msg, err}:
+			case <-registeredAgent.Closed():
+				return
+			}
+			if err != nil {
+				return
+			}
 		}
-		if err != nil {
-			return err
+	}()
+	for {
+		var msg *agentv2.AgentMessage
+		select {
+		case <-registeredAgent.Closed():
+			return nil
+		case r := <-recvCh:
+			if r.err == io.EOF {
+				return nil
+			}
+			if r.err != nil {
+				return r.err
+			}
+			msg = r.msg
 		}
 
 		switch k := msg.Kind.(type) {

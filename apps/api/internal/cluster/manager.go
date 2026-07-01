@@ -362,9 +362,23 @@ func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, 
 	m.metricsOnlyContexts[contextName] = clusterID
 	// Mutually exclusive with agent-proxy: an agent that (re)registers WITHOUT kube-proxy
 	// — a downgrade — drops the agent-proxy registration so the cluster flips to
-	// metrics-only. (Tearing down a now-stale active connector is a deferred refinement;
-	// this at least flips the mode immediately.)
+	// metrics-only.
 	delete(m.agentProxyContexts, contextName)
+	// Live-downgrade teardown: a metrics-only agent has no proxy, so the stale agent-proxy
+	// runtime for this cluster MUST go — otherwise its informers relist-storm on "no agent
+	// connected" and the connector keeps issuing kube_request to the now-metrics-only agent,
+	// piling up pending calls that trip the stuck-watchdog into force-closing it every
+	// ~StuckTimeout (a flap loop on an agent with no proxy at all). Keep the context
+	// registered — it stays a switchable metrics-only cluster; only the runtime is torn down.
+	if m.activeContext == contextName {
+		// stopCurrent() Stops the connector + cancels informers (cancelling the in-flight
+		// proxied requests so the agent's Multiplexor drains) and nils the runtime fields,
+		// leaving activeContext = contextName — exactly the active state that
+		// connectToContextLocked's metrics-only branch produces, so the cluster keeps
+		// serving Overview-from-KSM.
+		m.stopCurrent()
+	}
+	m.evictPooledContextLocked(contextName, "downgraded to metrics-only")
 	if m.kubeConfig.Contexts == nil {
 		m.kubeConfig.Contexts = map[string]*clientcmdapi.Context{}
 	}
@@ -1570,6 +1584,16 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // pooled spins. The active path calls it while holding m.mu (unchanged).
 //
 // Mirrors what connectToContextLocked used to inline — keep the two in sync.
+//
+// DefaultConnectTimeout is the hard outer deadline on a single cluster connect
+// (startRuntime). Start() bounds its own WaitForCacheSync, but a stuck agent-proxy can
+// wedge the live calls a connect makes BEFORE the sync (discovery, the permission probe)
+// where no inner deadline applies — that was the ~8-minute spin in the goroutine dump.
+// Bounding the WHOLE connect lets a stuck agent fail fast (cluster shown unreachable)
+// instead of stranding the pool placeholder + starving m.mu readers via writer priority.
+// Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go; 0 = unbounded (not advised).
+var DefaultConnectTimeout = 25 * time.Second
+
 func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout time.Duration) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
@@ -1577,9 +1601,32 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	}
 	// Apply the live cache-sync deadline before Start() (default when 0).
 	connector.SetCacheSyncTimeout(cacheSyncTimeout)
-	if err := connector.Start(); err != nil {
+	// Hard outer deadline on the WHOLE connect. Start() bounds its own WaitForCacheSync,
+	// but a stuck agent-proxy can wedge the live calls before the sync (discovery, the
+	// permission probe) where no inner deadline applies — the goroutine-dump hang was an
+	// ~8-minute spin here, stranding the pool placeholder. Race Start against
+	// DefaultConnectTimeout; on timeout, Stop() the connector (closes stopCh) and fail
+	// fast so getOrSpinPooled's error path closes the placeholder ready (cluster shown
+	// unreachable) instead of hanging. The buffered chan keeps the Start goroutine from
+	// leaking when we time out — it sends and exits once Start unwinds.
+	connectDone := make(chan error, 1)
+	go func() { connectDone <- connector.Start() }()
+	var connectErr error
+	if to := DefaultConnectTimeout; to > 0 {
+		timer := time.NewTimer(to)
+		select {
+		case connectErr = <-connectDone:
+			timer.Stop()
+		case <-timer.C:
+			connector.Stop() // best-effort: closes stopCh, unblocks WaitForCacheSync
+			return nil, fmt.Errorf("connect timed out after %s for context %s — agent may be stuck", to, contextName)
+		}
+	} else {
+		connectErr = <-connectDone
+	}
+	if connectErr != nil {
 		connector.Stop()
-		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, err)
+		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, connectErr)
 	}
 
 	// Shared broadcast gate for this runtime — starts enabled. The caller

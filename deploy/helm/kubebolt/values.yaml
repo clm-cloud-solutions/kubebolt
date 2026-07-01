@@ -347,6 +347,14 @@ copilot:
 #       value: "48h"
 #     - name: KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT
 #       value: "10m"
+#     # Agent-proxy resilience timeouts (widen under heavy agent concurrency, tighten to
+#     # fail faster). Connect deadline / stuck-watchdog (0 disables) / request fallback.
+#     - name: KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT
+#       value: "25s"
+#     - name: KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT
+#       value: "45s"
+#     - name: KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT
+#       value: "30s"
 #     # Air-gapped installs: disable the GitHub update-check so the
 #     # backend never reaches out to api.github.com.
 #     - name: KUBEBOLT_UPDATE_CHECK_ENABLED
