@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Cpu, MemoryStick, Network, HardDrive } from 'lucide-react'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
+import { useMetricsOnly } from '@/hooks/useMetricsOnly'
+import { useDeploysVM } from '@/hooks/useDeploysVM'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
@@ -59,25 +61,40 @@ export function CapacityPage() {
     })
   }
 
+  // A metrics-only cluster has no live connector, so the agent-integration status is an
+  // unreliable gate (it flaps when the agent is offline). But the Capacity trends come
+  // straight from VictoriaMetrics, which the agent populates regardless — so for a
+  // metrics-only cluster, treat the agent as present and render the VM trends instead of
+  // gating behind an "install the agent" prompt.
+  const isMetricsOnly = useMetricsOnly()
   const { data: agent, isLoading: agentLoading } = useQuery({
     queryKey: ['integration', 'agent'],
     queryFn: () => api.getIntegration('agent'),
     refetchInterval: 10_000,
     staleTime: 5_000,
   })
-  const installed = !!agent && (agent.status === 'installed' || agent.status === 'degraded')
+  const installed = isMetricsOnly || (!!agent && (agent.status === 'installed' || agent.status === 'degraded'))
 
   // Deploys feed BOTH the chart markers and the standalone Recent
-  // Deploys panel. One query, two consumers — the panel decides its
+  // Deploys panel. One source, two consumers — the panel decides its
   // own visibility (returns null on empty) and the markers respect
   // the showDeploys toggle.
-  const { data: deploys } = useQuery({
+  //
+  // Two sources, picked by cluster mode: the connector walks ReplicaSets
+  // (live API) for agent-proxy clusters, but a metrics-only cluster has no
+  // connector — so it derives the same rollouts from KSM in VM
+  // (kube_replicaset_created joined to its Deployment owner). The connector
+  // query is disabled on metrics-only so it doesn't 503-spam.
+  const { data: connectorDeploys } = useQuery({
     queryKey: ['deploys', rangeMinutes],
     queryFn: () => api.getDeploys({ windowMinutes: rangeMinutes }),
+    enabled: !isMetricsOnly,
     refetchInterval: 30_000,
     staleTime: 15_000,
     retry: false,
   })
+  const vmDeploys = useDeploysVM(rangeMinutes, isMetricsOnly)
+  const deploys = isMetricsOnly ? vmDeploys : connectorDeploys
   const eventMarkers: EventMarker[] = showDeploys
     ? (deploys ?? []).map((d) => ({
         // Backend emits RFC3339; chart axis is unix seconds.

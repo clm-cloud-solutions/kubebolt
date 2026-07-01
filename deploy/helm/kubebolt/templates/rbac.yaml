@@ -43,8 +43,8 @@ rules:
   # Optional CRDs surfaced as first-class read-only views in 1.14. Same
   # pattern as the gateway.networking.k8s.io grant above: harmless when the
   # CRD isn't installed (the rule matches nothing), and the moment the
-  # operator adds cert-manager / ArgoCD / VPA, KubeBolt lists them with no
-  # RBAC change. Probed by SelfSubjectAccessReview at connect time.
+  # operator adds cert-manager / ArgoCD / VPA / Cilium, KubeBolt lists them
+  # with no RBAC change. Probed by SelfSubjectAccessReview at connect time.
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "watch"]
@@ -53,6 +53,13 @@ rules:
     verbs: ["get", "list", "watch"]
   - apiGroups: ["autoscaling.k8s.io"]
     resources: ["verticalpodautoscalers"]
+    verbs: ["get", "list", "watch"]
+  # Cilium network policy CRDs. The agent's wildcard reader/operator role
+  # covers these via `*/*`, but this chart's in-cluster API role enumerates
+  # apiGroups explicitly, so cilium.io must be listed for the Cilium Policies
+  # views to light up (matches the cilium.io probe in cluster/permissions.go).
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
