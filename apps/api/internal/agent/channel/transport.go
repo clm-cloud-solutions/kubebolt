@@ -83,6 +83,23 @@ type AgentProxyTransport struct {
 // KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT.
 var DefaultProxyTimeout = 30 * time.Second
 
+// RequestTimeoutProvider, when set, resolves the per-request proxy timeout LIVE
+// on every RoundTrip — so Settings → General can retune it with no restart.
+// main.go wires it to settingsRuntime.GeneralGlobal().RequestTimeoutSeconds. nil
+// or a non-positive result falls back to the transport's DefaultTimeout baseline.
+var RequestTimeoutProvider func() time.Duration
+
+// effectiveTimeout is the live per-request timeout: the provider's value when
+// positive, else the transport's DefaultTimeout (env baseline captured at build).
+func (t *AgentProxyTransport) effectiveTimeout() time.Duration {
+	if RequestTimeoutProvider != nil {
+		if d := RequestTimeoutProvider(); d > 0 {
+			return d
+		}
+	}
+	return t.DefaultTimeout
+}
+
 // NewAgentProxyTransport returns a transport ready to use with
 // rest.Config{Transport: t}. Setting DefaultTimeout=0 keeps the value
 // unbounded for tests; production callers should rely on the default.
@@ -179,13 +196,14 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return nil, err
 	}
 
+	effTimeout := t.effectiveTimeout()
 	kubeReq := &agentv2.KubeProxyRequest{
 		Method:         req.Method,
 		Path:           req.URL.RequestURI(),
 		Headers:        flattenRequestHeaders(req.Header, isUpgrade),
 		Body:           body,
 		Watch:          isWatch,
-		TimeoutSeconds: timeoutSecondsFor(req, t.DefaultTimeout, isWatch || isUpgrade),
+		TimeoutSeconds: timeoutSecondsFor(req, effTimeout, isWatch || isUpgrade),
 	}
 	backendMsg := &agentv2.BackendMessage{
 		RequestId: requestID,
@@ -214,8 +232,8 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		timer    *time.Timer
 		timeoutC <-chan time.Time
 	)
-	if _, ok := ctx.Deadline(); !ok && t.DefaultTimeout > 0 {
-		timer = time.NewTimer(t.DefaultTimeout)
+	if _, ok := ctx.Deadline(); !ok && effTimeout > 0 {
+		timer = time.NewTimer(effTimeout)
 		defer timer.Stop()
 		timeoutC = timer.C
 	}
@@ -232,7 +250,7 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 		return nil, ctx.Err()
 	case <-timeoutC:
 		cancel()
-		return nil, fmt.Errorf("agent-proxy: timeout after %s", t.DefaultTimeout)
+		return nil, fmt.Errorf("agent-proxy: timeout after %s", effTimeout)
 	case <-agent.Closed():
 		return nil, ErrAgentClosed
 	}

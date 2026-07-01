@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -957,35 +958,61 @@ func main() {
 			)
 		}
 	}
-	// Agent-proxy resilience timeouts — all configurable so operators can WIDEN them
-	// under heavy agent concurrency or TIGHTEN them to fail faster. Mirror the
-	// idle-timeout parse: warn + keep the default on a bad value.
-	if v := os.Getenv("KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			cluster.DefaultConnectTimeout = d
-			slog.Info("agent-proxy connect timeout configured", slog.Duration("timeout", d))
-		} else {
-			slog.Warn("invalid KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT, using default",
-				slog.String("requested", v), slog.Duration("default", cluster.DefaultConnectTimeout))
+	// Agent-proxy resilience timeouts — install-global IngestChannel PLATFORM
+	// settings, tunable LIVE via Settings → Agents & Ingest (no restart). The env
+	// baselines (KUBEBOLT_AGENT_PROXY_{CONNECT,STUCK,REQUEST}_TIMEOUT) flow through
+	// config.LoadIngestChannelConfig; the package vars below are the fallback used
+	// when settings are unavailable (auth disabled) and by the live providers wired
+	// just after. Operators WIDEN under heavy agent concurrency or TIGHTEN to fail
+	// faster; stuck=0 disables the watchdog.
+	icBaseline := config.LoadIngestChannelConfig()
+	cluster.DefaultConnectTimeout = time.Duration(icBaseline.ConnectTimeoutSeconds) * time.Second
+	channel.StuckTimeout = time.Duration(icBaseline.StuckTimeoutSeconds) * time.Second
+	channel.DefaultProxyTimeout = time.Duration(icBaseline.RequestTimeoutSeconds) * time.Second
+	slog.Info("agent-proxy resilience timeouts",
+		slog.Duration("connect", cluster.DefaultConnectTimeout),
+		slog.Duration("stuck", channel.StuckTimeout),
+		slog.Duration("request", channel.DefaultProxyTimeout),
+	)
+	// Live providers read the resolved IngestChannel setting on each use (connect
+	// deadline per cold connect, request timeout per proxied call). Fall back to
+	// the env baseline via config when settingsRuntime is unavailable. The
+	// stuck-watchdog provider is a Server option (WithStuckTimeoutFunc), wired at
+	// NewServer below since it belongs to the ingest server.
+	agentProxySecs := func(pick func(config.IngestChannelConfig) int) int {
+		if settingsRuntime != nil {
+			return pick(settingsRuntime.IngestChannel())
+		}
+		return pick(config.LoadIngestChannelConfig())
+	}
+	// On-change observability: each provider logs when the resolved value
+	// changes, AT THE POINT OF USE (next connect / watchdog tick / proxied
+	// request). So a Settings → Agents & Ingest edit shows up in the API log
+	// as proof the runtime picked it up live — no restart. atomic.Swap dedups
+	// the log across the concurrent watchdog/request goroutines. The first read
+	// logs the boot value (prev=0), which also confirms the env baseline.
+	var lastConnectSecs, lastStuckSecs, lastRequestSecs atomic.Int64
+	logTimeoutChange := func(name string, last *atomic.Int64, secs int) {
+		if prev := last.Swap(int64(secs)); prev != int64(secs) {
+			slog.Info("agent-proxy timeout in effect (live from Settings → Agents & Ingest)",
+				slog.String("timeout", name),
+				slog.Int("seconds", secs),
+				slog.Int64("previous_seconds", prev))
 		}
 	}
-	if v := os.Getenv("KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			channel.StuckTimeout = d
-			slog.Info("agent-proxy stuck-watchdog timeout configured", slog.Duration("timeout", d))
-		} else {
-			slog.Warn("invalid KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT, using default",
-				slog.String("requested", v), slog.Duration("default", channel.StuckTimeout))
-		}
+	agentProxyTimeout := func(name string, last *atomic.Int64, pick func(config.IngestChannelConfig) int) time.Duration {
+		secs := agentProxySecs(pick)
+		logTimeoutChange(name, last, secs)
+		return time.Duration(secs) * time.Second
 	}
-	if v := os.Getenv("KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
-			channel.DefaultProxyTimeout = d
-			slog.Info("agent-proxy request timeout configured", slog.Duration("timeout", d))
-		} else {
-			slog.Warn("invalid KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT, using default",
-				slog.String("requested", v), slog.Duration("default", channel.DefaultProxyTimeout))
-		}
+	manager.SetConnectTimeoutProvider(func() time.Duration {
+		return agentProxyTimeout("connect", &lastConnectSecs, func(ic config.IngestChannelConfig) int { return ic.ConnectTimeoutSeconds })
+	})
+	channel.RequestTimeoutProvider = func() time.Duration {
+		return agentProxyTimeout("request", &lastRequestSecs, func(ic config.IngestChannelConfig) int { return ic.RequestTimeoutSeconds })
+	}
+	stuckTimeoutProvider := func() time.Duration {
+		return agentProxyTimeout("stuck", &lastStuckSecs, func(ic config.IngestChannelConfig) int { return ic.StuckTimeoutSeconds })
 	}
 	// Spec #09 V2 — hot-reload the tunnel idle timeout from the
 	// settings runtime. A 30s ticker re-reads the value and rewrites
@@ -1058,7 +1085,7 @@ func main() {
 		if err != nil {
 			slog.Warn("failed to list persisted agent records on boot", slog.String("error", err.Error()))
 		} else {
-			seen := make(map[string]string)      // cluster_id → display name
+			seen := make(map[string]string)        // cluster_id → display name
 			kubeProxyKeys := make(map[string]bool) // cluster_ids whose agent advertised kube-proxy
 			for i := range records {
 				rec := &records[i]
@@ -1264,6 +1291,8 @@ func main() {
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
 		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
+		// Live stuck-watchdog window (Settings → Agents & Ingest, no restart; 0 disables).
+		agent.WithStuckTimeoutFunc(stuckTimeoutProvider),
 		agent.WithGRPCIngestMetrics(agentGrpcMetrics),
 		agent.WithSelfClusterID(selfClusterID),
 		// Meter agent-ingested samples per tenant through the same usage seam
