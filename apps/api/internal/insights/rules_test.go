@@ -7,6 +7,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
@@ -92,7 +93,8 @@ func TestOOMKilledRule_Fires(t *testing.T) {
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name: "worker",
 		LastTerminationState: corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137},
+			// Recent OOM — within recentEventWindow.
+			Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(time.Now())},
 		},
 	}}
 	state := &ClusterState{Pods: []*corev1.Pod{p}}
@@ -102,6 +104,22 @@ func TestOOMKilledRule_Fires(t *testing.T) {
 	}
 	if got[0].Title != "Container OOMKilled" {
 		t.Errorf("title = %q", got[0].Title)
+	}
+}
+
+// A recovered OOM (last termination well outside the window) must STOP firing so
+// the engine resolves it — the lingering-forever bug this audit fixes (Bug A).
+func TestOOMKilledRule_ResolvesWhenStale(t *testing.T) {
+	p := pod("production", "worker")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name: "worker",
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(time.Now().Add(-2 * time.Hour))},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := oomKilledRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("stale OOM should not fire (must resolve), got %d insights", len(got))
 	}
 }
 
@@ -405,12 +423,141 @@ func TestFrequentRestartsRule_FiresAbove10(t *testing.T) {
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:         "flaky",
 		RestartCount: 12,
-		// Not crash-looping — just frequent restarts
+		// Not crash-looping — just frequent restarts, the latest one recent.
 		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", FinishedAt: metav1.NewTime(time.Now())},
+		},
 	}}
 	state := &ClusterState{Pods: []*corev1.Pod{p}}
 	if got := frequentRestartsRule().Evaluate(state); len(got) != 1 {
 		t.Errorf("frequent restarts should fire at 12 restarts, got %d insights", len(got))
+	}
+}
+
+// A high cumulative RestartCount whose last restart is old (pod stable for a
+// while) must STOP firing — RestartCount never resets, so recency is what clears
+// it (Bug A). Without this gate the warning showed for days.
+func TestFrequentRestartsRule_ResolvesWhenStable(t *testing.T) {
+	p := pod("default", "flaky")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "flaky",
+		RestartCount: 12,
+		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", FinishedAt: metav1.NewTime(time.Now().Add(-3 * time.Hour))},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := frequentRestartsRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("stable pod (old last restart) should not fire, got %d insights", len(got))
+	}
+}
+
+// Evicted pods linger as dead objects until GC — a recent eviction fires, a
+// long-dead one resolves (Bug A).
+func TestEvictedPodsRule_RecencyGate(t *testing.T) {
+	recent := pod("default", "evicted-recent")
+	recent.Status.Phase = corev1.PodFailed
+	recent.Status.Reason = "Evicted"
+	recent.Status.Conditions = []corev1.PodCondition{{LastTransitionTime: metav1.NewTime(time.Now())}}
+	if got := evictedPodsRule().Evaluate(&ClusterState{Pods: []*corev1.Pod{recent}}); len(got) != 1 {
+		t.Errorf("recent eviction should fire, got %d insights", len(got))
+	}
+
+	stale := pod("default", "evicted-stale")
+	stale.Status.Phase = corev1.PodFailed
+	stale.Status.Reason = "Evicted"
+	stale.CreationTimestamp = metav1.NewTime(time.Now().Add(-4 * time.Hour))
+	stale.Status.Conditions = []corev1.PodCondition{{LastTransitionTime: metav1.NewTime(time.Now().Add(-4 * time.Hour))}}
+	if got := evictedPodsRule().Evaluate(&ClusterState{Pods: []*corev1.Pod{stale}}); len(got) != 0 {
+		t.Errorf("stale evicted pod should not fire (must resolve), got %d insights", len(got))
+	}
+}
+
+func cpuLimitPod(ns, name, cpu string) *corev1.Pod {
+	p := pod(ns, name)
+	p.Spec.Containers = []corev1.Container{{
+		Name:      name,
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse(cpu)}},
+	}}
+	return p
+}
+
+// With the dampening window at 0, a pod over the CPU threshold fires immediately.
+func TestCPUThrottleRule_FiresWhenSustained(t *testing.T) {
+	old := sustainedMetricWindow
+	sustainedMetricWindow = 0
+	defer func() { sustainedMetricWindow = old }()
+
+	p := cpuLimitPod("default", "hot", "100m")
+	state := &ClusterState{Pods: []*corev1.Pod{p}, PodMetrics: map[string]*models.MetricPoint{"default/hot": {CPUUsage: 90}}}
+	if got := cpuThrottleRiskRule().Evaluate(state); len(got) != 1 {
+		t.Fatalf("want 1 CPU throttle insight, got %d", len(got))
+	}
+}
+
+// A brief spike (over threshold but not yet sustained past the window) is
+// dampened — no insight on the first eval — so the rule doesn't flap.
+func TestCPUThrottleRule_DampensBriefSpike(t *testing.T) {
+	old := sustainedMetricWindow
+	sustainedMetricWindow = time.Hour
+	defer func() { sustainedMetricWindow = old }()
+
+	p := cpuLimitPod("default", "spike", "100m")
+	state := &ClusterState{Pods: []*corev1.Pod{p}, PodMetrics: map[string]*models.MetricPoint{"default/spike": {CPUUsage: 95}}}
+	if got := cpuThrottleRiskRule().Evaluate(state); len(got) != 0 {
+		t.Fatalf("brief spike should be dampened, got %d insights", len(got))
+	}
+}
+
+func TestMemoryPressureRule_FiresWhenSustained(t *testing.T) {
+	old := sustainedMetricWindow
+	sustainedMetricWindow = 0
+	defer func() { sustainedMetricWindow = old }()
+
+	p := pod("default", "leaky")
+	p.Spec.Containers = []corev1.Container{{
+		Name:      "leaky",
+		Resources: corev1.ResourceRequirements{Limits: corev1.ResourceList{corev1.ResourceMemory: resource.MustParse("100Mi")}},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}, PodMetrics: map[string]*models.MetricPoint{"default/leaky": {MemUsage: 95 * 1024 * 1024}}}
+	if got := memoryPressureRule().Evaluate(state); len(got) != 1 {
+		t.Fatalf("want 1 memory pressure insight, got %d", len(got))
+	}
+}
+
+// resourceUnderrequest is metric-based too, so it gets the same sustained-window.
+func TestResourceUnderrequestRule_FiresWhenSustained(t *testing.T) {
+	old := sustainedMetricWindow
+	sustainedMetricWindow = 0
+	defer func() { sustainedMetricWindow = old }()
+
+	p := pod("default", "greedy")
+	p.Spec.Containers = []corev1.Container{{
+		Name:      "greedy",
+		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}},
+	}}
+	// Usage 300m vs 100m request → request is 33% of usage (< 40%) → fires.
+	state := &ClusterState{Pods: []*corev1.Pod{p}, PodMetrics: map[string]*models.MetricPoint{"default/greedy": {CPUUsage: 300}}}
+	if got := resourceUnderrequestRule().Evaluate(state); len(got) != 1 {
+		t.Fatalf("want 1 CPU underrequest insight, got %d", len(got))
+	}
+}
+
+func TestResourceUnderrequestRule_DampensBriefSpike(t *testing.T) {
+	old := sustainedMetricWindow
+	sustainedMetricWindow = time.Hour
+	defer func() { sustainedMetricWindow = old }()
+
+	p := pod("default", "spiky")
+	p.Spec.Containers = []corev1.Container{{
+		Name:      "spiky",
+		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m")}},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}, PodMetrics: map[string]*models.MetricPoint{"default/spiky": {CPUUsage: 500}}}
+	if got := resourceUnderrequestRule().Evaluate(state); len(got) != 0 {
+		t.Fatalf("brief spike should be dampened, got %d insights", len(got))
 	}
 }
 

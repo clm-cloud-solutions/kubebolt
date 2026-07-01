@@ -3,6 +3,7 @@ package insights
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -310,6 +311,36 @@ func crashLoopRule() Rule {
 	}
 }
 
+// recentEventWindow bounds how long after a container termination (OOM,
+// restart) or a pod eviction the corresponding insight keeps firing. Past it,
+// the rule stops producing the insight and the engine resolves it — a one-off
+// event that already recovered must NOT linger "forever" on the sticky
+// lastTerminationState / dead evicted-pod object. Mirrors the time-windowed
+// treatment the RecentOOMKills panel uses. See docs/insights-rule-lifecycle-audit.md (Bug A).
+const recentEventWindow = 30 * time.Minute
+
+// terminatedRecently reports whether a container's last termination finished
+// within recentEventWindow. A zero/absent FinishedAt reads as NOT recent — we
+// can't confirm recency, so we don't fire; this is what clears the insight once
+// the OOM/restart ages out.
+func terminatedRecently(t *corev1.ContainerStateTerminated) bool {
+	return t != nil && !t.FinishedAt.IsZero() && time.Since(t.FinishedAt.Time) < recentEventWindow
+}
+
+// podFailedRecently approximates when a Failed/Evicted pod entered that state
+// (most recent status-condition transition, else creation time) and reports
+// whether it was within recentEventWindow — evicted pods linger as dead objects
+// until GC, so gate on recency instead of showing them forever.
+func podFailedRecently(pod *corev1.Pod) bool {
+	latest := pod.CreationTimestamp.Time
+	for _, c := range pod.Status.Conditions {
+		if c.LastTransitionTime.Time.After(latest) {
+			latest = c.LastTransitionTime.Time
+		}
+	}
+	return !latest.IsZero() && time.Since(latest) < recentEventWindow
+}
+
 // 2. OOMKilled
 func oomKilledRule() Rule {
 	return Rule{
@@ -320,7 +351,12 @@ func oomKilledRule() Rule {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
 				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.LastTerminationState.Terminated != nil && cs.LastTerminationState.Terminated.Reason == "OOMKilled" {
+					// Gate on recency: LastTerminationState is sticky (it survives a
+					// healthy restart), so without a window a one-off OOM that already
+					// recovered shows forever. Only fire while the OOM is recent (Bug A).
+					if cs.LastTerminationState.Terminated != nil &&
+						cs.LastTerminationState.Terminated.Reason == "OOMKilled" &&
+						terminatedRecently(cs.LastTerminationState.Terminated) {
 						insights = append(insights, newInsight(
 							"critical",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
@@ -336,14 +372,56 @@ func oomKilledRule() Rule {
 	}
 }
 
-// 3. CPU throttle risk (usage > 80% of limit)
+// sustainedMetricWindow is how long a pod's metric must stay over a rule's
+// threshold before the insight fires — dampens brief spikes so a metric rule
+// doesn't flap new→resolved on a borderline value. Package var so tests can set
+// it. See docs/insights-rule-lifecycle-audit.md (flap-dampening).
+var sustainedMetricWindow = 2 * time.Minute
+
+// sustainedOver tracks, per resource key, since when it has been continuously
+// over threshold. One instance per rule closure — rules are per-engine and
+// evaluated serially; the mutex just guards against an overlapping on-demand eval.
+type sustainedOver struct {
+	mu    sync.Mutex
+	since map[string]time.Time
+}
+
+func newSustainedOver() *sustainedOver { return &sustainedOver{since: map[string]time.Time{}} }
+
+// fired takes the keys currently over threshold this eval and returns the subset
+// that has been over for at least sustainedMetricWindow. Keys no longer over are
+// forgotten, so a recovered-then-relapsed pod restarts its clock.
+func (s *sustainedOver) fired(over map[string]bool) map[string]bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	out := map[string]bool{}
+	for k := range over {
+		if s.since[k].IsZero() {
+			s.since[k] = now
+		}
+		if now.Sub(s.since[k]) >= sustainedMetricWindow {
+			out[k] = true
+		}
+	}
+	for k := range s.since {
+		if !over[k] {
+			delete(s.since, k)
+		}
+	}
+	return out
+}
+
+// 3. CPU throttle risk (usage > 80% of limit, sustained)
 func cpuThrottleRiskRule() Rule {
+	tracker := newSustainedOver()
 	return Rule{
 		ID:       "cpu-throttle-risk",
 		Name:     "CPU Throttle Risk",
 		Severity: "warning",
 		Evaluate: func(state *ClusterState) []models.Insight {
-			var insights []models.Insight
+			over := map[string]bool{}
+			pending := map[string]models.Insight{}
 			for _, pod := range state.Pods {
 				key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 				metrics := state.PodMetrics[key]
@@ -355,13 +433,23 @@ func cpuThrottleRiskRule() Rule {
 					cpuLimit += c.Resources.Limits.Cpu().MilliValue()
 				}
 				if cpuLimit > 0 && float64(metrics.CPUUsage)/float64(cpuLimit) > 0.8 {
-					insights = append(insights, newInsight(
+					over[key] = true
+					pending[key] = newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"CPU Throttle Risk",
 						fmt.Sprintf("Pod %s/%s is using %.0f%% of CPU limit (%dm/%dm)", pod.Namespace, pod.Name, float64(metrics.CPUUsage)/float64(cpuLimit)*100, metrics.CPUUsage, cpuLimit),
 						"Consider increasing CPU limits or optimizing CPU-intensive operations.",
-					))
+					)
+				}
+			}
+			// Emit only pods sustained over the window; re-walk state.Pods so the
+			// output order stays deterministic.
+			fired := tracker.fired(over)
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				if key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name); fired[key] {
+					insights = append(insights, pending[key])
 				}
 			}
 			return insights
@@ -369,14 +457,16 @@ func cpuThrottleRiskRule() Rule {
 	}
 }
 
-// 4. Memory pressure (usage > 85% of limit)
+// 4. Memory pressure (usage > 85% of limit, sustained)
 func memoryPressureRule() Rule {
+	tracker := newSustainedOver()
 	return Rule{
 		ID:       "memory-pressure",
 		Name:     "Memory Pressure",
 		Severity: "warning",
 		Evaluate: func(state *ClusterState) []models.Insight {
-			var insights []models.Insight
+			over := map[string]bool{}
+			pending := map[string]models.Insight{}
 			for _, pod := range state.Pods {
 				key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 				metrics := state.PodMetrics[key]
@@ -389,13 +479,21 @@ func memoryPressureRule() Rule {
 				}
 				if memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > 0.85 {
 					pct := float64(metrics.MemUsage) / float64(memLimit) * 100
-					insights = append(insights, newInsight(
+					over[key] = true
+					pending[key] = newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"Memory Pressure",
 						fmt.Sprintf("Pod %s/%s is using %.0f%% of memory limit", pod.Namespace, pod.Name, pct),
 						"Increase memory limits or investigate memory usage patterns to avoid OOMKill.",
-					))
+					)
+				}
+			}
+			fired := tracker.fired(over)
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				if key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name); fired[key] {
+					insights = append(insights, pending[key])
 				}
 			}
 			return insights
@@ -403,14 +501,19 @@ func memoryPressureRule() Rule {
 	}
 }
 
-// 5. Resource underrequest (requests < 40% of actual usage)
+// 5. Resource underrequest (requests < 40% of actual usage, sustained)
 func resourceUnderrequestRule() Rule {
+	tracker := newSustainedOver()
 	return Rule{
 		ID:       "resource-underrequest",
 		Name:     "Resource Under-Request",
 		Severity: "info",
 		Evaluate: func(state *ClusterState) []models.Insight {
-			var insights []models.Insight
+			// Two independent metric conditions per pod (cpu / mem), so track
+			// them under distinct keys — a pod can be CPU-underrequested but not
+			// memory-underrequested, and each dampens on its own clock.
+			over := map[string]bool{}
+			pending := map[string]models.Insight{}
 			for _, pod := range state.Pods {
 				key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
 				metrics := state.PodMetrics[key]
@@ -423,22 +526,37 @@ func resourceUnderrequestRule() Rule {
 					memReq += c.Resources.Requests.Memory().Value()
 				}
 				if cpuReq > 0 && metrics.CPUUsage > 0 && float64(cpuReq)/float64(metrics.CPUUsage) < 0.4 {
-					insights = append(insights, newInsight(
+					over[key+"/cpu"] = true
+					pending[key+"/cpu"] = newInsight(
 						"info",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"CPU Request Too Low",
 						fmt.Sprintf("Pod %s/%s CPU request (%dm) is less than 40%% of actual usage (%dm)", pod.Namespace, pod.Name, cpuReq, metrics.CPUUsage),
 						"Increase CPU requests to better reflect actual usage for improved scheduling.",
-					))
+					)
 				}
 				if memReq > 0 && metrics.MemUsage > 0 && float64(memReq)/float64(metrics.MemUsage) < 0.4 {
-					insights = append(insights, newInsight(
+					over[key+"/mem"] = true
+					pending[key+"/mem"] = newInsight(
 						"info",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
 						"Memory Request Too Low",
 						fmt.Sprintf("Pod %s/%s memory request is less than 40%% of actual usage", pod.Namespace, pod.Name),
 						"Increase memory requests to better reflect actual usage for improved scheduling.",
-					))
+					)
+				}
+			}
+			// Emit only the dimensions sustained over the window; re-walk pods so
+			// output order stays deterministic (cpu before mem, per pod).
+			fired := tracker.fired(over)
+			var insights []models.Insight
+			for _, pod := range state.Pods {
+				key := fmt.Sprintf("%s/%s", pod.Namespace, pod.Name)
+				if fired[key+"/cpu"] {
+					insights = append(insights, pending[key+"/cpu"])
+				}
+				if fired[key+"/mem"] {
+					insights = append(insights, pending[key+"/mem"])
 				}
 			}
 			return insights
@@ -596,7 +714,10 @@ func frequentRestartsRule() Rule {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
 				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.RestartCount > 5 {
+					// RestartCount is cumulative (resets only on pod recreation), so
+					// pair it with a recent termination — a pod that churned once and
+					// has been stable for days no longer fires the warning (Bug A).
+					if cs.RestartCount > 5 && terminatedRecently(cs.LastTerminationState.Terminated) {
 						insights = append(insights, newInsight(
 							"warning",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
@@ -918,7 +1039,9 @@ func evictedPodsRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
-				if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" {
+				// Evicted pods stay in Failed/Evicted until GC, so gate on recency —
+				// the insight must not linger on a long-dead object (Bug A).
+				if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" && podFailedRecently(pod) {
 					insights = append(insights, newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
