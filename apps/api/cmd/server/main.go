@@ -957,6 +957,36 @@ func main() {
 			)
 		}
 	}
+	// Agent-proxy resilience timeouts — all configurable so operators can WIDEN them
+	// under heavy agent concurrency or TIGHTEN them to fail faster. Mirror the
+	// idle-timeout parse: warn + keep the default on a bad value.
+	if v := os.Getenv("KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			cluster.DefaultConnectTimeout = d
+			slog.Info("agent-proxy connect timeout configured", slog.Duration("timeout", d))
+		} else {
+			slog.Warn("invalid KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT, using default",
+				slog.String("requested", v), slog.Duration("default", cluster.DefaultConnectTimeout))
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			channel.StuckTimeout = d
+			slog.Info("agent-proxy stuck-watchdog timeout configured", slog.Duration("timeout", d))
+		} else {
+			slog.Warn("invalid KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT, using default",
+				slog.String("requested", v), slog.Duration("default", channel.StuckTimeout))
+		}
+	}
+	if v := os.Getenv("KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
+			channel.DefaultProxyTimeout = d
+			slog.Info("agent-proxy request timeout configured", slog.Duration("timeout", d))
+		} else {
+			slog.Warn("invalid KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT, using default",
+				slog.String("requested", v), slog.Duration("default", channel.DefaultProxyTimeout))
+		}
+	}
 	// Spec #09 V2 — hot-reload the tunnel idle timeout from the
 	// settings runtime. A 30s ticker re-reads the value and rewrites
 	// the package-level default; subsequent tunnel constructions pick

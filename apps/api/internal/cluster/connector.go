@@ -105,7 +105,7 @@ type Connector struct {
 	collector     metricsCollector
 	topologyTimer *time.Timer
 	permissions   ResourcePermissions
-	canWrite      bool // SA has write RBAC (operator tier) vs read-only (reader); probed at Start
+	canWrite      atomic.Bool // SA has write RBAC (operator tier) vs read-only (reader); probed at Start + refreshed on the reachability TTL (warmServerVersion) so the badge tracks the agent's CURRENT RBAC
 
 	// k8sVersionFetching guards the async ServerVersion() warm (Finding #4) so the
 	// overview never blocks on the slow agent-proxy round-trip; the same warm also
@@ -253,7 +253,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	}
 
 	c.permissions = probePermissions(clientset)
-	c.canWrite = probeCanWrite(clientset)
+	c.canWrite.Store(probeCanWrite(clientset))
 	c.setupInformers()
 	return c, nil
 }
@@ -275,7 +275,7 @@ func (c *Connector) Permissions() ResourcePermissions {
 // CanWrite reports whether the connected ServiceAccount has write RBAC — the marker
 // that distinguishes an agent-proxy "operator" cluster from a read-only "reader" one.
 func (c *Connector) CanWrite() bool {
-	return c.canWrite
+	return c.canWrite.Load()
 }
 
 // RestConfig returns the Kubernetes REST config for this cluster connection.
@@ -1085,6 +1085,14 @@ func (c *Connector) serverVersionCached() (version, platform string) {
 // overview retries. Guarded by k8sVersionFetching so only one fetch is in flight.
 func (c *Connector) warmServerVersion() {
 	sv, err := c.clientset.Discovery().ServerVersion()
+	if err == nil {
+		// Refresh the write-RBAC marker (reader vs operator) on the same TTL so the badge
+		// tracks the agent's CURRENT RBAC, not a value cached once at connect — which goes
+		// stale if the agent is reconfigured, or the first probe caught a transient state
+		// (e.g. RBAC mid-rollout). Live SSAR, off the request path; the atomic store needs
+		// no lock.
+		c.canWrite.Store(probeCanWrite(c.clientset))
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.k8sVersionFetching = false
