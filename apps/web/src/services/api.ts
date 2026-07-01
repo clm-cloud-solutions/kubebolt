@@ -1640,6 +1640,10 @@ export interface IngestChannelEffective {
   promWriteDefaultMaxActiveSeriesGlobal: number
   // Tunnels.
   agentTunnelIdleTimeoutSecs: number
+  // Agent-proxy resilience (live-tunable).
+  connectTimeoutSeconds: number
+  stuckTimeoutSeconds: number
+  requestTimeoutSeconds: number
 }
 
 export interface IngestChannelStored {
@@ -1659,6 +1663,9 @@ export interface IngestChannelStored {
   promWriteDefaultMaxActiveSeries?: number
   promWriteDefaultMaxActiveSeriesGlobal?: number
   agentTunnelIdleTimeoutSecs?: number
+  connectTimeoutSeconds?: number
+  stuckTimeoutSeconds?: number
+  requestTimeoutSeconds?: number
 }
 
 export interface IngestChannelSettingsResponse {

@@ -76,6 +76,11 @@ type Server struct {
 	// nil means "fall back to false"; main.go plugs in a closure that
 	// reads `settingsRuntime.IngestChannel().AgentAutoRegisterClusters`.
 	autoRegisterClusters func() bool
+	// stuckTimeoutFn resolves the stuck-agent watchdog window LIVE (Settings →
+	// General, no restart). Read on every watchdog tick so a change takes effect
+	// on the next tick. nil / non-positive → channel.StuckTimeout (env baseline);
+	// 0 disables the watchdog for that agent.
+	stuckTimeoutFn func() time.Duration
 	// selfClusterID is the kube-system namespace UID of the cluster
 	// the backend itself runs in (when running in-cluster), as
 	// discovered by DiscoverClusterID at boot. Empty when running
@@ -137,6 +142,23 @@ func WithAutoRegisterClusters(enabled bool) Option {
 // "manual register" to "auto" the moment a fleet rollout starts.
 func WithAutoRegisterClustersFunc(getter func() bool) Option {
 	return func(s *Server) { s.autoRegisterClusters = getter }
+}
+
+// WithStuckTimeoutFunc plugs a getter that resolves the stuck-agent watchdog
+// window on every tick, so Settings → General can retune (or disable, with 0)
+// the watchdog with no restart. nil getter → channel.StuckTimeout baseline.
+func WithStuckTimeoutFunc(getter func() time.Duration) Option {
+	return func(s *Server) { s.stuckTimeoutFn = getter }
+}
+
+// resolveStuckTimeout returns the live watchdog window: the wired getter's value
+// when set, else the channel.StuckTimeout package var (env baseline). A
+// non-positive result disables the watchdog.
+func (s *Server) resolveStuckTimeout() time.Duration {
+	if s.stuckTimeoutFn != nil {
+		return s.stuckTimeoutFn()
+	}
+	return channel.StuckTimeout
 }
 
 // WithGRPCIngestMetrics plugs the Prometheus counter set that powers
@@ -364,39 +386,49 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 
 		// Stuck-agent watchdog: a live-but-stuck agent keeps its gRPC stream healthy
 		// (keepalive pings pass) but stops answering kube_requests — the pipeline
-		// wedges. Detect it (pending requests + no delivery for StuckTimeout) and
+		// wedges. Detect it (pending requests + no delivery for the window) and
 		// Close() the agent; the handler loop below returns on Closed(), tearing the
-		// stream down so the agent reconnects with a fresh tunnel. 0 disables.
-		if st := channel.StuckTimeout; st > 0 {
-			go func() {
-				interval := st / 4
-				if interval > 10*time.Second {
-					interval = 10 * time.Second
+		// stream down so the agent reconnects with a fresh tunnel.
+		//
+		// The window is read LIVE each iteration (resolveStuckTimeout → Settings →
+		// General), so an admin can retune or DISABLE (window ≤ 0) it with no
+		// restart. The goroutine always runs; when disabled it just idles + skips.
+		// The tick interval tracks the current window (min(window/4, 10s), floored
+		// 1s; 10s when disabled) so responsiveness follows the setting.
+		go func() {
+			for {
+				st := s.resolveStuckTimeout()
+				interval := 10 * time.Second
+				if st > 0 && st/4 < interval {
+					interval = st / 4
 				}
 				if interval < time.Second {
 					interval = time.Second
 				}
-				ticker := time.NewTicker(interval)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-registeredAgent.Closed():
-						return
-					case <-ticker.C:
-						if registeredAgent.Pending.Pending() > 0 && registeredAgent.Pending.SinceLastDelivery() > st {
-							slog.Warn("agent stuck — force-closing channel to trigger reconnect",
-								slog.String("cluster_id", clusterID),
-								slog.String("agent_id", agentID),
-								slog.Int("pending", registeredAgent.Pending.Pending()),
-								slog.Duration("since_last_delivery", registeredAgent.Pending.SinceLastDelivery()),
-							)
-							registeredAgent.Close()
-							return
-						}
-					}
+				timer := time.NewTimer(interval)
+				select {
+				case <-registeredAgent.Closed():
+					timer.Stop()
+					return
+				case <-timer.C:
 				}
-			}()
-		}
+				// Re-read after sleeping — the setting may have changed mid-window.
+				if st = s.resolveStuckTimeout(); st <= 0 {
+					continue // watchdog disabled right now
+				}
+				if registeredAgent.Pending.Pending() > 0 && registeredAgent.Pending.SinceLastDelivery() > st {
+					slog.Warn("agent stuck — force-closing channel to trigger reconnect",
+						slog.String("cluster_id", clusterID),
+						slog.String("agent_id", agentID),
+						slog.Int("pending", registeredAgent.Pending.Pending()),
+						slog.Duration("since_last_delivery", registeredAgent.Pending.SinceLastDelivery()),
+						slog.Duration("window", st),
+					)
+					registeredAgent.Close()
+					return
+				}
+			}
+		}()
 	}
 
 	// Spec #09 V2 Item 5b — emit stream lifecycle counters that the

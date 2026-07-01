@@ -76,6 +76,12 @@ type Manager struct {
 	// built-in default. Wired from main.go to settingsRuntime.General().
 	cacheSyncTimeoutFn func() time.Duration
 
+	// connectTimeoutFn returns the live hard outer deadline on a single cluster
+	// connect (startRuntime), read per-connect so a Settings → Agents & Ingest
+	// change applies with no restart. nil / 0 → the DefaultConnectTimeout package
+	// var (env baseline). Wired from main.go to settingsRuntime.IngestChannel().
+	connectTimeoutFn func() time.Duration
+
 	// runtimes holds per-(tenant,cluster) runtimes for NON-active clusters
 	// (W2). The active cluster's runtime stays in the fields above
 	// (m.connector/collector/engine/cancelFn); lazy spin-up into this pool
@@ -254,6 +260,29 @@ func (m *Manager) resolveCacheSyncTimeoutLocked() time.Duration {
 		return m.cacheSyncTimeoutFn()
 	}
 	return 0
+}
+
+// SetConnectTimeoutProvider wires a provider for the agent-proxy connect
+// deadline, read fresh on every cold connect (Settings → Agents & Ingest changes
+// apply with no restart). Pass nil to fall back to the DefaultConnectTimeout baseline.
+func (m *Manager) SetConnectTimeoutProvider(fn func() time.Duration) {
+	m.mu.Lock()
+	m.connectTimeoutFn = fn
+	m.mu.Unlock()
+}
+
+// resolveConnectTimeoutLocked returns the live connect deadline: the wired
+// provider's value when positive, else the DefaultConnectTimeout package var
+// (env baseline). Caller holds m.mu (passed into startRuntime as a param, like
+// cacheSyncTimeout). The provider reads settingsRuntime, which has its own lock —
+// no lock-ordering issue.
+func (m *Manager) resolveConnectTimeoutLocked() time.Duration {
+	if m.connectTimeoutFn != nil {
+		if d := m.connectTimeoutFn(); d > 0 {
+			return d
+		}
+	}
+	return DefaultConnectTimeout
 }
 
 // SetAgentRegistry attaches the live AgentRegistry to the manager so
@@ -1289,12 +1318,13 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	insightStore := m.insightStore
 	tenantID := m.tenantID
 	cacheSyncTimeout := m.resolveCacheSyncTimeoutLocked()
+	connectTimeout := m.resolveConnectTimeoutLocked()
 	placeholder := &clusterRuntime{ready: make(chan struct{})}
 	m.runtimes[pk] = placeholder
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
-	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout)
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout)
 	if err != nil {
 		m.mu.Lock()
 		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
@@ -1571,7 +1601,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	// prior behavior (the ~20s connector.Start runs under the lock for a
 	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
 	// lock instead.
-	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked())
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked(), m.resolveConnectTimeoutLocked())
 	if err != nil {
 		return err
 	}
@@ -1609,7 +1639,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go; 0 = unbounded (not advised).
 var DefaultConnectTimeout = 25 * time.Second
 
-func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout time.Duration) (*clusterRuntime, error) {
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
@@ -1627,7 +1657,7 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	connectDone := make(chan error, 1)
 	go func() { connectDone <- connector.Start() }()
 	var connectErr error
-	if to := DefaultConnectTimeout; to > 0 {
+	if to := connectTimeout; to > 0 {
 		timer := time.NewTimer(to)
 		select {
 		case connectErr = <-connectDone:

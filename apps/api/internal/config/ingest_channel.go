@@ -58,6 +58,15 @@ type IngestChannelConfig struct {
 
 	// SPDY tunnels via agent-proxy.
 	AgentTunnelIdleTimeout time.Duration
+
+	// Agent-proxy resilience timeouts (seconds) — so one stuck/dead agent can't
+	// hang the API. Hot-reload: read live by the manager's connect deadline (per
+	// cold connect), the stuck-agent watchdog (per tick; 0 disables), and the
+	// per-request proxy timeout. Env baselines are Go durations
+	// (KUBEBOLT_AGENT_PROXY_{CONNECT,STUCK,REQUEST}_TIMEOUT), stored as whole seconds.
+	ConnectTimeoutSeconds int
+	StuckTimeoutSeconds   int
+	RequestTimeoutSeconds int
 }
 
 // Default values used when the corresponding env var is unset or
@@ -74,6 +83,14 @@ const (
 	DefaultRemoteWriteEnabled        = false
 	DefaultRemoteWriteAuthMode       = "disabled"
 	DefaultAgentTunnelIdleTimeout    = 5 * time.Minute
+
+	// Agent-proxy resilience baselines + floors. Stuck accepts 0 (disabled);
+	// connect/request are floored so a fat-fingered tiny value can't wedge the proxy.
+	DefaultConnectTimeoutSeconds = 25
+	DefaultStuckTimeoutSeconds   = 45
+	DefaultRequestTimeoutSeconds = 30
+	MinAgentProxyTimeoutSeconds  = 5
+	MaxAgentProxyTimeoutSeconds  = 600
 )
 
 // LoadIngestChannelConfig reads the ingest-channel env vars and returns
@@ -100,6 +117,9 @@ func LoadIngestChannelConfig() IngestChannelConfig {
 		PromWriteDefaultMaxActiveSeries:       DefaultPromWriteMaxActiveSeries,
 		PromWriteDefaultMaxActiveSeriesGlobal: 0,
 		AgentTunnelIdleTimeout:                DefaultAgentTunnelIdleTimeout,
+		ConnectTimeoutSeconds:                 DefaultConnectTimeoutSeconds,
+		StuckTimeoutSeconds:                   DefaultStuckTimeoutSeconds,
+		RequestTimeoutSeconds:                 DefaultRequestTimeoutSeconds,
 	}
 
 	if v := os.Getenv("KUBEBOLT_AGENT_AUTH_MODE"); v != "" {
@@ -176,7 +196,42 @@ func LoadIngestChannelConfig() IngestChannelConfig {
 		}
 	}
 
+	// Agent-proxy resilience timeouts: env vars are Go durations ("25s") for
+	// backward-compat with how they first shipped; stored as whole seconds.
+	// Connect/request are floored; stuck accepts 0 (disabled) or a floored value.
+	cfg.ConnectTimeoutSeconds = agentProxyEnvSeconds("KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT", cfg.ConnectTimeoutSeconds, false)
+	cfg.StuckTimeoutSeconds = agentProxyEnvSeconds("KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT", cfg.StuckTimeoutSeconds, true)
+	cfg.RequestTimeoutSeconds = agentProxyEnvSeconds("KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT", cfg.RequestTimeoutSeconds, false)
+
 	return cfg
+}
+
+// agentProxyEnvSeconds parses a Go-duration env var into whole seconds, keeping
+// the fallback on parse error or an out-of-range value. allowZero lets the stuck
+// watchdog be disabled with "0"; otherwise the value is floored at
+// MinAgentProxyTimeoutSeconds. All values are capped at MaxAgentProxyTimeoutSeconds.
+func agentProxyEnvSeconds(key string, fallback int, allowZero bool) int {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil || d < 0 {
+		log.Printf("WARN config: %s=%q is not a valid Go duration — using default %ds", key, v, fallback)
+		return fallback
+	}
+	n := int(d.Seconds())
+	if n == 0 {
+		if allowZero {
+			return 0
+		}
+		return fallback
+	}
+	if n < MinAgentProxyTimeoutSeconds || n > MaxAgentProxyTimeoutSeconds {
+		log.Printf("WARN config: %s=%s out of range [%d,%d]s — using default %ds", key, d, MinAgentProxyTimeoutSeconds, MaxAgentProxyTimeoutSeconds, fallback)
+		return fallback
+	}
+	return n
 }
 
 // isValidAuthMode returns true for one of the three three-tier values

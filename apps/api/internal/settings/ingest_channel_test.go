@@ -181,6 +181,10 @@ func TestIngestChannel_ValidationRejectsBadInput(t *testing.T) {
 		{"negative global series cap", &StoredIngestChannelSettings{PromWriteDefaultMaxActiveSeriesGlobal: intPtr(-5)}, "promWriteDefaultMaxActiveSeriesGlobal"},
 		{"negative tunnel idle timeout", &StoredIngestChannelSettings{AgentTunnelIdleTimeoutSecs: intPtr(-1)}, "agentTunnelIdleTimeoutSecs"},
 		{"token audience too long", &StoredIngestChannelSettings{AgentTokenAudience: strPtr(longString(257))}, "agentTokenAudience"},
+		{"connect timeout too low", &StoredIngestChannelSettings{ConnectTimeoutSeconds: intPtr(4)}, "connectTimeoutSeconds"},
+		{"connect timeout too high", &StoredIngestChannelSettings{ConnectTimeoutSeconds: intPtr(601)}, "connectTimeoutSeconds"},
+		{"stuck timeout too low (non-zero)", &StoredIngestChannelSettings{StuckTimeoutSeconds: intPtr(3)}, "stuckTimeoutSeconds"},
+		{"request timeout too high", &StoredIngestChannelSettings{RequestTimeoutSeconds: intPtr(9999)}, "requestTimeoutSeconds"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,6 +237,28 @@ func TestIngestChannel_AcceptsZeroGlobalSeriesCapAsDisable(t *testing.T) {
 	}
 	if got := rt.IngestChannel().PromWriteDefaultMaxActiveSeriesGlobal; got != 0 {
 		t.Errorf("PromWriteDefaultMaxActiveSeriesGlobal: want 0, got %d", got)
+	}
+}
+
+func TestIngestChannel_AgentProxyTimeoutsResolveAndDisable(t *testing.T) {
+	rt := newIngestChannelRuntime(t)
+	// Override all three; stuck=0 must be accepted as "disable the watchdog".
+	if err := rt.PutIngestChannel(&StoredIngestChannelSettings{
+		ConnectTimeoutSeconds: intPtr(40),
+		StuckTimeoutSeconds:   intPtr(0),
+		RequestTimeoutSeconds: intPtr(50),
+	}); err != nil {
+		t.Fatalf("PutIngestChannel: %v", err)
+	}
+	got := rt.IngestChannel()
+	if got.ConnectTimeoutSeconds != 40 {
+		t.Errorf("ConnectTimeoutSeconds: want 40, got %d", got.ConnectTimeoutSeconds)
+	}
+	if got.StuckTimeoutSeconds != 0 {
+		t.Errorf("StuckTimeoutSeconds: want 0 (disabled), got %d", got.StuckTimeoutSeconds)
+	}
+	if got.RequestTimeoutSeconds != 50 {
+		t.Errorf("RequestTimeoutSeconds: want 50, got %d", got.RequestTimeoutSeconds)
 	}
 }
 

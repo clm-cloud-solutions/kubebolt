@@ -57,6 +57,12 @@ type StoredIngestChannelSettings struct {
 
 	// SPDY tunnels.
 	AgentTunnelIdleTimeoutSecs *int `json:"agentTunnelIdleTimeoutSecs,omitempty"`
+
+	// Agent-proxy resilience timeouts (seconds). Read live — connect deadline per
+	// cold connect, stuck-watchdog per tick (0 disables), request per proxied call.
+	ConnectTimeoutSeconds *int `json:"connectTimeoutSeconds,omitempty"`
+	StuckTimeoutSeconds   *int `json:"stuckTimeoutSeconds,omitempty"`
+	RequestTimeoutSeconds *int `json:"requestTimeoutSeconds,omitempty"`
 }
 
 // IngestChannel returns the resolved IngestChannelConfig (env +
@@ -179,6 +185,17 @@ func applyStoredIngestChannel(cfg *config.IngestChannelConfig, stored *StoredIng
 	if stored.AgentTunnelIdleTimeoutSecs != nil && *stored.AgentTunnelIdleTimeoutSecs >= 0 {
 		cfg.AgentTunnelIdleTimeout = time.Duration(*stored.AgentTunnelIdleTimeoutSecs) * time.Second
 	}
+	// Agent-proxy resilience timeouts (whole seconds, stored directly). Stuck
+	// accepts 0 (disabled); connect/request are positive.
+	if stored.ConnectTimeoutSeconds != nil && *stored.ConnectTimeoutSeconds > 0 {
+		cfg.ConnectTimeoutSeconds = *stored.ConnectTimeoutSeconds
+	}
+	if stored.StuckTimeoutSeconds != nil && *stored.StuckTimeoutSeconds >= 0 {
+		cfg.StuckTimeoutSeconds = *stored.StuckTimeoutSeconds
+	}
+	if stored.RequestTimeoutSeconds != nil && *stored.RequestTimeoutSeconds > 0 {
+		cfg.RequestTimeoutSeconds = *stored.RequestTimeoutSeconds
+	}
 }
 
 // PutIngestChannel validates and persists a partial IngestChannel patch.
@@ -257,6 +274,10 @@ type MaskedEffectiveIngestChannel struct {
 	PromWriteDefaultMaxActiveSeriesGlobal int    `json:"promWriteDefaultMaxActiveSeriesGlobal"`
 	// Tunnels.
 	AgentTunnelIdleTimeoutSecs int `json:"agentTunnelIdleTimeoutSecs"`
+	// Agent-proxy resilience.
+	ConnectTimeoutSeconds int `json:"connectTimeoutSeconds"`
+	StuckTimeoutSeconds   int `json:"stuckTimeoutSeconds"`
+	RequestTimeoutSeconds int `json:"requestTimeoutSeconds"`
 }
 
 type MaskedStoredIngestChannel struct {
@@ -276,6 +297,9 @@ type MaskedStoredIngestChannel struct {
 	PromWriteDefaultMaxActiveSeries       *int    `json:"promWriteDefaultMaxActiveSeries,omitempty"`
 	PromWriteDefaultMaxActiveSeriesGlobal *int    `json:"promWriteDefaultMaxActiveSeriesGlobal,omitempty"`
 	AgentTunnelIdleTimeoutSecs            *int    `json:"agentTunnelIdleTimeoutSecs,omitempty"`
+	ConnectTimeoutSeconds                 *int    `json:"connectTimeoutSeconds,omitempty"`
+	StuckTimeoutSeconds                   *int    `json:"stuckTimeoutSeconds,omitempty"`
+	RequestTimeoutSeconds                 *int    `json:"requestTimeoutSeconds,omitempty"`
 }
 
 func (r *Runtime) RenderMaskedIngestChannel() (MaskedIngestChannel, error) {
@@ -316,6 +340,9 @@ func renderEffectiveIngestChannel(cfg config.IngestChannelConfig) MaskedEffectiv
 		PromWriteDefaultMaxActiveSeries:       cfg.PromWriteDefaultMaxActiveSeries,
 		PromWriteDefaultMaxActiveSeriesGlobal: cfg.PromWriteDefaultMaxActiveSeriesGlobal,
 		AgentTunnelIdleTimeoutSecs:            int(cfg.AgentTunnelIdleTimeout / time.Second),
+		ConnectTimeoutSeconds:                 cfg.ConnectTimeoutSeconds,
+		StuckTimeoutSeconds:                   cfg.StuckTimeoutSeconds,
+		RequestTimeoutSeconds:                 cfg.RequestTimeoutSeconds,
 	}
 }
 
@@ -336,6 +363,9 @@ func renderStoredIngestChannelMask(s StoredIngestChannelSettings) MaskedStoredIn
 		PromWriteDefaultMaxActiveSeries:       s.PromWriteDefaultMaxActiveSeries,
 		PromWriteDefaultMaxActiveSeriesGlobal: s.PromWriteDefaultMaxActiveSeriesGlobal,
 		AgentTunnelIdleTimeoutSecs:            s.AgentTunnelIdleTimeoutSecs,
+		ConnectTimeoutSeconds:                 s.ConnectTimeoutSeconds,
+		StuckTimeoutSeconds:                   s.StuckTimeoutSeconds,
+		RequestTimeoutSeconds:                 s.RequestTimeoutSeconds,
 	}
 	out.HasOverride = s.AgentAuthMode != nil ||
 		s.AgentTokenAudience != nil ||
@@ -351,7 +381,10 @@ func renderStoredIngestChannelMask(s StoredIngestChannelSettings) MaskedStoredIn
 		s.PromWriteDefaultBurstSamples != nil ||
 		s.PromWriteDefaultMaxActiveSeries != nil ||
 		s.PromWriteDefaultMaxActiveSeriesGlobal != nil ||
-		s.AgentTunnelIdleTimeoutSecs != nil
+		s.AgentTunnelIdleTimeoutSecs != nil ||
+		s.ConnectTimeoutSeconds != nil ||
+		s.StuckTimeoutSeconds != nil ||
+		s.RequestTimeoutSeconds != nil
 	return out
 }
 
@@ -408,6 +441,22 @@ func validateIngestChannelPatch(p *StoredIngestChannelSettings) error {
 	}
 	if p.AgentTunnelIdleTimeoutSecs != nil && *p.AgentTunnelIdleTimeoutSecs < 0 {
 		return &ValidationError{Field: "agentTunnelIdleTimeoutSecs", Message: "must be >= 0 (0 disables the watchdog)"}
+	}
+	if p.ConnectTimeoutSeconds != nil {
+		if *p.ConnectTimeoutSeconds < config.MinAgentProxyTimeoutSeconds || *p.ConnectTimeoutSeconds > config.MaxAgentProxyTimeoutSeconds {
+			return &ValidationError{Field: "connectTimeoutSeconds", Message: "must be between 5 and 600 seconds"}
+		}
+	}
+	// Stuck watchdog: 0 disables it; any other value is floored/capped.
+	if p.StuckTimeoutSeconds != nil {
+		if *p.StuckTimeoutSeconds != 0 && (*p.StuckTimeoutSeconds < config.MinAgentProxyTimeoutSeconds || *p.StuckTimeoutSeconds > config.MaxAgentProxyTimeoutSeconds) {
+			return &ValidationError{Field: "stuckTimeoutSeconds", Message: "must be 0 (disabled) or between 5 and 600 seconds"}
+		}
+	}
+	if p.RequestTimeoutSeconds != nil {
+		if *p.RequestTimeoutSeconds < config.MinAgentProxyTimeoutSeconds || *p.RequestTimeoutSeconds > config.MaxAgentProxyTimeoutSeconds {
+			return &ValidationError{Field: "requestTimeoutSeconds", Message: "must be between 5 and 600 seconds"}
+		}
 	}
 	return nil
 }
@@ -466,6 +515,15 @@ func mergeIngestChannel(base, patch StoredIngestChannelSettings) StoredIngestCha
 	}
 	if patch.AgentTunnelIdleTimeoutSecs != nil {
 		out.AgentTunnelIdleTimeoutSecs = patch.AgentTunnelIdleTimeoutSecs
+	}
+	if patch.ConnectTimeoutSeconds != nil {
+		out.ConnectTimeoutSeconds = patch.ConnectTimeoutSeconds
+	}
+	if patch.StuckTimeoutSeconds != nil {
+		out.StuckTimeoutSeconds = patch.StuckTimeoutSeconds
+	}
+	if patch.RequestTimeoutSeconds != nil {
+		out.RequestTimeoutSeconds = patch.RequestTimeoutSeconds
 	}
 	return out
 }
