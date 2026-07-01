@@ -73,7 +73,15 @@ export function InsightCard({ insight }: InsightCardProps) {
           <div className="flex items-center gap-3 text-[10px] font-mono text-kb-text-tertiary">
             <span>{insight.resource}</span>
             {insight.namespace && <span>{insight.namespace}</span>}
-            <span>{formatAge(insight.lastSeen)}</span>
+            {/* Age from firstSeen (real first-detection time), NOT lastSeen.
+                The engine bumps lastSeen every eval cycle (~10s), so showing it
+                made every insight read "~10s old" and hid how long a lingering
+                one had actually been open — misleading operators and Kobi.
+                See docs/insights-rule-lifecycle-audit.md (Bug B). lastSeen stays
+                available in the tooltip as secondary context. */}
+            <span title={`First seen ${formatAge(insight.firstSeen)} ago${insight.lastSeen ? ` · last seen ${formatAge(insight.lastSeen)} ago` : ''}`}>
+              {formatAge(insight.firstSeen)}
+            </span>
           </div>
         </div>
       </div>
