@@ -396,16 +396,23 @@ scrape:
     maxSeriesGlobal: 1000000
 
   # ── Sample relabeling ──
-  # Drop high-cardinality labels at scrape time before they hit
-  # VictoriaMetrics. The defaults strip a few labels we know are
-  # noisy and rarely useful for queries (instance hash suffixes,
-  # k8s replicaset hashes that already collapse to workload
-  # labels via Phase 1's UI). Operators can append more.
-  metricRelabelConfigs: []
-  # Example to add to the list:
-  #   - source_labels: [my_high_card_label]
-  #     action: labeldrop
-  #     regex: my_high_card_label
+  # KubeBolt's consumed-series contract, applied at scrape time before samples
+  # reach VictoriaMetrics. The default KEEPS only the metric families KubeBolt
+  # queries and DROPS everything else — chiefly the customer app metrics
+  # (GitLab / sidekiq / etc.) that the annotation-driven kubernetes-pods job
+  # would otherwise sweep in. Validated on yagan-prod: 96k → 19k active series
+  # (−80%), zero KubeBolt metrics lost. Active series is the cost/pricing unit,
+  # so this is a cardinality guardrail — keep it in lockstep with the metric &
+  # label registry (docs/kubebolt-metric-label-registry.md). Operators may append
+  # rules; removing the keep-rule re-opens uncontrolled cardinality.
+  metricRelabelConfigs:
+    - source_labels: [__name__]
+      action: keep
+      regex: 'kube_.*|node_.*|container_.*|kubelet_.*|pod_flow_.*|pod_dns_.*|hubble_.*|kubebolt_.*|up|process_.*'
+    # Drop high-cardinality labels KubeBolt does NOT query (verified against the
+    # label registry). Do NOT add pod_uid / uid here — they are used for joins.
+    - action: labeldrop
+      regex: 'endpoint_id|container_id'
 
   # ── Service discovery ──
   # Built-in scrape jobs that vmagent renders into the ConfigMap.
