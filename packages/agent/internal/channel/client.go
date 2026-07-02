@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -50,6 +51,13 @@ type HelloInfo struct {
 // buffer.Ring type so tests can stub it.
 type SamplesProvider interface {
 	PopBatch(n int) []*agentv2.Sample
+}
+
+// bufferStatser is the optional buffer introspection the stall watchdog needs.
+// buffer.Ring implements it; a stub that only implements PopBatch simply skips
+// the watchdog (the type assertion in Run fails, no-op).
+type bufferStatser interface {
+	Stats() (collected, dropped uint64, current, capacity int)
 }
 
 // Handler hooks the Client up to the rest of the agent. Each method
@@ -129,6 +137,13 @@ type Client struct {
 
 	// gRPC client streams aren't safe for concurrent Send. Serialize.
 	sendMu sync.Mutex
+
+	// flushInFlightNanos is the unix-nano when the current metric flush's
+	// stream.Send began, or 0 when no flush is in flight. The stall watchdog
+	// reads it to detect a Send WEDGED on backend backpressure — a Send that
+	// never returns (the slow-flush log can't catch that; only a live monitor
+	// can). Diagnostic instrumentation for finding #11.
+	flushInFlightNanos atomic.Int64
 }
 
 // NewClient builds a Client for one session. handler may be nil — the
@@ -233,6 +248,23 @@ func (c *Client) Run(ctx context.Context) error {
 	writerErr := make(chan error, 1)
 	go func() { writerErr <- c.writeLoop(streamCtx, stream) }()
 
+	// Stall watchdog — forces a reconnect when the buffer stays saturated
+	// because stream.Send is wedged on backend backpressure. The transport
+	// keepalive can't catch this (the connection is alive, only the data stream
+	// is stuck), so without this the agent silently drops until a manual
+	// restart. See docs/11-agent-shipper-backpressure-silent-drop.md.
+	if st, ok := c.samples.(bufferStatser); ok {
+		slog.Info("stall watchdog started",
+			slog.Duration("interval", stallWatchdogInterval),
+			slog.Duration("timeout", stallWatchdogTimeout),
+		)
+		go c.stallWatchdog(streamCtx, streamCancel, st)
+	} else {
+		slog.Error("stall watchdog NOT started — sample buffer has no Stats(); backpressure/saturation will go UNDETECTED",
+			slog.String("samples_type", fmt.Sprintf("%T", c.samples)),
+		)
+	}
+
 	for {
 		msg, err := stream.Recv()
 		if err == io.EOF {
@@ -283,7 +315,99 @@ func (c *Client) Run(ctx context.Context) error {
 
 	streamCancel()
 	<-writerErr
-	return nil
+	// The read loop only breaks on io.EOF — the BACKEND closed the stream (a
+	// network drop, a backend restart, or the backend's stuck-agent force-close
+	// that EXPECTS us to reconnect). Return a non-nil error so the shipper's
+	// reconnect loop rebuilds the session; it stops only when the agent's own ctx
+	// is cancelled (a real shutdown). Returning nil here was the ROOT CAUSE of
+	// finding #11: a backend-closed stream made the agent stop shipping FOREVER
+	// (the backend's "force-closing channel to trigger reconnect" backfired — the
+	// agent treated the close as a clean shutdown instead of reconnecting), and
+	// with the shipper stopped there was no session and no watchdog when the
+	// buffer later saturated.
+	if ctx.Err() != nil {
+		return nil // agent is shutting down — clean stop, no reconnect
+	}
+	return fmt.Errorf("backend closed the stream (EOF) — reconnecting")
+}
+
+// Stall-watchdog + slow-flush tunables (vars so tests can shrink them).
+var (
+	stallWatchdogInterval = 10 * time.Second
+	// How long the buffer may stay saturated + dropping before we force a
+	// reconnect. Long enough to ride out a brief collector burst, short enough
+	// that a wedged Send doesn't bleed data for minutes.
+	stallWatchdogTimeout = 45 * time.Second
+	// A healthy metric flush returns in milliseconds; a multi-second one means
+	// the backend is reading slowly — the precursor to a full stall.
+	slowFlushThreshold = 3 * time.Second
+)
+
+// stallWatchdog forces a stream reconnect when the buffer stays saturated AND
+// dropping past stallWatchdogTimeout — the signature of a stream.Send blocked on
+// gRPC flow-control backpressure. Cancelling the stream ctx unblocks the wedged
+// Send → writeLoop returns → the shipper builds a fresh session with a fresh
+// flow-control window. Loud logs so operators aren't blind (finding #11).
+func (c *Client) stallWatchdog(ctx context.Context, cancel context.CancelFunc, st bufferStatser) {
+	ticker := time.NewTicker(stallWatchdogInterval)
+	defer ticker.Stop()
+	_, lastDropped, _, _ := st.Stats()
+	var saturatedSince time.Time
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_, dropped, current, capacity := st.Stats()
+			dropping := dropped > lastDropped
+			lastDropped = dropped
+			// Diagnostic (finding #11): log exactly what the watchdog sees each
+			// tick, plus how long the current metric flush's Send has been in
+			// flight — a climbing flush_in_flight = a Send WEDGED on backpressure
+			// (the backend stopped reading this stream while the conn stays alive).
+			var flushInFlight time.Duration
+			if fn := c.flushInFlightNanos.Load(); fn != 0 {
+				flushInFlight = time.Since(time.Unix(0, fn))
+			}
+			slog.Info("stall watchdog tick",
+				slog.Int("current", current),
+				slog.Int("capacity", capacity),
+				slog.Uint64("dropped_total", dropped),
+				slog.Bool("dropping", dropping),
+				slog.Bool("saturated", capacity > 0 && current >= capacity),
+				slog.Duration("flush_in_flight", flushInFlight.Round(time.Second)),
+			)
+			if flushInFlight > slowFlushThreshold {
+				slog.Warn("metric flush WEDGED — stream.Send has not returned; the backend is not reading this agent's stream",
+					slog.Duration("wedged_for", flushInFlight.Round(time.Second)),
+				)
+			}
+			if capacity > 0 && current >= capacity && dropping {
+				if saturatedSince.IsZero() {
+					saturatedSince = time.Now()
+					slog.Warn("metric buffer saturated — shipper stalled on backend backpressure; will force reconnect if it persists",
+						slog.Int("current", current),
+						slog.Int("capacity", capacity),
+						slog.Uint64("dropped_total", dropped),
+					)
+					continue
+				}
+				if time.Since(saturatedSince) >= stallWatchdogTimeout {
+					slog.Error("metric buffer saturated + dropping too long — forcing stream reconnect (backpressure watchdog)",
+						slog.Duration("stalled_for", time.Since(saturatedSince).Round(time.Second)),
+						slog.Uint64("dropped_total", dropped),
+					)
+					cancel() // unblocks the wedged Send → session ends → shipper reconnects
+					return
+				}
+			} else if !saturatedSince.IsZero() {
+				slog.Info("metric buffer recovered — shipper draining again",
+					slog.Int("current", current),
+				)
+				saturatedSince = time.Time{}
+			}
+		}
+	}
 }
 
 // writeLoop drains the buffer into Metrics batches every FlushEvery and
@@ -326,7 +450,11 @@ func (c *Client) flushOnce(stream agentv2.AgentChannel_ChannelClient) error {
 		return nil
 	}
 	sanitizeSamples(samples)
-	return c.sendOnStream(stream, &agentv2.AgentMessage{
+	start := time.Now()
+	// Mark the Send in-flight so the watchdog can see a wedged (never-returning)
+	// Send. Cleared to 0 after Send returns.
+	c.flushInFlightNanos.Store(start.UnixNano())
+	err := c.sendOnStream(stream, &agentv2.AgentMessage{
 		Kind: &agentv2.AgentMessage_Metrics{
 			Metrics: &agentv2.MetricBatch{
 				AgentId: c.AgentID(),
@@ -335,6 +463,17 @@ func (c *Client) flushOnce(stream agentv2.AgentChannel_ChannelClient) error {
 			},
 		},
 	})
+	c.flushInFlightNanos.Store(0)
+	// Surface backpressure early: a healthy flush returns in milliseconds; a
+	// multi-second send means the backend is reading slowly (precursor to the
+	// full stall the watchdog force-reconnects on).
+	if d := time.Since(start); d > slowFlushThreshold {
+		slog.Warn("slow metric flush — backend backpressure",
+			slog.Duration("send_duration", d.Round(time.Millisecond)),
+			slog.Int("batch", len(samples)),
+		)
+	}
+	return err
 }
 
 // sendOnStream serializes Send across goroutines. Used by writeLoop and
