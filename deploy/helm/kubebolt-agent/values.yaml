@@ -167,6 +167,32 @@ hubble:
 # defer env var for the bundled vmagent topology. Set this value
 # explicitly only when the bundled sidecar is OFF and an external
 # Prometheus is the canonical node-exporter scraper.
+
+# ── In-agent collectors (Mode A / gRPC path) ──
+collectors:
+  # Network interfaces excluded from container_network_* (per-interface
+  # cadvisor counters). This is applied IN the agent, not by the vmagent
+  # scrape's metricRelabelConfigs — container_network_* rides the gRPC
+  # AgentChannel, which relabel rules never see.
+  #
+  # Default = the kernel tunnel/dummy devices that exist in EVERY network
+  # namespace (created by the sit/gre/ipip/ip6_tunnel modules) but never
+  # transmit a byte unless explicitly configured. cAdvisor reports the full
+  # container_network_* set for each → ~10x cardinality on kernels that load
+  # the modules (local kind/Docker, some bare-metal), all reading 0. They are
+  # ABSENT on cloud CNIs (EKS/GKE/AKS), so this list is a no-op there.
+  # Set to [] to keep every interface, or extend for your environment.
+  dropNetworkInterfaces:
+    - sit0
+    - ip6tnl0
+    - tunl0
+    - gre0
+    - gretap0
+    - erspan0
+    - ip6gre0
+    - ip_vti0
+    - ip6_vti0
+
 agent:
   deferNodeNetwork: false
 

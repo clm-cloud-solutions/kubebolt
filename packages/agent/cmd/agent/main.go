@@ -138,9 +138,22 @@ func main() {
 	if tenantID != "" {
 		slog.Info("tenant identity", slog.String("tenant_id", tenantID))
 	}
+	// KUBEBOLT_AGENT_DROP_NET_INTERFACES (helm value collectors.dropNetworkInterfaces;
+	// default = kernel tunnel devices sit0/gre0/tunl0/… that never carry traffic)
+	// excludes those interfaces from container_network_* / node_network_* to cut
+	// cardinality on kernels that load the modules (kind/bare-metal). No-op on cloud
+	// CNIs where the devices are absent. Empty value = keep all interfaces. Applied
+	// in BOTH network collectors: stats.go (/stats/summary) and cadvisor.go emit the
+	// same per-interface series, so filtering only one lets the other re-introduce
+	// the tunnels (VM merges the duplicate series).
+	dropNetIfaces := csvSet(os.Getenv("KUBEBOLT_AGENT_DROP_NET_INTERFACES"))
+	if len(dropNetIfaces) > 0 {
+		slog.Info("container_network: dropping interfaces", slog.Int("count", len(dropNetIfaces)))
+	}
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
-		collector.WithDeferNodeNetwork(deferNodeNetwork))
-	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID)
+		collector.WithDeferNodeNetwork(deferNodeNetwork),
+		collector.WithDropInterfaces(dropNetIfaces))
+	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID, dropNetIfaces)
 	// NodeStress reads /proc/loadavg + /proc/pressure/* directly.
 	// procPath defaults to "/proc" — system-wide files aren't PID-
 	// namespaced so reading from inside the container returns host
@@ -567,6 +580,22 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// csvSet parses a comma-separated value into a set, trimming whitespace and
+// skipping empties. Returns nil for an empty/blank input so callers can treat
+// nil as "no filtering". Used for the container_network interface droplist.
+func csvSet(v string) map[string]struct{} {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	m := make(map[string]struct{})
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			m[p] = struct{}{}
+		}
+	}
+	return m
 }
 
 // envBool reads a truthy/falsy env var. Empty/unset returns fallback.

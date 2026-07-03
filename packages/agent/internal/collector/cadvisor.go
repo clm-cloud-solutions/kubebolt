@@ -32,15 +32,25 @@ type CadvisorCollector struct {
 	// Once Day 4.3 lands and enforced mode requires the label,
 	// operators MUST set tenant.id at install.
 	tenantID string
+	// dropInterfaces is the set of network interface names to skip when
+	// emitting container_network_* samples. Sourced from the helm value
+	// `collectors.dropNetworkInterfaces` via KUBEBOLT_AGENT_DROP_NET_INTERFACES.
+	// Default = kernel tunnel devices (sit0/gre0/tunl0/…) that exist in every
+	// network namespace but never carry traffic — dropping them cuts ~10x
+	// container_network_* cardinality on kernels that load the modules
+	// (kind/bare-metal) and is a no-op on cloud CNIs (EKS/GKE) where the
+	// devices are absent. nil/empty means "keep all interfaces".
+	dropInterfaces map[string]struct{}
 }
 
-func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string) *CadvisorCollector {
+func NewCadvisor(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, dropInterfaces map[string]struct{}) *CadvisorCollector {
 	return &CadvisorCollector{
-		client:      client,
-		clusterID:   clusterID,
-		clusterName: clusterName,
-		nodeName:    nodeName,
-		tenantID:    tenantID,
+		client:         client,
+		clusterID:      clusterID,
+		clusterName:    clusterName,
+		nodeName:       nodeName,
+		tenantID:       tenantID,
+		dropInterfaces: dropInterfaces,
 	}
 }
 
@@ -85,6 +95,12 @@ func (c *CadvisorCollector) Collect(ctx context.Context) ([]*agentv2.Sample, err
 			continue
 		}
 		if _, want := allowedCadvisorMetrics[metric]; !want {
+			continue
+		}
+		// Skip network interfaces the operator has dropped (default: kernel
+		// tunnel devices that never carry traffic — see dropInterfaces). Lookup
+		// on a nil map is safe and keeps everything.
+		if _, drop := c.dropInterfaces[labels["interface"]]; drop {
 			continue
 		}
 		podNs := labels["namespace"]
