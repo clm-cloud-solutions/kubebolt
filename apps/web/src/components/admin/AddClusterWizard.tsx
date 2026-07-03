@@ -433,8 +433,11 @@ function copyViaTextarea(text: string, done: () => void) {
 // readable for the common case.
 function buildHelmCommand(cfg: AgentInstallConfig, nodeSelector: Array<{ k: string; v: string }>): string {
   const ns = cfg.namespace?.trim() || 'kubebolt-system'
-  const escKey = (s: string) => s.replace(/\./g, '\\.') // dots are helm path separators
-  const escVal = (s: string) => s.replace(/,/g, '\\,')  // commas separate --set entries
+  // Escape backslashes FIRST, then the metachar — otherwise a backslash already
+  // in the input slips through and the escaping is incomplete (CodeQL flags this
+  // as js/incomplete-sanitization).
+  const escKey = (s: string) => s.replace(/\\/g, '\\\\').replace(/\./g, '\\.') // dots are helm path separators
+  const escVal = (s: string) => s.replace(/\\/g, '\\\\').replace(/,/g, '\\,')  // commas separate --set entries
   const flags: string[] = [
     `backendUrl=${cfg.backendUrl.trim() || '<BACKEND_URL>'}`,
     `cluster.name=${cfg.clusterName?.trim() || '<cluster-name>'}`,
