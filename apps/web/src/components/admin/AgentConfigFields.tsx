@@ -61,6 +61,11 @@ interface Props {
   showFullCapabilities?: boolean
   // Extra control rendered right under Backend URL (e.g. owner-team selector).
   topExtra?: ReactNode
+  // Hosted / SaaS mode — the backend has a configured agent-ingest URL, so the
+  // agent dials a public endpoint. Auth becomes mandatory: the "Disabled" option
+  // is hidden (unauthenticated ingest over the internet is not an option). The
+  // TLS-on + ingest-token defaults are seeded by the wizard at cfg init.
+  hostedMode?: boolean
 }
 
 // AgentConfigFields is the single source of truth for the agent installer's
@@ -69,7 +74,7 @@ interface Props {
 // can never drift apart on which knobs they expose.
 export function AgentConfigFields({
   cfg, setCfg, nodeSelector, setNodeSelector, authInfo,
-  advancedOpen, setAdvancedOpen, tokenSlot, showTransportTls, showFullCapabilities, topExtra,
+  advancedOpen, setAdvancedOpen, tokenSlot, showTransportTls, showFullCapabilities, topExtra, hostedMode,
 }: Props) {
   const saAnnotations = cfg.serviceAccountAnnotations ?? []
   const extraEnv = cfg.extraEnv ?? []
@@ -118,7 +123,11 @@ export function AgentConfigFields({
         <div>
           <div className="text-sm text-kb-text-primary font-medium">Auth to backend</div>
           <p className="text-[11px] text-kb-text-secondary mt-0.5">
-            How the agent identifies itself to the backend's gRPC channel. Must match the backend's <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">KUBEBOLT_AGENT_AUTH_MODE</code> — under <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">enforced</code>/<code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">permissive</code>, leaving this "Disabled" gets the agent rejected with <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">unknown auth mode</code> and a reconnect loop.
+            {hostedMode ? (
+              <>The agent dials this backend over a public endpoint, so authentication is <strong>required</strong>. Generate an ingest token below and create the Secret in the target cluster.</>
+            ) : (
+              <>How the agent identifies itself to the backend's gRPC channel. Must match the backend's <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">KUBEBOLT_AGENT_AUTH_MODE</code> — under <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">enforced</code>/<code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">permissive</code>, leaving this "Disabled" gets the agent rejected with <code className="font-mono text-[10px] px-1 py-0.5 rounded bg-kb-card">unknown auth mode</code> and a reconnect loop.</>
+            )}
           </p>
         </div>
         <select
@@ -126,7 +135,7 @@ export function AgentConfigFields({
           onChange={(e) => setCfg({ ...cfg, authMode: e.target.value as AgentInstallConfig['authMode'], authTokenSecret: e.target.value === 'ingest-token' ? cfg.authTokenSecret : '' })}
           className="w-full px-3 py-2 rounded-lg bg-kb-card border border-kb-border text-sm text-kb-text-primary focus:outline-none focus:ring-1 focus:ring-kb-accent"
         >
-          <option value="">Disabled — backend accepts unauthenticated agents</option>
+          {!hostedMode && <option value="">Disabled — backend accepts unauthenticated agents</option>}
           <option value="ingest-token">Ingest Token — long-lived bearer (typical for SaaS)</option>
           <option value="tokenreview" disabled>TokenReview — projected SA token (in-cluster only; not yet wizard-supported)</option>
         </select>
@@ -330,7 +339,8 @@ export function AgentConfigFields({
               </div>
             </section>
 
-            {/* Hubble relay */}
+            {/* Hubble relay — only meaningful when the collector is enabled */}
+            {cfg.hubbleEnabled && (
             <section className="space-y-2 pt-3 border-t border-kb-border/60">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Hubble relay</div>
               <div>
@@ -351,6 +361,7 @@ export function AgentConfigFields({
                   className={subInput} />
               </div>
             </section>
+            )}
 
             {/* Scheduling */}
             <section className="space-y-2 pt-3 border-t border-kb-border/60">

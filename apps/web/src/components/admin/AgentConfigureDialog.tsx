@@ -131,6 +131,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
     mutationFn: () =>
       api.issueAgentTokenAndMaterializeSecret({
         tenantId: selectedTenantId,
+        materialize: true, // configuring an already-connected agent — create the Secret in one click
         // Namespace pinned to the agent's current namespace so the
         // Secret lands where the DaemonSet's volumeMount expects it.
         namespace: cfg?.namespace || 'kubebolt-system',
@@ -142,7 +143,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
       setIssuedToken(resp)
       // Pre-fill the Token Secret field so the user just clicks Save
       // — no copy/paste of the Secret name across forms.
-      setCfg((prev) => (prev ? { ...prev, authTokenSecret: resp.secretName } : prev))
+      setCfg((prev) => (prev ? { ...prev, authTokenSecret: resp.secretName ?? prev.authTokenSecret } : prev))
     },
     onError: (err) => {
       setIssuedToken(null)

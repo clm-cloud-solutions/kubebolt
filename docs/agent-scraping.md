@@ -91,15 +91,17 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
   --set scrape.remoteWriteUrl=http://kubebolt.kubebolt.svc.cluster.local/api/v1/prom/write
 ```
 
-**Trade-off you accept by enabling the dedicated KSM job:** without
-per-node leader election, *every* vmagent (one DaemonSet pod per
-node) scrapes the cluster-scoped KSM service. With N nodes you
-get N×duplicate samples in VM. The bundled KubeBolt VictoriaMetrics
-ships `--dedup.minScrapeInterval=30s` by default, which collapses
-the duplicates at write time — but if you point KubeBolt at an
-**external** TSDB (`metrics.storage.externalUrl`), enable dedup
-there yourself or expect inflated series counts. See *Metrics
-Storage* in the kubebolt chart README.
+**KSM is scraped once, not once-per-node.** kube-state-metrics is a single
+cluster-scoped pod, so a naive DaemonSet would scrape it from every node and
+ship the same `kube_*` series N times. The dedicated KSM job carries the same
+per-node `node_name == %{NODE_NAME}` keep filter the pods and node-exporter jobs
+use, so **only the agent co-located with KSM scrapes it — 1× ingest, not N×** —
+and it still returns the full cluster-wide `kube_*` set (KSM is cluster-scoped,
+so one scrape covers everything). The duplication is prevented at scrape time,
+so no VictoriaMetrics `--dedup` is required to deduplicate KSM. The bundled VM
+still ships `--dedup.minScrapeInterval=30s` as a general safety net, and if you
+point KubeBolt at an **external** TSDB (`metrics.storage.externalUrl`) you should
+keep dedup enabled there for other sources.
 
 If you can't modify the customer's `kube-prometheus-stack` install
 (common in audited environments), override the agent-side selector
@@ -165,8 +167,16 @@ scrape:
     maxSeriesPerTarget: 30000     # Series limit per (job, target).
     maxSeriesGlobal:    1000000   # Soft cap on total active series.
 
-  # List of Prom relabel rules applied per scrape job.
-  metricRelabelConfigs: []
+  # Sample relabeling applied to every scrape job. Defaults to a
+  # family-level allowlist (keep only KubeBolt-consumed metric names)
+  # + label drops, so the annotation scrape doesn't sweep in app metrics.
+  # See "Cardinality protection" below. Set to [] to keep everything.
+  metricRelabelConfigs:
+    - source_labels: [__name__]
+      action: keep
+      regex: "kube_.*|node_.*|container_.*|kubelet_.*|pod_flow_.*|pod_dns_.*|hubble_.*|kubebolt_.*|up|process_.*"
+    - action: labeldrop
+      regex: "endpoint_id|container_id"
 
   # Built-in scrape jobs.
   discovery:
@@ -206,23 +216,44 @@ agent's UID and the vmagent samples become invisible to the UI.
 
 ### Cardinality protection
 
-Each cap rejects samples beyond the limit with a vmagent log line
-— operators see the rejection and can either fix the target, raise
-the cap, or drop the offending label via `metricRelabelConfigs`.
+**The default allowlist is the primary control.** `scrape.metricRelabelConfigs`
+ships a family-level keep-rule by default (shown above): it keeps only the metric
+families KubeBolt queries and drops everything else — chiefly the app metrics an
+annotation scrape would otherwise sweep in (GitLab, sidekiq, client-library
+histograms). Validated on a production cluster: **96k → 19k active series
+(−80%)**, zero KubeBolt metrics lost. It also drops two unused high-cardinality
+labels (`endpoint_id`, `container_id`). Keep it in lockstep with
+[`kubebolt-metric-label-registry.md`](kubebolt-metric-label-registry.md). Set
+`scrape.metricRelabelConfigs: []` to keep everything.
 
-To drop a runaway label cluster-wide:
+**Defensive caps.** On top of the allowlist, the `limits` block rejects samples
+beyond a hard bound with a vmagent log line — operators see the rejection and can
+fix the target, raise the cap, or drop the offending label.
+
+To drop an additional runaway label, **re-include the default keep-rule** and
+append your own (overriding the value replaces the default, so leaving it out
+re-opens the annotation firehose):
 
 ```yaml
 scrape:
   metricRelabelConfigs:
-    - source_labels: [request_id]
-      action: labeldrop
-      regex: request_id
+    - source_labels: [__name__]        # keep the default allowlist…
+      action: keep
+      regex: "kube_.*|node_.*|container_.*|kubelet_.*|pod_flow_.*|pod_dns_.*|hubble_.*|kubebolt_.*|up|process_.*"
+    - action: labeldrop                # …and add your own drop
+      regex: "endpoint_id|container_id|request_id"
 ```
 
-The chart wires `metricRelabelConfigs` into every scrape job via a
-shared helper, so adding a rule applies to kubernetes-pods,
-node-exporter, and kube-state-metrics in one shot.
+The chart wires `metricRelabelConfigs` into every scrape job via a shared helper,
+so a rule applies to kubernetes-pods, node-exporter, and kube-state-metrics in
+one shot.
+
+**`container_network_*` interfaces are filtered in the agent, not here.** The
+per-interface `container_network_*` counters ride the gRPC/cadvisor path (Mode
+A), which `metricRelabelConfigs` never sees. The agent drops always-zero kernel
+tunnel interfaces (`sit0`, `gre0`, `tunl0`, …) via
+`collectors.dropNetworkInterfaces` (default set; no-op on cloud CNIs where those
+devices don't exist). See the chart README's "Metric footprint" section.
 
 ---
 

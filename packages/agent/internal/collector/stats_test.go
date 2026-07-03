@@ -282,6 +282,56 @@ func TestStatsCollector_DeferNodeNetwork(t *testing.T) {
 	})
 }
 
+// TestStatsCollector_DropsFilteredInterfaces verifies WithDropInterfaces
+// (helm collectors.dropNetworkInterfaces) excludes the given interfaces from
+// BOTH per-interface network loops: node_network_* (node loop) and
+// container_network_* (pod loop). Regression guard for the dual-source gap
+// where the filter lived only in cadvisor.go and /stats/summary re-introduced
+// the tunnel interfaces.
+func TestStatsCollector_DropsFilteredInterfaces(t *testing.T) {
+	srv := newFixtureServer(t, "stats_summary.json")
+	t.Cleanup(srv.Close)
+	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
+
+	// Node loop: fixture node has eth0 + eth1. Drop eth1 (stand-in for a
+	// tunnel device); it must vanish from node_network_* while eth0 stays.
+	c := NewStats(client, "cid", "cn", "node", "", WithDropInterfaces(map[string]struct{}{"eth1": {}}))
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	var sawNodeEth0, sawNodeEth1 bool
+	for _, s := range samples {
+		if s.MetricName == "node_network_receive_bytes_total" {
+			switch s.Labels["device"] {
+			case "eth0":
+				sawNodeEth0 = true
+			case "eth1":
+				sawNodeEth1 = true
+			}
+		}
+	}
+	if sawNodeEth1 {
+		t.Error("dropped device eth1 leaked into node_network_*")
+	}
+	if !sawNodeEth0 {
+		t.Error("node device eth0 was filtered but must be kept")
+	}
+
+	// Pod loop: fixture pod nginx-abc123 has interface eth0. Dropping eth0
+	// must remove its container_network_* series.
+	c2 := NewStats(client, "cid", "cn", "node", "", WithDropInterfaces(map[string]struct{}{"eth0": {}}))
+	s2, err := c2.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+	for _, s := range s2 {
+		if s.MetricName == "container_network_receive_bytes_total" && s.Labels["interface"] == "eth0" {
+			t.Error("dropped pod interface eth0 leaked into container_network_*")
+		}
+	}
+}
+
 // TestStatsCollector_FallbackInterface validates the docker-desktop fallback:
 // when interfaces[] is empty, top-level network fields are projected as a
 // single eth0 interface so metrics still land.

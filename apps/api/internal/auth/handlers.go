@@ -112,6 +112,19 @@ type loginResponse struct {
 }
 
 // Login authenticates a user and returns a JWT access token + refresh cookie.
+// isSecureRequest reports whether the client reached us over HTTPS — either
+// directly (r.TLS) or via a TLS-terminating proxy that sets X-Forwarded-Proto.
+// The refresh cookie's Secure attribute mirrors this: it's protected on HTTPS
+// deployments, but not forced on plain-HTTP self-hosted setups (localhost,
+// kubectl port-forward) where a Secure cookie would be silently dropped by the
+// browser and break login.
+func isSecureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -175,6 +188,7 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 		Value:    rawRefresh,
 		Path:     "/api/v1/auth",
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(h.cfg.RefreshTokenExpiry.Seconds()),
 	})
@@ -281,6 +295,7 @@ func (h *Handlers) Signup(w http.ResponseWriter, r *http.Request) {
 		Value:    rawRefresh,
 		Path:     "/api/v1/auth",
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(h.cfg.RefreshTokenExpiry.Seconds()),
 	})
@@ -384,6 +399,7 @@ func (h *Handlers) Refresh(w http.ResponseWriter, r *http.Request) {
 		Value:    rawRefresh,
 		Path:     "/api/v1/auth",
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   int(h.cfg.RefreshTokenExpiry.Seconds()),
 	})
@@ -404,6 +420,7 @@ func (h *Handlers) Logout(w http.ResponseWriter, r *http.Request) {
 		Value:    "",
 		Path:     "/api/v1/auth",
 		HttpOnly: true,
+		Secure:   isSecureRequest(r),
 		SameSite: http.SameSiteStrictMode,
 		MaxAge:   -1,
 	})

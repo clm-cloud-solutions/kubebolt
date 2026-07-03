@@ -166,6 +166,17 @@ spec:
             - name: KUBEBOLT_AGENT_DEFER_NODE_STRESS
               value: "true"
             {{- end }}
+            {{- /* Network interfaces excluded from container_network_* (Mode A /
+                   cadvisor path — NOT the vmagent scrape, so metricRelabelConfigs
+                   can't reach it). Default = kernel tunnel devices that exist in
+                   every netns but never carry traffic; ~10x cardinality cut on
+                   kind/bare-metal, no-op on cloud CNIs. Empty list = keep all. */ -}}
+            {{- with .Values.collectors }}
+            {{- if .dropNetworkInterfaces }}
+            - name: KUBEBOLT_AGENT_DROP_NET_INTERFACES
+              value: {{ join "," .dropNetworkInterfaces | quote }}
+            {{- end }}
+            {{- end }}
             {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
             {{- /* Auto-derive proxy enable from rbac.mode unless an
                    explicit override was given. proxy is the path the

@@ -17,6 +17,18 @@ historical metrics, network / disk observability, and live traffic
 flows, but everything else (inventory, insights, YAML edit, exec,
 port-forward, logs) is unchanged.
 
+For clusters that also run Prometheus-compatible exporters
+(node-exporter, kube-state-metrics, or app pods carrying
+`prometheus.io/scrape`), the agent can additionally run an **opt-in
+vmagent sidecar** that scrapes those `/metrics` endpoints and
+`remote_write`s the samples to the same backend — so the dashboard's
+node OS, kube-state, and app-metric panels light up. It's **off unless
+you set `scrape.enabled=true`**, and it ships with cardinality controls
+(a metric-family allowlist + single-scrape kube-state-metrics) on by
+default so it stays lean. If you already run a Prometheus you'd rather
+reuse, point it at KubeBolt instead of scraping twice — see
+[Choosing your coverage](#choosing-your-coverage--simplest-to-fullest).
+
 ## Installation methods
 
 There are three ways to install the agent. All produce the same
@@ -47,6 +59,29 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 Replace `backendUrl` with wherever your KubeBolt backend's gRPC port
 (`:9090`) is reachable from inside the cluster. See the "Connecting
 to the backend" section below for concrete examples.
+
+### Choosing your coverage — simplest to fullest
+
+The command above is all most clusters need to start. It lights up **Mode A**
+(kubelet CPU/memory, container metrics, and Hubble flows if you run Cilium) —
+already with **cardinality controls on by default** (see
+[Metric footprint](#metric-footprint--cardinality-is-controlled-by-default)).
+Scale up only when you want more:
+
+| You want… | Add to the install | Notes |
+|---|---|---|
+| **Just the essentials** (greenfield, no Prometheus) | nothing — the command above | Mode A only. CPU/mem/container/flows. |
+| **Full node + cluster coverage** (node-exporter + kube-state-metrics) | `--set scrape.enabled=true --set scrape.discovery.nodeExporter.enabled=true --set scrape.discovery.kubeStateMetrics.enabled=true` | Bundled vmagent sidecar scrapes them. **Duplication is prevented automatically** (see [Scrape sidecar](#scrape-sidecar-scrapeenabled)). `kube-prometheus-stack` needs a label override — see [`docs/agent-scraping.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/agent-scraping.md). |
+| **You already run Prometheus** | Point it at KubeBolt instead of scraping twice — see the integration guides below | Mode C (promread) or `remote_write`. No double collection. |
+
+**Integration guides** — when the cluster already has a Prometheus you want to
+reuse (pick the one that matches your setup):
+
+- [Self-managed Prometheus → `remote_write`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/prometheus.md)
+- [Self-managed Prometheus, read-only (Mode C)](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/self-managed-prom-readonly.md)
+- [AWS Managed Prometheus (AMP)](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/aws-amp.md)
+- [Azure Managed Prometheus (AMW)](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/azure-managed-prometheus.md)
+- [Google Managed Prometheus (GMP)](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/gcp-managed-prometheus.md)
 
 ## Permission tier — `rbac.mode`
 
@@ -109,6 +144,8 @@ The two run **in separate pods** — Mode C does NOT piggy-back on the DaemonSet
 | Has managed Prom that's query-only (AWS AMP, Azure Monitor managed Prom, GCP GMP managed) OR change-management blocks editing the customer's Prom config | `agent.promRead.enabled=true` + `agent.promRead.url=<customer-prom-svc>` + appropriate `agent.promRead.auth.mode` (`none` / `basicAuth` / `bearer` in 1.13; AWS SigV4 / Azure Workload Identity / GCP IAM in 1.13.x). Mode A keeps running in parallel for the KubeBolt-named metrics. |
 
 **Mutual exclusion enforced at render time:** if `scrape.enabled=true` AND `agent.promRead.enabled=true`, the chart hard-fails with a clear message — pick one (the scrape sidecar and the customer-Prom reader would duplicate work for no UI gain).
+
+**Setting up Mode C or `remote_write`?** The [integration guides](#choosing-your-coverage--simplest-to-fullest) (AWS AMP, Azure Monitor, GMP, self-managed Prometheus) walk through the cloud identity + auth wiring end-to-end.
 
 **Default Mode C matchers are surgical.** They pull ONLY metrics Mode A doesn't already synthesize, to avoid 2× storage on overlapping data:
 
@@ -323,6 +360,12 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 | Backend behind an internal LoadBalancer | that LB's IP:9090 |
 | Backend on a VM reachable from the cluster | that host:9090 |
 
+**Resilience:** the agent reconnects automatically if the backend closes the
+stream — a backend restart, a rolling upgrade, a network blip, or the backend's
+own stuck-agent recovery. It does not stop shipping, and a saturated send buffer
+triggers a reconnect rather than a silent drop, so a transient backend outage
+self-heals without touching the agent.
+
 ## Hubble + mTLS
 
 When your Cilium install requires mTLS on Hubble Relay, mount a
@@ -536,13 +579,54 @@ scrape jobs explicitly:
 ```
 
 This routes node-exporter + KSM through the agent's dedicated jobs,
-which match by `app.kubernetes.io/name=...` label. Beware: the
-dedicated KSM job runs in every agent DaemonSet pod, so KSM samples
-are produced N× across an N-node cluster. The bundled KubeBolt
-VictoriaMetrics collapses them at write time via
-`--dedup.minScrapeInterval=30s`; external TSDBs need the same flag
-configured on your side.
+which match by `app.kubernetes.io/name=...` label. **Duplication is
+handled for you:** kube-state-metrics is a single cluster-wide pod, so a
+naive DaemonSet would scrape it from every node. The dedicated KSM job
+carries a `node_name == %{NODE_NAME}` keep filter, so **only the agent
+co-located with KSM scrapes it — 1× ingest, not N×** — and it still
+returns the full cluster's `kube_*` set (KSM is cluster-scoped, one scrape
+covers everything). No VictoriaMetrics `--dedup` flag required; the
+duplication is prevented at scrape time. node-exporter is a DaemonSet, so
+each agent scrapes only its own node's copy (same node filter). See
+[Metric footprint](#metric-footprint--cardinality-is-controlled-by-default)
+for how the agent keeps its series count low overall.
 
 Quick start + full config reference + troubleshooting (including the
 `kube-prometheus-stack` recipe with `prometheus-node-exporter.nameOverride`):
 [`docs/agent-scraping.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/agent-scraping.md).
+
+## Metric footprint — cardinality is controlled by default
+
+Active series is the unit that drives storage and cost, so the agent ships with
+three cardinality guards **on by default**. There's nothing to configure for
+them to work — they're documented here so you know what's happening and how to
+tune them.
+
+**1. Family allowlist (scrape path).** When the vmagent sidecar is enabled,
+`scrape.metricRelabelConfigs` defaults to a keep-rule for the metric families
+KubeBolt actually queries — `kube_*`, `node_*`, `container_*`, `kubelet_*`,
+`pod_flow_*`, `pod_dns_*`, `hubble_*`, `kubebolt_*`, `up`, `process_*` — and
+drops everything else, chiefly the app metrics a `prometheus.io/scrape`
+annotation would otherwise sweep in (GitLab, sidekiq, client-library
+histograms). Validated on a production cluster: **96k → 19k active series
+(−80%)**, zero KubeBolt metrics lost. It also drops two high-cardinality unused
+labels (`endpoint_id`, `container_id`). Set `scrape.metricRelabelConfigs: []` to
+keep everything.
+
+**2. KSM single-scrape.** kube-state-metrics is one cluster-wide pod; a per-node
+`node_name == %{NODE_NAME}` keep filter on the dedicated KSM job means only the
+co-located agent scrapes it — **1× ingest, not N×** — with no VictoriaMetrics
+`--dedup` needed (see the Scrape sidecar section above).
+
+**3. Dummy network-interface filter (Mode A path).** cAdvisor reports
+`container_network_*` per interface, and every pod's network namespace carries
+kernel tunnel devices (`sit0`, `gre0`, `tunl0`, …) that never transmit a byte.
+On kernels that load those modules (local kind, some bare-metal) they multiply
+`container_network_*` cardinality ~10× while reading a permanent 0.
+`collectors.dropNetworkInterfaces` drops them by default. It's a **no-op on
+cloud CNIs (EKS/GKE/AKS)** where the devices don't exist. Set it to `[]` to keep
+all interfaces.
+
+The net effect: **a fresh install consumes far fewer series than a stock
+Prometheus scrape would** — the annotation firehose, the KSM N× duplication, and
+the phantom-interface bloat are all handled without any tuning on your part.

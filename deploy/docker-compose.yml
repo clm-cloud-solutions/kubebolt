@@ -36,6 +36,10 @@ services:
       # gRPC channel's KUBEBOLT_AGENT_AUTH_MODE. Default disabled for
       # backwards compat with Sprint A migration.
       - KUBEBOLT_REMOTE_WRITE_AUTH_MODE=${KUBEBOLT_REMOTE_WRITE_AUTH_MODE:-disabled}
+      # External address remote agents dial to reach this backend's gRPC ingest
+      # (host:port). Set for HOSTED / SaaS deployments — the add-cluster wizard
+      # uses it as the backendUrl default + SaaS-mode. Empty for local/self-hosted.
+      - KUBEBOLT_AGENT_INGEST_URL=${KUBEBOLT_AGENT_INGEST_URL:-}
       # Per-tenant Prom remote_write limits (Phase 3). Fleet-wide
       # defaults applied when a tenant has no admin-API override.
       # See deploy/.env.example for the full description.

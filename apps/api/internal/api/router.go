@@ -414,6 +414,18 @@ func NewRouter(
 			r.Get("/integrations", h.handleListIntegrations)
 			r.Get("/integrations/{id}", h.handleGetIntegration)
 
+			// Agent onboarding helpers — surface backend auth posture,
+			// deployment/ingest defaults, and let the dialog issue an ingest
+			// token. OUTSIDE requireConnector on purpose: the add-cluster
+			// wizard registers a NEW remote cluster, so it must work even when
+			// the ACTIVE cluster is down (e.g. a disconnected agent-proxy).
+			r.Group(func(r chi.Router) {
+				r.Use(auth.RequireRole(auth.RoleAdmin))
+				r.Get("/integrations/agent/auth-info", h.handleAgentAuthInfo)
+				r.Get("/integrations/agent/install-defaults", h.handleAgentInstallDefaults)
+				r.Post("/integrations/agent/issue-token", h.handleAgentIssueToken)
+			})
+
 			// Cluster overview lives OUTSIDE requireConnector: for a metrics-only cluster
 			// it serves a KSM-derived overview (no connector needed) and owns its own
 			// genuine no-connector 503.
@@ -462,15 +474,6 @@ func NewRouter(
 					r.Get("/integrations/{id}/config", h.handleGetIntegrationConfig)
 					r.Put("/integrations/{id}/config", h.handlePutIntegrationConfig)
 					r.Delete("/integrations/{id}", h.handleUninstallIntegration)
-					// Agent-specific helpers — surface backend auth
-					// posture and let the dialog issue an ingest token
-					// + materialize the Secret in one click. Hard-coded
-					// to /integrations/agent/* (not parameterized) so
-					// other integrations don't accidentally inherit
-					// the tenants-store-backed flow.
-					r.Get("/integrations/agent/auth-info", h.handleAgentAuthInfo)
-					r.Get("/integrations/agent/install-defaults", h.handleAgentInstallDefaults)
-					r.Post("/integrations/agent/issue-token", h.handleAgentIssueToken)
 				})
 
 				// Copilot chat — any role can ask questions

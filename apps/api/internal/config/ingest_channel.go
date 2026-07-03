@@ -39,6 +39,17 @@ type IngestChannelConfig struct {
 	AgentTokenAudience string
 	AgentRequireMTLS   bool
 
+	// AgentIngestURL is the operator-configured external address remote
+	// agents dial to reach this backend's gRPC ingest (host:port, e.g.
+	// agent.kubebolt.io:443). Empty on OSS/self-hosted co-located installs
+	// (the wizard infers the endpoint from the agent-ingest Service). When
+	// SET it signals a HOSTED deployment: the add-cluster wizard uses it as
+	// the sole backendUrl default and switches to SaaS-mode behavior (TLS on,
+	// auth required, operator creates the token secret in their OWN cluster).
+	// Env KUBEBOLT_AGENT_INGEST_URL; a platform-admin override can supersede
+	// it via settings (see settings.Runtime.AgentIngestURL).
+	AgentIngestURL string
+
 	// Rate limiting (fleet-wide; per-tenant overrides are separate).
 	AgentRateLimitEnabled bool
 	AgentRateLimitRPS     int
@@ -131,6 +142,9 @@ func LoadIngestChannelConfig() IngestChannelConfig {
 	}
 	if v := os.Getenv("KUBEBOLT_AGENT_TOKEN_AUDIENCE"); v != "" {
 		cfg.AgentTokenAudience = v
+	}
+	if v := os.Getenv("KUBEBOLT_AGENT_INGEST_URL"); v != "" {
+		cfg.AgentIngestURL = v
 	}
 	cfg.AgentRequireMTLS = os.Getenv("KUBEBOLT_AGENT_REQUIRE_MTLS") == "true"
 

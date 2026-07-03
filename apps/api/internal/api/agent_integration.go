@@ -49,21 +49,14 @@ func (h *handlers) handleAgentAuthInfo(w http.ResponseWriter, r *http.Request) {
 	}
 	out := agentAuthInfoResponse{Enforcement: enforcement, Tenants: []agentTenantBrief{}}
 
-	// tenantsStore is nil when app auth is disabled. The UI receives
-	// an empty tenants list and falls back to "paste a Secret name"
-	// only.
+	// Scope to the CALLER'S OWN org (the session tenant) — never a cross-org
+	// picker. The add-cluster wizard registers a cluster into the org the
+	// operator is signed into; the old ListTenants() leaked the entire org
+	// roster into the dialog. tenantsStore is nil when app auth is disabled →
+	// empty list, and the UI falls back to "paste a Secret name" only.
 	if h.tenantsStore != nil {
-		tenants, err := h.tenantsStore.ListTenants()
-		if err != nil {
-			respondError(w, http.StatusInternalServerError, "list tenants: "+err.Error())
-			return
-		}
-		for i := range tenants {
-			out.Tenants = append(out.Tenants, agentTenantBrief{
-				ID:       tenants[i].ID,
-				Name:     tenants[i].Name,
-				Disabled: tenants[i].Disabled,
-			})
+		if t, err := h.tenantsStore.GetTenant(auth.ContextTenantID(r)); err == nil {
+			out.Tenants = append(out.Tenants, agentTenantBrief{ID: t.ID, Name: t.Name, Disabled: t.Disabled})
 		}
 	}
 	respondJSON(w, http.StatusOK, out)
@@ -72,22 +65,32 @@ func (h *handlers) handleAgentAuthInfo(w http.ResponseWriter, r *http.Request) {
 // agentIssueTokenRequest is the body the dialog's "Generate token +
 // create Secret" button sends.
 type agentIssueTokenRequest struct {
-	TenantID   string `json:"tenantId"`
-	Label      string `json:"label,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`  // defaults to "kubebolt-system"
-	SecretName string `json:"secretName,omitempty"` // defaults to "kubebolt-agent-token"
-	TTLSeconds int64  `json:"ttlSeconds,omitempty"`
+	// TenantID is accepted for wire-compat but IGNORED — the token is always
+	// scoped to the caller's session org (see handleAgentIssueToken).
+	TenantID string `json:"tenantId,omitempty"`
+	// TeamID is the team that will own the cluster registered with this token
+	// (Track D — team-scoped clusters). Empty = unassigned. Multi-tenant only.
+	TeamID string `json:"teamId,omitempty"`
+	Label  string `json:"label,omitempty"`
+	// Materialize=true creates the Secret in the CONNECTED cluster in one click
+	// (backend-reachable flows: setup / configure / backend-applied install).
+	// Omitted/false = issue-only: the plaintext token is returned so the operator
+	// creates the Secret in a REMOTE cluster themselves (add-cluster wizard).
+	Materialize bool   `json:"materialize,omitempty"`
+	Namespace   string `json:"namespace,omitempty"`  // materialize path; defaults to "kubebolt-system"
+	SecretName  string `json:"secretName,omitempty"` // materialize path; defaults to "kubebolt-agent-token"
+	TTLSeconds  int64  `json:"ttlSeconds,omitempty"`
 }
 
-// agentIssueTokenResponse intentionally OMITS the plaintext token.
-// The token only ever lives in the cluster Secret we just created —
-// the operator can retrieve it with `kubectl get secret -o yaml`
-// when needed. Returning the plaintext over the API would force a
-// "save it now or lose it" UX dialog, which is exactly what we're
-// trying to eliminate by storing it server-side.
+// agentIssueTokenResponse carries the issued token's identity plus EITHER the
+// plaintext token (issue-only — the operator secures a REMOTE cluster via
+// kubectl) OR the materialized Secret's name+namespace (backend-reachable
+// flows). tokenPrefix/label/tenantId are always set. The plaintext is never
+// re-retrievable; a fresh Generate mints a new token.
 type agentIssueTokenResponse struct {
-	SecretName  string `json:"secretName"`
-	Namespace   string `json:"namespace"`
+	Token       string `json:"token,omitempty"`      // issue-only path
+	SecretName  string `json:"secretName,omitempty"` // materialize path
+	Namespace   string `json:"namespace,omitempty"`  // materialize path
 	TokenPrefix string `json:"tokenPrefix"`
 	TokenLabel  string `json:"tokenLabel"`
 	TenantID    string `json:"tenantId"`
@@ -104,48 +107,20 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusServiceUnavailable, "tenants store not configured (KUBEBOLT_AUTH_ENABLED must be true to issue ingest tokens)")
 		return
 	}
-	conn := h.manager.Connector(r.Context())
-	if conn == nil {
-		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
-		return
-	}
 
 	var req agentIssueTokenRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		respondError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if req.TenantID == "" {
-		respondError(w, http.StatusBadRequest, "tenantId is required")
-		return
-	}
-	ns := req.Namespace
-	if ns == "" {
-		ns = "kubebolt-system"
-	}
-	secretName := req.SecretName
-	if secretName == "" {
-		secretName = "kubebolt-agent-token"
-	}
-	label := req.Label
-	if label == "" {
-		label = "agent-install-wizard"
-	}
 
-	issuer := auth.ContextUserID(r)
-	if issuer == "" {
-		issuer = "system"
-	}
-
-	// Agent-install issues the token via the agent dialog, which
-	// doesn't yet collect a cluster ID at issue time — the agent's
-	// own cluster_id ships in the Hello message after it boots.
-	// Pass "" to keep the unscoped behavior we had before
-	// per-token cluster scoping landed.
-	// Validate the tenant exists (the ingest-token store doesn't, since
-	// tokens are no longer coupled to the tenant record) so a bad TenantID
-	// still 404s instead of minting an orphan token.
-	if _, err := h.tenantsStore.GetTenant(req.TenantID); err != nil {
+	// The token is ALWAYS scoped to the caller's OWN org (the session tenant),
+	// never a client-supplied tenantId — the add-cluster wizard registers a
+	// cluster into the org the operator is signed into. Cross-org issuance is
+	// not a capability of this flow. Validate the org exists so a broken
+	// session still 404s instead of minting an orphan token.
+	orgID := auth.ContextTenantID(r)
+	if _, err := h.tenantsStore.GetTenant(orgID); err != nil {
 		if errors.Is(err, auth.ErrTenantNotFound) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -153,46 +128,77 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), req.TenantID, "", "", label, issuer, nil)
+
+	label := req.Label
+	if label == "" {
+		label = "agent-install-wizard"
+	}
+	issuer := auth.ContextUserID(r)
+	if issuer == "" {
+		issuer = "system"
+	}
+
+	// Cluster-unscoped at issue time — the agent's own cluster_id ships in its
+	// Hello after boot; TeamID (optional) decides which team owns the cluster
+	// once it registers.
+	plaintext, tok, err := h.ingestTokens.Issue(r.Context(), orgID, "", req.TeamID, label, issuer, nil)
 	if err != nil {
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	if err := upsertAgentTokenSecret(r.Context(), conn.Clientset(), ns, secretName, plaintext); err != nil {
-		// Best-effort revoke so the issued token doesn't dangle
-		// after we failed to wire it into the cluster. RevokeToken
-		// errors are logged but don't override the underlying
-		// failure that brought us here.
-		if revokeErr := h.ingestTokens.Revoke(r.Context(), req.TenantID, tok.ID); revokeErr != nil {
-			slog.Warn("issue-token: failed to revoke after Secret apply error",
-				slog.String("error", revokeErr.Error()),
-			)
-		}
-		respondError(w, http.StatusInternalServerError, "create token Secret: "+err.Error())
-		return
-	}
-
-	respondJSON(w, http.StatusOK, agentIssueTokenResponse{
-		SecretName:  secretName,
-		Namespace:   ns,
+	resp := agentIssueTokenResponse{
 		TokenPrefix: tok.Prefix,
 		TokenLabel:  tok.Label,
-		TenantID:    req.TenantID,
-	})
+		TenantID:    orgID,
+	}
+
+	if req.Materialize {
+		// Backend-reachable flows (setup / configure / backend-applied install):
+		// create the Secret in the connected cluster in one click.
+		conn := h.manager.Connector(r.Context())
+		if conn == nil {
+			respondError(w, http.StatusServiceUnavailable, "cluster not connected — cannot materialize the Secret (omit materialize for a remote cluster)")
+			return
+		}
+		ns := req.Namespace
+		if ns == "" {
+			ns = "kubebolt-system"
+		}
+		secretName := req.SecretName
+		if secretName == "" {
+			secretName = "kubebolt-agent-token"
+		}
+		if err := upsertAgentTokenSecret(r.Context(), conn.Clientset(), ns, secretName, plaintext); err != nil {
+			// Best-effort revoke so the issued token doesn't dangle after we
+			// failed to wire it into the cluster.
+			if revokeErr := h.ingestTokens.Revoke(r.Context(), orgID, tok.ID); revokeErr != nil {
+				slog.Warn("issue-token: failed to revoke after Secret apply error", slog.String("error", revokeErr.Error()))
+			}
+			respondError(w, http.StatusInternalServerError, "create token Secret: "+err.Error())
+			return
+		}
+		resp.SecretName = secretName
+		resp.Namespace = ns
+	} else {
+		// Issue-ONLY (SaaS onboarding): the agent lands in a REMOTE cluster the
+		// backend can't reach, so return the plaintext token — shown ONCE — and
+		// the wizard emits the `kubectl create secret` the operator runs in THEIR
+		// cluster.
+		resp.Token = plaintext
+	}
+
+	respondJSON(w, http.StatusOK, resp)
 }
 
-// upsertAgentTokenSecret creates the Secret on first use, updates
-// otherwise. Labels mark it managed-by KubeBolt so future cleanup
-// paths can reason about ownership. Auto-creates the namespace
-// when it doesn't exist — the wizard's "Generate token + create
-// Secret" button is supposed to be self-contained, the operator
-// shouldn't have to pre-provision the namespace.
+// upsertAgentTokenSecret creates the Secret on first use, updates otherwise.
+// Labels mark it managed-by KubeBolt so future cleanup paths can reason about
+// ownership. Auto-creates the namespace when it doesn't exist — the one-click
+// materialize flow is meant to be self-contained. Used only when the request
+// sets materialize=true (a cluster the backend can reach).
 func upsertAgentTokenSecret(ctx context.Context, cs kubernetes.Interface, ns, name, token string) error {
-	// Ensure the namespace exists. Tolerate AlreadyExists for the
-	// common case where Install / Configure already ran (or the
-	// operator pre-created it manually). Real errors (RBAC denied,
-	// API down) bubble up.
+	// Ensure the namespace exists. Tolerate AlreadyExists for the common case
+	// where Install / Configure already ran (or the operator pre-created it).
 	nsObj := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: ns,
