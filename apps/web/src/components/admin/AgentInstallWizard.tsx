@@ -19,7 +19,7 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
   const [cfg, setCfg] = useState<AgentInstallConfig>({
     backendUrl: '',
     clusterName: '',
-    hubbleEnabled: true,
+    hubbleEnabled: false,
     rbacMode: 'reader',
   })
   const [nodeSelector, setNodeSelector] = useState<Array<{ k: string; v: string }>>([])

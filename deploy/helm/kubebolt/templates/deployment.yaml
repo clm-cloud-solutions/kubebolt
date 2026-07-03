@@ -199,6 +199,13 @@ spec:
               value: {{ .Values.agentIngest.authMode | quote }}
             - name: KUBEBOLT_AGENT_TOKEN_AUDIENCE
               value: {{ .Values.agentIngest.tokenAudience | quote }}
+            {{- with .Values.agentIngest.externalUrl }}
+            # External address remote agents dial to reach the gRPC ingest
+            # (host:port). Set on hosted/SaaS installs — makes the add-cluster
+            # wizard default backendUrl to it and switch to SaaS-mode.
+            - name: KUBEBOLT_AGENT_INGEST_URL
+              value: {{ . | quote }}
+            {{- end }}
             - name: KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS
               value: {{ .Values.agentIngest.autoRegisterClusters | quote }}
             {{- if .Values.agentIngest.rateLimit.enabled }}

@@ -44,6 +44,14 @@ type AgentInstallDefaults struct {
 	// agents won't reach it.
 	ExternalEndpoint string `json:"externalEndpoint,omitempty"`
 
+	// AgentIngestURL is the operator-configured external ingest endpoint
+	// (KUBEBOLT_AGENT_INGEST_URL / platform-admin override). When non-empty
+	// the deployment is HOSTED: the add-cluster wizard uses this as the sole
+	// backendUrl default and switches to SaaS-mode (TLS on, auth required,
+	// operator creates the secret in their OWN cluster). Empty → the wizard
+	// infers the endpoint from the Service (OSS / self-hosted co-located).
+	AgentIngestURL string `json:"agentIngestUrl,omitempty"`
+
 	// Suggested namespace for the agent install (kubebolt-system is the
 	// chart default). Surfaced so the wizard pre-fills it without
 	// hardcoding the constant in three places.
@@ -78,6 +86,14 @@ type AgentIngestServiceInfo struct {
 func (h *handlers) handleAgentInstallDefaults(w http.ResponseWriter, r *http.Request) {
 	defaults := AgentInstallDefaults{
 		AgentNamespace: "kubebolt-system",
+	}
+
+	// Operator-configured external ingest endpoint (hosted / SaaS). When set
+	// it is authoritative — the wizard uses it verbatim as the backendUrl
+	// default and enters SaaS-mode — so it flows regardless of in-cluster vs
+	// external topology below.
+	if h.settingsRuntime != nil {
+		defaults.AgentIngestURL = h.settingsRuntime.AgentIngestURL()
 	}
 
 	cfg, err := rest.InClusterConfig()
