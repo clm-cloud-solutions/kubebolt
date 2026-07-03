@@ -264,19 +264,22 @@ operator RBAC mode and Cilium present for D).
 ### What's lost
 Nothing functional. Operational cost: two scrapers (customer's Prom
 + kubebolt-agent vmagent) pull from the same KSM and node-exporter
-endpoints in parallel. The bundled VM ships `--dedup.minScrapeInterval=30s`
-so the duplicate KSM samples collapse server-side; node-exporter is
-per-node (one pod per node) so no duplication there.
+endpoints. The agent scrapes **KSM exactly once** (a per-node keep
+filter on the dedicated job — only the vmagent sharing a node with the
+KSM pod scrapes it, no N× duplication from the DaemonSet) and
+node-exporter per-node (each agent scrapes its own node's copy). The
+bundled VM dedups the agent-vs-customer-Prom overlap at write time via
+`--dedup.minScrapeInterval=30s`.
 
 ### Phase X impact
 - **Phase 3** (Prom `remote_write` receiver, customer-facing): customer
   can configure their own Prom to remote_write into KubeBolt's VM
   and disable `scrape.enabled` in the agent. Single-source intake,
   zero scrape duplication, customer's Prom retention preserved.
-- Cosmetic side-effect today: the duplicate vmagent scrape adds
-  ~30s × N_nodes × N_targets of extra requests per cycle to KSM/NE.
-  In a 50-node cluster scraping KSM (one target) it's ~50 req/30s
-  extra. Negligible but worth flagging if the customer asks.
+- Cosmetic side-effect today: the agent's extra scrape adds one
+  `/metrics` request per target per cycle (KSM once, from its node;
+  node-exporter once per node). Negligible; worth flagging only if the
+  customer asks.
 
 ---
 
@@ -553,9 +556,10 @@ The customer's Prom and the kubebolt-agent vmagent both pull from
 KSM/node-exporter. Two scrapers per target.
 - Bandwidth cost: ~one extra `/metrics` HTTP request per target per
   30s. Negligible in any cluster.
-- KSM cardinality: one scrape source per target produces one series
-  in VM (the bundled VM dedups at write time via `--dedup.minScrapeInterval=30s`).
-  No inflation.
+- KSM cardinality: the agent scrapes KSM exactly once (a per-node keep filter
+  on the dedicated job — no N× duplication from the DaemonSet), so the customer's
+  Prom is the only other source. The bundled VM dedups those two at write time
+  via `--dedup.minScrapeInterval=30s`. No inflation.
 - Customer's Prom retention is untouched — they keep their own
   history independent of KubeBolt's VM.
 
@@ -564,24 +568,34 @@ KubeBolt directly and the agent's scrape sidecar gets disabled.
 
 ### Series cardinality on bundled VM
 
-Each scenario produces a different VM footprint:
-- Scenario 1 / 2a / 2b-full: typical ~5k-15k series for a 50-node
-  cluster (KSM emits ~2k, node-exporter ~3k×N nodes, agent ~5k).
-- Scenario 3 minimal: ~5k-8k series (just agent kubelet/cAdvisor).
-- Bundled VM defaults (10 GiB PVC, 30-day retention) cover up to
-  ~500-node clusters comfortably. Bigger clusters → bump
-  `metrics.storage.embedded.persistence.size` and/or move to an
-  external VM via `metrics.storage.externalUrl`.
+VM footprint per scenario, **with the default metric-family allowlist**
+(`scrape.metricRelabelConfigs`, on by default — it keeps only KubeBolt-consumed
+families and drops the app metrics an annotation scrape would sweep in; see the
+agent chart's "Metric footprint" section). Validated on a production cluster:
+the allowlist took a real workload from **96k → 19k active series (−80%)** with
+zero KubeBolt metrics lost.
+- Scenario 1 / 2a / 2b-full: a few thousand active series for a mid-size cluster
+  after filtering. Disabling the allowlist (`metricRelabelConfigs: []`) re-opens
+  the annotation firehose and can multiply this several-fold.
+- Scenario 3 minimal: agent kubelet/cAdvisor only (no scrape sidecar) — a few
+  thousand series.
+- Bundled VM defaults (10 GiB PVC, 30-day retention) cover up to ~500-node
+  clusters comfortably. Bigger clusters → bump
+  `metrics.storage.embedded.persistence.size` and/or move to an external VM via
+  `metrics.storage.externalUrl`.
 
 ### External TSDB caveat
 
-If the customer points KubeBolt at their own VM cluster
-(`metrics.storage.externalUrl`) AND uses the dedicated KSM scrape job
-in the agent, **enable `--dedup.minScrapeInterval=30s` on their own
-vmstorage/vminsert** or accept inflated KSM series counts. The bundled
-VM handles this by default — external TSDBs are the customer's
-responsibility. See [`deploy/helm/kubebolt/README.md`](../deploy/helm/kubebolt/README.md)
-Metrics Storage section.
+The agent's dedicated KSM job is now **single-scrape** by default — a
+`node_name == %{NODE_NAME}` keep filter means only the agent co-located with KSM
+scrapes it (see the agent chart's "Metric footprint" section), so the agent no
+longer inflates KSM series regardless of TSDB. `--dedup` is only relevant if a
+**second** scraper (e.g. the customer's own Prometheus in scenarios 1/2) also
+pulls the same targets: the bundled VM handles that 2-source case with the
+default `--dedup.minScrapeInterval=30s`; on an external TSDB
+(`metrics.storage.externalUrl`) enable dedup there yourself for that case. See
+[`deploy/helm/kubebolt/README.md`](../deploy/helm/kubebolt/README.md) Metrics
+Storage section.
 
 ### Cilium / Hubble version requirements
 
