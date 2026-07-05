@@ -49,6 +49,17 @@ type TenantLimits struct {
 	// this cap are rejected at ingest with HTTP 413 + Retry-After.
 	// Series count is authoritative via a periodic VM count query.
 	MaxActiveSeries *int `json:"maxActiveSeries,omitempty"`
+
+	// AllowCustomSeries controls whether NON-core metric families (series
+	// whose __name__ isn't a KubeBolt-consumed family — the customer's own
+	// app metrics arriving via remote_write) are accepted or dropped at
+	// ingest. nil inherits the system default (core-only). false = drop
+	// custom: the margin-protecting floor, KubeBolt only ingests what it
+	// consumes. true = keep custom — they reach VM and count toward
+	// MaxActiveSeries (the billable "custom telemetry" tier). This is the
+	// enforcement point for the core-vs-custom split in the active-series
+	// pricing proposal; the family classification is the metric registry.
+	AllowCustomSeries *bool `json:"allowCustomSeries,omitempty"`
 }
 
 // EffectiveLimits is the resolved view a tenant's enforcement layer
@@ -56,9 +67,10 @@ type TenantLimits struct {
 // system default), plus a parallel "source" map for the admin UI to
 // render "default" / "custom" badges per field.
 type EffectiveLimits struct {
-	WriteSamplesPerSec int `json:"writeSamplesPerSec"`
-	WriteBurstSamples  int `json:"writeBurstSamples"`
-	MaxActiveSeries    int `json:"maxActiveSeries"`
+	WriteSamplesPerSec int  `json:"writeSamplesPerSec"`
+	WriteBurstSamples  int  `json:"writeBurstSamples"`
+	MaxActiveSeries    int  `json:"maxActiveSeries"`
+	AllowCustomSeries  bool `json:"allowCustomSeries"`
 }
 
 // LimitsResponse is the admin API DTO. It returns three views:
@@ -91,6 +103,9 @@ func ResolveLimits(custom *TenantLimits, defaults EffectiveLimits) EffectiveLimi
 	}
 	if custom.MaxActiveSeries != nil {
 		out.MaxActiveSeries = *custom.MaxActiveSeries
+	}
+	if custom.AllowCustomSeries != nil {
+		out.AllowCustomSeries = *custom.AllowCustomSeries
 	}
 	return out
 }
@@ -180,6 +195,10 @@ func MergeLimits(base, patch *TenantLimits) *TenantLimits {
 	if patch.MaxActiveSeries != nil {
 		v := *patch.MaxActiveSeries
 		out.MaxActiveSeries = &v
+	}
+	if patch.AllowCustomSeries != nil {
+		v := *patch.AllowCustomSeries
+		out.AllowCustomSeries = &v
 	}
 	return &out
 }

@@ -312,6 +312,7 @@ func main() {
 		WriteSamplesPerSec: promLimitsCfg.WriteSamplesPerSec,
 		WriteBurstSamples:  promLimitsCfg.WriteBurstSamples,
 		MaxActiveSeries:    promLimitsCfg.MaxActiveSeries,
+		AllowCustomSeries:  promLimitsCfg.AllowCustomSeries,
 	}
 
 	// Notifications env baseline. Loaded here (before authCfg.Enabled
@@ -823,6 +824,15 @@ func main() {
 	// tests pass a fresh registry to isolate (see prom_write_metrics
 	// _test.go).
 	promWriteMetrics := api.NewPromWriteMetrics(prometheus.DefaultRegisterer)
+
+	// Ingest-time core/custom name filter (Layer 2 of the cardinality
+	// cost-control plan). On the core-only floor it drops non-KubeBolt
+	// ("custom") series before forwarding to VM; the per-tenant
+	// AllowCustomSeries limit opts a tenant into keeping custom telemetry.
+	// NameFilterEnabled is the fleet-wide kill-switch. Self-hosted OSS
+	// deployments that want to keep their own remote_write'd metrics set
+	// KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES=true (they own their VM).
+	promNameFilter := api.NewPromNameFilter(promLimitsCfg.NameFilterEnabled, promLimitsEffective, promWriteMetrics)
 	// Spec #09 V2 Item 5b — gRPC ingest counters powering the
 	// /admin/ingest-activity panel. Same registry as promWriteMetrics
 	// so the `/metrics` endpoint surfaces both ingest paths uniformly
@@ -871,7 +881,7 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel

@@ -42,6 +42,10 @@ type PromWriteMetrics struct {
 	// forwarded. Useful for cost-allocation in SaaS where
 	// bandwidth is non-trivial.
 	bytesAccepted *prometheus.CounterVec
+	// droppedSeries counts non-core ("custom") series dropped at ingest by
+	// the core-only name filter, labeled by tenant + drop reason. Pairs
+	// with samplesAccepted for a kept-vs-dropped cardinality dashboard.
+	droppedSeries *prometheus.CounterVec
 	// activeSeries mirrors the CardinalityTracker's cache. Updated
 	// by the tracker's refresh loop, not the request hot path.
 	activeSeries *prometheus.GaugeVec
@@ -100,12 +104,16 @@ func NewPromWriteMetrics(reg prometheus.Registerer) *PromWriteMetrics {
 			Name: "kubebolt_prom_write_active_series",
 			Help: "Cached active series count per tenant, refreshed every 30s from VM.",
 		}, []string{"tenant_id"}),
+		droppedSeries: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "kubebolt_prom_write_dropped_series_total",
+			Help: "Total series dropped at ingest by the core-only name filter, per tenant and reason.",
+		}, []string{"tenant_id", "reason"}),
 		activeSeriesTenants: make(map[string]struct{}),
 	}
 	// MustRegister panics on duplicate registration — that's the
 	// right semantic for a process-lifetime metric; a double-wire
 	// in main.go would silently corrupt counts without it.
-	reg.MustRegister(m.requestsTotal, m.samplesAccepted, m.bytesAccepted, m.activeSeries)
+	reg.MustRegister(m.requestsTotal, m.samplesAccepted, m.bytesAccepted, m.activeSeries, m.droppedSeries)
 	return m
 }
 
@@ -134,6 +142,17 @@ func (m *PromWriteMetrics) RecordAcceptedSamples(tenantID string, samples int, b
 	if bytes > 0 {
 		m.bytesAccepted.WithLabelValues(tenantID).Add(float64(bytes))
 	}
+}
+
+// RecordDroppedByName bumps the dropped-series counter for series the
+// core-only name filter rejected (reason="custom" — the __name__ wasn't a
+// KubeBolt family). Series-level count, not request-level: a request can
+// forward its core series and still record customs dropped here.
+func (m *PromWriteMetrics) RecordDroppedByName(tenantID string, count int) {
+	if m == nil || count <= 0 {
+		return
+	}
+	m.droppedSeries.WithLabelValues(tenantID, "custom").Add(float64(count))
 }
 
 // SetActiveSeries replaces the active_series snapshot. Called by
@@ -179,6 +198,7 @@ func (m *PromWriteMetrics) ForgetTenant(tenantID string) {
 	m.samplesAccepted.DeleteLabelValues(tenantID)
 	m.bytesAccepted.DeleteLabelValues(tenantID)
 	m.activeSeries.DeleteLabelValues(tenantID)
+	m.droppedSeries.DeletePartialMatch(prometheus.Labels{"tenant_id": tenantID})
 }
 
 // PromHTTPHandler returns the http.Handler that serves /metrics

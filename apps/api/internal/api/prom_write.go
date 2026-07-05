@@ -464,6 +464,30 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+
+		// Core/custom name filter (Layer 2 of the cardinality plan): drop
+		// non-KubeBolt ("custom") series unless the tenant opted into custom
+		// telemetry. Runs for authenticated AND permissive/anonymous ingest —
+		// the margin floor is tenant-independent (anonymous → fleet default).
+		if h.promNameFilter != nil {
+			filtered, _, droppedSamples, rewrote, filtErr := h.promNameFilter.Filter(tenantID, overrides, decoded)
+			if filtErr != nil {
+				h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedMalformed)
+				respondError(w, http.StatusBadRequest, "remote_write payload filter: "+filtErr.Error())
+				return
+			}
+			if rewrote {
+				sampleCount -= droppedSamples
+				if sampleCount <= 0 {
+					// Every series was custom → nothing core to forward.
+					h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusAccepted)
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				body = snappy.Encode(nil, filtered)
+				decoded = filtered
+			}
+		}
 	}
 
 	target, err := url.Parse(metricsStorageURL() + promWriteUpstreamPath)

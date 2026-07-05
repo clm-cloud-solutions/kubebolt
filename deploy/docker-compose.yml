@@ -46,6 +46,11 @@ services:
       - KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC=${KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC:-10000}
       - KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES=${KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES:-100000}
       - KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES=${KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES:-1000000}
+      # Core/custom series filter (Layer 2 cardinality control). Self-hosted
+      # default keeps your own remote_write'd metrics (your VM, your data);
+      # set ALLOW_CUSTOM_SERIES=false to drop non-KubeBolt series at ingest.
+      - KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED=${KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED:-true}
+      - KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES=${KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES:-true}
       # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
       # The copilot is disabled if no key is set; KubeBolt works fully without it.
       - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}
