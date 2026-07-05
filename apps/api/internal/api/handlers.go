@@ -91,6 +91,12 @@ type handlers struct {
 	// reachable at boot or in test fixtures). The refresh goroutine
 	// is started by main.go alongside the HTTP server.
 	promCardinality *CardinalityTracker
+	// promNameFilter is the ingest-time core/custom classifier (Layer 2 of
+	// the cardinality cost-control plan). On the core-only floor it drops
+	// non-KubeBolt ("custom") series before forwarding to VM; a per-tenant
+	// opt-in keeps them (the billable custom-telemetry tier). nil means the
+	// classifier is disabled — a no-op that forwards everything.
+	promNameFilter *PromNameFilter
 	// promWriteMetrics records per-tenant request outcomes,
 	// accepted samples + bytes, and the active-series gauge driven
 	// by the cardinality tracker's refresh loop. Exposed at /metrics

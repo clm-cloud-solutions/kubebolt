@@ -47,6 +47,7 @@ func NewRouter(
 	promWriteAuthMode string,
 	promRateLimiter *PromRateLimiter,
 	promCardinality *CardinalityTracker,
+	promNameFilter *PromNameFilter,
 	promWriteMetrics *PromWriteMetrics,
 	// usageStore is the W1 metering seam. Never nil — OSS passes the no-op,
 	// EE passes a Postgres-backed impl. Call sites (e.g. prom_write accepted
@@ -99,6 +100,7 @@ func NewRouter(
 		promWriteAuthMode:    promWriteAuthMode,
 		promRateLimiter:      promRateLimiter,
 		promCardinality:      promCardinality,
+		promNameFilter:       promNameFilter,
 		promWriteMetrics:     promWriteMetrics,
 		usage:                usageStore,
 		agentRegistry:        agentRegistry,
