@@ -49,7 +49,7 @@ func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")
 	nodeName := flag.String("node", envOr("KUBEBOLT_AGENT_NODE_NAME", hostname()), "Node name (falls back to hostname)")
 	nodeIP := flag.String("node-ip", envOr("KUBEBOLT_AGENT_NODE_IP", ""), "Node IP the kubelet listens on (downward API status.hostIP)")
-	statsInterval := flag.Duration("stats-interval", 15*time.Second, "How often to poll kubelet /stats/summary")
+	statsInterval := flag.Duration("stats-interval", 30*time.Second, "How often to poll kubelet /stats/summary. Aligned to VM --dedup.minScrapeInterval=30s: polling faster (was 15s) just ships samples VM deduplicates away — ~2x wasted ingest with zero retained resolution (finding #7). Set 15s here AND --dedup.minScrapeInterval=15s if you genuinely want finer resolution.")
 	podsInterval := flag.Duration("pods-interval", 30*time.Second, "How often to refresh the pods metadata cache")
 	// Default 50k: a multi-node Mode C poll can produce 5-7k samples
 	// per matcher across 4-6 matchers — per-matcher pushes (see
