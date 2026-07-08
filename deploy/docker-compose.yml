@@ -23,6 +23,9 @@ services:
       - KUBEBOLT_AUTH_ENABLED=${KUBEBOLT_AUTH_ENABLED:-true}
       - KUBEBOLT_ADMIN_PASSWORD=${KUBEBOLT_ADMIN_PASSWORD:-}
       - KUBEBOLT_JWT_SECRET=${KUBEBOLT_JWT_SECRET:-}
+      # Allowed CORS origins for cross-origin browser calls (UI on a different
+      # origin than the API). Empty = local dev defaults.
+      - KUBEBOLT_CORS_ORIGINS=${KUBEBOLT_CORS_ORIGINS:-}
       - KUBEBOLT_DATA_DIR=/data
       # Metrics storage (Phase 2). Backend writes via Prom remote_write and
       # queries via PromQL. VictoriaMetrics is the default; swap by pointing
