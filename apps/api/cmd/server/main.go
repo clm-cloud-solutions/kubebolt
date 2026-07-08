@@ -55,7 +55,7 @@ var version = "dev"
 //go:embed all:web/dist
 var embeddedFS embed.FS
 
-const helpText = `KubeBolt %s — Instant Kubernetes Monitoring & Management
+const helpText = `KubeBolt %s — The AI operations platform for Kubernetes
 
 USAGE:
   kubebolt [flags]

@@ -23,9 +23,9 @@ export function AboutModal({ onClose }: Props) {
           <div className="min-w-0">
             <div className="text-base font-semibold text-kb-text-primary">KubeBolt</div>
             <div className="text-[11px] text-kb-text-secondary leading-relaxed mt-1">
-              Instant Kubernetes monitoring — full cluster visibility in
-              under 2 minutes, with zero configuration and Kobi, the
-              built-in agent.
+              The AI operations platform for Kubernetes. Autopilot
+              investigates incidents, finds the root cause, and applies
+              the fix on its own — with Kobi, your built-in AI copilot.
             </div>
           </div>
         </div>

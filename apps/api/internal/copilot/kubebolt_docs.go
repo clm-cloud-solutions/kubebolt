@@ -16,7 +16,7 @@ import (
 // kebab-case multi-word keys. New topics are picked up automatically by
 // the get_kubebolt_docs tool (topic list is derived from this map).
 var kubebolt_docs = map[string]string{
-	"overview": `KubeBolt is a zero-config Kubernetes monitoring and management dashboard. It auto-detects clusters from kubeconfig (or in-cluster ServiceAccount), introspects resources through shared informers, and surfaces insights, metrics, topology, and pod-level operations (logs, terminal, port-forward, file browser) in a web UI. BYO kubeconfig or deploy via Helm/Docker/binary — no agent, no persistence by default.`,
+	"overview": `KubeBolt is the AI operations platform for Kubernetes — a zero-config dashboard. It auto-detects clusters from kubeconfig (or in-cluster ServiceAccount), introspects resources through shared informers, and surfaces insights, metrics, topology, and pod-level operations (logs, terminal, port-forward, file browser) in a web UI. BYO kubeconfig or deploy via Helm/Docker/binary — no agent, no persistence by default.`,
 
 	"navigation": `Main surfaces:
 - Overview (/) — cluster summary, health, recent insights, workload cards

@@ -6,6 +6,7 @@ import { RefreshProvider } from '@/contexts/RefreshContext'
 import { AuthProvider } from '@/contexts/AuthContext'
 import { ApiError } from '@/services/api'
 import { Layout } from '@/components/layout/Layout'
+import { ViewportGate } from '@/components/layout/ViewportGate'
 import { RequireAuth } from '@/components/auth/RequireAuth'
 import { RequireRole } from '@/components/auth/RequireRole'
 import { OverviewPage } from '@/components/dashboard/OverviewPage'
@@ -96,7 +97,7 @@ export default function App() {
             {eePublicRoutes}
 
             {/* All app routes — require auth when enabled */}
-            <Route element={<RequireAuth><Layout /></RequireAuth>}>
+            <Route element={<RequireAuth><ViewportGate><Layout /></ViewportGate></RequireAuth>}>
               <Route path="/" element={<OverviewPage />} />
               <Route path="/capacity" element={<CapacityPage />} />
               <Route path="/reliability" element={<ReliabilityPage />} />
