@@ -21,8 +21,14 @@ export function HelmReleaseDetailPage() {
   const { namespace = '', name = '' } = useParams()
   const [tab, setTab] = useState<Tab>('overview')
 
+  // Cluster-scoped: the same release coords can exist in another cluster, so key
+  // by the ACTIVE cluster — otherwise switching shows the previous cluster's
+  // release while the live (over-the-agent-proxy) Secrets List refetches.
+  const { data: clusters } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
+  const activeCluster = clusters?.find((c) => c.active)?.context ?? 'none'
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['helm-release', namespace, name],
+    queryKey: ['helm-release', activeCluster, namespace, name],
     queryFn: () => api.getHelmRelease(namespace, name),
     refetchInterval: 30_000,
   })

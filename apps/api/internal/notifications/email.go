@@ -337,8 +337,10 @@ var htmlTemplate = template.Must(template.New("email").Parse(`<!DOCTYPE html>
     </div>
     {{end}}
   </div>
-  <div style="padding:14px 24px;background:#fafafa;font-size:11px;color:#999;text-align:center;border-top:1px solid #eee;">
-    Sent by KubeBolt · {{.Timestamp}}
+  <div style="padding:18px 24px;background:#fafafa;font-size:11px;color:#999;text-align:center;border-top:1px solid #eee;line-height:1.7;">
+    <div style="font-size:13px;font-weight:700;color:#1a1a1a;letter-spacing:-0.01em;">KubeBolt</div>
+    <div style="color:#888;">AI operations platform for Kubernetes · <a href="https://kubebolt.io" style="color:#1DBD7D;text-decoration:none;">kubebolt.io</a></div>
+    <div style="margin-top:4px;">Sent {{.Timestamp}}</div>
   </div>
 </div>
 </body></html>`))
@@ -420,6 +422,7 @@ func buildBodies(events []Event) (html string, text string) {
 	}
 	var buf bytes.Buffer
 	_ = htmlTemplate.Execute(&buf, data)
+	textBuilder.WriteString("KubeBolt · AI operations platform for Kubernetes · https://kubebolt.io\n")
 	return buf.String(), textBuilder.String()
 }
 

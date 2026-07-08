@@ -67,6 +67,9 @@ interface FormState {
   promWriteDefaultMaxActiveSeries: string
   promWriteDefaultMaxActiveSeriesGlobal: string
   agentTunnelIdleTimeoutSecs: string
+  connectTimeoutSeconds: string
+  stuckTimeoutSeconds: string
+  requestTimeoutSeconds: string
 }
 
 function stateFromResponse(d: IngestChannelSettingsResponse): FormState {
@@ -87,6 +90,9 @@ function stateFromResponse(d: IngestChannelSettingsResponse): FormState {
     promWriteDefaultMaxActiveSeries: String(e.promWriteDefaultMaxActiveSeries),
     promWriteDefaultMaxActiveSeriesGlobal: String(e.promWriteDefaultMaxActiveSeriesGlobal),
     agentTunnelIdleTimeoutSecs: String(e.agentTunnelIdleTimeoutSecs),
+    connectTimeoutSeconds: String(e.connectTimeoutSeconds),
+    stuckTimeoutSeconds: String(e.stuckTimeoutSeconds),
+    requestTimeoutSeconds: String(e.requestTimeoutSeconds),
   }
 }
 
@@ -162,6 +168,19 @@ function buildPatch(initial: FormState, current: FormState): IngestChannelSettin
     tunnel !== parseInt(initial.agentTunnelIdleTimeoutSecs, 10)
   ) {
     patch.agentTunnelIdleTimeoutSecs = tunnel
+  }
+  // Agent-proxy resilience timeouts. Connect/request are positive; stuck 0 = off.
+  const connect = parseInt(current.connectTimeoutSeconds, 10)
+  if (!isNaN(connect) && connect > 0 && connect !== parseInt(initial.connectTimeoutSeconds, 10)) {
+    patch.connectTimeoutSeconds = connect
+  }
+  const stuck = parseInt(current.stuckTimeoutSeconds, 10)
+  if (!isNaN(stuck) && stuck >= 0 && stuck !== parseInt(initial.stuckTimeoutSeconds, 10)) {
+    patch.stuckTimeoutSeconds = stuck
+  }
+  const request = parseInt(current.requestTimeoutSeconds, 10)
+  if (!isNaN(request) && request > 0 && request !== parseInt(initial.requestTimeoutSeconds, 10)) {
+    patch.requestTimeoutSeconds = request
   }
   return Object.keys(patch).length > 0 ? { patch } : {}
 }
@@ -274,6 +293,12 @@ function IngestChannelForm({
       form.promWriteDefaultMaxActiveSeriesGlobal !== initial.promWriteDefaultMaxActiveSeriesGlobal,
     agentTunnelIdleTimeoutSecs:
       form.agentTunnelIdleTimeoutSecs !== initial.agentTunnelIdleTimeoutSecs,
+    connectTimeoutSeconds:
+      form.connectTimeoutSeconds !== initial.connectTimeoutSeconds,
+    stuckTimeoutSeconds:
+      form.stuckTimeoutSeconds !== initial.stuckTimeoutSeconds,
+    requestTimeoutSeconds:
+      form.requestTimeoutSeconds !== initial.requestTimeoutSeconds,
   }
   // Channel-wide dirty (the 15 fields above) OR per-tenant dirty
   // (the 3 fields inside PerTenantLimitsSection). Save button at the
@@ -744,6 +769,61 @@ function IngestChannelForm({
               onChange={(e) =>
                 setForm({ ...form, agentTunnelIdleTimeoutSecs: e.target.value })
               }
+              className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            />
+          </Field>
+        </div>
+      </SectionCard>
+
+      {/* ─── 7. Agent-proxy resilience ─────────────────────────────────── */}
+      <SectionCard
+        icon={<Timer className="w-4 h-4 text-kb-accent" />}
+        title="Agent-proxy resilience"
+        subtitle="Live-tunable timeouts so one stuck or dead agent can't hang the API. Applied on the next connect / watchdog tick / proxied request — no restart."
+      >
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-5 gap-y-4">
+          <Field
+            stacked
+            label="Connect deadline (seconds)"
+            dirty={dirtyMap.connectTimeoutSeconds}
+            helper="Hard deadline on a single cluster connect. A stuck agent fails fast ('cluster unreachable') instead of stranding the connect + hanging the API. Range 5–600s."
+          >
+            <input
+              type="number"
+              min={5}
+              max={600}
+              value={form.connectTimeoutSeconds}
+              onChange={(e) => setForm({ ...form, connectTimeoutSeconds: e.target.value })}
+              className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            />
+          </Field>
+          <Field
+            stacked
+            label="Stuck-agent watchdog (seconds)"
+            dirty={dirtyMap.stuckTimeoutSeconds}
+            helper="If an agent has in-flight proxied requests but delivers no response for this long, its channel is force-closed so it reconnects. 0 disables. Enabling >0 fleet-wide needs keepalive-capable agents (else a force-closed agent won't reconnect). 0, or 5–600s."
+          >
+            <input
+              type="number"
+              min={0}
+              max={600}
+              value={form.stuckTimeoutSeconds}
+              onChange={(e) => setForm({ ...form, stuckTimeoutSeconds: e.target.value })}
+              className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
+            />
+          </Field>
+          <Field
+            stacked
+            label="Request timeout (seconds)"
+            dirty={dirtyMap.requestTimeoutSeconds}
+            helper="Per-request fallback bounding a non-watch proxied apiserver call. Range 5–600s."
+          >
+            <input
+              type="number"
+              min={5}
+              max={600}
+              value={form.requestTimeoutSeconds}
+              onChange={(e) => setForm({ ...form, requestTimeoutSeconds: e.target.value })}
               className="w-40 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
             />
           </Field>

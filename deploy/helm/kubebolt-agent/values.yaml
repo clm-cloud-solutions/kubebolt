@@ -167,6 +167,32 @@ hubble:
 # defer env var for the bundled vmagent topology. Set this value
 # explicitly only when the bundled sidecar is OFF and an external
 # Prometheus is the canonical node-exporter scraper.
+
+# ── In-agent collectors (Mode A / gRPC path) ──
+collectors:
+  # Network interfaces excluded from container_network_* (per-interface
+  # cadvisor counters). This is applied IN the agent, not by the vmagent
+  # scrape's metricRelabelConfigs — container_network_* rides the gRPC
+  # AgentChannel, which relabel rules never see.
+  #
+  # Default = the kernel tunnel/dummy devices that exist in EVERY network
+  # namespace (created by the sit/gre/ipip/ip6_tunnel modules) but never
+  # transmit a byte unless explicitly configured. cAdvisor reports the full
+  # container_network_* set for each → ~10x cardinality on kernels that load
+  # the modules (local kind/Docker, some bare-metal), all reading 0. They are
+  # ABSENT on cloud CNIs (EKS/GKE/AKS), so this list is a no-op there.
+  # Set to [] to keep every interface, or extend for your environment.
+  dropNetworkInterfaces:
+    - sit0
+    - ip6tnl0
+    - tunl0
+    - gre0
+    - gretap0
+    - erspan0
+    - ip6gre0
+    - ip_vti0
+    - ip6_vti0
+
 agent:
   deferNodeNetwork: false
 
@@ -396,16 +422,23 @@ scrape:
     maxSeriesGlobal: 1000000
 
   # ── Sample relabeling ──
-  # Drop high-cardinality labels at scrape time before they hit
-  # VictoriaMetrics. The defaults strip a few labels we know are
-  # noisy and rarely useful for queries (instance hash suffixes,
-  # k8s replicaset hashes that already collapse to workload
-  # labels via Phase 1's UI). Operators can append more.
-  metricRelabelConfigs: []
-  # Example to add to the list:
-  #   - source_labels: [my_high_card_label]
-  #     action: labeldrop
-  #     regex: my_high_card_label
+  # KubeBolt's consumed-series contract, applied at scrape time before samples
+  # reach VictoriaMetrics. The default KEEPS only the metric families KubeBolt
+  # queries and DROPS everything else — chiefly the customer app metrics
+  # (GitLab / sidekiq / etc.) that the annotation-driven kubernetes-pods job
+  # would otherwise sweep in. Validated on yagan-prod: 96k → 19k active series
+  # (−80%), zero KubeBolt metrics lost. Active series is the cost/pricing unit,
+  # so this is a cardinality guardrail — keep it in lockstep with the metric &
+  # label registry (docs/kubebolt-metric-label-registry.md). Operators may append
+  # rules; removing the keep-rule re-opens uncontrolled cardinality.
+  metricRelabelConfigs:
+    - source_labels: [__name__]
+      action: keep
+      regex: 'kube_.*|node_.*|container_.*|kubelet_.*|pod_flow_.*|pod_dns_.*|hubble_.*|kubebolt_.*|up|process_.*'
+    # Drop high-cardinality labels KubeBolt does NOT query (verified against the
+    # label registry). Do NOT add pod_uid / uid here — they are used for joins.
+    - action: labeldrop
+      regex: 'endpoint_id|container_id'
 
   # ── Service discovery ──
   # Built-in scrape jobs that vmagent renders into the ConfigMap.

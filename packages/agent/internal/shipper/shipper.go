@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 
 	"github.com/kubebolt/kubebolt/packages/agent/internal/buffer"
 	"github.com/kubebolt/kubebolt/packages/agent/internal/channel"
@@ -217,6 +218,15 @@ func (s *Shipper) runSession(ctx context.Context) error {
 			grpc.MaxCallRecvMsgSize(maxMsg),
 			grpc.MaxCallSendMsgSize(maxMsg),
 		),
+		// Client keepalive: PING the backend every 15s so a half-open connection is
+		// detected in seconds (→ reconnect) instead of ~48s, and so the backend's
+		// read loop keeps seeing activity. Paired with the server keepalive +
+		// EnforcementPolicy (MinTime 10s) so these pings aren't flagged as abusive.
+		grpc.WithKeepaliveParams(keepalive.ClientParameters{
+			Time:                15 * time.Second,
+			Timeout:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	}
 	if creds := NewTokenCreds(s.auth); creds != nil {
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(creds))

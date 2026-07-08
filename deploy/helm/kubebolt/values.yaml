@@ -117,6 +117,15 @@ agentIngest:
   enabled: true
   port: 9090
 
+  # External address remote agents dial to reach this gRPC ingest
+  # (host:port, e.g. agent.kubebolt.io:443). Set on HOSTED / SaaS installs:
+  # the "add cluster" wizard then defaults backendUrl to it and switches to
+  # SaaS-mode (TLS on, auth required, secret created in the operator's OWN
+  # cluster). Leave empty for co-located installs — the wizard infers the
+  # endpoint from the Service. Maps to env KUBEBOLT_AGENT_INGEST_URL; a
+  # platform-admin can override it at runtime in Settings.
+  externalUrl: ""
+
   # Enforcement matrix for the agent auth interceptor:
   #   disabled    — accept every connection (Sprint 0 migration default)
   #   permissive  — try to authenticate; on failure, log + accept
@@ -347,6 +356,14 @@ copilot:
 #       value: "48h"
 #     - name: KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT
 #       value: "10m"
+#     # Agent-proxy resilience timeouts (widen under heavy agent concurrency, tighten to
+#     # fail faster). Connect deadline / stuck-watchdog (0 disables) / request fallback.
+#     - name: KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT
+#       value: "25s"
+#     - name: KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT
+#       value: "45s"
+#     - name: KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT
+#       value: "30s"
 #     # Air-gapped installs: disable the GitHub update-check so the
 #     # backend never reaches out to api.github.com.
 #     - name: KUBEBOLT_UPDATE_CHECK_ENABLED

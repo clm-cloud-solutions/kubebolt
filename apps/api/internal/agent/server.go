@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -75,6 +76,11 @@ type Server struct {
 	// nil means "fall back to false"; main.go plugs in a closure that
 	// reads `settingsRuntime.IngestChannel().AgentAutoRegisterClusters`.
 	autoRegisterClusters func() bool
+	// stuckTimeoutFn resolves the stuck-agent watchdog window LIVE (Settings →
+	// General, no restart). Read on every watchdog tick so a change takes effect
+	// on the next tick. nil / non-positive → channel.StuckTimeout (env baseline);
+	// 0 disables the watchdog for that agent.
+	stuckTimeoutFn func() time.Duration
 	// selfClusterID is the kube-system namespace UID of the cluster
 	// the backend itself runs in (when running in-cluster), as
 	// discovered by DiscoverClusterID at boot. Empty when running
@@ -136,6 +142,23 @@ func WithAutoRegisterClusters(enabled bool) Option {
 // "manual register" to "auto" the moment a fleet rollout starts.
 func WithAutoRegisterClustersFunc(getter func() bool) Option {
 	return func(s *Server) { s.autoRegisterClusters = getter }
+}
+
+// WithStuckTimeoutFunc plugs a getter that resolves the stuck-agent watchdog
+// window on every tick, so Settings → General can retune (or disable, with 0)
+// the watchdog with no restart. nil getter → channel.StuckTimeout baseline.
+func WithStuckTimeoutFunc(getter func() time.Duration) Option {
+	return func(s *Server) { s.stuckTimeoutFn = getter }
+}
+
+// resolveStuckTimeout returns the live watchdog window: the wired getter's value
+// when set, else the channel.StuckTimeout package var (env baseline). A
+// non-positive result disables the watchdog.
+func (s *Server) resolveStuckTimeout() time.Duration {
+	if s.stuckTimeoutFn != nil {
+		return s.stuckTimeoutFn()
+	}
+	return channel.StuckTimeout
 }
 
 // WithGRPCIngestMetrics plugs the Prometheus counter set that powers
@@ -360,6 +383,52 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			evicted.Close()
 		}
 		defer s.registry.Unregister(registeredAgent)
+
+		// Stuck-agent watchdog: a live-but-stuck agent keeps its gRPC stream healthy
+		// (keepalive pings pass) but stops answering kube_requests — the pipeline
+		// wedges. Detect it (pending requests + no delivery for the window) and
+		// Close() the agent; the handler loop below returns on Closed(), tearing the
+		// stream down so the agent reconnects with a fresh tunnel.
+		//
+		// The window is read LIVE each iteration (resolveStuckTimeout → Settings →
+		// General), so an admin can retune or DISABLE (window ≤ 0) it with no
+		// restart. The goroutine always runs; when disabled it just idles + skips.
+		// The tick interval tracks the current window (min(window/4, 10s), floored
+		// 1s; 10s when disabled) so responsiveness follows the setting.
+		go func() {
+			for {
+				st := s.resolveStuckTimeout()
+				interval := 10 * time.Second
+				if st > 0 && st/4 < interval {
+					interval = st / 4
+				}
+				if interval < time.Second {
+					interval = time.Second
+				}
+				timer := time.NewTimer(interval)
+				select {
+				case <-registeredAgent.Closed():
+					timer.Stop()
+					return
+				case <-timer.C:
+				}
+				// Re-read after sleeping — the setting may have changed mid-window.
+				if st = s.resolveStuckTimeout(); st <= 0 {
+					continue // watchdog disabled right now
+				}
+				if registeredAgent.Pending.Pending() > 0 && registeredAgent.Pending.SinceLastDelivery() > st {
+					slog.Warn("agent stuck — force-closing channel to trigger reconnect",
+						slog.String("cluster_id", clusterID),
+						slog.String("agent_id", agentID),
+						slog.Int("pending", registeredAgent.Pending.Pending()),
+						slog.Duration("since_last_delivery", registeredAgent.Pending.SinceLastDelivery()),
+						slog.Duration("window", st),
+					)
+					registeredAgent.Close()
+					return
+				}
+			}
+		}()
 	}
 
 	// Spec #09 V2 Item 5b — emit stream lifecycle counters that the
@@ -375,13 +444,42 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamConnected)
 	defer s.metrics.RecordStreamEvent(tenantIDLabel, GRPCIngestStreamDisconnected)
 
-	for {
-		msg, err := stream.Recv()
-		if err == io.EOF {
-			return nil
+	// Recv() is blocking, so pump it to a channel and let the main loop also watch the
+	// agent's Closed() signal — that way the stuck-watchdog's Close() (or an eviction)
+	// returns this handler, closing the gRPC stream so the agent reconnects with a fresh
+	// tunnel instead of staying registered-but-wedged. The pump exits when the stream
+	// closes (Recv errors) or the agent is Closed.
+	type recvResult struct {
+		msg *agentv2.AgentMessage
+		err error
+	}
+	recvCh := make(chan recvResult, 1)
+	go func() {
+		for {
+			msg, err := stream.Recv()
+			select {
+			case recvCh <- recvResult{msg, err}:
+			case <-registeredAgent.Closed():
+				return
+			}
+			if err != nil {
+				return
+			}
 		}
-		if err != nil {
-			return err
+	}()
+	for {
+		var msg *agentv2.AgentMessage
+		select {
+		case <-registeredAgent.Closed():
+			return nil
+		case r := <-recvCh:
+			if r.err == io.EOF {
+				return nil
+			}
+			if r.err != nil {
+				return r.err
+			}
+			msg = r.msg
 		}
 
 		switch k := msg.Kind.(type) {
@@ -630,6 +728,24 @@ func Listen(ctx context.Context, addr string, srv *Server, opts ListenOptions) e
 		grpc.MaxSendMsgSize(maxMsg),
 		grpc.UnaryInterceptor(UnaryAuthInterceptor(opts.Auth)),
 		grpc.StreamInterceptor(StreamAuthInterceptor(opts.Auth)),
+		// Server keepalive: actively PING an idle agent so the backend detects a
+		// dead/half-open connection in ~30s (Time+Timeout) instead of blocking on the
+		// kernel TCP retransmit (~15 min). Without this, an abrupt agent death never
+		// returns stream.Recv() → Agent.Close never fires → the agent-proxy watch
+		// reflectors freeze and the connector serves stale/empty data (HTTP 200) until
+		// an API restart. The keepalive ping firing makes the existing recovery path
+		// (Close → agentClosed → watch EOF → reflector relist → RoundTrip re-resolves
+		// the live agent) actually run.
+		grpc.KeepaliveParams(keepalive.ServerParameters{
+			Time:    20 * time.Second,
+			Timeout: 10 * time.Second,
+		}),
+		// Permit the agent's client-side keepalive pings (~15s) without flagging them
+		// as too-aggressive and killing the stream.
+		grpc.KeepaliveEnforcementPolicy(keepalive.EnforcementPolicy{
+			MinTime:             10 * time.Second,
+			PermitWithoutStream: true,
+		}),
 	}
 	if opts.TLS != nil && opts.TLS.Config != nil {
 		serverOpts = append(serverOpts, grpc.Creds(credentials.NewTLS(opts.TLS.Config)))

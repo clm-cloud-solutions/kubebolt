@@ -49,7 +49,7 @@ func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")
 	nodeName := flag.String("node", envOr("KUBEBOLT_AGENT_NODE_NAME", hostname()), "Node name (falls back to hostname)")
 	nodeIP := flag.String("node-ip", envOr("KUBEBOLT_AGENT_NODE_IP", ""), "Node IP the kubelet listens on (downward API status.hostIP)")
-	statsInterval := flag.Duration("stats-interval", 15*time.Second, "How often to poll kubelet /stats/summary")
+	statsInterval := flag.Duration("stats-interval", 30*time.Second, "How often to poll kubelet /stats/summary. Aligned to VM --dedup.minScrapeInterval=30s: polling faster (was 15s) just ships samples VM deduplicates away — ~2x wasted ingest with zero retained resolution (finding #7). Set 15s here AND --dedup.minScrapeInterval=15s if you genuinely want finer resolution.")
 	podsInterval := flag.Duration("pods-interval", 30*time.Second, "How often to refresh the pods metadata cache")
 	// Default 50k: a multi-node Mode C poll can produce 5-7k samples
 	// per matcher across 4-6 matchers — per-matcher pushes (see
@@ -138,9 +138,22 @@ func main() {
 	if tenantID != "" {
 		slog.Info("tenant identity", slog.String("tenant_id", tenantID))
 	}
+	// KUBEBOLT_AGENT_DROP_NET_INTERFACES (helm value collectors.dropNetworkInterfaces;
+	// default = kernel tunnel devices sit0/gre0/tunl0/… that never carry traffic)
+	// excludes those interfaces from container_network_* / node_network_* to cut
+	// cardinality on kernels that load the modules (kind/bare-metal). No-op on cloud
+	// CNIs where the devices are absent. Empty value = keep all interfaces. Applied
+	// in BOTH network collectors: stats.go (/stats/summary) and cadvisor.go emit the
+	// same per-interface series, so filtering only one lets the other re-introduce
+	// the tunnels (VM merges the duplicate series).
+	dropNetIfaces := csvSet(os.Getenv("KUBEBOLT_AGENT_DROP_NET_INTERFACES"))
+	if len(dropNetIfaces) > 0 {
+		slog.Info("container_network: dropping interfaces", slog.Int("count", len(dropNetIfaces)))
+	}
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
-		collector.WithDeferNodeNetwork(deferNodeNetwork))
-	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID)
+		collector.WithDeferNodeNetwork(deferNodeNetwork),
+		collector.WithDropInterfaces(dropNetIfaces))
+	cadvisor := collector.NewCadvisor(kc, clusterID, clusterName, *nodeName, tenantID, dropNetIfaces)
 	// NodeStress reads /proc/loadavg + /proc/pressure/* directly.
 	// procPath defaults to "/proc" — system-wide files aren't PID-
 	// namespaced so reading from inside the container returns host
@@ -567,6 +580,22 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// csvSet parses a comma-separated value into a set, trimming whitespace and
+// skipping empties. Returns nil for an empty/blank input so callers can treat
+// nil as "no filtering". Used for the container_network interface droplist.
+func csvSet(v string) map[string]struct{} {
+	if strings.TrimSpace(v) == "" {
+		return nil
+	}
+	m := make(map[string]struct{})
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			m[p] = struct{}{}
+		}
+	}
+	return m
 }
 
 // envBool reads a truthy/falsy env var. Empty/unset returns fallback.

@@ -324,6 +324,13 @@ func (p *KubeAPIProxy) HandleWatch(ctx context.Context, req *agentv2.KubeProxyRe
 	if err != nil {
 		return nil, err
 	}
+	// Force JSON watch frames. The backend's informers negotiate protobuf by
+	// default (no ContentType on the agent-proxy rest.Config), so without this
+	// the apiserver streams protobuf-framed watch events that the json.Decoder
+	// below fails on at frame 1 — closing the watch with zero events and sending
+	// the client-go reflector into a relist loop. Raw object bytes still pass
+	// through unchanged; only the stream envelope must be JSON.
+	httpReq.Header.Set("Accept", "application/json")
 
 	resp, err := p.transport.RoundTrip(httpReq)
 	if err != nil {

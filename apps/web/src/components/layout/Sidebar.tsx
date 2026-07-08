@@ -34,6 +34,8 @@ import {
   Info,
   Package,
   UserCog,
+  ChevronRight,
+  MessageSquarePlus,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -42,6 +44,7 @@ import { AboutModal } from '@/components/layout/AboutModal'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import type { ClusterOverview } from '@/types/kubernetes'
 import { eePinnedNavItems } from '@/ee/registry'
+import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 
 interface SidebarProps {
   overview?: ClusterOverview
@@ -58,6 +61,11 @@ export interface NavItem {
   icon: React.ReactNode
   countKey?: keyof ClusterOverview
   permissionKey?: string
+  // Render the item non-clickable (dimmed, no navigation) — for features that
+  // are shipped in the nav but not yet enabled in this release.
+  disabled?: boolean
+  // Small pill shown after the label (e.g. "Soon"). Pairs with `disabled`.
+  badge?: string
 }
 
 interface NavSection {
@@ -168,13 +176,40 @@ const adminItems = [
   { label: 'API Tokens', path: '/admin/api-tokens', icon: <KeyRound className="w-4 h-4" /> },
 ]
 
+// Every nav group EXCEPT Pinned is collapsible. Pinned is always visible so the
+// operator's most-used links never hide. Collapsed state persists in
+// localStorage (mirrors kb-sidebar-collapsed / kb-theme / kb-refresh-interval).
+// ('Platform' is EE-only and never renders here, but kept for parity with the EE build.)
+const COLLAPSIBLE_GROUPS = ['Workloads', 'Traffic', 'Storage', 'Config', 'Extensions', 'Cluster', 'Administration', 'Platform']
+const GROUPS_STORAGE_KEY = 'kb-sidebar-groups-collapsed'
+
+// A map of group-title -> collapsed(bool). On first visit (nothing stored) every
+// group starts COLLAPSED except Workloads, so a new user sees a short, scannable
+// menu instead of the full firehose.
+function loadCollapsedGroups(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(GROUPS_STORAGE_KEY)
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed === 'object') return parsed as Record<string, boolean>
+    }
+  } catch { /* private mode / bad JSON — fall through to defaults */ }
+  const init: Record<string, boolean> = {}
+  for (const g of COLLAPSIBLE_GROUPS) init[g] = g !== 'Workloads'
+  return init
+}
+
 export function Sidebar({ overview, collapsed }: SidebarProps) {
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
-  const { hasRole, isAuthEnabled } = useAuth()
+  const { hasRole, isAuthEnabled, user } = useAuth()
   const location = useLocation()
   const uiConfig = useUIConfig()
+  // Metrics-only active cluster → dim + disable the resource-view nav (Pods, workloads,
+  // etc.); those endpoints have no connector. The metrics dashboards stay reachable via
+  // the Overview link.
+  const isMetricsOnly = useMetricsOnly()
   const brandLabel = uiConfig.displayName?.trim() || 'KubeBolt'
   // Overview is the entry point for the whole dashboard surface
   // (Overview / Capacity / Reliability sub-tabs). All three should
@@ -183,6 +218,46 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
   // would only match `/` exact, which is why we drive active state
   // from the central path list instead.
   const dashboardActive = isDashboardPath(location.pathname)
+
+  // Per-group collapse (Pinned excluded). Persisted so the layout is stable
+  // across visits, like the other localStorage UI prefs.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(loadCollapsedGroups)
+  const toggleGroup = useCallback((title: string) => {
+    setCollapsedGroups((prev) => {
+      const next = { ...prev, [title]: !prev[title] }
+      try { localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(next)) } catch { /* private mode */ }
+      return next
+    })
+  }, [])
+  // Collapsible group header with a chevron; Pinned renders a plain label.
+  // In rail mode (sidebar collapsed) headers are hidden entirely — there's no
+  // room for the chevron and all items already render as icon-only.
+  const renderSectionHeader = (title: string, collapsible: boolean) => {
+    if (collapsed) return null
+    if (!collapsible) {
+      return (
+        <div className="px-2 mb-1 text-[10px] font-mono font-semibold uppercase tracking-[0.1em] text-kb-text-secondary">
+          {title}
+        </div>
+      )
+    }
+    const isColl = !!collapsedGroups[title]
+    return (
+      <button
+        type="button"
+        onClick={() => toggleGroup(title)}
+        aria-expanded={!isColl}
+        className="w-full flex items-center gap-1 px-2 py-1 mb-1 rounded-md text-[10px] font-mono font-semibold uppercase tracking-[0.1em] text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card transition-colors"
+      >
+        <ChevronRight className={`w-3 h-3 shrink-0 transition-transform ${isColl ? '' : 'rotate-90'}`} />
+        <span className="flex-1 text-left">{title}</span>
+      </button>
+    )
+  }
+  // Whether a group's items render: Pinned always; rail mode always (icon-only,
+  // no header to expand from); otherwise honor the collapsed map.
+  const showGroupItems = (title: string, collapsible: boolean) =>
+    !collapsible || collapsed || !collapsedGroups[title]
 
   const handleLogoClick = useCallback(() => {
     const next = clickCount + 1
@@ -274,19 +349,57 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
           </NavLink>
         </div>
 
-        {sections.map((section) => (
+        {sections.map((section) => {
+          const collapsible = section.title !== 'Pinned'
+          return (
           <div key={section.title}>
-            {!collapsed && (
-              <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
-                {section.title}
-              </div>
-            )}
+            {renderSectionHeader(section.title, collapsible)}
+            {showGroupItems(section.title, collapsible) && (
             <div className="space-y-0.5">
               {section.items.map((item) => {
                 const count = getCount(overview, item.countKey)
                 const isRestricted = item.permissionKey != null
                   && overview?.permissions != null
                   && overview.permissions[item.permissionKey] === false
+                // Metrics-only: every resource view needs a live API (connector), so dim +
+                // disable them — except /clusters, the platform escape hatch. The metrics
+                // dashboards stay reachable via the Overview link above.
+                const metricsBlocked = isMetricsOnly && item.path !== '/clusters'
+
+                // Not-yet-enabled feature (visible as a teaser, non-clickable, "Soon"
+                // badge). Inert in OSS today — kept in sync with the EE sidebar.
+                if (item.disabled) {
+                  return (
+                    <div
+                      key={item.path}
+                      title={`${item.label} — coming soon`}
+                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-tertiary cursor-not-allowed relative"
+                    >
+                      <span className="shrink-0 opacity-60">{item.icon}</span>
+                      {!collapsed && <span className="flex-1 truncate opacity-60">{item.label}</span>}
+                      {!collapsed && item.badge && (
+                        <span className="text-[9px] font-mono font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-kb-accent-light text-kb-accent">
+                          {item.badge}
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
+
+                if (metricsBlocked) {
+                  return (
+                    <div
+                      key={item.path}
+                      title="Monitored-only — needs the agent-proxy or a direct API connection"
+                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-primary opacity-40 cursor-not-allowed relative"
+                    >
+                      <span className="shrink-0">{item.icon}</span>
+                      {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                      {!collapsed && <ShieldOff className="w-3 h-3 text-status-warn" />}
+                    </div>
+                  )
+                }
+
                 return (
                   <NavLink
                     key={item.path}
@@ -318,17 +431,16 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                 )
               })}
             </div>
+            )}
           </div>
-        ))}
+          )
+        })}
 
         {/* Administration section — admin only (or when auth disabled) */}
         {hasRole('admin') && (
           <div>
-            {!collapsed && (
-              <div className="px-2 mb-1 text-[9px] font-mono font-medium uppercase tracking-[0.1em] text-kb-text-tertiary">
-                Administration
-              </div>
-            )}
+            {renderSectionHeader('Administration', true)}
+            {showGroupItems('Administration', true) && (
             <div className="space-y-0.5">
               {adminItems.map((item) => (
                 <NavLink
@@ -355,12 +467,25 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                 </NavLink>
               ))}
             </div>
+            )}
           </div>
         )}
       </nav>
 
-      {/* About */}
+      {/* Feedback + About */}
       <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
+        {/* Links to the public feedback form with the signed-in email prefilled,
+            in a new tab so the operator never loses their place in the app. */}
+        <a
+          href={`https://kubebolt.io/feedback${user?.email ? `?email=${encodeURIComponent(user.email)}` : ''}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={collapsed ? 'Send feedback' : undefined}
+          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-primary hover:bg-kb-card transition-colors"
+        >
+          <MessageSquarePlus className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Feedback</span>}
+        </a>
         <button
           type="button"
           onClick={() => setAboutOpen(true)}

@@ -686,6 +686,7 @@ function StepAgent() {
       }
       return api.issueAgentTokenAndMaterializeSecret({
         tenantId,
+        materialize: true, // first-run install into a backend-reachable cluster — create the Secret in one click
         namespace: 'kubebolt',
         secretName: 'kubebolt-agent-token',
         label: `wizard ${new Date().toISOString().slice(0, 10)}`,
@@ -698,8 +699,8 @@ function StepAgent() {
       // only need name + namespace + the tokenPrefix to display the
       // operator-facing identity ("you issued token kbat_a1b2…").
       setIssuedSecret({
-        secretName: resp.secretName,
-        namespace: resp.namespace,
+        secretName: resp.secretName ?? '',
+        namespace: resp.namespace ?? '',
         tokenPrefix: resp.tokenPrefix,
       })
     },

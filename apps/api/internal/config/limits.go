@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // PromWriteLimitsConfig holds the fleet-wide default Prom remote_write
@@ -36,15 +37,35 @@ type PromWriteLimitsConfig struct {
 	WriteSamplesPerSec int
 	WriteBurstSamples  int
 	MaxActiveSeries    int
+	// AllowCustomSeries is the fleet-wide DEFAULT for the per-tenant
+	// AllowCustomSeries policy: false (default) drops non-core metric
+	// families at ingest (the core-only floor); true keeps them (the
+	// billable custom-telemetry tier). Per-tenant overrides win via
+	// auth.ResolveLimits.
+	AllowCustomSeries bool
+	// NameFilterEnabled is the global kill-switch for the __name__ core/
+	// custom classifier. true (default) runs the filter; false skips it
+	// entirely (forward everything unclassified) for transition / incident
+	// safety, independent of the per-tenant policy.
+	NameFilterEnabled bool
 }
 
 // Default values used when the corresponding env var is unset or
 // unparseable. Exposed as constants for tests + so handlers can render
 // "defaults" in admin responses without re-reading env vars per request.
 const (
-	DefaultPromWriteSamplesPerSec = 10_000
-	DefaultPromWriteBurstSamples  = 100_000
+	DefaultPromWriteSamplesPerSec   = 10_000
+	DefaultPromWriteBurstSamples    = 100_000
 	DefaultPromWriteMaxActiveSeries = 1_000_000
+	// DefaultPromWriteAllowCustomSeries false = the core-only floor:
+	// non-core (customer app) series are dropped at ingest unless a tenant
+	// opts in. Aligns with "the registry is the floor" — custom telemetry
+	// is an explicit, billable expansion, never an uncontrolled default.
+	DefaultPromWriteAllowCustomSeries = false
+	// DefaultPromWriteNameFilterEnabled true = the classifier runs by
+	// default (enforced). Flip to false only to disable filtering fleet-
+	// wide during an incident.
+	DefaultPromWriteNameFilterEnabled = true
 )
 
 // LoadPromWriteLimitsConfig reads the per-tenant Prom remote_write
@@ -61,6 +82,8 @@ func LoadPromWriteLimitsConfig() PromWriteLimitsConfig {
 		WriteSamplesPerSec: DefaultPromWriteSamplesPerSec,
 		WriteBurstSamples:  DefaultPromWriteBurstSamples,
 		MaxActiveSeries:    DefaultPromWriteMaxActiveSeries,
+		AllowCustomSeries:  DefaultPromWriteAllowCustomSeries,
+		NameFilterEnabled:  DefaultPromWriteNameFilterEnabled,
 	}
 
 	if v := readPositiveIntEnv("KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC", DefaultPromWriteSamplesPerSec); v != 0 {
@@ -72,8 +95,29 @@ func LoadPromWriteLimitsConfig() PromWriteLimitsConfig {
 	if v := readPositiveIntEnv("KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES", DefaultPromWriteMaxActiveSeries); v != 0 {
 		cfg.MaxActiveSeries = v
 	}
+	cfg.AllowCustomSeries = readBoolEnv("KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES", DefaultPromWriteAllowCustomSeries)
+	cfg.NameFilterEnabled = readBoolEnv("KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED", DefaultPromWriteNameFilterEnabled)
 
 	return cfg
+}
+
+// readBoolEnv parses a boolean env var (true/1/yes/on vs false/0/no/off,
+// case-insensitive). Unset or unparseable → fallback, with a WARN once on
+// the unparseable path so a typo can't silently flip a default.
+func readBoolEnv(key string, fallback bool) bool {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "true", "1", "yes", "on":
+		return true
+	case "false", "0", "no", "off":
+		return false
+	default:
+		log.Printf("WARN config: %s=%q is not a boolean — using default %v", key, raw, fallback)
+		return fallback
+	}
 }
 
 func readPositiveIntEnv(key string, fallback int) int {

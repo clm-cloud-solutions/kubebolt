@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,6 +49,12 @@ type Manager struct {
 	// Lookup-on-connect lets the manager pick the right ClusterAccess
 	// without bolting a new field onto every kubeconfig entry.
 	agentProxyContexts map[string]string
+	// metricsOnlyContexts maps the synthetic contextName of a cluster whose agent
+	// ships metrics but does NOT advertise kube-proxy → cluster_id. Parallel to
+	// agentProxyContexts but NEVER gets a connector: connectToContextLocked skips
+	// the WaitForCacheSync for these, ListClusters flags them Mode="metrics-only",
+	// and requireConnector degrades the resource views instead of 503-ing.
+	metricsOnlyContexts map[string]string
 
 	// onNewInsight is invoked for each newly detected insight; wired to the
 	// notifications manager from main.go. Nil when notifications are disabled.
@@ -70,6 +75,12 @@ type Manager struct {
 	// effect on the next switch with no restart. nil → connector uses its
 	// built-in default. Wired from main.go to settingsRuntime.General().
 	cacheSyncTimeoutFn func() time.Duration
+
+	// connectTimeoutFn returns the live hard outer deadline on a single cluster
+	// connect (startRuntime), read per-connect so a Settings → Agents & Ingest
+	// change applies with no restart. nil / 0 → the DefaultConnectTimeout package
+	// var (env baseline). Wired from main.go to settingsRuntime.IngestChannel().
+	connectTimeoutFn func() time.Duration
 
 	// runtimes holds per-(tenant,cluster) runtimes for NON-active clusters
 	// (W2). The active cluster's runtime stays in the fields above
@@ -95,6 +106,14 @@ type Manager struct {
 	// (instant switch-back) without leaking WS events for a cluster nobody is
 	// viewing (A.4 OSS hole). nil when nothing is connected.
 	activeGate *atomic.Bool
+
+	// metricsFreshness answers "is this metrics-only cluster shipping samples
+	// into VM right now?" off the request path (its own mutex, never m.mu). The
+	// robust liveness signal for metrics-only clusters: vmagent's HTTP ingest is
+	// independent of the gRPC AgentChannel, so a flapping/absent channel mustn't
+	// show OFFLINE while metrics still flow. nil in direct-struct test managers
+	// (fresh() is nil-safe).
+	metricsFreshness *metricsFreshnessCache
 }
 
 // poolKey identifies a pooled runtime. tenant is "default" in OSS.
@@ -243,6 +262,29 @@ func (m *Manager) resolveCacheSyncTimeoutLocked() time.Duration {
 	return 0
 }
 
+// SetConnectTimeoutProvider wires a provider for the agent-proxy connect
+// deadline, read fresh on every cold connect (Settings → Agents & Ingest changes
+// apply with no restart). Pass nil to fall back to the DefaultConnectTimeout baseline.
+func (m *Manager) SetConnectTimeoutProvider(fn func() time.Duration) {
+	m.mu.Lock()
+	m.connectTimeoutFn = fn
+	m.mu.Unlock()
+}
+
+// resolveConnectTimeoutLocked returns the live connect deadline: the wired
+// provider's value when positive, else the DefaultConnectTimeout package var
+// (env baseline). Caller holds m.mu (passed into startRuntime as a param, like
+// cacheSyncTimeout). The provider reads settingsRuntime, which has its own lock —
+// no lock-ordering issue.
+func (m *Manager) resolveConnectTimeoutLocked() time.Duration {
+	if m.connectTimeoutFn != nil {
+		if d := m.connectTimeoutFn(); d > 0 {
+			return d
+		}
+	}
+	return DefaultConnectTimeout
+}
+
 // SetAgentRegistry attaches the live AgentRegistry to the manager so
 // agent-proxy clusters can resolve their access at connect time. nil
 // is tolerated (agent channel disabled) — AddAgentProxyCluster then
@@ -284,6 +326,12 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 		m.agentProxyContexts = make(map[string]string)
 	}
 	m.agentProxyContexts[contextName] = clusterID
+	// Mutually exclusive with metrics-only: an agent that (re)registers WITH kube-proxy
+	// — a metrics-only cluster upgraded to reader/operator (the happy path of the
+	// "enable the agent-proxy" notice) — must drop its metrics-only flag so ListClusters
+	// stops reporting Mode="metrics-only" and connectToContextLocked stops skipping the
+	// connector. delete on a nil/absent map is a safe no-op.
+	delete(m.metricsOnlyContexts, contextName)
 	if m.kubeConfig.Contexts == nil {
 		m.kubeConfig.Contexts = map[string]*clientcmdapi.Context{}
 	}
@@ -330,6 +378,63 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	return contextName, nil
 }
 
+// AddMetricsOnlyCluster registers a cluster whose agent ships metrics but does NOT
+// advertise kube-proxy — so it has no live-resource connector. It surfaces the cluster
+// in ListClusters (switchable, flagged Mode="metrics-only") via the same synthetic-
+// context machinery as AddAgentProxyCluster, but routes into metricsOnlyContexts so
+// connectToContextLocked skips the connector entirely (no WaitForCacheSync, no 503).
+// The metrics/Capacity dashboards query VictoriaMetrics directly; the resource views
+// degrade behind requireConnector's metrics-only signal. No auto-retry connect (there
+// is nothing to connect). Idempotent.
+func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, error) {
+	if clusterID == "" {
+		return "", fmt.Errorf("clusterID is required")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	contextName := AgentProxyContextName(clusterID)
+	if m.metricsOnlyContexts == nil {
+		m.metricsOnlyContexts = make(map[string]string)
+	}
+	m.metricsOnlyContexts[contextName] = clusterID
+	// Mutually exclusive with agent-proxy: an agent that (re)registers WITHOUT kube-proxy
+	// — a downgrade — drops the agent-proxy registration so the cluster flips to
+	// metrics-only.
+	delete(m.agentProxyContexts, contextName)
+	// Live-downgrade teardown: a metrics-only agent has no proxy, so the stale agent-proxy
+	// runtime for this cluster MUST go — otherwise its informers relist-storm on "no agent
+	// connected" and the connector keeps issuing kube_request to the now-metrics-only agent,
+	// piling up pending calls that trip the stuck-watchdog into force-closing it every
+	// ~StuckTimeout (a flap loop on an agent with no proxy at all). Keep the context
+	// registered — it stays a switchable metrics-only cluster; only the runtime is torn down.
+	if m.activeContext == contextName {
+		// stopCurrent() Stops the connector + cancels informers (cancelling the in-flight
+		// proxied requests so the agent's Multiplexor drains) and nils the runtime fields,
+		// leaving activeContext = contextName — exactly the active state that
+		// connectToContextLocked's metrics-only branch produces, so the cluster keeps
+		// serving Overview-from-KSM.
+		m.stopCurrent()
+	}
+	m.evictPooledContextLocked(contextName, "downgraded to metrics-only")
+	if m.kubeConfig.Contexts == nil {
+		m.kubeConfig.Contexts = map[string]*clientcmdapi.Context{}
+	}
+	if m.kubeConfig.Clusters == nil {
+		m.kubeConfig.Clusters = map[string]*clientcmdapi.Cluster{}
+	}
+	m.kubeConfig.Clusters[contextName] = &clientcmdapi.Cluster{Server: agentProxyAPIServerURL(clusterID)}
+	m.kubeConfig.Contexts[contextName] = &clientcmdapi.Context{Cluster: contextName}
+	if displayName != "" && m.storage != nil {
+		_ = m.storage.SetDisplayName(m.storeCtx(), contextName, displayName)
+	}
+	slog.Info("registered metrics-only cluster",
+		slog.String("cluster_id", clusterID),
+		slog.String("context", contextName),
+		slog.String("display_name", displayName),
+	)
+	return contextName, nil
+}
+
 // retryAgentProxyConnect re-runs connectToContextLocked for an agent-
 // proxy context whose first connect failed (typically with cache-sync
 // timeout) before any agent had registered. Called from
@@ -347,11 +452,19 @@ func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
 	// connect). So retry a few times with a short backoff, releasing the lock
 	// between tries, until the registration settles. Only the registration race
 	// is retried; a real connect error (cache-sync, etc.) returns immediately.
+	//
+	// CRITICAL (isolation): spin the runtime OUTSIDE the global lock. getOrSpinPooled
+	// runs the slow connector.Start()/WaitForCacheSync (~20s) WITHOUT holding m.mu, then
+	// we promote the built runtime to active under a BRIEF lock. The old path called
+	// connectToContextLocked UNDER m.mu for the whole sync, so a single reconnecting
+	// agent — or a metrics→operator upgrade — froze the API for every other cluster until
+	// the sync finished.
 	const maxAttempts = 12
 	for attempt := 0; attempt < maxAttempts; attempt++ {
-		m.mu.Lock()
-		if contextName != m.activeContext || m.connector != nil {
-			m.mu.Unlock()
+		m.mu.RLock()
+		stillNeeded := contextName == m.activeContext && m.connector == nil
+		m.mu.RUnlock()
+		if !stillNeeded {
 			return // switched away, or another goroutine already recovered it
 		}
 		if attempt == 0 {
@@ -360,38 +473,46 @@ func (m *Manager) retryAgentProxyConnect(contextName, clusterID string) {
 				slog.String("context", contextName),
 			)
 		}
-		err := m.connectToContextLocked(contextName)
-		if err == nil {
-			m.connErr = nil
-			m.mu.Unlock()
-			slog.Info("connector recovered for agent-proxy cluster",
-				slog.String("context", contextName),
-				slog.Int("attempt", attempt+1),
-			)
-			// Push the recovery to connected UIs so they invalidate
-			// `['clusters']` + `['cluster-overview']` immediately instead of
-			// waiting up to 30s for TanStack Query's refetch tick.
-			if m.wsHub != nil {
-				m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
-					"context":   contextName,
-					"clusterId": clusterID,
-				})
+		// Slow build, lock-free — never blocks other clusters.
+		rt := m.getOrSpinPooled(m.tenantID, contextName)
+		if rt == nil || rt.connector == nil {
+			// Registration race (agent not visible in the registry yet) or a transient
+			// connect error — both worth a short wait + retry; a hard error settles to
+			// nil and the loop gives up after maxAttempts.
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		// Promote the spun runtime to active under a BRIEF lock — fast, no I/O held.
+		// Mirrors SwitchCluster's pooled-promotion path.
+		m.mu.Lock()
+		if contextName == m.activeContext && m.connector == nil {
+			delete(m.runtimes, poolKey{tenant: m.tenantID, cluster: contextName})
+			m.connector = rt.connector
+			m.collector = rt.collector
+			m.engine = rt.engine
+			m.cancelFn = rt.cancelFn
+			m.activeGate = rt.gate
+			if rt.gate != nil {
+				rt.gate.Store(true) // promoted → resume broadcasting
 			}
-			return
+			m.activeContext = contextName
+			m.connErr = nil
+			m.wireInsightHookLocked()
 		}
-		m.connErr = err
 		m.mu.Unlock()
-		// Only the "agent not visible in the registry yet" race is worth waiting
-		// out (the message comes from connectToContextLocked's fast-fail just
-		// above). Any other error won't fix itself by retrying.
-		if !strings.Contains(err.Error(), "no agent connected yet") {
-			slog.Warn("connector retry failed (not a registration race)",
-				slog.String("context", contextName),
-				slog.String("error", err.Error()),
-			)
-			return
+		slog.Info("connector recovered for agent-proxy cluster",
+			slog.String("context", contextName),
+			slog.Int("attempt", attempt+1),
+		)
+		// Push the recovery to connected UIs so they invalidate `['clusters']` +
+		// `['cluster-overview']` immediately instead of waiting on the 30s refetch.
+		if m.wsHub != nil {
+			m.wsHub.Broadcast(websocket.ClusterConnected, map[string]string{
+				"context":   contextName,
+				"clusterId": clusterID,
+			})
 		}
-		time.Sleep(500 * time.Millisecond)
+		return
 	}
 	slog.Warn("connector retry exhausted — agent never became visible in the registry",
 		slog.String("cluster_id", clusterID),
@@ -530,6 +651,13 @@ type ClusterInfo struct {
 	// specific cluster at issue-time (5a.1.a — Prometheus integration
 	// per-cluster filtering).
 	ClusterID string `json:"clusterId,omitempty"`
+
+	// Mode distinguishes a metrics-only cluster ("metrics-only" — the agent ships
+	// metrics but advertises no kube-proxy, so there is no live-resource connector),
+	// a connected agent-proxy cluster's RBAC tier ("reader" / "operator"), or a normal
+	// connector-backed cluster (""). The UI shows the metrics dashboards and degrades
+	// the resource views when Mode == "metrics-only", and badges the connection type.
+	Mode string `json:"mode,omitempty"`
 }
 
 // Pool bounds (A.3d). A parked runtime keeps live informers, so the pool is
@@ -561,13 +689,14 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 					},
 					CurrentContext: "in-cluster",
 				},
-				activeContext:   "in-cluster",
-				wsHub:           wsHub,
-				metricInterval:  metricInterval,
-				insightInterval: insightInterval,
-				poolIdleTimeout: defaultPoolIdleTimeout,
-				poolMaxRuntimes: defaultPoolMaxRuntimes,
-				reaperStop:      make(chan struct{}),
+				activeContext:    "in-cluster",
+				wsHub:            wsHub,
+				metricInterval:   metricInterval,
+				insightInterval:  insightInterval,
+				poolIdleTimeout:  defaultPoolIdleTimeout,
+				poolMaxRuntimes:  defaultPoolMaxRuntimes,
+				reaperStop:       make(chan struct{}),
+				metricsFreshness: newMetricsFreshnessCache(),
 			}
 			m.startPoolReaper()
 
@@ -587,15 +716,16 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 	}
 
 	m := &Manager{
-		kubeconfigPath:  kubeconfigPath,
-		kubeConfig:      kubeConfig,
-		activeContext:   kubeConfig.CurrentContext,
-		wsHub:           wsHub,
-		metricInterval:  metricInterval,
-		insightInterval: insightInterval,
-		poolIdleTimeout: defaultPoolIdleTimeout,
-		poolMaxRuntimes: defaultPoolMaxRuntimes,
-		reaperStop:      make(chan struct{}),
+		kubeconfigPath:   kubeconfigPath,
+		kubeConfig:       kubeConfig,
+		activeContext:    kubeConfig.CurrentContext,
+		wsHub:            wsHub,
+		metricInterval:   metricInterval,
+		insightInterval:  insightInterval,
+		poolIdleTimeout:  defaultPoolIdleTimeout,
+		poolMaxRuntimes:  defaultPoolMaxRuntimes,
+		reaperStop:       make(chan struct{}),
+		metricsFreshness: newMetricsFreshnessCache(),
 	}
 	m.startPoolReaper()
 
@@ -616,6 +746,32 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 }
 
 // ListClusters returns all available clusters from the kubeconfig.
+// resolveConnectorLocked returns the live Connector backing a cluster context,
+// mirroring the status="connected" determination in ListClusters: the global connector
+// when this is the active context, else the pooled runtime's connector. Returns nil when
+// no connector is up. Caller holds m.mu.
+func (m *Manager) resolveConnectorLocked(ctxName string, isActive bool) *Connector {
+	if isActive && ctxName == m.activeContext && m.connector != nil {
+		return m.connector
+	}
+	if rt, ok := m.runtimes[poolKey{tenant: m.tenantID, cluster: ctxName}]; ok {
+		return rt.connector
+	}
+	return nil
+}
+
+// MetricsOnlyClusterID returns the cluster_id when the request's resolved (active)
+// cluster is a metrics-only cluster (the agent ships metrics but advertises no
+// kube-proxy, so there is no connector), else "". Single-tenant: resolves to the active
+// context. Lets requireConnector degrade (not 503) and the metrics query path scope to
+// VM by UID without a connector. The ctx param is kept for signature parity with the
+// EE multi-tenant variant; OSS resolves the single active context.
+func (m *Manager) MetricsOnlyClusterID(_ context.Context) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.metricsOnlyContexts[m.activeContext]
+}
+
 func (m *Manager) ListClusters() []ClusterInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -648,9 +804,21 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			server = cl.Server
 		}
 		isActive := ctxName == m.activeContext
+		metricsOnlyCID := m.metricsOnlyContexts[ctxName]
 		status := "disconnected"
 		connErrMsg := ""
-		if isActive {
+		if metricsOnlyCID != "" {
+			// Metrics-only cluster: no connector, so liveness IS "are metrics
+			// arriving?" — NOT a live gRPC AgentChannel session. vmagent ships over
+			// HTTP remote_write independently of the channel, so a flapping/absent
+			// channel must NOT show OFFLINE while VM is still ingesting. Prefer the
+			// live-channel signal (instant, no VM round-trip); fall back to VM
+			// freshness so durable ingest reads as connected on its own.
+			channelLive := m.agentRegistry != nil && m.agentRegistry.CountByCluster(metricsOnlyCID) > 0
+			if channelLive || m.metricsFresh(metricsOnlyCID) {
+				status = "connected"
+			}
+		} else if isActive {
 			if m.connector != nil {
 				status = "connected"
 			} else if m.connErr != nil {
@@ -662,6 +830,8 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		switch {
 		case m.agentProxyContexts[ctxName] != "":
 			source = "agent-proxy"
+		case metricsOnlyCID != "":
+			source = "agent-proxy" // still an agent connection, just metrics-only (see Mode)
 		case m.inCluster && ctxName == "in-cluster":
 			source = "in-cluster"
 		case uploadedContexts[ctxName]:
@@ -678,11 +848,30 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		// Empty otherwise; the admin UI treats empty as "unknown,
 		// pick Any cluster".
 		clusterID := m.agentProxyContexts[ctxName]
+		if clusterID == "" {
+			clusterID = metricsOnlyCID
+		}
 		if clusterID == "" && isActive && m.connector != nil {
 			clusterID = m.connector.ClusterUID()
 		}
 		if clusterID == "" {
 			clusterID = cachedUIDs[ctxName]
+		}
+		mode := ""
+		switch {
+		case metricsOnlyCID != "":
+			mode = "metrics-only"
+		case source == "agent-proxy" && status == "connected":
+			// Reader vs operator: probe the live connector's write-RBAC marker. Only
+			// agent-proxy clusters with a connector up can be told apart; metrics-only
+			// (handled above) and disconnected stay unlabeled.
+			if conn := m.resolveConnectorLocked(ctxName, isActive); conn != nil {
+				if conn.CanWrite() {
+					mode = "operator"
+				} else {
+					mode = "reader"
+				}
+			}
 		}
 		clusters = append(clusters, ClusterInfo{
 			Name:        ctx.Cluster,
@@ -694,6 +883,7 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			DisplayName: displayNames[ctxName],
 			Source:      source,
 			ClusterID:   clusterID,
+			Mode:        mode,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -744,17 +934,41 @@ func (m *Manager) SwitchCluster(contextName string) error {
 		return nil
 	}
 
-	// First connect to this cluster — the only slow path (~20s
-	// WaitForCacheSync). connectToContextLocked builds + installs the runtime.
+	// First connect to this cluster — the only slow path (~20s WaitForCacheSync).
+	// CRITICAL (isolation): do NOT hold m.mu across the sync. Claim the active context,
+	// RELEASE the lock, spin the runtime via getOrSpinPooled (which runs connector.Start()
+	// lock-free), then re-acquire briefly to promote it. Holding m.mu across the ~20s
+	// connect froze every OTHER cluster during a switch. The defer'd Unlock balances the
+	// Lock re-acquired below.
 	m.activeContext = contextName
-	if err := m.connectToContextLocked(contextName); err != nil {
-		m.connErr = err
-		slog.Warn("failed to connect to context, staying disconnected",
-			slog.String("context", contextName),
-			slog.String("error", err.Error()))
-		return err
-	}
+	m.mu.Unlock()
 
+	rt := m.getOrSpinPooled(m.tenantID, contextName)
+
+	m.mu.Lock()
+	if rt == nil || rt.connector == nil {
+		if m.activeContext == contextName {
+			m.connErr = fmt.Errorf("could not connect to cluster %q — agent not connected yet, or cache sync failed", contextName)
+		}
+		slog.Warn("failed to connect to context, staying disconnected",
+			slog.String("context", contextName))
+		return fmt.Errorf("connecting to context %q failed", contextName)
+	}
+	// Promote the spun runtime to active only if this switch still owns the active
+	// context and nothing connected it first.
+	if m.activeContext == contextName && m.connector == nil {
+		delete(m.runtimes, pk)
+		m.connector = rt.connector
+		m.collector = rt.collector
+		m.engine = rt.engine
+		m.cancelFn = rt.cancelFn
+		m.activeGate = rt.gate
+		if rt.gate != nil {
+			rt.gate.Store(true) // promoted → resume broadcasting
+		}
+		m.connErr = nil
+		m.wireInsightHookLocked()
+	}
 	slog.Info("switched cluster context (fresh connect)", slog.String("context", contextName))
 	return nil
 }
@@ -1104,12 +1318,13 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 	insightStore := m.insightStore
 	tenantID := m.tenantID
 	cacheSyncTimeout := m.resolveCacheSyncTimeoutLocked()
+	connectTimeout := m.resolveConnectTimeoutLocked()
 	placeholder := &clusterRuntime{ready: make(chan struct{})}
 	m.runtimes[pk] = placeholder
 	m.mu.Unlock()
 
 	// Build outside the lock (connector.Start ~20s).
-	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout)
+	built, err := m.startRuntime(access, contextName, agentProxyCID, insightStore, tenantID, cacheSyncTimeout, connectTimeout)
 	if err != nil {
 		m.mu.Lock()
 		delete(m.runtimes, pk) // drop the failed placeholder so a retry rebuilds
@@ -1353,6 +1568,21 @@ func (m *Manager) accessForContextLocked(contextName string) *ClusterAccess {
 }
 
 func (m *Manager) connectToContextLocked(contextName string) error {
+	// Metrics-only cluster: no connector. The agent ships metrics (queried straight from
+	// VM) but advertises no kube-proxy, so there's nothing to WaitForCacheSync. Mark it
+	// active with a nil runtime — requireConnector degrades the resource views and the
+	// metrics path scopes by UID via MetricsOnlyClusterID. SwitchCluster already parked
+	// the prior active runtime, so no connector teardown is needed here.
+	if _, ok := m.metricsOnlyContexts[contextName]; ok {
+		m.connector = nil
+		m.collector = nil
+		m.engine = nil
+		m.cancelFn = nil
+		m.activeGate = nil
+		m.activeContext = contextName
+		m.connErr = nil
+		return nil
+	}
 	// Fast-fail for agent-proxy contexts when no agent is connected.
 	// Without this short-circuit, Connector.Start() spends the full
 	// WaitForCacheSync(20s) timeout listing resources that all return
@@ -1371,7 +1601,7 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 	// prior behavior (the ~20s connector.Start runs under the lock for a
 	// switch). Pooled spins (getOrSpinPooled) call startRuntime OUTSIDE the
 	// lock instead.
-	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked())
+	rt, err := m.startRuntime(access, contextName, m.agentProxyContexts[contextName], m.insightStore, m.tenantID, m.resolveCacheSyncTimeoutLocked(), m.resolveConnectTimeoutLocked())
 	if err != nil {
 		return err
 	}
@@ -1399,16 +1629,49 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // pooled spins. The active path calls it while holding m.mu (unchanged).
 //
 // Mirrors what connectToContextLocked used to inline — keep the two in sync.
-func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout time.Duration) (*clusterRuntime, error) {
+//
+// DefaultConnectTimeout is the hard outer deadline on a single cluster connect
+// (startRuntime). Start() bounds its own WaitForCacheSync, but a stuck agent-proxy can
+// wedge the live calls a connect makes BEFORE the sync (discovery, the permission probe)
+// where no inner deadline applies — that was the ~8-minute spin in the goroutine dump.
+// Bounding the WHOLE connect lets a stuck agent fail fast (cluster shown unreachable)
+// instead of stranding the pool placeholder + starving m.mu readers via writer priority.
+// Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go; 0 = unbounded (not advised).
+var DefaultConnectTimeout = 25 * time.Second
+
+func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
 		return nil, fmt.Errorf("connecting to context %s: %w", contextName, err)
 	}
 	// Apply the live cache-sync deadline before Start() (default when 0).
 	connector.SetCacheSyncTimeout(cacheSyncTimeout)
-	if err := connector.Start(); err != nil {
+	// Hard outer deadline on the WHOLE connect. Start() bounds its own WaitForCacheSync,
+	// but a stuck agent-proxy can wedge the live calls before the sync (discovery, the
+	// permission probe) where no inner deadline applies — the goroutine-dump hang was an
+	// ~8-minute spin here, stranding the pool placeholder. Race Start against
+	// DefaultConnectTimeout; on timeout, Stop() the connector (closes stopCh) and fail
+	// fast so getOrSpinPooled's error path closes the placeholder ready (cluster shown
+	// unreachable) instead of hanging. The buffered chan keeps the Start goroutine from
+	// leaking when we time out — it sends and exits once Start unwinds.
+	connectDone := make(chan error, 1)
+	go func() { connectDone <- connector.Start() }()
+	var connectErr error
+	if to := connectTimeout; to > 0 {
+		timer := time.NewTimer(to)
+		select {
+		case connectErr = <-connectDone:
+			timer.Stop()
+		case <-timer.C:
+			connector.Stop() // best-effort: closes stopCh, unblocks WaitForCacheSync
+			return nil, fmt.Errorf("connect timed out after %s for context %s — agent may be stuck", to, contextName)
+		}
+	} else {
+		connectErr = <-connectDone
+	}
+	if connectErr != nil {
 		connector.Stop()
-		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, err)
+		return nil, fmt.Errorf("starting connector for context %s: %w", contextName, connectErr)
 	}
 
 	// Shared broadcast gate for this runtime — starts enabled. The caller

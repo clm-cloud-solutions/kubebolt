@@ -14,9 +14,9 @@ import { VERSION } from '@/version'
 // rgb(29,189,125) drives every glow.
 
 const FEATURES = [
-  'Live metrics, logs & topology',
-  'Multi-cluster from one place',
-  'Kobi AI copilot for incidents',
+  'Kobi, your AI copilot for Kubernetes',
+  'Investigate incidents & apply fixes',
+  'Metrics, logs & topology across clusters',
 ]
 
 export function AuthShell({
@@ -84,14 +84,14 @@ export function AuthShell({
               <span className="absolute inline-flex w-full h-full rounded-full bg-kb-accent opacity-60 animate-ping" />
               <span className="relative inline-flex w-1.5 h-1.5 rounded-full bg-kb-accent" />
             </span>
-            Instant Kubernetes monitoring
+            AI operations platform for Kubernetes
           </p>
           <h2 className="text-[clamp(2.6rem,3.6vw,4.4rem)] font-semibold leading-[1.05] tracking-tight">
-            Full cluster visibility in{' '}
-            <span className="text-kb-accent [text-shadow:0_0_34px_rgba(29,189,125,0.4)]">under two minutes.</span>
+            Root cause in{' '}
+            <span className="text-kb-accent [text-shadow:0_0_34px_rgba(29,189,125,0.4)]">seconds, not hours.</span>
           </h2>
           <p className="text-sm xl:text-base 2xl:text-lg text-kb-text-secondary mt-4 xl:mt-5 leading-relaxed max-w-sm xl:max-w-md">
-            Zero config, multi-cluster, with the Kobi AI copilot built in.
+            Kobi, your AI copilot, investigates incidents and proposes the fix you approve. Metrics, logs, and topology across clusters.
           </p>
           <ul className="mt-7 xl:mt-9 space-y-3 xl:space-y-4">
             {FEATURES.map((f) => (

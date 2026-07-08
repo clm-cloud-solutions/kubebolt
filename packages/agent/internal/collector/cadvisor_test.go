@@ -156,7 +156,7 @@ func TestCadvisorCollector_TenantIDStamped(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
-	c := NewCadvisor(client, "cid", "cn", "node", "tenant-acme")
+	c := NewCadvisor(client, "cid", "cn", "node", "tenant-acme", nil)
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -188,7 +188,7 @@ func collectCadvisorFromFixture(t *testing.T, fixture string) []*agentv2.Sample 
 	}))
 	t.Cleanup(srv.Close)
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
-	c := NewCadvisor(client, "test-cluster-id", "test-cluster", "kind-control-plane", "")
+	c := NewCadvisor(client, "test-cluster-id", "test-cluster", "kind-control-plane", "", nil)
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -197,5 +197,50 @@ func collectCadvisorFromFixture(t *testing.T, fixture string) []*agentv2.Sample 
 		t.Fatal("Collect returned zero samples; fixture or collector broken")
 	}
 	return samples
+}
+
+// TestCadvisorCollector_DropsFilteredInterfaces verifies the dropInterfaces set
+// (helm value collectors.dropNetworkInterfaces) excludes those interfaces from
+// container_network_* while every other interface passes through unchanged.
+func TestCadvisorCollector_DropsFilteredInterfaces(t *testing.T) {
+	const body = `container_network_receive_bytes_total{namespace="ns1",pod="pod1",interface="eth0"} 12345
+container_network_receive_bytes_total{namespace="ns1",pod="pod1",interface="sit0"} 0
+container_network_transmit_bytes_total{namespace="ns1",pod="pod1",interface="gre0"} 0
+container_network_transmit_bytes_total{namespace="ns1",pod="pod1",interface="eth0"} 678
+`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/metrics/cadvisor" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
+
+	drop := map[string]struct{}{"sit0": {}, "gre0": {}}
+	c := NewCadvisor(client, "cid", "cn", "node", "", drop)
+	samples, err := c.Collect(context.Background())
+	if err != nil {
+		t.Fatalf("Collect: %v", err)
+	}
+
+	// The two dropped-interface lines must be gone; only the two eth0 lines remain.
+	var sawEth0 bool
+	for _, s := range samples {
+		switch s.Labels["interface"] {
+		case "sit0", "gre0":
+			t.Errorf("dropped interface %q leaked into samples", s.Labels["interface"])
+		case "eth0":
+			sawEth0 = true
+		}
+	}
+	if !sawEth0 {
+		t.Error("eth0 was filtered but must be kept")
+	}
+	if len(samples) != 2 {
+		t.Errorf("expected 2 samples (both eth0) after filtering, got %d", len(samples))
+	}
 }
 

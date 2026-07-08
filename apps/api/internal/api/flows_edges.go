@@ -164,7 +164,6 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 	dnsRows, _ := runInstantQuery(r.Context(), dnsQuery)
 
 	// Pre-bucket HTTP by pair so the edge-build loop below is O(1) lookup.
-	type pairKey struct{ srcNs, srcPod, dstNs, dstPod string }
 	httpByPair := map[pairKey]*L7Summary{}
 	for _, row := range httpRows {
 		k := pairKey{
@@ -226,26 +225,7 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	edges := make([]FlowEdge, 0, len(eventsRows)+len(externalRows))
-	for _, row := range eventsRows {
-		edge := FlowEdge{
-			SrcNamespace: row.Labels["source_namespace"],
-			SrcPod:       row.Labels["source_pod"],
-			DstNamespace: row.Labels["destination_namespace"],
-			DstPod:       row.Labels["destination_pod"],
-			Verdict:      row.Labels["verdict"],
-			RatePerSec:   row.Value,
-		}
-		// Only attach L7 to the forwarded edge — dropped flows by
-		// definition never reached the proxy.
-		if edge.Verdict == "forwarded" {
-			k := pairKey{edge.SrcNamespace, edge.SrcPod, edge.DstNamespace, edge.DstPod}
-			if s, ok := httpByPair[k]; ok {
-				edge.L7 = s
-			}
-		}
-		edges = append(edges, edge)
-	}
+	edges := buildPodFlowEdges(eventsRows, httpByPair)
 
 	// Build a pod-IP → (namespace, name) index from the informer cache so
 	// "external" rows whose destination_ip is actually a pod IP get
@@ -344,6 +324,68 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		WindowMinutes: windowMin,
 		Source:        "hubble",
 	})
+}
+
+// pairKey identifies a directed pod-to-pod flow (source → destination) for
+// joining L4 event rows with their L7 summary.
+type pairKey struct{ srcNs, srcPod, dstNs, dstPod string }
+
+func pairKeyOf(row vmRow) pairKey {
+	return pairKey{
+		srcNs:  row.Labels["source_namespace"],
+		srcPod: row.Labels["source_pod"],
+		dstNs:  row.Labels["destination_namespace"],
+		dstPod: row.Labels["destination_pod"],
+	}
+}
+
+// buildPodFlowEdges turns pod-to-pod L4 event rows into edges, attaching each
+// pair's L7 summary and collapsing the redirect/forward duplication an L7
+// CiliumNetworkPolicy introduces.
+//
+// An L7 CNP makes Cilium redirect matching traffic to its Envoy proxy, which
+// Hubble reports as a SECOND L4 flow — verdict "redirected" — alongside the
+// "forwarded" one for the same pair. The HTTP metric lands on the forwarded leg,
+// so the redirected row carries no L7 and would draw a ghost "No L7 visibility"
+// edge over the real one. So: drop a redirect when a forwarded edge already
+// covers the pair; surface a lone redirect (no forwarded counterpart in the
+// window) as forwarded, since it IS an allowed flow.
+func buildPodFlowEdges(eventsRows []vmRow, httpByPair map[pairKey]*L7Summary) []FlowEdge {
+	forwardedPairs := map[pairKey]bool{}
+	for _, row := range eventsRows {
+		if row.Labels["verdict"] == "forwarded" {
+			forwardedPairs[pairKeyOf(row)] = true
+		}
+	}
+
+	edges := make([]FlowEdge, 0, len(eventsRows))
+	for _, row := range eventsRows {
+		k := pairKeyOf(row)
+		verdict := row.Labels["verdict"]
+		if verdict == "redirected" {
+			if forwardedPairs[k] {
+				continue // redundant with the forwarded edge — skip the ghost
+			}
+			verdict = "forwarded" // lone L7-proxied flow: it's allowed
+		}
+		edge := FlowEdge{
+			SrcNamespace: k.srcNs,
+			SrcPod:       k.srcPod,
+			DstNamespace: k.dstNs,
+			DstPod:       k.dstPod,
+			Verdict:      verdict,
+			RatePerSec:   row.Value,
+		}
+		// Only attach L7 to the forwarded edge — dropped flows by
+		// definition never reached the proxy.
+		if edge.Verdict == "forwarded" {
+			if s, ok := httpByPair[k]; ok {
+				edge.L7 = s
+			}
+		}
+		edges = append(edges, edge)
+	}
+	return edges
 }
 
 // vmRow is one result row from a VictoriaMetrics instant query, shaped

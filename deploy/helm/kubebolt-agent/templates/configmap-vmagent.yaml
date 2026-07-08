@@ -250,21 +250,17 @@ data:
 {{- include "kubebolt-agent.metricRelabelConfigs" . }}
 {{- end }}
 {{- if .Values.scrape.discovery.kubeStateMetrics.enabled }}
-      # ⚠️  kube-state-metrics is cluster-scoped — enabling this
-      # without per-vmagent dedup means N×duplicate samples (one
-      # per node where an agent runs). Mitigation paths:
-      #   1. Annotation-driven discovery (preferred when KSM has
-      #      `prometheus.io/scrape=true` + `port` annotations) —
-      #      the kubernetes-pods job's per-node filter ensures
-      #      single-scrape semantics. kube-prometheus-stack does
-      #      NOT add these annotations, so this path requires
-      #      operator action on the customer side.
-      #   2. VM-side dedup — `--dedup.minScrapeInterval=30s` on
-      #      the storage flag collapses duplicate samples at write
-      #      time. The bundled kubebolt chart and docker-compose
-      #      ship this flag by default since the post-Phase-2.5
-      #      follow-up; external Prom-compatible TSDBs need the
-      #      operator to enable it.
+      # kube-state-metrics is cluster-scoped (a single pod), so a naive
+      # DaemonSet scrape hits it from EVERY node's vmagent → N× duplicate
+      # INGEST. VM-side `--dedup.minScrapeInterval=30s` (shipped by default)
+      # collapses the STORED samples, but NOT the N× remote_write TRAFFIC +
+      # ingest CPU — the agents still ship it N times. The `node_name ==
+      # %{NODE_NAME}` keep below co-locates the scrape with KSM's node so a
+      # SINGLE vmagent scrapes it → 1× traffic; it still returns the full
+      # cluster-wide kube_* set (KSM is cluster-scoped, so one scrape covers
+      # everything). --dedup stays as a storage backstop. Caveat: assumes
+      # KSM's node runs a kubebolt-agent (true for a full DaemonSet); if you
+      # restrict the agent off KSM's node, drop this keep and lean on --dedup.
       - job_name: kube-state-metrics
         kubernetes_sd_configs:
           - role: pod
@@ -272,6 +268,12 @@ data:
           - source_labels: [__meta_kubernetes_pod_label_{{ $ksmKey }}]
             action: keep
             regex: {{ $ksmVal | quote }}
+          # Co-locate the scrape with KSM's node so a SINGLE vmagent scrapes
+          # this cluster-singleton → 1× ingest instead of N× (see the job
+          # comment above). Same node filter the node-exporter job uses.
+          - source_labels: [__meta_kubernetes_pod_node_name]
+            action: keep
+            regex: "%{NODE_NAME}"
           # KSM 2.x exposes two containerPorts — `http` (metrics)
           # and `metrics` (telemetry). Pod-SD emits one target per
           # port; without this keep, the __address__ rewrite below

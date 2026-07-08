@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { AlertTriangle, Check, Copy, Loader2, KeyRound, ExternalLink } from 'lucide-react'
+import { AlertTriangle, Check, Copy, Eye, EyeOff, Loader2, KeyRound, ExternalLink } from 'lucide-react'
 import { api, type AgentInstallConfig, type AgentIssueTokenResponse } from '@/services/api'
+import type { ClusterInfo } from '@/types/kubernetes'
 import { useAuth } from '@/contexts/AuthContext'
 import { Modal } from '@/components/shared/Modal'
 import { AgentConfigFields } from '@/components/admin/AgentConfigFields'
@@ -24,7 +25,7 @@ export function AddClusterWizard({ onClose }: Props) {
     backendUrl: '',
     clusterName: '',
     rbacMode: 'reader',
-    hubbleEnabled: true,
+    hubbleEnabled: false,
     authMode: 'ingest-token',
     tlsEnabled: false,
   })
@@ -32,9 +33,16 @@ export function AddClusterWizard({ onClose }: Props) {
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [issuedToken, setIssuedToken] = useState<AgentIssueTokenResponse | null>(null)
   const [issueError, setIssueError] = useState<string | null>(null)
-  const [selectedTenantId, setSelectedTenantId] = useState<string>('')
   const [selectedTeamId, setSelectedTeamId] = useState<string>('')
   const [copied, setCopied] = useState(false)
+  const [showToken, setShowToken] = useState(false)
+  const [copiedKey, setCopiedKey] = useState<string | null>(null)
+  const [tokenAcked, setTokenAcked] = useState(false)
+  const [agentConnected, setAgentConnected] = useState(false)
+  const [baselineContexts, setBaselineContexts] = useState<Set<string> | null>(null)
+  const [waiting, setWaiting] = useState(false)
+  const [connectedCluster, setConnectedCluster] = useState<ClusterInfo | null>(null)
+  const [waitTimedOut, setWaitTimedOut] = useState(false)
 
   // Multi-tenant (Cloud): pick which team OWNS the cluster registered with this
   // token. OSS / single-tenant skips it.
@@ -58,35 +66,76 @@ export function AddClusterWizard({ onClose }: Props) {
     staleTime: 30_000,
   })
 
-  // Pre-fill the backend URL with the externally-reachable endpoint.
+  // Poll the clusters list once a token is issued so we can detect the new
+  // cluster registering (see the wait-for-agent effect below).
+  const { data: clustersList } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: api.listClusters,
+    enabled: waiting,
+    refetchInterval: waiting && !agentConnected && !waitTimedOut ? 5000 : false,
+  })
+
+  // Hosted / SaaS: when the operator configured an agent-ingest URL, it is the
+  // deployment's authoritative external endpoint — the sole backendUrl default,
+  // and the signal that flips the wizard into SaaS-mode (TLS on, auth required).
+  const hostedMode = !!defaults?.agentIngestUrl
+  // Pre-fill the backend URL once (guarded on empty backendUrl so later user
+  // edits stick). Hosted → seed the SaaS-mode defaults together; otherwise fall
+  // back to the inferred externally-reachable endpoint.
   useEffect(() => {
     if (!defaults || cfg.backendUrl) return
-    if (defaults.externalEndpoint) setCfg((prev) => ({ ...prev, backendUrl: defaults.externalEndpoint! }))
+    if (defaults.agentIngestUrl) {
+      setCfg((prev) => ({ ...prev, backendUrl: defaults.agentIngestUrl!, tlsEnabled: true, authMode: 'ingest-token' }))
+    } else if (defaults.externalEndpoint) {
+      setCfg((prev) => ({ ...prev, backendUrl: defaults.externalEndpoint! }))
+    }
   }, [defaults, cfg.backendUrl])
 
+  // Wait-for-agent: there's NO WS event for a NEW cluster registering
+  // (cluster:connected only fires for the ACTIVE cluster's connector recovery),
+  // so once the operator copies the install command we poll the clusters list
+  // and watch for a context that wasn't present when they copied it.
   useEffect(() => {
-    if (selectedTenantId || !authInfo?.tenants?.length) return
-    const firstActive = authInfo.tenants.find((t) => !t.disabled)
-    if (firstActive) setSelectedTenantId(firstActive.id)
-  }, [authInfo, selectedTenantId])
+    if (!waiting || !clustersList) return
+    if (!baselineContexts) {
+      setBaselineContexts(new Set(clustersList.map((c) => c.context)))
+      return
+    }
+    if (!agentConnected) {
+      const fresh = clustersList.find((c) => !baselineContexts.has(c.context))
+      if (fresh) {
+        setConnectedCluster(fresh)
+        setAgentConnected(true)
+      }
+    }
+  }, [waiting, clustersList, baselineContexts, agentConnected])
+
+  // Stop the poll after a generous window so a wizard left open (helm never run,
+  // agent never installed) doesn't poll forever. Closing the wizard also stops
+  // it (the query unmounts). "Keep waiting" re-arms it.
+  useEffect(() => {
+    if (!waiting || agentConnected || waitTimedOut) return
+    const t = setTimeout(() => setWaitTimedOut(true), 300_000)
+    return () => clearTimeout(t)
+  }, [waiting, agentConnected, waitTimedOut])
+
 
   const issueToken = useMutation({
     mutationFn: () =>
+      // Issue-ONLY (no materialize): this is a REMOTE cluster the backend can't
+      // reach, so we get the plaintext token back and the operator creates the
+      // Secret there via the kubectl the wizard emits. Scoped to the session org
+      // server-side — no tenant picker, no cross-org.
       api.issueAgentTokenAndMaterializeSecret({
-        tenantId: selectedTenantId,
         ...(isMultiTenant && selectedTeamId ? { teamId: selectedTeamId } : {}),
-        // Secret materialized in the BACKEND's namespace for audit; the operator
-        // recreates it on the remote cluster from the token below.
-        namespace: defaults?.selfNamespace || 'kubebolt',
-        secretName: `kubebolt-agent-token-${(cfg.clusterName?.trim() || 'remote').toLowerCase().replace(/[^a-z0-9-]/g, '-')}`.slice(0, 63),
         label: `add-cluster ${(cfg.clusterName?.trim() || 'remote')} ${new Date().toISOString().slice(0, 10)}`,
       }),
     onSuccess: (resp) => {
       setIssueError(null)
       setIssuedToken(resp)
-      // Wire the issued Secret name into the config so the helm command and the
-      // shared Token-Secret field stay in sync.
-      setCfg((prev) => ({ ...prev, authTokenSecret: resp.secretName }))
+      // Default the Secret name the operator will create so the helm command and
+      // the shared Token-Secret field reference the same name.
+      setCfg((prev) => ({ ...prev, authTokenSecret: prev.authTokenSecret?.trim() || 'kubebolt-agent-token' }))
     },
     onError: (err) => {
       setIssuedToken(null)
@@ -114,6 +163,7 @@ export function AddClusterWizard({ onClose }: Props) {
   function copyHelm() {
     const done = () => {
       setCopied(true)
+      setWaiting(true) // copying the command = about to run it → start watching for the agent
       setTimeout(() => setCopied(false), 2000)
     }
     if (navigator.clipboard?.writeText) {
@@ -123,20 +173,40 @@ export function AddClusterWizard({ onClose }: Props) {
     copyViaTextarea(helmCommand, done)
   }
 
+  // copyText copies an arbitrary string (the token or the kubectl command) and
+  // flags `key` as copied for a 2s check indicator — the REAL value is always
+  // copied even while the on-screen token is masked.
+  function copyText(text: string, key: string) {
+    const done = () => {
+      setCopiedKey(key)
+      setTimeout(() => setCopiedKey((k) => (k === key ? null : k)), 2000)
+    }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => copyViaTextarea(text, done))
+      return
+    }
+    copyViaTextarea(text, done)
+  }
+
   const enforced = authInfo?.enforcement === 'enforced'
   const hasTenants = (authInfo?.tenants?.length ?? 0) > 0
-  const canIssueToken = enforced && hasTenants && selectedTenantId !== ''
+  const canIssueToken = enforced && hasTenants
 
-  // The ingest-token issuance UI (owner team + tenant + Generate) is injected
-  // into the shared auth section's tokenSlot. Warnings replace it when the
-  // backend isn't ready for token registration.
+  const tokenSecretName = cfg.authTokenSecret?.trim() || 'kubebolt-agent-token'
+  const tokenNamespace = cfg.namespace?.trim() || 'kubebolt-system'
+
+  // Ingest-token issuance (owner team + Generate) injected into the shared auth
+  // section's tokenSlot. The token is scoped to the caller's OWN org server-side
+  // — no tenant picker. Issue-only: we show the plaintext once and emit the
+  // kubectl the operator runs in the REMOTE cluster. Warnings replace it when the
+  // backend isn't ready.
   const tokenSlot = !enforced ? (
     <p className="text-[11px] text-status-warn pt-1">
       Backend agent-auth is "{authInfo?.enforcement || 'disabled'}". Token-based registration requires <span className="font-mono">enforced</span> mode (<span className="font-mono">agentIngest.authMode=enforced</span> on the chart).
     </p>
   ) : !hasTenants ? (
     <p className="text-[11px] text-status-warn pt-1">
-      No tenants configured. Create one under <Link to="/admin/tenants" className="underline text-kb-accent">Administration → Tenants</Link>.
+      No org resolved for your session. <Link to="/admin/tenants" className="underline text-kb-accent">Administration → Tenants</Link>.
     </p>
   ) : (
     <div className="pt-2 space-y-2">
@@ -156,36 +226,45 @@ export function AddClusterWizard({ onClose }: Props) {
           <p className="text-[10px] text-kb-text-tertiary">Only this team (and org admins) will see the cluster once it connects.</p>
         </div>
       )}
-      <div className="flex gap-2 items-center">
-        <select
-          value={selectedTenantId}
-          onChange={(e) => setSelectedTenantId(e.target.value)}
-          className="flex-1 px-2.5 py-1.5 rounded bg-kb-card border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:ring-1 focus:ring-kb-accent"
-        >
-          {(authInfo?.tenants || []).map((t) => (
-            <option key={t.id} value={t.id} disabled={t.disabled}>{t.name}{t.disabled ? ' (disabled)' : ''}</option>
-          ))}
-        </select>
-        <button
-          type="button"
-          onClick={() => issueToken.mutate()}
-          disabled={!canIssueToken || issueToken.isPending}
-          className="px-3 py-1.5 text-[11px] font-medium bg-kb-accent text-white rounded hover:bg-kb-accent/90 disabled:opacity-40 transition-colors flex items-center gap-1.5"
-        >
-          {issueToken.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
-          {issuedToken ? 'Re-issue' : 'Generate'}
-        </button>
-      </div>
+      <button
+        type="button"
+        onClick={() => issueToken.mutate()}
+        disabled={!canIssueToken || issueToken.isPending}
+        className="px-3 py-1.5 text-[11px] font-medium bg-kb-accent text-white rounded hover:bg-kb-accent/90 disabled:opacity-40 transition-colors flex items-center gap-1.5"
+      >
+        {issueToken.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <KeyRound className="w-3 h-3" />}
+        {issuedToken ? 'Re-generate token' : 'Generate token'}
+      </button>
       {issueError && <div className="text-[11px] text-status-error">{issueError}</div>}
-      {issuedToken && (
-        <div className="text-[11px] text-kb-text-secondary">
-          Secret <span className="font-mono text-kb-text-primary">{issuedToken.secretName}</span> created in <span className="font-mono">{issuedToken.namespace}</span> · prefix <span className="font-mono">{issuedToken.tokenPrefix}…</span>
-          <br />
-          <span className="text-[10px] text-kb-text-tertiary">
-            The plaintext token is in <span className="font-mono">data.token</span> of that Secret. Recreate it on the remote cluster under the same name the command references.
-          </span>
-        </div>
-      )}
+      {issuedToken?.token && (() => {
+        const masked = '•'.repeat(24)
+        const kubectlCmd = `kubectl create namespace ${tokenNamespace}\nkubectl -n ${tokenNamespace} create secret generic ${tokenSecretName} \\\n  --from-literal=token=${issuedToken.token!}`
+        return (
+          <div className="space-y-1.5 pt-1">
+            <div className="text-[11px] text-status-warn font-medium">Copy this token now — it's shown only once.</div>
+            <div className="flex items-center gap-2 p-2 rounded bg-kb-card border border-kb-border">
+              <code className="flex-1 text-[10px] font-mono text-kb-text-primary break-all">{showToken ? issuedToken.token : masked}</code>
+              <button type="button" onClick={() => setShowToken((s) => !s)} className="shrink-0 text-kb-text-tertiary hover:text-kb-text-primary" title={showToken ? 'Hide' : 'Show'}>
+                {showToken ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+              </button>
+              <button type="button" onClick={() => copyText(issuedToken.token!, 'token')} className="shrink-0 text-kb-text-tertiary hover:text-kb-text-primary" title="Copy token">
+                {copiedKey === 'token' ? <Check className="w-3.5 h-3.5 text-kb-accent" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <div className="text-[10px] text-kb-text-tertiary">Create the Secret in the target cluster — Copy grabs the real token even while masked:</div>
+            <div className="relative">
+              <pre className="p-2 pr-8 rounded bg-kb-card border border-kb-border text-[10px] font-mono text-kb-text-secondary whitespace-pre-wrap break-all">{showToken ? kubectlCmd : kubectlCmd.replace(issuedToken.token!, masked)}</pre>
+              <button type="button" onClick={() => copyText(kubectlCmd, 'kubectl')} className="absolute top-1.5 right-1.5 text-kb-text-tertiary hover:text-kb-text-primary" title="Copy command">
+                {copiedKey === 'kubectl' ? <Check className="w-3.5 h-3.5 text-kb-accent" /> : <Copy className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            <label className="flex items-center gap-2 text-[10px] text-kb-text-secondary cursor-pointer pt-0.5">
+              <input type="checkbox" checked={tokenAcked} onChange={(e) => setTokenAcked(e.target.checked)} className="accent-kb-accent" />
+              I've copied and saved the token — it can't be shown again.
+            </label>
+          </div>
+        )
+      })()}
     </div>
   )
 
@@ -199,7 +278,7 @@ export function AddClusterWizard({ onClose }: Props) {
         </div>
 
         {/* Reachability warnings */}
-        {!externalReachable && !isExternalDeployment && (
+        {!hostedMode && !externalReachable && !isExternalDeployment && (
           <div className="rounded-lg border border-status-warn/40 bg-status-warn-dim/15 p-3.5 space-y-2">
             <div className="flex items-center gap-2 text-status-warn text-[12px] font-semibold">
               <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -215,7 +294,7 @@ export function AddClusterWizard({ onClose }: Props) {
           </div>
         )}
 
-        {!externalReachable && isExternalDeployment && (
+        {!hostedMode && !externalReachable && isExternalDeployment && (
           <div className="rounded-lg border border-status-warn/40 bg-status-warn-dim/15 p-3.5 space-y-2">
             <div className="flex items-center gap-2 text-status-warn text-[12px] font-semibold">
               <AlertTriangle className="w-4 h-4 shrink-0" />
@@ -238,6 +317,7 @@ export function AddClusterWizard({ onClose }: Props) {
           setAdvancedOpen={setAdvancedOpen}
           showTransportTls
           showFullCapabilities
+          hostedMode={hostedMode}
           tokenSlot={tokenSlot}
         />
         </div>
@@ -263,12 +343,45 @@ export function AddClusterWizard({ onClose }: Props) {
             </button>
           </div>
           <pre className="text-[10px] font-mono bg-kb-elevated border border-kb-border rounded p-3 overflow-x-auto text-kb-text-primary leading-relaxed">{helmCommand}</pre>
-          {issuedToken && (
+          {issuedToken?.token && (
             <p className="text-[10px] text-kb-text-tertiary mt-2">
-              Pull the token Secret from this cluster with{' '}
-              <span className="font-mono text-kb-text-secondary">{`kubectl -n ${defaults?.selfNamespace || 'kubebolt'} get secret ${issuedToken.secretName} -o yaml`}</span>{' '}
-              and recreate it on the remote cluster (same name) after creating the namespace.
+              This command references the Secret <span className="font-mono text-kb-text-secondary">{tokenSecretName}</span> — create it in the target cluster with the token + kubectl shown in the auth section on the left.
             </p>
+          )}
+          {waiting && (
+            <div className="mt-3 rounded-lg border border-kb-border bg-kb-elevated p-3">
+              {agentConnected && connectedCluster ? (
+                <div className="space-y-1.5">
+                  <div className="text-[11px] text-status-ok flex items-center gap-2">
+                    <Check className="w-4 h-4 shrink-0" /> Agent connected — cluster registered.
+                  </div>
+                  <div className="text-[10px] pl-6 flex flex-wrap gap-x-3 gap-y-0.5">
+                    <span className="text-kb-text-primary font-medium">{connectedCluster.displayName || connectedCluster.name}</span>
+                    {connectedCluster.clusterId && (
+                      <span className="text-kb-text-tertiary">id <span className="font-mono text-kb-text-secondary">{connectedCluster.clusterId.slice(0, 12)}…</span></span>
+                    )}
+                    {(connectedCluster.agentConnected ?? true)
+                      ? <span className="text-status-ok font-medium">● live</span>
+                      : <span className="text-kb-text-tertiary">● not live yet</span>}
+                    {connectedCluster.source && <span className="text-kb-text-tertiary">via <span className="font-mono text-kb-text-secondary">{connectedCluster.source}</span></span>}
+                  </div>
+                </div>
+              ) : waitTimedOut ? (
+                <div className="space-y-1">
+                  <div className="text-[11px] text-status-warn flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0" /> No agent registered yet.
+                  </div>
+                  <div className="text-[10px] text-kb-text-tertiary pl-6">
+                    Make sure you created the Secret and ran the command in the target cluster — the cluster appears within ~30s of the agent starting.{' '}
+                    <button type="button" onClick={() => setWaitTimedOut(false)} className="text-kb-accent underline">Keep waiting</button>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-[11px] text-kb-text-secondary flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 shrink-0 animate-spin" /> Waiting for the agent to register — run the command above in the remote cluster…
+                </div>
+              )}
+            </div>
           )}
         </div>
           </div>
@@ -320,8 +433,9 @@ function copyViaTextarea(text: string, done: () => void) {
 // readable for the common case.
 function buildHelmCommand(cfg: AgentInstallConfig, nodeSelector: Array<{ k: string; v: string }>): string {
   const ns = cfg.namespace?.trim() || 'kubebolt-system'
-  // Escape the backslash FIRST, then the metacharacter — otherwise a literal
-  // backslash in the input would be left unescaped (incomplete sanitization).
+  // Escape backslashes FIRST, then the metachar — otherwise a backslash already
+  // in the input slips through and the escaping is incomplete (CodeQL flags this
+  // as js/incomplete-sanitization).
   const escKey = (s: string) => s.replace(/\\/g, '\\\\').replace(/\./g, '\\.') // dots are helm path separators
   const escVal = (s: string) => s.replace(/\\/g, '\\\\').replace(/,/g, '\\,')  // commas separate --set entries
   const flags: string[] = [

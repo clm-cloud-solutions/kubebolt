@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -54,7 +55,7 @@ var version = "dev"
 //go:embed all:web/dist
 var embeddedFS embed.FS
 
-const helpText = `KubeBolt %s — Instant Kubernetes Monitoring & Management
+const helpText = `KubeBolt %s — The AI operations platform for Kubernetes
 
 USAGE:
   kubebolt [flags]
@@ -311,6 +312,7 @@ func main() {
 		WriteSamplesPerSec: promLimitsCfg.WriteSamplesPerSec,
 		WriteBurstSamples:  promLimitsCfg.WriteBurstSamples,
 		MaxActiveSeries:    promLimitsCfg.MaxActiveSeries,
+		AllowCustomSeries:  promLimitsCfg.AllowCustomSeries,
 	}
 
 	// Notifications env baseline. Loaded here (before authCfg.Enabled
@@ -822,6 +824,15 @@ func main() {
 	// tests pass a fresh registry to isolate (see prom_write_metrics
 	// _test.go).
 	promWriteMetrics := api.NewPromWriteMetrics(prometheus.DefaultRegisterer)
+
+	// Ingest-time core/custom name filter (Layer 2 of the cardinality
+	// cost-control plan). On the core-only floor it drops non-KubeBolt
+	// ("custom") series before forwarding to VM; the per-tenant
+	// AllowCustomSeries limit opts a tenant into keeping custom telemetry.
+	// NameFilterEnabled is the fleet-wide kill-switch. Self-hosted OSS
+	// deployments that want to keep their own remote_write'd metrics set
+	// KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES=true (they own their VM).
+	promNameFilter := api.NewPromNameFilter(promLimitsCfg.NameFilterEnabled, promLimitsEffective, promWriteMetrics)
 	// Spec #09 V2 Item 5b — gRPC ingest counters powering the
 	// /admin/ingest-activity panel. Same registry as promWriteMetrics
 	// so the `/metrics` endpoint surfaces both ingest paths uniformly
@@ -870,7 +881,7 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
@@ -957,6 +968,62 @@ func main() {
 			)
 		}
 	}
+	// Agent-proxy resilience timeouts — install-global IngestChannel PLATFORM
+	// settings, tunable LIVE via Settings → Agents & Ingest (no restart). The env
+	// baselines (KUBEBOLT_AGENT_PROXY_{CONNECT,STUCK,REQUEST}_TIMEOUT) flow through
+	// config.LoadIngestChannelConfig; the package vars below are the fallback used
+	// when settings are unavailable (auth disabled) and by the live providers wired
+	// just after. Operators WIDEN under heavy agent concurrency or TIGHTEN to fail
+	// faster; stuck=0 disables the watchdog.
+	icBaseline := config.LoadIngestChannelConfig()
+	cluster.DefaultConnectTimeout = time.Duration(icBaseline.ConnectTimeoutSeconds) * time.Second
+	channel.StuckTimeout = time.Duration(icBaseline.StuckTimeoutSeconds) * time.Second
+	channel.DefaultProxyTimeout = time.Duration(icBaseline.RequestTimeoutSeconds) * time.Second
+	slog.Info("agent-proxy resilience timeouts",
+		slog.Duration("connect", cluster.DefaultConnectTimeout),
+		slog.Duration("stuck", channel.StuckTimeout),
+		slog.Duration("request", channel.DefaultProxyTimeout),
+	)
+	// Live providers read the resolved IngestChannel setting on each use (connect
+	// deadline per cold connect, request timeout per proxied call). Fall back to
+	// the env baseline via config when settingsRuntime is unavailable. The
+	// stuck-watchdog provider is a Server option (WithStuckTimeoutFunc), wired at
+	// NewServer below since it belongs to the ingest server.
+	agentProxySecs := func(pick func(config.IngestChannelConfig) int) int {
+		if settingsRuntime != nil {
+			return pick(settingsRuntime.IngestChannel())
+		}
+		return pick(config.LoadIngestChannelConfig())
+	}
+	// On-change observability: each provider logs when the resolved value
+	// changes, AT THE POINT OF USE (next connect / watchdog tick / proxied
+	// request). So a Settings → Agents & Ingest edit shows up in the API log
+	// as proof the runtime picked it up live — no restart. atomic.Swap dedups
+	// the log across the concurrent watchdog/request goroutines. The first read
+	// logs the boot value (prev=0), which also confirms the env baseline.
+	var lastConnectSecs, lastStuckSecs, lastRequestSecs atomic.Int64
+	logTimeoutChange := func(name string, last *atomic.Int64, secs int) {
+		if prev := last.Swap(int64(secs)); prev != int64(secs) {
+			slog.Info("agent-proxy timeout in effect (live from Settings → Agents & Ingest)",
+				slog.String("timeout", name),
+				slog.Int("seconds", secs),
+				slog.Int64("previous_seconds", prev))
+		}
+	}
+	agentProxyTimeout := func(name string, last *atomic.Int64, pick func(config.IngestChannelConfig) int) time.Duration {
+		secs := agentProxySecs(pick)
+		logTimeoutChange(name, last, secs)
+		return time.Duration(secs) * time.Second
+	}
+	manager.SetConnectTimeoutProvider(func() time.Duration {
+		return agentProxyTimeout("connect", &lastConnectSecs, func(ic config.IngestChannelConfig) int { return ic.ConnectTimeoutSeconds })
+	})
+	channel.RequestTimeoutProvider = func() time.Duration {
+		return agentProxyTimeout("request", &lastRequestSecs, func(ic config.IngestChannelConfig) int { return ic.RequestTimeoutSeconds })
+	}
+	stuckTimeoutProvider := func() time.Duration {
+		return agentProxyTimeout("stuck", &lastStuckSecs, func(ic config.IngestChannelConfig) int { return ic.StuckTimeoutSeconds })
+	}
 	// Spec #09 V2 — hot-reload the tunnel idle timeout from the
 	// settings runtime. A 30s ticker re-reads the value and rewrites
 	// the package-level default; subsequent tunnel constructions pick
@@ -1028,11 +1095,12 @@ func main() {
 		if err != nil {
 			slog.Warn("failed to list persisted agent records on boot", slog.String("error", err.Error()))
 		} else {
-			seen := make(map[string]string) // cluster_id → display name
+			seen := make(map[string]string)        // cluster_id → display name
+			kubeProxyKeys := make(map[string]bool) // cluster_ids whose agent advertised kube-proxy
 			for i := range records {
 				rec := &records[i]
-				if !rec.HasKubeProxy() {
-					continue
+				if rec.HasKubeProxy() {
+					kubeProxyKeys[rec.ClusterID] = true
 				}
 				// Last-write-wins on display name — records are
 				// sorted (cluster_id, agent_id) so any of the
@@ -1060,7 +1128,16 @@ func main() {
 					skipped++
 					continue
 				}
-				if _, err := manager.AddAgentProxyCluster(clusterID, displayName); err != nil {
+				var err error
+				if kubeProxyKeys[clusterID] {
+					_, err = manager.AddAgentProxyCluster(clusterID, displayName)
+				} else {
+					// Metrics-only cluster (agent shipped metrics, never advertised
+					// kube-proxy) — restore it as monitored-only so it stays in the
+					// selector across restarts.
+					_, err = manager.AddMetricsOnlyCluster(clusterID, displayName)
+				}
+				if err != nil {
 					slog.Warn("failed to restore agent-proxy cluster",
 						slog.String("cluster_id", clusterID),
 						slog.String("display_name", displayName),
@@ -1224,6 +1301,8 @@ func main() {
 		agent.WithRegistry(agentRegistry),
 		agent.WithClusterRegistrar(manager),
 		agent.WithAutoRegisterClustersFunc(autoRegisterFn),
+		// Live stuck-watchdog window (Settings → Agents & Ingest, no restart; 0 disables).
+		agent.WithStuckTimeoutFunc(stuckTimeoutProvider),
 		agent.WithGRPCIngestMetrics(agentGrpcMetrics),
 		agent.WithSelfClusterID(selfClusterID),
 		// Meter agent-ingested samples per tenant through the same usage seam

@@ -23,6 +23,9 @@ services:
       - KUBEBOLT_AUTH_ENABLED=${KUBEBOLT_AUTH_ENABLED:-true}
       - KUBEBOLT_ADMIN_PASSWORD=${KUBEBOLT_ADMIN_PASSWORD:-}
       - KUBEBOLT_JWT_SECRET=${KUBEBOLT_JWT_SECRET:-}
+      # Allowed CORS origins for cross-origin browser calls (UI on a different
+      # origin than the API). Empty = local dev defaults.
+      - KUBEBOLT_CORS_ORIGINS=${KUBEBOLT_CORS_ORIGINS:-}
       - KUBEBOLT_DATA_DIR=/data
       # Metrics storage (Phase 2). Backend writes via Prom remote_write and
       # queries via PromQL. VictoriaMetrics is the default; swap by pointing
@@ -36,12 +39,21 @@ services:
       # gRPC channel's KUBEBOLT_AGENT_AUTH_MODE. Default disabled for
       # backwards compat with Sprint A migration.
       - KUBEBOLT_REMOTE_WRITE_AUTH_MODE=${KUBEBOLT_REMOTE_WRITE_AUTH_MODE:-disabled}
+      # External address remote agents dial to reach this backend's gRPC ingest
+      # (host:port). Set for HOSTED / SaaS deployments — the add-cluster wizard
+      # uses it as the backendUrl default + SaaS-mode. Empty for local/self-hosted.
+      - KUBEBOLT_AGENT_INGEST_URL=${KUBEBOLT_AGENT_INGEST_URL:-}
       # Per-tenant Prom remote_write limits (Phase 3). Fleet-wide
       # defaults applied when a tenant has no admin-API override.
       # See deploy/.env.example for the full description.
       - KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC=${KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC:-10000}
       - KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES=${KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES:-100000}
       - KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES=${KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES:-1000000}
+      # Core/custom series filter (Layer 2 cardinality control). Self-hosted
+      # default keeps your own remote_write'd metrics (your VM, your data);
+      # set ALLOW_CUSTOM_SERIES=false to drop non-KubeBolt series at ingest.
+      - KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED=${KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED:-true}
+      - KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES=${KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES:-true}
       # AI Copilot — set KUBEBOLT_AI_API_KEY in your shell or .env file to enable.
       # The copilot is disabled if no key is set; KubeBolt works fully without it.
       - KUBEBOLT_AI_PROVIDER=${KUBEBOLT_AI_PROVIDER:-anthropic}

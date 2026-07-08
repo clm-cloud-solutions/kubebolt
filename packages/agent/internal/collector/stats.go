@@ -53,6 +53,14 @@ type StatsCollector struct {
 	// is kubelet-derived from cgroup accounting). The flag is
 	// surgical, scoped only to the names that actually collide.
 	deferNodeNetwork bool
+	// dropInterfaces excludes always-zero kernel tunnel interfaces
+	// (sit0, gre0, tunl0, …) from per-interface network metrics — the
+	// SAME set CadvisorCollector filters. /stats/summary and cadvisor
+	// both emit container_network_* per interface, so the filter MUST
+	// live in both or the unfiltered source re-introduces the tunnels
+	// (VM collapses the duplicate series). Populated from the helm value
+	// collectors.dropNetworkInterfaces. Nil/empty = keep all.
+	dropInterfaces map[string]struct{}
 }
 
 // StatsOption is a functional option for NewStats.
@@ -64,6 +72,16 @@ type StatsOption func(*StatsCollector)
 // the same labels, so the agent steps aside to avoid double-counting.
 func WithDeferNodeNetwork(defer_ bool) StatsOption {
 	return func(c *StatsCollector) { c.deferNodeNetwork = defer_ }
+}
+
+// WithDropInterfaces excludes the given network interfaces from
+// container_network_* (pod loop) and node_network_* (node loop)
+// emission. Mirrors the CadvisorCollector filter so both network
+// sources drop the same always-zero kernel tunnel devices — otherwise
+// the unfiltered source re-introduces them via VM's duplicate-series
+// merge. Wired by the helm chart from collectors.dropNetworkInterfaces.
+func WithDropInterfaces(drop map[string]struct{}) StatsOption {
+	return func(c *StatsCollector) { c.dropInterfaces = drop }
 }
 
 func NewStats(client *kubelet.Client, clusterID, clusterName, nodeName, tenantID string, opts ...StatsOption) *StatsCollector {
@@ -184,6 +202,9 @@ func (c *StatsCollector) collectNode(s *statsSummary, ts *timestamppb.Timestamp)
 			}
 		}
 		for _, iface := range nodeIfaces {
+			if _, drop := c.dropInterfaces[iface.Name]; drop {
+				continue
+			}
 			ifaceLabels := mergeLabels(base, map[string]string{"device": iface.Name})
 			if iface.RxBytes != nil {
 				samples = append(samples, sample("node_network_receive_bytes_total", float64(*iface.RxBytes), ifaceLabels, ts))
@@ -220,6 +241,9 @@ func (c *StatsCollector) collectPod(p *podStats, ts *timestamppb.Timestamp) []*a
 		}
 	}
 	for _, iface := range podIfaces {
+		if _, drop := c.dropInterfaces[iface.Name]; drop {
+			continue
+		}
 		ifaceLabels := mergeLabels(netLabels, map[string]string{"interface": iface.Name})
 		if iface.RxBytes != nil {
 			samples = append(samples, sample("container_network_receive_bytes_total", float64(*iface.RxBytes), ifaceLabels, ts))

@@ -16,7 +16,21 @@ import type {
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
 import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
 
-const API_BASE = '/api/v1'
+// API origin — empty string keeps every call same-origin (the nginx-proxied
+// self-hosted / Docker deploy, unchanged). Set VITE_API_URL at build time to
+// point the SPA at a remote API — e.g. a Vercel-hosted UI talking to
+// https://api.kubebolt.io. Trailing slashes are trimmed so `${API_ORIGIN}/api/v1`
+// is always well-formed.
+export const API_ORIGIN = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
+const API_BASE = `${API_ORIGIN}/api/v1`
+
+// WebSocket origin (ws:// or wss://). Derived from API_ORIGIN when set (remote
+// API), else the current page origin (same-origin proxy). https→wss, http→ws.
+export function wsOrigin(): string {
+  if (API_ORIGIN) return API_ORIGIN.replace(/^http/, 'ws')
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}`
+}
 
 export class ApiError extends Error {
   // Optional structured payload that callers parse out of 4xx
@@ -1640,6 +1654,10 @@ export interface IngestChannelEffective {
   promWriteDefaultMaxActiveSeriesGlobal: number
   // Tunnels.
   agentTunnelIdleTimeoutSecs: number
+  // Agent-proxy resilience (live-tunable).
+  connectTimeoutSeconds: number
+  stuckTimeoutSeconds: number
+  requestTimeoutSeconds: number
 }
 
 export interface IngestChannelStored {
@@ -1659,6 +1677,9 @@ export interface IngestChannelStored {
   promWriteDefaultMaxActiveSeries?: number
   promWriteDefaultMaxActiveSeriesGlobal?: number
   agentTunnelIdleTimeoutSecs?: number
+  connectTimeoutSeconds?: number
+  stuckTimeoutSeconds?: number
+  requestTimeoutSeconds?: number
 }
 
 export interface IngestChannelSettingsResponse {
@@ -1906,19 +1927,28 @@ export interface AgentTenantBrief {
 }
 
 export interface AgentIssueTokenRequest {
-  tenantId: string
+  // tenantId is accepted for wire-compat but IGNORED — the token is always
+  // scoped to the caller's session org.
+  tenantId?: string
+  // Team that will own the cluster (multi-tenant only; unused in OSS).
+  teamId?: string
   label?: string
+  // materialize=true creates the Secret in the CONNECTED cluster in one click
+  // (backend-reachable flows). Omit for issue-only: the plaintext token is
+  // returned so the operator creates the Secret in a REMOTE cluster via kubectl.
+  materialize?: boolean
   namespace?: string
   secretName?: string
   ttlSeconds?: number
 }
 
-// Note: the backend deliberately omits the plaintext token — it
-// lives only in the cluster Secret. The dialog uses `secretName` to
-// pre-fill AgentInstallConfig.authTokenSecret.
+// The response carries EITHER the plaintext `token` (issue-only — the operator
+// secures a REMOTE cluster with the kubectl the wizard emits) OR the
+// materialized Secret's name+namespace (backend-reachable flows).
 export interface AgentIssueTokenResponse {
-  secretName: string
-  namespace: string
+  token?: string
+  secretName?: string
+  namespace?: string
   tokenPrefix: string
   tokenLabel: string
   tenantId: string
@@ -1948,6 +1978,10 @@ export interface AgentInstallDefaults {
   selfNamespace?: string
   internalBackendUrl?: string
   externalEndpoint?: string
+  // Operator-configured external ingest endpoint (KUBEBOLT_AGENT_INGEST_URL /
+  // platform override). Non-empty ⇒ HOSTED / SaaS: the add-cluster wizard uses
+  // it as the sole backendUrl default and switches to SaaS-mode.
+  agentIngestUrl?: string
   agentNamespace: string
   agentIngestService?: AgentIngestServiceInfo
 }

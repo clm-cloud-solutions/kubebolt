@@ -12,9 +12,17 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
+
+// StuckTimeout configures the stuck-agent watchdog (server.go): an agent with in-flight
+// proxied requests that delivers no response for this long is alive-but-stuck (its gRPC
+// keepalive still passes) and gets force-disconnected so it reconnects with a fresh
+// tunnel. Set from KUBEBOLT_AGENT_PROXY_STUCK_TIMEOUT in main.go; 0 disables.
+var StuckTimeout = 45 * time.Second
 
 // SlotMode classifies how Deliver behaves when more than one message
 // arrives for the same request_id and how saturation is handled.
@@ -106,6 +114,11 @@ func (m SlotMode) bufferSize() int {
 type Multiplexor struct {
 	mu      sync.Mutex
 	pending map[string]*pendingCall
+	// lastDelivery is the unix-nano time of the last message routed to a pending slot
+	// (any kube_response / kube_event). SinceLastDelivery reads it for the stuck-agent
+	// watchdog: pending requests + a long gap since delivery = the agent stopped
+	// answering even though its stream is alive.
+	lastDelivery atomic.Int64
 }
 
 type pendingCall struct {
@@ -115,7 +128,9 @@ type pendingCall struct {
 }
 
 func NewMultiplexor() *Multiplexor {
-	return &Multiplexor{pending: make(map[string]*pendingCall)}
+	m := &Multiplexor{pending: make(map[string]*pendingCall)}
+	m.lastDelivery.Store(time.Now().UnixNano())
+	return m
 }
 
 // ErrDuplicateRequestID is returned when Register is called twice with
@@ -178,6 +193,7 @@ func (m *Multiplexor) Deliver(msg *agentv2.AgentMessage) {
 	if msg == nil || msg.GetRequestId() == "" {
 		return
 	}
+	m.lastDelivery.Store(time.Now().UnixNano())
 	m.mu.Lock()
 	pc, ok := m.pending[msg.GetRequestId()]
 	m.mu.Unlock()
@@ -262,6 +278,13 @@ func (m *Multiplexor) Pending() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.pending)
+}
+
+// SinceLastDelivery reports how long since the agent last delivered any message to a
+// pending slot — i.e. how long it has gone without answering. The stuck-watchdog pairs
+// it with Pending() > 0 to spot an alive-but-stuck agent.
+func (m *Multiplexor) SinceLastDelivery() time.Duration {
+	return time.Since(time.Unix(0, m.lastDelivery.Load()))
 }
 
 // cancel releases a slot. Idempotent: calling it twice (the auto-cleanup
