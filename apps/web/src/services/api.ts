@@ -16,7 +16,21 @@ import type {
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
 import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
 
-const API_BASE = '/api/v1'
+// API origin — empty string keeps every call same-origin (the nginx-proxied
+// self-hosted / Docker deploy, unchanged). Set VITE_API_URL at build time to
+// point the SPA at a remote API — e.g. a Vercel-hosted UI talking to
+// https://api.kubebolt.io. Trailing slashes are trimmed so `${API_ORIGIN}/api/v1`
+// is always well-formed.
+export const API_ORIGIN = (import.meta.env.VITE_API_URL || '').replace(/\/+$/, '')
+const API_BASE = `${API_ORIGIN}/api/v1`
+
+// WebSocket origin (ws:// or wss://). Derived from API_ORIGIN when set (remote
+// API), else the current page origin (same-origin proxy). https→wss, http→ws.
+export function wsOrigin(): string {
+  if (API_ORIGIN) return API_ORIGIN.replace(/^http/, 'ws')
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}`
+}
 
 export class ApiError extends Error {
   // Optional structured payload that callers parse out of 4xx

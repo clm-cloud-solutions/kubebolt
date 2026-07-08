@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 import { useDeploymentPods, useStatefulSetPods, useDaemonSetPods, useJobPods } from '@/hooks/useResources'
-import { getAccessToken } from '@/services/api'
+import { getAccessToken, wsOrigin } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -18,14 +18,13 @@ const SHELLS = [
 ]
 
 function buildExecUrl(namespace: string, name: string, container: string, shell: string): string {
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   const params = new URLSearchParams()
   if (container) params.set('container', container)
   if (shell) params.set('shell', shell)
   // Attach auth token for WebSocket authentication
   const token = getAccessToken()
   if (token) params.set('token', token)
-  return `${proto}//${window.location.host}/ws/exec/${namespace}/${name}?${params}`
+  return `${wsOrigin()}/ws/exec/${namespace}/${name}?${params}`
 }
 
 const TERM_THEME = {
