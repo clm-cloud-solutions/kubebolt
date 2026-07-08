@@ -35,6 +35,7 @@ import {
   Package,
   UserCog,
   ChevronRight,
+  MessageSquarePlus,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -197,7 +198,7 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
-  const { hasRole, isAuthEnabled } = useAuth()
+  const { hasRole, isAuthEnabled, user } = useAuth()
   const location = useLocation()
   const uiConfig = useUIConfig()
   // Metrics-only active cluster → dim + disable the resource-view nav (Pods, workloads,
@@ -446,8 +447,20 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
         )}
       </nav>
 
-      {/* About */}
+      {/* Feedback + About */}
       <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
+        {/* Links to the public feedback form with the signed-in email prefilled,
+            in a new tab so the operator never loses their place in the app. */}
+        <a
+          href={`https://kubebolt.io/feedback${user?.email ? `?email=${encodeURIComponent(user.email)}` : ''}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={collapsed ? 'Send feedback' : undefined}
+          className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-primary hover:bg-kb-card transition-colors"
+        >
+          <MessageSquarePlus className="w-4 h-4 shrink-0" />
+          {!collapsed && <span>Feedback</span>}
+        </a>
         <button
           type="button"
           onClick={() => setAboutOpen(true)}
