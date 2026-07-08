@@ -61,6 +61,11 @@ export interface NavItem {
   icon: React.ReactNode
   countKey?: keyof ClusterOverview
   permissionKey?: string
+  // Render the item non-clickable (dimmed, no navigation) — for features that
+  // are shipped in the nav but not yet enabled in this release.
+  disabled?: boolean
+  // Small pill shown after the label (e.g. "Soon"). Pairs with `disabled`.
+  badge?: string
 }
 
 interface NavSection {
@@ -360,6 +365,26 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                 // disable them — except /clusters, the platform escape hatch. The metrics
                 // dashboards stay reachable via the Overview link above.
                 const metricsBlocked = isMetricsOnly && item.path !== '/clusters'
+
+                // Not-yet-enabled feature (visible as a teaser, non-clickable, "Soon"
+                // badge). Inert in OSS today — kept in sync with the EE sidebar.
+                if (item.disabled) {
+                  return (
+                    <div
+                      key={item.path}
+                      title={`${item.label} — coming soon`}
+                      className="flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-tertiary cursor-not-allowed relative"
+                    >
+                      <span className="shrink-0 opacity-60">{item.icon}</span>
+                      {!collapsed && <span className="flex-1 truncate opacity-60">{item.label}</span>}
+                      {!collapsed && item.badge && (
+                        <span className="text-[9px] font-mono font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-kb-accent-light text-kb-accent">
+                          {item.badge}
+                        </span>
+                      )}
+                    </div>
+                  )
+                }
 
                 if (metricsBlocked) {
                   return (
