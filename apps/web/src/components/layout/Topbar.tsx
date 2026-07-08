@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { isDashboardPath } from '@/utils/routes'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen, Building2, Users } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen, Building2, Users, LayoutDashboard, Network } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { NewResourceModal } from '@/components/resources/NewResourceModal'
 import { UpdateAvailableChip } from '@/components/layout/UpdateAvailableChip'
@@ -154,7 +154,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
   return (
     <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]">
       {/* Left side */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3 xl:gap-4 min-w-0">
         {/* Sidebar toggle — anchors visually to the sidebar's right edge
             since it sits at the topbar's leftmost position. */}
         <button
@@ -182,7 +182,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${dotColor} ${noClusters ? '' : 'animate-pulse-live'}`} />
-            <span className="text-xs font-mono text-kb-text-primary">{clusterName}</span>
+            <span className="text-xs font-mono text-kb-text-primary truncate max-w-[110px] xl:max-w-[200px]">{clusterName}</span>
             {dropdownInteractive && (
               <ChevronDown className={`w-3 h-3 text-kb-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
             )}
@@ -258,24 +258,28 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
         <div className="flex rounded-md border border-kb-border overflow-hidden">
           <NavLink
             to="/"
-            className={`px-3 py-1.5 text-xs font-semibold transition-colors ${
+            title="Dashboard"
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors ${
               dashboardActive
                 ? 'bg-kb-elevated text-kb-text-primary'
                 : 'bg-kb-card text-kb-text-secondary hover:text-kb-text-primary'
             }`}
           >
-            Dashboard
+            <LayoutDashboard className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden xl:inline">Dashboard</span>
           </NavLink>
           {!isMetricsOnly && (
             <NavLink
               to="/map"
+              title="Cluster Map"
               className={({ isActive }) =>
-                `px-3 py-1.5 text-xs font-semibold transition-colors border-l border-kb-border ${
+                `flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors border-l border-kb-border ${
                   isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-secondary hover:text-kb-text-primary'
                 }`
               }
             >
-              Cluster Map
+              <Network className="w-3.5 h-3.5 shrink-0" />
+              <span className="hidden xl:inline">Cluster Map</span>
             </NavLink>
           )}
         </div>
@@ -307,9 +311,9 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
 
           {/* Node count — matched to the LIVE / FWD chip shell so the
               three read as one row instead of "two pills + raw text". */}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-kb-card border border-kb-border text-kb-text-secondary">
+          <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-md bg-kb-card border border-kb-border text-kb-text-secondary">
             <Server className="w-3.5 h-3.5" />
-            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount} nodes</span>
+            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount}<span className="hidden xl:inline"> nodes</span></span>
           </div>
         </div>
 
@@ -320,11 +324,12 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
           {/* Search trigger */}
           <button
             onClick={() => setSearchOpen(true)}
-            className="flex items-center gap-2 w-52 pl-3 pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
+            title="Search (⌘K)"
+            className="flex items-center justify-center xl:justify-start gap-2 px-2.5 xl:w-52 xl:pl-3 xl:pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
           >
-            <Search className="w-3.5 h-3.5" />
-            <span className="flex-1 text-left">Search...</span>
-            <kbd className="px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
+            <Search className="w-3.5 h-3.5 shrink-0" />
+            <span className="hidden xl:block flex-1 text-left">Search...</span>
+            <kbd className="hidden xl:inline-block px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
           </button>
           {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
 
@@ -335,7 +340,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
             className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
-            <span>New</span>
+            <span className="hidden xl:inline">New</span>
           </button>
           {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
 
