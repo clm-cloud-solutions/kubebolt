@@ -11,6 +11,44 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-07-09
+
+First minor since 1.1.0. A new default scrape posture (lower cardinality out of the
+box) plus connection-reliability and security fixes. **Same v1.0 metric/label
+schema** — drop-in with backend **>= 1.13.0**; the metric families the UI consumes are
+unchanged.
+
+### Changed — scrape defaults (lower cardinality out of the box)
+
+- **Default scrape allowlist now tracks the KubeBolt consumed-series contract** — the
+  bundled vmagent scrapes only the metric families KubeBolt's UI actually consumes,
+  cutting cardinality and cost by default. Operators who relied on the previous broad
+  default can widen it back via `scrape` values.
+- **Dummy / virtual network interfaces are filtered** in both network collectors, and
+  kube-state-metrics is scraped once (single-scrape) — fewer junk series on the wire.
+- **kubelet stats polled every 30s** (aligned to VictoriaMetrics' dedup interval)
+  instead of 15s — halves sample volume with no loss of dashboard resolution.
+- Deployment docs updated to reflect the default cardinality controls.
+
+### Fixed — connection reliability
+
+- **Reconnect on a backend-closed stream (EOF)** plus a **buffer-stall watchdog** that
+  reconnects when the ship buffer stops draining, so a wedged session self-heals
+  instead of going silent.
+- **Force JSON watch frames + gRPC client keepalive** so idle agent-proxy watches don't
+  silently stall behind an intermediary.
+
+### Security
+
+- **Bundled VictoriaMetrics + vmagent → `v1.147.0-scratch`** — clears a Go-stdlib CVE
+  present in the `v1.145.0` pin. All three pinned sites move in lockstep (agent vmagent
+  + kubebolt VM + docker-compose mirror), keeping the release drift check green.
+
+### Compatibility
+
+- Compatible with KubeBolt backend **>= 1.13.0**; same v1.0 schema.
+- Tag pattern remains `agent-vX.Y.Z`. This release: `agent-v1.2.0`.
+
 ## [1.1.6] — 2026-06-29
 
 Completes the agent-proxy UTF-8 hardening from 1.1.5 (which fixed headers/labels but not
