@@ -18,6 +18,7 @@ import (
 	"k8s.io/client-go/tools/portforward"
 	"k8s.io/client-go/transport/spdy"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
@@ -58,7 +59,27 @@ type PortForward struct {
 	Status     string    `json:"status"` // active, error, stopped
 	Error      string    `json:"error,omitempty"`
 	CreatedAt  time.Time `json:"createdAt"`
-	stopCh     chan struct{}
+	// OrgID is the tenant that created this forward. Used to authorize the public
+	// /pf/{id}/ proxy via the kb_pf cookie. Never serialized to clients.
+	OrgID  string `json:"-"`
+	stopCh chan struct{}
+}
+
+// pfCookieName is the httpOnly, path-scoped cookie that authorizes /pf/{id}/
+// access. A top-level browser navigation can't send an Authorization header, so
+// the create response sets this cookie (handleCreatePortForward) and the proxy
+// validates it (handlePortForwardProxy).
+const pfCookieName = "kb_pf"
+
+// isSecureRequest reports whether the client reached us over HTTPS (directly or
+// via a TLS-terminating proxy that sets X-Forwarded-Proto) — mirrors the auth
+// package's refresh-cookie convention so the kb_pf cookie's Secure attribute is
+// set behind a gateway but not on plain-HTTP local dev.
+func isSecureRequest(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // PortForwardManager manages active port-forward sessions.
@@ -270,6 +291,24 @@ func (h *handlers) handleCreatePortForward(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Bind this forward to the caller's org and hand the browser a scoped cookie
+	// so the public /pf/{id}/ proxy can authenticate the (header-less) navigation
+	// and enforce tenant isolation. No-op when auth is disabled.
+	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
+		pf.OrgID = auth.TenantIDFromContext(r.Context())
+		if tok := h.authHandlers.IssuePortForwardToken(pf.OrgID); tok != "" {
+			http.SetCookie(w, &http.Cookie{
+				Name:     pfCookieName,
+				Value:    tok,
+				Path:     "/pf/",
+				HttpOnly: true,
+				Secure:   isSecureRequest(r),
+				SameSite: http.SameSiteLaxMode,
+				MaxAge:   int(auth.PortForwardCookieExpiry.Seconds()),
+			})
+		}
+	}
+
 	respondJSON(w, http.StatusOK, pf)
 }
 
@@ -292,6 +331,22 @@ func (h *handlers) handlePortForwardProxy(w http.ResponseWriter, r *http.Request
 	if pf == nil || pf.Status != "active" {
 		http.Error(w, "port-forward not found or not active", http.StatusNotFound)
 		return
+	}
+
+	// This route is public (a top-level navigation can't carry a Bearer token),
+	// so authorize via the path-scoped kb_pf cookie set at create time and enforce
+	// tenant isolation: the cookie's org must match the forward's owning org.
+	// Skipped entirely when auth is disabled (self-hosted single-tenant / dev).
+	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
+		var cookieVal string
+		if c, err := r.Cookie(pfCookieName); err == nil {
+			cookieVal = c.Value
+		}
+		orgID, ok := h.authHandlers.ValidatePortForwardToken(cookieVal)
+		if !ok || orgID != pf.OrgID {
+			http.Error(w, "unauthorized", http.StatusForbidden)
+			return
+		}
 	}
 
 	prefix := "/pf/" + id
