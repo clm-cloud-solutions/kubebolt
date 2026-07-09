@@ -1,0 +1,31 @@
+{{- if and .Values.gatewayAPI.enabled .Values.gatewayAPI.forceHTTP1 }}
+# Force HTTP/1.1 to clients (ALPN). Envoy Gateway defaults to offering HTTP/2,
+# but browsers then (a) BREAK the WebSocket upgrade — h2 carries no
+# `Connection: Upgrade`, so /api/v1/ws (live updates, pod exec terminal) 400s
+# with "'upgrade' token not found" — and (b) intermittently reset h2 streams
+# under request bursts, which Chrome surfaces as "CORS error" (the request never
+# reaches the API). HTTP/1.1 is fine at this scale and makes WebSocket + bursty
+# dashboard queries reliable. NOTE: ClientTrafficPolicy is an Envoy Gateway CRD —
+# set gatewayAPI.forceHTTP1=false if you front the chart with a different Gateway
+# API controller.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: {{ include "kubebolt.fullname" . }}-http1
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+spec:
+  targetRefs:
+    # ONLY the api (browser) listener — NOT the whole Gateway. The agent-https
+    # listener carries the bidirectional gRPC AgentChannel, which REQUIRES ALPN
+    # `h2`; forcing http/1.1 there makes the agent's TLS handshake fail with
+    # "missing selected ALPN property" (grpc-go >= 1.67 ALPN enforcement) and no
+    # cluster can connect. Scoping by sectionName keeps h2 on agent-https.
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ include "kubebolt.fullname" . }}
+      sectionName: api-https
+  tls:
+    alpnProtocols:
+      - "http/1.1"
+{{- end }}

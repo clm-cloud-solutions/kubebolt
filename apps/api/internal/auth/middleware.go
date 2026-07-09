@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"time"
 )
 
 type contextKey string
@@ -133,6 +134,37 @@ func (h *Handlers) ValidateWSToken(tokenStr string) *Claims {
 		return nil
 	}
 	return claims
+}
+
+// PortForwardCookieExpiry is how long the kb_pf cookie authorizing /pf/{id}/
+// access stays valid.
+const PortForwardCookieExpiry = 8 * time.Hour
+
+// IssuePortForwardToken mints the kb_pf cookie value binding a port-forward's
+// owning org. Returns "" when auth is disabled (the proxy then skips the check).
+func (h *Handlers) IssuePortForwardToken(orgID string) string {
+	if !h.authEnabled {
+		return ""
+	}
+	tok, err := h.jwt.GeneratePortForwardToken(orgID, time.Now().Add(PortForwardCookieExpiry))
+	if err != nil {
+		return ""
+	}
+	return tok
+}
+
+// ValidatePortForwardToken checks a kb_pf cookie value and returns the org it
+// authorizes. ok is false when auth is disabled, the value is empty, or the token
+// is invalid/expired/wrong-purpose.
+func (h *Handlers) ValidatePortForwardToken(tokenStr string) (orgID string, ok bool) {
+	if !h.authEnabled || tokenStr == "" {
+		return "", false
+	}
+	orgID, err := h.jwt.ValidatePortForwardToken(tokenStr)
+	if err != nil {
+		return "", false
+	}
+	return orgID, true
 }
 
 // ContextClaims returns the JWT claims from the request context, or nil if not present.
