@@ -99,6 +99,36 @@ ingress:
           pathType: Prefix
   tls: []
 
+# Gateway API entry point (modern replacement for the retiring ingress-nginx).
+# Mutually exclusive with `ingress` above — enable ONE. Needs a Gateway API
+# controller + CRDs in the cluster (we use Envoy Gateway, GatewayClass "eg").
+# The controller owns the public LoadBalancer; KubeBolt Services stay ClusterIP.
+gatewayAPI:
+  enabled: false
+  gatewayClassName: eg
+  # Force HTTP/1.1 to clients via an Envoy Gateway ClientTrafficPolicy. REQUIRED
+  # with Envoy Gateway: its default HTTP/2 breaks the WebSocket upgrade (live
+  # updates + pod terminal) and resets streams under bursts (shows as "CORS
+  # error"). Set false only for a non-Envoy-Gateway controller.
+  forceHTTP1: true
+  # Extra annotations merged onto the Gateway object.
+  annotations: {}
+  certManager:
+    # When set, cert-manager's gateway-shim auto-issues each listener's cert into
+    # its certificateRefs Secret. cert-manager must run with Gateway API support
+    # enabled. Empty = you provide the TLS Secrets yourself. e.g. letsencrypt-prod
+    clusterIssuer: ""
+  # HTTP/REST + WebSocket (the API Service).
+  api:
+    host: kubebolt.example.com
+    tlsSecretName: kubebolt-api-tls
+  # Bidirectional gRPC AgentChannel (the agent-ingest Service). If proxied by a
+  # CDN, this host must stay DNS-only — proxies break bidi gRPC.
+  agent:
+    enabled: true
+    host: agent.kubebolt.example.com
+    tlsSecretName: kubebolt-agent-tls
+
 # ServiceAccount for API to access the cluster
 serviceAccount:
   create: true

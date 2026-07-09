@@ -55,6 +55,9 @@ spec:
       {{- end }}
       protocol: TCP
       name: grpc
+      # Signals HTTP/2 cleartext upstream so a Gateway API controller (Envoy
+      # Gateway) forwards gRPC correctly after terminating TLS at the listener.
+      appProtocol: kubernetes.io/h2c
   selector:
     {{- include "kubebolt.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: api

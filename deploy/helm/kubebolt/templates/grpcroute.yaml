@@ -1,0 +1,22 @@
+{{- if and .Values.gatewayAPI.enabled .Values.gatewayAPI.agent.enabled }}
+# agent.kubebolt.io → the agent-ingest Service (bidirectional gRPC AgentChannel).
+# The gateway terminates TLS and speaks h2c to the backend — the agent-ingest
+# Service port carries appProtocol: kubernetes.io/h2c so Envoy Gateway uses
+# HTTP/2 cleartext upstream (required for gRPC).
+apiVersion: gateway.networking.k8s.io/v1
+kind: GRPCRoute
+metadata:
+  name: {{ include "kubebolt.fullname" . }}-agent
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ include "kubebolt.fullname" . }}
+      sectionName: agent-https
+  hostnames:
+    - {{ .Values.gatewayAPI.agent.host | quote }}
+  rules:
+    - backendRefs:
+        - name: {{ include "kubebolt.fullname" . }}-agent-ingest
+          port: {{ .Values.agentIngest.port }}
+{{- end }}
