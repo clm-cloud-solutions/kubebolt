@@ -20,3 +20,9 @@
 # Do NOT use this file to bypass scans because "the release is urgent".
 # That defeats the entire purpose of the gate. Bump the vulnerable
 # dependency or postpone the release.
+
+# Bundled VictoriaMetrics / vmagent (v1.147.0 builds on Go 1.26.4). Both
+# entries mirror kubebolt-ee's .trivyignore verbatim — same decision, same
+# justification, same remove-by, so OSS and EE stay in sync.
+CVE-2026-39822  # 2026-07-08 lmaina — os symlink+trailing-slash root-escape; VM is an internal metrics store that never resolves untrusted symlink paths in KubeBolt's deployment. Remove-by 2026-07-22 (bump VM to a Go-1.26.5+ build).
+CVE-2026-42505  # 2026-07-08 lmaina — crypto/tls Encrypted Client Hello privacy leak; VM's TLS is intra-cluster and does not use ECH. Remove-by 2026-07-22 (bump VM to a Go-1.26.5+ build).
