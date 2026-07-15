@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { ExternalLink, X, Loader2, Cable } from 'lucide-react'
-import { api } from '@/services/api'
+import { api, API_ORIGIN } from '@/services/api'
 
 interface PortForwardButtonProps {
   namespace: string
@@ -31,7 +31,7 @@ export function PortForwardButton({ namespace, pod, container, remotePort, disab
         // the dashboard) so the HTTP service is reachable even when the
         // backend is remote — not the direct host:port, which only works
         // when backend and browser share a machine.
-        setForward({ id: existing.id, url: `/pf/${existing.id}/` })
+        setForward({ id: existing.id, url: `${API_ORIGIN}/pf/${existing.id}/` })
       }
     }).catch(() => {})
   }, [namespace, pod, remotePort])
@@ -41,7 +41,7 @@ export function PortForwardButton({ namespace, pod, container, remotePort, disab
     setError(null)
     try {
       const result = await api.createPortForward({ namespace, pod, container, remotePort })
-      setForward({ id: result.id, url: `/pf/${result.id}/` })
+      setForward({ id: result.id, url: `${API_ORIGIN}/pf/${result.id}/` })
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to start port-forward')
     } finally {

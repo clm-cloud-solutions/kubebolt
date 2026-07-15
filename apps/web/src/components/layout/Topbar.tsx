@@ -6,7 +6,7 @@ import { SearchModal } from '@/components/shared/SearchModal'
 import { NewResourceModal } from '@/components/resources/NewResourceModal'
 import { UpdateAvailableChip } from '@/components/layout/UpdateAvailableChip'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { api } from '@/services/api'
+import { api, API_ORIGIN } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useAuth } from '@/contexts/AuthContext'
 import { useCopilot } from '@/contexts/CopilotContext'
@@ -416,7 +416,7 @@ function PortForwardIndicator() {
             // NOT host:localPort — the local port lives on the backend pod and
             // is unreachable from the browser when the backend is remote. Must
             // stay in sync with PortForwardButton.tsx (Option A, Sprint 2).
-            const url = `/pf/${pf.id}/`
+            const url = `${API_ORIGIN}/pf/${pf.id}/`
             return (
               <div key={pf.id} className="px-3 py-2 flex items-center gap-2 hover:bg-kb-card-hover transition-colors">
                 <div className="flex-1 min-w-0">

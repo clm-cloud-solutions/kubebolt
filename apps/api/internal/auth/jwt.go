@@ -131,3 +131,57 @@ func HashToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
 }
+
+// pfTokenPurpose tags a port-forward cookie JWT so neither an access token nor a
+// verification/reset link can be replayed as port-forward access (and vice
+// versa) — token confusion is rejected on the purpose check.
+const pfTokenPurpose = "port_forward"
+
+// PortForwardClaims is the claim set for the kb_pf cookie that authorizes access
+// to the /pf/{id}/ reverse proxy. It carries only the owning org so the proxy can
+// enforce tenant isolation on a request that (being a top-level navigation) can't
+// send an Authorization header.
+type PortForwardClaims struct {
+	jwt.RegisteredClaims
+	OrgID   string `json:"tid,omitempty"`
+	Purpose string `json:"pur"`
+}
+
+// GeneratePortForwardToken mints the signed value for a kb_pf cookie, binding a
+// port-forward session's owning org.
+func (j *JWTService) GeneratePortForwardToken(orgID string, expiresAt time.Time) (string, error) {
+	claims := PortForwardClaims{
+		RegisteredClaims: jwt.RegisteredClaims{
+			IssuedAt:  jwt.NewNumericDate(time.Now()),
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			Issuer:    "kubebolt",
+		},
+		OrgID:   orgID,
+		Purpose: pfTokenPurpose,
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(j.secret)
+}
+
+// ValidatePortForwardToken parses a kb_pf cookie and returns the org it
+// authorizes. Rejects expired tokens, bad signatures, and any token whose purpose
+// isn't port-forward access.
+func (j *JWTService) ValidatePortForwardToken(tokenStr string) (orgID string, err error) {
+	token, err := jwt.ParseWithClaims(tokenStr, &PortForwardClaims{}, func(token *jwt.Token) (interface{}, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
+		}
+		return j.secret, nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("invalid port-forward token: %w", err)
+	}
+	claims, ok := token.Claims.(*PortForwardClaims)
+	if !ok || !token.Valid {
+		return "", fmt.Errorf("invalid port-forward token claims")
+	}
+	if claims.Purpose != pfTokenPurpose {
+		return "", fmt.Errorf("token is not a port-forward token")
+	}
+	return claims.OrgID, nil
+}

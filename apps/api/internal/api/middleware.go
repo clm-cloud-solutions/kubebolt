@@ -14,10 +14,19 @@ import (
 // CORSMiddleware returns a CORS handler for the given allowed origins.
 func CORSMiddleware(allowedOrigins []string) func(http.Handler) http.Handler {
 	return cors.Handler(cors.Options{
-		AllowedOrigins:   allowedOrigins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-Requested-With"},
-		ExposedHeaders:   []string{"Link"},
+		AllowedOrigins: allowedOrigins,
+		AllowedMethods: []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
+		// Includes the custom X-KubeBolt-* request headers the SPA sends (cluster
+		// selection, Kobi action context, etc.). Without these, cluster-scoped and
+		// Kobi requests fail the CORS preflight cross-origin (UI on a different
+		// origin than the API — e.g. Vercel) even though login/config succeed.
+		AllowedHeaders: []string{
+			"Accept", "Authorization", "Content-Type", "X-Requested-With",
+			"X-KubeBolt-Cluster", "X-KubeBolt-Action-Source", "X-KubeBolt-Conversation-Id",
+			"X-KubeBolt-Origin-Insight", "X-KubeBolt-Validation-Warnings", "X-KubeBolt-Edge",
+		},
+		// Response headers the SPA reads cross-origin.
+		ExposedHeaders:   []string{"Link", "X-KubeBolt-Validation-Warnings", "X-KubeBolt-Edge"},
 		AllowCredentials: true,
 		MaxAge:           300,
 	})

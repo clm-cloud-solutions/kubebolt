@@ -149,3 +149,52 @@ func TestHashToken_Deterministic(t *testing.T) {
 		t.Error("hash should be 64 hex chars")
 	}
 }
+
+func TestPortForwardToken_Roundtrip(t *testing.T) {
+	svc := testJWTService(time.Hour, 24*time.Hour)
+	tok, err := svc.GeneratePortForwardToken("org-acme", time.Now().Add(8*time.Hour))
+	if err != nil {
+		t.Fatalf("GeneratePortForwardToken: %v", err)
+	}
+	orgID, err := svc.ValidatePortForwardToken(tok)
+	if err != nil {
+		t.Fatalf("ValidatePortForwardToken: %v", err)
+	}
+	if orgID != "org-acme" {
+		t.Errorf("roundtrip org mismatch: got %q", orgID)
+	}
+}
+
+func TestValidatePortForwardToken_RejectsExpired(t *testing.T) {
+	svc := testJWTService(time.Hour, 24*time.Hour)
+	tok, err := svc.GeneratePortForwardToken("org-acme", time.Now().Add(-time.Minute))
+	if err != nil {
+		t.Fatalf("GeneratePortForwardToken: %v", err)
+	}
+	if _, err := svc.ValidatePortForwardToken(tok); err == nil {
+		t.Error("expected expired port-forward token to be rejected")
+	}
+}
+
+func TestValidatePortForwardToken_RejectsWrongPurpose(t *testing.T) {
+	svc := testJWTService(time.Hour, 24*time.Hour)
+	// An access token must not validate as a port-forward token (no token
+	// confusion), even though both are signed by the same key.
+	access, err := svc.GenerateAccessToken(&User{ID: "u", Role: RoleViewer})
+	if err != nil {
+		t.Fatalf("GenerateAccessToken: %v", err)
+	}
+	if _, err := svc.ValidatePortForwardToken(access); err == nil {
+		t.Error("expected an access token to be rejected as a port-forward token")
+	}
+}
+
+func TestValidatePortForwardToken_RejectsGarbage(t *testing.T) {
+	svc := testJWTService(time.Hour, 24*time.Hour)
+	if _, err := svc.ValidatePortForwardToken("not.a.jwt"); err == nil {
+		t.Error("expected garbage to be rejected")
+	}
+	if _, err := svc.ValidatePortForwardToken(""); err == nil {
+		t.Error("expected empty string to be rejected")
+	}
+}

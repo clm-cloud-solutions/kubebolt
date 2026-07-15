@@ -1,0 +1,58 @@
+{{- if .Values.gatewayAPI.enabled }}
+# Gateway API entry point (replaces the deprecated ingress-nginx path).
+# Fronted by a Gateway API controller — on AKS-managed Cilium we use Envoy
+# Gateway (GatewayClass "eg"), which provisions its OWN LoadBalancer; every
+# KubeBolt Service stays ClusterIP behind it.
+#
+# Two HTTPS listeners, both TLS-terminated at the gateway:
+#   • api  — HTTP/REST + WebSocket, attached by the HTTPRoute (see httproute.yaml)
+#   • agent — bidirectional gRPC AgentChannel, attached by the GRPCRoute
+#             (grpcroute.yaml). This host must be Cloudflare DNS-only (grey-cloud):
+#             Cloudflare's proxy breaks long-lived bidi gRPC.
+#
+# cert-manager issues both listener certs when .certManager.clusterIssuer is set
+# (the gateway-shim watches this annotation and populates each certificateRefs
+# Secret). cert-manager must be installed with Gateway API support enabled.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ include "kubebolt.fullname" . }}
+  labels:
+    {{- include "kubebolt.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.gatewayAPI.certManager.clusterIssuer }}
+    cert-manager.io/cluster-issuer: {{ .Values.gatewayAPI.certManager.clusterIssuer | quote }}
+    {{- end }}
+    {{- with .Values.gatewayAPI.annotations }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  gatewayClassName: {{ .Values.gatewayAPI.gatewayClassName }}
+  listeners:
+    - name: api-https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ .Values.gatewayAPI.api.host | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ .Values.gatewayAPI.api.tlsSecretName }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- if .Values.gatewayAPI.agent.enabled }}
+    - name: agent-https
+      protocol: HTTPS
+      port: 443
+      hostname: {{ .Values.gatewayAPI.agent.host | quote }}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - kind: Secret
+            name: {{ .Values.gatewayAPI.agent.tlsSecretName }}
+      allowedRoutes:
+        namespaces:
+          from: Same
+    {{- end }}
+{{- end }}
