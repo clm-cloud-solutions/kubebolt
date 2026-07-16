@@ -1,0 +1,313 @@
+import { useQuery } from '@tanstack/react-query'
+import { api } from '@/services/api'
+import type { ClusterOverview } from '@/types/kubernetes'
+
+// useRightSizing owns the deterministic right-sizing computation that
+// used to live inside RightSizingPanel. It moved to a shared hook
+// because two surfaces now consume the same recommendations: the
+// Capacity summary strip (Σ reclaimable cores/memory headline) and
+// the Overview efficiency band ("N recs ready"), besides the panel
+// itself. Both queries share the same queryKey, so the extra
+// consumers dedupe into a single VM round-trip.
+//
+// Data sources:
+//   - VM, two PromQL queries: P95 of CPU/memory per workload over a
+//     7d window. Same ReplicaSet→Deployment label_replace transform
+//     as TopWorkloadsCpu so the recommendations bucket by the
+//     user-visible workload kind.
+//   - Existing `overview.namespaceWorkloads[].workloads[].cpu/memory`
+//     for the current request/limit values — already aggregated by
+//     the connector, no new round-trip.
+//
+// Logic is intentionally deterministic, not LLM-driven: a constant
+// rule set means recommendations are predictable and don't drift
+// between runs.
+//
+// Rules (per resource, evaluated independently for CPU and memory):
+//   1. NEAR-LIMIT  if limit > 0 && P95 >= 0.8 × limit                → critical
+//   2. OVER-PROV   if request > 0 && P95 < 0.5 × request &&
+//                     (request - P95) above absolute floor          → warning
+//   3. NO-SPECS    if request == 0 && limit == 0 && P95 > 0          → info
+//
+// Absolute floors prevent flagging tiny workloads where the
+// percentage is technically high but the absolute waste is
+// irrelevant: 50m CPU, 100Mi memory.
+//
+// NOTE on money: the strip deliberately reports reclaimable
+// cores/GiB, NOT $/mo. Real currency needs per-node pricing, which
+// arrives with the OpenCost integration (Cost slice). Do not bolt a
+// hardcoded $/core assumption on top of this hook in the meantime.
+
+export type Severity = 'critical' | 'warning' | 'info'
+export type ResourceState = 'over' | 'near-limit' | 'no-specs' | 'ok'
+
+export interface ResourceFinding {
+  request: number
+  limit: number
+  p95: number
+  // 'over' | 'near-limit' | 'no-specs' | 'ok'
+  state: ResourceState
+  // Recommended new value when state is over/near-limit; 0 otherwise.
+  // For 'over' it's the suggested request; for 'near-limit' the
+  // suggested limit.
+  suggest: number
+}
+
+export interface Recommendation {
+  namespace: string
+  kind: string
+  name: string
+  severity: Severity
+  reason: string
+  // CPU values are in millicores; memory in bytes.
+  cpu: ResourceFinding
+  mem: ResourceFinding
+}
+
+export interface RightSizingTotals {
+  count: number
+  // Σ(request − suggested request) across over-provisioned findings —
+  // what the cluster could hand back by applying the recommendations.
+  reclaimCpuMilli: number
+  reclaimMemBytes: number
+}
+
+export interface RightSizingResult {
+  recs: Recommendation[]
+  totals: RightSizingTotals
+  isLoading: boolean
+  error: Error | null
+}
+
+// Floors below which a percentage-based finding is suppressed —
+// prevents false-positives on near-idle controllers (kube-system
+// daemons that legitimately sit at 5m / 20Mi).
+const CPU_ABS_FLOOR_MILLI = 50
+const MEM_ABS_FLOOR_BYTES = 100 * 1024 * 1024 // 100Mi
+
+// Headroom multipliers when computing the suggested value: enough
+// buffer that the workload doesn't get OOM-killed by a small spike,
+// not so much that we just shift the over-provisioning down.
+const REQUEST_HEADROOM = 1.2
+const LIMIT_HEADROOM = 1.5
+
+// PromQL: P95 over 7d, grouped by workload (Deployment / StatefulSet
+// / DaemonSet). The label_replace pair collapses ReplicaSet →
+// Deployment same way TopWorkloadsCpu does.
+//
+// `expr` is a builder that produces the inner per-series expression
+// given a label-matcher fragment — needed because CPU is a counter
+// (must be wrapped in rate()) while memory is a gauge.
+function buildP95Query(expr: (matcher: string) => string): string {
+  return [
+    `quantile_over_time(0.95,`,
+    `  sum by (workload_kind, workload_name, namespace) (`,
+    `    label_replace(`,
+    `      label_replace(`,
+    `        ${expr('workload_kind="ReplicaSet",workload_name!=""')},`,
+    `        "workload_name", "$1", "workload_name", "^(.+)-[a-z0-9]{6,12}$"`,
+    `      ),`,
+    `      "workload_kind", "Deployment", "workload_kind", "ReplicaSet"`,
+    `    )`,
+    `    or ${expr('workload_kind=~"StatefulSet|DaemonSet",workload_name!=""')}`,
+    `  )[7d:5m]`,
+    `)`,
+  ].join(' ')
+}
+
+// CPU rate window aligned with the outer subquery step (5m) so each
+// sample inside the quantile_over_time has matching resolution.
+const CPU_P95_QUERY = buildP95Query((m) => `rate(container_cpu_usage_seconds_total{${m}}[5m])`)
+const MEM_P95_QUERY = buildP95Query((m) => `container_memory_working_set_bytes{${m}}`)
+
+export function useRightSizing(installed: boolean, overview?: ClusterOverview): RightSizingResult {
+  // P95 queries are heavy (subqueries over 7d), so cache 5m and
+  // only refetch on user-driven invalidation. Polling like the
+  // other panels would saturate VM for marginal value — these
+  // recommendations don't shift minute-to-minute.
+  const cpuQ = useQuery({
+    queryKey: ['rightsizing', 'cpu-p95'],
+    queryFn: () => api.queryMetrics({ query: CPU_P95_QUERY }),
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    enabled: installed,
+    retry: false,
+  })
+  const memQ = useQuery({
+    queryKey: ['rightsizing', 'mem-p95'],
+    queryFn: () => api.queryMetrics({ query: MEM_P95_QUERY }),
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    enabled: installed,
+    retry: false,
+  })
+
+  const isLoading = cpuQ.isLoading || memQ.isLoading
+  const error = cpuQ.error ?? memQ.error
+
+  // P95 lookups keyed by namespace/kind/name. CPU is in cores from
+  // VM; convert to millicores so it lines up with the overview's
+  // request/limit which are millicores.
+  const cpuP95 = buildP95Index(cpuQ.data?.data?.result, (v) => Math.round(v * 1000))
+  const memP95 = buildP95Index(memQ.data?.data?.result, (v) => Math.round(v))
+
+  // Walk the overview's workloads, evaluate each. Workloads not yet
+  // shipping samples (just deployed, or restricted by RBAC) get
+  // their P95 as 0; that's fine — no-specs and near-limit branches
+  // gate on either request/limit being set, and over-provisioned
+  // requires P95 > 0 implicitly via the absolute floor.
+  const recs: Recommendation[] = []
+  for (const nsw of overview?.namespaceWorkloads ?? []) {
+    for (const w of nsw.workloads ?? []) {
+      const key = `${w.namespace}/${w.kind}/${w.name}`
+      const cpu = evaluateResource(
+        w.cpu?.requested ?? 0,
+        w.cpu?.limit ?? 0,
+        cpuP95.get(key) ?? 0,
+        CPU_ABS_FLOOR_MILLI,
+      )
+      const mem = evaluateResource(
+        w.memory?.requested ?? 0,
+        w.memory?.limit ?? 0,
+        memP95.get(key) ?? 0,
+        MEM_ABS_FLOOR_BYTES,
+      )
+      const sev = combinedSeverity(cpu.state, mem.state)
+      if (sev === null) continue
+      recs.push({
+        namespace: w.namespace,
+        kind: w.kind,
+        name: w.name,
+        severity: sev,
+        reason: describeReason(cpu, mem),
+        cpu,
+        mem,
+      })
+    }
+  }
+
+  // Sort by severity, then by absolute waste magnitude (CPU
+  // millicores + memory MiB normalized) so the most actionable
+  // workloads land at the top.
+  const SEVERITY_ORDER: Record<Severity, number> = { critical: 0, warning: 1, info: 2 }
+  recs.sort((a, b) => {
+    const s = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]
+    if (s !== 0) return s
+    return wasteMagnitude(b) - wasteMagnitude(a)
+  })
+
+  const totals: RightSizingTotals = { count: recs.length, reclaimCpuMilli: 0, reclaimMemBytes: 0 }
+  for (const r of recs) {
+    if (r.cpu.state === 'over') totals.reclaimCpuMilli += r.cpu.request - r.cpu.suggest
+    if (r.mem.state === 'over') totals.reclaimMemBytes += r.mem.request - r.mem.suggest
+  }
+
+  return { recs, totals, isLoading, error }
+}
+
+// ─── Pure logic helpers (testable in isolation) ──────────────────
+
+export function evaluateResource(
+  request: number,
+  limit: number,
+  p95: number,
+  absFloor: number,
+): ResourceFinding {
+  // Near-limit takes precedence — it's the urgent signal. P95
+  // ≥ 80% of limit means a small spike will OOM/throttle.
+  if (limit > 0 && p95 >= 0.8 * limit && p95 - limit > -absFloor) {
+    return {
+      request,
+      limit,
+      p95,
+      state: 'near-limit',
+      suggest: roundResource(p95 * LIMIT_HEADROOM),
+    }
+  }
+  // Over-provisioned: P95 well below request, AND the absolute
+  // gap is meaningful (not 5m on a 10m request).
+  if (request > 0 && p95 < 0.5 * request && request - p95 > absFloor) {
+    return {
+      request,
+      limit,
+      p95,
+      state: 'over',
+      suggest: roundResource(p95 * REQUEST_HEADROOM),
+    }
+  }
+  // No specs but observable usage — best-practice violation worth
+  // flagging once. Skip if there's no usage either (truly idle
+  // workload with no spec is fine; we don't have data to suggest
+  // anything).
+  if (request === 0 && limit === 0 && p95 > absFloor) {
+    return { request, limit, p95, state: 'no-specs', suggest: 0 }
+  }
+  return { request, limit, p95, state: 'ok', suggest: 0 }
+}
+
+export function combinedSeverity(
+  cpuState: ResourceState,
+  memState: ResourceState,
+): Severity | null {
+  if (cpuState === 'near-limit' || memState === 'near-limit') return 'critical'
+  if (cpuState === 'over' || memState === 'over') return 'warning'
+  if (cpuState === 'no-specs' || memState === 'no-specs') return 'info'
+  return null
+}
+
+function describeReason(cpu: ResourceFinding, mem: ResourceFinding): string {
+  const parts: string[] = []
+  if (cpu.state === 'near-limit') parts.push('CPU near limit')
+  else if (cpu.state === 'over') parts.push('CPU over-provisioned')
+  if (mem.state === 'near-limit') parts.push('Memory near limit')
+  else if (mem.state === 'over') parts.push('Memory over-provisioned')
+  if (parts.length === 0 && (cpu.state === 'no-specs' || mem.state === 'no-specs')) {
+    const which: string[] = []
+    if (cpu.state === 'no-specs') which.push('CPU')
+    if (mem.state === 'no-specs') which.push('memory')
+    parts.push(`No ${which.join(' / ')} specs defined`)
+  }
+  return parts.join(' · ')
+}
+
+function wasteMagnitude(r: Recommendation): number {
+  // Normalize CPU + memory into a comparable scalar for sorting:
+  // 1m CPU ≈ 1Mi memory in importance for "should I reduce this".
+  // The exact ratio is arbitrary — what matters is the ordering
+  // within a single sort, not the units.
+  const cpuWaste = r.cpu.state === 'over' ? r.cpu.request - r.cpu.p95 : 0
+  const memWaste = r.mem.state === 'over' ? (r.mem.request - r.mem.p95) / (1024 * 1024) : 0
+  return cpuWaste + memWaste
+}
+
+function roundResource(v: number): number {
+  // Round CPU to nearest 10m, memory to nearest 10Mi. Keeps
+  // recommendations human-friendly ("125m" not "127.4m").
+  if (v < 1024) {
+    // CPU territory (millicores)
+    return Math.max(10, Math.round(v / 10) * 10)
+  }
+  // Memory territory (bytes); round to 10Mi
+  const tenMi = 10 * 1024 * 1024
+  return Math.max(tenMi, Math.round(v / tenMi) * tenMi)
+}
+
+// Build a workload→P95 lookup from a Prom vector response.
+// `convert` lets the caller scale (e.g. cores → millicores).
+function buildP95Index(
+  result: Array<{ metric: Record<string, string>; value: [number, string] }> | undefined,
+  convert: (v: number) => number,
+): Map<string, number> {
+  const map = new Map<string, number>()
+  if (!result) return map
+  for (const s of result) {
+    const ns = s.metric.namespace
+    const kind = s.metric.workload_kind
+    const name = s.metric.workload_name
+    if (!ns || !kind || !name) continue
+    const v = parseFloat(s.value?.[1] ?? '0')
+    if (Number.isNaN(v)) continue
+    map.set(`${ns}/${kind}/${name}`, convert(v))
+  }
+  return map
+}

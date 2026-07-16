@@ -29,6 +29,14 @@ interface QuerySpec {
   // Prepended to each series name to disambiguate when multiple queries
   // return the same labels (e.g. "RX" vs "TX").
   prefix?: string
+  // Pins this query's series to a specific color, regardless of how many
+  // series the OTHER queries returned. Without it colors assign by
+  // arrival order — and a two-query chart whose first query comes back
+  // empty paints the second query's series in the first palette slot
+  // (the 4xx/5xx error chart drew 5xx in 4xx's amber whenever there
+  // were no client errors in range). Set it whenever a color carries
+  // meaning (5xx=red, 4xx=amber).
+  accent?: string
 }
 
 interface ReferenceLineSpec {
@@ -73,6 +81,11 @@ interface RangeOption {
 
 interface MetricChartProps {
   title: string
+
+  // Solid recessed background for charts rendered INSIDE an enclosing
+  // panel (e.g. Capacity's Cluster trends card) — same tone as the
+  // dashboard's inner mini-cards. Default false = standalone card.
+  recessed?: boolean
 
   // Optional icon rendered alongside the title. When provided, the
   // header switches from the compact uppercase-mono format used in
@@ -334,6 +347,7 @@ export function MetricChart({
   chartType = 'area',
   tooltipExtra,
   refsPersistKey,
+  recessed = false,
 }: MetricChartProps) {
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
@@ -426,7 +440,7 @@ export function MetricChart({
           n++
           name = `${baseName} (${n})`
         }
-        const color = palette[allSeries.length % palette.length]
+        const color = spec?.accent ?? palette[allSeries.length % palette.length]
         const info: SeriesInfo = { name, color, negated: !!spec?.negate }
 
         const seen: number[] = []
@@ -480,7 +494,18 @@ export function MetricChart({
   const hasData = points.length > 0 && series.length > 0
 
   return (
-    <div className="rounded-lg border border-kb-border bg-kb-card p-4">
+    <div
+      className="rounded-lg border border-kb-border p-4"
+      // recessed: the chart sits INSIDE an enclosing panel (Capacity's
+      // Cluster trends card) — take the same solid recessed tone the
+      // dashboard's inner mini-cards use so it cuts against the parent
+      // instead of blending card-on-card. Default: standalone card.
+      style={{
+        background: recessed
+          ? 'color-mix(in srgb, var(--kb-bg) 40%, var(--kb-card))'
+          : 'var(--kb-card)',
+      }}
+    >
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           {/* Title style is uniform whether or not an icon is provided —
