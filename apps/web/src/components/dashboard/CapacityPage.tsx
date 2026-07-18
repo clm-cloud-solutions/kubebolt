@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Cpu, MemoryStick, Network, HardDrive } from 'lucide-react'
+import { Cpu, MemoryStick, Network, HardDrive, LineChart } from 'lucide-react'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
+import { useDashboardRange } from '@/hooks/useDashboardRange'
 import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 import { useDeploysVM } from '@/hooks/useDeploysVM'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -16,12 +17,21 @@ import { buildCpuRefs, buildMemRefs, formatMemoryShort, type RefSpec } from '@/u
 import { formatCPU } from '@/utils/formatters'
 import { DashboardSubTabs } from './DashboardSubTabs'
 import { OverviewHeader } from './OverviewHeader'
+import { CapacityStrip } from './CapacityStrip'
+import { useAgentInstalled } from '@/hooks/useAgentInstalled'
 import { TopWorkloadsCpu } from './TopWorkloadsCpu'
 import { DeploysList } from './DeploysList'
 import { RightSizingPanel } from './RightSizingPanel'
 import { RecentOOMKills } from './RecentOOMKills'
 
 const SHOW_DEPLOYS_KEY = 'kb-capacity-show-deploys'
+
+// Selects the pod-level subset of container_* metrics — the KubeBolt
+// agent's own series (pod_uid, stamped on every container sample),
+// real application containers only (excludes cgroup rollups + the
+// pause sandbox). See the Cluster-trends chart comment for why a naive
+// sum(container_*) over-counts.
+const POD_SUM_FILTER = 'pod_uid!="",container!="",container!="POD",container!="pause"'
 
 // CapacityPage answers "how is the cluster consuming, and is it
 // sized right for what it's actually doing?" — the investigative
@@ -41,7 +51,9 @@ const SHOW_DEPLOYS_KEY = 'kb-capacity-show-deploys'
 // elsewhere in the app — one mental model across views.
 export function CapacityPage() {
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
-  const [rangeMinutes, setRangeMinutes] = useState(15)
+  // Shared session-scoped range — sticky across the Capacity/
+  // Reliability tab switch (see useDashboardRange).
+  const [rangeMinutes, setRangeMinutes] = useDashboardRange()
   // Deploy markers visible by default — they're the differentiating
   // feature of this tab. Off-state lets the user read raw curves
   // when investigating something whose root cause isn't a rollout.
@@ -61,19 +73,10 @@ export function CapacityPage() {
     })
   }
 
-  // A metrics-only cluster has no live connector, so the agent-integration status is an
-  // unreliable gate (it flaps when the agent is offline). But the Capacity trends come
-  // straight from VictoriaMetrics, which the agent populates regardless — so for a
-  // metrics-only cluster, treat the agent as present and render the VM trends instead of
-  // gating behind an "install the agent" prompt.
+  // Agent gate shared with Overview's efficiency band — see the
+  // hook for the metrics-only rationale.
   const isMetricsOnly = useMetricsOnly()
-  const { data: agent, isLoading: agentLoading } = useQuery({
-    queryKey: ['integration', 'agent'],
-    queryFn: () => api.getIntegration('agent'),
-    refetchInterval: 10_000,
-    staleTime: 5_000,
-  })
-  const installed = isMetricsOnly || (!!agent && (agent.status === 'installed' || agent.status === 'degraded'))
+  const { installed, isLoading: agentLoading } = useAgentInstalled()
 
   // Deploys feed BOTH the chart markers and the standalone Recent
   // Deploys panel. One source, two consumers — the panel decides its
@@ -158,7 +161,7 @@ export function CapacityPage() {
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <OverviewHeader overview={overview} />
+        <OverviewHeader overview={overview} tab="Capacity" />
         <div className="flex items-center gap-3 mt-1">
           <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} />
           <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
@@ -166,6 +169,12 @@ export function CapacityPage() {
       </div>
 
       <DashboardSubTabs />
+
+      {/* Scan layer — summarizes the panels below (peaks from the
+          trend series, rightsizing totals from the recs hook, OOM
+          count from the KSM query). See CapacityStrip for the
+          no-$/mo rationale. */}
+      <CapacityStrip rangeMinutes={rangeMinutes} installed={installed} overview={overview} />
 
       <AgentTrendsBlock
         rangeMinutes={rangeMinutes}
@@ -251,11 +260,18 @@ function AgentTrendsBlock({
     )
   }
 
+  // One enclosing card for the whole trends block (title + toggle +
+  // 2×2 grid) — same "big panel" treatment as Overview's Resource
+  // efficiency band, minus the accent gradient (that wash is reserved
+  // for hero/opportunity moments; trends are neutral instrumentation).
   return (
-    <div className="space-y-3 pt-2">
-      <div className="flex items-center justify-between gap-3 flex-wrap">
-        <div className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-          Cluster trends
+    <div className="rounded-xl border border-kb-border bg-kb-card p-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap mb-3">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="text-kb-text-secondary shrink-0">
+            <LineChart className="w-4 h-4" />
+          </span>
+          <h3 className="text-sm font-semibold text-kb-text-primary">Cluster trends</h3>
         </div>
         <div className="flex items-center gap-3">
           {/* Deploy markers toggle — pill with the same triangle
@@ -296,13 +312,34 @@ function AgentTrendsBlock({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
+        {/* Two series per chart: NODE total (node_* from kubelet's
+            node summary — the whole box incl. OS/kubelet/kernel) and
+            PODS (Σ leaf containers — the pod-level subset the Overview
+            efficiency band shows). Drawing both makes the gap between
+            "what the hardware uses" and "what your workloads use"
+            explicit, instead of it reading as a contradiction across
+            tabs. Node stays the primary accent; pods is a muted slate
+            subset line.
+
+            POD_SUM_FILTER is load-bearing (verified in-vivo — a naive
+            sum(container_*) over-counts 2-3×): `pod_uid!=""` selects the
+            KubeBolt agent's own series (the agent stamps pod_uid on
+            every container sample; a co-installed Prometheus/cAdvisor
+            scrape carries job/instance instead, and summing both
+            double-counts), and container!=""/POD/pause drops the
+            per-pod and node cgroup rollups + the sandbox container so
+            only real application containers are summed. */}
         <MetricChart
+          recessed
           title="CPU Usage"
           icon={<Cpu className="w-4 h-4" />}
           unit="cores"
-          query={`sum(rate(node_cpu_usage_seconds_total[1m]))`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.cpu}
+          queries={[
+            { query: `sum(rate(node_cpu_usage_seconds_total[1m]))`, prefix: 'node' },
+            { query: `sum(rate(container_cpu_usage_seconds_total{${POD_SUM_FILTER}}[1m]))`, prefix: 'pods' },
+          ]}
+          seriesLabel={(_l, prefix) => (prefix === 'pods' ? 'pods' : 'node total')}
+          accents={[METRIC_ACCENTS.cpu[0], '#94a3b8']}
           chartType="area"
           showStats={false}
           height={180}
@@ -312,12 +349,16 @@ function AgentTrendsBlock({
           refsPersistKey="capacity-cpu"
         />
         <MetricChart
+          recessed
           title="Memory Working Set"
           icon={<MemoryStick className="w-4 h-4" />}
           unit="bytes"
-          query={`sum(node_memory_working_set_bytes)`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.memory}
+          queries={[
+            { query: `sum(node_memory_working_set_bytes)`, prefix: 'node' },
+            { query: `sum(container_memory_working_set_bytes{${POD_SUM_FILTER}})`, prefix: 'pods' },
+          ]}
+          seriesLabel={(_l, prefix) => (prefix === 'pods' ? 'pods' : 'node total')}
+          accents={[METRIC_ACCENTS.memory[0], '#94a3b8']}
           chartType="area"
           showStats={false}
           height={180}
@@ -327,6 +368,7 @@ function AgentTrendsBlock({
           refsPersistKey="capacity-mem"
         />
         <MetricChart
+          recessed
           title="Network Activity"
           icon={<Network className="w-4 h-4" />}
           unit="bytes/s"
@@ -348,6 +390,7 @@ function AgentTrendsBlock({
           eventMarkers={eventMarkers}
         />
         <MetricChart
+          recessed
           title="Filesystem Used"
           icon={<HardDrive className="w-4 h-4" />}
           unit="bytes"

@@ -117,6 +117,13 @@ export interface ClusterOverview {
   clusterUID?: string
   kubernetesVersion?: string
   platform?: string
+  // Cloud the cluster runs on + topology region, when the backend can
+  // derive them from node spec/labels. Optional and currently unset by
+  // the OSS backend — the Overview header simply omits them when absent
+  // (the cloud-provider detection lands separately). Kept here so the
+  // header component stays identical across OSS/EE.
+  cloudProvider?: string
+  region?: string
   networkPolicies?: ResourceCount
   podDisruptionBudgets?: ResourceCount
   nodes?: ResourceCount

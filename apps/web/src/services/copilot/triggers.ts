@@ -146,6 +146,7 @@ export type PanelInquiryKind =
   | 'top_consumers_cpu'
   | 'right_sizing'
   | 'recent_deploys'
+  | 'recent_oomkills'
   | 'top_workloads_traffic'
   | 'error_hotspots'
   | 'top_latency'
@@ -404,6 +405,12 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
           close: `Was anything risky or unusual? Should I correlate with errors / anomalies in the same window?`,
           singleLead: `Tell me about this rollout.`,
           singleClose: `Was it routine, or worth investigating? Check whether it correlates with any errors, restarts, or metric anomalies in the same window.`,
+        },
+        recent_oomkills: {
+          lead: `These containers were OOMKilled — walk me through them.`,
+          close: `For each: is the memory limit simply too low for the workload's real working set, or does the usage pattern suggest a leak / unbounded growth? High restart counts mean a chronic OOM loop, not a one-off spike. Tell me which limits to raise (and to what), and which workloads need their memory behavior investigated instead.`,
+          singleLead: `This container was OOMKilled — investigate why.`,
+          singleClose: `Compare its memory limit against its actual working-set trend: is the limit too low, or is the process leaking / growing without bound? If the restart count is high this is a chronic loop. Recommend a concrete fix — new limit value or code-level investigation.`,
         },
         top_workloads_traffic: {
           lead: `Walk me through the cluster's top HTTP workloads and flag anything that looks off.`,
