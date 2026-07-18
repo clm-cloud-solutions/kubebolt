@@ -44,9 +44,11 @@ export function RightSizingPanel({ installed, overview }: Props) {
 
   if (!installed) return null
 
-  const VISIBLE_LIMIT = 10
-  const visible = recs.slice(0, VISIBLE_LIMIT)
-  const overflow = recs.length - visible.length
+  // The full list renders inside a scroll container (below) so every
+  // recommendation is reachable. The Kobi payload stays capped — sending
+  // the LLM the whole list would bloat the prompt — with truncatedFromTotal
+  // telling it there's more it can pull via tools.
+  const KOBI_ROW_CAP = 10
 
   if (!isLoading && !error && recs.length === 0) {
     // Metrics-only: there are no per-workload request/limit specs to evaluate (the
@@ -78,10 +80,10 @@ export function RightSizingPanel({ installed, overview }: Props) {
     return null
   }
 
-  // Kobi panel-level payload — visible recs serialized via the
+  // Kobi panel-level payload — capped recs serialized via the
   // shared row helper so per-row and panel-level prompts can't
   // drift in shape.
-  const kobiRows = visible.map(buildRowBlob)
+  const kobiRows = recs.slice(0, KOBI_ROW_CAP).map(buildRowBlob)
 
   return (
     <div className="rounded-lg border border-kb-border bg-kb-card p-4">
@@ -125,18 +127,16 @@ export function RightSizingPanel({ installed, overview }: Props) {
         </div>
       )}
 
-      {!isLoading && !error && visible.length > 0 && (
-        <ul className="space-y-1">
-          {visible.map((r) => (
+      {!isLoading && !error && recs.length > 0 && (
+        // Scroll the full list rather than capping at N with a "+more"
+        // line — every recommendation is reachable. pr-1 keeps the
+        // scrollbar off the row content.
+        <ul className="space-y-1 max-h-[420px] overflow-y-auto pr-1">
+          {recs.map((r) => (
             <li key={`${r.namespace}/${r.kind}/${r.name}`}>
               <Row rec={r} />
             </li>
           ))}
-          {overflow > 0 && (
-            <li className="text-[10px] font-mono text-kb-text-tertiary text-center pt-1.5">
-              +{overflow} more recommendations
-            </li>
-          )}
         </ul>
       )}
     </div>

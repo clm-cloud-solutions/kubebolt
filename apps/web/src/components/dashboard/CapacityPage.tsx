@@ -26,6 +26,13 @@ import { RecentOOMKills } from './RecentOOMKills'
 
 const SHOW_DEPLOYS_KEY = 'kb-capacity-show-deploys'
 
+// Selects the pod-level subset of container_* metrics — the KubeBolt
+// agent's own series (pod_uid, stamped on every container sample),
+// real application containers only (excludes cgroup rollups + the
+// pause sandbox). See the Cluster-trends chart comment for why a naive
+// sum(container_*) over-counts.
+const POD_SUM_FILTER = 'pod_uid!="",container!="",container!="POD",container!="pause"'
+
 // CapacityPage answers "how is the cluster consuming, and is it
 // sized right for what it's actually doing?" — the investigative
 // counterpart to Overview's at-a-glance scan. Time-series charts +
@@ -305,14 +312,34 @@ function AgentTrendsBlock({
         </div>
       </div>
       <div className="grid grid-cols-2 gap-3">
+        {/* Two series per chart: NODE total (node_* from kubelet's
+            node summary — the whole box incl. OS/kubelet/kernel) and
+            PODS (Σ leaf containers — the pod-level subset the Overview
+            efficiency band shows). Drawing both makes the gap between
+            "what the hardware uses" and "what your workloads use"
+            explicit, instead of it reading as a contradiction across
+            tabs. Node stays the primary accent; pods is a muted slate
+            subset line.
+
+            POD_SUM_FILTER is load-bearing (verified in-vivo — a naive
+            sum(container_*) over-counts 2-3×): `pod_uid!=""` selects the
+            KubeBolt agent's own series (the agent stamps pod_uid on
+            every container sample; a co-installed Prometheus/cAdvisor
+            scrape carries job/instance instead, and summing both
+            double-counts), and container!=""/POD/pause drops the
+            per-pod and node cgroup rollups + the sandbox container so
+            only real application containers are summed. */}
         <MetricChart
           recessed
           title="CPU Usage"
           icon={<Cpu className="w-4 h-4" />}
           unit="cores"
-          query={`sum(rate(node_cpu_usage_seconds_total[1m]))`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.cpu}
+          queries={[
+            { query: `sum(rate(node_cpu_usage_seconds_total[1m]))`, prefix: 'node' },
+            { query: `sum(rate(container_cpu_usage_seconds_total{${POD_SUM_FILTER}}[1m]))`, prefix: 'pods' },
+          ]}
+          seriesLabel={(_l, prefix) => (prefix === 'pods' ? 'pods' : 'node total')}
+          accents={[METRIC_ACCENTS.cpu[0], '#94a3b8']}
           chartType="area"
           showStats={false}
           height={180}
@@ -326,9 +353,12 @@ function AgentTrendsBlock({
           title="Memory Working Set"
           icon={<MemoryStick className="w-4 h-4" />}
           unit="bytes"
-          query={`sum(node_memory_working_set_bytes)`}
-          seriesLabel={() => 'cluster total'}
-          accents={METRIC_ACCENTS.memory}
+          queries={[
+            { query: `sum(node_memory_working_set_bytes)`, prefix: 'node' },
+            { query: `sum(container_memory_working_set_bytes{${POD_SUM_FILTER}})`, prefix: 'pods' },
+          ]}
+          seriesLabel={(_l, prefix) => (prefix === 'pods' ? 'pods' : 'node total')}
+          accents={[METRIC_ACCENTS.memory[0], '#94a3b8']}
           chartType="area"
           showStats={false}
           height={180}

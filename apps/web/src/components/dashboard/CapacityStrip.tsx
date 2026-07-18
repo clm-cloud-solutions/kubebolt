@@ -84,6 +84,19 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
       <StripCard
         label={`Peak CPU (${rangeLabel})`}
+        info={
+          <>
+            <TooltipHeader right="whole node">Peak CPU</TooltipHeader>
+            <TooltipRow color="#22c55e" label="Scope" value="node total" />
+            <TooltipNote>
+              Highest CPU the <b>whole node</b> reached in range — from kubelet's node
+              summary, so it includes the OS, kubelet, containerd and kernel on top of
+              your pods. Overview's efficiency band counts <b>pods only</b> (Metrics
+              Server), so its number is lower; the "pods" line on the chart below shows
+              that subset here too.
+            </TooltipNote>
+          </>
+        }
         value={cpuPeak != null ? cpuPeak.toFixed(1) : '—'}
         valueSuffix={cpuCapacity > 0 ? `/ ${Math.round(cpuCapacity)}` : 'cores'}
         sub={
@@ -97,6 +110,19 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
       />
       <StripCard
         label={`Peak memory (${rangeLabel})`}
+        info={
+          <>
+            <TooltipHeader right="whole node">Peak memory</TooltipHeader>
+            <TooltipRow color="#3b82f6" label="Scope" value="node total" />
+            <TooltipNote>
+              Highest working set the <b>whole node</b> reached in range — includes the
+              OS, kubelet, containerd and kernel memory (active page cache) beyond your
+              pods, so it runs well above Overview's <b>pod-only</b> figure. Both are
+              correct; they measure different things. The "pods" line on the chart below
+              shows the workload subset.
+            </TooltipNote>
+          </>
+        }
         value={memPeak != null ? formatMemory(memPeak) : '—'}
         valueSuffix={memCapacity > 0 ? `/ ${formatMemory(memCapacity)}` : undefined}
         sub={

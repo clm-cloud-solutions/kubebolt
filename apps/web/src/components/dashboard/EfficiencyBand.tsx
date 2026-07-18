@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import type { ResourceUsage as ResourceUsageType } from '@/types/kubernetes'
 import { formatPercent, formatCPU, formatMemory } from '@/utils/formatters'
 import { getUsageBarColor } from '@/utils/colors'
-import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
+import { HoverTooltip, TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
 
 // EfficiencyBand is ResourceUsage potentiated from a side card to the
 // Overview's hero (design/kubebolt-overview-cluster-redesign.html §7):
@@ -76,7 +76,7 @@ export function EfficiencyBand({
           <h3 className="text-sm font-semibold text-kb-text-primary">Resource efficiency</h3>
         </div>
         <span className="text-[10px] font-mono text-kb-text-tertiary">
-          current state · requested vs actually used
+          current state · pod usage vs requests
         </span>
       </div>
 
@@ -221,6 +221,13 @@ function EfficiencyCard({
               />
               <TooltipRow color={null} label="Capacity" value={formatFn(allocatable)} />
             </div>
+            <div className="mt-2 pt-2 border-t border-kb-border">
+              <TooltipNote>
+                "Used" is the sum of your <b>pods</b> (Metrics Server) — it doesn't count
+                the node's own OS / kubelet / kernel usage. Capacity's node-total figure
+                runs higher for that reason; both are correct at their level.
+              </TooltipNote>
+            </div>
           </>
         }
       >
@@ -229,9 +236,13 @@ function EfficiencyCard({
           <div className="relative">
             <div className="h-6 rounded-md overflow-hidden flex border border-kb-border" style={{ background: 'var(--kb-bar-track)' }}>
               {hasUsage && (
+                // status-ok, not --kb-accent: the "Used" fill must match the
+                // usage green the rings + workload-health bars use app-wide.
+                // --kb-accent diverges in light mode (#16a34a vs #22d68a), so
+                // the band's bar read as a different green there.
                 <div
-                  className="h-full transition-all duration-700"
-                  style={{ width: `${usedPct}%`, background: 'var(--kb-accent)' }}
+                  className="h-full transition-all duration-700 bg-status-ok"
+                  style={{ width: `${usedPct}%` }}
                 />
               )}
               {hasUsage && idlePct > 0 && (
@@ -256,7 +267,7 @@ function EfficiencyCard({
           {/* Axis key */}
           <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[10px] font-mono text-kb-text-secondary">
             <span className="flex items-center gap-1.5">
-              <i className="w-2 h-2 rounded-[2px]" style={{ background: 'var(--kb-accent)' }} />
+              <i className="w-2 h-2 rounded-[2px] bg-status-ok" />
               Used {hasUsage ? `${formatFn(used)} / ${formatFn(allocatable)}` : 'no data'}
             </span>
             {requested > 0 && (
