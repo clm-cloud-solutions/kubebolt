@@ -15,7 +15,13 @@ spec:
   hostnames:
     - {{ .Values.gatewayAPI.api.host | quote }}
   rules:
-    - backendRefs:
+      # No per-request timeout cap by default (0s) — the Copilot SSE stream runs
+      # for multiple tool-calling rounds; Envoy Gateway's 15s route default cuts
+      # it mid-turn ("Load failed"). WebSocket upgrades are exempt; idle streams
+      # are still bounded by stream_idle_timeout + the SSE heartbeat.
+    - timeouts:
+        request: {{ .Values.gatewayAPI.api.requestTimeout | default "0s" | quote }}
+      backendRefs:
         {{- if .Values.web.enabled }}
         - name: {{ include "kubebolt.fullname" . }}
           port: {{ .Values.service.port }}

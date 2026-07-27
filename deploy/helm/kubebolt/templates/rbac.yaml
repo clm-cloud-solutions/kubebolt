@@ -32,7 +32,7 @@ rules:
     resources: ["endpointslices"]
     verbs: ["get", "list", "watch"]
   - apiGroups: ["gateway.networking.k8s.io"]
-    resources: ["gateways", "httproutes"]
+    resources: ["gateways", "httproutes", "grpcroutes"]
     verbs: ["get", "list", "watch"]
   # PodDisruptionBudgets — standard policy/v1 resource, surfaced as a
   # first-class view + insight (pdb-no-match) in 1.14. Without this grant
@@ -114,6 +114,14 @@ rules:
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses"]
     verbs: ["create", "update", "delete"]
+  # Gateway API write — edit Gateways/HTTPRoutes/GRPCRoutes from the YAML tab and
+  # resource actions (e.g. tuning a route's `timeouts.request` so the Copilot SSE
+  # stream isn't cut by Envoy Gateway's 15s route default). Read is granted
+  # above; without write, editing the API's own HTTPRoute 403s as the kubebolt SA
+  # on an in-cluster / self-managed install.
+  - apiGroups: ["gateway.networking.k8s.io"]
+    resources: ["gateways", "httproutes", "grpcroutes"]
+    verbs: ["create", "update", "patch", "delete"]
   - apiGroups: ["autoscaling"]
     resources: ["horizontalpodautoscalers"]
     verbs: ["create", "update", "patch", "delete"]
