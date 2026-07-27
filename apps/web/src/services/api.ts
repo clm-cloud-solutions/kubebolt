@@ -2159,6 +2159,15 @@ export interface AgentInstallConfig {
   gomemlimit?: string
   // Free-form extra env vars — escape hatch for knobs without a first-class field.
   extraEnv?: Array<{ name: string; value: string }>
+  // ─── OpenCost cost integration (populates the Cost dashboards) ───
+  // Three ways to source OpenCost's cost/allocation metrics:
+  //   bundled  — install the official OpenCost sub-chart (opencost.enabled=true);
+  //   scrape   — scrape an OpenCost you already run
+  //              (collectors.exporters.opencost=<opencostScrapeUrl>);
+  //   promread — read the cost families from your existing Prometheus (Mode C).
+  opencostMode?: 'off' | 'bundled' | 'scrape' | 'promread'
+  // OpenCost /metrics URL — only for opencostMode='scrape'.
+  opencostScrapeUrl?: string
 }
 
 export interface FlowEdge {

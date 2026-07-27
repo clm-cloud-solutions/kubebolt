@@ -12,6 +12,7 @@ import { RequireRole } from '@/components/auth/RequireRole'
 import { OverviewPage } from '@/components/dashboard/OverviewPage'
 import { CapacityPage } from '@/components/dashboard/CapacityPage'
 import { ReliabilityPage } from '@/components/dashboard/ReliabilityPage'
+import { CostPage } from '@/components/dashboard/CostPage'
 import { ResourceListPage } from '@/components/resources/ResourceListPage'
 import { NodesPage } from '@/components/resources/NodesPage'
 import { EventsPage } from '@/components/resources/EventsPage'
@@ -101,6 +102,7 @@ export default function App() {
               <Route path="/" element={<OverviewPage />} />
               <Route path="/capacity" element={<CapacityPage />} />
               <Route path="/reliability" element={<ReliabilityPage />} />
+              <Route path="/cost" element={<CostPage />} />
               <Route path="/insights" element={<InsightsList />} />
               <Route path="/applications" element={<ApplicationsPage />} />
               <Route path="/applications/:namespace/:name" element={<HelmReleaseDetailPage />} />

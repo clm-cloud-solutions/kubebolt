@@ -11,10 +11,9 @@
 // exact paths, so we drive the active state from this list
 // instead.
 //
-// Append future sub-tabs here when they land (e.g. /costs,
-// /storage). Must stay in sync with the SubTab entries in
-// DashboardSubTabs.
-export const DASHBOARD_PATHS = ['/', '/capacity', '/reliability'] as const
+// Append future sub-tabs here when they land (e.g. /storage). Must
+// stay in sync with the SubTab entries in DashboardSubTabs.
+export const DASHBOARD_PATHS = ['/', '/capacity', '/reliability', '/cost'] as const
 
 export function isDashboardPath(pathname: string): boolean {
   return (DASHBOARD_PATHS as readonly string[]).includes(pathname)

@@ -151,6 +151,7 @@ export type PanelInquiryKind =
   | 'error_hotspots'
   | 'top_latency'
   | 'network_drops'
+  | 'cost_breakdown'
 
 export interface PanelInquiryTriggerPayload {
   type: 'panel_inquiry'
@@ -436,6 +437,12 @@ export function buildTriggerPrompt(payload: CopilotTriggerPayload): string {
           close: `Most dropped flows in a Cilium cluster come from NetworkPolicies blocking traffic — but they can also be connection refused, host firewall, or pod restarting. Tell me which of these look like NetworkPolicy issues vs other causes, and how to confirm.`,
           singleLead: `Investigate this dropped network flow.`,
           singleClose: `What's most likely blocking this traffic — a NetworkPolicy, a CiliumNetworkPolicy, the destination pod being down, or something else? Walk me through how to confirm and remediate.`,
+        },
+        cost_breakdown: {
+          lead: `Walk me through where my cluster's spend is going.`,
+          close: `Which of these are expensive AND inefficient? For namespaces the rows carry the CPU efficiency plus the ACTUAL used/allocated cores (cpu_used_milli / cpu_allocated_milli) and memory (mem_used_mib / mem_allocated_mib). Base every sizing number on those real figures — never infer a request backwards from the efficiency percentage — and pull the Deployment when you need exact per-container specs. Rank the biggest waste by absolute idle spend (allocated minus used), not just the lowest percentage, then tell me what to right-size or consolidate first.`,
+          singleLead: `Break down the cost of this one.`,
+          singleClose: `Is its spend justified by its actual usage, or is it over-provisioned? Use the used/allocated figures in the row (not the efficiency % alone) and pull the Deployment for exact specs before proposing numbers — then tell me what you'd right-size and the rough saving.`,
         },
       }
       const q = questions[p.panel]

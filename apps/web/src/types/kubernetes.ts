@@ -4,6 +4,9 @@ export interface ResourceCount {
   ready: number
   notReady: number
   warning: number
+  // Pods only: Succeeded/Completed phase (terminal Job pods). Omitted for
+  // other resource types.
+  succeeded?: number
 }
 
 // Resource usage metrics
