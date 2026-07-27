@@ -25,15 +25,19 @@ type RateLimitConfig struct {
 	Burst          float64 // bucket capacity (max queued tokens)
 }
 
-// RateLimiter is a per-tenant token-bucket. Buckets are created lazily
-// on the first call for a tenant and never evicted — Sprint A. A long-
-// running process with many tenants (SaaS at scale) wants periodic
-// eviction; tracked for Sprint B.
+// RateLimiter is a per-key token-bucket. Buckets are created lazily on the
+// first call for a key. By default they are never evicted (maxBuckets==0),
+// which is fine for the agent-ingest limiter (bounded, trusted tenant set).
+// Limiters keyed by an ATTACKER-controlled space (client IP, login identity —
+// Sec #5) MUST set a maxBuckets cap via SetMaxBuckets so a flood of distinct
+// keys can't grow the map without bound; when the cap is hit, fully-refilled
+// (idle) buckets are reclaimed on the next new-key insert.
 type RateLimiter struct {
-	cfg     RateLimitConfig
-	nowFn   func() time.Time // overridable for tests
-	mu      sync.Mutex
-	buckets map[string]*tokenBucket
+	cfg        RateLimitConfig
+	nowFn      func() time.Time // overridable for tests
+	mu         sync.Mutex
+	buckets    map[string]*tokenBucket
+	maxBuckets int // 0 = unbounded (no eviction)
 }
 
 type tokenBucket struct {
@@ -54,6 +58,28 @@ func NewRateLimiter(cfg RateLimitConfig) *RateLimiter {
 // Enabled reports whether the limiter is on. Useful so callers can
 // skip the lock when no rate limiting is configured.
 func (r *RateLimiter) Enabled() bool { return r.cfg.Enabled }
+
+// SetMaxBuckets caps how many buckets the limiter holds before it starts
+// reclaiming idle ones. REQUIRED for limiters keyed by an attacker-controlled
+// space (client IP, login identity). Returns the limiter for chaining.
+func (r *RateLimiter) SetMaxBuckets(n int) *RateLimiter {
+	r.mu.Lock()
+	r.maxBuckets = n
+	r.mu.Unlock()
+	return r
+}
+
+// evictIdleLocked reclaims buckets that would be fully refilled by `now` — i.e.
+// idle since their last use. Dropping one is harmless: the key just gets a
+// fresh full bucket if it reappears. Caller holds r.mu.
+func (r *RateLimiter) evictIdleLocked(now time.Time) {
+	for k, b := range r.buckets {
+		refilled := b.tokens + now.Sub(b.lastRefill).Seconds()*r.cfg.RequestsPerSec
+		if refilled >= r.cfg.Burst {
+			delete(r.buckets, k)
+		}
+	}
+}
 
 // Allow consumes one token for tenantID. Returns (allowed, retryAfter):
 // when allowed=false, retryAfter is the duration to wait before the
@@ -76,19 +102,24 @@ func (r *RateLimiter) AllowN(tenantID string, n float64) (bool, time.Duration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	now := r.nowFn()
 	b, ok := r.buckets[tenantID]
 	if !ok {
-		// New tenant: bucket arrives full so the first burst is
+		// Reclaim idle buckets before growing past the cap (Sec #5) so an
+		// attacker rotating keys can't OOM the map. No-op when maxBuckets==0.
+		if r.maxBuckets > 0 && len(r.buckets) >= r.maxBuckets {
+			r.evictIdleLocked(now)
+		}
+		// New key: bucket arrives full so the first burst is
 		// permitted without warmup.
 		b = &tokenBucket{
 			tokens:     r.cfg.Burst,
-			lastRefill: r.nowFn(),
+			lastRefill: now,
 		}
 		r.buckets[tenantID] = b
 	}
 
 	// Refill since last update, capped at Burst.
-	now := r.nowFn()
 	elapsed := now.Sub(b.lastRefill).Seconds()
 	if elapsed > 0 {
 		b.tokens += elapsed * r.cfg.RequestsPerSec
