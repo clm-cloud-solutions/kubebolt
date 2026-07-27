@@ -148,8 +148,12 @@ jobs:
       - name: Package and push chart
         run: |
           # The agent chart declares an optional opencost sub-chart (Chart.yaml +
-          # Chart.lock); vendor it into charts/ before packaging, or `helm package`
-          # fails with "missing in charts/ directory: opencost".
+          # Chart.lock). On a fresh runner helm knows no repos, so add the
+          # sub-chart's repo first, then vendor it into charts/ before packaging —
+          # otherwise `helm dependency build` errors ("no repository definition")
+          # or `helm package` errors ("missing in charts/ directory: opencost").
+          helm repo add opencost https://opencost.github.io/opencost-helm-chart
+          helm repo update opencost
           helm dependency build deploy/helm/kubebolt-agent
           helm package deploy/helm/kubebolt-agent
           CHART_TGZ=$(ls kubebolt-agent-*.tgz)
