@@ -11,6 +11,17 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.1] — 2026-07-27
+
+Security patch. Same v1.0 metric/label schema, drop-in within 1.3.x.
+
+### Fixed
+
+- Bumped `golang.org/x/net` → 0.56.0 and `golang.org/x/text` → 0.39.0, clearing
+  CVE-2026-46600 (x/net) and CVE-2026-56852 (x/text). The Go stdlib CVEs
+  (CVE-2026-39822/42505) did not affect the agent image — its builder was already
+  Go 1.25.12 — but the shared dep bumps ship here in lockstep with the API.
+
 ## [1.3.0] — 2026-07-27
 
 Adds the **OpenCost cost integration**: the agent can now source OpenCost

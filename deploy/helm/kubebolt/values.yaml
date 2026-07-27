@@ -261,7 +261,7 @@ metrics:
       enabled: true
       image:
         repository: victoriametrics/victoria-metrics
-        tag: v1.147.0-scratch
+        tag: v1.148.0-scratch
         pullPolicy: IfNotPresent
       # Data retention. Anything older than this is dropped to keep the
       # PVC bounded. Increase if you need historical analysis windows
