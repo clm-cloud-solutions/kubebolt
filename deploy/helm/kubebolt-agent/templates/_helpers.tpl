@@ -140,3 +140,26 @@ Mi / Gi; an unrecognised unit is passed through verbatim; an empty limit yields
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+kubebolt-agent.exportersValue renders the KUBEBOLT_AGENT_EXPORTERS CSV
+(name=url pairs) from two sources: the operator's explicit
+collectors.exporters map, plus the auto-derived entry for the bundled
+OpenCost sub-chart when opencost.enabled. Map iteration is key-sorted
+by Helm → deterministic output → stable pod checksums.
+Empty string when nothing is configured (the env var is omitted).
+*/}}
+{{- define "kubebolt-agent.exportersValue" -}}
+{{- $entries := list -}}
+{{- range $name, $url := .Values.collectors.exporters -}}
+{{- $entries = append $entries (printf "%s=%s" $name $url) -}}
+{{- end -}}
+{{- if .Values.opencost.enabled -}}
+{{- $url := .Values.opencost.exporterUrl -}}
+{{- if not $url -}}
+{{- $url = printf "http://%s-opencost.%s.svc:9003/metrics" .Release.Name .Release.Namespace -}}
+{{- end -}}
+{{- $entries = append $entries (printf "opencost=%s" $url) -}}
+{{- end -}}
+{{- join "," $entries -}}
+{{- end -}}

@@ -193,6 +193,47 @@ collectors:
     - ip_vti0
     - ip6_vti0
 
+  # Extra Prometheus exporters the agent scrapes and forwards
+  # (leader-elected: ONE pod cluster-wide scrapes each, samples ship
+  # stamped source=<name>). Map of name → full /metrics URL. Rendered
+  # into KUBEBOLT_AGENT_EXPORTERS. Use this for an OpenCost you
+  # installed yourself; for the bundled one see `opencost:` below.
+  #
+  # exporters:
+  #   opencost: http://opencost.opencost.svc.cluster.local:9003/metrics
+  exporters: {}
+
+# ── OpenCost (bundled, optional — E1 WS-D) ──
+# Off by default. When enabled, this does two things:
+#   1. Installs the official opencost sub-chart (pinned in Chart.yaml;
+#      run `helm dependency update` after toggling).
+#   2. Auto-wires the agent's exporter scraper at the sub-chart's
+#      service (http://<release>-opencost.<namespace>.svc:9003/metrics)
+#      — no need to also list it under collectors.exporters.
+#
+# NOTE: OpenCost itself queries a Prometheus for usage data
+# (allocation math). Point the sub-chart at yours via the passthrough
+# below (opencost.opencost.prometheus.*); without one, node pricing
+# still flows but container allocation will be incomplete.
+opencost:
+  enabled: false
+
+  # Override the auto-derived scrape URL — only needed when the
+  # sub-chart's service name differs (fullnameOverride etc.).
+  exporterUrl: ""
+
+  # Passthrough to the official chart (its values live under an inner
+  # `opencost:` key — see https://github.com/opencost/opencost-helm-chart).
+  opencost:
+    ui:
+      enabled: false  # exporter only; KubeBolt is the UI
+    # prometheus:
+    #   internal:
+    #     enabled: true
+    #     serviceName: kube-prometheus-stack-prometheus
+    #     namespaceName: monitoring
+    #     port: 9090
+
 agent:
   deferNodeNetwork: false
 
@@ -229,6 +270,16 @@ agent:
   # whose config they can't edit to add a remote_write block.
   promRead:
     enabled: false
+
+    # Cost opt-in (OpenCost). When true, the agent APPENDS the OpenCost
+    # metric families (node_*_hourly_cost, container_*_allocation,
+    # pv_hourly_cost) to `matchers` below — it does NOT replace them, so
+    # the core KubeBolt metrics always stay. Requires an OpenCost scraped
+    # by this Prometheus. Off by default (cost only exists when the
+    # customer runs OpenCost). See D4 in the integrations plan.
+    cost:
+      enabled: false
+
     # Customer Prom endpoint, e.g. "http://prometheus.monitoring:9090".
     # No trailing slash needed — the client appends /api/v1/query_range.
     url: ""

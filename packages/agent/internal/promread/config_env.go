@@ -84,6 +84,24 @@ var DefaultMatchers = []string{
 	"process_cpu_seconds_total",
 }
 
+// CostMatchers is the OpenCost family set, appended to the effective
+// matchers when KUBEBOLT_AGENT_PROMREAD_COST=true. Kept OUT of
+// DefaultMatchers on purpose: cost only exists when the customer runs
+// OpenCost, so it's opt-in (chart flag agent.promRead.cost.enabled).
+// Appended — never replacing the base set — so enabling cost can't
+// drop the core metrics KubeBolt needs. Explicit names (no =~) for the
+// same GMP portability reason as DefaultMatchers.
+var CostMatchers = []string{
+	"node_total_hourly_cost",
+	"node_cpu_hourly_cost",
+	"node_ram_hourly_cost",
+	"node_gpu_hourly_cost",
+	"container_cpu_allocation",
+	"container_gpu_allocation",
+	"container_memory_allocation_bytes",
+	"pv_hourly_cost",
+}
+
 // envPrefix is shared by all promread env vars. Kept in one place so
 // the env-template docs (.env.example × 4 per feedback_document_env_vars)
 // and the chart values can grep against a single constant.
@@ -135,11 +153,44 @@ func LoadConfigFromEnv() (Config, error) {
 	}
 
 	cfg.Matchers = parseMatchers(os.Getenv(envPrefix + "MATCHERS"))
-	if cfg.Enabled && len(cfg.Matchers) == 0 {
-		cfg.Matchers = append([]string(nil), DefaultMatchers...)
+	if cfg.Enabled {
+		if len(cfg.Matchers) == 0 {
+			cfg.Matchers = append([]string(nil), DefaultMatchers...)
+		}
+		// Cost opt-in: append the OpenCost families on top of the base
+		// set (defaults OR operator-supplied), deduped. A single flag
+		// so activating cost never means hand-listing matchers and
+		// accidentally dropping the core (the trap that motivated D4).
+		if v := os.Getenv(envPrefix + "COST"); v != "" {
+			costOn, err := strconv.ParseBool(v)
+			if err != nil {
+				return cfg, fmt.Errorf("%sCOST: %w", envPrefix, err)
+			}
+			if costOn {
+				cfg.Matchers = appendDedup(cfg.Matchers, CostMatchers...)
+			}
+		}
 	}
 
 	return cfg, nil
+}
+
+// appendDedup appends add to base, skipping any value already present
+// so an operator who both flips cost on AND lists a cost matcher by
+// hand doesn't double-fetch it.
+func appendDedup(base []string, add ...string) []string {
+	seen := make(map[string]struct{}, len(base))
+	for _, m := range base {
+		seen[m] = struct{}{}
+	}
+	for _, m := range add {
+		if _, ok := seen[m]; ok {
+			continue
+		}
+		seen[m] = struct{}{}
+		base = append(base, m)
+	}
+	return base
 }
 
 // parseMatchers splits the env value on newlines, trims whitespace

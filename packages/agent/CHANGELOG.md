@@ -11,6 +11,31 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.3.0] — 2026-07-27
+
+Adds the **OpenCost cost integration**: the agent can now source OpenCost
+cost/allocation metrics three ways and forwards the cost families
+(`node_*_hourly_cost`, `container_*_allocation`, `pv_hourly_cost`) into the
+KubeBolt ingest that powers the Cost dashboard. Additive within the 1.x line —
+**same v1.0 metric/label schema**, drop-in with backend **>= 1.13.0**.
+
+### Added
+
+- **OpenCost sourcing.** Three mutually-exclusive modes: `opencost.enabled=true`
+  installs the official OpenCost sub-chart and auto-wires the agent's exporter
+  scraper to it; `collectors.exporters.opencost=<url>` scrapes an OpenCost you
+  already run; `agent.promRead.cost.enabled=true` reads the cost families from
+  your existing Prometheus (Mode C). Default matchers are surgical — only the
+  families Mode A doesn't already synthesize.
+- **Generic exporter scraper behind Lease election.** A single elected agent pod
+  scrapes the configured Prometheus exporters and forwards them, so the DaemonSet
+  never emits duplicate series.
+
+### Changed
+
+- Dependency bumps in lockstep with the API/proto modules: gRPC
+  `v1.79.3 → v1.82.1`, Go toolchain `1.25.10 → 1.25.12` (closes HIGH stdlib CVEs).
+
 ## [1.2.0] — 2026-07-09
 
 First minor since 1.1.0. A new default scrape posture (lower cardinality out of the

@@ -491,6 +491,31 @@ func main() {
 			slog.String("reason", err.Error()))
 	}
 
+	// Third-party exporter scraping (E1 WS-B) — generic Prom-text
+	// exporters listed in KUBEBOLT_AGENT_EXPORTERS (name=url CSV;
+	// first use: OpenCost). Cluster-wide sources, so they run behind
+	// the same Lease pattern as Hubble/promread: only ONE pod scrapes.
+	// Off by default (empty env).
+	if exporterTargets, expErr := collector.ParseExporterTargets(os.Getenv("KUBEBOLT_AGENT_EXPORTERS")); expErr != nil {
+		slog.Error("exporters: invalid KUBEBOLT_AGENT_EXPORTERS, exporter scraping disabled",
+			slog.String("error", expErr.Error()))
+	} else if len(exporterTargets) > 0 {
+		if leaseNs, nsErr := flows.ResolveLeaseNamespace(); nsErr == nil {
+			exporters := make([]*collector.Exporter, 0, len(exporterTargets))
+			for _, t := range exporterTargets {
+				exporters = append(exporters, collector.NewExporter(t, clusterID, clusterName, tenantID, nil))
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				collector.RunLeaderElectedExporters(rootCtx, exporters, buf, pods, *statsInterval, leaseNs, *nodeName)
+			}()
+		} else {
+			slog.Info("exporters: skipping (no lease namespace)",
+				slog.String("reason", nsErr.Error()))
+		}
+	}
+
 	// Periodic buffer stats log (every minute) — lets you see drops if they happen.
 	wg.Add(1)
 	go func() {

@@ -177,6 +177,11 @@ spec:
               value: {{ join "," .dropNetworkInterfaces | quote }}
             {{- end }}
             {{- end }}
+            {{- $exporters := include "kubebolt-agent.exportersValue" . }}
+            {{- if $exporters }}
+            - name: KUBEBOLT_AGENT_EXPORTERS
+              value: {{ $exporters | quote }}
+            {{- end }}
             {{- /* ── K8s API proxy (Sprint A.5) ── */ -}}
             {{- /* Auto-derive proxy enable from rbac.mode unless an
                    explicit override was given. proxy is the path the
