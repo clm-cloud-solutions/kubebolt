@@ -176,7 +176,14 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
 }
 
 function withClass(metric: string, statusClass: string): string {
-  return metric.replace('}', `, status_class="${statusClass}"}`)
+  // Insert the status_class matcher before the selector's CLOSING brace.
+  // Uses lastIndexOf + slice rather than String.replace('}', …): replace
+  // targets the first '}' (fragile if the selector ever grows a nested brace)
+  // and trips CodeQL's incomplete-sanitization rule; this targets the closing
+  // brace deterministically and no-ops on a brace-less metric.
+  const close = metric.lastIndexOf('}')
+  if (close === -1) return metric
+  return `${metric.slice(0, close)}, status_class="${statusClass}"${metric.slice(close)}`
 }
 
 // scalar — run an instant query and take the single-series value.
