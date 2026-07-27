@@ -53,14 +53,14 @@ func TestLoadAuthConfig_Disabled(t *testing.T) {
 func TestLoadAuthConfig_CustomValues(t *testing.T) {
 	clearAuthEnv(t)
 	t.Setenv("KUBEBOLT_AUTH_ENABLED", "true")
-	t.Setenv("KUBEBOLT_JWT_SECRET", "my-explicit-secret")
+	t.Setenv("KUBEBOLT_JWT_SECRET", "my-explicit-secret-0123456789abcdef") // >=32 bytes (Sec #12)
 	t.Setenv("KUBEBOLT_JWT_EXPIRY", "30m")
 	t.Setenv("KUBEBOLT_JWT_REFRESH_EXPIRY", "72h")
 	t.Setenv("KUBEBOLT_DATA_DIR", "/var/lib/kubebolt")
 	t.Setenv("KUBEBOLT_ADMIN_PASSWORD", "set-by-operator")
 
 	cfg := LoadAuthConfig()
-	if string(cfg.JWTSecret) != "my-explicit-secret" {
+	if string(cfg.JWTSecret) != "my-explicit-secret-0123456789abcdef" {
 		t.Errorf("secret mismatch")
 	}
 	if !cfg.JWTSecretFromEnv {

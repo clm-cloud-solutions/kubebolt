@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+// minJWTSecretLen is the floor for an operator-provided KUBEBOLT_JWT_SECRET
+// (Sec #12): 32 bytes ≈ 256 bits, matching the auto-generated fallback's length.
+const minJWTSecretLen = 32
+
 // AuthConfig holds authentication configuration loaded from KUBEBOLT_AUTH_* env vars.
 type AuthConfig struct {
 	Enabled              bool
@@ -51,6 +55,13 @@ func LoadAuthConfig() AuthConfig {
 
 	// JWT secret
 	if v := os.Getenv("KUBEBOLT_JWT_SECRET"); v != "" {
+		// Sec #12: an operator-provided secret shorter than 32 bytes is
+		// brute-forceable and would let an attacker forge access tokens. Fail
+		// fast rather than boot with a weak key. The auto-generated fallback
+		// (main.go, when unset) is 32 random bytes, so it's never short.
+		if len(v) < minJWTSecretLen {
+			log.Fatalf("KUBEBOLT_JWT_SECRET is too short (%d bytes); need >= %d — use a long random secret", len(v), minJWTSecretLen)
+		}
 		cfg.JWTSecret = []byte(v)
 		cfg.JWTSecretFromEnv = true
 	}
