@@ -2141,7 +2141,7 @@ function EventsTab({ type, namespace, name }: { type: string; namespace: string;
                 <td className="py-2 max-w-md truncate">{String(evt.message ?? '-')}</td>
                 <td className="py-2 font-mono text-kb-text-tertiary">{String(evt.source ?? '-')}</td>
                 <td className="py-2 font-mono text-kb-text-tertiary shrink-0">
-                  {evt.timestamp ? formatAge(String(evt.timestamp)) : '-'}
+                  {evt.lastSeen ? formatAge(String(evt.lastSeen)) : '-'}
                 </td>
               </tr>
             ))}

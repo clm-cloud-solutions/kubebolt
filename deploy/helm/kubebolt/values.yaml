@@ -122,6 +122,15 @@ gatewayAPI:
   api:
     host: kubebolt.example.com
     tlsSecretName: kubebolt-api-tls
+    # Per-request timeout for the API HTTPRoute. Envoy Gateway applies a 15s
+    # default to any route that doesn't set one — which silently cuts long
+    # streaming responses: the Copilot SSE stream (multi-round tool calling on a
+    # busy cluster) dies mid-turn at exactly 15s and the browser shows "Load
+    # failed". "0s" disables the cap. WebSocket upgrades are already exempt from
+    # the route timeout; the Envoy stream_idle_timeout (5m) + the SSE keepalive
+    # heartbeat are the backstops for a genuinely hung stream. Set a finite value
+    # (e.g. "600s") instead if your Envoy Gateway version rejects "0s".
+    requestTimeout: "0s"
   # Bidirectional gRPC AgentChannel (the agent-ingest Service). If proxied by a
   # CDN, this host must stay DNS-only — proxies break bidi gRPC.
   agent:

@@ -66,7 +66,7 @@ export function EventsPage() {
         {items.map((item, i) => {
           const eventType = (item.type as string) || 'Normal'
           return (
-            <div key={`${item.namespace}-${item.name}-${item.reason}-${item.createdAt}`} className="flex items-start gap-3 px-4 py-3 hover:bg-kb-card-hover transition-colors">
+            <div key={`${item.namespace}-${item.name}-${item.reason}-${item.lastSeen}`} className="flex items-start gap-3 px-4 py-3 hover:bg-kb-card-hover transition-colors">
               <span
                 className={`shrink-0 mt-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-[0.06em] ${
                   eventType === 'Warning'
@@ -84,7 +84,7 @@ export function EventsPage() {
                 </div>
               </div>
               <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">
-                {item.createdAt ? formatAge(item.createdAt) : item.age || '-'}
+                {item.lastSeen ? formatAge(String(item.lastSeen)) : '-'}
               </span>
               {eventType === 'Warning' && (
                 <div className="shrink-0">
@@ -98,8 +98,8 @@ export function EventsPage() {
                         object: String(item.object ?? `${item.namespace ?? ''}/${item.name ?? ''}`),
                         namespace: item.namespace ? String(item.namespace) : undefined,
                         count: item.count != null ? Number(item.count) : undefined,
-                        firstSeen: item.firstTimestamp ? String(item.firstTimestamp) : undefined,
-                        lastSeen: item.createdAt ? String(item.createdAt) : undefined,
+                        firstSeen: item.firstSeen ? String(item.firstSeen) : undefined,
+                        lastSeen: item.lastSeen ? String(item.lastSeen) : undefined,
                       },
                     }}
                   />

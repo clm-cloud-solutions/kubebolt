@@ -54,3 +54,20 @@ export function formatCount(count: number): string {
   if (count >= 1000) return `${(count / 1000).toFixed(1)}k`
   return `${count}`
 }
+
+// formatMoney renders a USD figure for the Cost surfaces. Compact by
+// default ($1.8k, $1.2M) so KPI cards and bars stay tidy at any
+// scale; `exact` keeps whole dollars ($1,842) for headline figures
+// where the precise number matters. Sub-dollar values (a $0.47/h node
+// on a tiny cluster) keep two decimals so they don't collapse to $0.
+export function formatMoney(usd: number, opts?: { exact?: boolean }): string {
+  if (!Number.isFinite(usd)) return '—'
+  const abs = Math.abs(usd)
+  const sign = usd < 0 ? '-' : ''
+  if (!opts?.exact) {
+    if (abs >= 1_000_000) return `${sign}$${(abs / 1_000_000).toFixed(1)}M`
+    if (abs >= 10_000) return `${sign}$${(abs / 1000).toFixed(1)}k`
+  }
+  if (abs > 0 && abs < 1) return `${sign}$${abs.toFixed(2)}`
+  return `${sign}$${Math.round(abs).toLocaleString('en-US')}`
+}

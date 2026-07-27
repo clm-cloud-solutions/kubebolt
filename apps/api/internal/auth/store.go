@@ -738,3 +738,16 @@ func (s *Store) SetSetting(key string, value []byte) error {
 func CheckPassword(user *User, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) == nil
 }
+
+// dummyBcryptHash is a valid cost-12 bcrypt hash of a random value. It is never
+// a real credential — it exists only to equalize login timing (Sec #10).
+const dummyBcryptHash = "$2a$12$G5P5BWv7/zL67kv7YkRvcOfsGDUCy9ybBivmx6Uljfah9YDqYQY1m"
+
+// CheckDummyPassword runs a throwaway bcrypt comparison against a fixed dummy
+// hash so the user-not-found login path spends the same ~bcrypt-cost time as
+// the found-user path. Without it, an unknown username returns near-instantly
+// while a known one incurs the full hash — an observable timing oracle for
+// account enumeration. The cost (12) matches real hashes so timing lines up.
+func CheckDummyPassword(password string) {
+	_ = bcrypt.CompareHashAndPassword([]byte(dummyBcryptHash), []byte(password))
+}

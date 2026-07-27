@@ -42,7 +42,7 @@ export function TooltipPanel({ children, className = '', solid = false }: { chil
 
 export function TooltipHeader({ children, right }: { children: ReactNode; right?: ReactNode }) {
   return (
-    <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60 flex items-baseline justify-between gap-3">
+    <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border flex items-baseline justify-between gap-3">
       <span className="truncate">{children}</span>
       {right && <span className="text-[10px] font-normal uppercase tracking-wider text-kb-text-tertiary shrink-0">{right}</span>}
     </div>
@@ -72,7 +72,7 @@ export function TooltipRow({ color, label, value }: TooltipRowProps) {
 }
 
 export function TooltipNote({ children }: { children: ReactNode }) {
-  return <div className="text-[10px] text-kb-text-tertiary leading-snug">{children}</div>
+  return <div className="text-[11px] text-kb-text-secondary leading-relaxed">{children}</div>
 }
 
 // HoverTooltip wraps a trigger element and renders the body in a

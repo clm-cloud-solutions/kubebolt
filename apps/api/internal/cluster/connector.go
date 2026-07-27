@@ -2649,6 +2649,26 @@ func (c *Connector) GetEvents(eventType, namespace, involvedKind, involvedName s
 				source += "/" + event.Source.Host
 			}
 		}
+		// Events emitted through events.k8s.io carry their dates in
+		// eventTime / series.lastObservedTime and leave the legacy
+		// first/lastTimestamp fields zero — coalesce like kubectl does.
+		firstSeen := event.FirstTimestamp.Time
+		if firstSeen.IsZero() {
+			firstSeen = event.EventTime.Time
+		}
+		if firstSeen.IsZero() {
+			firstSeen = event.CreationTimestamp.Time
+		}
+		lastSeen := event.LastTimestamp.Time
+		if lastSeen.IsZero() && event.Series != nil {
+			lastSeen = event.Series.LastObservedTime.Time
+		}
+		if lastSeen.IsZero() {
+			lastSeen = event.EventTime.Time
+		}
+		if lastSeen.IsZero() {
+			lastSeen = event.CreationTimestamp.Time
+		}
 		items = append(items, map[string]interface{}{
 			"name":      event.Name,
 			"namespace": event.Namespace,
@@ -2658,8 +2678,8 @@ func (c *Connector) GetEvents(eventType, namespace, involvedKind, involvedName s
 			"object":    event.InvolvedObject.Kind + "/" + event.InvolvedObject.Name,
 			"count":     event.Count,
 			"source":    source,
-			"firstSeen": event.FirstTimestamp.Time,
-			"lastSeen":  event.LastTimestamp.Time,
+			"firstSeen": firstSeen,
+			"lastSeen":  lastSeen,
 		})
 	}
 

@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity } from 'lucide-react'
 import { api } from '@/services/api'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
+import { useDashboardRange } from '@/hooks/useDashboardRange'
 import { useHubbleAvailable, useHubbleL7Available } from '@/hooks/useHubbleAvailable'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
@@ -11,6 +12,7 @@ import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicat
 import { RangeSelector } from '@/components/shared/RangeSelector'
 import { DashboardSubTabs } from './DashboardSubTabs'
 import { OverviewHeader } from './OverviewHeader'
+import { GoldenSignalsStrip } from './GoldenSignalsStrip'
 import { TopWorkloadsTraffic } from './TopWorkloadsTraffic'
 import { ErrorHotspots } from './ErrorHotspots'
 import { TopLatencyWorkloads } from './TopLatencyWorkloads'
@@ -33,7 +35,9 @@ import { NetworkDrops } from './NetworkDrops'
 // we show an explanatory empty state instead of empty panels.
 export function ReliabilityPage() {
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
-  const [rangeMinutes, setRangeMinutes] = useState(15)
+  // Shared session-scoped range — sticky across the Capacity/
+  // Reliability tab switch (see useDashboardRange).
+  const [rangeMinutes, setRangeMinutes] = useDashboardRange()
   const { available: hubbleAvailable, isLoading: hubbleLoading } = useHubbleAvailable()
   const { available: hubbleL7Available } = useHubbleL7Available()
 
@@ -77,7 +81,22 @@ export function ReliabilityPage() {
   return (
     <div className="space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <OverviewHeader overview={overview} />
+        <OverviewHeader
+          overview={overview}
+          tab="Reliability"
+          badge={
+            hubbleAvailable && hubbleL7Available ? (
+              // Provenance badge — this tab is the only surface fed
+              // exclusively by Hubble L7; naming the source up top is
+              // also the natural home for the placeholder state when
+              // L7 is absent (the empty-state cards below handle that).
+              <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-kb-accent-light text-kb-accent text-[9px] font-mono uppercase tracking-[0.08em] shrink-0">
+                <span className="w-1.5 h-1.5 rounded-full bg-kb-accent" />
+                Hubble L7 · live
+              </span>
+            ) : undefined
+          }
+        />
         <div className="flex items-center gap-3 mt-1">
           <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} />
           <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
@@ -92,6 +111,11 @@ export function ReliabilityPage() {
         <HubbleL7UnavailablePlaceholder />
       ) : (
         <>
+          {/* Scan layer — golden signals summarized from the same
+              Hubble series the panels below detail. Deltas compare
+              the previous window of the same length (see the strip
+              for baseline semantics). */}
+          <GoldenSignalsStrip rangeMinutes={rangeMinutes} />
           {/* Cluster-wide error rate over time, split by class —
               4xx (amber, client errors) and 5xx (red, server
               errors) as separate series. Splitting the curve
@@ -108,11 +132,13 @@ export function ReliabilityPage() {
             icon={<Activity className="w-4 h-4" />}
             unit="percent"
             queries={[
-              { query: errorRateByClassQuery('client_err'), prefix: '4xx' },
-              { query: errorRateByClassQuery('server_err'), prefix: '5xx' },
+              // Accents pinned per query — class identity colors (4xx
+              // amber / 5xx red) must survive one class returning no
+              // data in range (see QuerySpec.accent).
+              { query: errorRateByClassQuery('client_err'), prefix: '4xx', accent: '#f59e0b' },
+              { query: errorRateByClassQuery('server_err'), prefix: '5xx', accent: '#ef4056' },
             ]}
             seriesLabel={(_labels, prefix) => prefix ?? ''}
-            accents={['#f59e0b', '#ef4056']}
             chartType="area"
             showStats={false}
             height={200}

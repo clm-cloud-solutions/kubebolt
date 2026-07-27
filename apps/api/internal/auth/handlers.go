@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -125,6 +126,16 @@ func isSecureRequest(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
+// loginAttemptLimiter throttles login attempts per TARGET identity (Sec #5):
+// ~5 immediate tries, then 1 every ~15s. Keyed by the lowercased username/email
+// so brute-forcing one account is bounded even if the attacker rotates source
+// IPs. Bounded memory (SetMaxBuckets) — the key space is attacker-controlled.
+var loginAttemptLimiter = NewRateLimiter(RateLimitConfig{
+	Enabled:        true,
+	RequestsPerSec: 1.0 / 15.0,
+	Burst:          5,
+}).SetMaxBuckets(50000)
+
 func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -134,6 +145,14 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 
 	if req.Username == "" || req.Password == "" {
 		respondError(w, http.StatusBadRequest, "username and password are required")
+		return
+	}
+
+	// Sec #5: throttle per target identity so brute-forcing one account is
+	// bounded regardless of source IP.
+	if ok, retry := loginAttemptLimiter.Allow("login:" + strings.ToLower(strings.TrimSpace(req.Username))); !ok {
+		w.Header().Set("Retry-After", fmt.Sprintf("%.0f", retry.Seconds()+1))
+		respondError(w, http.StatusTooManyRequests, "too many sign-in attempts — try again shortly")
 		return
 	}
 
@@ -148,7 +167,15 @@ func (h *Handlers) Login(w http.ResponseWriter, r *http.Request) {
 	} else {
 		user, err = h.store.GetUserByUsername(r.Context(), req.Username)
 	}
-	if err != nil || !CheckPassword(user, req.Password) {
+	if err != nil || user == nil {
+		// Equalize timing with the found-user path (Sec #10): run a bcrypt
+		// comparison against a fixed dummy hash so account enumeration can't be
+		// done by measuring how fast an unknown username is rejected.
+		CheckDummyPassword(req.Password)
+		respondError(w, http.StatusUnauthorized, "invalid username or password")
+		return
+	}
+	if !CheckPassword(user, req.Password) {
 		respondError(w, http.StatusUnauthorized, "invalid username or password")
 		return
 	}
@@ -659,6 +686,42 @@ func (h *Handlers) ChangePassword(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "failed to update password")
 		return
 	}
+
+	// Sec #4: a password change must invalidate every existing session — a
+	// leaked or old refresh token from before the change must stop working.
+	// Scope the writes to the user's org so they pass RLS (EE); OSS resolves to
+	// the default tenant, behavior unchanged.
+	octx := WithTenantID(r.Context(), user.OrgID)
+	if err := h.store.DeleteUserRefreshTokens(octx, user.ID); err != nil {
+		slog.Warn("change password: refresh token revoke failed",
+			slog.String("user", user.ID), slog.String("error", err.Error()))
+	}
+
+	// Re-issue the caller's OWN session so this browser stays logged in while
+	// every other device is forced to re-authenticate.
+	rawRefresh, expiry, err := h.jwt.GenerateRefreshToken()
+	if err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to rotate session")
+		return
+	}
+	if err := h.store.SaveRefreshToken(octx, &RefreshToken{
+		TokenHash: HashToken(rawRefresh),
+		UserID:    user.ID,
+		ExpiresAt: expiry,
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		respondError(w, http.StatusInternalServerError, "failed to rotate session")
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "kb_refresh",
+		Value:    rawRefresh,
+		Path:     "/api/v1/auth",
+		HttpOnly: true,
+		Secure:   isSecureRequest(r),
+		SameSite: http.SameSiteStrictMode,
+		MaxAge:   int(h.cfg.RefreshTokenExpiry.Seconds()),
+	})
 
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

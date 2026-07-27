@@ -19,7 +19,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
+export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent' | 'usd'
 
 interface QuerySpec {
   query: string
@@ -29,6 +29,14 @@ interface QuerySpec {
   // Prepended to each series name to disambiguate when multiple queries
   // return the same labels (e.g. "RX" vs "TX").
   prefix?: string
+  // Pins this query's series to a specific color, regardless of how many
+  // series the OTHER queries returned. Without it colors assign by
+  // arrival order — and a two-query chart whose first query comes back
+  // empty paints the second query's series in the first palette slot
+  // (the 4xx/5xx error chart drew 5xx in 4xx's amber whenever there
+  // were no client errors in range). Set it whenever a color carries
+  // meaning (5xx=red, 4xx=amber).
+  accent?: string
 }
 
 interface ReferenceLineSpec {
@@ -74,6 +82,11 @@ interface RangeOption {
 interface MetricChartProps {
   title: string
 
+  // Solid recessed background for charts rendered INSIDE an enclosing
+  // panel (e.g. Capacity's Cluster trends card) — same tone as the
+  // dashboard's inner mini-cards. Default false = standalone card.
+  recessed?: boolean
+
   // Optional icon rendered alongside the title. When provided, the
   // header switches from the compact uppercase-mono format used in
   // resource detail pages to the larger sentence-case + icon format
@@ -87,6 +100,12 @@ interface MetricChartProps {
   queries?: QuerySpec[]
 
   unit?: UnitKind
+
+  // Optional period/unit hint rendered as a muted chip after the title, e.g.
+  // "$/day". The `unit` axis label only shows magnitude ("$", "GiB"); when a
+  // `transform` re-bases the value (hourly→daily here) the period is otherwise
+  // invisible and readers have to reverse-engineer it. Purely cosmetic.
+  unitNote?: string
 
   transform?: (v: number) => number
 
@@ -177,6 +196,10 @@ const DEFAULT_RANGE_OPTIONS: RangeOption[] = [
   // selector drives this chart in controlled mode, the lookup here
   // is what resolves the step.
   { label: '7d', minutes: 10080, step: '1h' },
+  // 14d/30d (history, plan-gated by the page selector): coarser steps to stay
+  // well under -search.maxPointsPerTimeseries (14d×2h=168, 30d×6h=120 points).
+  { label: '14d', minutes: 20160, step: '2h' },
+  { label: '30d', minutes: 43200, step: '6h' },
 ]
 
 const DEFAULT_COLORS = [
@@ -207,6 +230,9 @@ export const METRIC_ACCENTS = {
 export interface UnitScale {
   divisor: number
   label: string
+  // Prepended before the number (currency). Suffix `label` still
+  // applies after — so USD renders "$1.2 k", bytes render "12 MiB".
+  prefix?: string
 }
 
 // pickScale and formatValue are exported so other surfaces (e.g. Kobi's
@@ -231,6 +257,13 @@ export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
     // tells the user how to read the axis.
     return { divisor: 1, label: '%' }
   }
+  if (unit === 'usd') {
+    // Currency: '$' prefix + compact k/M suffix so a $1,842/mo trend
+    // and a $0.95/h run-rate both read cleanly on the same axis.
+    if (absMax >= 1_000_000) return { divisor: 1_000_000, label: 'M', prefix: '$' }
+    if (absMax >= 1000) return { divisor: 1000, label: 'k', prefix: '$' }
+    return { divisor: 1, label: '', prefix: '$' }
+  }
   return { divisor: 1, label: '' }
 }
 
@@ -243,7 +276,7 @@ export function formatValue(v: number | null | undefined, scale: UnitScale, useA
   else if (absScaled >= 10) fixed = scaled.toFixed(1)
   else if (absScaled >= 1) fixed = scaled.toFixed(2)
   else fixed = scaled.toFixed(3)
-  return `${fixed}${scale.label ? ' ' + scale.label : ''}`
+  return `${scale.prefix ?? ''}${fixed}${scale.label ? ' ' + scale.label : ''}`
 }
 
 // Time formatters come in two shapes: axis (compact, for crowded
@@ -319,6 +352,7 @@ export function MetricChart({
   query,
   queries,
   unit,
+  unitNote,
   transform,
   seriesLabel = defaultSeriesLabel,
   referenceLines,
@@ -334,6 +368,7 @@ export function MetricChart({
   chartType = 'area',
   tooltipExtra,
   refsPersistKey,
+  recessed = false,
 }: MetricChartProps) {
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
@@ -426,7 +461,7 @@ export function MetricChart({
           n++
           name = `${baseName} (${n})`
         }
-        const color = palette[allSeries.length % palette.length]
+        const color = spec?.accent ?? palette[allSeries.length % palette.length]
         const info: SeriesInfo = { name, color, negated: !!spec?.negate }
 
         const seen: number[] = []
@@ -480,7 +515,18 @@ export function MetricChart({
   const hasData = points.length > 0 && series.length > 0
 
   return (
-    <div className="rounded-lg border border-kb-border bg-kb-card p-4">
+    <div
+      className="rounded-lg border border-kb-border p-4"
+      // recessed: the chart sits INSIDE an enclosing panel (Capacity's
+      // Cluster trends card) — take the same solid recessed tone the
+      // dashboard's inner mini-cards use so it cuts against the parent
+      // instead of blending card-on-card. Default: standalone card.
+      style={{
+        background: recessed
+          ? 'color-mix(in srgb, var(--kb-bg) 40%, var(--kb-card))'
+          : 'var(--kb-card)',
+      }}
+    >
       <div className="flex items-center justify-between mb-3 gap-3 flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           {/* Title style is uniform whether or not an icon is provided —
@@ -494,6 +540,11 @@ export function MetricChart({
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             {title}
           </h4>
+          {unitNote && (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-mono text-kb-text-tertiary bg-kb-card border border-kb-border">
+              {unitNote}
+            </span>
+          )}
           {hasData && (
             <AskCopilotButton
               payload={{
@@ -609,16 +660,25 @@ export function MetricChart({
       )}
 
       {!isLoading && !error && hasData && (() => {
-        // Detect whether the data range crosses a calendar-day
-        // boundary, so tick/tooltip formatters can include a date
-        // when needed. 24h and 7d ranges almost always cross
-        // midnight; 5m-1h ranges almost never do.
-        const first = points[0]?.t ?? 0
-        const last = points[points.length - 1]?.t ?? 0
+        // Pin the X domain to the SELECTED range window ([now-range, now]),
+        // not the data extent. With domain={['dataMin','dataMax']} a chart
+        // whose series cover only PART of the window auto-fits to just those
+        // points — so two charts driven by the same range selector can show
+        // different date spans and read as different time windows (the Cost
+        // "Allocated vs total cost" chart spanned ~1d while "Spend run-rate"
+        // spanned 7d, because the latter's `or vector(0)` synthesizes a point
+        // at every step while the former's OpenCost allocation series had only
+        // ~1d of history). Anchoring the domain makes every chart honor the
+        // selector; a partially-covered series renders its gap as empty space
+        // (honest) instead of compressing the axis. allowDataOverflow stays
+        // default-false, so full-coverage charts still auto-extend by the
+        // sub-second edge margin without clipping any real point.
+        const domainEnd = Math.floor(Date.now() / 1000)
+        const domainStart = domainEnd - rangeMinutes * 60
+        // Date-boundary detection now keys off the WINDOW, not the data, so a
+        // 7d/24h axis always carries dates even when data covers only part of it.
         const spansDays =
-          first && last
-            ? new Date(first * 1000).toDateString() !== new Date(last * 1000).toDateString()
-            : false
+          new Date(domainStart * 1000).toDateString() !== new Date(domainEnd * 1000).toDateString()
         const axisFmt = (v: number) => formatTimeAxis(v, spansDays)
         const tipFmt = (v: number) => formatTimeTooltip(v, spansDays)
         return (
@@ -655,7 +715,7 @@ export function MetricChart({
                 <XAxis
                   dataKey="t"
                   type="number"
-                  domain={['dataMin', 'dataMax']}
+                  domain={[domainStart, domainEnd]}
                   tickFormatter={axisFmt}
                   tick={{ fill: 'var(--kb-text-secondary)', fontSize: 10 }}
                   stroke="var(--kb-border)"
@@ -702,7 +762,7 @@ export function MetricChart({
                     )
                     return (
                       <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
-                        <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
+                        <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border">
                           {tipFmt(label as number)}
                         </div>
                         <div className="space-y-1">
@@ -722,7 +782,7 @@ export function MetricChart({
                           ))}
                         </div>
                         {nearbyMarkers.length > 0 && (
-                          <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                          <div className="mt-2 pt-1.5 border-t border-kb-border space-y-1">
                             {nearbyMarkers.map((m, idx) => (
                               <div key={idx} className="flex items-center gap-2">
                                 <span
@@ -740,7 +800,7 @@ export function MetricChart({
                           const extra = tooltipExtra(label as number)
                           if (!extra) return null
                           return (
-                            <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                            <div className="mt-2 pt-1.5 border-t border-kb-border space-y-1">
                               {extra}
                             </div>
                           )

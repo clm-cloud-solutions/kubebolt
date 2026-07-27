@@ -3,10 +3,12 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Activity } from 'lucide-react'
 import { useResources } from '@/hooks/useResources'
+import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
+import { NodesSummaryStrip } from './NodesSummaryStrip'
 import { UsageBar } from './UsageBar'
 import { NodeActionMenu } from './NodeActionMenu'
 import { DrainModal } from './DrainModal'
@@ -28,10 +30,15 @@ function NodeCard({
   node,
   onDrain,
   stress,
+  isIdle = false,
 }: {
   node: ResourceItem
   onDrain: (node: ResourceItem) => void
   stress?: NodeStress
+  // Flagged by the page as the least-loaded node — shown as an "idle"
+  // condition badge (an observation, not a drain verdict; see the
+  // summary strip's Consolidation card).
+  isIdle?: boolean
 }) {
   const cpuPercent = Number(node.cpuPercent ?? 0)
   const memPercent = Number(node.memoryPercent ?? 0)
@@ -46,10 +53,27 @@ function NodeCard({
   const hasMetrics = cpuUsage > 0 || memUsage > 0
   const unschedulable = (node as unknown as { unschedulable?: boolean }).unschedulable === true
 
+  // Node severity drives the colored left accent — memory usage is the
+  // binding signal (CPU rarely pressures a node before memory), with
+  // PSI memory as a corroborating axis.
+  const severity: 'ok' | 'warn' | 'crit' =
+    node.status !== 'Ready'
+      ? 'crit'
+      : memPercent >= 90 || (stress && stress.psiMemory >= PSI_CRIT)
+        ? 'crit'
+        : memPercent >= 80 || (stress && stress.psiMemory >= PSI_WARN)
+          ? 'warn'
+          : 'ok'
+  const accentBar =
+    severity === 'crit' ? 'bg-status-error' : severity === 'warn' ? 'bg-status-warn' : 'bg-status-ok'
+
   return (
-    <Link to={`/nodes/_/${node.name}`} className="block bg-kb-card border border-kb-border rounded-[10px] p-4 hover:bg-kb-card-hover transition-colors">
+    <Link to={`/nodes/_/${node.name}`} className="relative block bg-kb-card border border-kb-border rounded-[10px] p-4 pl-[1.1rem] overflow-hidden hover:bg-kb-card-hover transition-colors">
+      {/* Left accent bar — node severity at a glance (design mockup) */}
+      <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${accentBar}`} aria-hidden />
+
       {/* Header */}
-      <div className="flex items-center gap-2.5 mb-3">
+      <div className="flex items-center gap-2.5 mb-2.5">
         <div className={`w-2.5 h-2.5 rounded-full ${node.status === 'Ready' ? 'bg-status-ok' : 'bg-status-error'}`} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
@@ -63,10 +87,17 @@ function NodeCard({
               </span>
             )}
           </div>
-          <div className="text-[10px] font-mono text-kb-text-tertiary">{(node.labels as Record<string, string>)?.['node.kubernetes.io/instance-type'] || ''}</div>
+          <div className="text-[10px] font-mono text-kb-text-tertiary">
+            {nodeMeta(node)}
+          </div>
         </div>
         <NodeActionMenu node={node} onDrain={onDrain} />
       </div>
+
+      {/* Condition badges — derived from existing metrics; only render
+          when there's something to say, so healthy nodes stay quiet. */}
+      <NodeBadges node={node} memPercent={memPercent} stress={stress} isIdle={isIdle} />
+
 
       {/* Bars */}
       <div className="space-y-2.5">
@@ -199,8 +230,64 @@ function psiColor(v: number): string {
   return '#555770'
 }
 
+// nodeMeta — instance type · availability zone from node labels.
+function nodeMeta(node: ResourceItem): string {
+  const labels = (node.labels as Record<string, string>) ?? {}
+  const instance = labels['node.kubernetes.io/instance-type'] || labels['beta.kubernetes.io/instance-type'] || ''
+  const zone = labels['topology.kubernetes.io/zone'] || labels['failure-domain.beta.kubernetes.io/zone'] || ''
+  return [instance, zone].filter(Boolean).join(' · ')
+}
+
+// NodeBadges — condition chips derived from data the card already has:
+// memory pressure, PSI memory, and the page-flagged idle candidate.
+function NodeBadges({
+  node,
+  memPercent,
+  stress,
+  isIdle,
+}: {
+  node: ResourceItem
+  memPercent: number
+  stress?: NodeStress
+  isIdle: boolean
+}) {
+  const badges: Array<{ text: string; tone: 'warn' | 'crit' | 'info' }> = []
+  if (node.status === 'Ready') {
+    if (memPercent >= 90) badges.push({ text: `mem ${Math.round(memPercent)}%`, tone: 'crit' })
+    else if (memPercent >= 80) badges.push({ text: `mem ${Math.round(memPercent)}%`, tone: 'warn' })
+    if (stress && stress.psiMemory >= PSI_CRIT) badges.push({ text: `PSI mem ${Math.round(stress.psiMemory * 100)}%`, tone: 'crit' })
+    else if (stress && stress.psiMemory >= PSI_WARN) badges.push({ text: `PSI mem ${Math.round(stress.psiMemory * 100)}%`, tone: 'warn' })
+    // "idle" is an observation, NOT "drain candidate" — draining needs
+    // a scheduling-aware check we don't do yet.
+    if (isIdle) badges.push({ text: 'idle', tone: 'info' })
+  }
+  if (badges.length === 0) return null
+
+  const toneCls = {
+    warn: 'bg-status-warn-dim text-status-warn',
+    crit: 'bg-status-error-dim text-status-error',
+    info: 'bg-status-info-dim text-status-info',
+  }
+  return (
+    <div className="flex flex-wrap gap-1.5 mb-2.5">
+      {badges.map((b) => (
+        <span
+          key={b.text}
+          className={`text-[9px] font-mono font-semibold uppercase tracking-[0.03em] px-1.5 py-0.5 rounded ${toneCls[b.tone]}`}
+        >
+          {b.text}
+        </span>
+      ))}
+    </div>
+  )
+}
+
 export function NodesPage() {
   const { data, isLoading, error, refetch, dataUpdatedAt, isFetching } = useResources('nodes')
+  // Overview supplies the cluster-wide requested vs allocatable (the
+  // bin-packing strip). Its own loading/error don't block the node
+  // grid — the strip degrades gracefully when it's absent.
+  const { data: overview } = useClusterOverview()
   // Stress data is fetched once at the page level so 3 VM queries
   // (load + PSI waiting) run for the whole list, not N. Each card
   // reads its own slice from the map. Returns an empty map when
@@ -216,6 +303,16 @@ export function NodesPage() {
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
 
   const nodes = data?.items || []
+
+  // Sort by pressure: highest memory usage first, least-loaded last —
+  // so the nodes that need attention are at the top and the idle
+  // consolidation candidate sits at the bottom (design mockup order).
+  const sorted = [...nodes].sort((a, b) => Number(b.memoryPercent ?? 0) - Number(a.memoryPercent ?? 0))
+
+  // Least-loaded schedulable node, flagged as the idle observation —
+  // same criterion the summary strip's Consolidation card uses. Only
+  // meaningful once there are enough nodes to consolidate.
+  const idleName = idleCandidateName(nodes)
 
   return (
     <div>
@@ -234,13 +331,27 @@ export function NodesPage() {
         </div>
         <p className="text-xs text-kb-text-secondary mt-1">{resourceTypeDescription('nodes')}</p>
       </div>
+
+      <NodesSummaryStrip nodes={nodes} overview={overview} />
+
+      {/* Section divider — separates the summary strip from the node
+          grid so the two layers read as distinct, and labels the grid
+          order. */}
+      <div className="flex items-center gap-3 border-t border-kb-border pt-4 mb-3">
+        <span className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
+          All nodes
+        </span>
+        <span className="text-[10px] font-mono text-kb-text-tertiary/70">sorted by pressure</span>
+      </div>
+
       <div className="grid grid-cols-3 gap-3 mb-5">
-        {nodes.map((node) => (
+        {sorted.map((node) => (
           <NodeCard
             key={node.name}
             node={node}
             onDrain={setDrainTarget}
             stress={stress[String(node.name)]}
+            isIdle={String(node.name) === idleName}
           />
         ))}
       </div>
@@ -250,6 +361,20 @@ export function NodesPage() {
       )}
     </div>
   )
+}
+
+// idleCandidateName — mirror of the strip's leastLoadedNode logic so
+// the card badge and the Consolidation card agree on the same node.
+// Returns '' when no node clearly stands out.
+function idleCandidateName(nodes: ResourceItem[]): string {
+  const schedulable = nodes.filter(
+    (n) => (n as unknown as { unschedulable?: boolean }).unschedulable !== true && n.status === 'Ready',
+  )
+  if (schedulable.length < 3) return ''
+  const s = [...schedulable].sort((a, b) => Number(a.memoryPercent ?? 0) - Number(b.memoryPercent ?? 0))
+  const lowest = s[0]
+  const median = Number(s[Math.floor(s.length / 2)].memoryPercent ?? 0)
+  return Number(lowest.memoryPercent ?? 0) < median - 20 ? String(lowest.name) : ''
 }
 
 // NodeFleetCharts renders per-node disk and network activity in two

@@ -238,8 +238,11 @@ export function Layout() {
         {/* Reservation lives on <main> instead of the column so the
             topbar above remains untouched — what was empty space to
             the right of the topbar now stays as topbar. */}
+        {/* pb-24: scroll runway past the floating Kobi FAB (bottom-
+            right) — without it the last table's tail rows sit under
+            the button and can't be read. */}
         <main
-          className="flex-1 overflow-y-auto p-5 transition-[margin] duration-200 ease-out"
+          className="flex-1 overflow-y-auto p-5 pb-24 transition-[margin] duration-200 ease-out"
           style={{ marginRight: copilotReservation }}
         >
           {isSwitching ? (

@@ -108,6 +108,11 @@ spec:
             - name: KUBEBOLT_TENANT_ID
               value: {{ .Values.tenant.id | quote }}
             {{- end }}
+            {{- $exporters := include "kubebolt-agent.exportersValue" . }}
+            {{- if $exporters }}
+            - name: KUBEBOLT_AGENT_EXPORTERS
+              value: {{ $exporters | quote }}
+            {{- end }}
             # Defensive: Hubble is Mode A. With KUBEBOLT_AGENT_MODE=promread
             # the agent already skips Hubble setup, but the explicit env
             # makes the intent reading the chart obvious.
@@ -158,6 +163,11 @@ spec:
             - name: KUBEBOLT_AGENT_PROMREAD_MATCHERS
               value: |-
 {{ join "\n" . | indent 16 }}
+            {{- end }}
+            {{- if and .Values.agent.promRead.cost .Values.agent.promRead.cost.enabled }}
+            # Cost opt-in — appends the OpenCost families to the matchers above.
+            - name: KUBEBOLT_AGENT_PROMREAD_COST
+              value: "true"
             {{- end }}
             # ── Backend auth (mirrors daemonset.yaml) ──
             {{- if eq .Values.auth.mode "tokenreview" }}

@@ -4,7 +4,9 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { KpiCards } from './KpiCards'
 import { OverviewHeader } from './OverviewHeader'
-import { ResourceUsagePanel } from './ResourceUsage'
+import { EfficiencyBand } from './EfficiencyBand'
+import { useAgentInstalled } from '@/hooks/useAgentInstalled'
+import { useRightSizing } from '@/hooks/useRightSizing'
 import { WorkloadHealth } from './WorkloadHealth'
 import { EventsFeed } from './EventsFeed'
 import { NamespaceTiles } from './NamespaceTiles'
@@ -27,6 +29,11 @@ import { MetricsOnlyBanner } from '@/components/shared/MetricsOnlyNotice'
 export function OverviewPage() {
   const isMetricsOnly = useMetricsOnly()
   const { data: overview, isLoading, error, refetch, dataUpdatedAt, isFetching } = useClusterOverview()
+  // Rec count for the efficiency band's footer — same hook (and the
+  // same cached VM queries) the Capacity tab uses, so the number the
+  // user scans here matches what they find after clicking through.
+  const { installed } = useAgentInstalled()
+  const { totals: rightSizingTotals } = useRightSizing(installed, overview)
 
   if (isLoading) return <LoadingSpinner />
   if (error || !overview) return <ErrorState message={error?.message} onRetry={() => refetch()} />
@@ -35,7 +42,7 @@ export function OverviewPage() {
     <div className="space-y-5">
       {isMetricsOnly && <MetricsOnlyBanner />}
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <OverviewHeader overview={overview} />
+        <OverviewHeader overview={overview} tab="Overview" />
         <div className="flex items-center gap-3 mt-1">
           <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
         </div>
@@ -47,11 +54,12 @@ export function OverviewPage() {
 
       <KpiCards overview={overview} />
 
-      <ResourceUsagePanel
+      <EfficiencyBand
         cpu={overview.cpu}
         memory={overview.memory}
         metricsAvailable={!overview.health?.checks?.some(c => c.name === 'metrics' && c.status !== 'pass')}
         nodesRestricted={overview.permissions?.nodes === false}
+        recsReady={rightSizingTotals.count}
       />
 
       <div className="grid grid-cols-2 gap-3">

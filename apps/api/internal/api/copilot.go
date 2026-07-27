@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
@@ -210,6 +211,29 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, "streaming not supported")
 		return
 	}
+	sse := &sseStream{w: w, flusher: flusher}
+
+	// Keepalive heartbeat — a quiet SSE comment every 15s so a long turn that
+	// spends seconds inside a single tool call or LLM round (no content flowing)
+	// never trips the browser's or Envoy's idle timeout and drops the stream
+	// (the Safari "Load failed" on deep RCAs). Stops when the handler returns or
+	// the client disconnects; every write goes through sse's mutex.
+	hbStop := make(chan struct{})
+	defer close(hbStop)
+	go func() {
+		t := time.NewTicker(15 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-hbStop:
+				return
+			case <-r.Context().Done():
+				return
+			case <-t.C:
+				sse.comment()
+			}
+		}
+	}()
 
 	// Build the system prompt — parameter-free as of Phase 6 so the cached
 	// prefix is byte-identical across clusters, views, and operators.
@@ -247,7 +271,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	if newConversation {
 		conversationID = copilot.NewConversationID()
 	}
-	writeSSEEvent(w, flusher, "meta", map[string]any{"conversationId": conversationID})
+	sse.event("meta", map[string]any{"conversationId": conversationID})
 
 	logger := slog.Default().With(
 		slog.String("component", "copilot"),
@@ -529,7 +553,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 						TokensAfter:  cr.TokensAfter,
 						Model:        cr.UsedModel,
 					})
-					writeSSEEvent(w, flusher, "compact", map[string]any{
+					sse.event("compact", map[string]any{
 						"turnsFolded":        cr.TurnsFolded,
 						"toolResultsStubbed": cr.ToolResultsStubbed,
 						"tokensBefore":       cr.TokensBefore,
@@ -568,6 +592,23 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 		resp, err := h.callProvider(r, chatReq)
 
+		// Client/gateway hung up mid-call (Envoy route timeout, browser
+		// navigation, user cancel) → the request context is done. A fallback
+		// retry is futile (the context is dead) and, with a mis/unconfigured
+		// fallback, surfaces a confusing `unknown provider` ERROR. Nothing can be
+		// written to a gone connection anyway, so bail quietly: log at INFO,
+		// persist what streamed, and finish as "canceled" rather than "error".
+		if err != nil && r.Context().Err() != nil {
+			logger.Info("copilot request canceled mid-call (client/gateway disconnected)",
+				slog.Int("round", round),
+				slog.String("cause", r.Context().Err().Error()),
+			)
+			roundsUsed = round + 1
+			persistConversation(messages)
+			finish("canceled")
+			return
+		}
+
 		// On recoverable error, try fallback if configured
 		if err != nil && copilot.IsRecoverable(err) && cfg.Fallback != nil && !usedFallback {
 			logger.Warn("copilot primary failed, retrying with fallback",
@@ -579,7 +620,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			resp, err = h.callProvider(r, chatReq)
 			if err == nil {
 				usedFallback = true
-				writeSSEEvent(w, flusher, "meta", map[string]bool{"fallback": true})
+				sse.event("meta", map[string]bool{"fallback": true})
 			}
 		}
 
@@ -588,8 +629,8 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				slog.Int("round", round),
 				slog.String("error", err.Error()),
 			)
-			writeSSEEvent(w, flusher, "error", map[string]string{"error": friendlyCopilotError(err)})
-			writeSSEEvent(w, flusher, "done", nil)
+			sse.event("error", map[string]string{"error": friendlyCopilotError(err)})
+			sse.event("done", nil)
 			roundsUsed = round + 1
 			persistConversation(messages)
 			finish("error")
@@ -618,7 +659,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		)
 
 		// Emit per-round usage so the UI can show it live
-		writeSSEEvent(w, flusher, "usage", map[string]any{
+		sse.event("usage", map[string]any{
 			"round":   round,
 			"turn":    resp.Usage,
 			"session": sessionUsage,
@@ -626,7 +667,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 		// If the model produced text, send it to the user
 		if resp.Text != "" {
-			writeSSEEvent(w, flusher, "text", map[string]string{"text": resp.Text})
+			sse.event("text", map[string]string{"text": resp.Text})
 		}
 
 		// If no tool calls, we're done. Emit the final messages array
@@ -677,7 +718,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 						TokensAfter:  cr.TokensAfter,
 						Model:        cr.UsedModel,
 					})
-					writeSSEEvent(w, flusher, "compact", map[string]any{
+					sse.event("compact", map[string]any{
 						"turnsFolded":        cr.TurnsFolded,
 						"toolResultsStubbed": cr.ToolResultsStubbed,
 						"tokensBefore":       cr.TokensBefore,
@@ -702,7 +743,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			writeSSEEvent(w, flusher, "done", map[string]any{
+			sse.event("done", map[string]any{
 				"messages":       finalMessages,
 				"conversationId": conversationID,
 			})
@@ -722,7 +763,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// Execute each tool and append results
 		var toolResults []copilot.ToolResult
 		for _, call := range resp.ToolCalls {
-			writeSSEEvent(w, flusher, "tool_call", map[string]string{"toolName": call.Name})
+			sse.event("tool_call", map[string]string{"toolName": call.Name})
 
 			toolStart := time.Now()
 			result := executor.Execute(call)
@@ -778,7 +819,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	)
 	// Forward-compatible signal so the UI can later offer a "Continue
 	// investigation" affordance (1.16). Unknown meta keys are ignored today.
-	writeSSEEvent(w, flusher, "meta", map[string]any{"maxRoundsReached": maxRounds})
+	sse.event("meta", map[string]any{"maxRoundsReached": maxRounds})
 
 	// Same provider-selection rule the loop uses: stick with the fallback if an
 	// earlier round already fell over to it.
@@ -810,7 +851,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		resp, err = h.callProvider(r, closeReq)
 		if err == nil {
 			usedFallback = true
-			writeSSEEvent(w, flusher, "meta", map[string]bool{"fallback": true})
+			sse.event("meta", map[string]bool{"fallback": true})
 		}
 	}
 
@@ -821,10 +862,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		logger.Error("copilot max-rounds close turn failed",
 			slog.String("error", err.Error()),
 		)
-		writeSSEEvent(w, flusher, "error", map[string]string{
+		sse.event("error", map[string]string{
 			"error": fmt.Sprintf("reached max tool call rounds (%d)", maxRounds),
 		})
-		writeSSEEvent(w, flusher, "done", map[string]any{
+		sse.event("done", map[string]any{
 			"messages":       finalMessages,
 			"conversationId": conversationID,
 		})
@@ -835,20 +876,20 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 	sessionUsage.Add(resp.Usage)
 	lastTurnUsage = resp.Usage
-	writeSSEEvent(w, flusher, "usage", map[string]any{
+	sse.event("usage", map[string]any{
 		"round":   maxRounds,
 		"turn":    resp.Usage,
 		"session": sessionUsage,
 	})
 	if resp.Text != "" {
-		writeSSEEvent(w, flusher, "text", map[string]string{"text": resp.Text})
+		sse.event("text", map[string]string{"text": resp.Text})
 		finalMessages = append(finalMessages, copilot.Message{
 			Role:      copilot.RoleAssistant,
 			Content:   resp.Text,
 			Timestamp: time.Now(),
 		})
 	}
-	writeSSEEvent(w, flusher, "done", map[string]any{
+	sse.event("done", map[string]any{
 		"messages":       finalMessages,
 		"conversationId": conversationID,
 	})
@@ -934,6 +975,37 @@ func writeSSEEvent(w http.ResponseWriter, flusher http.Flusher, event string, pa
 		fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
 	}
 	flusher.Flush()
+}
+
+// sseStream serializes every write to one SSE response. The chat handler streams
+// from its request goroutine while a heartbeat goroutine writes keepalive
+// comments concurrently; without the mutex a keepalive could interleave
+// mid-frame with a content event and corrupt the stream (and race the writer).
+type sseStream struct {
+	mu      sync.Mutex
+	w       http.ResponseWriter
+	flusher http.Flusher
+}
+
+// event writes one named SSE event, serialized against the heartbeat.
+func (s *sseStream) event(event string, payload interface{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	writeSSEEvent(s.w, s.flusher, event, payload)
+}
+
+// comment writes an SSE comment line (":" prefix). Clients ignore it — our
+// parser drops any frame with no `data:` — but the bytes reset the idle timers
+// that otherwise abort a long, quiet turn: Safari/WebKit gives up on a fetch
+// after ~60s without data ("Load failed" on a deep RCA that spends that long in
+// a single tool call or LLM round), and Envoy's stream_idle_timeout resets the
+// connection the same way. A heartbeat keeps both alive with zero effect on the
+// rendered transcript.
+func (s *sseStream) comment() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprint(s.w, ": keepalive\n\n")
+	s.flusher.Flush()
 }
 
 // ensure config import is referenced (avoids unused import in test files)

@@ -38,6 +38,25 @@ export function serializeMessages(messages: CopilotMessage[]) {
     }))
 }
 
+// isAbort reports whether an error is a user-initiated cancel (cancelMessage →
+// AbortController.abort()). That is NOT a connection failure — the caller
+// renders it as "Stopped by you" — so it must propagate untouched.
+function isAbort(err: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || (err instanceof DOMException && err.name === 'AbortError')
+}
+
+// networkErrorMessage turns a raw fetch/stream network rejection — WebKit's
+// "Load failed", Chromium's "Failed to fetch" — into an operator-readable line.
+// `mid` distinguishes a stream that dropped AFTER it started (the turn is
+// already running server-side and gets persisted, so the answer is recoverable
+// by reopening) from a request that never connected. The panel renders a thrown
+// error's message verbatim, so this copy IS what the user sees.
+function networkErrorMessage(mid: boolean): string {
+  return mid
+    ? 'The connection to Kobi dropped before the response finished — a long analysis can outlast the browser or gateway timeout. Your conversation is saved; reopen it to see the full result.'
+    : "Couldn't reach Kobi — check your connection and try again."
+}
+
 /**
  * sendCopilotChat opens an SSE stream to /api/v1/copilot/chat and yields
  * each event as it arrives. The conversation continues server-side via
@@ -53,7 +72,9 @@ export async function* sendCopilotChat(
   originatingInsightId?: string | null,
 ): AsyncGenerator<CopilotStreamEvent> {
   const token = getAccessToken()
-  const res = await fetch(`${API_ORIGIN}/api/v1/copilot/chat`, {
+  let res: Response
+  try {
+    res = await fetch(`${API_ORIGIN}/api/v1/copilot/chat`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -84,7 +105,12 @@ export async function* sendCopilotChat(
       clientNow: new Date().toISOString(),
     }),
     signal,
-  })
+    })
+  } catch (err) {
+    // The request never connected (DNS, TLS, offline, CORS-preflight fail).
+    if (isAbort(err, signal)) throw err
+    throw new Error(networkErrorMessage(false))
+  }
 
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText)
@@ -125,6 +151,14 @@ export async function* sendCopilotChat(
         if (parsed) yield parsed
       }
     }
+  } catch (err) {
+    // The stream dropped mid-response — Safari/WebKit aborts a quiet fetch after
+    // ~60s ("Load failed"), a gateway idle-timeout resets it, or the network
+    // blipped. A user cancel (AbortError) is not a failure — let it pass. For a
+    // real drop, replace the raw browser text with a recoverable message: the
+    // turn keeps running server-side and is persisted, so reopening restores it.
+    if (isAbort(err, signal)) throw err
+    throw new Error(networkErrorMessage(true))
   } finally {
     reader.releaseLock()
   }
