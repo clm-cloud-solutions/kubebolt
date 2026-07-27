@@ -2,7 +2,9 @@ import { useQuery } from '@tanstack/react-query'
 import { Zap } from 'lucide-react'
 import { api } from '@/services/api'
 import { useRightSizing } from '@/hooks/useRightSizing'
-import { formatCPU, formatMemory } from '@/utils/formatters'
+import { useCostAvailable } from '@/hooks/useCostAvailable'
+import { useNodeRates, estimateMonthlySavings } from '@/hooks/useClusterCost'
+import { formatCPU, formatMemory, formatMoney } from '@/utils/formatters'
 import { StripCard } from './StripCard'
 import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
 import type { ClusterOverview } from '@/types/kubernetes'
@@ -15,10 +17,13 @@ import type { ClusterOverview } from '@/types/kubernetes'
 // the SAME hook the recommendations panel renders, the OOM count
 // from the SAME KSM query RecentOOMKills lists. No new data sources.
 //
-// The Rightsizing card deliberately reports reclaimable cores/GiB,
-// NOT $/mo: real currency needs per-node pricing, which arrives with
-// the OpenCost integration (Cost slice). When that lands, this card
-// is where the ≈$/mo figure appears.
+// The Rightsizing card keeps reclaimable cores/GiB as its headline
+// value (the sizing signal) and, once OpenCost cost rates are
+// present, adds the ≈$/mo the reclaim is worth to its sub-line +
+// links into the Cost tab (the savings lens). The $/mo comes from the
+// SAME node rates the Cost dashboard prices with — one ruler across
+// both tabs. Without OpenCost the card degrades to the cores/GiB-only
+// line it always showed.
 
 interface Props {
   rangeMinutes: number
@@ -47,6 +52,19 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const cpu = usePeakSeries('cpu', CPU_QUERY, rangeMinutes, installed)
   const mem = usePeakSeries('mem', MEM_QUERY, rangeMinutes, installed)
   const { totals, isLoading: recsLoading } = useRightSizing(installed, overview)
+
+  // Money layer: when OpenCost cost rates are available, price the
+  // reclaimable capacity into $/mo — the same node rates and formula
+  // the Cost dashboard uses. Absent OpenCost, savings is 0 and the
+  // card shows its cores/GiB-only sub-line.
+  const { available: costAvailable } = useCostAvailable()
+  const rates = useNodeRates(costAvailable)
+  const savingsMonthly = estimateMonthlySavings(
+    totals.reclaimCpuMilli,
+    totals.reclaimMemBytes,
+    rates,
+  )
+  const showMoney = costAvailable && rates.available && savingsMonthly > 0
 
   const oomQ = useQuery({
     // Same queryKey as RecentOOMKills so both consumers share one
@@ -146,8 +164,8 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
               Total CPU / memory you could hand back by applying the recommendations
               below — the sum of (request − suggested request) across over-provisioned
               workloads. Suggestions come from each workload's P95 usage over 7 days plus
-              headroom. Reported as cores / GiB, not $/mo: currency needs per-node
-              pricing, which arrives with the cost integration.
+              headroom. When OpenCost cost rates are present, the sub-line prices this
+              into ≈$/mo and links to the Cost tab; otherwise it's reported as cores / GiB.
             </TooltipNote>
           </>
         }
@@ -163,14 +181,17 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
         valueAccent={totals.count > 0 ? 'ok' : 'default'}
         sub={
           totals.count > 0
-            ? `${reclaimSummary(totals.reclaimCpuMilli, totals.reclaimMemBytes)} · ${totals.count} ${
-                totals.count === 1 ? 'rec' : 'recs'
-              } →`
+            ? `${
+                showMoney
+                  ? `≈ ${formatMoney(savingsMonthly, { exact: true })}/mo`
+                  : reclaimSummary(totals.reclaimCpuMilli, totals.reclaimMemBytes)
+              } · ${totals.count} ${totals.count === 1 ? 'rec' : 'recs'} →`
             : recsLoading
               ? 'computing from 7d P95…'
               : 'no recommendations — well sized'
         }
         subAccent={totals.count > 0 ? 'ok' : 'default'}
+        subTo={totals.count > 0 ? '/cost' : undefined}
       />
       <StripCard
         label={`OOMKills (${rangeLabel})`}

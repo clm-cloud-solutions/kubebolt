@@ -8,6 +8,7 @@ import {
   type ResourceState,
   type Severity,
 } from '@/hooks/useRightSizing'
+import { PreliminaryBadge } from './PreliminaryBadge'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
@@ -40,7 +41,7 @@ const KIND_TO_PATH: Record<string, string> = {
 
 export function RightSizingPanel({ installed, overview }: Props) {
   const isMetricsOnly = useMetricsOnly()
-  const { recs, isLoading, error } = useRightSizing(installed, overview)
+  const { recs, isLoading, error, preliminary, windowDays } = useRightSizing(installed, overview)
 
   if (!installed) return null
 
@@ -95,6 +96,7 @@ export function RightSizingPanel({ installed, overview }: Props) {
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             Right-sizing Recommendations
           </h4>
+          {preliminary && <PreliminaryBadge windowDays={windowDays} />}
           {recs.length > 0 && (
             <AskCopilotButton
               payload={{

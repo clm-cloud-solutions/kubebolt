@@ -19,7 +19,7 @@ import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent'
+export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent' | 'usd'
 
 interface QuerySpec {
   query: string
@@ -100,6 +100,12 @@ interface MetricChartProps {
   queries?: QuerySpec[]
 
   unit?: UnitKind
+
+  // Optional period/unit hint rendered as a muted chip after the title, e.g.
+  // "$/day". The `unit` axis label only shows magnitude ("$", "GiB"); when a
+  // `transform` re-bases the value (hourly→daily here) the period is otherwise
+  // invisible and readers have to reverse-engineer it. Purely cosmetic.
+  unitNote?: string
 
   transform?: (v: number) => number
 
@@ -190,6 +196,10 @@ const DEFAULT_RANGE_OPTIONS: RangeOption[] = [
   // selector drives this chart in controlled mode, the lookup here
   // is what resolves the step.
   { label: '7d', minutes: 10080, step: '1h' },
+  // 14d/30d (history, plan-gated by the page selector): coarser steps to stay
+  // well under -search.maxPointsPerTimeseries (14d×2h=168, 30d×6h=120 points).
+  { label: '14d', minutes: 20160, step: '2h' },
+  { label: '30d', minutes: 43200, step: '6h' },
 ]
 
 const DEFAULT_COLORS = [
@@ -220,6 +230,9 @@ export const METRIC_ACCENTS = {
 export interface UnitScale {
   divisor: number
   label: string
+  // Prepended before the number (currency). Suffix `label` still
+  // applies after — so USD renders "$1.2 k", bytes render "12 MiB".
+  prefix?: string
 }
 
 // pickScale and formatValue are exported so other surfaces (e.g. Kobi's
@@ -244,6 +257,13 @@ export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
     // tells the user how to read the axis.
     return { divisor: 1, label: '%' }
   }
+  if (unit === 'usd') {
+    // Currency: '$' prefix + compact k/M suffix so a $1,842/mo trend
+    // and a $0.95/h run-rate both read cleanly on the same axis.
+    if (absMax >= 1_000_000) return { divisor: 1_000_000, label: 'M', prefix: '$' }
+    if (absMax >= 1000) return { divisor: 1000, label: 'k', prefix: '$' }
+    return { divisor: 1, label: '', prefix: '$' }
+  }
   return { divisor: 1, label: '' }
 }
 
@@ -256,7 +276,7 @@ export function formatValue(v: number | null | undefined, scale: UnitScale, useA
   else if (absScaled >= 10) fixed = scaled.toFixed(1)
   else if (absScaled >= 1) fixed = scaled.toFixed(2)
   else fixed = scaled.toFixed(3)
-  return `${fixed}${scale.label ? ' ' + scale.label : ''}`
+  return `${scale.prefix ?? ''}${fixed}${scale.label ? ' ' + scale.label : ''}`
 }
 
 // Time formatters come in two shapes: axis (compact, for crowded
@@ -332,6 +352,7 @@ export function MetricChart({
   query,
   queries,
   unit,
+  unitNote,
   transform,
   seriesLabel = defaultSeriesLabel,
   referenceLines,
@@ -519,6 +540,11 @@ export function MetricChart({
           <h4 className="text-sm font-semibold text-kb-text-primary truncate">
             {title}
           </h4>
+          {unitNote && (
+            <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] font-mono text-kb-text-tertiary bg-kb-card border border-kb-border">
+              {unitNote}
+            </span>
+          )}
           {hasData && (
             <AskCopilotButton
               payload={{
@@ -634,16 +660,25 @@ export function MetricChart({
       )}
 
       {!isLoading && !error && hasData && (() => {
-        // Detect whether the data range crosses a calendar-day
-        // boundary, so tick/tooltip formatters can include a date
-        // when needed. 24h and 7d ranges almost always cross
-        // midnight; 5m-1h ranges almost never do.
-        const first = points[0]?.t ?? 0
-        const last = points[points.length - 1]?.t ?? 0
+        // Pin the X domain to the SELECTED range window ([now-range, now]),
+        // not the data extent. With domain={['dataMin','dataMax']} a chart
+        // whose series cover only PART of the window auto-fits to just those
+        // points — so two charts driven by the same range selector can show
+        // different date spans and read as different time windows (the Cost
+        // "Allocated vs total cost" chart spanned ~1d while "Spend run-rate"
+        // spanned 7d, because the latter's `or vector(0)` synthesizes a point
+        // at every step while the former's OpenCost allocation series had only
+        // ~1d of history). Anchoring the domain makes every chart honor the
+        // selector; a partially-covered series renders its gap as empty space
+        // (honest) instead of compressing the axis. allowDataOverflow stays
+        // default-false, so full-coverage charts still auto-extend by the
+        // sub-second edge margin without clipping any real point.
+        const domainEnd = Math.floor(Date.now() / 1000)
+        const domainStart = domainEnd - rangeMinutes * 60
+        // Date-boundary detection now keys off the WINDOW, not the data, so a
+        // 7d/24h axis always carries dates even when data covers only part of it.
         const spansDays =
-          first && last
-            ? new Date(first * 1000).toDateString() !== new Date(last * 1000).toDateString()
-            : false
+          new Date(domainStart * 1000).toDateString() !== new Date(domainEnd * 1000).toDateString()
         const axisFmt = (v: number) => formatTimeAxis(v, spansDays)
         const tipFmt = (v: number) => formatTimeTooltip(v, spansDays)
         return (
@@ -680,7 +715,7 @@ export function MetricChart({
                 <XAxis
                   dataKey="t"
                   type="number"
-                  domain={['dataMin', 'dataMax']}
+                  domain={[domainStart, domainEnd]}
                   tickFormatter={axisFmt}
                   tick={{ fill: 'var(--kb-text-secondary)', fontSize: 10 }}
                   stroke="var(--kb-border)"
@@ -727,7 +762,7 @@ export function MetricChart({
                     )
                     return (
                       <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
-                        <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
+                        <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border">
                           {tipFmt(label as number)}
                         </div>
                         <div className="space-y-1">
@@ -747,7 +782,7 @@ export function MetricChart({
                           ))}
                         </div>
                         {nearbyMarkers.length > 0 && (
-                          <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                          <div className="mt-2 pt-1.5 border-t border-kb-border space-y-1">
                             {nearbyMarkers.map((m, idx) => (
                               <div key={idx} className="flex items-center gap-2">
                                 <span
@@ -765,7 +800,7 @@ export function MetricChart({
                           const extra = tooltipExtra(label as number)
                           if (!extra) return null
                           return (
-                            <div className="mt-2 pt-1.5 border-t border-kb-border/60 space-y-1">
+                            <div className="mt-2 pt-1.5 border-t border-kb-border space-y-1">
                               {extra}
                             </div>
                           )

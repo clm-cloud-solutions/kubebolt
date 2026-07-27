@@ -77,6 +77,15 @@ export interface RightSizingResult {
   totals: RightSizingTotals
   isLoading: boolean
   error: Error | null
+  // Days of usage history the P95 window actually spans. The P95 is computed
+  // over [7d], but a freshly-connected cluster only has a few hours — so this
+  // is what the recommendation is REALLY based on. undefined while loading.
+  windowDays?: number
+  // True when windowDays < CONFIDENCE_DAYS: the P95 hasn't seen enough daily
+  // cycles yet (a low-load snapshot masquerading as a 7d baseline), so the
+  // reclaim / savings figures are optimistic and should read as PRELIMINARY
+  // rather than something to act on. Surfaced as a badge by consumers.
+  preliminary: boolean
 }
 
 // Floors below which a percentage-based finding is suppressed —
@@ -90,6 +99,18 @@ const MEM_ABS_FLOOR_BYTES = 100 * 1024 * 1024 // 100Mi
 // not so much that we just shift the over-provisioning down.
 const REQUEST_HEADROOM = 1.2
 const LIMIT_HEADROOM = 1.5
+
+// Below this many days of history the P95 hasn't seen enough day/night cycles
+// to trust — a minimal-load snapshot reads as if it were the steady state.
+// 2 days ≈ two daily peaks, the floor for the P95 to reflect real demand
+// swings instead of "right now, when nobody's using it".
+const CONFIDENCE_DAYS = 2
+
+// Approximate span of usage history sitting in VM: count the 1h buckets that
+// carried the core usage metric over the last 7d; ÷24 = days. Cheap (1h step)
+// and reuses the exact metric the P95 depends on, so "we have data" and "the
+// P95 has data" stay in sync.
+const WINDOW_QUERY = 'count_over_time((count(container_cpu_usage_seconds_total))[7d:1h])'
 
 // PromQL: P95 over 7d, grouped by workload (Deployment / StatefulSet
 // / DaemonSet). The label_replace pair collapses ReplicaSet →
@@ -142,8 +163,25 @@ export function useRightSizing(installed: boolean, overview?: ClusterOverview): 
     retry: false,
   })
 
+  // How many days of history the P95 actually spans — cheap side query so
+  // consumers can flag preliminary recommendations on a young cluster.
+  const windowQ = useQuery({
+    queryKey: ['rightsizing', 'window'],
+    queryFn: () => api.queryMetrics({ query: WINDOW_QUERY }),
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+    enabled: installed,
+    retry: false,
+  })
+
   const isLoading = cpuQ.isLoading || memQ.isLoading
   const error = cpuQ.error ?? memQ.error
+
+  const windowHours = Number(windowQ.data?.data?.result?.[0]?.value?.[1])
+  const windowDays = Number.isFinite(windowHours) ? windowHours / 24 : undefined
+  // Only flag preliminary once we actually know the span — while the window
+  // query is loading/absent we don't cry wolf.
+  const preliminary = windowDays !== undefined && windowDays < CONFIDENCE_DAYS
 
   // P95 lookups keyed by namespace/kind/name. CPU is in cores from
   // VM; convert to millicores so it lines up with the overview's
@@ -202,7 +240,7 @@ export function useRightSizing(installed: boolean, overview?: ClusterOverview): 
     if (r.mem.state === 'over') totals.reclaimMemBytes += r.mem.request - r.mem.suggest
   }
 
-  return { recs, totals, isLoading, error }
+  return { recs, totals, isLoading, error, windowDays, preliminary }
 }
 
 // ─── Pure logic helpers (testable in isolation) ──────────────────

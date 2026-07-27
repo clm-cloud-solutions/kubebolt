@@ -9,7 +9,7 @@ interface Props {
   overview: ClusterOverview
   // Current sub-tab, rendered as the breadcrumb leaf and used to pick
   // the subtitle's framing line. Defaults keep older call sites valid.
-  tab?: 'Overview' | 'Capacity' | 'Reliability'
+  tab?: 'Overview' | 'Capacity' | 'Reliability' | 'Cost'
   // Optional chip rendered next to the title (e.g. Reliability's
   // "Hubble L7 · live" badge).
   badge?: ReactNode
@@ -21,6 +21,7 @@ const TAB_FRAMING: Record<NonNullable<Props['tab']>, string> = {
   Overview: 'Live snapshot',
   Capacity: 'Sizing & consumption',
   Reliability: 'Golden signals',
+  Cost: 'Spend & efficiency',
 }
 
 // OverviewHeader anchors the three dashboard sub-tabs with a
