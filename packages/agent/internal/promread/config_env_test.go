@@ -146,7 +146,99 @@ func clearPromreadEnv(t *testing.T) {
 		"STEP",
 		"LOOKBACK",
 		"MATCHERS",
+		"COST",
 	} {
 		t.Setenv(envPrefix+k, "")
+	}
+}
+
+func contains(ss []string, want string) bool {
+	for _, s := range ss {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func TestLoadConfigFromEnv_CostAppendsToDefaults(t *testing.T) {
+	clearPromreadEnv(t)
+	t.Setenv(envPrefix+"ENABLED", "true")
+	t.Setenv(envPrefix+"URL", "http://prom.svc:9090")
+	t.Setenv(envPrefix+"COST", "true")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	// Core kept AND cost appended — never replaced.
+	if len(cfg.Matchers) != len(DefaultMatchers)+len(CostMatchers) {
+		t.Errorf("want %d matchers (defaults+cost), got %d", len(DefaultMatchers)+len(CostMatchers), len(cfg.Matchers))
+	}
+	if !contains(cfg.Matchers, "kube_pod_info") {
+		t.Error("core matcher kube_pod_info dropped")
+	}
+	if !contains(cfg.Matchers, "node_total_hourly_cost") {
+		t.Error("cost matcher node_total_hourly_cost not appended")
+	}
+}
+
+func TestLoadConfigFromEnv_CostAppendsToCustomMatchers(t *testing.T) {
+	clearPromreadEnv(t)
+	t.Setenv(envPrefix+"ENABLED", "true")
+	t.Setenv(envPrefix+"URL", "http://prom.svc:9090")
+	t.Setenv(envPrefix+"MATCHERS", "my_custom_metric\n")
+	t.Setenv(envPrefix+"COST", "true")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(cfg.Matchers) != 1+len(CostMatchers) {
+		t.Errorf("want %d (custom+cost), got %d", 1+len(CostMatchers), len(cfg.Matchers))
+	}
+	if !contains(cfg.Matchers, "my_custom_metric") || !contains(cfg.Matchers, "container_cpu_allocation") {
+		t.Errorf("custom+cost not both present: %+v", cfg.Matchers)
+	}
+}
+
+func TestLoadConfigFromEnv_CostDedupes(t *testing.T) {
+	clearPromreadEnv(t)
+	t.Setenv(envPrefix+"ENABLED", "true")
+	t.Setenv(envPrefix+"URL", "http://prom.svc:9090")
+	// Operator lists a cost matcher by hand AND flips the flag.
+	t.Setenv(envPrefix+"MATCHERS", "node_total_hourly_cost\n")
+	t.Setenv(envPrefix+"COST", "true")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	n := 0
+	for _, m := range cfg.Matchers {
+		if m == "node_total_hourly_cost" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("node_total_hourly_cost should appear once (deduped), got %d", n)
+	}
+}
+
+func TestLoadConfigFromEnv_CostOffDoesNotAppend(t *testing.T) {
+	clearPromreadEnv(t)
+	t.Setenv(envPrefix+"ENABLED", "true")
+	t.Setenv(envPrefix+"URL", "http://prom.svc:9090")
+	t.Setenv(envPrefix+"COST", "false")
+
+	cfg, err := LoadConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	if len(cfg.Matchers) != len(DefaultMatchers) {
+		t.Errorf("cost off must not append: want %d, got %d", len(DefaultMatchers), len(cfg.Matchers))
+	}
+	if contains(cfg.Matchers, "node_total_hourly_cost") {
+		t.Error("cost matcher present with COST=false")
 	}
 }
