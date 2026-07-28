@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { AlertTriangle } from 'lucide-react'
 import type { AgentAuthInfo, AgentInstallConfig } from '@/services/api'
 import { RBACModePicker } from '@/components/admin/RBACModePicker'
+import { OpenCostModePicker } from '@/components/admin/OpenCostModePicker'
 
 // The agent ships samples to the KubeBolt backend over gRPC :9090.
 // These are the shapes that typically work — the user picks the one
@@ -89,16 +90,23 @@ export function AgentConfigFields({
         <input
           type="text" required placeholder="host:port" value={cfg.backendUrl}
           onChange={(e) => setCfg({ ...cfg, backendUrl: e.target.value })}
-          className={input}
+          readOnly={hostedMode}
+          className={`${input}${hostedMode ? ' opacity-70 cursor-not-allowed' : ''}`}
         />
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {backendPresets.map((p) => (
-            <button key={p.value} type="button" onClick={() => setCfg({ ...cfg, backendUrl: p.value })}
-              className="text-[10px] px-2 py-1 rounded-md bg-kb-elevated hover:bg-kb-card-hover text-kb-text-secondary border border-kb-border">
-              {p.label}
-            </button>
-          ))}
-        </div>
+        {hostedMode ? (
+          <p className="text-[11px] text-kb-text-tertiary mt-1">
+            The platform's agent-ingest endpoint — the only backend agents dial in this deployment.
+          </p>
+        ) : (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {backendPresets.map((p) => (
+              <button key={p.value} type="button" onClick={() => setCfg({ ...cfg, backendUrl: p.value })}
+                className="text-[10px] px-2 py-1 rounded-md bg-kb-elevated hover:bg-kb-card-hover text-kb-text-secondary border border-kb-border">
+                {p.label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {topExtra}
@@ -189,7 +197,7 @@ export function AgentConfigFields({
             </button>
           </div>
           {showFullCapabilities && cfg.tlsEnabled && (
-            <div className="space-y-2 pt-2 border-t border-kb-border/60">
+            <div className="space-y-2 pt-2 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Mutual TLS (optional)</div>
               <p className="text-[10px] text-kb-text-tertiary">Only when the backend verifies client certs. Secrets must pre-exist in the target namespace.</p>
               <div>
@@ -227,6 +235,9 @@ export function AgentConfigFields({
       {/* RBAC mode */}
       <RBACModePicker mode={cfg.rbacMode ?? 'reader'} onChange={(mode) => setCfg({ ...cfg, rbacMode: mode })} />
 
+      {/* OpenCost cost integration */}
+      <OpenCostModePicker cfg={cfg} setCfg={setCfg} />
+
       {/* Advanced */}
       <div>
         <button
@@ -247,14 +258,32 @@ export function AgentConfigFields({
                     ['kubelet', 'None — kubelet metrics only'],
                     ['scrape', 'Scrape annotated pods (prometheus.io/scrape)'],
                     ['promread', 'Read from existing Prometheus (AMP / GMP / Azure Monitor / self-hosted)'],
-                  ] as const).map(([val, label]) => (
-                    <label key={val} className="flex items-center gap-2 text-xs text-kb-text-secondary cursor-pointer">
-                      <input type="radio" name="metricsSource" checked={(cfg.metricsSource ?? 'kubelet') === val}
-                        onChange={() => setCfg({ ...cfg, metricsSource: val })} className="accent-kb-accent" />
-                      {label}
-                    </label>
-                  ))}
+                  ] as const).map(([val, label]) => {
+                    // OpenCost "Read from my Prometheus" (promRead.cost) reads cost
+                    // from the same Prometheus, so it pins the metrics source to
+                    // promRead — kubelet/scrape are incompatible (they'd orphan
+                    // promRead.cost.enabled in the command). Lock them visibly
+                    // rather than letting the selection go invalid.
+                    const locked = cfg.opencostMode === 'promread' && val !== 'promread'
+                    return (
+                      <label
+                        key={val}
+                        className={`flex items-center gap-2 text-xs ${locked ? 'text-kb-text-tertiary opacity-50 cursor-not-allowed' : 'text-kb-text-secondary cursor-pointer'}`}
+                        title={locked ? 'Locked while Cost monitoring reads from your Prometheus' : undefined}
+                      >
+                        <input type="radio" name="metricsSource" checked={(cfg.metricsSource ?? 'kubelet') === val}
+                          disabled={locked}
+                          onChange={() => setCfg({ ...cfg, metricsSource: val })} className="accent-kb-accent" />
+                        {label}
+                      </label>
+                    )
+                  })}
                 </div>
+                {cfg.opencostMode === 'promread' && (
+                  <p className="text-[10px] text-kb-text-tertiary leading-relaxed">
+                    Pinned to <span className="font-mono">Read from existing Prometheus</span> — OpenCost’s “Read from my Prometheus” reads cost from the same source. Change <span className="text-kb-text-secondary">Cost monitoring (OpenCost)</span> above to unlock.
+                  </p>
+                )}
                 {cfg.metricsSource === 'promread' && (
                   <div className="space-y-2 pt-2 pl-3 border-l-2 border-kb-border">
                     <div>
@@ -341,7 +370,7 @@ export function AgentConfigFields({
 
             {/* Hubble relay — only meaningful when the collector is enabled */}
             {cfg.hubbleEnabled && (
-            <section className="space-y-2 pt-3 border-t border-kb-border/60">
+            <section className="space-y-2 pt-3 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Hubble relay</div>
               <div>
                 <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Relay address override</label>
@@ -364,7 +393,7 @@ export function AgentConfigFields({
             )}
 
             {/* Scheduling */}
-            <section className="space-y-2 pt-3 border-t border-kb-border/60">
+            <section className="space-y-2 pt-3 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Scheduling</div>
               <div>
                 <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Priority class name</label>
@@ -394,7 +423,7 @@ export function AgentConfigFields({
 
             {/* ServiceAccount annotations (full-capability flow only) */}
             {showFullCapabilities && (
-              <section className="space-y-2 pt-3 border-t border-kb-border/60">
+              <section className="space-y-2 pt-3 border-t border-kb-border">
                 <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">ServiceAccount annotations</div>
                 <p className="text-[10px] text-kb-text-tertiary">IRSA (EKS) / Workload Identity (GKE/AKS) — required when promRead auth uses the cloud's ambient credentials.</p>
                 <div className="space-y-1.5">
@@ -410,7 +439,7 @@ export function AgentConfigFields({
             )}
 
             {/* Resources */}
-            <section className="space-y-2 pt-3 border-t border-kb-border/60">
+            <section className="space-y-2 pt-3 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Resources</div>
               <p className="text-[10px] text-kb-text-tertiary">Kubernetes quantity strings. Defaults: requests 10m / 64Mi, limits 100m / 128Mi. Bump the limit (e.g. 256Mi) on busy nodes — Hubble flow parsing is the main driver.</p>
               <div className="grid grid-cols-2 gap-3">
@@ -434,7 +463,7 @@ export function AgentConfigFields({
             </section>
 
             {/* Logging */}
-            <section className="space-y-2 pt-3 border-t border-kb-border/60">
+            <section className="space-y-2 pt-3 border-t border-kb-border">
               <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Logging</div>
               <div>
                 <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Log level</label>
@@ -449,7 +478,7 @@ export function AgentConfigFields({
 
             {/* Extra env vars (full-capability flow only) */}
             {showFullCapabilities && (
-              <section className="space-y-2 pt-3 border-t border-kb-border/60">
+              <section className="space-y-2 pt-3 border-t border-kb-border">
                 <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Extra env vars</div>
                 <p className="text-[10px] text-kb-text-tertiary">Escape hatch for knobs without a first-class field (e.g. KUBEBOLT_AGENT_PPROF_ADDR).</p>
                 <div className="space-y-1.5">

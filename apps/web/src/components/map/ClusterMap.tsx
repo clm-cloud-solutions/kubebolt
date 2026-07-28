@@ -1601,7 +1601,7 @@ function ClusterMapInner() {
                       ? isTraffic
                         ? 'bg-status-ok-dim border-status-ok/40 text-status-ok'
                         : 'bg-kb-elevated/60 border-kb-border text-kb-text-primary hover:border-kb-border-active'
-                      : 'border-kb-border/60 text-kb-text-tertiary opacity-50 hover:opacity-80'
+                      : 'border-kb-border text-kb-text-tertiary opacity-50 hover:opacity-80'
                   }`}
                 >
                   {g.label}
@@ -1858,7 +1858,7 @@ function ClusterMapInner() {
           }}
           className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[240px] pointer-events-auto"
         >
-          <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60 flex items-baseline justify-between gap-3">
+          <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border flex items-baseline justify-between gap-3">
             <span>{hoveredTooltip.rate.toFixed(2)} ev/s</span>
             <span className="text-[10px] font-normal uppercase tracking-wider text-kb-text-tertiary">{hoveredTooltip.verdict}</span>
           </div>
@@ -1912,7 +1912,7 @@ function ClusterMapInner() {
               </div>
             ) : null}
           </div>
-          <div className="pt-2 mt-1 border-t border-kb-border/60 flex items-center justify-end">
+          <div className="pt-2 mt-1 border-t border-kb-border flex items-center justify-end">
             <AskCopilotButton
               payload={buildFlowEdgePayload(hoveredEdge, hoveredTooltip)}
               variant="text"

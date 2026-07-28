@@ -286,9 +286,14 @@ export interface ClusterInfo {
   // empty for direct-kubeconfig contexts we haven't probed.
   clusterId?: string
   // Liveness of an agent-proxy cluster: true when an agent for it is connected
-  // right now (independent of active). Not populated by the OSS backend today —
-  // the add-cluster wizard treats an absent value as "just registered ⇒ live".
+  // right now (independent of active). Populated by the backend from the live
+  // agent registry; the add-cluster wizard treats an absent value as "just
+  // registered ⇒ live".
   agentConnected?: boolean
+  // Most recent agent contact (RFC3339) for an offline agent-proxy cluster, from
+  // the durable agent record — drives the "last seen …" tooltip. Absent when the
+  // cluster is live or has no durable record.
+  lastSeen?: string
   // Connection mode of an agent-proxy cluster, derived server-side:
   //   'metrics-only' — agent ships metrics but advertises no kube-proxy, so there is
   //     no live-resource connector; the UI shows dashboards and degrades resource views.

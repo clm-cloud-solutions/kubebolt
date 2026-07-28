@@ -247,7 +247,7 @@ export function RestartHistorySparkline({
           />
         </div>
         {urgent && (
-          <div className="mt-2 pt-1.5 border-t border-kb-border/60">
+          <div className="mt-2 pt-1.5 border-t border-kb-border">
             <TooltipNote>
               ≥2 restarts in 1h — likely flapping, investigate now.
             </TooltipNote>

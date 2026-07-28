@@ -45,13 +45,16 @@ export function KpiCards({ overview }: KpiCardsProps) {
   const podsTotal = overview.pods?.total ?? 0
   const nodesNotReady = overview.nodes?.notReady ?? 0
   const podsNotReady = overview.pods?.notReady ?? 0
-  // The connector buckets pods three ways: Ready (Running all-ready,
-  // or Succeeded), NotReady (Failed phase only), and Warning —
-  // everything in between (Pending, CrashLoopBackOff, partially
-  // ready). Without surfacing Warning the card claims "all running"
-  // while a pod is crash-looping, because that pod is neither Ready
-  // nor NotReady.
+  // The connector buckets pods four ways: Ready (Running, all containers
+  // ready), Succeeded (terminal Completed Job/CronJob pods — surfaced on their
+  // own so they're not miscounted as "Running"), NotReady (Failed phase only),
+  // and Warning — everything in between (Pending, CrashLoopBackOff, partially
+  // ready). Without surfacing Warning the card claims "all running" while a pod
+  // is crash-looping, because that pod is neither Ready nor NotReady.
   const podsDegraded = overview.pods?.warning ?? 0
+  // Completed Job pods: a normal terminal state, not "Running" and not a
+  // problem. Shown as its own neutral row so Running reflects the true count.
+  const podsSucceeded = overview.pods?.succeeded ?? 0
 
   const healthAccent: Accent =
     health?.status === 'healthy' ? 'ok' : health?.status === 'warning' ? 'warn' : 'err'
@@ -112,6 +115,10 @@ export function KpiCards({ overview }: KpiCardsProps) {
         value={restricted('pods') ? null : `${podsReady}`}
         valueSuffix={restricted('pods') ? undefined : `/ ${podsTotal}`}
         sub={
+          // Headline priority: problems first (Not-running, then Degraded) —
+          // those are the only states worth surfacing above Running. Otherwise
+          // Running is the default. Completed is NEVER the headline: it's a
+          // benign terminal state, shown only in the row breakdown below.
           restricted('pods')
             ? 'No access'
             : podsNotReady > 0
@@ -120,14 +127,25 @@ export function KpiCards({ overview }: KpiCardsProps) {
                 ? `${podsDegraded} degraded`
                 : 'all running'
         }
+        // Completed pods count as "fine" toward the ring so a batch of finished
+        // Jobs doesn't drop the gauge (and turn the card amber-looking); only
+        // Degraded / Not-running pods pull the fill below 100%.
         gaugePercent={
-          !restricted('pods') && podsTotal > 0 ? (podsReady / podsTotal) * 100 : undefined
+          !restricted('pods') && podsTotal > 0
+            ? ((podsReady + podsSucceeded) / podsTotal) * 100
+            : undefined
         }
         rows={
           restricted('pods')
             ? undefined
             : [
                 { color: ACCENT_COLOR.ok, label: 'Running', value: `${podsReady}`, to: '/pods?status=running' },
+                // Completed (Succeeded phase) — only surfaced when present, so
+                // clusters with no finished Jobs keep the tidy 3-row card. A
+                // terminal success, styled info-blue (not green/amber/red).
+                ...(podsSucceeded > 0
+                  ? [{ color: INFO_COLOR, label: 'Completed', value: `${podsSucceeded}`, to: '/pods?status=succeeded' as string | undefined }]
+                  : []),
                 {
                   // Warning bucket: Pending / CrashLoopBackOff /
                   // partially-ready. "degraded" is a backend
@@ -357,18 +375,29 @@ function healthRows(health?: ClusterOverview['health']): KpiRow[] {
   return rows
 }
 
-// summarizeHealth picks the single most actionable line for the
-// card's sub-line. Priority order:
-//   1. Active critical insights (the "why is status critical when
-//      checks all pass?" case the user couldn't reconcile)
-//   2. Active warning insights (same shape)
-//   3. First failing check (basic component is down)
-//   4. First warning check
-//   5. "X checks passing" fallback when everything's green
+// summarizeHealth picks the card's sub-line so it MATCHES the overall status.
+//   - status healthy → a positive summary ("All/N of M checks passing"); a lone
+//     non-critical check stays in the breakdown, not the headline.
+//   - status not healthy → the most actionable problem, in priority order:
+//       1. active critical insights · 2. active warning insights ·
+//       3. first failing check · 4. first warning check · 5. checks-passing.
 // Returns undefined when there's no health payload at all so the
 // card omits the sub-line entirely instead of rendering "—".
 function summarizeHealth(health?: ClusterOverview['health']): string | undefined {
   if (!health) return undefined
+  const checks = health.checks ?? []
+  // When the overall health is good, the headline MATCHES the score: a single
+  // non-critical issue (e.g. metrics server unavailable) belongs in the
+  // breakdown below, not as the headline — showing "Metrics server not
+  // available" on a 90/100 HEALTHY cluster reads as a contradiction. Only
+  // surface the worst problem when the STATUS itself reflects one.
+  if (health.status === 'healthy') {
+    if (checks.length === 0) return 'All systems operational'
+    const passing = checks.filter((c) => c.status === 'pass').length
+    return passing === checks.length
+      ? `All ${checks.length} checks passing`
+      : `${passing} of ${checks.length} checks passing`
+  }
   const insights = health.insights
   if (insights && insights.critical > 0) {
     return `${insights.critical} critical ${insights.critical === 1 ? 'insight' : 'insights'}`
@@ -376,7 +405,6 @@ function summarizeHealth(health?: ClusterOverview['health']): string | undefined
   if (insights && insights.warning > 0) {
     return `${insights.warning} warning ${insights.warning === 1 ? 'insight' : 'insights'}`
   }
-  const checks = health.checks ?? []
   if (checks.length === 0) return undefined
   const fail = checks.find((c) => c.status === 'fail')
   if (fail) return fail.message || `${fail.name} failing`
