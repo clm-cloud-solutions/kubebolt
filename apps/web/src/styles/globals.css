@@ -95,6 +95,31 @@ body,
   background: transparent;
 }
 
+/* Keep browser-autofilled inputs on-theme. Chrome/Safari otherwise
+   paint a light box over the field, breaking the dark login card. The
+   inset box-shadow repaints the background to the field color and the
+   long transition defers the UA repaint; -webkit-text-fill-color keeps
+   the typed value legible. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--kb-text-primary);
+  -webkit-box-shadow: 0 0 0 1000px var(--kb-bg) inset;
+  caret-color: var(--kb-text-primary);
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* Primary (accent) button disabled state. Element opacity would wash
+   out the label too; instead we blend the brand green toward the page
+   background so the fill reads as "muted green, not clickable" while
+   the text stays legible. */
+.btn-primary:disabled {
+  background: color-mix(in srgb, var(--kb-accent) 40%, var(--kb-bg));
+  color: rgba(255, 255, 255, 0.82);
+  cursor: not-allowed;
+}
+
 @keyframes pulse-live {
   0%,
   100% {

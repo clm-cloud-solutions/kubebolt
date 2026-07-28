@@ -26,6 +26,10 @@ export const OVERVIEW_RANGE_OPTIONS: RangeOption[] = [
   { label: '6h', minutes: 360, step: '2m' },
   { label: '24h', minutes: 1440, step: '10m' },
   { label: '7d', minutes: 10080, step: '1h' },
+  // 14d/30d (history): coarser steps to stay well under the VM points-per-series
+  // cap (14d×2h=168, 30d×6h=120 points). Mirrors MetricChart's DEFAULT_RANGE_OPTIONS.
+  { label: '14d', minutes: 20160, step: '2h' },
+  { label: '30d', minutes: 43200, step: '6h' },
 ]
 
 interface Props {

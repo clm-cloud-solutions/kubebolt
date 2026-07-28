@@ -62,6 +62,7 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
     mutationFn: () =>
       api.issueAgentTokenAndMaterializeSecret({
         tenantId: selectedTenantId,
+        materialize: true, // backend reaches this cluster — create the Secret in one click
         namespace: cfg.namespace?.trim() || 'kubebolt-system',
         secretName: cfg.authTokenSecret?.trim() || 'kubebolt-agent-token',
         label: `agent-install ${new Date().toISOString().slice(0, 10)}`,
@@ -69,7 +70,7 @@ export function AgentInstallWizard({ integration: _integration, onClose }: Props
     onSuccess: (resp) => {
       setIssueError(null)
       setIssuedToken(resp)
-      setCfg((prev) => ({ ...prev, authTokenSecret: resp.secretName }))
+      setCfg((prev) => ({ ...prev, authTokenSecret: resp.secretName ?? prev.authTokenSecret }))
     },
     onError: (err) => {
       setIssuedToken(null)

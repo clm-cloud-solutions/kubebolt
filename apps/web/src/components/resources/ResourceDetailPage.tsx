@@ -2163,6 +2163,7 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
   })
   const [selectedContainer, setSelectedContainer] = useState(containerNames[0] ?? '')
   const [tailLines, setTailLines] = useState(100)
+  const [liveTail, setLiveTail] = useState(false) // auto-refresh opt-in (finding #13)
   const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
   const sinceTimeRFC = localDateTimeToRFC3339(filters.sinceTime)
@@ -2188,6 +2189,7 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
       previous: filters.previous || undefined,
       timestamps: rangeActive || undefined,
       enabled: rangeOk,
+      live: liveTail,
     },
   )
   const historical = rangeActive || filters.previous
@@ -2262,15 +2264,30 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
           {historical ? (
-            <span className="text-[10px] text-kb-text-tertiary">Auto-refresh paused</span>
+            <span className="text-[10px] text-kb-text-tertiary">Static — historical window</span>
           ) : (
-            <>
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-              </span>
-              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
-            </>
+            <button
+              type="button"
+              onClick={() => setLiveTail((v) => !v)}
+              title={
+                liveTail
+                  ? 'Live tail on — auto-refreshing every 10s. Click to pause.'
+                  : 'Start a live tail (auto-refresh every 10s). Off by default so reading a log is not interrupted.'
+              }
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[10px] transition-colors ${
+                liveTail
+                  ? 'border-status-ok/30 bg-status-ok-dim text-status-ok'
+                  : 'border-kb-border text-kb-text-tertiary hover:text-kb-text-secondary hover:bg-kb-card-hover'
+              }`}
+            >
+              {liveTail && (
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+                </span>
+              )}
+              {liveTail ? 'Live 10s' : 'Live'}
+            </button>
           )}
         </div>
       </div>
@@ -3265,6 +3282,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
   const [selectedPod, setSelectedPod] = useState('')
   const [selectedContainer, setSelectedContainer] = useState('')
   const [tailLines, setTailLines] = useState(100)
+  const [liveTail, setLiveTail] = useState(false) // auto-refresh opt-in (finding #13)
   const [filters, setFilters] = useState<LogFiltersState>(emptyLogFilters())
 
   // Set default pod when pods load
@@ -3314,6 +3332,7 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
       previous: filters.previous || undefined,
       timestamps: rangeActive || undefined,
       enabled: rangeOk,
+      live: liveTail,
     },
   )
 
@@ -3398,15 +3417,30 @@ function WorkloadLogsTab({ pods, isLoading: podsLoading, error: podsError }: { p
         </button>
         <div className="flex items-center gap-1.5 ml-auto">
           {historical ? (
-            <span className="text-[10px] text-kb-text-tertiary">Auto-refresh paused</span>
+            <span className="text-[10px] text-kb-text-tertiary">Static — historical window</span>
           ) : (
-            <>
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
-              </span>
-              <span className="text-[10px] text-kb-text-tertiary">Auto-refresh 10s</span>
-            </>
+            <button
+              type="button"
+              onClick={() => setLiveTail((v) => !v)}
+              title={
+                liveTail
+                  ? 'Live tail on — auto-refreshing every 10s. Click to pause.'
+                  : 'Start a live tail (auto-refresh every 10s). Off by default so reading a log is not interrupted.'
+              }
+              className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-[10px] transition-colors ${
+                liveTail
+                  ? 'border-status-ok/30 bg-status-ok-dim text-status-ok'
+                  : 'border-kb-border text-kb-text-tertiary hover:text-kb-text-secondary hover:bg-kb-card-hover'
+              }`}
+            >
+              {liveTail && (
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-status-ok opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-status-ok" />
+                </span>
+              )}
+              {liveTail ? 'Live 10s' : 'Live'}
+            </button>
           )}
         </div>
       </div>

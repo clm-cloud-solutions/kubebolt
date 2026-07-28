@@ -55,6 +55,18 @@ export function IngestActivityPage() {
     refetchInterval: POLL_INTERVAL_MS,
   })
 
+  // cluster_id → friendly name, so the per-cluster active-series breakdown can
+  // label each cluster (the agent's cluster_id is a UID; the clusters list
+  // carries the operator-facing display name).
+  const { data: clusters } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
+  const clusterNameById = useMemo(() => {
+    const m: Record<string, string> = {}
+    for (const c of clusters ?? []) {
+      if (c.clusterId) m[c.clusterId] = c.displayName || c.name
+    }
+    return m
+  }, [clusters])
+
   // Default tenant first, the rest A-Z. The OSS install only has the
   // "default" tenant; this ordering is mostly future-proofing for the
   // multi-tenant Enterprise UX.
@@ -119,6 +131,7 @@ export function IngestActivityPage() {
             tenant={t}
             agents={(agents ?? []).filter((a) => a.tenantId === t.id)}
             rangeMinutes={rangeMinutes}
+            clusterNameById={clusterNameById}
           />
         ))}
       </div>
@@ -136,9 +149,11 @@ interface TenantIngestCardProps {
   // at rate[5m] regardless because "current rate" is a smoothing
   // signal, not a range-dependent aggregation.
   rangeMinutes: number
+  // cluster_id → friendly name for the per-cluster active-series breakdown.
+  clusterNameById: Record<string, string>
 }
 
-function TenantIngestCard({ tenant, agents, rangeMinutes }: TenantIngestCardProps) {
+function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: TenantIngestCardProps) {
   // Instant queries powering the chips + gauge. Each returns a single
   // number; we render the result inline. PromQL functions used:
   //   - sum(rate(...[5m])) for the headline (fixed 5m smoothing)
@@ -159,7 +174,11 @@ function TenantIngestCard({ tenant, agents, rangeMinutes }: TenantIngestCardProp
     queryKey: ['ingest-activity', tenant.id, 'samples-per-sec'],
     queryFn: () =>
       api.adminQueryMetrics({
-        query: `sum(rate(kubebolt_agent_grpc_samples_received_total{${tenantLabel}}[5m])) + sum(rate(kubebolt_prom_write_samples_accepted_total{${tenantLabel}}[5m]))`,
+        // `or vector(0)` on each side so a tenant using only ONE ingest path
+        // (e.g. gRPC agents, no remote_write) still gets a number — `scalar +
+        // empty vector` is empty in PromQL, which is why the headline read "—"
+        // while the split chart (two separate series) showed the gRPC rate fine.
+        query: `(sum(rate(kubebolt_agent_grpc_samples_received_total{${tenantLabel}}[5m])) or vector(0)) + (sum(rate(kubebolt_prom_write_samples_accepted_total{${tenantLabel}}[5m])) or vector(0))`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -185,6 +204,18 @@ function TenantIngestCard({ tenant, agents, rangeMinutes }: TenantIngestCardProp
     queryKey: ['admin-tenant-limits', tenant.id],
     queryFn: () => api.getTenantLimits(tenant.id),
     staleTime: 60_000, // limits change rarely; cache aggressively
+  })
+
+  // Active series broken down by cluster — the per-cluster consumption lens
+  // (#65). count by (cluster_id) over the tenant's series shows WHICH cluster
+  // drives the org's cardinality (and thus its cost / which cluster to trim).
+  const { data: seriesByCluster } = useQuery({
+    queryKey: ['ingest-activity', tenant.id, 'series-by-cluster'],
+    queryFn: () =>
+      api.adminQueryMetrics({
+        query: `count by (cluster_id) ({${tenantLabel}})`,
+      }),
+    refetchInterval: POLL_INTERVAL_MS,
   })
 
   // Stream lifecycle chips: connections / disconnects in the selected
@@ -220,6 +251,12 @@ function TenantIngestCard({ tenant, agents, rangeMinutes }: TenantIngestCardProp
     cap && cap > 0 && activeSeriesValue !== null
       ? Math.min(100, Math.round((activeSeriesValue / cap) * 100))
       : null
+
+  // Per-cluster active-series breakdown (cluster_id-labelled series only; the
+  // handful of backend self-metrics carry no cluster_id and are dropped so the
+  // percentages sum across real clusters).
+  const clusterBreakdown = vectorByClusterId(seriesByCluster).filter((c) => c.clusterId)
+  const clusterSeriesTotal = clusterBreakdown.reduce((sum, c) => sum + c.count, 0)
 
   // Empty-state detection: no samples/sec AND no agents AND no recent
   // activity in either status group. Show a quieter card with the docs
@@ -312,8 +349,50 @@ function TenantIngestCard({ tenant, agents, rangeMinutes }: TenantIngestCardProp
               showStats={false}
               height={160}
               controlledRangeMinutes={rangeMinutes}
+              // Per-tenant samples/sec rate limit (sustained rate over it → 429 +
+              // Retry-After). Mirror the active-series cap so the ceiling shows on the
+              // chart, not just the headline. Omitted when unset / 0 (no cap).
+              referenceLines={
+                limits?.effective.writeSamplesPerSec && limits.effective.writeSamplesPerSec > 0
+                  ? [
+                      {
+                        y: limits.effective.writeSamplesPerSec,
+                        label: `rate limit ${formatRate(limits.effective.writeSamplesPerSec)}`,
+                        shortLabel: 'limit',
+                        color: '#ef4444',
+                      },
+                    ]
+                  : undefined
+              }
             />
           </div>
+
+          {/* Active series by cluster — per-cluster consumption lens (#65) */}
+          {clusterBreakdown.length > 0 && (
+            <div>
+              <h3 className="text-[11px] font-semibold uppercase tracking-wider text-kb-text-tertiary mb-2 flex items-center gap-1.5">
+                <Database className="w-3 h-3" /> Active series by cluster
+              </h3>
+              <div className="space-y-1.5">
+                {clusterBreakdown.map((c) => {
+                  const pct = clusterSeriesTotal > 0 ? Math.round((c.count / clusterSeriesTotal) * 100) : 0
+                  const name = clusterNameById[c.clusterId] || c.clusterId.slice(0, 12)
+                  return (
+                    <div key={c.clusterId} className="flex items-center gap-3 text-xs">
+                      <span className="w-44 shrink-0 truncate text-kb-text-secondary" title={name}>
+                        {name}
+                      </span>
+                      <div className="flex-1 h-1.5 rounded-full bg-kb-elevated overflow-hidden">
+                        <div className="h-full rounded-full bg-kb-accent" style={{ width: `${pct}%` }} />
+                      </div>
+                      <span className="w-16 text-right font-mono text-kb-text-primary">{formatInt(c.count)}</span>
+                      <span className="w-9 text-right font-mono text-kb-text-tertiary">{pct}%</span>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Chips row */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -396,9 +475,12 @@ function StreamLifecycleChips({
         <Power className="w-3 h-3" />
         gRPC stream events (last {rangeLabel})
       </div>
+      {/* These are stream LIFECYCLE events in the window (churn), not current
+          state — "opened"/"closed" so they don't read as "N agents connected",
+          which is the Connected Agents table below. 0/0 = no flapping. */}
       <div className="flex flex-wrap gap-2">
-        <Chip label="connected" count={connected} variant="ok" />
-        <Chip label="disconnected" count={disconnected} variant="muted" />
+        <Chip label="opened" count={connected} variant="ok" />
+        <Chip label="closed" count={disconnected} variant="muted" />
         {authRejected > 0 && <Chip label="auth rejected" count={authRejected} variant="error" />}
       </div>
     </div>
@@ -566,6 +648,20 @@ function vectorByStatus(resp: unknown): Record<string, number> {
     if (Number.isFinite(v)) out[status] = v
   }
   return out
+}
+
+// vectorByClusterId reduces a `count by (cluster_id) (...)` vector into
+// per-cluster entries sorted by descending count. Entries with no cluster_id
+// (backend self-metrics) keep an empty clusterId and are filtered by the caller.
+function vectorByClusterId(resp: unknown): Array<{ clusterId: string; count: number }> {
+  const data = (resp as { data?: { result?: Array<{ metric?: Record<string, string>; value?: [number, string] }> } })?.data
+  const out: Array<{ clusterId: string; count: number }> = []
+  for (const r of data?.result ?? []) {
+    if (!r.value) continue
+    const v = parseFloat(r.value[1])
+    if (Number.isFinite(v)) out.push({ clusterId: r.metric?.cluster_id ?? '', count: v })
+  }
+  return out.sort((a, b) => b.count - a.count)
 }
 
 function hasNonZeroStats(resp: unknown): boolean {

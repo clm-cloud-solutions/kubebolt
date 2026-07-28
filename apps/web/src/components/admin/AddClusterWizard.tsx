@@ -274,7 +274,7 @@ export function AddClusterWizard({ onClose }: Props) {
         {/* Left: configuration (scrolls independently) */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5 min-w-0">
         <div className="text-[12px] text-kb-text-secondary leading-relaxed">
-          Register a remote Kubernetes cluster by installing the KubeBolt agent in it. The agent dials this backend over gRPC and auto-registers the cluster — it appears in the switcher within ~30 seconds.
+          Register a remote Kubernetes cluster by installing the KubeBolt agent in it. The agent dials the KubeBolt API over gRPC and auto-registers the cluster — it appears in the switcher within ~30 seconds.
         </div>
 
         {/* Reachability warnings */}
@@ -301,7 +301,7 @@ export function AddClusterWizard({ onClose }: Props) {
               Backend gRPC port 9090 must be reachable from the remote cluster
             </div>
             <p className="text-[11px] text-kb-text-secondary leading-relaxed">
-              KubeBolt runs outside Kubernetes, so there's no Service to expose. The remote agent dials this backend directly over gRPC — make sure port <span className="font-mono text-kb-text-primary">9090</span> is reachable from where the agent runs (publish it with <span className="font-mono">-p 9090:9090</span>, open firewall/NAT, or front it with a reverse proxy). Then enter that <span className="font-mono">host:9090</span> below.
+              KubeBolt runs outside Kubernetes, so there's no Service to expose. The remote agent dials the KubeBolt API directly over gRPC — make sure port <span className="font-mono text-kb-text-primary">9090</span> is reachable from where the agent runs (publish it with <span className="font-mono">-p 9090:9090</span>, open firewall/NAT, or front it with a reverse proxy). Then enter that <span className="font-mono">host:9090</span> below.
             </p>
           </div>
         )}
@@ -465,6 +465,20 @@ function buildHelmCommand(cfg: AgentInstallConfig, nodeSelector: Array<{ k: stri
       if (pAuth === 'bearer' && cfg.promRead?.bearerToken?.trim()) flags.push(`agent.promRead.auth.bearerToken=${escVal(cfg.promRead.bearerToken.trim())}`)
       if (pAuth === 'awsSigV4') flags.push(`agent.promRead.auth.awsRegion=${cfg.promRead?.awsRegion?.trim() || '<AWS_REGION>'}`)
     }
+  }
+  // OpenCost cost integration. 'promread' rides the promRead metrics source
+  // (the picker sets metricsSource='promread', so the block above already emits
+  // promRead.enabled + url) — here we only flip cost on.
+  switch (cfg.opencostMode) {
+    case 'bundled':
+      flags.push('opencost.enabled=true')
+      break
+    case 'scrape':
+      flags.push(`collectors.exporters.opencost=${escVal(cfg.opencostScrapeUrl?.trim() || '<OPENCOST_METRICS_URL>')}`)
+      break
+    case 'promread':
+      flags.push('agent.promRead.cost.enabled=true')
+      break
   }
   // mTLS — only meaningful when transport TLS is on.
   if (cfg.tlsEnabled && cfg.tlsCaSecret?.trim()) flags.push(`tls.caSecret=${cfg.tlsCaSecret.trim()}`)

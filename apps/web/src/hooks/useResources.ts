@@ -149,9 +149,10 @@ export function useRolloutHistory(type: string, namespace: string, name: string)
   })
 }
 
-// Logs have their own fixed refresh interval (independent of global setting).
-// When a closed time-window or previous-container query is active, auto-refresh
-// is disabled — the result is historical and shouldn't churn.
+// Logs are an INVESTIGATION surface: auto-refresh is opt-in (default OFF) so a
+// user reading a filtered/scrolled log isn't yanked out from under every 10s
+// (finding #13). The Logs tab exposes a "Live" toggle that flips `live` on. A
+// closed time-window or previous-container query is always static (historical).
 export interface PodLogsOptions {
   since?: string
   sinceTime?: string
@@ -161,6 +162,8 @@ export interface PodLogsOptions {
   // Caller-side gate: defaults to true. Set false to suspend the query
   // (e.g. while the user is editing an invalid datetime range).
   enabled?: boolean
+  // Live tail: auto-refetch every 10s while true. Default OFF (see above).
+  live?: boolean
 }
 export function usePodLogs(
   namespace: string,
@@ -175,7 +178,9 @@ export function usePodLogs(
     queryKey: ['pod-logs', namespace, name, container, tailLines, opts],
     queryFn: () => api.getPodLogs(namespace, name, container || undefined, tailLines, opts),
     enabled: callerEnabled && !!namespace && !!name,
-    refetchInterval: historical ? false : 10_000,
+    // Opt-in live tail only; static otherwise (default) and always static for
+    // historical windows.
+    refetchInterval: !historical && opts?.live ? 10_000 : false,
   })
 }
 
