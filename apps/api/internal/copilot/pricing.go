@@ -41,6 +41,15 @@ var modelPricing = map[string]ModelPricing{
 	// the lower tier. Haiku 4.5 is more expensive than the now-retired
 	// Haiku 3.5 ($1/$5 vs $0.80/$4). Sonnet pricing stayed flat at
 	// $3/$15 across the 4.x line.
+	//
+	// Claude 5 family (current): Opus 5 and Opus 4.8 share the Opus $5/$25
+	// tier; Sonnet 5 stays at $3/$15 (Anthropic runs a $2/$10 intro rate
+	// through 2026-08-31 — we track the durable list price for estimates);
+	// Fable 5 is the premium tier at $10/$50.
+	"claude-fable-5":  {Input: 10, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
+	"claude-opus-5":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
+	"claude-opus-4-8": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
+	"claude-sonnet-5": {Input: 3, CachedInput: 0.30, CacheCreation: 3.75, Output: 15},
 	"claude-opus-4-7": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-6": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-5": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
