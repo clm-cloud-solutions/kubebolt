@@ -1,1 +1,1 @@
-export { KobiSigil, type KobiSigilState } from './KobiSigil'
+export { KobiSigil, KobiSigilIcon, KobiAutopilotIcon, type KobiSigilState } from './KobiSigil'

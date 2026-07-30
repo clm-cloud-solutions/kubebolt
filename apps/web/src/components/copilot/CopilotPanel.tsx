@@ -424,7 +424,7 @@ export function CopilotPanel() {
             <KobiSigil state={kobiState} size={18} />
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
+            <span className="font-display text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
               Kobi
             </span>
             <span className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate">
@@ -818,7 +818,7 @@ function EmptyState() {
       <div className="mb-4">
         <KobiSigil state="watching" size={56} />
       </div>
-      <h3 className="text-base font-semibold tracking-tight text-kobi-text mb-1">Kobi</h3>
+      <h3 className="font-display text-base font-semibold tracking-tight text-kobi-text mb-1">Kobi</h3>
       <p className="text-sm text-kobi-text-secondary mb-4 max-w-xs">
         Ask about your cluster, troubleshoot an issue, or learn about Kubernetes.
       </p>

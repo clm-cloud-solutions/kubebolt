@@ -62,6 +62,10 @@ export default {
           'st-ok': 'rgb(var(--kobi-st-ok-rgb) / <alpha-value>)',
           'st-warn': 'rgb(var(--kobi-st-warn-rgb) / <alpha-value>)',
           'st-error': 'rgb(var(--kobi-st-error-rgb) / <alpha-value>)',
+          // info = "running now" (Autopilot flow) — sky tier per theme.
+          'st-info': 'rgb(var(--kobi-st-info-rgb) / <alpha-value>)',
+          'st-ok-dim': 'var(--kobi-st-ok-dim)',
+          'st-info-dim': 'var(--kobi-st-info-dim)',
           'st-warn-dim': 'var(--kobi-st-warn-dim)',
           'st-error-dim': 'var(--kobi-st-error-dim)',
           'st-warn-line': 'var(--kobi-st-warn-line)',
@@ -80,6 +84,10 @@ export default {
       fontFamily: {
         sans: ['DM Sans', 'sans-serif'],
         mono: ['JetBrains Mono', 'monospace'],
+        // Display face for Kobi-brand headings only (hub titles, chat
+        // wordmark) — the site's Voltage Editorial voice. Everything else
+        // stays DM Sans.
+        display: ['Space Grotesk', 'DM Sans', 'sans-serif'],
       },
     },
   },

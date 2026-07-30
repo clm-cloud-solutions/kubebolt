@@ -115,10 +115,13 @@
   /* Ink: dark text used ON the green accent (white on #00e07a fails
      contrast; the site sets dark ink on green fills). */
   --kobi-ink: #06130c;
-  /* Sigil — 700 tier (≥3.9:1 on their header tiles); static uses the
-     deep brand green for the small message avatars. */
+  /* Sigil — amber/sky on the 700 tier (≥3.9:1 on their header tiles;
+     600 would drop below the 3:1 floor). Watching sits on 600 — user
+     QA flagged the 700 forest green as off-brand at hero size; #059669
+     (= st-ok light) keeps ≥3.5:1 on its tile and matches the product
+     green family. Static uses the deep brand green. */
   --kobi-sigil-static: #009a54;
-  --kobi-sigil-watching: #047857;
+  --kobi-sigil-watching: #059669;
   --kobi-sigil-investigating: #b45309;
   --kobi-sigil-awaiting: #0369a1;
   /* Kobi-scoped status. The amber dim uses a LIVELIER base than the
@@ -128,13 +131,19 @@
   --kobi-st-ok-rgb: 5 150 105;
   --kobi-st-warn-rgb: 180 83 9;
   --kobi-st-error-rgb: 220 38 38;
+  /* info = "running now" — the sky family of the sigil awaiting tier
+     (sky-700 on light, sky-400 on dark), used by Autopilot flow. */
+  --kobi-st-info-rgb: 3 105 161;
   /* Composed forms of the triplets, for SVG props and other non-Tailwind
      consumers (e.g. the metric chart's limit line). */
   --kobi-st-ok: #059669;
   --kobi-st-warn: #b45309;
   --kobi-st-error: #dc2626;
+  --kobi-st-info: #0369a1;
   --kobi-st-warn-dim: rgba(245, 158, 11, 0.12);
   --kobi-st-error-dim: rgba(220, 38, 38, 0.06);
+  --kobi-st-ok-dim: rgba(5, 150, 105, 0.12);
+  --kobi-st-info-dim: rgba(3, 105, 161, 0.1);
   --kobi-st-warn-line: rgba(217, 119, 6, 0.55);
 }
 
@@ -170,11 +179,15 @@
   --kobi-st-ok-rgb: 52 211 153;
   --kobi-st-warn-rgb: 251 191 36;
   --kobi-st-error-rgb: 239 68 68;
+  --kobi-st-info-rgb: 56 189 248;
   --kobi-st-ok: #34d399;
   --kobi-st-warn: #fbbf24;
   --kobi-st-error: #ef4444;
+  --kobi-st-info: #38bdf8;
   --kobi-st-warn-dim: rgba(251, 191, 36, 0.09);
   --kobi-st-error-dim: rgba(239, 68, 68, 0.09);
+  --kobi-st-ok-dim: rgba(52, 211, 153, 0.12);
+  --kobi-st-info-dim: rgba(56, 189, 248, 0.1);
   --kobi-st-warn-line: rgba(251, 191, 36, 0.4);
 }
 
