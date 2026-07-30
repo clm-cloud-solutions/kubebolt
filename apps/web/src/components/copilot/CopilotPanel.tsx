@@ -357,43 +357,55 @@ export function CopilotPanel() {
   return (
     <div
       style={containerStyle}
-      className={`relative bg-kb-card border border-kb-border z-[300] flex flex-col shadow-2xl ${
-        isDocked ? 'border-l' : ''
+      className={`relative bg-kobi-bg border border-kobi-border z-[300] flex flex-col ${
+        isDocked ? 'border-l shadow-2xl' : 'kobi-floating-shadow'
       }`}
     >
       {/* Resize handles — wide enough to grab easily, positioned slightly outside the panel
-          edge so the cursor changes before reaching the visible border */}
+          edge so the cursor changes before reaching the visible border. The GRAB area stays
+          12px, but the visible hover indicator is a centered 3px hairline — tinting the whole
+          hit zone read as a thick green slab down the panel edge. */}
       {isDocked ? (
         <div
           onMouseDown={startDockedResize}
-          className="absolute -left-1 top-0 bottom-0 w-3 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-[400]"
+          className="group absolute -left-1 top-0 bottom-0 w-3 cursor-ew-resize z-[400]"
           title="Drag to resize width"
-        />
+        >
+          <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-[3px] rounded-full group-hover:bg-kobi-accent/50 transition-colors" />
+        </div>
       ) : (
         <>
           {/* Left edge */}
           <div
             onMouseDown={(e) => startFloatingResize(e, 'left')}
-            className="absolute -left-1 top-5 bottom-5 w-3 cursor-ew-resize hover:bg-kb-accent/30 transition-colors z-[400]"
+            className="group absolute -left-1 top-5 bottom-5 w-3 cursor-ew-resize z-[400]"
             title="Drag to resize width"
-          />
+          >
+            <div className="absolute left-1/2 -translate-x-1/2 top-0 bottom-0 w-[3px] rounded-full group-hover:bg-kobi-accent/50 transition-colors" />
+          </div>
           {/* Top edge */}
           <div
             onMouseDown={(e) => startFloatingResize(e, 'top')}
-            className="absolute -top-1 left-5 right-5 h-3 cursor-ns-resize hover:bg-kb-accent/30 transition-colors z-[400]"
+            className="group absolute -top-1 left-5 right-5 h-3 cursor-ns-resize z-[400]"
             title="Drag to resize height"
-          />
-          {/* Top-left corner — diagonal resize, larger hit area */}
+          >
+            <div className="absolute top-1/2 -translate-y-1/2 left-0 right-0 h-[3px] rounded-full group-hover:bg-kobi-accent/50 transition-colors" />
+          </div>
+          {/* Top-left corner — diagonal resize, larger hit area. Indicator is
+              a 3px "L" hugging the panel's rounded corner (same hairline
+              language as the edges), not a solid block. */}
           <div
             onMouseDown={(e) => startFloatingResize(e, 'corner')}
-            className="absolute -top-1 -left-1 w-6 h-6 cursor-nwse-resize hover:bg-kb-accent/40 transition-colors z-[401] rounded-tl-xl"
+            className="group absolute -top-1 -left-1 w-6 h-6 cursor-nwse-resize z-[401]"
             title="Drag to resize"
-          />
+          >
+            <div className="absolute inset-1 rounded-tl-xl border-t-[3px] border-l-[3px] border-transparent group-hover:border-kobi-accent/50 transition-colors" />
+          </div>
         </>
       )}
 
       {/* Header */}
-      <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
+      <div className="px-4 py-3 border-b border-kobi-border flex items-center justify-between shrink-0">
         <div className="flex items-center gap-2 min-w-0">
           {/* The avatar background tints with the state, in the same color
               family as the Sigil inside. At small sizes (18px) the inner
@@ -406,16 +418,16 @@ export function CopilotPanel() {
                 ? 'bg-amber-100 dark:bg-amber-950/40'
                 : kobiState === 'awaiting'
                   ? 'bg-sky-100 dark:bg-sky-950/40'
-                  : 'bg-kb-accent-light'
+                  : 'bg-kobi-accent-light'
             }`}
           >
             <KobiSigil state={kobiState} size={18} />
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-sm font-semibold text-kb-text-primary leading-tight truncate">
+            <span className="text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
               Kobi
             </span>
-            <span className="text-[9px] font-mono text-kb-text-tertiary uppercase tracking-[0.08em] truncate">
+            <span className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate">
               {config.provider} · {config.model || 'default'}
             </span>
           </div>
@@ -424,21 +436,21 @@ export function CopilotPanel() {
           <button
             onClick={() => setShowHistory(true)}
             title="Conversation history"
-            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
           >
             <History className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={newConversation}
             title="New conversation"
-            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
           <button
             onClick={toggleMode}
             title={isDocked ? 'Switch to floating window' : 'Dock to right side'}
-            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
           >
             {isDocked ? <PanelRightOpen className="w-3.5 h-3.5" /> : <PanelRightClose className="w-3.5 h-3.5" />}
           </button>
@@ -447,7 +459,7 @@ export function CopilotPanel() {
               onClick={() => void compactSession(true)}
               disabled={isCompacting || isLoading}
               title="New session with summary — compress conversation and start fresh"
-              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-accent disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
             >
               {isCompacting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Scissors className="w-3.5 h-3.5" />}
             </button>
@@ -456,7 +468,7 @@ export function CopilotPanel() {
             <button
               onClick={() => exportConversationMarkdown(messages, conversationTitle)}
               title="Export conversation (Markdown)"
-              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+              className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
             >
               <Download className="w-3.5 h-3.5" />
             </button>
@@ -465,7 +477,7 @@ export function CopilotPanel() {
             <button
               onClick={clearHistory}
               title="Clear history"
-              className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+              className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
             >
               <Trash2 className="w-3.5 h-3.5" />
             </button>
@@ -473,7 +485,7 @@ export function CopilotPanel() {
           <button
             onClick={closePanel}
             title="Close (⌘J)"
-            className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+            className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
           >
             <X className="w-4 h-4" />
           </button>
@@ -482,9 +494,9 @@ export function CopilotPanel() {
 
       {/* Active conversation title */}
       {conversationTitle && messages.length > 0 && (
-        <div className="px-4 py-1.5 border-b border-kb-border flex items-center gap-1.5 shrink-0">
-          <Sparkles className="w-3 h-3 text-kb-text-tertiary shrink-0" />
-          <span className="text-xs text-kb-text-secondary truncate">{conversationTitle}</span>
+        <div className="px-4 py-1.5 border-b border-kobi-border flex items-center gap-1.5 shrink-0">
+          <Sparkles className="w-3 h-3 text-kobi-text-tertiary shrink-0" />
+          <span className="text-xs text-kobi-text-secondary truncate">{conversationTitle}</span>
         </div>
       )}
 
@@ -636,7 +648,7 @@ export function CopilotPanel() {
                     // (empty avatar slot + content), like the metric cards above.
                     <div className="flex justify-start gap-2 max-w-[95%]">
                       <div className="w-6 shrink-0" aria-hidden />
-                      <div className="flex items-center gap-1.5 text-[11px] text-kb-text-tertiary">
+                      <div className="flex items-center gap-1.5 text-[11px] text-kobi-text-tertiary">
                         <Square className="w-2.5 h-2.5 fill-current shrink-0" />
                         <span className="font-mono">Stopped by you</span>
                       </div>
@@ -687,7 +699,7 @@ export function CopilotPanel() {
         {isLoading && <StreamStatusHint />}
 
         {error && (
-          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-[11px]">
+          <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-kobi-st-error-dim text-kobi-st-error text-[11px]">
             <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span className="break-words">{error}</span>
           </div>
@@ -707,14 +719,14 @@ export function CopilotPanel() {
       </div>
 
       {/* Input */}
-      <div className="border-t border-kb-border p-3 shrink-0">
+      <div className="border-t border-kobi-border p-3 shrink-0">
         <div className="flex gap-2 items-end">
           {/* AI bezel — gradient border that rotates around the box
               (accent → blue → violet → back), paired with a slow
               hue-cycling outer glow. Both effects share the same
               palette as the Ask Copilot button so the affordance
               reads as "this is the AI surface" wherever it appears. */}
-          <div className="kb-ai-bezel flex-1 bg-kb-bg">
+          <div className="kb-ai-bezel flex-1 bg-kobi-card">
             <textarea
               ref={inputRef}
               value={input}
@@ -723,7 +735,7 @@ export function CopilotPanel() {
               placeholder="Ask about your cluster..."
               rows={1}
               disabled={isLoading}
-              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none resize-none max-h-32 overflow-y-auto overflow-x-hidden disabled:opacity-50"
+              className="relative z-[1] w-full px-3 py-2 rounded-lg bg-transparent border-0 text-sm text-kobi-text placeholder:text-kobi-text-tertiary focus:outline-none resize-none max-h-32 overflow-y-auto overflow-x-hidden disabled:opacity-50"
               style={{ minHeight: '36px' }}
             />
           </div>
@@ -732,7 +744,7 @@ export function CopilotPanel() {
               onClick={cancelMessage}
               title="Stop generating"
               aria-label="Stop generating"
-              className="w-9 h-9 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-kb-text-secondary hover:text-kb-text-primary border border-kb-border flex items-center justify-center transition-colors shrink-0"
+              className="w-9 h-9 rounded-lg bg-kobi-elevated hover:bg-kobi-elevated text-kobi-text-secondary hover:text-kobi-text border border-kobi-border flex items-center justify-center transition-colors shrink-0"
             >
               <Square className="w-3.5 h-3.5 fill-current" />
             </button>
@@ -740,13 +752,13 @@ export function CopilotPanel() {
             <button
               onClick={handleSend}
               disabled={!input.trim()}
-              className="w-9 h-9 rounded-lg bg-kb-accent hover:bg-kb-accent/90 text-white disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+              className="w-9 h-9 rounded-lg bg-kobi-accent-fill hover:bg-kobi-accent-fill/90 text-kobi-ink disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
             >
               <Send className="w-4 h-4" />
             </button>
           )}
         </div>
-        <div className="text-[9px] font-mono text-kb-text-tertiary mt-1.5 text-center leading-relaxed">
+        <div className="text-[10.5px] font-mono text-kobi-text-tertiary mt-1.5 text-center leading-relaxed">
           AI can make mistakes. Verify important information before acting on it.
           <br />
           ⌘+Enter to send · ⌘J to toggle
@@ -754,7 +766,7 @@ export function CopilotPanel() {
             <>
               <br />
               <span
-                className="text-kb-text-secondary"
+                className="text-kobi-text-secondary"
                 title={formatUsageTooltip(sessionUsage)}
               >
                 Question: {formatTokens(sessionUsage.inputTokens + sessionUsage.outputTokens)} billed
@@ -769,7 +781,7 @@ export function CopilotPanel() {
             <>
               <br />
               <span
-                className={`${contextPct >= 80 ? 'text-status-warn' : 'text-kb-text-secondary'}`}
+                className={`${contextPct >= 80 ? 'text-kobi-st-warn' : 'text-kobi-text-secondary'}`}
                 title={`Cumulative conversation size vs auto-compact trigger${
                   config.sessionBudget ? ` (budget ${config.sessionBudget.toLocaleString()})` : ''
                 }`}
@@ -806,16 +818,18 @@ function EmptyState() {
       <div className="mb-4">
         <KobiSigil state="watching" size={56} />
       </div>
-      <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Kobi</h3>
-      <p className="text-sm text-kb-text-tertiary mb-4 max-w-xs">
+      <h3 className="text-base font-semibold tracking-tight text-kobi-text mb-1">Kobi</h3>
+      <p className="text-sm text-kobi-text-secondary mb-4 max-w-xs">
         Ask about your cluster, troubleshoot an issue, or learn about Kubernetes.
       </p>
+      {/* Suggestion chips are the panel's most valuable surface — they get
+          card treatment and a readable size instead of tertiary 12px. */}
       <div className="space-y-1.5 w-full max-w-md">
         {suggestions.map((text) => (
           <button
             key={text}
             onClick={() => sendMessage(text)}
-            className="w-full text-left px-3 py-2 rounded-lg bg-kb-bg hover:bg-kb-elevated border border-kb-border text-xs text-kb-text-secondary hover:text-kb-text-primary transition-colors"
+            className="w-full text-left px-3 py-2 rounded-lg bg-kobi-card hover:bg-kobi-elevated border border-kobi-border hover:border-kobi-border-accent text-[13px] text-kobi-text-secondary hover:text-kobi-text transition-colors"
           >
             {text}
           </button>
@@ -841,11 +855,22 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
   if (message.role === 'user') {
     return (
       <div className="flex justify-end gap-2">
-        <div className="max-w-[85%] px-3 py-2 rounded-lg bg-kb-elevated text-sm text-kb-text-primary whitespace-pre-wrap break-words">
+        {/* User bubble — soft accent tint so the two voices are
+            distinguishable at a glance (they were two near-identical
+            grays in dark mode). bubble-user is the tint flattened to an
+            opaque color so the tail diamond composes without a seam. */}
+        <div className="relative max-w-[85%] px-3.5 py-2.5 rounded-xl rounded-tr-md bg-kobi-bubble-user border border-kobi-accent/20 text-sm text-kobi-text whitespace-pre-wrap break-words">
           {message.content}
+          {/* WhatsApp-style tail toward the avatar: rotated square, borders
+              only on the two protruding faces; the inner half covers the
+              bubble's own border segment so the outline reads continuous. */}
+          <span
+            aria-hidden
+            className="absolute -right-[5px] top-2 w-2.5 h-2.5 rotate-45 rounded-[1px] bg-kobi-bubble-user border-t border-r border-kobi-accent/20"
+          />
         </div>
-        <div className="w-6 h-6 rounded-full bg-kb-elevated flex items-center justify-center shrink-0 mt-0.5">
-          <User className="w-3.5 h-3.5 text-kb-text-secondary" />
+        <div className="w-6 h-6 rounded-full bg-kobi-elevated flex items-center justify-center shrink-0 mt-0.5">
+          <User className="w-3.5 h-3.5 text-kobi-text-secondary" />
         </div>
       </div>
     )
@@ -867,21 +892,28 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
   // rendering immediately after the bubble.
   return (
     <div className="flex justify-start gap-2 group max-w-[95%] min-w-0">
-      <div className="w-6 h-6 rounded-full bg-kb-accent-light flex items-center justify-center shrink-0 mt-0.5">
+      <div className="w-6 h-6 rounded-full bg-kobi-accent-light flex items-center justify-center shrink-0 mt-0.5">
         <KobiSigil state="static" size={14} />
       </div>
-      <div className="flex flex-col items-start min-w-0 flex-1">
-        <div className="relative px-3 py-2 rounded-lg bg-kb-bg text-sm text-kb-text-primary break-words min-w-0 max-w-full w-full overflow-hidden">
+      {/* relative: hosts the tail. The tail can't live inside the bubble —
+          its overflow-hidden (copy button / code blocks) would clip it. */}
+      <div className="relative flex flex-col items-start min-w-0 flex-1">
+        {/* Assistant bubble — card-v3 treatment: slightly ELEVATED over the
+            panel bg (the old bg-kb-bg sat darker than the panel and sank),
+            thin green-tinted bevel border, and a ~65ch measure so long RCA
+            answers don't stretch into fatiguing 120-char lines on wide
+            docked panels. */}
+        <div className="relative px-3.5 py-2.5 rounded-xl rounded-tl-md bg-kobi-card border border-kobi-border-accent shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] text-[15px] text-kobi-text break-words min-w-0 max-w-[min(65ch,100%)] overflow-hidden">
           {message.content ? (
             <MarkdownRenderer content={message.content} />
           ) : (
-            <span className="text-kb-text-tertiary italic">...</span>
+            <span className="text-kobi-text-tertiary italic">...</span>
           )}
           {message.content && (
             <button
               onClick={handleCopyMessage}
               title={copied ? 'Copied!' : 'Copy message'}
-              className="absolute top-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono text-kb-text-tertiary bg-kb-elevated/95 hover:text-kb-accent hover:bg-kb-elevated opacity-0 group-hover:opacity-100 transition-all"
+              className="absolute top-1.5 right-1.5 flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono text-kobi-text-tertiary bg-kobi-elevated/95 hover:text-kobi-accent hover:bg-kobi-elevated opacity-0 group-hover:opacity-100 transition-all"
             >
               {copied ? (
                 <>
@@ -897,6 +929,11 @@ function MessageBubble({ message }: { message: CopilotMessage }) {
             </button>
           )}
         </div>
+        {/* Kobi-side tail — same diamond as the user bubble, card bg. */}
+        <span
+          aria-hidden
+          className="absolute -left-[5px] top-2 w-2.5 h-2.5 rotate-45 rounded-[1px] bg-kobi-card border-b border-l border-kobi-border-accent"
+        />
       </div>
     </div>
   )
@@ -919,8 +956,8 @@ function ToolCardLane({ children }: { children: React.ReactNode }) {
 function ToolCallIndicator({ toolName }: { toolName: string }) {
   const label = toolName.replace(/_/g, ' ')
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-kb-bg border border-kb-border text-[10px] font-mono text-kb-text-tertiary">
-      <Wrench className="w-3 h-3 text-kb-accent" />
+    <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-kobi-bg border border-kobi-border text-[10px] font-mono text-kobi-text-tertiary">
+      <Wrench className="w-3 h-3 text-kobi-accent" />
       <span>{label}</span>
       <Loader2 className="w-3 h-3 animate-spin ml-auto" />
     </div>
@@ -960,7 +997,7 @@ function StreamStatusHint() {
 
   const longWait = idleMs >= LONG_WAIT_MS
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border w-fit text-[11px] text-kb-text-tertiary">
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-kobi-bg border border-kobi-border w-fit text-[11px] text-kobi-text-tertiary">
       <Loader2 className="w-3 h-3 animate-spin shrink-0" />
       <span className="font-mono">
         {longWait ? 'Taking longer than usual…' : 'Waiting for response…'}
@@ -977,18 +1014,18 @@ function StreamStatusHint() {
 // activity without overpromising progress.
 function ThinkingIndicator() {
   return (
-    <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border w-fit">
+    <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-kobi-bg border border-kobi-border w-fit">
       <div className="flex items-center gap-1">
         <span
-          className="w-1.5 h-1.5 rounded-full bg-kb-accent animate-kb-ai-thinking-dot"
+          className="w-1.5 h-1.5 rounded-full bg-kobi-accent animate-kb-ai-thinking-dot"
           style={{ animationDelay: '0s' }}
         />
         <span
-          className="w-1.5 h-1.5 rounded-full bg-kb-accent animate-kb-ai-thinking-dot"
+          className="w-1.5 h-1.5 rounded-full bg-kobi-accent animate-kb-ai-thinking-dot"
           style={{ animationDelay: '0.18s' }}
         />
         <span
-          className="w-1.5 h-1.5 rounded-full bg-kb-accent animate-kb-ai-thinking-dot"
+          className="w-1.5 h-1.5 rounded-full bg-kobi-accent animate-kb-ai-thinking-dot"
           style={{ animationDelay: '0.36s' }}
         />
       </div>
@@ -1005,10 +1042,10 @@ function ThinkingIndicator() {
 function MaxRoundsNoticeBubble({ limit }: { limit?: number }) {
   const { sendMessage, isLoading } = useCopilot()
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-status-warn/40 bg-status-warn/5 text-[10px] font-mono text-kb-text-secondary">
-      <Hourglass className="w-3 h-3 text-status-warn shrink-0" />
-      <span className="text-status-warn font-semibold uppercase tracking-wider">Step limit reached</span>
-      <span className="text-kb-text-tertiary">·</span>
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-kobi-st-warn/40 bg-kobi-st-warn/5 text-[10px] font-mono text-kobi-text-secondary">
+      <Hourglass className="w-3 h-3 text-kobi-st-warn shrink-0" />
+      <span className="text-kobi-st-warn font-semibold uppercase tracking-wider">Step limit reached</span>
+      <span className="text-kobi-text-tertiary">·</span>
       <span>
         Kobi paused after {limit ?? 'the'} tool step{limit === 1 ? '' : 's'} before finishing.
       </span>
@@ -1020,7 +1057,7 @@ function MaxRoundsNoticeBubble({ limit }: { limit?: number }) {
             trigger: 'continue_after_max_rounds',
           })
         }
-        className="ml-auto inline-flex items-center gap-1 text-status-warn hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
+        className="ml-auto inline-flex items-center gap-1 text-kobi-st-warn hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed"
       >
         Continue
         <ArrowRight className="w-3 h-3" />
@@ -1049,14 +1086,14 @@ function CompactNoticeBubble({
           } stubbed`
         : 'no-op'
   return (
-    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-kb-accent/30 bg-gradient-to-r from-kb-accent-light via-kb-accent-light/40 to-violet-500/5 text-[10px] font-mono text-kb-text-secondary">
-      <Sparkles className="w-3 h-3 text-kb-accent shrink-0" />
-      <span className="text-kb-accent font-semibold uppercase tracking-wider">{title}</span>
-      <span className="text-kb-text-tertiary">·</span>
+    <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-dashed border-kobi-accent/30 bg-gradient-to-r from-kb-accent-light via-kb-accent-light/40 to-violet-500/5 text-[10px] font-mono text-kobi-text-secondary">
+      <Sparkles className="w-3 h-3 text-kobi-accent shrink-0" />
+      <span className="text-kobi-accent font-semibold uppercase tracking-wider">{title}</span>
+      <span className="text-kobi-text-tertiary">·</span>
       <span>{action}</span>
       {meta.turnsFolded > 0 && meta.toolResultsStubbed > 0 && (
         <>
-          <span className="text-kb-text-tertiary">+</span>
+          <span className="text-kobi-text-tertiary">+</span>
           <span>
             {meta.toolResultsStubbed} tool result{meta.toolResultsStubbed === 1 ? '' : 's'} stubbed
           </span>
@@ -1064,15 +1101,15 @@ function CompactNoticeBubble({
       )}
       {meta.tokensBefore > 0 && (
         <>
-          <span className="text-kb-text-tertiary">·</span>
+          <span className="text-kobi-text-tertiary">·</span>
           <span>
             {formatTokens(meta.tokensBefore)} → {formatTokens(meta.tokensAfter)}
-            {pct > 0 && <span className="text-kb-accent ml-1">(−{pct}%)</span>}
+            {pct > 0 && <span className="text-kobi-accent ml-1">(−{pct}%)</span>}
           </span>
         </>
       )}
       {meta.model && (
-        <span className="ml-auto text-kb-text-tertiary truncate" title={meta.model}>
+        <span className="ml-auto text-kobi-text-tertiary truncate" title={meta.model}>
           {meta.model}
         </span>
       )}

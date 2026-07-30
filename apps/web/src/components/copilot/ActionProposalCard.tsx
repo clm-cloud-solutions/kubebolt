@@ -71,7 +71,18 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const [dryRunPhase, setDryRunPhase] = useState<'idle' | 'validating' | 'ok' | 'rejected'>('idle')
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null)
 
-  const { action, target, params, summary, rationale, risk, reversible } = proposal
+  const { action, target, params, summary, rationale, reversible } = proposal
+
+  // Never trust the model's self-declared risk for destructive work — an
+  // irreversible delete_resource arrived marked "low" in the field, which
+  // rendered a green LOW RISK badge with a one-click Execute. Clamp to a
+  // floor derived from what the action actually does: deletes and anything
+  // irreversible are high (red theme + type-to-confirm), no matter what
+  // the proposal claims. The badge, theme and confirm gate all follow.
+  const risk: typeof proposal.risk =
+    action === 'delete_resource' || reversible === false
+      ? 'high'
+      : proposal.risk
 
   // Validate a FRESH, pending, in-this-session proposal against the cluster
   // (?dryRun=true) ONCE, so the card shows "would apply" / "would be rejected"
@@ -240,7 +251,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
 
   if (status === 'dismissed') {
     return (
-      <div className="text-[10px] font-mono text-kb-text-tertiary italic px-2 py-1">
+      <div className="text-[10px] font-mono text-kobi-text-tertiary italic px-2 py-1">
         Proposal dismissed: {summary}
       </div>
     )
@@ -249,10 +260,19 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
   // Risk-driven accent. Low = accent green, medium = warn amber, high = error red.
   const accentClasses =
     risk === 'high'
-      ? 'border-status-error/40 bg-status-error-dim/30'
+      ? // The *-dim tokens are per-theme and already carry the design alpha
+        // (mockup 6–12%) — overriding with /30 tripled it and the cards
+        // read as solid color slabs. Use the tokens as designed.
+        'border-kobi-st-error/40 bg-kobi-st-error-dim'
       : risk === 'medium'
-        ? 'border-status-warn/40 bg-status-warn-dim/30'
-        : 'border-kb-accent/40 bg-kb-accent-light/30'
+        ? // warn-line carries its own alpha (40% dark / 55% light): with a
+          // uniform /40 the light amber border was too faint to tell the
+          // medium card from the red one at a glance.
+          'border-kobi-st-warn-line bg-kobi-st-warn-dim'
+        : // accent-dim (~3%), NOT accent-light (10%): the user bubble owns
+          // the 10% tint — with both at 10% a low-risk card and a user
+          // message read as the same green slab in a conversation.
+          'border-kobi-accent/40 bg-kobi-accent-dim'
 
   // The card always sits on a tinted background (green / amber / red, all
   // at low alpha). The default tertiary token (#555770 in dark) loses
@@ -260,7 +280,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
   // it's just as bad on medium-risk amber. Use secondary (#8b8d9a)
   // uniformly for all muted text inside the card; it's still clearly a
   // "less important" gray but readable on every tint and in both themes.
-  const headerMutedClass = 'text-kb-text-secondary'
+  const headerMutedClass = 'text-kobi-text-secondary'
 
   const detailPath = buildDetailPath(target.type, target.namespace, target.name)
   const detailPathPods = detailPath ? `${detailPath}?tab=${podsTabId(target.type)}` : null
@@ -271,8 +291,8 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
     >
       {/* Header */}
       <div className="flex items-start gap-2">
-        <div className="w-6 h-6 rounded-lg bg-kb-bg flex items-center justify-center shrink-0 mt-0.5">
-          <Wrench className="w-3.5 h-3.5 text-kb-accent" />
+        <div className="w-6 h-6 rounded-lg bg-kobi-bg flex items-center justify-center shrink-0 mt-0.5">
+          <Wrench className="w-3.5 h-3.5 text-kobi-accent" />
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5 flex-wrap">
@@ -281,13 +301,13 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
             </span>
             <RiskBadge risk={risk} />
             {!reversible && (
-              <span className="text-[9px] font-mono text-status-warn flex items-center gap-1">
+              <span className="text-[9px] font-mono text-kobi-st-warn flex items-center gap-1">
                 <ShieldAlert className="w-3 h-3" />
                 irreversible
               </span>
             )}
           </div>
-          <div className="text-xs font-semibold text-kb-text-primary mt-0.5 break-words">
+          <div className="text-xs font-semibold text-kobi-text mt-0.5 break-words">
             {summary}
           </div>
           <div className={`text-[10px] font-mono ${headerMutedClass} mt-0.5`}>
@@ -295,7 +315,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
             {detailPath ? (
               <Link
                 to={detailPath}
-                className="hover:text-kb-accent inline-flex items-center gap-0.5"
+                className="hover:text-kobi-accent inline-flex items-center gap-0.5"
               >
                 {target.namespace}/{target.name}
                 <ExternalLink className="w-2.5 h-2.5" />
@@ -311,7 +331,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
 
       {/* Rationale */}
       {rationale && (
-        <div className="text-[11px] text-kb-text-secondary leading-snug border-l-2 border-kb-border pl-2 ml-1">
+        <div className="text-[11px] text-kobi-text-secondary leading-snug border-l-2 border-kobi-border pl-2 ml-1">
           {rationale}
         </div>
       )}
@@ -328,9 +348,9 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
           {Object.entries(otherParams).map(([k, v]) => (
             <span
               key={k}
-              className="text-[10px] font-mono text-kb-text-secondary bg-kb-bg/60 px-1.5 py-0.5 rounded border border-kb-border"
+              className="text-[10px] font-mono text-kobi-text-secondary bg-kobi-bg/60 px-1.5 py-0.5 rounded border border-kobi-border"
             >
-              {k}: <span className="text-kb-text-primary">{formatProposalParam(k, v)}</span>
+              {k}: <span className="text-kobi-text">{formatProposalParam(k, v)}</span>
             </span>
           ))}
         </div>
@@ -348,9 +368,9 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
           dangerous future actions). Mirrors the native Delete modal pattern. */}
       {status === 'pending' && requireTyping && (
         <div className="flex flex-col gap-1.5 mt-1 ml-1">
-          <label className="text-[10px] font-mono text-kb-text-secondary">
+          <label className="text-[10px] font-mono text-kobi-text-secondary">
             Type{' '}
-            <span className="font-bold text-kb-text-primary bg-kb-bg/60 px-1 rounded border border-kb-border">
+            <span className="font-bold text-kobi-text bg-kobi-bg/60 px-1 rounded border border-kobi-border">
               {confirmExpected}
             </span>{' '}
             to enable Execute:
@@ -360,7 +380,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
             placeholder={confirmExpected}
-            className="px-2 py-1 rounded border border-kb-border bg-kb-bg text-[11px] font-mono text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-status-error/60"
+            className="px-2 py-1 rounded border border-kobi-border bg-kobi-bg text-[11px] font-mono text-kobi-text placeholder:text-kobi-text-tertiary focus:outline-none focus:border-kobi-st-error/60"
             autoComplete="off"
             spellCheck={false}
           />
@@ -382,7 +402,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
                 <button
                   disabled
                   title="The cluster would reject this — see the preview above"
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-[11px] font-medium bg-kb-accent opacity-40 cursor-not-allowed"
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-[11px] font-medium bg-kobi-accent opacity-40 cursor-not-allowed"
                 >
                   <Play className="w-3 h-3" />
                   Execute · {action.replace(/_/g, ' ')}
@@ -390,7 +410,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
                 <button
                   onClick={execute}
                   disabled={!confirmMatched}
-                  className={`text-[11px] font-mono underline ${headerMutedClass} hover:text-status-error disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed`}
+                  className={`text-[11px] font-mono underline ${headerMutedClass} hover:text-kobi-st-error disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed`}
                 >
                   Execute anyway
                 </button>
@@ -401,8 +421,8 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
                 disabled={!confirmMatched}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-white text-[11px] font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                   risk === 'high'
-                    ? 'bg-status-error hover:bg-status-error/90'
-                    : 'bg-kb-accent hover:bg-kb-accent/90'
+                    ? 'bg-kobi-st-error hover:bg-kobi-st-error/90'
+                    : 'bg-kobi-accent hover:bg-kobi-accent/90'
                 }`}
               >
                 {risk === 'high' ? <Trash2 className="w-3 h-3" /> : <Play className="w-3 h-3" />}
@@ -411,7 +431,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
             )}
             <button
               onClick={dismiss}
-              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg ${headerMutedClass} hover:text-kb-text-primary hover:bg-kb-elevated text-[11px] transition-colors`}
+              className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg ${headerMutedClass} hover:text-kobi-text hover:bg-kobi-elevated text-[11px] transition-colors`}
             >
               <XIcon className="w-3 h-3" />
               Dismiss
@@ -421,15 +441,15 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
       )}
 
       {status === 'executing' && (
-        <div className="flex items-center gap-2 text-[11px] text-kb-text-secondary mt-1">
-          <Loader2 className="w-3.5 h-3.5 animate-spin text-kb-accent" />
+        <div className="flex items-center gap-2 text-[11px] text-kobi-text-secondary mt-1">
+          <Loader2 className="w-3.5 h-3.5 animate-spin text-kobi-accent" />
           Executing...
         </div>
       )}
 
       {status === 'success' && (
         <div className="flex flex-col gap-1.5 mt-1">
-          <div className="flex items-center gap-2 text-[11px] text-status-ok">
+          <div className="flex items-center gap-2 text-[11px] text-kobi-st-ok">
             <CheckCircle2 className="w-3.5 h-3.5" />
             {resultMsg ?? 'Done'}
           </div>
@@ -451,7 +471,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
           {action === 'delete_resource' ? (
             <Link
               to={`/${canonicalListRoute(target.type)}`}
-              className="self-start text-[10px] font-mono text-kb-accent hover:underline inline-flex items-center gap-1"
+              className="self-start text-[10px] font-mono text-kobi-accent hover:underline inline-flex items-center gap-1"
             >
               <ExternalLink className="w-2.5 h-2.5" />
               View {target.type}
@@ -460,7 +480,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
             detailPathPods && (
               <Link
                 to={detailPathPods}
-                className="self-start text-[10px] font-mono text-kb-accent hover:underline inline-flex items-center gap-1"
+                className="self-start text-[10px] font-mono text-kobi-accent hover:underline inline-flex items-center gap-1"
               >
                 <ExternalLink className="w-2.5 h-2.5" />
                 View pods
@@ -472,13 +492,13 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
 
       {status === 'error' && (
         <div className="flex flex-col gap-1.5 mt-1">
-          <div className="flex items-start gap-2 text-[11px] text-status-error">
+          <div className="flex items-start gap-2 text-[11px] text-kobi-st-error">
             <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
             <span className="break-words">{error}</span>
           </div>
           <button
             onClick={execute}
-            className={`self-start text-[10px] font-mono ${headerMutedClass} hover:text-kb-accent underline`}
+            className={`self-start text-[10px] font-mono ${headerMutedClass} hover:text-kobi-accent underline`}
           >
             Retry
           </button>
@@ -491,10 +511,10 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
 function RiskBadge({ risk }: { risk: ActionProposal['risk'] }) {
   const cls =
     risk === 'high'
-      ? 'text-status-error bg-status-error-dim'
+      ? 'text-kobi-st-error bg-kobi-st-error-dim'
       : risk === 'medium'
-        ? 'text-status-warn bg-status-warn-dim'
-        : 'text-kb-accent bg-kb-accent-light'
+        ? 'text-kobi-st-warn bg-kobi-st-warn-dim'
+        : 'text-kobi-accent bg-kobi-accent-light'
   return (
     <span className={`text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded ${cls}`}>
       {risk} risk
@@ -777,29 +797,29 @@ function BlastRadiusPreview({ blast }: { blast: Record<string, unknown> }) {
   }
 
   // Note on text colors: the panel sits on a tinted red background
-  // (bg-status-error-dim/20). Default tertiary/secondary tokens lose
+  // (bg-kobi-st-error-dim/20). Default tertiary/secondary tokens lose
   // contrast there in dark mode (#555770 over translucent red ≈
   // illegible — see issue noted during PoC validation). We pick colors
-  // that work on both light and dark by using the status-error palette
+  // that work on both light and dark by using the kobi-st-error palette
   // with reduced opacity for muted text and a high-contrast primary for
   // body copy, instead of the generic kb-text-* tokens.
   return (
-    <div className="rounded-md border border-status-error/30 bg-status-error-dim/20 px-2.5 py-2 ml-1 flex flex-col gap-1.5">
-      <div className="flex items-center gap-1.5 text-[10px] font-mono text-status-error uppercase tracking-wider">
+    <div className="rounded-md border border-kobi-st-error/30 bg-kobi-st-error-dim px-2.5 py-2 ml-1 flex flex-col gap-1.5">
+      <div className="flex items-center gap-1.5 text-[10px] font-mono text-kobi-st-error uppercase tracking-wider">
         <AlertTriangle className="w-3 h-3" />
         What will happen
       </div>
-      <ul className="flex flex-col gap-1 text-[11px] text-kb-text-primary">
+      <ul className="flex flex-col gap-1 text-[11px] text-kobi-text">
         {items.map((it, i) => (
           <li key={i} className="flex flex-col gap-0.5">
             <span className="flex items-start gap-1.5">
-              <span className={it.icon === 'warn' ? 'text-status-error' : 'text-status-error/60'}>
+              <span className={it.icon === 'warn' ? 'text-kobi-st-error' : 'text-kobi-st-error/60'}>
                 •
               </span>
               <span>{it.text}</span>
             </span>
             {it.detail && it.detail.length > 0 && (
-              <span className="text-[10px] font-mono text-status-error/80 ml-3 break-words">
+              <span className="text-[10px] font-mono text-kobi-st-error/80 ml-3 break-words">
                 {it.detail.slice(0, 5).join(', ')}
                 {it.detail.length > 5 ? `, ... +${it.detail.length - 5} more` : ''}
               </span>
@@ -808,10 +828,10 @@ function BlastRadiusPreview({ blast }: { blast: Record<string, unknown> }) {
         ))}
       </ul>
       {b.notes && b.notes.length > 0 && (
-        <ul className="flex flex-col gap-1 mt-1 pt-1.5 border-t border-status-error/20 text-[10px] text-kb-text-primary/80 leading-snug">
+        <ul className="flex flex-col gap-1 mt-1 pt-1.5 border-t border-kobi-st-error/20 text-[10px] text-kobi-text/80 leading-snug">
           {b.notes.map((note, i) => (
             <li key={i} className="flex items-start gap-1.5">
-              <span className="text-status-error/70">ℹ</span>
+              <span className="text-kobi-st-error/70">ℹ</span>
               <span>{note}</span>
             </li>
           ))}
@@ -1115,10 +1135,10 @@ function WorkloadProgress({
   const isStalled = timedOut && !isComplete
   const Icon = isComplete ? CheckCircle2 : isStalled ? AlertTriangle : Loader2
   const colorCls = isComplete
-    ? 'text-status-ok'
+    ? 'text-kobi-st-ok'
     : isStalled
-      ? 'text-status-warn'
-      : 'text-kb-text-secondary'
+      ? 'text-kobi-st-warn'
+      : 'text-kobi-text-secondary'
   // Spinner only while genuinely in flight — a stalled action must NOT keep
   // spinning (the original bug: the icon spun forever on a stuck rollout).
   const iconAnim = isComplete || isStalled ? '' : 'animate-spin'
@@ -1134,7 +1154,7 @@ function WorkloadProgress({
           <button
             onClick={() => investigateStall(sendMessage, proposal, line, timeoutMs)}
             disabled={isLoading}
-            className="text-[10px] font-mono text-kb-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
+            className="text-[10px] font-mono text-kobi-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
           >
             <Wrench className="w-2.5 h-2.5" />
             Ask Kobi why
@@ -1157,14 +1177,14 @@ function StalledNotice({ proposal }: { proposal: ActionProposal }) {
   const timeoutMs = config?.actionProgressTimeoutMs ?? PROGRESS_TIMEOUT_FALLBACK_MS
   const detail = proposal.progressDetail ?? 'did not converge'
   return (
-    <div className="flex items-center gap-2 text-[11px] text-status-warn flex-wrap">
+    <div className="flex items-center gap-2 text-[11px] text-kobi-st-warn flex-wrap">
       <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
       <span className="font-mono">{detail}</span>
       <span className="text-[10px]">· did not converge in {Math.round(timeoutMs / 1000)}s</span>
       <button
         onClick={() => investigateStall(sendMessage, proposal, detail, timeoutMs)}
         disabled={isLoading}
-        className="text-[10px] font-mono text-kb-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
+        className="text-[10px] font-mono text-kobi-accent hover:underline disabled:opacity-40 disabled:no-underline disabled:cursor-not-allowed inline-flex items-center gap-1"
       >
         <Wrench className="w-2.5 h-2.5" />
         Ask Kobi why
@@ -1176,7 +1196,7 @@ function StalledNotice({ proposal }: { proposal: ActionProposal }) {
 // DryRunPreview renders the automatic pre-Execute validation: a one-line
 // "Validating…" → "Would apply · <diff>" (green) → "Would be rejected · <reason>"
 // (red, + a req/used/limit breakdown for quota blocks). idle renders nothing
-// (not run, not applicable, or couldn't validate). Reuses status-ok/error
+// (not run, not applicable, or couldn't validate). Reuses kobi-st-ok/error
 // tokens — no new design tokens.
 function DryRunPreview({
   phase,
@@ -1188,15 +1208,15 @@ function DryRunPreview({
   if (phase === 'idle') return null
   if (phase === 'validating') {
     return (
-      <div className="flex items-center gap-2 text-[11px] text-kb-text-secondary ml-1">
-        <Loader2 className="w-3.5 h-3.5 animate-spin text-kb-accent shrink-0" />
+      <div className="flex items-center gap-2 text-[11px] text-kobi-text-secondary ml-1">
+        <Loader2 className="w-3.5 h-3.5 animate-spin text-kobi-accent shrink-0" />
         <span className="font-mono">Validating against the cluster…</span>
       </div>
     )
   }
   if (phase === 'ok') {
     return (
-      <div className="flex items-center gap-2 text-[11px] text-status-ok ml-1 rounded-md border border-status-ok/20 bg-status-ok/5 px-2 py-1.5">
+      <div className="flex items-center gap-2 text-[11px] text-kobi-st-ok ml-1 rounded-md border border-kobi-st-ok/20 bg-kobi-st-ok/5 px-2 py-1.5">
         <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
         <span className="font-mono">{result?.message || 'Would apply'}</span>
       </div>
@@ -1205,7 +1225,7 @@ function DryRunPreview({
   // rejected
   const q = result?.quota
   return (
-    <div className="flex flex-col gap-1 text-[11px] text-status-error ml-1 rounded-md border border-status-error/25 bg-status-error/5 px-2 py-1.5">
+    <div className="flex flex-col gap-1 text-[11px] text-kobi-st-error ml-1 rounded-md border border-kobi-st-error/25 bg-kobi-st-error/5 px-2 py-1.5">
       <div className="flex items-start gap-2">
         <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
         <span className="font-mono break-words">
@@ -1213,7 +1233,7 @@ function DryRunPreview({
         </span>
       </div>
       {q && (
-        <div className="ml-5 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-0.5 text-[10px] font-mono text-status-error/85">
+        <div className="ml-5 grid grid-cols-[5rem_1fr] gap-x-3 gap-y-0.5 text-[10px] font-mono text-kobi-st-error/85">
           <span>requested</span>
           <span className="break-all">{q.requested}</span>
           <span>used</span>
