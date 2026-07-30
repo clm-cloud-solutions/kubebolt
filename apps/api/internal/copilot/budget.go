@@ -10,9 +10,14 @@ func ContextWindowFor(provider, model string) int {
 	m := strings.ToLower(model)
 	switch strings.ToLower(provider) {
 	case "anthropic":
-		// 1M-token models: Opus 4.7, Opus 4.6, Sonnet 4.6. Everything else
-		// in the 4.x family (Sonnet 4.5, Haiku 4.5) is 200K.
-		if strings.Contains(m, "opus-4-7") ||
+		// 1M-token models: the Claude 5 family (Fable 5, Opus 5, Sonnet 5) and
+		// Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6. Everything else in the 4.x family
+		// (Sonnet 4.5, Haiku 4.5) is 200K.
+		if strings.Contains(m, "fable-5") ||
+			strings.Contains(m, "opus-5") ||
+			strings.Contains(m, "sonnet-5") ||
+			strings.Contains(m, "opus-4-8") ||
+			strings.Contains(m, "opus-4-7") ||
 			strings.Contains(m, "opus-4-6") ||
 			strings.Contains(m, "sonnet-4-6") ||
 			strings.Contains(m, "1m") {

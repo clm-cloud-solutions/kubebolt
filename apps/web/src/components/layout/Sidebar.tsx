@@ -1,5 +1,7 @@
 import { useState, useCallback } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { NavLink, useLocation } from 'react-router-dom'
+import { api } from '@/services/api'
 import { isDashboardPath } from '@/utils/routes'
 import {
   LayoutDashboard,
@@ -199,11 +201,22 @@ function loadCollapsedGroups(): Record<string, boolean> {
   return init
 }
 
-export function Sidebar({ overview, collapsed }: SidebarProps) {
+export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
+  // Collapsed rail "peeks" open while hovered — it expands to a floating overlay
+  // and snaps back on mouse-leave. `collapsed` is the EFFECTIVE state every label /
+  // header / width decision below reads, so the whole sidebar renders expanded
+  // during the peek without touching each call site. The flow width stays pinned to
+  // the rail on the wrapper <div> so the content never reflows — the panel floats
+  // over it (see the return). Peek only arms when the persisted state is collapsed.
+  const [peeking, setPeeking] = useState(false)
+  const collapsed = collapsedProp && !peeking
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
   const { hasRole, isAuthEnabled, user } = useAuth()
+  // Cluster count for the Clusters nav badge — reuses the ['clusters'] cache the
+  // ClustersPage already populates, so it's effectively free here.
+  const { data: clusters } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
   const location = useLocation()
   const uiConfig = useUIConfig()
   // Metrics-only active cluster → dim + disable the resource-view nav (Pods, workloads,
@@ -254,10 +267,12 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
       </button>
     )
   }
-  // Whether a group's items render: Pinned always; rail mode always (icon-only,
-  // no header to expand from); otherwise honor the collapsed map.
+  // Whether a group's items render: Pinned always; otherwise honor the collapsed
+  // map in EVERY mode. The collapsed rail (and its hover-peek) now group/ungroup
+  // exactly like the expanded sidebar — the peek surfaces the section headers to
+  // toggle groups from, so the rail no longer dumps every icon when collapsed.
   const showGroupItems = (title: string, collapsible: boolean) =>
-    !collapsible || collapsed || !collapsedGroups[title]
+    !collapsible || !collapsedGroups[title]
 
   const handleLogoClick = useCallback(() => {
     const next = clickCount + 1
@@ -271,10 +286,19 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
   }, [clickCount])
 
   return (
+    // Flow spacer — reserves the layout width from the PERSISTED collapse state so
+    // the content column never reflows while the rail peeks open. Hover only arms
+    // the peek in collapsed mode. No z-index here (plain stacking parent) so the
+    // AboutModal sibling below stays free to overlay the app.
+    <div
+      className={`h-full shrink-0 relative ${collapsedProp ? 'w-[56px]' : 'w-[220px]'}`}
+      onMouseEnter={collapsedProp ? () => setPeeking(true) : undefined}
+      onMouseLeave={collapsedProp ? () => setPeeking(false) : undefined}
+    >
     <aside
-      className={`h-full bg-kb-sidebar border-r border-kb-border flex flex-col shrink-0 relative overflow-hidden transition-[width] duration-200 ease-out ${
+      className={`absolute inset-y-0 left-0 z-[500] h-full bg-kb-sidebar border-r border-kb-border flex flex-col overflow-hidden transition-[width] duration-200 ease-out ${
         collapsed ? 'w-[56px]' : 'w-[220px]'
-      }`}
+      } ${collapsedProp && peeking ? 'shadow-2xl' : ''}`}
     >
       {/* Celebration particles */}
       {celebrating && (
@@ -357,7 +381,11 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
             {showGroupItems(section.title, collapsible) && (
             <div className="space-y-0.5">
               {section.items.map((item) => {
-                const count = getCount(overview, item.countKey)
+                // Clusters isn't a per-cluster ClusterOverview count — it's the
+                // size of the cluster list (durable membership).
+                const count = item.path === '/clusters'
+                  ? clusters?.length
+                  : getCount(overview, item.countKey)
                 const isRestricted = item.permissionKey != null
                   && overview?.permissions != null
                   && overview.permissions[item.permissionKey] === false
@@ -420,6 +448,11 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
                         )}
                         <span className="shrink-0">{item.icon}</span>
                         {!collapsed && <span className="flex-1 truncate">{item.label}</span>}
+                        {!collapsed && item.badge && (
+                          <span className="text-[9px] font-mono font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-kb-accent-light text-kb-accent">
+                            {item.badge}
+                          </span>
+                        )}
                         {!collapsed && (isRestricted ? (
                           <ShieldOff className="w-3 h-3 text-status-warn" />
                         ) : count !== undefined ? (
@@ -497,7 +530,10 @@ export function Sidebar({ overview, collapsed }: SidebarProps) {
         </button>
       </div>
 
-      {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
     </aside>
+      {/* Rendered as a sibling of the floating <aside> (outside its z-[500]
+          stacking context) so the full-screen modal can overlay the whole app. */}
+      {aboutOpen && <AboutModal onClose={() => setAboutOpen(false)} />}
+    </div>
   )
 }

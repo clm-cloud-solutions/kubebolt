@@ -16,6 +16,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { api } from '@/services/api'
+import { parseClusterDisplayName } from '@/utils/cluster'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ReliabilityStrip, BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
 import type {
@@ -520,7 +521,20 @@ function SessionModal({
   session: CopilotSessionEnriched
   onClose: () => void
 }) {
-  const title = `${new Date(session.timestamp).toLocaleString()} · ${session.cluster}`
+  // The stored `cluster` field is the raw agent-proxy context (e.g.
+  // "agent:<uid>") — noise. Resolve it to the cluster's friendly display name
+  // via the clusters list (already cached by the topbar). Falls back to just the
+  // timestamp when the cluster isn't resolvable (deleted / unknown) — never the
+  // cryptic raw context.
+  const { data: clusters } = useQuery({
+    queryKey: ['clusters'],
+    queryFn: api.listClusters,
+    staleTime: 5 * 60_000,
+  })
+  const cluster = (clusters ?? []).find((c) => c.context === session.cluster)
+  const clusterLabel = cluster ? parseClusterDisplayName(cluster) : ''
+  const when = new Date(session.timestamp).toLocaleString()
+  const title = clusterLabel ? `${when} · ${clusterLabel}` : when
 
   return (
     <Modal badge="Kobi session" title={title} onClose={onClose} size="lg">

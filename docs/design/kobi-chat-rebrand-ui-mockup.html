@@ -1,0 +1,954 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kobi chat rebrand — mockup as-built (full element inventory)</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  /* Tokens AS IMPLEMENTED (globals.css). Dark + light side by side. */
+  .t-dark {
+    --kobi-accent: #00e07a; --kobi-accent-deep: #00b864;
+    --kobi-accent-light: rgba(0,224,122,.1);
+    --kobi-bg: #0a0b0a; --kobi-card: #131413; --kobi-elevated: #1c1d1c;
+    --kobi-border: #2a2b2a; --kobi-border-accent: rgba(0,224,122,.22);
+    --kobi-text: #f5f2ec; --kobi-text-secondary: #a8a29e; --kobi-text-tertiary: #6b6864;
+    --kobi-code-bg: #0c0d0c; --kobi-code-text: #d9d6cf; --kobi-ink: #06130c;
+    --st-ok: #34d399; --st-warn: #fbbf24; --st-error: #ef4444;
+    --st-warn-dim: rgba(251,191,36,.09); --st-error-dim: rgba(239,68,68,.09);
+    --st-warn-line: rgba(251,191,36,.4);
+    --code-bar-line: rgba(255,255,255,.1); --code-bar-bg: rgba(255,255,255,.03);
+    /* Burbuja del usuario OPACA (accent-light 10% aplanado sobre --kobi-bg):
+       la cola estilo WhatsApp se solapa con la burbuja y un tinte translúcido
+       duplicaría el lavado en la unión. Mismo color compuesto a la vista. */
+    --kobi-bubble-user: #092015;
+    /* Relleno de controles verdes (FAB + send) — en dark es el propio accent */
+    --kobi-accent-fill: #00e07a;
+    /* Sigil — tier 400 sobre fondo oscuro (igual que la app hoy) */
+    --kobi-sigil-static: #00e07a; --kobi-sigil-watching: #34d399;
+    --kobi-sigil-investigating: #fbbf24; --kobi-sigil-awaiting: #38bdf8;
+    --kobi-sigil-investigating-tile: rgba(69,26,3,.4); --kobi-sigil-awaiting-tile: rgba(8,47,73,.4);
+  }
+  /* Light TRADUCIDO, no trasplantado: la identidad de Kobi viene del verde,
+     los biseles y el mono — el matiz de superficie se alinea a la familia
+     FRÍA de la app (--kb-bg #f5f6fa) en vez del marfil cálido del sitio,
+     que a 96% de claridad chocaba contra el resto del dashboard. */
+  .t-light {
+    --kobi-accent: #00b864; --kobi-accent-deep: #009a54;
+    --kobi-accent-light: rgba(0,184,100,.1);
+    --kobi-bg: #f5f6fa; --kobi-card: #ffffff; --kobi-elevated: #e8eaf0;
+    --kobi-border: rgba(26,27,46,.12); --kobi-border-accent: rgba(0,184,100,.3);
+    --kobi-text: #1a1b2e; --kobi-text-secondary: #5a5c6e; --kobi-text-tertiary: #8b8d9a;
+    --kobi-code-bg: #14151c; --kobi-code-text: #e3e4ea; --kobi-ink: #06130c;
+    --st-ok: #059669; --st-warn: #b45309; --st-error: #dc2626;
+    /* El dim ámbar usa una base MÁS clara que el texto (amber-500, no 700):
+       a 7% el 700 se veía beige, casi indistinguible del rosa del error.
+       Base viva + 12% → lee amarillo inequívoco; el rojo queda como ancla. */
+    --st-warn-dim: rgba(245,158,11,.12); --st-error-dim: rgba(220,38,38,.06);
+    --st-warn-line: rgba(217,119,6,.55);
+    --code-bar-line: rgba(255,255,255,.1); --code-bar-bg: rgba(255,255,255,.03);
+    --kobi-bubble-user: #ddf0eb;
+    /* Relleno de controles verdes (FAB + send): un paso más brillante que el
+       accent de texto (#00b864 se apaga como fill sobre fondo claro; el ink
+       oscuro encima mantiene el contraste de sobra) */
+    --kobi-accent-fill: #00cc70;
+    /* Sigil — tier 700 sobre fondo claro (≥3.9:1 sobre sus tiles; los 400
+       de dark quedan entre 1.5:1 y 2.1:1 aquí, por debajo del 3:1 WCAG) */
+    --kobi-sigil-static: #009a54; --kobi-sigil-watching: #059669;
+    --kobi-sigil-investigating: #b45309; --kobi-sigil-awaiting: #0369a1;
+    --kobi-sigil-investigating-tile: #fef3c7; --kobi-sigil-awaiting-tile: #e0f2fe;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#17181c; font-family:'DM Sans',sans-serif; padding:28px; color:#e6e4de; }
+  .mono { font-family:'JetBrains Mono',monospace; }
+  .section-title { font-family:'JetBrains Mono',monospace; font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:#9a9a94; margin:34px 0 16px; text-align:center; }
+  .row { display:flex; gap:28px; flex-wrap:wrap; justify-content:center; align-items:flex-start; }
+
+  .panel {
+    width: 420px; border-radius: 12px; overflow: hidden;
+    background: var(--kobi-bg); border: 1px solid var(--kobi-border);
+    box-shadow: 0 25px 50px -12px rgba(0,0,0,.5);
+    display: flex; flex-direction: column; color: var(--kobi-text);
+  }
+  .panel.wide { width: 560px; }
+  .head { padding: 12px 16px; border-bottom: 1px solid var(--kobi-border); display:flex; align-items:center; gap:8px; }
+  .avatar { width:28px; height:28px; border-radius:8px; background:var(--kobi-accent-light); display:flex; align-items:center; justify-content:center; }
+  .name { font-size:15px; font-weight:600; letter-spacing:-.02em; }
+  .sub { font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--kobi-text-tertiary); }
+
+  .msgs { padding: 14px 16px; display:flex; flex-direction:column; gap:12px; }
+
+  .u-row { display:flex; justify-content:flex-end; gap:8px; }
+  .u-bubble {
+    position:relative; max-width:85%; padding:10px 14px; font-size:14px;
+    border-radius:12px; border-top-right-radius:6px;
+    background: var(--kobi-bubble-user);
+    border: 1px solid color-mix(in srgb, var(--kobi-accent) 20%, transparent);
+  }
+  /* Cola estilo WhatsApp hacia el avatar: rombo opaco con borde en las dos
+     caras salientes; la mitad interior tapa el borde de la burbuja. */
+  .u-bubble::after {
+    content:''; position:absolute; right:-5px; top:8px; width:10px; height:10px;
+    transform:rotate(45deg); border-radius:1px; background:var(--kobi-bubble-user);
+    border-top:1px solid color-mix(in srgb, var(--kobi-accent) 20%, transparent);
+    border-right:1px solid color-mix(in srgb, var(--kobi-accent) 20%, transparent);
+  }
+  .a-row { display:flex; gap:8px; max-width:97%; }
+  .a-avatar { width:24px; height:24px; border-radius:50%; background:var(--kobi-accent-light); display:flex; align-items:center; justify-content:center; flex:none; margin-top:2px; }
+  .a-col { display:flex; flex-direction:column; gap:8px; min-width:0; flex:1; }
+  .a-bubble {
+    position:relative;
+    padding:10px 14px; font-size:15px; line-height:1.65;
+    border-radius:12px; border-top-left-radius:6px;
+    background: var(--kobi-card);
+    border: 1px solid var(--kobi-border-accent);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.04);
+    max-width: 65ch;
+  }
+  /* Cola del lado de Kobi — mismo rombo, fondo card opaco. */
+  .a-bubble::before {
+    content:''; position:absolute; left:-5px; top:8px; width:10px; height:10px;
+    transform:rotate(45deg); border-radius:1px; background:var(--kobi-card);
+    border-bottom:1px solid var(--kobi-border-accent);
+    border-left:1px solid var(--kobi-border-accent);
+  }
+  .a-bubble h2 { font-size:16px; font-weight:600; letter-spacing:-.02em; margin:10px 0 6px; }
+  .a-bubble h2:first-child { margin-top:0; }
+  .a-bubble h4 { font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.06em; color:var(--kobi-text-secondary); margin:8px 0 4px; }
+  .a-bubble p + p { margin-top:6px; }
+  .a-bubble ul { margin:6px 0 6px 18px; }
+  .a-bubble li { margin:3px 0; }
+  .a-bubble a { color:var(--kobi-accent); text-decoration:underline; }
+  code.inline { font-family:'JetBrains Mono',monospace; font-size:13px; background:var(--kobi-elevated); color:var(--kobi-accent); padding:1px 5px; border-radius:4px; }
+
+  /* MarkdownRenderer — code block (tokenized, dark surface in BOTH themes) */
+  .codeblock { margin:8px 0; border-radius:8px; overflow:hidden; border:1px solid var(--kobi-border); background:var(--kobi-code-bg); }
+  .codeblock .bar { display:flex; justify-content:space-between; align-items:center; padding:4px 12px; border-bottom:1px solid var(--code-bar-line); background:var(--code-bar-bg); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:#6b6864; font-family:'JetBrains Mono',monospace; }
+  .codeblock .bar .copy { display:flex; align-items:center; gap:4px; color:#6b6864; cursor:pointer; }
+  .codeblock pre { padding:8px 12px; font-family:'JetBrains Mono',monospace; font-size:13px; line-height:1.65; color:var(--kobi-code-text); overflow-x:auto; }
+  .codeblock pre .cmt { color:#6b6864; }
+  .codeblock pre .kw { color:var(--kobi-accent); }
+
+  /* MarkdownRenderer — table */
+  .md-table { width:100%; border-collapse:collapse; font-size:12px; margin:8px 0; border:1px solid var(--kobi-border); border-radius:8px; overflow:hidden; }
+  .md-table thead { background:color-mix(in srgb, var(--kobi-elevated) 50%, transparent); }
+  .md-table th { text-align:left; font-weight:600; color:var(--kobi-text-secondary); padding:6px 8px; font-size:11px; }
+  .md-table td { padding:6px 8px; color:var(--kobi-text); border-top:1px solid var(--kobi-border); }
+  .md-table td.mono, .md-table th.mono { font-family:'JetBrains Mono',monospace; }
+  .ok { color:var(--st-ok); } .warn { color:var(--st-warn); } .err { color:var(--st-error); }
+
+  /* ToolCallCard — collapsible tool chip (mono 10px family) */
+  .tool { border-radius:8px; background:var(--kobi-bg); border:1px solid var(--kobi-border); overflow:hidden; font-family:'JetBrains Mono',monospace; font-size:10px; max-width:97%; }
+  .tool .trow { display:flex; align-items:center; gap:8px; padding:6px 12px; color:var(--kobi-text-tertiary); }
+  .tool .trow .label { flex:none; }
+  .tool .trow .summ { color:var(--kobi-text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+  .tool .trow .right { margin-left:auto; display:flex; align-items:center; gap:6px; flex:none; }
+  .tool .body { border-top:1px solid var(--kobi-border); }
+  .tool .sect { padding:8px 12px; }
+  .tool .sect + .sect { border-top:1px solid var(--kobi-border); }
+  .tool .stitle { font-size:9px; text-transform:uppercase; letter-spacing:.1em; color:var(--kobi-text-tertiary); margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }
+  .tool .kv { display:flex; gap:8px; font-size:11px; line-height:1.5; }
+  .tool .kv .k { color:var(--kobi-text-tertiary); flex:none; }
+  .tool .kv .v { color:var(--kobi-text); word-break:break-all; }
+  .tool pre.cmd { font-size:11px; color:var(--kobi-text-secondary); white-space:pre-wrap; word-break:break-all; line-height:1.5; }
+  .spin { display:inline-block; width:11px; height:11px; border:1.6px solid var(--kobi-text-tertiary); border-top-color:transparent; border-radius:50%; animation:sp 1s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg); } }
+
+  /* ActionProposalCard — risk-tinted */
+  .prop { max-width:97%; border-radius:12px; padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+  .prop.low  { border:1px solid color-mix(in srgb, var(--kobi-accent) 40%, transparent); background:color-mix(in srgb, var(--kobi-accent-light) 30%, transparent); }
+  .prop.med  { border:1px solid var(--st-warn-line); background:var(--st-warn-dim); }
+  .prop.high { border:1px solid color-mix(in srgb, var(--st-error) 40%, transparent); background:var(--st-error-dim); }
+  .prop .phead { display:flex; align-items:flex-start; gap:8px; }
+  .prop .ptile { width:24px; height:24px; border-radius:8px; background:var(--kobi-bg); display:flex; align-items:center; justify-content:center; flex:none; margin-top:2px; }
+  .prop .plabel { font-family:'JetBrains Mono',monospace; font-size:9px; text-transform:uppercase; letter-spacing:.1em; color:var(--kobi-text-secondary); display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .prop .pbadge { color:var(--st-warn); display:inline-flex; align-items:center; gap:3px; }
+  .prop .ptitle { font-size:12px; font-weight:600; color:var(--kobi-text); margin-top:2px; }
+  .prop .pctx { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--kobi-text-secondary); margin-top:2px; }
+  .prop .preason { font-size:11px; color:var(--kobi-text-secondary); line-height:1.5; border-left:2px solid var(--kobi-border); padding-left:8px; margin-left:4px; }
+  .prop .pchips { display:flex; flex-wrap:wrap; gap:6px; margin-left:4px; }
+  .prop .pchip { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--kobi-text-secondary); background:color-mix(in srgb, var(--kobi-bg) 60%, transparent); border:1px solid var(--kobi-border); border-radius:4px; padding:2px 6px; }
+  .prop .pchip b { color:var(--kobi-text); font-weight:500; }
+  .prop .pbtns { display:flex; align-items:center; gap:10px; margin-top:2px; flex-wrap:wrap; }
+  .prop .exec { display:inline-flex; align-items:center; gap:6px; padding:6px 12px; border-radius:8px; border:0; font-size:11px; font-weight:500; font-family:inherit; cursor:pointer; background:var(--kobi-accent); color:#fff; }
+  .prop.high .exec { background:var(--st-error); }
+  .prop .dismiss { background:none; border:0; font-size:11px; color:var(--kobi-text-secondary); cursor:pointer; font-family:inherit; padding:6px 8px; border-radius:8px; }
+  .prop .typeconfirm { display:flex; flex-direction:column; gap:6px; margin-left:4px; }
+  .prop .typeconfirm label { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--kobi-text-secondary); }
+  .prop .typeconfirm label b { color:var(--kobi-text); background:color-mix(in srgb, var(--kobi-bg) 60%, transparent); padding:1px 4px; border-radius:3px; border:1px solid var(--kobi-border); }
+  .prop .typeconfirm input { padding:5px 8px; border-radius:6px; border:1px solid var(--kobi-border); background:var(--kobi-bg); font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--kobi-text); outline:none; max-width:220px; }
+  .prop .pstate { display:flex; align-items:center; gap:8px; font-size:11px; }
+  .prop .pstate.okst { color:var(--st-ok); }
+  .prop .pstate.runst { color:var(--kobi-text-secondary); }
+  .prop .plink { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--kobi-accent); text-decoration:none; display:inline-flex; align-items:center; gap:3px; margin-left:2px; }
+  .prop .plink:hover { text-decoration:underline; }
+  .prop-dismissed { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--kobi-text-tertiary); font-style:italic; padding:4px 8px; }
+
+  /* KobiMetricChartCard */
+  .chart { border-radius:8px; border:1px solid var(--kobi-border); background:color-mix(in srgb, var(--kobi-bg) 40%, transparent); overflow:hidden; max-width:97%; }
+  .chart .chead { display:flex; align-items:center; gap:8px; padding:8px 12px; border-bottom:1px solid var(--kobi-border); }
+  .chart .ctile { width:24px; height:24px; border-radius:8px; background:var(--kobi-bg); display:flex; align-items:center; justify-content:center; flex:none; }
+  .chart .ctitle { font-family:'JetBrains Mono',monospace; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--kobi-text-tertiary); }
+  .chart .csub { font-size:10px; color:var(--kobi-text-tertiary); }
+  .chart .mrow { display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 12px; }
+  .chart .mname { font-family:'JetBrains Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--kobi-text-secondary); }
+  .chart .mstats { font-size:11px; color:var(--kobi-text-secondary); }
+  .chart .mstats b { color:var(--kobi-text); font-weight:500; }
+  .chart .mbadge { font-family:'JetBrains Mono',monospace; font-size:10px; padding:1px 6px; border-radius:4px; border:1px solid color-mix(in srgb, var(--st-error) 50%, transparent); color:var(--st-error); }
+  .chart .carea { padding: 0 12px 8px; }
+  .chart .cfoot { border-top:1px solid var(--kobi-border); padding:4px 12px 6px; font-family:'JetBrains Mono',monospace; font-size:10px; text-transform:uppercase; letter-spacing:.1em; color:var(--kobi-text-tertiary); }
+
+  .chips { padding: 0 16px 12px; display:flex; flex-direction:column; gap:6px; }
+  .chip { text-align:left; padding:8px 12px; font-size:13px; border-radius:8px; background:var(--kobi-card); border:1px solid var(--kobi-border); color:var(--kobi-text-secondary); cursor:pointer; font-family:inherit; }
+  .chip:hover { border-color: var(--kobi-border-accent); color: var(--kobi-text); background: var(--kobi-elevated); }
+
+  .inputrow { padding: 12px 16px 6px; border-top:1px solid var(--kobi-border); display:flex; gap:8px; align-items:center; }
+  .bezel { position:relative; flex:1; border-radius:8px; background:var(--kobi-card);
+    box-shadow: 0 0 18px 2px rgba(0,224,122,.2), 0 0 36px 8px rgba(0,224,122,.09); }
+  .t-light .bezel { box-shadow: 0 0 18px 2px rgba(0,184,100,.18), 0 0 36px 8px rgba(0,184,100,.08); }
+  .bezel::before { content:''; position:absolute; inset:-1.5px; border-radius:inherit; padding:1.5px;
+    background: conic-gradient(from 220deg, rgba(0,224,122,.3) 0deg, rgba(0,224,122,.3) 180deg, rgba(0,224,122,.6) 210deg, rgba(0,224,122,1) 245deg, rgba(198,255,227,.95) 310deg, rgba(0,224,122,.6) 340deg, rgba(0,224,122,.3) 360deg);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude; pointer-events:none; }
+  .bezel input { position:relative; z-index:1; width:100%; border:0; background:transparent; padding:10px 12px; font-size:14px; color:var(--kobi-text); font-family:inherit; outline:none; }
+  .send { width:36px; height:36px; border-radius:8px; border:0; background:var(--kobi-accent-fill); color:var(--kobi-ink); font-size:15px; cursor:pointer; }
+  .foot { padding: 0 16px 12px; text-align:center; font-size:10.5px; line-height:1.6; color:var(--kobi-text-tertiary); }
+
+  .fab { position:relative; width:48px; height:48px; border-radius:50%; border:0; cursor:pointer;
+    background: linear-gradient(135deg, var(--kobi-accent-fill), var(--kobi-accent-deep));
+    box-shadow: 0 10px 15px -3px color-mix(in srgb, var(--kobi-accent-fill) 40%, transparent), 0 0 18px 2px color-mix(in srgb, var(--kobi-accent-fill) 20%, transparent);
+    display:flex; align-items:center; justify-content:center; margin: 14px auto 0; }
+  .caption { color:#9a9a94; font-size:11px; text-align:center; padding:10px 0 16px; font-family:'JetBrains Mono',monospace; letter-spacing:.05em; }
+
+  svg.sigil line, svg.sigil circle { stroke:currentColor; }
+  svg.sigil circle.dot { fill:currentColor; stroke:none; }
+
+  /* Inventario — grid dark|light */
+  .inv { display:grid; grid-template-columns: 1fr 1fr; gap:20px; max-width:1100px; margin:0 auto; }
+  .inv-cell { border-radius:12px; padding:16px; background:var(--kobi-bg); border:1px solid var(--kobi-border); color:var(--kobi-text); display:flex; flex-direction:column; gap:10px; }
+  .inv-label { font-family:'JetBrains Mono',monospace; font-size:10px; letter-spacing:.12em; text-transform:uppercase; color:var(--kobi-text-tertiary); }
+
+  /* Demo de estados del sigil (avatar del header, 28px) */
+  .sigil-states { display:flex; gap:22px; flex-wrap:wrap; padding:6px 0; }
+  .sigil-state { display:flex; flex-direction:column; align-items:center; gap:7px; }
+  .sigil-state .tile { width:28px; height:28px; border-radius:8px; display:flex; align-items:center; justify-content:center; }
+  .sigil-state .slabel { font-family:'JetBrains Mono',monospace; font-size:9px; text-transform:uppercase; letter-spacing:.08em; color:var(--kobi-text-tertiary); }
+</style>
+</head>
+<body>
+
+<div class="section-title">panel básico · dark | light (v1 del mockup)</div>
+<div class="row">
+  <!-- DARK básico -->
+  <div>
+    <div class="panel t-dark">
+      <div class="head">
+        <div class="avatar"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+        <div><div class="name">Kobi</div><div class="mono sub">anthropic · claude-haiku-4-5</div></div>
+      </div>
+      <div class="msgs">
+        <div class="u-row"><div class="u-bubble">Why is there a critical issue in monitoring/prometheus-0?</div></div>
+        <div class="a-row">
+          <div class="a-avatar"><svg class="sigil" width="14" height="14" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+          <div class="a-bubble">
+            <p><strong>OOMKilled, three times in 40 minutes.</strong> The container is hitting its memory limit during TSDB compaction.</p>
+            <h2>What I found</h2>
+            <ul>
+              <li>Limit: <code class="inline">2Gi</code> · working set peaks at <code class="inline">2.4Gi</code></li>
+              <li>Restarts: 3 · last exit code 137</li>
+            </ul>
+            <p>I recommend raising the limit to <code class="inline">3Gi</code>. Want me to propose the change?</p>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <button class="chip">Analyze the 51 active warnings</button>
+        <button class="chip">What is the overall status of my cluster?</button>
+      </div>
+      <div class="inputrow">
+        <div class="bezel"><input placeholder="Ask about your cluster..." /></div>
+        <button class="send">➤</button>
+      </div>
+      <div class="foot mono">AI can make mistakes. Verify important information before acting on it.<br/>⌘+Enter to send · ⌘J to toggle</div>
+    </div>
+    <button class="fab t-dark"><svg class="sigil" width="22" height="22" viewBox="0 0 32 32" style="color:#06130c"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></button>
+    <div class="caption">dark · panel + toggle</div>
+  </div>
+
+  <!-- LIGHT básico -->
+  <div>
+    <div class="panel t-light">
+      <div class="head">
+        <div class="avatar"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+        <div><div class="name">Kobi</div><div class="mono sub">anthropic · claude-haiku-4-5</div></div>
+      </div>
+      <div class="msgs">
+        <div class="u-row"><div class="u-bubble">Analyze the 51 active warnings</div></div>
+        <div class="a-row">
+          <div class="a-avatar"><svg class="sigil" width="14" height="14" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+          <div class="a-bubble">
+            <p>Of the 51 warnings, <strong>44 are one recurring pattern</strong>: missing resource limits across three namespaces. The remaining 7 are unbound PVCs.</p>
+            <div class="codeblock">
+              <div class="bar"><span>yaml</span><span class="copy">⧉ copy</span></div>
+              <pre>resources:
+  requests: { cpu: 100m, memory: 128Mi }
+  limits:   { memory: 256Mi }</pre>
+            </div>
+            <p>Code keeps its dark surface in light mode — tokenized, no more GitHub-dark patch.</p>
+          </div>
+        </div>
+      </div>
+      <div class="chips">
+        <button class="chip">Why is prometheus-0 critical?</button>
+        <button class="chip">Show rightsizing opportunities</button>
+      </div>
+      <div class="inputrow">
+        <div class="bezel"><input placeholder="Ask about your cluster..." /></div>
+        <button class="send">➤</button>
+      </div>
+      <div class="foot mono">AI can make mistakes. Verify important information before acting on it.</div>
+    </div>
+    <button class="fab t-light"><svg class="sigil" width="22" height="22" viewBox="0 0 32 32" style="color:#06130c"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></button>
+    <div class="caption">light · panel + toggle</div>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     CONVERSACIÓN DE INCIDENTE COMPLETA — todos los tipos de contenido:
+     tool cards (loading / success / expandido), markdown (tabla, listas,
+     kubectl, YAML), chart de métricas, propuestas (pending / executed).
+     Duplicada dark | light.
+════════════════════════════════════════════════════════════════════ -->
+<div class="section-title">conversación de incidente completa · dark | light</div>
+<div class="row">
+<!-- Se genera dos veces con el mismo markup: t-dark y t-light -->
+<!-- ============ DARK RICO ============ -->
+<div>
+<div class="panel wide t-dark">
+  <div class="head">
+    <div class="avatar"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+    <div><div class="name">Kobi</div><div class="mono sub">anthropic · claude-haiku-4-5</div></div>
+  </div>
+  <div class="msgs">
+    <div class="u-row"><div class="u-bubble">Why is payments-api crashlooping in kobi-incident-lab?</div></div>
+
+    <!-- ToolCallCard: success, colapsada -->
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get insights</span><span class="summ">· active insights</span>
+        <span class="right"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--st-ok)" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <!-- ToolCallCard: success, EXPANDIDA (input + kubectl equivalente) -->
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get pod logs</span><span class="summ">· payments-api-7d9f · tail 200 · grep OOM</span>
+        <span class="right"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--st-ok)" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform:rotate(180deg)"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+      <div class="body">
+        <div class="sect">
+          <div class="stitle">Input</div>
+          <div class="kv"><span class="k">namespace:</span><span class="v">kobi-incident-lab</span></div>
+          <div class="kv"><span class="k">pod:</span><span class="v">payments-api-7d9f8c6b4-x2lqp</span></div>
+          <div class="kv"><span class="k">tail:</span><span class="v">200</span></div>
+          <div class="kv"><span class="k">grep:</span><span class="v">OOM|memory</span></div>
+        </div>
+        <div class="sect">
+          <div class="stitle"><span>Equivalent</span><span style="letter-spacing:0; text-transform:none; display:flex; gap:4px; align-items:center;">⧉ Copy</span></div>
+          <pre class="cmd">kubectl logs -n kobi-incident-lab payments-api-7d9f8c6b4-x2lqp --tail=200 | grep -E 'OOM|memory'</pre>
+        </div>
+      </div>
+    </div>
+
+    <!-- ToolCallCard: running (spinner) -->
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get workload metrics</span><span class="summ">· deployment payments-api · 1h window</span>
+        <span class="right"><span class="spin"></span></span>
+      </div>
+    </div>
+
+    <!-- Respuesta markdown: heading + tabla + lista + inline + link -->
+    <div class="a-row">
+      <div class="a-avatar"><svg class="sigil" width="14" height="14" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+      <div class="a-col">
+        <div class="a-bubble">
+          <p><strong>OOMKill loop.</strong> The container's working set crosses its <code class="inline">512Mi</code> limit roughly every 12 minutes — exit code 137, kubelet restarts it, and the cycle repeats.</p>
+          <h2>Pod state</h2>
+          <table class="md-table">
+            <thead><tr><th>Pod</th><th>Status</th><th class="mono">Restarts</th><th class="mono">Last exit</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">payments-api-7d9f…x2lqp</td><td><span class="err">CrashLoopBackOff</span></td><td class="mono">7</td><td class="mono">137 (OOM)</td></tr>
+              <tr><td class="mono">payments-api-7d9f…m8skv</td><td><span class="ok">Running</span></td><td class="mono">2</td><td class="mono">137 (OOM)</td></tr>
+              <tr><td class="mono">payments-worker-5c…t7dh2</td><td><span class="ok">Running</span></td><td class="mono">0</td><td class="mono">—</td></tr>
+            </tbody>
+          </table>
+          <h2>Why</h2>
+          <ul>
+            <li>Requests <code class="inline">256Mi</code>, limit <code class="inline">512Mi</code> — but P99 working set is <code class="inline">610Mi</code> since yesterday's deploy.</li>
+            <li>The new release enables an in-memory cache (<code class="inline">CACHE_SIZE=512</code>) that alone exceeds the limit.</li>
+          </ul>
+          <p>You can reproduce my checks yourself:</p>
+          <div class="codeblock">
+            <div class="bar"><span>bash</span><span class="copy">⧉ copy</span></div>
+            <pre><span class="cmt"># describe muestra el motivo del último kill</span>
+kubectl -n kobi-incident-lab describe pod payments-api-7d9f8c6b4-x2lqp
+<span class="cmt"># eventos ordenados por hora</span>
+kubectl get events -n kobi-incident-lab --sort-by=.lastTimestamp
+<span class="cmt"># estado actual del deployment</span>
+kubectl -n kobi-incident-lab get deploy payments-api -o wide</pre>
+          </div>
+          <p>Full detail on the <a href="#">workload page ↗</a>.</p>
+        </div>
+
+        <!-- KobiMetricChartCard -->
+        <div class="chart">
+          <div class="chead">
+            <div class="ctile"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+            <div>
+              <div class="ctitle">workload metrics · payments-api</div>
+              <div class="csub">last 1h · deployment · kobi-incident-lab</div>
+            </div>
+          </div>
+          <div class="mrow">
+            <span class="mname">Memory</span>
+            <span class="mstats">avg <b>468Mi</b> · max <b>612Mi</b></span>
+            <span class="mbadge">120% of limit</span>
+          </div>
+          <div class="carea">
+            <svg viewBox="0 0 500 130" width="100%" height="130" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="gd" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" style="stop-color:var(--kobi-accent); stop-opacity:.35"/>
+                  <stop offset="100%" style="stop-color:var(--kobi-accent); stop-opacity:0"/>
+                </linearGradient>
+              </defs>
+              <!-- grid -->
+              <g style="stroke:var(--kobi-border); stroke-opacity:.5">
+                <line x1="34" y1="18" x2="496" y2="18"/><line x1="34" y1="52" x2="496" y2="52"/>
+                <line x1="34" y1="86" x2="496" y2="86"/><line x1="34" y1="120" x2="496" y2="120"/>
+              </g>
+              <!-- limit / request dashed reference lines -->
+              <line x1="34" y1="34" x2="496" y2="34" style="stroke:var(--st-error); stroke-opacity:.75" stroke-dasharray="4 4"/>
+              <text x="493" y="30" text-anchor="end" font-size="8.5" font-family="JetBrains Mono" style="fill:var(--st-error)">limit 512Mi</text>
+              <line x1="34" y1="86" x2="496" y2="86" style="stroke:var(--kobi-text-tertiary); stroke-opacity:.6" stroke-dasharray="3 3"/>
+              <text x="493" y="82" text-anchor="end" font-size="8.5" font-family="JetBrains Mono" style="fill:var(--kobi-text-tertiary)">request 256Mi</text>
+              <!-- y ticks -->
+              <g font-size="8.5" font-family="JetBrains Mono" style="fill:var(--kobi-text-tertiary)">
+                <text x="28" y="21" text-anchor="end">640</text>
+                <text x="28" y="55" text-anchor="end">427</text>
+                <text x="28" y="89" text-anchor="end">213</text>
+                <text x="28" y="123" text-anchor="end">0</text>
+              </g>
+              <!-- area: crece, dientes de sierra OOM, pico sobre el límite -->
+              <path d="M34,100 L80,96 L120,90 L160,78 L200,60 L226,44 L238,26 L242,108 L266,84 L296,58 L318,38 L326,24 L330,110 L356,86 L386,60 L412,42 L424,28 L428,112 L456,88 L484,66 L496,58 L496,120 L34,120 Z" fill="url(#gd)"/>
+              <path d="M34,100 L80,96 L120,90 L160,78 L200,60 L226,44 L238,26 L242,108 L266,84 L296,58 L318,38 L326,24 L330,110 L356,86 L386,60 L412,42 L424,28 L428,112 L456,88 L484,66 L496,58" fill="none" style="stroke:var(--kobi-accent)" stroke-width="1.5"/>
+              <!-- x ticks -->
+              <g font-size="8.5" font-family="JetBrains Mono" style="fill:var(--kobi-text-tertiary)">
+                <text x="34" y="129">14:00</text><text x="250" y="129" text-anchor="middle">14:30</text><text x="496" y="129" text-anchor="end">15:00</text>
+              </g>
+            </svg>
+          </div>
+          <div class="cfoot">— · limit &nbsp; ┄ · request</div>
+        </div>
+
+        <!-- YAML del fix -->
+        <div class="a-bubble">
+          <p>The durable fix is raising the memory envelope to match the new cache:</p>
+          <div class="codeblock">
+            <div class="bar"><span>yaml</span><span class="copy">⧉ copy</span></div>
+            <pre><span class="kw">resources</span>:
+  <span class="kw">requests</span>: { cpu: 100m, memory: <b>512Mi</b> }
+  <span class="kw">limits</span>:   { memory: <b>768Mi</b> }</pre>
+          </div>
+          <p>I can apply it for you — proposal below.</p>
+        </div>
+
+        <!-- ActionProposalCard: low risk, PENDING -->
+        <div class="prop low">
+          <div class="phead">
+            <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+            <div style="min-width:0">
+              <div class="plabel">proposed action</div>
+              <div class="ptitle">set resources · deployment payments-api</div>
+              <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+            </div>
+          </div>
+          <div class="preason">Working set exceeds the limit since the cache landed; 512Mi request + 768Mi limit fits P99 (612Mi) with 25% headroom and triggers a rolling restart.</div>
+          <div class="pchips">
+            <span class="pchip">memory.request: <b>256Mi → 512Mi</b></span>
+            <span class="pchip">memory.limit: <b>512Mi → 768Mi</b></span>
+            <span class="pchip">rollout: <b>rolling</b></span>
+          </div>
+          <div class="pbtns">
+            <button class="exec">▶ Execute · set resources</button>
+            <button class="dismiss">✕ Dismiss</button>
+          </div>
+        </div>
+
+        <!-- ActionProposalCard: EXECUTED -->
+        <div class="prop low">
+          <div class="phead">
+            <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+            <div style="min-width:0">
+              <div class="plabel">proposed action</div>
+              <div class="ptitle">restart deployment · payments-api</div>
+              <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+            </div>
+          </div>
+          <div class="pstate okst">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m8.5 12.5 2.5 2.5 5-5"/></svg>
+            Executed · rollout complete, 3/3 replicas ready
+          </div>
+          <a class="plink" href="#">View resource ↗</a>
+        </div>
+
+        <div class="a-bubble">
+          <p>Rollout finished and the working set is stable at <code class="inline">548Mi</code> — inside the new limit with headroom. I'll keep watching; the insight closes itself after 15 quiet minutes.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="inputrow">
+    <div class="bezel"><input placeholder="Ask about your cluster..." /></div>
+    <button class="send">➤</button>
+  </div>
+  <div class="foot mono">AI can make mistakes. Verify important information before acting on it.</div>
+</div>
+<div class="caption">dark · incidente completo: tools + markdown + chart + propuestas</div>
+</div>
+
+<!-- ============ LIGHT RICO (mismo contenido) ============ -->
+<div>
+<div class="panel wide t-light">
+  <div class="head">
+    <div class="avatar"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+    <div><div class="name">Kobi</div><div class="mono sub">anthropic · claude-haiku-4-5</div></div>
+  </div>
+  <div class="msgs">
+    <div class="u-row"><div class="u-bubble">Why is payments-api crashlooping in kobi-incident-lab?</div></div>
+
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get insights</span><span class="summ">· active insights</span>
+        <span class="right"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--st-ok)" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+    </div>
+
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get pod logs</span><span class="summ">· payments-api-7d9f · tail 200 · grep OOM</span>
+        <span class="right"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--st-ok)" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform:rotate(180deg)"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+      <div class="body">
+        <div class="sect">
+          <div class="stitle">Input</div>
+          <div class="kv"><span class="k">namespace:</span><span class="v">kobi-incident-lab</span></div>
+          <div class="kv"><span class="k">pod:</span><span class="v">payments-api-7d9f8c6b4-x2lqp</span></div>
+          <div class="kv"><span class="k">tail:</span><span class="v">200</span></div>
+          <div class="kv"><span class="k">grep:</span><span class="v">OOM|memory</span></div>
+        </div>
+        <div class="sect">
+          <div class="stitle"><span>Equivalent</span><span style="letter-spacing:0; text-transform:none; display:flex; gap:4px; align-items:center;">⧉ Copy</span></div>
+          <pre class="cmd">kubectl logs -n kobi-incident-lab payments-api-7d9f8c6b4-x2lqp --tail=200 | grep -E 'OOM|memory'</pre>
+        </div>
+      </div>
+    </div>
+
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get workload metrics</span><span class="summ">· deployment payments-api · 1h window</span>
+        <span class="right"><span class="spin"></span></span>
+      </div>
+    </div>
+
+    <div class="a-row">
+      <div class="a-avatar"><svg class="sigil" width="14" height="14" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+      <div class="a-col">
+        <div class="a-bubble">
+          <p><strong>OOMKill loop.</strong> The container's working set crosses its <code class="inline">512Mi</code> limit roughly every 12 minutes — exit code 137, kubelet restarts it, and the cycle repeats.</p>
+          <h2>Pod state</h2>
+          <table class="md-table">
+            <thead><tr><th>Pod</th><th>Status</th><th class="mono">Restarts</th><th class="mono">Last exit</th></tr></thead>
+            <tbody>
+              <tr><td class="mono">payments-api-7d9f…x2lqp</td><td><span class="err">CrashLoopBackOff</span></td><td class="mono">7</td><td class="mono">137 (OOM)</td></tr>
+              <tr><td class="mono">payments-api-7d9f…m8skv</td><td><span class="ok">Running</span></td><td class="mono">2</td><td class="mono">137 (OOM)</td></tr>
+              <tr><td class="mono">payments-worker-5c…t7dh2</td><td><span class="ok">Running</span></td><td class="mono">0</td><td class="mono">—</td></tr>
+            </tbody>
+          </table>
+          <h2>Why</h2>
+          <ul>
+            <li>Requests <code class="inline">256Mi</code>, limit <code class="inline">512Mi</code> — but P99 working set is <code class="inline">610Mi</code> since yesterday's deploy.</li>
+            <li>The new release enables an in-memory cache (<code class="inline">CACHE_SIZE=512</code>) that alone exceeds the limit.</li>
+          </ul>
+          <p>You can reproduce my checks yourself:</p>
+          <div class="codeblock">
+            <div class="bar"><span>bash</span><span class="copy">⧉ copy</span></div>
+            <pre><span class="cmt"># describe muestra el motivo del último kill</span>
+kubectl -n kobi-incident-lab describe pod payments-api-7d9f8c6b4-x2lqp
+<span class="cmt"># eventos ordenados por hora</span>
+kubectl get events -n kobi-incident-lab --sort-by=.lastTimestamp
+<span class="cmt"># estado actual del deployment</span>
+kubectl -n kobi-incident-lab get deploy payments-api -o wide</pre>
+          </div>
+          <p>Full detail on the <a href="#">workload page ↗</a>.</p>
+        </div>
+
+        <div class="chart">
+          <div class="chead">
+            <div class="ctile"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></div>
+            <div>
+              <div class="ctitle">workload metrics · payments-api</div>
+              <div class="csub">last 1h · deployment · kobi-incident-lab</div>
+            </div>
+          </div>
+          <div class="mrow">
+            <span class="mname">Memory</span>
+            <span class="mstats">avg <b>468Mi</b> · max <b>612Mi</b></span>
+            <span class="mbadge">120% of limit</span>
+          </div>
+          <div class="carea">
+            <svg viewBox="0 0 500 130" width="100%" height="130" preserveAspectRatio="none">
+              <defs>
+                <linearGradient id="gl" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" style="stop-color:var(--kobi-accent); stop-opacity:.3"/>
+                  <stop offset="100%" style="stop-color:var(--kobi-accent); stop-opacity:0"/>
+                </linearGradient>
+              </defs>
+              <g style="stroke:var(--kobi-border); stroke-opacity:.8">
+                <line x1="34" y1="18" x2="496" y2="18"/><line x1="34" y1="52" x2="496" y2="52"/>
+                <line x1="34" y1="86" x2="496" y2="86"/><line x1="34" y1="120" x2="496" y2="120"/>
+              </g>
+              <line x1="34" y1="34" x2="496" y2="34" style="stroke:var(--st-error); stroke-opacity:.75" stroke-dasharray="4 4"/>
+              <text x="493" y="30" text-anchor="end" font-size="8.5" font-family="JetBrains Mono" style="fill:var(--st-error)">limit 512Mi</text>
+              <line x1="34" y1="86" x2="496" y2="86" style="stroke:var(--kobi-text-tertiary); stroke-opacity:.7" stroke-dasharray="3 3"/>
+              <text x="493" y="82" text-anchor="end" font-size="8.5" font-family="JetBrains Mono" style="fill:var(--kobi-text-tertiary)">request 256Mi</text>
+              <g font-size="8.5" font-family="JetBrains Mono" style="fill:var(--kobi-text-tertiary)">
+                <text x="28" y="21" text-anchor="end">640</text>
+                <text x="28" y="55" text-anchor="end">427</text>
+                <text x="28" y="89" text-anchor="end">213</text>
+                <text x="28" y="123" text-anchor="end">0</text>
+              </g>
+              <path d="M34,100 L80,96 L120,90 L160,78 L200,60 L226,44 L238,26 L242,108 L266,84 L296,58 L318,38 L326,24 L330,110 L356,86 L386,60 L412,42 L424,28 L428,112 L456,88 L484,66 L496,58 L496,120 L34,120 Z" fill="url(#gl)"/>
+              <path d="M34,100 L80,96 L120,90 L160,78 L200,60 L226,44 L238,26 L242,108 L266,84 L296,58 L318,38 L326,24 L330,110 L356,86 L386,60 L412,42 L424,28 L428,112 L456,88 L484,66 L496,58" fill="none" style="stroke:var(--kobi-accent)" stroke-width="1.5"/>
+              <g font-size="8.5" font-family="JetBrains Mono" style="fill:var(--kobi-text-tertiary)">
+                <text x="34" y="129">14:00</text><text x="250" y="129" text-anchor="middle">14:30</text><text x="496" y="129" text-anchor="end">15:00</text>
+              </g>
+            </svg>
+          </div>
+          <div class="cfoot">— · limit &nbsp; ┄ · request</div>
+        </div>
+
+        <div class="a-bubble">
+          <p>The durable fix is raising the memory envelope to match the new cache:</p>
+          <div class="codeblock">
+            <div class="bar"><span>yaml</span><span class="copy">⧉ copy</span></div>
+            <pre><span class="kw">resources</span>:
+  <span class="kw">requests</span>: { cpu: 100m, memory: <b>512Mi</b> }
+  <span class="kw">limits</span>:   { memory: <b>768Mi</b> }</pre>
+          </div>
+          <p>I can apply it for you — proposal below.</p>
+        </div>
+
+        <div class="prop low">
+          <div class="phead">
+            <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+            <div style="min-width:0">
+              <div class="plabel">proposed action</div>
+              <div class="ptitle">set resources · deployment payments-api</div>
+              <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+            </div>
+          </div>
+          <div class="preason">Working set exceeds the limit since the cache landed; 512Mi request + 768Mi limit fits P99 (612Mi) with 25% headroom and triggers a rolling restart.</div>
+          <div class="pchips">
+            <span class="pchip">memory.request: <b>256Mi → 512Mi</b></span>
+            <span class="pchip">memory.limit: <b>512Mi → 768Mi</b></span>
+            <span class="pchip">rollout: <b>rolling</b></span>
+          </div>
+          <div class="pbtns">
+            <button class="exec">▶ Execute · set resources</button>
+            <button class="dismiss">✕ Dismiss</button>
+          </div>
+        </div>
+
+        <div class="prop low">
+          <div class="phead">
+            <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+            <div style="min-width:0">
+              <div class="plabel">proposed action</div>
+              <div class="ptitle">restart deployment · payments-api</div>
+              <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+            </div>
+          </div>
+          <div class="pstate okst">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="m8.5 12.5 2.5 2.5 5-5"/></svg>
+            Executed · rollout complete, 3/3 replicas ready
+          </div>
+          <a class="plink" href="#">View resource ↗</a>
+        </div>
+
+        <div class="a-bubble">
+          <p>Rollout finished and the working set is stable at <code class="inline">548Mi</code> — inside the new limit with headroom. I'll keep watching; the insight closes itself after 15 quiet minutes.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="inputrow">
+    <div class="bezel"><input placeholder="Ask about your cluster..." /></div>
+    <button class="send">➤</button>
+  </div>
+  <div class="foot mono">AI can make mistakes. Verify important information before acting on it.</div>
+</div>
+<div class="caption">light · incidente completo: tools + markdown + chart + propuestas</div>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════
+     INVENTARIO DE ELEMENTOS — cada componente aislado, dark | light
+════════════════════════════════════════════════════════════════════ -->
+<div class="section-title">inventario de elementos · dark | light</div>
+<div class="inv">
+
+  <!-- Tool card error -->
+  <div class="inv-cell t-dark">
+    <div class="inv-label">tool card · error (auto-expandida)</div>
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get resource yaml</span><span class="summ">· secret payments-tls</span>
+        <span class="right"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--st-error)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform:rotate(180deg)"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+      <div class="body">
+        <div class="sect">
+          <div class="stitle" style="color:var(--st-error)">Error</div>
+          <pre class="cmd" style="color:var(--st-error)">secrets "payments-tls" is forbidden: User "system:serviceaccount:kubebolt:agent" cannot get resource "secrets" (agent permission tier: read-core)</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+  <div class="inv-cell t-light">
+    <div class="inv-label">tool card · error (auto-expandida)</div>
+    <div class="tool">
+      <div class="trow">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg>
+        <span class="label">get resource yaml</span><span class="summ">· secret payments-tls</span>
+        <span class="right"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--st-error)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform:rotate(180deg)"><path d="m6 9 6 6 6-6"/></svg></span>
+      </div>
+      <div class="body">
+        <div class="sect">
+          <div class="stitle" style="color:var(--st-error)">Error</div>
+          <pre class="cmd" style="color:var(--st-error)">secrets "payments-tls" is forbidden: User "system:serviceaccount:kubebolt:agent" cannot get resource "secrets" (agent permission tier: read-core)</pre>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Propuesta riesgo medio -->
+  <div class="inv-cell t-dark">
+    <div class="inv-label">propuesta · riesgo medio (patch hpa)</div>
+    <div class="prop med">
+      <div class="phead">
+        <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+        <div style="min-width:0">
+          <div class="plabel">proposed action <span class="pbadge">⛨ requires care</span></div>
+          <div class="ptitle">patch hpa · payments-api</div>
+          <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+        </div>
+      </div>
+      <div class="preason">CPU throttling at peak; raising maxReplicas gives the HPA room without touching requests.</div>
+      <div class="pchips">
+        <span class="pchip">maxReplicas: <b>5 → 10</b></span>
+        <span class="pchip">targetCPU: <b>80%</b></span>
+      </div>
+      <div class="pbtns">
+        <button class="exec">▶ Execute · patch hpa</button>
+        <button class="dismiss">✕ Dismiss</button>
+      </div>
+    </div>
+  </div>
+  <div class="inv-cell t-light">
+    <div class="inv-label">propuesta · riesgo medio (patch hpa)</div>
+    <div class="prop med">
+      <div class="phead">
+        <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+        <div style="min-width:0">
+          <div class="plabel">proposed action <span class="pbadge">⛨ requires care</span></div>
+          <div class="ptitle">patch hpa · payments-api</div>
+          <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+        </div>
+      </div>
+      <div class="preason">CPU throttling at peak; raising maxReplicas gives the HPA room without touching requests.</div>
+      <div class="pchips">
+        <span class="pchip">maxReplicas: <b>5 → 10</b></span>
+        <span class="pchip">targetCPU: <b>80%</b></span>
+      </div>
+      <div class="pbtns">
+        <button class="exec">▶ Execute · patch hpa</button>
+        <button class="dismiss">✕ Dismiss</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Propuesta riesgo alto + type-to-confirm -->
+  <div class="inv-cell t-dark">
+    <div class="inv-label">propuesta · riesgo alto (type-to-confirm)</div>
+    <div class="prop high">
+      <div class="phead">
+        <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--st-error)" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></div>
+        <div style="min-width:0">
+          <div class="plabel">proposed action <span class="pbadge" style="color:var(--st-error)">⛨ destructive</span></div>
+          <div class="ptitle">delete pod · payments-api-7d9f8c6b4-x2lqp</div>
+          <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+        </div>
+      </div>
+      <div class="preason">Stuck in CrashLoopBackOff with a corrupted emptyDir; the ReplicaSet will recreate it clean.</div>
+      <div class="typeconfirm">
+        <label>Type <b>payments-api-7d9f8c6b4-x2lqp</b> to enable Execute:</label>
+        <input placeholder="pod name" />
+      </div>
+      <div class="pbtns">
+        <button class="exec" style="opacity:.4; cursor:not-allowed">🗑 Execute · delete pod</button>
+        <button class="dismiss">✕ Dismiss</button>
+      </div>
+    </div>
+  </div>
+  <div class="inv-cell t-light">
+    <div class="inv-label">propuesta · riesgo alto (type-to-confirm)</div>
+    <div class="prop high">
+      <div class="phead">
+        <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--st-error)" stroke-width="2"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/></svg></div>
+        <div style="min-width:0">
+          <div class="plabel">proposed action <span class="pbadge" style="color:var(--st-error)">⛨ destructive</span></div>
+          <div class="ptitle">delete pod · payments-api-7d9f8c6b4-x2lqp</div>
+          <div class="pctx">kobi-incident-lab · prod-us-east ↗</div>
+        </div>
+      </div>
+      <div class="preason">Stuck in CrashLoopBackOff with a corrupted emptyDir; the ReplicaSet will recreate it clean.</div>
+      <div class="typeconfirm">
+        <label>Type <b>payments-api-7d9f8c6b4-x2lqp</b> to enable Execute:</label>
+        <input placeholder="pod name" />
+      </div>
+      <div class="pbtns">
+        <button class="exec" style="opacity:.4; cursor:not-allowed">🗑 Execute · delete pod</button>
+        <button class="dismiss">✕ Dismiss</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Estados: executing + dismissed -->
+  <div class="inv-cell t-dark">
+    <div class="inv-label">propuesta · executing + dismissed</div>
+    <div class="prop low">
+      <div class="phead">
+        <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+        <div style="min-width:0">
+          <div class="plabel">proposed action</div>
+          <div class="ptitle">scale deployment · payments-worker → 4 replicas</div>
+        </div>
+      </div>
+      <div class="pstate runst"><span class="spin" style="border-color:var(--kobi-accent); border-top-color:transparent"></span> Executing · waiting for rollout…</div>
+    </div>
+    <div class="prop-dismissed">✕ Proposal dismissed — rollback deployment payments-api</div>
+  </div>
+  <div class="inv-cell t-light">
+    <div class="inv-label">propuesta · executing + dismissed</div>
+    <div class="prop low">
+      <div class="phead">
+        <div class="ptile"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--kobi-accent)" stroke-width="2"><path d="M14.7 6.3a4.5 4.5 0 0 0-6 6L3 18l3 3 5.7-5.7a4.5 4.5 0 0 0 6-6l-3 3-3-3 3-3z"/></svg></div>
+        <div style="min-width:0">
+          <div class="plabel">proposed action</div>
+          <div class="ptitle">scale deployment · payments-worker → 4 replicas</div>
+        </div>
+      </div>
+      <div class="pstate runst"><span class="spin" style="border-color:var(--kobi-accent); border-top-color:transparent"></span> Executing · waiting for rollout…</div>
+    </div>
+    <div class="prop-dismissed">✕ Proposal dismissed — rollback deployment payments-api</div>
+  </div>
+
+  <!-- kubectl con output -->
+  <div class="inv-cell t-dark">
+    <div class="inv-label">code block · kubectl con output</div>
+    <div class="codeblock">
+      <div class="bar"><span>bash</span><span class="copy">⧉ copy</span></div>
+      <pre>$ kubectl -n kobi-incident-lab get pods -l app=payments-api
+<span class="cmt">NAME                            READY  STATUS            RESTARTS
+payments-api-7d9f8c6b4-x2lqp    0/1    CrashLoopBackOff  7
+payments-api-7d9f8c6b4-m8skv    1/1    Running           2</span></pre>
+    </div>
+  </div>
+  <div class="inv-cell t-light">
+    <div class="inv-label">code block · kubectl con output</div>
+    <div class="codeblock">
+      <div class="bar"><span>bash</span><span class="copy">⧉ copy</span></div>
+      <pre>$ kubectl -n kobi-incident-lab get pods -l app=payments-api
+<span class="cmt">NAME                            READY  STATUS            RESTARTS
+payments-api-7d9f8c6b4-x2lqp    0/1    CrashLoopBackOff  7
+payments-api-7d9f8c6b4-m8skv    1/1    Running           2</span></pre>
+    </div>
+  </div>
+
+  <!-- Sigil: estados del avatar del header (watching / investigating / awaiting)
+       + static (mensajes). El tile tiñe con el estado (como en la app) y el
+       trazo del sigil cambia de tier por tema: 400 en dark, 700 en light. -->
+  <div class="inv-cell t-dark">
+    <div class="inv-label">sigil · estados del header (28px) + mensajes (24px)</div>
+    <div class="sigil-states">
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-accent-light)"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-watching)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+        <div class="slabel">watching</div>
+      </div>
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-sigil-investigating-tile)"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-investigating)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/><circle cx="23.5" cy="16" r="4" fill="none" stroke-width="0.7" opacity="0.55"/></svg></div>
+        <div class="slabel">investigating</div>
+      </div>
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-sigil-awaiting-tile)"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-awaiting)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle cx="23.5" cy="16" r="1.76" fill="none" stroke-width="1" stroke-dasharray="1.5 1.5"/></svg></div>
+        <div class="slabel">awaiting</div>
+      </div>
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-accent-light); border-radius:50%; width:24px; height:24px"><svg class="sigil" width="14" height="14" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+        <div class="slabel">static · msg</div>
+      </div>
+    </div>
+  </div>
+  <div class="inv-cell t-light">
+    <div class="inv-label">sigil · estados del header (28px) + mensajes (24px)</div>
+    <div class="sigil-states">
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-accent-light)"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-watching)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+        <div class="slabel">watching</div>
+      </div>
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-sigil-investigating-tile)"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-investigating)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/><circle cx="23.5" cy="16" r="4" fill="none" stroke-width="0.7" opacity="0.55"/></svg></div>
+        <div class="slabel">investigating</div>
+      </div>
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-sigil-awaiting-tile)"><svg class="sigil" width="18" height="18" viewBox="0 0 32 32" style="color:var(--kobi-sigil-awaiting)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle cx="23.5" cy="16" r="1.76" fill="none" stroke-width="1" stroke-dasharray="1.5 1.5"/></svg></div>
+        <div class="slabel">awaiting</div>
+      </div>
+      <div class="sigil-state">
+        <div class="tile" style="background:var(--kobi-accent-light); border-radius:50%; width:24px; height:24px"><svg class="sigil" width="14" height="14" viewBox="0 0 32 32" style="color:var(--kobi-sigil-static)"><line x1="9" y1="6" x2="9" y2="26" stroke-width="1.8"/><line x1="11.5" y1="14" x2="20" y2="6" stroke-width="1.8"/><line x1="11.5" y1="18" x2="20" y2="26" stroke-width="1.8"/><circle class="dot" cx="23.5" cy="16" r="1.76"/></svg></div>
+        <div class="slabel">static · msg</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="caption" style="margin-top:26px">as-built · tokens --kobi-* de globals.css · light traducido a la familia fría de la app (--kb-bg) · sigil 400-dark / 700-light · estructura fiel a ToolCallCard / ActionProposalCard / KobiMetricChartCard / MarkdownRenderer</div>
+
+</body>
+</html>

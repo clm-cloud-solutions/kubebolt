@@ -96,6 +96,40 @@ function ConnectionModeBadge({ mode }: { mode?: string }) {
   return null
 }
 
+// shortAgo renders a compact "2h ago" for an RFC3339 timestamp; "" when unset.
+function shortAgo(iso?: string): string {
+  if (!iso) return ''
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000)
+  if (s < 90) return 'just now'
+  if (s < 3600) return `${Math.round(s / 60)}m ago`
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`
+  return `${Math.round(s / 86400)}d ago`
+}
+
+// LivenessBadge shows whether an agent-proxy cluster has a live agent right now.
+// Distinct from the "Active" selection badge — this is about the cluster
+// reporting, not which one is selected.
+function LivenessBadge({ connected, lastSeen }: { connected?: boolean; lastSeen?: string }) {
+  if (connected) {
+    return (
+      <span className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-status-ok-dim text-status-ok text-[9px] font-mono font-semibold uppercase tracking-wider">
+        <span className="w-1.5 h-1.5 rounded-full bg-status-ok" />
+        Live
+      </span>
+    )
+  }
+  const ago = shortAgo(lastSeen)
+  return (
+    <span
+      title={ago ? `Last seen ${ago}` : 'No agent connected'}
+      className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-kb-elevated text-kb-text-tertiary text-[9px] font-mono font-semibold uppercase tracking-wider"
+    >
+      <span className="w-1.5 h-1.5 rounded-full bg-kb-text-tertiary" />
+      Offline
+    </span>
+  )
+}
+
 interface ClusterCardProps {
   cluster: ClusterInfo
   overview?: ClusterOverview
@@ -123,6 +157,11 @@ function ClusterCard({
   const isUploaded = cluster.source === 'uploaded'
   const isAgentProxy = cluster.source === 'agent-proxy'
   const displayName = parseClusterDisplayName(cluster)
+  // Liveness chrome (agent-proxy): a green left bezel marks a cluster whose agent
+  // is reporting; an offline one is dimmed so it reads as "not reporting" at a
+  // glance — distinct from the "Active" (selected) state.
+  const isLive = isAgentProxy && cluster.agentConnected
+  const isOffline = isAgentProxy && !cluster.agentConnected
 
   return (
     <div
@@ -132,7 +171,7 @@ function ClusterCard({
           : hasError
           ? 'border-status-error/30'
           : 'border-kb-border hover:border-kb-border-active'
-      }`}
+      } ${isLive ? 'border-l-[3px] border-l-status-ok' : ''} ${isOffline ? 'opacity-[0.55]' : ''}`}
     >
       {/* Header */}
       <div className="flex items-start justify-between mb-4 gap-2">
@@ -148,6 +187,7 @@ function ClusterCard({
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className="text-sm font-semibold text-kb-text-primary truncate">{displayName}</span>
               <SourceBadge source={cluster.source} />
+              {isAgentProxy && <LivenessBadge connected={cluster.agentConnected} lastSeen={cluster.lastSeen} />}
               {isAgentProxy && <ConnectionModeBadge mode={cluster.mode} />}
             </div>
             <div className="text-[10px] font-mono text-kb-text-tertiary truncate" title={cluster.context}>{cluster.context}</div>

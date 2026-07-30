@@ -50,13 +50,13 @@ export function AskCopilotButton({
         type="button"
         onClick={handleClick}
         title={label}
-        className={`group relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium text-kb-accent bg-gradient-to-r from-kb-accent-light via-kb-accent-light to-violet-500/10 ring-1 ring-kb-accent/25 shadow-[0_0_0_0_rgba(29,189,125,0)] hover:ring-kb-accent/50 hover:shadow-[0_0_14px_rgba(29,189,125,0.35)] hover:-translate-y-[0.5px] active:translate-y-0 transition-all duration-200 overflow-hidden ${className}`}
+        className={`group relative inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] font-medium text-kobi-accent bg-kobi-accent-light ring-1 ring-kobi-accent/25 shadow-[0_0_0_0_rgba(0,224,122,0)] hover:ring-kobi-accent/50 hover:shadow-[0_0_14px_rgba(0,224,122,0.30)] hover:-translate-y-[0.5px] active:translate-y-0 transition-all duration-200 overflow-hidden ${className}`}
       >
         <span className="relative flex items-center">
-          <span className="absolute inset-0 rounded-full bg-kb-accent/60 blur-[3px] animate-ping opacity-60" aria-hidden />
+          <span className="absolute inset-0 rounded-full bg-kobi-accent/60 blur-[3px] animate-ping opacity-60" aria-hidden />
           <KobiSigil state="static" inheritColor size={14} className="relative" />
         </span>
-        <span className="relative bg-gradient-to-r from-kb-accent to-violet-400 bg-clip-text text-transparent font-semibold">
+        <span className="relative text-kobi-accent font-semibold">
           {label}
         </span>
         <span
@@ -73,7 +73,7 @@ export function AskCopilotButton({
       onClick={handleClick}
       title={label}
       aria-label={label}
-      className={`group relative inline-flex items-center justify-center w-6 h-6 rounded-md text-kb-accent bg-gradient-to-br from-kb-accent-light to-violet-500/10 ring-1 ring-kb-accent/20 hover:ring-kb-accent/50 hover:scale-105 hover:shadow-[0_0_12px_rgba(29,189,125,0.35)] active:scale-95 transition-all duration-200 ${className}`}
+      className={`group relative inline-flex items-center justify-center w-6 h-6 rounded-md text-kobi-accent bg-kobi-accent-light ring-1 ring-kobi-accent/20 hover:ring-kobi-accent/50 hover:scale-105 hover:shadow-[0_0_12px_rgba(0,224,122,0.30)] active:scale-95 transition-all duration-200 ${className}`}
     >
       <KobiSigil state="static" inheritColor size={14} className="transition-transform duration-200 group-hover:rotate-[8deg]" />
     </button>

@@ -84,38 +84,38 @@ export function ConversationList({ onClose }: ConversationListProps) {
   }
 
   return (
-    <div className="absolute inset-0 z-20 flex flex-col bg-kb-card">
+    <div className="absolute inset-0 z-20 flex flex-col bg-kobi-card">
       {/* Drawer header */}
-      <div className="flex items-center justify-between px-4 py-2.5 border-b border-kb-border shrink-0">
-        <span className="text-sm font-semibold text-kb-text-primary">Conversations</span>
+      <div className="flex items-center justify-between px-4 py-2.5 border-b border-kobi-border shrink-0">
+        <span className="text-sm font-semibold text-kobi-text">Conversations</span>
         <button
           onClick={onClose}
           title="Back to chat"
-          className="p-1.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+          className="p-1.5 rounded hover:bg-kobi-elevated text-kobi-text-tertiary hover:text-kobi-text transition-colors"
         >
           <X className="w-4 h-4" />
         </button>
       </div>
 
       {/* New + search */}
-      <div className="px-3 py-2.5 space-y-2 border-b border-kb-border shrink-0">
+      <div className="px-3 py-2.5 space-y-2 border-b border-kobi-border shrink-0">
         <button
           onClick={() => {
             newConversation()
             onClose()
           }}
-          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-kb-accent-light text-kb-accent text-sm font-medium hover:opacity-90 transition-opacity"
+          className="w-full flex items-center gap-2 px-3 py-2 rounded-lg bg-kobi-accent-light text-kobi-accent text-sm font-medium hover:opacity-90 transition-opacity"
         >
           <Plus className="w-4 h-4" />
           New conversation
         </button>
         <div className="relative">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-kb-text-tertiary" />
+          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-kobi-text-tertiary" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="Search conversations…"
-            className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-kb-elevated border border-kb-border text-sm text-kb-text-primary placeholder:text-kb-text-tertiary focus:outline-none focus:border-kb-accent"
+            className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-kobi-elevated border border-kobi-border text-sm text-kobi-text placeholder:text-kobi-text-tertiary focus:outline-none focus:border-kobi-accent"
           />
         </div>
         {/* Cluster scope — default to the active cluster; conversations are
@@ -127,8 +127,8 @@ export function ConversationList({ onClose }: ConversationListProps) {
               onClick={() => setScope(s)}
               className={`px-2 py-0.5 rounded-md transition-colors ${
                 scope === s
-                  ? 'bg-kb-accent-light text-kb-accent font-medium'
-                  : 'text-kb-text-tertiary hover:text-kb-text-primary'
+                  ? 'bg-kobi-accent-light text-kobi-accent font-medium'
+                  : 'text-kobi-text-tertiary hover:text-kobi-text'
               }`}
             >
               {s === 'cluster' ? 'This cluster' : 'All clusters'}
@@ -140,13 +140,13 @@ export function ConversationList({ onClose }: ConversationListProps) {
       {/* List */}
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
-          <div className="flex items-center justify-center py-10 text-kb-text-tertiary">
+          <div className="flex items-center justify-center py-10 text-kobi-text-tertiary">
             <Loader2 className="w-5 h-5 animate-spin" />
           </div>
         ) : conversations.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-12 px-6 text-center">
-            <MessageSquare className="w-8 h-8 text-kb-text-tertiary mb-2" />
-            <p className="text-sm text-kb-text-secondary">
+            <MessageSquare className="w-8 h-8 text-kobi-text-tertiary mb-2" />
+            <p className="text-sm text-kobi-text-secondary">
               {search ? 'No matching conversations' : 'No past conversations yet'}
             </p>
           </div>
@@ -156,7 +156,7 @@ export function ConversationList({ onClose }: ConversationListProps) {
               <li
                 key={c.id}
                 className={`group px-3 py-2 cursor-pointer transition-colors ${
-                  c.id === conversationId ? 'bg-kb-accent-light' : 'hover:bg-kb-elevated'
+                  c.id === conversationId ? 'bg-kobi-accent-light' : 'hover:bg-kobi-elevated'
                 }`}
                 onClick={() => {
                   if (editingId === c.id) return
@@ -176,11 +176,11 @@ export function ConversationList({ onClose }: ConversationListProps) {
                             if (e.key === 'Enter') commitRename(c.id)
                             if (e.key === 'Escape') setEditingId(null)
                           }}
-                          className="flex-1 min-w-0 px-1.5 py-0.5 rounded bg-kb-bg border border-kb-accent text-sm text-kb-text-primary focus:outline-none"
+                          className="flex-1 min-w-0 px-1.5 py-0.5 rounded bg-kobi-bg border border-kobi-accent text-sm text-kobi-text focus:outline-none"
                         />
                         <button
                           onClick={() => commitRename(c.id)}
-                          className="p-1 rounded hover:bg-kb-bg text-kb-accent"
+                          className="p-1 rounded hover:bg-kobi-bg text-kobi-accent"
                           title="Save"
                         >
                           <Check className="w-3.5 h-3.5" />
@@ -194,13 +194,13 @@ export function ConversationList({ onClose }: ConversationListProps) {
                             aria-label="Started from an insight"
                           />
                         )}
-                        <span className="text-sm text-kb-text-primary truncate">{c.title || 'Untitled'}</span>
+                        <span className="text-sm text-kobi-text truncate">{c.title || 'Untitled'}</span>
                       </div>
                     )}
                     {c.preview && editingId !== c.id && (
-                      <p className="text-xs text-kb-text-tertiary truncate mt-0.5">{c.preview}</p>
+                      <p className="text-xs text-kobi-text-tertiary truncate mt-0.5">{c.preview}</p>
                     )}
-                    <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wide">
+                    <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-wide">
                       <span>{timeAgo(c.updatedAt)}</span>
                       {c.clusterId && (
                         <>
@@ -225,7 +225,7 @@ export function ConversationList({ onClose }: ConversationListProps) {
                           startRename(c)
                         }}
                         title="Rename"
-                        className="p-1 rounded hover:bg-kb-bg text-kb-text-tertiary hover:text-kb-text-primary"
+                        className="p-1 rounded hover:bg-kobi-bg text-kobi-text-tertiary hover:text-kobi-text"
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
@@ -235,7 +235,7 @@ export function ConversationList({ onClose }: ConversationListProps) {
                           deleteMut.mutate(c.id)
                         }}
                         title="Delete"
-                        className="p-1 rounded hover:bg-kb-bg text-kb-text-tertiary hover:text-red-500"
+                        className="p-1 rounded hover:bg-kobi-bg text-kobi-text-tertiary hover:text-red-500"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
                       </button>

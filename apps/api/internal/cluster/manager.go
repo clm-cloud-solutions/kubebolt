@@ -652,6 +652,18 @@ type ClusterInfo struct {
 	// per-cluster filtering).
 	ClusterID string `json:"clusterId,omitempty"`
 
+	// AgentConnected is the LIVENESS of an agent-proxy cluster: true when at least
+	// one agent for this cluster_id is connected right now (or, for metrics-only,
+	// VM is still fresh), independent of whether it's the active cluster. Lets the
+	// UI render a Live/Offline badge so a durable-but-disconnected cluster is
+	// visibly distinct from a live one. Always false for non-agent-proxy contexts.
+	AgentConnected bool `json:"agentConnected"`
+
+	// LastSeen is the most recent agent contact for an agent-proxy cluster (from
+	// the durable agent record). Lets the UI show "last seen …" on an offline
+	// cluster. Nil when unknown (non-agent-proxy, or no durable record).
+	LastSeen *time.Time `json:"lastSeen,omitempty"`
+
 	// Mode distinguishes a metrics-only cluster ("metrics-only" — the agent ships
 	// metrics but advertises no kube-proxy, so there is no live-resource connector),
 	// a connected agent-proxy cluster's RBAC tier ("reader" / "operator"), or a normal
@@ -796,6 +808,12 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			cachedUIDs = uids
 		}
 	}
+	// Durable last-seen per cluster_id (single bulk read) — powers the "last seen …"
+	// tooltip on an offline agent-proxy cluster's liveness badge.
+	var lastSeenByCluster map[string]time.Time
+	if m.agentRegistry != nil {
+		lastSeenByCluster = m.agentRegistry.LastSeenByCluster()
+	}
 
 	var clusters []ClusterInfo
 	for ctxName, ctx := range m.kubeConfig.Contexts {
@@ -873,17 +891,33 @@ func (m *Manager) ListClusters() []ClusterInfo {
 				}
 			}
 		}
+		// Liveness for the UI badge: a live gRPC channel (or, for metrics-only,
+		// fresh VM ingest) means the agent-proxy cluster is reporting right now.
+		agentConnected := false
+		var lastSeen *time.Time
+		if source == "agent-proxy" {
+			agentConnected = clusterID != "" && m.agentRegistry != nil && m.agentRegistry.CountByCluster(clusterID) > 0
+			if !agentConnected && metricsOnlyCID != "" {
+				agentConnected = m.metricsFresh(metricsOnlyCID)
+			}
+			if ls, ok := lastSeenByCluster[clusterID]; ok && !ls.IsZero() {
+				lsCopy := ls
+				lastSeen = &lsCopy
+			}
+		}
 		clusters = append(clusters, ClusterInfo{
-			Name:        ctx.Cluster,
-			Context:     ctxName,
-			Server:      server,
-			Active:      isActive,
-			Status:      status,
-			Error:       connErrMsg,
-			DisplayName: displayNames[ctxName],
-			Source:      source,
-			ClusterID:   clusterID,
-			Mode:        mode,
+			Name:           ctx.Cluster,
+			Context:        ctxName,
+			Server:         server,
+			Active:         isActive,
+			Status:         status,
+			Error:          connErrMsg,
+			DisplayName:    displayNames[ctxName],
+			Source:         source,
+			ClusterID:      clusterID,
+			AgentConnected: agentConnected,
+			LastSeen:       lastSeen,
+			Mode:           mode,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {

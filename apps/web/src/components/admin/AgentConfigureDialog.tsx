@@ -501,7 +501,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
                         </div>
                       </section>
 
-                      <section className="space-y-2 pt-3 border-t border-kb-border/60">
+                      <section className="space-y-2 pt-3 border-t border-kb-border">
                         <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Hubble relay</div>
                         <div>
                           <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Relay address override</label>
@@ -532,7 +532,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
                         </div>
                       </section>
 
-                      <section className="space-y-2 pt-3 border-t border-kb-border/60">
+                      <section className="space-y-2 pt-3 border-t border-kb-border">
                         <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Scheduling</div>
                         <div>
                           <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Priority class name</label>
@@ -567,7 +567,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
                         </div>
                       </section>
 
-                      <section className="space-y-2 pt-3 border-t border-kb-border/60">
+                      <section className="space-y-2 pt-3 border-t border-kb-border">
                         <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Resources</div>
                         <div className="grid grid-cols-2 gap-3">
                           <div>
@@ -605,7 +605,7 @@ export function AgentConfigureDialog({ integration, onClose }: Props) {
                         </div>
                       </section>
 
-                      <section className="space-y-2 pt-3 border-t border-kb-border/60">
+                      <section className="space-y-2 pt-3 border-t border-kb-border">
                         <div className="text-[10px] font-mono text-kb-text-tertiary uppercase tracking-wider">Logging</div>
                         <div>
                           <label className="block text-[10px] font-mono text-kb-text-tertiary mb-1">Log level</label>

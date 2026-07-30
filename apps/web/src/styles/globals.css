@@ -24,11 +24,6 @@
   --kb-bar-track: rgba(0, 0, 0, 0.1);
   --kb-accent: #16a34a;
   --kb-accent-light: #dcf5e7;
-  /* Kobi Sigil state colors — same in light and dark, the brand
-     reads against either surface. */
-  --kb-kobi-watching: #34d399;
-  --kb-kobi-investigating: #fbbf24;
-  --kb-kobi-awaiting: #38bdf8;
   /* YAML syntax highlighting (code block always has dark bg) */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;
@@ -54,10 +49,6 @@
   --kb-bar-track: rgba(255, 255, 255, 0.06);
   --kb-accent: #1DBD7D;
   --kb-accent-light: rgba(29, 189, 125, 0.12);
-  /* Kobi Sigil state colors */
-  --kb-kobi-watching: #34d399;
-  --kb-kobi-investigating: #fbbf24;
-  --kb-kobi-awaiting: #38bdf8;
   /* YAML syntax highlighting */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;
@@ -65,6 +56,156 @@
   --kb-yaml-bool: #ff7b72;
   --kb-yaml-null: #6a737d;
   --kb-yaml-comment: #6a737d;
+}
+
+/* ── Kobi brand surface ─────────────────────────────────────────────
+   Tokens consumed ONLY by Kobi/AI surfaces (chat panel, floating
+   toggle, Ask buttons, markdown renderer), aligned with the site's
+   "Voltage Editorial" identity: warm black, electric green #00e07a as
+   an accent (never a fill), thin bevel borders. New variables — adding
+   them at :root changes nothing else in the app; only elements using
+   the kobi-* Tailwind utilities consume them.
+
+   Light is TRANSLATED, not transplanted: the site's warm ivory clashed
+   against the app's cool light theme (both ~96% lightness, opposite
+   hue families — the temperature gap is invisible at near-black but
+   obvious at near-white), so light surfaces align to the app's cool
+   family (--kb-bg #f5f6fa) and Kobi's identity rides on the green
+   accent, bevels and mono type instead of the background hue. Code
+   blocks stay dark in BOTH themes (existing convention: "code always
+   has dark bg").
+
+   Sigil + status tiers per theme: the 400-tier colors read on dark but
+   land at 1.5–2.1:1 on light (below the 3:1 WCAG graphics floor) —
+   light uses the 600/700 tier instead. --kobi-st-* scope status color
+   to Kobi surfaces only; the app-wide status palette is untouched. */
+:root {
+  --kobi-accent: #00b864;
+  --kobi-accent-rgb: 0 184 100;
+  --kobi-bg-rgb: 245 246 250;
+  --kobi-text-rgb: 26 27 46;
+  --kobi-accent-deep: #009a54;
+  --kobi-accent-light: rgba(0, 184, 100, 0.1);
+  /* Faint green wash for the LOW-RISK proposal card (mockup: accent-light
+     mixed to 30% ≈ 3%). The user bubble owns the full 10% accent-light —
+     when the card used it too, both read as the same green slab. */
+  --kobi-accent-dim: rgba(0, 184, 100, 0.03);
+  /* User bubble bg, OPAQUE: accent-light (10%) flattened onto --kobi-bg.
+     Same composite color to the eye (bubbles always sit on the panel bg),
+     but opaque so the WhatsApp-style tail diamond overlaps seamlessly —
+     a translucent tint would double the wash at the joint. */
+  --kobi-bubble-user: #ddf0eb;
+  /* Fill for solid green controls (FAB, send). One step brighter than
+     the text accent — #00b864 dulls as a fill on light surfaces, and
+     the dark ink on top keeps contrast regardless. Text/link accents
+     stay on --kobi-accent (brightening those would cost legibility). */
+  --kobi-accent-fill: #00cc70;
+  --kobi-accent-fill-rgb: 0 204 112;
+  --kobi-bg: #f5f6fa;
+  --kobi-card: #ffffff;
+  --kobi-elevated: #e8eaf0;
+  --kobi-elevated-rgb: 232 234 240;
+  --kobi-border: rgba(26, 27, 46, 0.12);
+  --kobi-border-accent: rgba(0, 184, 100, 0.3);
+  --kobi-text: #1a1b2e;
+  --kobi-text-secondary: #5a5c6e;
+  --kobi-text-tertiary: #8b8d9a;
+  --kobi-code-bg: #14151c;
+  --kobi-code-text: #e3e4ea;
+  /* Ink: dark text used ON the green accent (white on #00e07a fails
+     contrast; the site sets dark ink on green fills). */
+  --kobi-ink: #06130c;
+  /* Sigil — amber/sky on the 700 tier (≥3.9:1 on their header tiles;
+     600 would drop below the 3:1 floor). Watching sits on 600 — user
+     QA flagged the 700 forest green as off-brand at hero size; #059669
+     (= st-ok light) keeps ≥3.5:1 on its tile and matches the product
+     green family. Static uses the deep brand green. */
+  --kobi-sigil-static: #009a54;
+  --kobi-sigil-watching: #059669;
+  --kobi-sigil-investigating: #b45309;
+  --kobi-sigil-awaiting: #0369a1;
+  /* Kobi-scoped status. The amber dim uses a LIVELIER base than the
+     amber text (amber-500, not 700): at low alpha the 700 read beige,
+     nearly the same pastel as the error pink. Red stays the danger
+     anchor at 6%. */
+  --kobi-st-ok-rgb: 5 150 105;
+  --kobi-st-warn-rgb: 180 83 9;
+  --kobi-st-error-rgb: 220 38 38;
+  /* info = "running now" — the sky family of the sigil awaiting tier
+     (sky-700 on light, sky-400 on dark), used by Autopilot flow. */
+  --kobi-st-info-rgb: 3 105 161;
+  /* Composed forms of the triplets, for SVG props and other non-Tailwind
+     consumers (e.g. the metric chart's limit line). */
+  --kobi-st-ok: #059669;
+  --kobi-st-warn: #b45309;
+  --kobi-st-error: #dc2626;
+  --kobi-st-info: #0369a1;
+  --kobi-st-warn-dim: rgba(245, 158, 11, 0.12);
+  --kobi-st-error-dim: rgba(220, 38, 38, 0.06);
+  --kobi-st-ok-dim: rgba(5, 150, 105, 0.12);
+  --kobi-st-info-dim: rgba(3, 105, 161, 0.1);
+  --kobi-st-warn-line: rgba(217, 119, 6, 0.55);
+}
+
+.dark {
+  --kobi-accent: #00e07a;
+  --kobi-accent-rgb: 0 224 122;
+  --kobi-bg-rgb: 10 11 10;
+  --kobi-text-rgb: 245 242 236;
+  --kobi-accent-deep: #00b864;
+  --kobi-accent-light: rgba(0, 224, 122, 0.1);
+  --kobi-accent-dim: rgba(0, 224, 122, 0.03);
+  --kobi-bubble-user: #092015;
+  /* In dark the fill IS the accent — no separate brightness step. */
+  --kobi-accent-fill: #00e07a;
+  --kobi-accent-fill-rgb: 0 224 122;
+  --kobi-bg: #0a0b0a;
+  --kobi-card: #131413;
+  --kobi-elevated: #1c1d1c;
+  --kobi-elevated-rgb: 28 29 28;
+  --kobi-border: #2a2b2a;
+  --kobi-border-accent: rgba(0, 224, 122, 0.22);
+  --kobi-text: #f5f2ec;
+  --kobi-text-secondary: #a8a29e;
+  --kobi-text-tertiary: #6b6864;
+  --kobi-code-bg: #0c0d0c;
+  --kobi-code-text: #d9d6cf;
+  --kobi-ink: #06130c;
+  /* Sigil — 400 tier on dark (as shipped). */
+  --kobi-sigil-static: #00e07a;
+  --kobi-sigil-watching: #34d399;
+  --kobi-sigil-investigating: #fbbf24;
+  --kobi-sigil-awaiting: #38bdf8;
+  --kobi-st-ok-rgb: 52 211 153;
+  --kobi-st-warn-rgb: 251 191 36;
+  --kobi-st-error-rgb: 239 68 68;
+  --kobi-st-info-rgb: 56 189 248;
+  --kobi-st-ok: #34d399;
+  --kobi-st-warn: #fbbf24;
+  --kobi-st-error: #ef4444;
+  --kobi-st-info: #38bdf8;
+  --kobi-st-warn-dim: rgba(251, 191, 36, 0.09);
+  --kobi-st-error-dim: rgba(239, 68, 68, 0.09);
+  --kobi-st-ok-dim: rgba(52, 211, 153, 0.12);
+  --kobi-st-info-dim: rgba(56, 189, 248, 0.1);
+  --kobi-st-warn-line: rgba(251, 191, 36, 0.4);
+}
+
+/* Floating-panel shadow. Since the light panel bg now MATCHES the app bg
+   (the cool translation), Tailwind's generic shadow-2xl no longer separates
+   the floating window from the page — a hairline ring plus two depth layers
+   makes it read as clearly lifted in both themes. */
+.kobi-floating-shadow {
+  box-shadow:
+    0 0 0 1px rgba(26, 27, 46, 0.05),
+    0 12px 28px -8px rgba(26, 27, 46, 0.2),
+    0 32px 64px -16px rgba(26, 27, 46, 0.25);
+}
+.dark .kobi-floating-shadow {
+  box-shadow:
+    0 0 0 1px rgba(0, 0, 0, 0.45),
+    0 12px 28px -8px rgba(0, 0, 0, 0.5),
+    0 32px 64px -16px rgba(0, 0, 0, 0.65);
 }
 
 * {
@@ -93,6 +234,31 @@ body,
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/* Keep browser-autofilled inputs on-theme. Chrome/Safari otherwise
+   paint a light box over the field, breaking the dark login card. The
+   inset box-shadow repaints the background to the field color and the
+   long transition defers the UA repaint; -webkit-text-fill-color keeps
+   the typed value legible. */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus,
+input:-webkit-autofill:active {
+  -webkit-text-fill-color: var(--kb-text-primary);
+  -webkit-box-shadow: 0 0 0 1000px var(--kb-bg) inset;
+  caret-color: var(--kb-text-primary);
+  transition: background-color 9999s ease-in-out 0s;
+}
+
+/* Primary (accent) button disabled state. Element opacity would wash
+   out the label too; instead we blend the brand green toward the page
+   background so the fill reads as "muted green, not clickable" while
+   the text stays legible. */
+.btn-primary:disabled {
+  background: color-mix(in srgb, var(--kb-accent) 40%, var(--kb-bg));
+  color: rgba(255, 255, 255, 0.82);
+  cursor: not-allowed;
 }
 
 @keyframes pulse-live {
@@ -196,10 +362,10 @@ body,
 }
 
 /* kb-ai-bezel — animated gradient border that travels around the
-   Copilot input box, blended with a soft outer glow. Same hue
-   family as AskCopilotButton (green accent + violet) plus a touch
-   of blue to keep the rotation visually rich. Grafana and Apple
-   Intelligence use the same pattern.
+   Copilot input box, blended with a soft outer glow. Monochrome
+   green family (brand accent → bright mint crest → back), matching
+   the site's "green as an accent, never a fill" identity — the old
+   green→violet rotation was off-brand.
 
    Implementation: the wrapper hosts a ::before pseudo-element with
    a conic-gradient that rotates via a custom property animation.
@@ -219,13 +385,13 @@ body,
 @keyframes kb-ai-bezel-glow {
   0%, 100% {
     box-shadow:
-      0 0 18px 2px rgba(29, 189, 125, 0.22),
-      0 0 36px 8px rgba(29, 189, 125, 0.10);
+      0 0 18px 2px rgba(0, 224, 122, 0.20),
+      0 0 36px 8px rgba(0, 224, 122, 0.09);
   }
   50% {
     box-shadow:
-      0 0 18px 2px rgba(139, 92, 246, 0.24),
-      0 0 36px 8px rgba(139, 92, 246, 0.12);
+      0 0 18px 2px rgba(122, 255, 196, 0.18),
+      0 0 36px 8px rgba(0, 184, 100, 0.10);
   }
 }
 
@@ -256,19 +422,19 @@ body,
        on the opposite side. Since this section is a flat color,
        rotating the angle leaves it visually unchanged.
      - 180° → 360° ramps up to a wide bright arc (~150° including
-       the ramps) that carries the green→violet destello.
+       the ramps) that carries the green→mint destello.
      The combined "bright influence" covers ~40% of the perimeter
      at any moment, well above the 30% floor, while the rotating
      angle moves the bright crest around the box. */
   background: conic-gradient(
     from var(--kb-ai-bezel-angle),
-    rgba(29, 189, 125, 0.30)    0deg,
-    rgba(29, 189, 125, 0.30)  180deg,
-    rgba(29, 189, 125, 0.60)  210deg,
-    rgba(29, 189, 125, 1)     245deg,
-    rgba(139, 92, 246, 1)     310deg,
-    rgba(139, 92, 246, 0.60)  340deg,
-    rgba(29, 189, 125, 0.30)  360deg
+    rgba(0, 224, 122, 0.30)    0deg,
+    rgba(0, 224, 122, 0.30)  180deg,
+    rgba(0, 224, 122, 0.60)  210deg,
+    rgba(0, 224, 122, 1)     245deg,
+    rgba(198, 255, 227, 0.95) 310deg,
+    rgba(0, 224, 122, 0.60)  340deg,
+    rgba(0, 224, 122, 0.30)  360deg
   );
   -webkit-mask:
     linear-gradient(#000 0 0) content-box,
@@ -287,8 +453,8 @@ body,
 .kb-ai-bezel:focus-within {
   animation: none;
   box-shadow:
-    0 0 22px 3px rgba(29, 189, 125, 0.34),
-    0 0 40px 10px rgba(139, 92, 246, 0.16);
+    0 0 22px 3px rgba(0, 224, 122, 0.30),
+    0 0 40px 10px rgba(0, 184, 100, 0.14);
 }
 .kb-ai-bezel:focus-within::before {
   animation-duration: 7s;
@@ -395,8 +561,8 @@ body,
     90deg,
     var(--kb-text-tertiary) 0%,
     var(--kb-text-tertiary) 35%,
-    rgba(29, 189, 125, 1)   50%,
-    rgba(139, 92, 246, 1)   55%,
+    rgba(0, 224, 122, 1)    50%,
+    rgba(198, 255, 227, 1)  55%,
     var(--kb-text-tertiary) 70%,
     var(--kb-text-tertiary) 100%
   );

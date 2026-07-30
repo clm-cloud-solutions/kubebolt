@@ -109,13 +109,17 @@ export interface NodeRates {
 // halves so the `+` matches on the reduced {namespace,pod,node}
 // label set (validated on live VM data). group_left pulls the node's
 // rate onto each container series by the shared `node` label.
+// `max by (node)` collapses node_*_hourly_cost to ONE series per node:
+// OpenCost pod restarts within the range leave stale + fresh cost
+// series in VM, and group_left errors ("duplicate time series on the
+// right side") unless the right side is unique per join label.
 const ATTRIBUTION_QUERY = [
   'sum by (namespace, pod, node) (',
-  '  container_cpu_allocation * on(node) group_left node_cpu_hourly_cost',
+  '  container_cpu_allocation * on(node) group_left max by (node) (node_cpu_hourly_cost)',
   ')',
   '+',
   'sum by (namespace, pod, node) (',
-  '  (container_memory_allocation_bytes / 1024 / 1024 / 1024) * on(node) group_left node_ram_hourly_cost',
+  '  (container_memory_allocation_bytes / 1024 / 1024 / 1024) * on(node) group_left max by (node) (node_ram_hourly_cost)',
   ')',
 ].join(' ')
 
@@ -140,10 +144,12 @@ export const NETWORK_COST_QUERY = [
 // (node total − allocated) is idle/waste over time. group_left pulls each
 // node's rate onto its container series by the shared `node` label. Same two
 // summed halves as ATTRIBUTION_QUERY so the totals reconcile with the KPIs.
+// `max by (node)` dedupes node_*_hourly_cost (see ATTRIBUTION_QUERY) so the
+// range query survives OpenCost pod restarts.
 export const ALLOCATED_TOTAL_QUERY = [
-  'sum(container_cpu_allocation * on(node) group_left node_cpu_hourly_cost)',
+  'sum(container_cpu_allocation * on(node) group_left max by (node) (node_cpu_hourly_cost))',
   '+',
-  'sum((container_memory_allocation_bytes / 1024 / 1024 / 1024) * on(node) group_left node_ram_hourly_cost)',
+  'sum((container_memory_allocation_bytes / 1024 / 1024 / 1024) * on(node) group_left max by (node) (node_ram_hourly_cost))',
 ].join(' ')
 
 // ─── Parse helpers ───────────────────────────────────────────────

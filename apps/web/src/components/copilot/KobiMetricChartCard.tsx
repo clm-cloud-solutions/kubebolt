@@ -79,16 +79,16 @@ export function KobiMetricChartCard({ data }: Props) {
     presentMetrics.every((k) => (metrics[k]?.trend?.length ?? 0) === 0)
 
   return (
-    <div className="rounded-lg border border-kb-border bg-kb-bg/40 overflow-hidden">
-      <header className="flex items-center gap-2 px-3 py-2 border-b border-kb-border">
-        <div className="w-6 h-6 rounded-lg bg-kb-bg flex items-center justify-center shrink-0">
-          <Activity className="w-3.5 h-3.5 text-kb-accent" />
+    <div className="rounded-lg border border-kobi-border bg-kobi-bg/40 overflow-hidden">
+      <header className="flex items-center gap-2 px-3 py-2 border-b border-kobi-border">
+        <div className="w-6 h-6 rounded-lg bg-kobi-bg flex items-center justify-center shrink-0">
+          <Activity className="w-3.5 h-3.5 text-kobi-accent" />
         </div>
         <div className="flex-1 min-w-0">
-          <div className="text-[11px] text-kb-text-tertiary font-mono uppercase tracking-wide">
+          <div className="text-[11px] text-kobi-text-tertiary font-mono uppercase tracking-wide">
             {formatHeaderIdentity(data)}
           </div>
-          <div className="text-[10px] text-kb-text-tertiary">
+          <div className="text-[10px] text-kobi-text-tertiary">
             last {data.range}
             {formatScopeChip(data)}
             {data.note && <span className="ml-1">· {data.note}</span>}
@@ -150,7 +150,7 @@ function formatScopeChip(data: WorkloadMetricsResponse): React.ReactNode {
 
 function EmptyState({ note }: { note: string }) {
   return (
-    <div className="flex items-center gap-2 px-3 py-4 text-[11px] text-kb-text-tertiary">
+    <div className="flex items-center gap-2 px-3 py-4 text-[11px] text-kobi-text-tertiary">
       <MinusCircle className="w-3.5 h-3.5 shrink-0" />
       <span>{note}</span>
     </div>
@@ -185,7 +185,7 @@ function MetricBlock({ metricKey, entry }: MetricBlockProps) {
   }, [summary.max, entry.limit, entry.request, unitKind])
 
   return (
-    <div className="border-b border-kb-border last:border-b-0">
+    <div className="border-b border-kobi-border last:border-b-0">
       <MetricStrip
         label={display.label}
         summary={summary}
@@ -233,19 +233,19 @@ function MetricStrip({
   return (
     <div className="flex items-center justify-between gap-2 px-3 py-1.5">
       <div className="flex items-center gap-2">
-        <span className="text-[10px] font-mono uppercase tracking-wider text-kb-text-secondary">
+        <span className="text-[10px] font-mono uppercase tracking-wider text-kobi-text-secondary">
           {label}
         </span>
-        <span className="text-[11px] text-kb-text-secondary">
-          avg <span className="text-kb-text-primary font-medium">{formatValue(summary.avg, scale, true)}</span>
+        <span className="text-[11px] text-kobi-text-secondary">
+          avg <span className="text-kobi-text font-medium">{formatValue(summary.avg, scale, true)}</span>
         </span>
-        <span className="text-[11px] text-kb-text-secondary">
-          max <span className="text-kb-text-primary font-medium">{formatValue(summary.max, scale, true)}</span>
+        <span className="text-[11px] text-kobi-text-secondary">
+          max <span className="text-kobi-text font-medium">{formatValue(summary.max, scale, true)}</span>
         </span>
       </div>
       <div className="flex items-center gap-2">
         {limit != null && (
-          <span className="text-[10px] text-kb-text-tertiary">
+          <span className="text-[10px] text-kobi-text-tertiary">
             limit {formatValue(limit, scale, true)}
           </span>
         )}
@@ -256,7 +256,7 @@ function MetricStrip({
           <UtilizationChip percent={utilization.vsRequest} threshold="request" />
         )}
         {!limit && !request && (
-          <span className="text-[10px] text-kb-text-tertiary italic">no limits</span>
+          <span className="text-[10px] text-kobi-text-tertiary italic">no limits</span>
         )}
       </div>
     </div>
@@ -274,12 +274,15 @@ function UtilizationChip({
   //   <70% → muted (under-using is fine)
   //   70–95% → warning (approaching the line)
   //   ≥ 95% → danger (already saturating)
+  // kobi-st tokens (theme-tiered), outline style per the mockup's mbadge.
+  // The previous kb-danger/kb-warning classes never existed in the Tailwind
+  // palette, so the chip silently rendered colorless.
   const colorClass =
     percent >= 95
-      ? 'bg-kb-danger/15 text-kb-danger border-kb-danger/30'
+      ? 'text-kobi-st-error border-kobi-st-error/50'
       : percent >= 70
-        ? 'bg-kb-warning/15 text-kb-warning border-kb-warning/30'
-        : 'bg-kb-bg text-kb-text-tertiary border-kb-border'
+        ? 'text-kobi-st-warn border-kobi-st-warn/50'
+        : 'bg-kobi-bg text-kobi-text-tertiary border-kobi-border'
   return (
     <span
       className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${colorClass}`}
@@ -340,21 +343,21 @@ function ChartArea({ points, accent, request, limit, scale, height }: ChartAreaP
               <stop offset="100%" stopColor={accent} stopOpacity={0} />
             </linearGradient>
           </defs>
-          <CartesianGrid stroke="var(--kb-border)" strokeOpacity={0.3} vertical={false} />
+          <CartesianGrid stroke="var(--kobi-border)" strokeOpacity={0.3} vertical={false} />
           <XAxis
             type="number"
             dataKey="ts"
             domain={['dataMin', 'dataMax']}
             tickFormatter={(v) => formatTimeTick(v as number)}
-            tick={{ fontSize: 9, fill: 'var(--kb-text-tertiary)' }}
-            axisLine={{ stroke: 'var(--kb-border)' }}
-            tickLine={{ stroke: 'var(--kb-border)' }}
+            tick={{ fontSize: 9, fill: 'var(--kobi-text-tertiary)' }}
+            axisLine={{ stroke: 'var(--kobi-border)' }}
+            tickLine={{ stroke: 'var(--kobi-border)' }}
             minTickGap={40}
           />
           <YAxis
             type="number"
             domain={[0, yMax > 0 ? Math.ceil(yMax * 1.1 * 100) / 100 : 1]}
-            tick={{ fontSize: 9, fill: 'var(--kb-text-tertiary)' }}
+            tick={{ fontSize: 9, fill: 'var(--kobi-text-tertiary)' }}
             tickFormatter={(v) => `${v}`}
             axisLine={false}
             tickLine={false}
@@ -374,28 +377,28 @@ function ChartArea({ points, accent, request, limit, scale, height }: ChartAreaP
           {request != null && (
             <ReferenceLine
               y={request / scale.divisor}
-              stroke="var(--kb-text-tertiary)"
+              stroke="var(--kobi-text-tertiary)"
               strokeDasharray="3 3"
               strokeOpacity={0.6}
               label={{
                 value: 'req',
                 position: 'insideTopRight',
                 fontSize: 9,
-                fill: 'var(--kb-text-tertiary)',
+                fill: 'var(--kobi-text-tertiary)',
               }}
             />
           )}
           {limit != null && (
             <ReferenceLine
               y={limit / scale.divisor}
-              stroke="var(--kb-danger, #ef4444)"
+              stroke="var(--kobi-st-error, #ef4444)"
               strokeDasharray="4 3"
               strokeOpacity={0.7}
               label={{
                 value: 'limit',
                 position: 'insideTopRight',
                 fontSize: 9,
-                fill: 'var(--kb-danger, #ef4444)',
+                fill: 'var(--kobi-st-error, #ef4444)',
               }}
             />
           )}
@@ -435,15 +438,15 @@ function ChartTooltip({ active, payload, scale, limit }: ChartTooltipProps) {
   const ts = datum.ts ?? 0
   const utilPct = limit && limit > 0 ? (value / limit) * 100 : null
   return (
-    <div className="bg-kb-surface border border-kb-border rounded px-2 py-1.5 text-[10px] shadow-md">
-      <div className="text-kb-text-tertiary font-mono">
+    <div className="bg-kobi-elevated border border-kobi-border rounded px-2 py-1.5 text-[10px] shadow-md">
+      <div className="text-kobi-text-tertiary font-mono">
         {new Date(ts).toLocaleTimeString()}
       </div>
-      <div className="text-kb-text-primary font-medium mt-0.5">
+      <div className="text-kobi-text font-medium mt-0.5">
         {formatValue(value, scale, true)}
       </div>
       {utilPct != null && (
-        <div className="text-kb-text-secondary mt-0.5">
+        <div className="text-kobi-text-secondary mt-0.5">
           {utilPct.toFixed(0)}% of limit
         </div>
       )}
@@ -470,8 +473,8 @@ function PerContainerRows({ containers, accent, scale }: PerContainerRowsProps) 
   const hidden = sorted.length - visible.length
 
   return (
-    <div className="border-t border-kb-border bg-kb-bg/30">
-      <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-kb-text-tertiary">
+    <div className="border-t border-kobi-border bg-kobi-bg/30">
+      <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-kobi-text-tertiary">
         per container
       </div>
       <div className="flex flex-col">
@@ -479,7 +482,7 @@ function PerContainerRows({ containers, accent, scale }: PerContainerRowsProps) 
           <ContainerRow key={name} name={name} entry={c} accent={accent} scale={scale} />
         ))}
         {hidden > 0 && (
-          <div className="px-3 py-1.5 text-[10px] text-kb-text-tertiary italic border-t border-kb-border">
+          <div className="px-3 py-1.5 text-[10px] text-kobi-text-tertiary italic border-t border-kobi-border">
             +{hidden} more container{hidden === 1 ? '' : 's'} hidden — narrow to kind=Pod for full detail
           </div>
         )}
@@ -505,8 +508,8 @@ function ContainerRow({ name, entry, accent, scale }: ContainerRowProps) {
     [trend, scale.divisor],
   )
   return (
-    <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-3 py-1.5 border-t border-kb-border first:border-t-0">
-      <span className="text-[11px] font-mono text-kb-text-primary truncate max-w-[140px]" title={name}>
+    <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-3 py-1.5 border-t border-kobi-border first:border-t-0">
+      <span className="text-[11px] font-mono text-kobi-text truncate max-w-[140px]" title={name}>
         {name}
       </span>
       <div style={{ height: 24 }}>
@@ -523,8 +526,8 @@ function ContainerRow({ name, entry, accent, scale }: ContainerRowProps) {
           </LineChart>
         </ResponsiveContainer>
       </div>
-      <span className="text-[10px] text-kb-text-secondary font-mono">
-        max <span className="text-kb-text-primary">{formatValue(summary.max, scale, true)}</span>
+      <span className="text-[10px] text-kobi-text-secondary font-mono">
+        max <span className="text-kobi-text">{formatValue(summary.max, scale, true)}</span>
       </span>
     </div>
   )

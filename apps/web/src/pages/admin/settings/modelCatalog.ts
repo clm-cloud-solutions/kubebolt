@@ -33,39 +33,63 @@ export interface ModelOption {
 // ─── Anthropic ───────────────────────────────────────────────────────
 
 export const ANTHROPIC_MODELS: ModelOption[] = [
-  // Current top-of-line. Listed first within each tier so the picker
-  // surfaces the newest by default.
+  // ─── Claude 5 (current top-of-line) ──────────────────────────────
+  // Listed first so the picker surfaces the newest generation by default.
   {
-    id: 'claude-opus-4-7',
-    label: 'Claude Opus 4.7',
-    description: 'Most capable Anthropic model. Best for deep reasoning, complex investigations. Slowest and most expensive.',
-    group: 'Claude 4 (current)',
+    id: 'claude-opus-5',
+    label: 'Claude Opus 5',
+    description: 'Most capable general-purpose Claude — best for deep reasoning and complex investigations. Higher cost and latency than Sonnet.',
+    group: 'Claude 5 (current)',
   },
   {
-    id: 'claude-sonnet-4-6',
-    label: 'Claude Sonnet 4.6',
+    id: 'claude-sonnet-5',
+    label: 'Claude Sonnet 5',
     description: 'Balanced default — fast enough for live chat, deep enough for most operator tasks. Recommended for production.',
-    group: 'Claude 4 (current)',
+    group: 'Claude 5 (current)',
   },
   {
     id: 'claude-haiku-4-5',
     label: 'Claude Haiku 4.5',
     description: 'Fast and cheap. Good for high-volume diagnostics and short turns. Less depth than Sonnet on tricky tool chains.',
-    group: 'Claude 4 (current)',
+    group: 'Claude 5 (current)',
   },
-  // Previous-generation but still served by Anthropic. Useful for
-  // accounts pinned to an older version, or for cost optimisation when
-  // newer tiers aren't worth the price delta for the operator's workload.
+  {
+    id: 'claude-fable-5',
+    label: 'Claude Fable 5',
+    description: "Anthropic's most capable model, for the hardest reasoning and long-horizon work. Highest cost and latency — reserve for the deepest investigations.",
+    group: 'Claude 5 (current)',
+  },
+  // ─── Claude 4 (previous generation) ──────────────────────────────
+  // Still served by Anthropic; useful for accounts pinned to a version,
+  // or for cost/behaviour comparisons against the Claude 5 line.
+  {
+    id: 'claude-opus-4-8',
+    label: 'Claude Opus 4.8',
+    description: 'Last Opus 4 revision — highly capable and autonomous. Superseded by Opus 5; kept for accounts that prefer its behaviour.',
+    group: 'Claude 4 (previous)',
+  },
+  {
+    id: 'claude-opus-4-7',
+    label: 'Claude Opus 4.7',
+    description: 'Earlier Opus 4 revision. Still served by Anthropic; useful when an account is pinned to it or for A/B comparisons.',
+    group: 'Claude 4 (previous)',
+  },
+  {
+    id: 'claude-sonnet-4-6',
+    label: 'Claude Sonnet 4.6',
+    description: 'Previous Sonnet revision. Comparable depth to Sonnet 5 at a slightly different price/latency profile.',
+    group: 'Claude 4 (previous)',
+  },
   {
     id: 'claude-opus-4-6',
     label: 'Claude Opus 4.6',
-    description: 'Previous Opus revision. Still served by Anthropic; useful when an account is pinned to it or for A/B comparisons.',
+    description: 'Earlier Opus 4 revision. Still served by Anthropic; kept for pinned accounts and A/B comparisons.',
     group: 'Claude 4 (previous)',
   },
   {
     id: 'claude-sonnet-4-5',
     label: 'Claude Sonnet 4.5',
-    description: 'Previous Sonnet revision. Still supported; comparable depth to 4.6 at a slightly different price/latency profile.',
+    description: 'Earlier Sonnet revision. Still supported; comparable depth at a slightly different price/latency profile.',
     group: 'Claude 4 (previous)',
   },
   // Legacy. Kept for accounts that haven't been enabled for Claude 4

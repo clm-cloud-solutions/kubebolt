@@ -449,3 +449,27 @@ func (r *AgentRegistry) CountByCluster(clusterID string) int {
 	defer r.mu.RUnlock()
 	return len(r.agents[clusterID])
 }
+
+// LastSeenByCluster returns the most-recent LastSeen timestamp across all
+// durable agent records, keyed by cluster_id. Used by the cluster list to show
+// "last seen …" on a disconnected agent-proxy cluster (a live one renders "Live"
+// and never reads this). Nil when no durable store is wired.
+func (r *AgentRegistry) LastSeenByCluster() map[string]time.Time {
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return nil
+	}
+	recs, err := store.List()
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]time.Time, len(recs))
+	for _, rec := range recs {
+		if rec.LastSeen.After(out[rec.ClusterID]) {
+			out[rec.ClusterID] = rec.LastSeen
+		}
+	}
+	return out
+}
