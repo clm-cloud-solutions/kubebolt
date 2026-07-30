@@ -266,3 +266,41 @@ describe('ActionProposalCard dispatch — new propose_* arms', () => {
     })
   })
 })
+
+// ─── Risk floor — never trust the model's self-declared risk ─────────────
+// Field regression: an irreversible delete_resource arrived with
+// risk: 'low' and rendered a green LOW RISK badge + one-click Execute.
+// The card must clamp destructive/irreversible work to high risk
+// (red theme + type-to-confirm), regardless of the proposal's claim.
+describe('ActionProposalCard risk floor', () => {
+  it('clamps delete_resource declared low to high (type-to-confirm shown)', () => {
+    const proposal = {
+      ...baseProposal('delete_resource', { force: false }),
+      risk: 'low' as const,
+      reversible: false,
+    }
+    renderCard(proposal)
+
+    expect(screen.getByText(/high risk/i)).toBeInTheDocument()
+    // Type-to-confirm gate: Execute starts disabled until the target name
+    // is typed — the pending state must not offer a one-click destructive run.
+    expect(screen.getByRole('button', { name: /Execute/i })).toBeDisabled()
+  })
+
+  it('clamps any irreversible action to high', () => {
+    const proposal = {
+      ...baseProposal('restart_workload', {}),
+      risk: 'low' as const,
+      reversible: false,
+    }
+    renderCard(proposal)
+    expect(screen.getByText(/high risk/i)).toBeInTheDocument()
+  })
+
+  it('leaves reversible non-delete actions at their declared risk', () => {
+    const proposal = baseProposal('scale_workload', { replicas: 3 })
+    renderCard(proposal)
+    expect(screen.getByText(/medium risk/i)).toBeInTheDocument()
+    expect(screen.queryByText(/high risk/i)).not.toBeInTheDocument()
+  })
+})

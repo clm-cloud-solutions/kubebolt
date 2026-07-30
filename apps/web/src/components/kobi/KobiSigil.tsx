@@ -16,10 +16,15 @@ export type KobiSigilState =
   | 'awaiting' // sky — proposal pending operator action
 
 const STATE_COLOR: Record<KobiSigilState, string> = {
-  static: 'text-kb-accent',
-  watching: 'text-emerald-400',
-  investigating: 'text-amber-400',
-  awaiting: 'text-sky-400',
+  // Kobi brand tokens, not the app-wide kb-accent — the sigil is a
+  // Kobi-brand surface wherever it appears. Colors are theme-tiered in
+  // globals.css (400 tier on dark, 700 tier on light): the fixed 400s
+  // used before landed at 1.5–2.1:1 on light surfaces — invisible,
+  // especially amber during state changes.
+  static: 'text-kobi-sigil-static',
+  watching: 'text-kobi-sigil-watching',
+  investigating: 'text-kobi-sigil-investigating',
+  awaiting: 'text-kobi-sigil-awaiting',
 }
 
 interface KobiSigilProps {

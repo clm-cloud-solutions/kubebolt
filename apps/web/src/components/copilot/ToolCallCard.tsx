@@ -51,25 +51,25 @@ export function ToolCallCard({ name, input, result, isError }: Props) {
       : Check
 
   const statusColor = isLoading
-    ? 'text-kb-text-tertiary'
+    ? 'text-kobi-text-tertiary'
     : isError
-      ? 'text-status-error'
-      : 'text-status-ok'
+      ? 'text-kobi-st-error'
+      : 'text-kobi-st-ok'
 
   return (
-    <div className="rounded-lg bg-kb-bg border border-kb-border overflow-hidden text-[10px] font-mono">
+    <div className="rounded-lg bg-kobi-bg border border-kobi-border overflow-hidden text-[10px] font-mono">
       <button
         type="button"
         onClick={() => hasExpandable && setOpen((v) => !v)}
         disabled={!hasExpandable}
-        className={`w-full flex items-center gap-2 px-3 py-1.5 text-kb-text-tertiary transition-colors ${
-          hasExpandable ? 'hover:bg-kb-card-hover cursor-pointer' : 'cursor-default'
+        className={`w-full flex items-center gap-2 px-3 py-1.5 text-kobi-text-tertiary transition-colors ${
+          hasExpandable ? 'hover:bg-kobi-elevated cursor-pointer' : 'cursor-default'
         }`}
       >
-        <Wrench className="w-3 h-3 text-kb-accent shrink-0" />
+        <Wrench className="w-3 h-3 text-kobi-accent shrink-0" />
         <span className="shrink-0">{label}</span>
         {presentation.summary && (
-          <span className="text-kb-text-secondary truncate min-w-0">· {presentation.summary}</span>
+          <span className="text-kobi-text-secondary truncate min-w-0">· {presentation.summary}</span>
         )}
         <StatusIcon className={`w-3 h-3 shrink-0 ml-auto ${statusColor}`} />
         {hasExpandable && (
@@ -80,23 +80,23 @@ export function ToolCallCard({ name, input, result, isError }: Props) {
       </button>
 
       {open && hasExpandable && (
-        <div className="border-t border-kb-border divide-y divide-kb-border">
+        <div className="border-t border-kobi-border divide-y divide-kb-border">
           {hasErrorBody && (
             <div className="px-3 py-2">
-              <div className="text-[9px] uppercase tracking-wider text-status-error mb-1.5">Error</div>
-              <pre className="text-[11px] text-status-error whitespace-pre-wrap break-words leading-snug max-h-[200px] overflow-auto">
+              <div className="text-[9px] uppercase tracking-wider text-kobi-st-error mb-1.5">Error</div>
+              <pre className="text-[11px] text-kobi-st-error whitespace-pre-wrap break-words leading-snug max-h-[200px] overflow-auto">
                 {result}
               </pre>
             </div>
           )}
           {presentation.inputLines.length > 0 && (
             <div className="px-3 py-2">
-              <div className="text-[9px] uppercase tracking-wider text-kb-text-tertiary mb-1.5">Input</div>
+              <div className="text-[9px] uppercase tracking-wider text-kobi-text-tertiary mb-1.5">Input</div>
               <div className="space-y-0.5">
                 {presentation.inputLines.map(({ key, value }) => (
                   <div key={key} className="flex gap-2 items-baseline text-[11px]">
-                    <span className="text-kb-text-tertiary shrink-0">{key}:</span>
-                    <span className="text-kb-text-primary whitespace-pre-wrap break-all">{value}</span>
+                    <span className="text-kobi-text-tertiary shrink-0">{key}:</span>
+                    <span className="text-kobi-text whitespace-pre-wrap break-all">{value}</span>
                   </div>
                 ))}
               </div>
@@ -105,10 +105,10 @@ export function ToolCallCard({ name, input, result, isError }: Props) {
           {presentation.command && (
             <div className="px-3 py-2">
               <div className="flex items-center justify-between mb-1.5">
-                <span className="text-[9px] uppercase tracking-wider text-kb-text-tertiary">Equivalent</span>
+                <span className="text-[9px] uppercase tracking-wider text-kobi-text-tertiary">Equivalent</span>
                 <CopyButton value={presentation.command} />
               </div>
-              <pre className="text-[11px] text-kb-text-secondary whitespace-pre-wrap break-all leading-snug">
+              <pre className="text-[11px] text-kobi-text-secondary whitespace-pre-wrap break-all leading-snug">
                 {presentation.command}
               </pre>
             </div>
@@ -116,7 +116,7 @@ export function ToolCallCard({ name, input, result, isError }: Props) {
           {presentation.link && (
             <Link
               to={presentation.link.href}
-              className="flex items-center justify-between px-3 py-2 text-[11px] text-kb-accent hover:bg-kb-card-hover transition-colors"
+              className="flex items-center justify-between px-3 py-2 text-[11px] text-kobi-accent hover:bg-kobi-elevated transition-colors"
             >
               <span>{presentation.link.label}</span>
               <ArrowUpRight className="w-3 h-3" />
@@ -146,10 +146,10 @@ function CopyButton({ value }: { value: string }) {
     <button
       type="button"
       onClick={onClick}
-      className="flex items-center gap-1 text-[10px] text-kb-text-tertiary hover:text-kb-text-primary transition-colors"
+      className="flex items-center gap-1 text-[10px] text-kobi-text-tertiary hover:text-kobi-text transition-colors"
       aria-label={copied ? 'Copied' : 'Copy command'}
     >
-      {copied ? <CheckSmall className="w-3 h-3 text-status-ok" /> : <Copy className="w-3 h-3" />}
+      {copied ? <CheckSmall className="w-3 h-3 text-kobi-st-ok" /> : <Copy className="w-3 h-3" />}
       {copied ? 'Copied' : 'Copy'}
     </button>
   )
