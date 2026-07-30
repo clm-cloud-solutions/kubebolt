@@ -15,7 +15,7 @@ const (
 	anthropicDefaultURL = "https://api.anthropic.com/v1/messages"
 	// Default to the latest Claude Sonnet. Users can override via
 	// KUBEBOLT_AI_MODEL with any Claude model their account has access to.
-	anthropicDefaultModel = "claude-sonnet-4-6"
+	anthropicDefaultModel = "claude-sonnet-5"
 	anthropicAPIVersion   = "2023-06-01"
 )
 
