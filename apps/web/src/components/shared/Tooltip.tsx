@@ -112,9 +112,14 @@ interface HoverTooltipProps {
 // namespace tiles section, which sits at the bottom of the page.
 const FLIP_THRESHOLD_PX = 240
 
-type AnchoredPos =
-  | { kind: 'below'; x: number; top: number }
-  | { kind: 'above'; x: number; bottom: string }
+// alignRight: triggers near the RIGHT viewport edge anchor the tooltip's
+// right edge to the trigger's right edge (via CSS `right`) instead of
+// left-to-left — otherwise the panel overflows and clips (first observed
+// on the sign-off shield in the incidents table's last column).
+type AnchoredPos = { alignRight: boolean; x: number; rightX: number } & (
+  | { kind: 'below'; top: number }
+  | { kind: 'above'; bottom: string }
+)
 
 export function HoverTooltip({
   body,
@@ -133,20 +138,27 @@ export function HoverTooltip({
     if (!node) return
     const rect = node.getBoundingClientRect()
     const spaceBelow = window.innerHeight - rect.bottom
+    const anchor = {
+      // Horizontal: left-to-left normally; right-to-right when the panel
+      // could overflow the viewport's right edge.
+      alignRight: rect.left + maxWidth + 8 > window.innerWidth,
+      x: rect.left,
+      rightX: Math.max(8, window.innerWidth - rect.right),
+    }
     if (spaceBelow < FLIP_THRESHOLD_PX) {
       // Anchor the tooltip's BOTTOM edge `offset` px above the
       // trigger's top edge. CSS `bottom` measures from the viewport
       // bottom, so 100vh - rect.top + offset puts the tooltip's
       // bottom edge `offset` px above rect.top.
       setPos({
+        ...anchor,
         kind: 'above',
-        x: rect.left,
         bottom: `calc(100vh - ${rect.top - offset}px)`,
       })
     } else {
       setPos({
+        ...anchor,
         kind: 'below',
-        x: rect.left,
         top: rect.bottom + offset,
       })
     }
@@ -177,7 +189,8 @@ export function HoverTooltip({
           <div
             className={`fixed z-[9999] ${interactive ? 'pointer-events-auto' : 'pointer-events-none'}`}
             style={{
-              left: pos.x,
+              left: pos.alignRight ? undefined : pos.x,
+              right: pos.alignRight ? pos.rightX : undefined,
               top: pos.kind === 'below' ? pos.top : undefined,
               bottom: pos.kind === 'above' ? pos.bottom : undefined,
               minWidth,
