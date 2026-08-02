@@ -1,0 +1,120 @@
+# Scenario 14 — Liveness probe failing, then self-healing
+#
+# Symptom    : an HTTP server answers /livez with 500 for its first 90 seconds,
+#              then starts answering 200. kubelet fails the probe 3× (period 10s,
+#              failureThreshold 3), kills the container, and the replacement comes
+#              up healthy.
+# Insight    : "Liveness probe failing"
+#
+# WHY THIS SCENARIO EXISTS — it is the regression test for the fix of 2026-08-02.
+# The rule reads kubelet's `Unhealthy` Events, and Events are historical. Before
+# the fix its only exit was the apiserver garbage-collecting the Event at
+# --event-ttl, so the insight stayed on screen for up to an HOUR after the pod
+# was healthy, and Autopilot re-opened an incident on every cooldown.
+#
+# What to watch (this is the whole point — time it):
+#
+#   t+0:00   kubectl apply -f 14-liveness-flapping.yaml
+#   t+0:35   probe has failed 3× → kubelet emits Killing + Unhealthy and restarts
+#            it. RESTARTS stops at 1 — the replacement is healthy.
+#   t+0:45   the replacement answers 200 and goes Ready
+#   t+1:00   the "Liveness probe failing" insight appears (first eval after the
+#            kill; the run is younger than readyGrace, so it correctly fires even
+#            though the pod is already Ready)
+#   t+2:45   supersession holds (Ready + readyGrace)
+#   t+3:00   ✅ the insight is GONE — the engine evaluates every 60s
+#            (--insight-interval), so allow one cadence past supersession.
+#
+#   ❌ REGRESSED if the insight is still there at t+10:00 with the pod Ready.
+#      That means it is waiting on the Event's TTL again, not on evidence.
+#
+# THE OPPOSITE DIRECTION — delete the `state` volume + volumeMount and the pod
+# loops forever (every replacement is born unhealthy). The insight must then NEVER
+# clear, however long the pod happens to be Ready at the instant you look: each
+# kill resets state.running.startedAt, so the run can never accumulate readyGrace.
+# That is the no-false-negative half, and it is the half that a naive
+# "clear once the pod is Ready" fix would break.
+#
+# Cross-check while it is firing:
+#   kubectl -n kobi-incident-lab get pod -l app=flappy-liveness \
+#     -o jsonpath='{.items[0].status.containerStatuses[0].state.running.startedAt}{"\n"}'
+#   kubectl -n kobi-incident-lab get events --field-selector reason=Unhealthy \
+#     -o custom-columns=LAST:.lastTimestamp,COUNT:.count,MSG:.message
+# Once running.startedAt is LATER than the event's lastTimestamp and the pod has
+# been Ready for 2 minutes, the insight must be gone.
+#
+# Clean up   : kubectl delete -f 14-liveness-flapping.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: flappy-liveness
+  namespace: kobi-incident-lab
+  labels:
+    app: flappy-liveness
+    incident: liveness-failing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flappy-liveness
+  template:
+    metadata:
+      labels:
+        app: flappy-liveness
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import os, http.server
+              # The unhealthy state must survive a container RESTART, or the pod
+              # loops forever instead of self-healing: a wall-clock deadline
+              # (time.time() + 90) resets with every new process, so each
+              # replacement is born unhealthy and kubelet kills it again. That was
+              # the bug in the first cut of this file, caught in vivo 2026-08-02.
+              #
+              # emptyDir survives restarts within the pod, so the marker makes the
+              # FIRST container unhealthy (→ 3 failures → killed → the Event
+              # reaches Count > 1 and arms the rule) and EVERY replacement healthy.
+              MARKER = "/state/booted"
+              first_boot = not os.path.exists(MARKER)
+              if first_boot:
+                  open(MARKER, "w").close()
+              CODE = 500 if first_boot else 200
+              class H(http.server.BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      self.send_response(CODE)
+                      self.end_headers()
+                      self.wfile.write(b"ok" if CODE == 200 else b"still broken")
+                  def log_message(self, *a):
+                      print(f"[flappy-liveness] {self.path} -> {CODE}", flush=True)
+              print(f"[flappy-liveness] first_boot={first_boot} → /livez returns {CODE}", flush=True)
+              http.server.HTTPServer(("", 8080), H).serve_forever()
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: state
+              mountPath: /state
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+            # Kubernetes defaults, stated explicitly: probeSilenceWindow derives
+            # its lost-signal fallback from exactly these two numbers
+            # (10s × 3 × 3 = 90s), so changing them here changes the expected
+            # timings in the comment above.
+            periodSeconds: 10
+            failureThreshold: 3
+            initialDelaySeconds: 5
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      volumes:
+        - name: state
+          emptyDir: {}
