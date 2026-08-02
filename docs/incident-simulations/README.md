@@ -71,6 +71,20 @@ pregúntale a Kobi.
 | 11 | `11-orphan-service.yaml` | Service sin endpoints | service-no-endpoints | diagnóstico |
 | 12 | `12-orphan-networkpolicy.yaml` | NetworkPolicy sin matches | policy-no-match | diagnóstico |
 | 13 | `13-orphaned-resources.yaml` | Recursos zombie | (orphaned) | `delete_resource` |
+| 14 | `14-liveness-flapping.yaml` | Liveness falla y luego se auto-cura | liveness-probe-failing | diagnóstico + **ciclo de vida** |
+| 15 | `15-oom-selfhealing.yaml` | OOM una vez y se recupera **en el sitio** | oom-killed | diagnóstico + **ciclo de vida** |
+
+> El 14 y el 15 no son para ver disparar la regla: son los **tests de regresión
+> del ciclo de vida** (2026-08-02). Lo que se cronometra es cuándo *desaparece*
+> el insight, no cuándo aparece.
+>
+> El 15 existe porque "arreglarlo con `kubectl set resources`" **no prueba nada**:
+> cambia el pod template, nace otro ReplicaSet y el pod que hizo OOM se borra, así
+> que el insight se apaga por la razón aburrida. El único caso que discrimina es
+> la recuperación **sin reemplazar el pod**, donde `lastState.terminated.reason`
+> sigue diciendo `OOMKilled` para siempre.
+>
+> Criterio de fallo y comandos de contraste, en la cabecera de cada YAML.
 
 ### Dos escenarios necesitan un paso extra
 

@@ -68,6 +68,13 @@ type Engine struct {
 	// global. Set by the manager to (tenantID, contextName).
 	wsTenant  string
 	wsCluster string
+
+	// hydrated holds fingerprints restored from the store at boot that no rule
+	// has re-confirmed yet; each is owed one grace evaluation before the resolve
+	// loop may close it. hydrateDone guards the one-shot seeding. See
+	// hydrateLocked for why this exists at all.
+	hydrated    map[string]bool
+	hydrateDone bool
 }
 
 // SetBroadcastGate wires the active/parked gate shared with this engine's
@@ -161,6 +168,70 @@ func (e *Engine) SetOnResolvedInsight(fn func(models.Insight)) {
 	e.onResolved = fn
 }
 
+// hydrateLocked seeds e.insights from the store's still-active records, so the
+// resolve loop can close conditions that cleared while this process was down.
+//
+// Without it, e.insights starts EMPTY on every boot, and the resolve loop — which
+// only walks in-memory insights — can never reach a record the previous process
+// left `active`. MarkResolved has exactly one caller (persistResolved, off that
+// loop) and Prune refuses to touch active records ("Active records never get
+// pruned"), so such a record is immortal.
+//
+// That is not merely stale history. admitNew treats a still-`active` record as a
+// CONTINUATION (freshEpisode=false), so when the same condition genuinely recurs
+// weeks later, its Slack/email notification is SILENTLY suppressed and the card
+// inherits the ancient FirstSeen. An API restart — i.e. every deploy — is enough
+// to arm that. It is the mirror image of the sticky-insight bug: there an insight
+// that won't die, here a record that won't die.
+//
+// Restored insights are parked in `hydrated`: the first evaluation that fails to
+// re-produce one spends its grace instead of resolving it. The connector already
+// waits for WaitForCacheSync before the eval loop starts, so a cold informer
+// shouldn't be reachable — the grace pass is cheap insurance against closing the
+// entire set on one bad tick.
+//
+// Caller holds e.mu.
+func (e *Engine) hydrateLocked() {
+	e.hydrateDone = true
+	if e.store == nil {
+		return
+	}
+	recs, err := e.store.List(InsightQuery{
+		TenantID:  e.tenantID,
+		ClusterID: e.clusterID,
+		Status:    "active",
+	})
+	if err != nil {
+		log.Printf("insights: hydrate failed for %s/%s: %v", e.tenantID, e.clusterID, err)
+		return
+	}
+	if len(recs) == 0 {
+		return
+	}
+	e.hydrated = make(map[string]bool, len(recs))
+	for i := range recs {
+		rec := &recs[i]
+		e.insights = append(e.insights, models.Insight{
+			ID:          rec.CurrentOccurrenceID,
+			Fingerprint: rec.Fingerprint,
+			RuleID:      rec.RuleID,
+			TenantID:    rec.TenantID,
+			ClusterID:   rec.ClusterID,
+			Severity:    rec.Severity,
+			Category:    rec.Category,
+			Resource:    rec.Resource,
+			Namespace:   rec.Namespace,
+			Title:       rec.Title,
+			Message:     rec.Message,
+			Suggestion:  rec.Suggestion,
+			FirstSeen:   rec.FirstSeen,
+			LastSeen:    rec.LastSeen,
+		})
+		e.hydrated[rec.Fingerprint] = true
+	}
+	log.Printf("insights: hydrated %d active insight(s) for %s/%s", len(recs), e.tenantID, e.clusterID)
+}
+
 // Evaluate runs all rules against the current cluster state. Each produced
 // insight is stamped with its rule's identity (RuleID), the engine's
 // tenant/cluster, and a stable Fingerprint, then reconciled against the
@@ -184,6 +255,13 @@ func (e *Engine) Evaluate(state *ClusterState) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// One-shot, on the first evaluation rather than at construction: SetStore may
+	// land AFTER the engine is built (the async-connect boot race documented on
+	// SetStore), and hydrating before that would read a nil store.
+	if !e.hydrateDone {
+		e.hydrateLocked()
+	}
+
 	now := time.Now()
 
 	// Index this tick's production by fingerprint (first wins on the rare
@@ -203,6 +281,14 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			continue
 		}
 		if _, ok := current[e.insights[i].Fingerprint]; !ok {
+			// A hydrated insight has not been re-confirmed by any rule yet, so a
+			// single absent evaluation is not evidence that it cleared — it could
+			// equally be a half-warm cache. Spend its one grace pass and decide on
+			// the next tick.
+			if e.hydrated[e.insights[i].Fingerprint] {
+				delete(e.hydrated, e.insights[i].Fingerprint)
+				continue
+			}
 			e.insights[i].Resolved = true
 			e.insights[i].ResolvedAt = &now
 			e.persistResolved(e.insights[i], now)
@@ -228,6 +314,9 @@ func (e *Engine) Evaluate(state *ClusterState) {
 	for _, fp := range order {
 		ins := current[fp]
 		if idx, ok := activeIdx[fp]; ok {
+			// Re-confirmed by a rule — it no longer needs (or deserves) the
+			// hydration grace; from here it resolves on the normal path.
+			delete(e.hydrated, fp)
 			// Still active — refresh content + LastSeen, persist.
 			e.insights[idx].Severity = ins.Severity
 			e.insights[idx].Message = ins.Message

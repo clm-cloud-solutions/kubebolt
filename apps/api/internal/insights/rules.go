@@ -311,26 +311,173 @@ func crashLoopRule() Rule {
 	}
 }
 
-// recentEventWindow bounds how long after a container termination (OOM,
-// restart) or a pod eviction the corresponding insight keeps firing. Past it,
-// the rule stops producing the insight and the engine resolves it — a one-off
-// event that already recovered must NOT linger "forever" on the sticky
-// lastTerminationState / dead evicted-pod object. Mirrors the time-windowed
-// treatment the RecentOOMKills panel uses. See docs/insights-rule-lifecycle-audit.md (Bug A).
-const recentEventWindow = 30 * time.Minute
+// ─── Recovery evidence ───────────────────────────────────────────────────────
+//
+// An insight must clear because the system was OBSERVED to recover, never
+// because a clock expired. A clock is dishonest at both ends: while it runs the
+// insight asserts something false, and when it fires it asserts a recovery
+// nobody observed. Operators see the first (a healthy workload flagged as
+// broken) and Autopilot is driven by it — a stale insight keeps its
+// reconcileClearedIncidents safety valve shut, so the incident cannot auto-close
+// and re-triggers every cooldown. See docs/06-insights-rule-lifecycle-audit.md.
+//
+// Timers are permitted ONLY as a lost-signal fallback, and only when derived
+// from the signal's own cadence — see probeSilenceWindow.
 
-// terminatedRecently reports whether a container's last termination finished
-// within recentEventWindow. A zero/absent FinishedAt reads as NOT recent — we
-// can't confirm recency, so we don't fire; this is what clears the insight once
-// the OOM/restart ages out.
-func terminatedRecently(t *corev1.ContainerStateTerminated) bool {
-	return t != nil && !t.FinishedAt.IsZero() && time.Since(t.FinishedAt.Time) < recentEventWindow
+// readyGrace is how long a container's CURRENT run must have been healthy before
+// we accept that it superseded an earlier failure.
+//
+// It has to sit inside a band: longer than zero (one lucky probe must not clear
+// a real incident) and shorter than the anomaly's natural recurrence period (or
+// a live loop would clear itself between kills). A kubelet liveness kill recurs
+// every failureThreshold × periodSeconds — 30s at the Kubernetes defaults — and
+// every kill RESTARTS the container, resetting the run clock, so a looping
+// container can never reach this grace.
+//
+// A probe slow enough to recur beyond this grace (e.g. periodSeconds=60,
+// failureThreshold=3 → 3 min) will clear and re-fire. That is correct, not a
+// flap: two minutes of continuous health followed by another kill IS two
+// distinct episodes, the engine models them as occurrences on one stable
+// identity, and Autopilot's 10-min cooldown absorbs the re-trigger.
+const readyGrace = 2 * time.Minute
+
+// containerRecovered reports whether cs's current run supersedes a failure whose
+// last evidence is at `since`: the run began at/after that moment, the container
+// is Ready now, and the run has lasted at least readyGrace.
+//
+// Anchoring on State.Running.StartedAt is what makes this safe against a live
+// crash loop — each kill resets StartedAt, so the run never accumulates the
+// grace while the loop is running.
+func containerRecovered(cs *corev1.ContainerStatus, since time.Time) bool {
+	if cs == nil || cs.State.Running == nil || !cs.Ready {
+		return false
+	}
+	started := cs.State.Running.StartedAt.Time
+	if started.IsZero() || started.Before(since) {
+		return false
+	}
+	return time.Since(started) >= readyGrace
 }
+
+// eventLastOccurrence returns the most recent moment an Event was observed.
+// kubelet reports either the legacy aggregated shape (Count + LastTimestamp) or
+// a Series (EventTime + Series.LastObservedTime), and managed distributions
+// differ on which, so probe all four in decreasing order of precision. A zero
+// return means "unknown" and callers must not treat it as old.
+func eventLastOccurrence(ev *corev1.Event) time.Time {
+	if ev == nil {
+		return time.Time{}
+	}
+	if ev.Series != nil && !ev.Series.LastObservedTime.IsZero() {
+		return ev.Series.LastObservedTime.Time
+	}
+	if !ev.LastTimestamp.IsZero() {
+		return ev.LastTimestamp.Time
+	}
+	if !ev.EventTime.IsZero() {
+		return ev.EventTime.Time
+	}
+	return ev.FirstTimestamp.Time
+}
+
+// probeSilenceFactor multiplies a probe's own failure cadence to get how long we
+// keep believing a failure the container never restarted for. Three cycles of
+// silence is well past any single missed emission.
+const probeSilenceFactor = 3
+
+// probeSilenceWindow derives the lost-signal fallback from the probe's OWN
+// cadence (periodSeconds × failureThreshold × factor) rather than picking a
+// constant, so a deliberately slow probe gets a proportionally longer window.
+// A nil probe falls back to the Kubernetes defaults (10s × 3 → 90s).
+//
+// This is NOT the primary clear condition. When the container restarted,
+// containerRecovered supersedes on evidence and this never applies; it covers
+// only the case where the probe recovered in place (failures never reached
+// failureThreshold, so no kill), where there genuinely is no live level to read
+// and the absence of new events is the only evidence available.
+func probeSilenceWindow(p *corev1.Probe) time.Duration {
+	period := 10 * time.Second
+	threshold := int32(3)
+	if p != nil {
+		if p.PeriodSeconds > 0 {
+			period = time.Duration(p.PeriodSeconds) * time.Second
+		}
+		if p.FailureThreshold > 0 {
+			threshold = p.FailureThreshold
+		}
+	}
+	if w := period * time.Duration(threshold) * probeSilenceFactor; w > time.Minute {
+		return w
+	}
+	return time.Minute
+}
+
+// containerFromFieldPath extracts the container name kubelet stamps on probe
+// events as `spec.containers{name}`. Returns "" when absent — callers then fall
+// back to the pod's sole container, or give up rather than guess.
+func containerFromFieldPath(fp string) string {
+	i := strings.Index(fp, "{")
+	j := strings.LastIndex(fp, "}")
+	if i < 0 || j <= i {
+		return ""
+	}
+	return fp[i+1 : j]
+}
+
+// containerStatusFor resolves a container status by name, or the sole status
+// when the name is unknown and there is exactly one container. Returns nil when
+// it cannot be pinned down — we must not attribute one container's health to
+// another.
+func containerStatusFor(pod *corev1.Pod, name string) *corev1.ContainerStatus {
+	if pod == nil {
+		return nil
+	}
+	if name == "" {
+		if len(pod.Status.ContainerStatuses) == 1 {
+			return &pod.Status.ContainerStatuses[0]
+		}
+		return nil
+	}
+	for i := range pod.Status.ContainerStatuses {
+		if pod.Status.ContainerStatuses[i].Name == name {
+			return &pod.Status.ContainerStatuses[i]
+		}
+	}
+	return nil
+}
+
+// livenessProbeFor resolves a container's liveness probe spec, same name-
+// matching rules as containerStatusFor. nil is fine — probeSilenceWindow then
+// uses the Kubernetes defaults.
+func livenessProbeFor(pod *corev1.Pod, name string) *corev1.Probe {
+	if pod == nil {
+		return nil
+	}
+	if name == "" {
+		if len(pod.Spec.Containers) == 1 {
+			return pod.Spec.Containers[0].LivenessProbe
+		}
+		return nil
+	}
+	for i := range pod.Spec.Containers {
+		if pod.Spec.Containers[i].Name == name {
+			return pod.Spec.Containers[i].LivenessProbe
+		}
+	}
+	return nil
+}
+
+// recentEvictionWindow bounds the evicted-pods rule. Unlike the OOM / restart /
+// probe rules — which now clear on observed recovery — an evicted pod IS current
+// state: the Failed/Evicted object exists until GC, so the condition stays
+// legitimately true. The window here is a deliberate PRODUCT choice (a feed of
+// recent evictions is actionable; a wall of week-old carcasses is not), which is
+// why the rule's title says "recently" rather than hiding the clock.
+const recentEvictionWindow = 30 * time.Minute
 
 // podFailedRecently approximates when a Failed/Evicted pod entered that state
 // (most recent status-condition transition, else creation time) and reports
-// whether it was within recentEventWindow — evicted pods linger as dead objects
-// until GC, so gate on recency instead of showing them forever.
+// whether that was within recentEvictionWindow.
 func podFailedRecently(pod *corev1.Pod) bool {
 	latest := pod.CreationTimestamp.Time
 	for _, c := range pod.Status.Conditions {
@@ -338,7 +485,7 @@ func podFailedRecently(pod *corev1.Pod) bool {
 			latest = c.LastTransitionTime.Time
 		}
 	}
-	return !latest.IsZero() && time.Since(latest) < recentEventWindow
+	return !latest.IsZero() && time.Since(latest) < recentEvictionWindow
 }
 
 // 2. OOMKilled
@@ -350,13 +497,16 @@ func oomKilledRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
-				for _, cs := range pod.Status.ContainerStatuses {
-					// Gate on recency: LastTerminationState is sticky (it survives a
-					// healthy restart), so without a window a one-off OOM that already
-					// recovered shows forever. Only fire while the OOM is recent (Bug A).
-					if cs.LastTerminationState.Terminated != nil &&
-						cs.LastTerminationState.Terminated.Reason == "OOMKilled" &&
-						terminatedRecently(cs.LastTerminationState.Terminated) {
+				for i := range pod.Status.ContainerStatuses {
+					cs := &pod.Status.ContainerStatuses[i]
+					// LastTerminationState is sticky — it survives a healthy restart —
+					// so it can only ARM this rule, never keep it alive. What clears it
+					// is evidence: the replacement run holding Ready for readyGrace.
+					// (Previously a 30-min clock, which asserted a broken workload for
+					// half an hour after it recovered.)
+					term := cs.LastTerminationState.Terminated
+					if term != nil && term.Reason == "OOMKilled" &&
+						!containerRecovered(cs, term.FinishedAt.Time) {
 						insights = append(insights, newInsight(
 							"critical",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
@@ -713,11 +863,17 @@ func frequentRestartsRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
-				for _, cs := range pod.Status.ContainerStatuses {
-					// RestartCount is cumulative (resets only on pod recreation), so
-					// pair it with a recent termination — a pod that churned once and
-					// has been stable for days no longer fires the warning (Bug A).
-					if cs.RestartCount > 5 && terminatedRecently(cs.LastTerminationState.Terminated) {
+				for i := range pod.Status.ContainerStatuses {
+					cs := &pod.Status.ContainerStatuses[i]
+					// RestartCount is monotonic — it never falls, so on its own it can
+					// never clear this insight. Contrast crashLoopRule, which pairs the
+					// same counter with a LEVEL (Waiting.Reason) and is safe for it.
+					// Here the clearing evidence is the current run holding Ready for
+					// readyGrace. A container with no recorded termination cannot be
+					// churning right now, so it does not fire.
+					term := cs.LastTerminationState.Terminated
+					if cs.RestartCount > 5 && term != nil && !term.FinishedAt.IsZero() &&
+						!containerRecovered(cs, term.FinishedAt.Time) {
 						insights = append(insights, newInsight(
 							"warning",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
@@ -876,6 +1032,19 @@ func readinessProbeFailingRule() Rule {
 // the probe failure itself — the direct cause — and fires before the restarts
 // pile up. We require the event to have recurred (Count > 1) so a single
 // transient blip doesn't trip it. Tier-1 (2026-06).
+//
+// An Event is an EDGE (something that happened), and an insight is a LEVEL
+// (something that is true). Converting one into the other is this rule's whole
+// difficulty, and getting it wrong is what made the insight outlive its cause by
+// up to an hour: it used to stop firing only when the apiserver garbage-
+// collected the Event at --event-ttl, so the insight's lifetime was governed by
+// Kubernetes' retention policy rather than by the workload's health. Proven in
+// vivo 2026-08-02 — the pod was Ready for 31 minutes while the insight stayed
+// active, then the insight vanished at the TTL boundary with the pod unchanged.
+//
+// livenessFailureCleared converts the edge to a level: primarily by evidence
+// (the container that was being killed has been replaced and the replacement is
+// healthy), and only where no evidence can exist by probe-cadence silence.
 func livenessProbeFailingRule() Rule {
 	return Rule{
 		ID:       "liveness-probe-failing",
@@ -889,9 +1058,9 @@ func livenessProbeFailingRule() Rule {
 			// that's already been deleted — a phantom insight that the UI
 			// shows for up to an hour and that Autopilot re-opens as a new
 			// incident every poll tick. Only emit for pods that still exist.
-			livePods := make(map[string]bool, len(state.Pods))
+			podByKey := make(map[string]*corev1.Pod, len(state.Pods))
 			for _, p := range state.Pods {
-				livePods[p.Namespace+"/"+p.Name] = true
+				podByKey[p.Namespace+"/"+p.Name] = p
 			}
 			seen := map[string]bool{} // dedup per pod
 			for _, ev := range state.Events {
@@ -909,10 +1078,15 @@ func livenessProbeFailingRule() Rule {
 					continue
 				}
 				key := io.Namespace + "/" + io.Name
-				if !livePods[key] {
+				pod := podByKey[key]
+				if pod == nil {
 					continue // pod is gone; the event is just stale history
 				}
 				if seen[key] {
+					continue
+				}
+				container := containerFromFieldPath(io.FieldPath)
+				if livenessFailureCleared(pod, container, eventLastOccurrence(ev)) {
 					continue
 				}
 				seen[key] = true
@@ -928,6 +1102,44 @@ func livenessProbeFailingRule() Rule {
 			return insights
 		},
 	}
+}
+
+// livenessFailureCleared reports whether a liveness failure whose last evidence
+// is at `last` has been superseded — i.e. whether we may stop asserting that the
+// probe is failing.
+//
+// Two paths, in strict priority:
+//
+//  1. EVIDENCE (primary). The container's current run started at/after the last
+//     failure, so kubelet already killed and replaced the failing one. We clear
+//     once that replacement has held Ready for readyGrace. A live loop kills
+//     every failureThreshold × periodSeconds and each kill resets the run clock,
+//     so it can never reach the grace — no false negative.
+//
+//  2. SILENCE (fallback). No restart happened since the failure, which means the
+//     probe recovered in place (failures never reached failureThreshold). There
+//     is no live level to read here — the absence of new events is the only
+//     evidence that exists — so we fall back to a window derived from the
+//     probe's own cadence. This is the one legitimate use of a clock in this
+//     file, and it is a lost-signal fallback, not a staleness bound.
+//
+// A container that is Waiting (crash-looping) has no current run, so it takes
+// path 2 and clears after a short silence; that is deliberate — crashLoopRule
+// owns that state, exactly as readinessProbeFailingRule skips Waiting pods.
+//
+// An unknown `last` (no usable timestamp on the event at all) does NOT clear:
+// Count > 1 already established the failure recurred, and we refuse to invent a
+// recovery we cannot date.
+func livenessFailureCleared(pod *corev1.Pod, container string, last time.Time) bool {
+	if last.IsZero() {
+		return false
+	}
+	if cs := containerStatusFor(pod, container); cs != nil && cs.State.Running != nil {
+		if started := cs.State.Running.StartedAt.Time; !started.IsZero() && !started.Before(last) {
+			return containerRecovered(cs, last)
+		}
+	}
+	return time.Since(last) > probeSilenceWindow(livenessProbeFor(pod, container))
 }
 
 // 13. Service has zero ready endpoints (P25-05).
@@ -1039,14 +1251,20 @@ func evictedPodsRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
-				// Evicted pods stay in Failed/Evicted until GC, so gate on recency —
-				// the insight must not linger on a long-dead object (Bug A).
+				// Unlike the OOM / restart / probe rules, an evicted pod IS current
+				// state — the Failed/Evicted object exists until GC, so the condition
+				// stays legitimately true and there is nothing to "supersede". The
+				// window is a deliberate product choice, not a staleness bound: a feed
+				// of recent evictions is actionable, a wall of week-old carcasses is
+				// not. It is named in the title so the operator can see the clock
+				// rather than wonder where the insight went.
 				if pod.Status.Phase == corev1.PodFailed && pod.Status.Reason == "Evicted" && podFailedRecently(pod) {
 					insights = append(insights, newInsight(
 						"warning",
 						fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
-						"Pod Evicted",
-						fmt.Sprintf("Pod %s/%s was evicted: %s", pod.Namespace, pod.Name, pod.Status.Message),
+						"Pod recently evicted",
+						fmt.Sprintf("Pod %s/%s was evicted in the last %s: %s",
+							pod.Namespace, pod.Name, recentEvictionWindow, pod.Status.Message),
 						"Check node resource pressure. Evicted pods indicate the node ran out of resources.",
 					))
 				}
