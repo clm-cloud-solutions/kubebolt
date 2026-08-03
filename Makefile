@@ -1,4 +1,4 @@
-.PHONY: dev dev-clean dev-api dev-api-clean dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-mcp build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal
+.PHONY: dev dev-clean dev-api dev-api-clean dev-web agent-image agent-deploy agent-deploy-auth agent-rbac-operator agent-rbac-operator-undo agent-logs agent-dev agent-dev-auth agent-undeploy install build build-api build-mcp build-web build-binary build-all test clean kind-testbed kind-testbed-down kind-testbed-ingress kind-metrics-server kind-heal ci-local
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 
@@ -429,3 +429,23 @@ clean:
 # it's harmless in OSS (which doesn't ship Makefile.ee) and lets kubebolt-ee
 # keep this Makefile byte-identical while adding its targets in Makefile.ee.
 -include Makefile.ee
+
+# ─── Local CI gate ──────────────────────────────────────────────────────────
+## Reproduce the CI matrix locally. Run BEFORE any push; the pre-push hook calls it.
+##
+## Defined ONLY when Makefile.ee is absent (i.e. OSS). kubebolt-ee ships a richer
+## ci-local in Makefile.ee (both build tags, gosec, Trivy, autopilot typecheck),
+## and defining it here too would override it — keeping this Makefile
+## byte-identical across editions is the whole point of the -include above.
+##
+## `npm run build` is not redundant with `npm test`: it runs tsc, and vitest does
+## NOT typecheck. A test file can be green under vitest and still break the
+## frontend job — exactly how a PR burned ~11 min of Actions on 2026-08-02.
+ifeq ($(wildcard Makefile.ee),)
+ci-local:
+	@echo "==> Go build + vet";     cd apps/api && go build ./... && go vet ./...
+	@echo "==> Go test -race";      cd apps/api && go test ./... -race -count=1
+	@echo "==> Web test (full suite, as CI runs it)"; cd apps/web && npm test --silent
+	@echo "==> Web build (tsc + vite)";               cd apps/web && npm run build
+	@echo "PASS ci-local — safe to commit/PR"
+endif

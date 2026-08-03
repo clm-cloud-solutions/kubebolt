@@ -31,15 +31,7 @@ func applyCopilotPlatformFields(cfg *config.CopilotConfig, stored *StoredCopilot
 		applyStoredProvider(&cfg.Primary, stored.Primary, crypto)
 	}
 	if stored.Fallback != nil {
-		if cfg.Fallback == nil {
-			fb := config.ProviderConfig{}
-			cfg.Fallback = &fb
-		}
-		applyStoredProvider(cfg.Fallback, stored.Fallback, crypto)
-		storedHadKey := stored.Fallback.APIKeyEncoded != nil && *stored.Fallback.APIKeyEncoded != ""
-		if cfg.Fallback.APIKey == "" && !storedHadKey {
-			cfg.Fallback = nil
-		}
+		applyStoredFallback(cfg, stored.Fallback, crypto)
 	}
 	if stored.MaxTokens != nil {
 		cfg.MaxTokens = *stored.MaxTokens

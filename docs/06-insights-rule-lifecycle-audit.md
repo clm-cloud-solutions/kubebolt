@@ -163,14 +163,83 @@ So an incident can outlive its insight by ~5 min. That is the *inverse* incohere
 less alarming than the previous one; the grace guards against an insight flapping absent for
 a single tick, and is left as is.
 
-## Known, deliberately out of scope
+## Known, deliberately out of scope — flap damping
 
-**Engine-level disarm damping.** The engine resolves on the first evaluation a fingerprint is
-absent. Level rules with an arm grace are fine, but the metric rules (`sustainedOver`) are
-damped only on the arm side — one tick under threshold resolves instantly and re-fires. If we
-want flap protection, the right shape is ONE engine-level knob (absent for N consecutive
-evaluations), not N per-rule timers. Cross-cutting across all 24 rules, so it needs its own
-validation pass.
+> Analysis revised 2026-08-02 after reading the notification and Autopilot paths. The first
+> draft of this section recommended an engine-level knob; that is now the LAST choice, and the
+> reason it named — alert noise — turned out not to be a real cost.
+
+### The asymmetry
+
+Arming is damped, disarming is not:
+
+```go
+// sustainedOver.fired — 2 min before a metric rule may fire
+if now.Sub(s.since[k]) >= sustainedMetricWindow { out[k] = true }
+
+// engine.Evaluate — resolves on the FIRST evaluation the fingerprint is absent
+if _, ok := current[fp]; !ok { resolve }
+```
+
+`fired()` also deletes the key the moment the value drops, so the arm clock restarts from zero.
+A pod oscillating around its threshold therefore opens and closes roughly every 4 minutes at a
+60s evaluation cadence (fire at t+120s, resolve at t+180s, fire again at t+360s).
+
+### What it actually costs — and what it does not
+
+**Notifications are already protected.** `Manager.Enqueue` dedupes on
+`cluster|resource|title` with a **1-hour** cooldown by default, and `EnqueueResolved` uses the
+same key under a `resolved|` prefix. At most one notification per hour per identity, per
+direction. Flapping does NOT spam anyone. (The first draft of this section implied otherwise.)
+
+**Autopilot is already protected.** `ACTIVE_FINGERPRINT_WINDOW_MS` (30 min) blocks duplicates
+while an incident is live, `RECENT_RESOLVED_WINDOW_MS` (10 min) is the reopen cooldown, and
+`reconcileClearedIncidents` needs `STALE_GRACE_MS` (5 min) of continuous absence — a flap with
+a one-minute gap never even closes the incident.
+
+**The real damage is the occurrence history.** Every reopen appends an episode, and the ring is
+bounded:
+
+```go
+const maxOccurrences = 20
+```
+
+At one cycle every 4 minutes, **80 minutes of oscillation overwrite the record's entire
+history** with twenty one-minute episodes, trimming away the genuine ones. That is precisely
+the capability Sprint 0's persistence exists to provide — following a non-recent insight
+without losing context — quietly destroying itself.
+
+Ranked: 🔴 occurrence history · 🟡 UI churn · 🟢 notifications · 🟢 Autopilot.
+
+### Which rules can flap
+
+| rule | cause | auto-triggers Autopilot |
+|---|---|---|
+| `cpu-throttle-risk`, `memory-pressure`, `resource-underrequest` | value grazing the threshold | no |
+| `hpa-maxed-out` | an HPA oscillates at its ceiling by design | **yes** |
+| `crash-loop` | `Waiting` alternates with brief `Running` during backoff | **yes** |
+| `service-no-endpoints`, `zero-replicas` | endpoints/replicas momentarily 0 in a rollout | no |
+
+### Options, in recommended order
+
+**1. Occurrence coalescing** (engine, every rule). On reopen, if the previous occurrence closed
+less than X ago, extend it instead of appending. Fixes the actual damage, works for
+condition-based rules that cannot have a band, and **costs no latency**.
+
+**2. Hysteresis bands** (per rule, metrics only). Fire at 85%, clear at 80%. Attacks the cause
+rather than hiding it, and is honest — at 82% the pod IS still elevated. Precedent already in
+the codebase: `internal/api/prom_write_cardinality.go:146` uses a ±10% band for the
+active-series cap.
+
+**3. Engine-level disarm delay.** Require the fingerprint absent for N evaluations. The blunt
+instrument, and the one that fights this whole document: we just took liveness from ~60 min to
+3 min by removing clocks, and a 1-2 evaluation delay eats 20-40% of that. Only if UI churn
+proves genuinely annoying in practice.
+
+Note the hydration grace added in this pass IS an option-3-shaped mechanism, scoped to hydrated
+records only. A general disarm delay would subsume it.
+
+Whichever lands is cross-cutting across all 24 rules and needs its own validation pass.
 
 ## Code locations
 
