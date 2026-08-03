@@ -85,7 +85,9 @@ function stateFromResponse(data: CopilotSettingsResponse): FormState {
   }
 }
 
-function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutRequest {
+// Exported for unit tests — the fallback-provider rule below is a regression
+// guard, not incidental logic.
+export function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutRequest {
   const patch: CopilotSettingsPutRequest['patch'] = {}
   const primaryPatch: NonNullable<CopilotSettingsPutRequest['patch']>['primary'] = {}
   if (current.provider !== initial.provider) primaryPatch.provider = current.provider
@@ -95,7 +97,12 @@ function buildPatch(initial: FormState, current: FormState): CopilotSettingsPutR
 
   if (current.hasFallback) {
     const fallbackPatch: NonNullable<CopilotSettingsPutRequest['patch']>['fallback'] = {}
-    if (current.fallbackProvider !== initial.fallbackProvider) fallbackPatch.provider = current.fallbackProvider
+    // Always send the provider — never diff it against `initial`. When no
+    // fallback is stored yet, stateFromResponse DEFAULTS this select to a
+    // provider name that the server has never seen, so a pure dirty-diff drops
+    // it from the patch: the operator sees a provider in the UI while the
+    // stored record has none, and the resolved fallback ends up nameless.
+    fallbackPatch.provider = current.fallbackProvider
     if (current.fallbackModel !== initial.fallbackModel) fallbackPatch.model = current.fallbackModel
     if (current.fallbackBaseURL !== initial.fallbackBaseURL) fallbackPatch.baseURL = current.fallbackBaseURL
     if (Object.keys(fallbackPatch).length > 0) patch.fallback = fallbackPatch

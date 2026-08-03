@@ -611,16 +611,37 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 		// On recoverable error, try fallback if configured
 		if err != nil && copilot.IsRecoverable(err) && cfg.Fallback != nil && !usedFallback {
-			logger.Warn("copilot primary failed, retrying with fallback",
-				slog.String("error", err.Error()),
-				slog.String("fallbackProvider", cfg.Fallback.Provider),
-				slog.String("fallbackModel", cfg.Fallback.Model),
-			)
-			chatReq.Provider = *cfg.Fallback
-			resp, err = h.callProvider(r, chatReq)
-			if err == nil {
-				usedFallback = true
-				sse.event("meta", map[string]bool{"fallback": true})
+			if !fallbackUsable(&cfg) {
+				// Misconfigured fallback (e.g. a stored override with no
+				// provider name). Don't burn the retry on a call that cannot
+				// succeed, and above all don't let its error mask the
+				// primary's — that swap is what turned an upstream rate limit
+				// into a baffling `unknown provider:` for the operator.
+				logger.Warn("copilot fallback is configured but unusable, keeping the primary error",
+					slog.String("fallbackProvider", cfg.Fallback.Provider),
+					slog.String("fallbackModel", cfg.Fallback.Model),
+					slog.String("primaryError", err.Error()),
+				)
+			} else {
+				logger.Warn("copilot primary failed, retrying with fallback",
+					slog.String("error", err.Error()),
+					slog.String("fallbackProvider", cfg.Fallback.Provider),
+					slog.String("fallbackModel", cfg.Fallback.Model),
+				)
+				chatReq.Provider = *cfg.Fallback
+				fbResp, fbErr := h.callProvider(r, chatReq)
+				if fbErr == nil {
+					resp, err = fbResp, nil
+					usedFallback = true
+					sse.event("meta", map[string]bool{"fallback": true})
+				} else {
+					// Both failed. Surface the PRIMARY's error — it describes
+					// what actually went wrong with the configured model.
+					logger.Warn("copilot fallback also failed, surfacing the primary error",
+						slog.String("fallbackError", fbErr.Error()),
+						slog.String("primaryError", err.Error()),
+					)
+				}
 			}
 		}
 
@@ -846,13 +867,15 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		MaxTokens: cfg.MaxTokens,
 	}
 	resp, err := h.callProvider(r, closeReq)
-	if err != nil && copilot.IsRecoverable(err) && cfg.Fallback != nil && !usedFallback {
+	if err != nil && copilot.IsRecoverable(err) && !usedFallback && fallbackUsable(&cfg) {
 		closeReq.Provider = *cfg.Fallback
-		resp, err = h.callProvider(r, closeReq)
-		if err == nil {
+		fbResp, fbErr := h.callProvider(r, closeReq)
+		if fbErr == nil {
+			resp, err = fbResp, nil
 			usedFallback = true
 			sse.event("meta", map[string]bool{"fallback": true})
 		}
+		// On a fallback failure keep `err` — the primary's is the honest one.
 	}
 
 	finalMessages := messages
@@ -961,9 +984,23 @@ func (h *handlers) refineConversationTitle(userID, cluster, conversationID strin
 func (h *handlers) callProvider(r *http.Request, req copilot.ChatRequest) (*copilot.ChatResponse, error) {
 	provider := copilot.GetProvider(req.Provider.Provider)
 	if provider == nil {
+		// Name the misconfiguration instead of rendering a bare
+		// `unknown provider: ` — an empty name told the operator nothing about
+		// WHICH provider slot was unset.
+		if req.Provider.Provider == "" {
+			return nil, errors.New("no AI provider configured for this request — the provider name is empty (check the Kobi settings' fallback provider)")
+		}
 		return nil, fmt.Errorf("unknown provider: %s", req.Provider.Provider)
 	}
 	return provider.Chat(r.Context(), req)
+}
+
+// fallbackUsable reports whether cfg's fallback can actually serve a request.
+// A fallback whose provider doesn't resolve is worse than no fallback at all:
+// the retry can never succeed, and its error REPLACES the primary's, so the
+// operator sees a config complaint instead of the real failure.
+func fallbackUsable(cfg *config.CopilotConfig) bool {
+	return cfg.Fallback != nil && copilot.GetProvider(cfg.Fallback.Provider) != nil
 }
 
 // writeSSEEvent writes a single SSE message with the given event name and JSON payload.

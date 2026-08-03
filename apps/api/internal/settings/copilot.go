@@ -145,25 +145,7 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 		applyStoredProvider(&cfg.Primary, stored.Primary, crypto)
 	}
 	if stored.Fallback != nil {
-		// Initialize a fallback config if the override sets one and env
-		// didn't. If both env and override exist, override merges onto env.
-		if cfg.Fallback == nil {
-			fb := config.ProviderConfig{}
-			cfg.Fallback = &fb
-		}
-		applyStoredProvider(cfg.Fallback, stored.Fallback, crypto)
-		// Drop the fallback only when the stored override never had an
-		// encrypted key (legitimate "no fallback configured" state). If
-		// the stored key EXISTS but decryption failed (JWT secret was
-		// rotated mid-life), keep cfg.Fallback visible — secretsReadable
-		// flips false elsewhere so the UI can show the "re-enter key"
-		// prompt. Previously this branch dropped the fallback in BOTH
-		// cases, making a rotated install look identical to a fresh one
-		// and the operator's config silently disappeared.
-		storedHadKey := stored.Fallback.APIKeyEncoded != nil && *stored.Fallback.APIKeyEncoded != ""
-		if cfg.Fallback.APIKey == "" && !storedHadKey {
-			cfg.Fallback = nil
-		}
+		applyStoredFallback(cfg, stored.Fallback, crypto)
 	}
 	if stored.MaxTokens != nil {
 		cfg.MaxTokens = *stored.MaxTokens
@@ -203,6 +185,51 @@ func applyStoredCopilot(cfg *config.CopilotConfig, stored *StoredCopilotSettings
 	}
 	if stored.MaxRounds != nil {
 		cfg.MaxRounds = config.ClampMaxRounds(*stored.MaxRounds)
+	}
+}
+
+// applyStoredFallback merges a stored fallback override onto cfg. Shared by the
+// per-org (BYOK) and platform-managed resolvers so the two can't drift — the
+// empty-provider bug below existed in both copies independently.
+//
+// Provider inheritance is the load-bearing part. The env path already defaults
+// the fallback's provider to the primary's (LoadCopilotConfig's
+// getEnvOr("KUBEBOLT_AI_FALLBACK_PROVIDER", cfg.Primary.Provider)); the stored
+// path used to seed a bare ProviderConfig{} instead, so a record that carried an
+// API key + model but no explicit provider (exactly what the settings UI sends
+// when its provider select still shows the value it was defaulted to) resolved
+// to Provider:"". That fallback then survived the drop-check below — it HAS a
+// key — and blew up at request time as `unknown provider: ` when the primary hit
+// a recoverable error and the handler retried on it.
+//
+// Callers must apply the stored PRIMARY first: the inherited value is read off
+// cfg.Primary.Provider, which must already be final.
+func applyStoredFallback(cfg *config.CopilotConfig, stored *StoredProviderSettings, crypto *secretCrypto) {
+	// Initialize a fallback config if the override sets one and env didn't.
+	// If both env and override exist, override merges onto env.
+	if cfg.Fallback == nil {
+		fb := config.ProviderConfig{Provider: cfg.Primary.Provider}
+		cfg.Fallback = &fb
+	}
+	applyStoredProvider(cfg.Fallback, stored, crypto)
+	// Belt and braces: a record written before this fix (or an env fallback
+	// built by some future path) can still carry an empty provider. Resolve is
+	// stateless — it rebuilds from the env baseline on every request — so this
+	// repairs already-stored records in place, with no data migration.
+	if cfg.Fallback.Provider == "" {
+		cfg.Fallback.Provider = cfg.Primary.Provider
+	}
+	// Drop the fallback only when the stored override never had an
+	// encrypted key (legitimate "no fallback configured" state). If
+	// the stored key EXISTS but decryption failed (JWT secret was
+	// rotated mid-life), keep cfg.Fallback visible — secretsReadable
+	// flips false elsewhere so the UI can show the "re-enter key"
+	// prompt. Previously this branch dropped the fallback in BOTH
+	// cases, making a rotated install look identical to a fresh one
+	// and the operator's config silently disappeared.
+	storedHadKey := stored.APIKeyEncoded != nil && *stored.APIKeyEncoded != ""
+	if cfg.Fallback.APIKey == "" && !storedHadKey {
+		cfg.Fallback = nil
 	}
 }
 
