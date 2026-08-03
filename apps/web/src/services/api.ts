@@ -81,8 +81,15 @@ export function clearAccessToken() {
 async function extractErrorPayload(res: Response): Promise<{ message: string; payload?: Record<string, unknown> }> {
   try {
     const json = await res.json()
+    // `message` wins over `error` when both are present. Across this API `error`
+    // is the CATEGORY and `message` is the reason: a rejected settings form
+    // answers {error: "validation failed", field, message: "<what is actually
+    // wrong>"}. Reading `error` first showed the operator a flat "validation
+    // failed" and discarded the only part that said what to fix.
+    const detail =
+      typeof json === 'object' && json ? String(json.message ?? json.error ?? '') : ''
     return {
-      message: typeof json === 'object' && json && (json.error || json.message) ? String(json.error || json.message) : res.statusText,
+      message: detail || res.statusText,
       payload: typeof json === 'object' && json ? (json as Record<string, unknown>) : undefined,
     }
   } catch {
@@ -93,7 +100,8 @@ async function extractErrorPayload(res: Response): Promise<{ message: string; pa
 async function extractErrorMessage(res: Response): Promise<string> {
   try {
     const json = await res.json()
-    return json.error || json.message || res.statusText
+    // Same precedence as extractErrorPayload — see the note there.
+    return json.message || json.error || res.statusText
   } catch {
     return res.text().catch(() => res.statusText)
   }
