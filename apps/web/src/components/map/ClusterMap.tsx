@@ -1030,10 +1030,22 @@ function ClusterMapInner() {
       // it as a subtitle. Multiple IPs resolving to the same FQDN
       // collapse into one node; the first IP seen wins the subtitle.
       // (Tooltip UX for "show all IPs" is a future refinement.)
+      // Only externals reachable from a pod that is actually ON SCREEN.
+      //
+      // This loop walked every flow in the cluster while the pods beside it were
+      // filtered by kind and namespace, so a namespace-scoped view still got an
+      // ExternalEndpoint for every destination anyone talked to. The edge was
+      // then dropped further down (`visibleIds.has(srcId)` fails), leaving the
+      // node with nothing attached — ~95 orphans in the (external) region for
+      // two visible namespaces, with barely a line reaching them. Most belonged
+      // to trivy-system pulling its vulnerability database from CDNs: traffic
+      // the viewer had already filtered out.
+      const visibleSrcIds = new Set(trafficVisible.map((n) => n.id))
       const externalKeys = new Set<string>()
       const externalNodes: TopologyNode[] = []
       for (const f of flows) {
         if (f.dstPod) continue
+        if (!visibleSrcIds.has(`Pod/${f.srcNamespace}/${f.srcPod}`)) continue
         const label = f.dstFqdn || f.dstIp
         if (!label) continue
         const key = f.dstFqdn ? `fqdn:${f.dstFqdn}` : `ip:${f.dstIp}`
