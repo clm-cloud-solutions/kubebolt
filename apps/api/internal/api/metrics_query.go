@@ -118,6 +118,84 @@ var bareMetricRE = regexp.MustCompile(
 // excluded from pass 2 injection.
 var groupingClauseRE = regexp.MustCompile(`\b(?:by|without)\s*\(`)
 
+// reservedScopeLabels are set by the SERVER to enforce isolation. Whatever a
+// client sends for them is discarded before injection (stripReservedScopeLabels).
+//
+// Why this exists: injectLabelMatcher leaves a `{...}` selector untouched when it
+// already mentions the label being injected. That skip is correct idempotency for
+// INTERNAL composition — scopeQueryByCluster and scopeQueryByTenant must not
+// fight each other — but the selector text arrives from the CALLER, so
+// `node_load1{tenant_id=~".+"}` turned the injection into a no-op and handed any
+// authenticated user every organization's series. Verified against the running
+// stack: the correctly-scoped form returned 0 series, the bypass returned 4.
+//
+// The skip stays — composition still needs it. What changes is that untrusted
+// input no longer reaches it.
+var reservedScopeLabels = []string{TenantIDLabelName, "cluster_id"}
+
+// stripReservedScopeLabels removes any client-supplied matcher for a
+// server-injected label, so the injection that follows is AUTHORITATIVE.
+//
+// Strip rather than reject. Rejecting looked equivalent and was not: the
+// /admin/ingest-activity page legitimately sends `tenant_id="<org>"` — it
+// renders one card per tenant, and ListTenants already narrows an org admin to
+// their OWN tenant, so the value it sends is the very one the server would
+// inject. A 400 there broke a working page for no security gain.
+//
+// Stripping serves both callers with one rule:
+//   - that page sends its own org        → stripped → server re-injects the
+//     same value → identical result, page unaffected;
+//   - an attacker sends `tenant_id=~".+"` or another org's id → stripped →
+//     server injects the caller's org → confined.
+//
+// The server's value always wins, so there is nothing left to validate and no
+// legitimate shape left to break.
+//
+// Scoped to selectors on purpose: `sum by (cluster_id) (...)` is legitimate and
+// is what the fleet roll-up sends — a grouping clause shapes the output, it
+// cannot widen what is matched. Quoted strings are masked first so a label NAME
+// appearing as a literal argument (label_replace) is never touched.
+func stripReservedScopeLabels(promQL string) string {
+	masked, saved := maskQuotedStrings(promQL)
+
+	out := metricSelectorRE.ReplaceAllStringFunc(masked, func(sel string) string {
+		parts := strings.Split(sel[1:len(sel)-1], ",")
+		kept := parts[:0]
+		for _, p := range parts {
+			if !isReservedMatcher(p) {
+				kept = append(kept, p)
+			}
+		}
+		if len(kept) == 0 {
+			// The selector held nothing but reserved matchers. Emit `{}` rather
+			// than deleting it: injectLabelMatcher treats an empty selector as a
+			// valid injection site, and removing the braces would turn a bare
+			// `{tenant_id=...}` — which has no metric name — into empty text.
+			return "{}"
+		}
+		return "{" + strings.Join(kept, ",") + "}"
+	})
+
+	return unmaskQuotedStrings(out, saved)
+}
+
+// isReservedMatcher reports whether one comma-separated selector fragment is a
+// matcher on a reserved label. Matches the LABEL NAME before the operator, so
+// `tenant_id=`, `tenant_id=~`, `tenant_id!=` and `tenant_id!~` all count while
+// a different label whose name merely contains one (`my_tenant_id`) does not.
+func isReservedMatcher(fragment string) bool {
+	name := strings.TrimSpace(fragment)
+	if i := strings.IndexAny(name, "=!"); i >= 0 {
+		name = strings.TrimSpace(name[:i])
+	}
+	for _, lbl := range reservedScopeLabels {
+		if name == lbl {
+			return true
+		}
+	}
+	return false
+}
+
 // scopeQueryByCluster injects `cluster_id="<uid>"` into every metric
 // reference in a PromQL expression so a query can't accidentally sum
 // series from other clusters that happen to report to the same VM.
@@ -425,6 +503,9 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Strip any client-supplied tenant_id/cluster_id so the server's own
+	// injection below is authoritative (see stripReservedScopeLabels).
+	q = stripReservedScopeLabels(q)
 	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
 	q = scopeQueryByTenant(q, h.activeTenantID(r))
 
@@ -476,6 +557,9 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "query is required")
 		return
 	}
+	// Strip any client-supplied tenant_id/cluster_id so the server's own
+	// injection below is authoritative (see stripReservedScopeLabels).
+	q = stripReservedScopeLabels(q)
 	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
 	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
@@ -525,6 +609,9 @@ func (h *handlers) handleAdminMetricsQuery(w http.ResponseWriter, r *http.Reques
 	}
 	// kubebolt_* are tenant-scoped: skip cluster scoping but still filter by
 	// org so an admin sees only their own ingest activity. No-op in OSS.
+	// Strip any client-supplied tenant_id/cluster_id so the server's own
+	// injection below is authoritative (see stripReservedScopeLabels).
+	q = stripReservedScopeLabels(q)
 	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
@@ -570,6 +657,9 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 	}
 	// Tenant-scope the kubebolt_* range query (cluster scoping skipped — see
 	// handleAdminMetricsQuery). No-op in OSS.
+	// Strip any client-supplied tenant_id/cluster_id so the server's own
+	// injection below is authoritative (see stripReservedScopeLabels).
+	q = stripReservedScopeLabels(q)
 	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {

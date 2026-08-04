@@ -1,6 +1,9 @@
 package api
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestScopeQueryByCluster(t *testing.T) {
 	const uid = "cluster-uid-1"
@@ -253,6 +256,85 @@ func TestScopeQueryByClusterIdempotent(t *testing.T) {
 		twice := scopeQueryByCluster(once, uid)
 		if once != twice {
 			t.Errorf("not idempotent\n once: %s\n twice: %s", once, twice)
+		}
+	}
+}
+
+// TestStripReservedScopeLabels is the regression lock for a cross-ORG read, and
+// for the outage that the first attempt at fixing it caused.
+//
+// The hole: injectLabelMatcher leaves a `{...}` selector alone when it already
+// mentions the label being injected — correct idempotency for internal
+// composition, but the selector comes from the CALLER. So
+// `node_load1{tenant_id=~".+"}` made org scoping a no-op and any authenticated
+// user, viewer included, could read every org's series. Proven end-to-end
+// against the running stack: querying as a different org returned 0 series when
+// correctly scoped, 4 through the bypass.
+//
+// The first fix REJECTED such queries with a 400 — and broke the
+// /admin/ingest-activity page, which legitimately sends `tenant_id="<org>"` to
+// render its per-tenant cards. Stripping instead of rejecting serves both: the
+// page's own org is re-injected identically, an attacker's value is replaced by
+// the caller's. The server always wins, so nothing is left to validate.
+func TestStripReservedScopeLabels(t *testing.T) {
+	tests := []struct{ name, in, want string }{
+		// --- the bypass shapes, all neutralised -----------------------
+		{"tenant_id regex", `node_load1{tenant_id=~".+"}`, `node_load1{}`},
+		{"tenant_id impersonating another org", `node_load1{tenant_id="other-org"}`, `node_load1{}`},
+		{"cluster_id regex", `node_load1{cluster_id=~".+"}`, `node_load1{}`},
+		{"both labels — the real cross-org primitive", `node_load1{cluster_id=~".+",tenant_id=~".+"}`, `node_load1{}`},
+		{"negative matchers", `node_load1{cluster_id!="x",tenant_id!="x"}`, `node_load1{}`},
+		{"hidden among legitimate matchers", `container_cpu_usage_seconds_total{namespace="ns",tenant_id=~".+",pod="p"}`, `container_cpu_usage_seconds_total{namespace="ns",pod="p"}`},
+		{"nested in a subquery", `sum(rate(node_load1{cluster_id=~".+"}[5m]))`, `sum(rate(node_load1{}[5m]))`},
+		{"bare selector keeps its braces", `{tenant_id=~".+"}`, `{}`},
+		{"__name__ selector keeps the name", `{__name__="node_load1",tenant_id=~".+"}`, `{__name__="node_load1"}`},
+
+		// --- the legitimate caller that the reject-based fix broke ----
+		// /admin/ingest-activity builds `tenant_id="<org>"` and interpolates it.
+		// Stripped here, re-injected by the server with the same value.
+		{"ingest-activity headline", `sum(rate(kubebolt_agent_grpc_samples_received_total{tenant_id="e84d526e"}[5m]))`, `sum(rate(kubebolt_agent_grpc_samples_received_total{}[5m]))`},
+		{"ingest-activity by status", `sum by (status) (increase(kubebolt_prom_write_samples_accepted_total{tenant_id="e84d526e"}[1h]))`, `sum by (status) (increase(kubebolt_prom_write_samples_accepted_total{}[1h]))`},
+
+		// --- everything else must survive byte for byte --------------
+		{"fleet roll-up groups by cluster_id", `sum by (cluster_id) (node_total_hourly_cost)`, `sum by (cluster_id) (node_total_hourly_cost)`},
+		{"nested grouping", `count by (cluster_id) (count by (cluster_id, namespace, pod) (container_cpu_usage_seconds_total))`, `count by (cluster_id) (count by (cluster_id, namespace, pod) (container_cpu_usage_seconds_total))`},
+		{"without clause", `sum without (cluster_id) (node_load1)`, `sum without (cluster_id) (node_load1)`},
+		{"no selector at all", `sum(rate(node_cpu_usage_seconds_total[1m]))`, `sum(rate(node_cpu_usage_seconds_total[1m]))`},
+		{"unrelated labels untouched", `container_memory_working_set_bytes{namespace="ns",pod="p"}`, `container_memory_working_set_bytes{namespace="ns",pod="p"}`},
+		// A label whose NAME merely contains a reserved one is a different label.
+		{"my_tenant_id is not tenant_id", `node_load1{my_tenant_id="x"}`, `node_load1{my_tenant_id="x"}`},
+		// A reserved name inside a quoted VALUE is data, not a matcher — masking
+		// keeps label_replace arguments intact.
+		{"reserved name as a string argument", `label_replace(node_load1, "dst", "$1", "instance", "(.*)")`, `label_replace(node_load1, "dst", "$1", "instance", "(.*)")`},
+		{"reserved name inside a value", `node_load1{job=~"tenant_id stuff"}`, `node_load1{job=~"tenant_id stuff"}`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := stripReservedScopeLabels(tt.in); got != tt.want {
+				t.Errorf("\n in:   %s\n got:  %s\n want: %s", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestStripThenInjectIsAuthoritative proves the end-to-end property that matters:
+// whatever the client sent, the value that reaches VictoriaMetrics is the
+// server's. This is the actual security guarantee — the strip alone is only half.
+func TestStripThenInjectIsAuthoritative(t *testing.T) {
+	const org = "org-A"
+	for _, attack := range []string{
+		`node_load1`,
+		`node_load1{tenant_id=~".+"}`,
+		`node_load1{tenant_id="org-VICTIM"}`,
+		`node_load1{tenant_id!="org-A"}`,
+	} {
+		got := scopeQueryByTenant(stripReservedScopeLabels(attack), org)
+		if !strings.Contains(got, `tenant_id="org-A"`) {
+			t.Errorf("caller's org did not win for %q → %s", attack, got)
+		}
+		if strings.Contains(got, "org-VICTIM") || strings.Contains(got, `tenant_id=~`) || strings.Contains(got, `tenant_id!=`) {
+			t.Errorf("client-supplied matcher survived for %q → %s", attack, got)
 		}
 	}
 }

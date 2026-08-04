@@ -40,6 +40,24 @@ export function useWebSocket(resources: string[]) {
         return
       }
 
+      // Insight lifecycle. The engine has always broadcast these the moment a
+      // rule starts or stops firing, but nothing consumed them — the Insights
+      // view waited on its refetchInterval, so a recovered workload's insight
+      // stayed on screen for up to a full refresh cycle after it cleared. This
+      // is the channel that makes an insight disappear the way it appears.
+      //
+      // ClusterOverview carries InsightCount (the sidebar/dashboard badge), so
+      // it has to move in step or the badge contradicts the list.
+      //
+      // Bail before the resource-detail path: the payload is an Insight, not a
+      // K8s object, so it has no metadata and would otherwise fall through to
+      // the debounced overview/topology invalidation for nothing.
+      if (payload.type === 'insight:new' || payload.type === 'insight:resolved') {
+        queryClient.invalidateQueries({ queryKey: ['insights'] })
+        queryClient.invalidateQueries({ queryKey: ['cluster-overview'] })
+        return
+      }
+
       const ns = payload.data?.metadata?.namespace
       const name = payload.data?.metadata?.name
 

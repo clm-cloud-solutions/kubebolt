@@ -107,19 +107,61 @@ func TestOOMKilledRule_Fires(t *testing.T) {
 	}
 }
 
-// A recovered OOM (last termination well outside the window) must STOP firing so
-// the engine resolves it — the lingering-forever bug this audit fixes (Bug A).
-func TestOOMKilledRule_ResolvesWhenStale(t *testing.T) {
+// What clears an OOM is OBSERVED RECOVERY, not elapsed time: the replacement
+// run must be Ready and have held that for readyGrace. This used to be a 30-min
+// clock, which asserted a broken workload for half an hour after it recovered
+// AND (see the next test) declared healthy anything merely old.
+func TestOOMKilledRule_ResolvesOnObservedRecovery(t *testing.T) {
 	p := pod("production", "worker")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
-		Name: "worker",
+		Name:  "worker",
+		Ready: true,
+		// Killed 10 min ago; the replacement has been up 5 min > readyGrace.
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{
+			StartedAt: metav1.NewTime(time.Now().Add(-5 * time.Minute)),
+		}},
 		LastTerminationState: corev1.ContainerState{
-			Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(time.Now().Add(-2 * time.Hour))},
+			Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, FinishedAt: metav1.NewTime(time.Now().Add(-10 * time.Minute))},
 		},
 	}}
 	state := &ClusterState{Pods: []*corev1.Pod{p}}
 	if got := oomKilledRule().Evaluate(state); len(got) != 0 {
-		t.Errorf("stale OOM should not fire (must resolve), got %d insights", len(got))
+		t.Errorf("recovered OOM should not fire (must resolve), got %d insights", len(got))
+	}
+}
+
+// The inverse, and the case the old 30-min clock got WRONG: a container OOM-
+// killed hours ago that is STILL not running healthily has not recovered, and
+// saying otherwise because time passed is a false negative. Age is not health.
+func TestOOMKilledRule_KeepsFiringWhileNotRecovered(t *testing.T) {
+	old := metav1.NewTime(time.Now().Add(-3 * time.Hour))
+	oomTerm := corev1.ContainerState{
+		Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, FinishedAt: old},
+	}
+	for _, tc := range []struct {
+		name string
+		cs   corev1.ContainerStatus
+	}{
+		{"not running at all", corev1.ContainerStatus{Name: "worker", LastTerminationState: oomTerm}},
+		{"running but never became Ready", corev1.ContainerStatus{
+			Name:                 "worker",
+			State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(time.Now().Add(-time.Hour))}},
+			LastTerminationState: oomTerm,
+		}},
+		{"Ready but the run is younger than readyGrace", corev1.ContainerStatus{
+			Name:                 "worker",
+			Ready:                true,
+			State:                corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.NewTime(time.Now().Add(-10 * time.Second))}},
+			LastTerminationState: oomTerm,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := pod("production", "worker")
+			p.Status.ContainerStatuses = []corev1.ContainerStatus{tc.cs}
+			if got := oomKilledRule().Evaluate(&ClusterState{Pods: []*corev1.Pod{p}}); len(got) != 1 {
+				t.Errorf("want 1 insight (no recovery observed), got %d", len(got))
+			}
+		})
 	}
 }
 
@@ -317,6 +359,159 @@ func TestLivenessProbeFailingRule_IgnoresEventForDeletedPod(t *testing.T) {
 	}
 }
 
+// --- Liveness: edge → level ---
+//
+// The rule reads Events, which are EDGES. Before the supersession fix its only
+// exit was the apiserver GC'ing the event at --event-ttl, so the insight's
+// lifetime tracked Kubernetes' retention policy instead of the workload's
+// health. Reproduced in vivo 2026-08-02 on kind-kubebolt-lab: metrics-server was
+// Ready for 31 minutes while the insight stayed active, then it vanished at the
+// TTL boundary with the pod unchanged. These lock both directions.
+
+// probedPod builds a pod carrying one container with a liveness probe, plus the
+// container status the supersession check reads.
+func probedPod(ns, name, container string, probe *corev1.Probe, cs corev1.ContainerStatus) *corev1.Pod {
+	p := pod(ns, name)
+	p.Spec.Containers = []corev1.Container{{Name: container, LivenessProbe: probe}}
+	cs.Name = container
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{cs}
+	return p
+}
+
+func livenessEvent(ns, name, container string, count int32, last time.Time) *corev1.Event {
+	return &corev1.Event{
+		Reason:        "Unhealthy",
+		Message:       `Liveness probe failed: Get "https://10.244.0.4:10250/livez": context deadline exceeded`,
+		Count:         count,
+		LastTimestamp: metav1.NewTime(last),
+		InvolvedObject: corev1.ObjectReference{
+			Kind: "Pod", Namespace: ns, Name: name,
+			FieldPath: "spec.containers{" + container + "}",
+		},
+	}
+}
+
+// The exact lab scenario: kubelet killed the container, the replacement has been
+// Ready for half an hour. The insight must be gone — and must NOT wait on the
+// event's TTL to get there.
+func TestLivenessProbeFailingRule_ClearsOnObservedRecovery(t *testing.T) {
+	p := probedPod("kube-system", "metrics-server-abc", "metrics-server", nil, corev1.ContainerStatus{
+		Ready: true,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{
+			StartedAt: metav1.NewTime(time.Now().Add(-30 * time.Minute)),
+		}},
+	})
+	state := &ClusterState{
+		Pods:   []*corev1.Pod{p},
+		Events: []*corev1.Event{livenessEvent("kube-system", "metrics-server-abc", "metrics-server", 3, time.Now().Add(-31*time.Minute))},
+	}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 0 {
+		t.Errorf("recovered container should not fire, got %d insights", len(got))
+	}
+}
+
+// The false-negative guard. A container in a real liveness loop is restarted
+// every failureThreshold × periodSeconds, and each kill resets the run clock, so
+// it can never accumulate readyGrace. Being Ready *right now* is not recovery.
+func TestLivenessProbeFailingRule_KeepsFiringDuringLiveLoop(t *testing.T) {
+	p := probedPod("prod", "api-xyz", "api", nil, corev1.ContainerStatus{
+		Ready: true, // passing at this instant — the next kill is 10s away
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{
+			StartedAt: metav1.NewTime(time.Now().Add(-15 * time.Second)),
+		}},
+	})
+	state := &ClusterState{
+		Pods:   []*corev1.Pod{p},
+		Events: []*corev1.Event{livenessEvent("prod", "api-xyz", "api", 9, time.Now().Add(-20*time.Second))},
+	}
+	if got := livenessProbeFailingRule().Evaluate(state); len(got) != 1 {
+		t.Errorf("container still in a liveness loop must keep firing, got %d insights", len(got))
+	}
+}
+
+// When the probe recovered IN PLACE (failures never reached failureThreshold, so
+// no kill), no restart exists to supersede on — there is genuinely no level to
+// read. Only here may a clock decide, and it is derived from the probe's own
+// cadence rather than picked.
+func TestLivenessProbeFailingRule_SilenceFallbackWithoutRestart(t *testing.T) {
+	// Run predates the failure ⇒ kubelet never restarted it.
+	runningSince := metav1.NewTime(time.Now().Add(-2 * time.Hour))
+	for _, tc := range []struct {
+		name     string
+		lastFail time.Duration
+		want     int
+	}{
+		{"still within the probe's silence window", -30 * time.Second, 1},
+		{"silent for several probe cycles", -10 * time.Minute, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := probedPod("prod", "inplace", "app", nil, corev1.ContainerStatus{
+				Ready: true,
+				State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: runningSince}},
+			})
+			state := &ClusterState{
+				Pods:   []*corev1.Pod{p},
+				Events: []*corev1.Event{livenessEvent("prod", "inplace", "app", 2, time.Now().Add(tc.lastFail))},
+			}
+			if got := livenessProbeFailingRule().Evaluate(state); len(got) != tc.want {
+				t.Errorf("want %d insights, got %d", tc.want, len(got))
+			}
+		})
+	}
+}
+
+// A deliberately slow probe recurs slowly, so its silence window must stretch
+// with it — a fixed constant would clear a genuinely-failing slow probe between
+// its own failures.
+func TestProbeSilenceWindow_DerivesFromProbeCadence(t *testing.T) {
+	if got, want := probeSilenceWindow(nil), 90*time.Second; got != want {
+		t.Errorf("k8s defaults: got %s, want %s", got, want)
+	}
+	slow := &corev1.Probe{PeriodSeconds: 60, FailureThreshold: 5}
+	if got, want := probeSilenceWindow(slow), 15*time.Minute; got != want {
+		t.Errorf("slow probe: got %s, want %s", got, want)
+	}
+	// Never shorter than a minute, however twitchy the probe.
+	twitchy := &corev1.Probe{PeriodSeconds: 1, FailureThreshold: 1}
+	if got := probeSilenceWindow(twitchy); got != time.Minute {
+		t.Errorf("floor: got %s, want 1m0s", got)
+	}
+}
+
+// kubelet reports aggregated events in either the legacy (Count/LastTimestamp)
+// or the Series shape depending on distribution, and reading the wrong field
+// yields a zero time — which would make every event look ancient (clear
+// everything) or unknown. Precedence is most-precise first.
+func TestEventLastOccurrence_ShapePrecedence(t *testing.T) {
+	base := time.Now().Add(-time.Hour).Truncate(time.Second)
+	series := base.Add(50 * time.Minute)
+
+	ev := &corev1.Event{
+		FirstTimestamp: metav1.NewTime(base),
+		EventTime:      metav1.NewMicroTime(base.Add(10 * time.Minute)),
+		LastTimestamp:  metav1.NewTime(base.Add(20 * time.Minute)),
+		Series:         &corev1.EventSeries{LastObservedTime: metav1.NewMicroTime(series)},
+	}
+	if got := eventLastOccurrence(ev); !got.Equal(series) {
+		t.Errorf("Series must win: got %s, want %s", got, series)
+	}
+	ev.Series = nil
+	if got, want := eventLastOccurrence(ev), base.Add(20*time.Minute); !got.Equal(want) {
+		t.Errorf("LastTimestamp next: got %s, want %s", got, want)
+	}
+	ev.LastTimestamp = metav1.Time{}
+	if got, want := eventLastOccurrence(ev), base.Add(10*time.Minute); !got.Equal(want) {
+		t.Errorf("EventTime next: got %s, want %s", got, want)
+	}
+	ev.EventTime = metav1.MicroTime{}
+	if got := eventLastOccurrence(ev); !got.Equal(base) {
+		t.Errorf("FirstTimestamp last: got %s, want %s", got, base)
+	}
+	if got := eventLastOccurrence(&corev1.Event{}); !got.IsZero() {
+		t.Errorf("no timestamps at all must read as unknown, got %s", got)
+	}
+}
+
 func TestLivenessProbeFailingRule_IgnoresSingleBlip(t *testing.T) {
 	ev := &corev1.Event{
 		Reason:         "Unhealthy",
@@ -435,22 +630,45 @@ func TestFrequentRestartsRule_FiresAbove10(t *testing.T) {
 	}
 }
 
-// A high cumulative RestartCount whose last restart is old (pod stable for a
-// while) must STOP firing — RestartCount never resets, so recency is what clears
-// it (Bug A). Without this gate the warning showed for days.
-func TestFrequentRestartsRule_ResolvesWhenStable(t *testing.T) {
+// RestartCount is monotonic, so it can never clear this insight on its own —
+// what clears it is the current run being Ready past readyGrace. "Stable" has to
+// mean observed-healthy-now, not merely last-restarted-a-while-ago.
+func TestFrequentRestartsRule_ResolvesWhenObservedStable(t *testing.T) {
 	p := pod("default", "flaky")
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:         "flaky",
 		RestartCount: 12,
-		State:        corev1.ContainerState{Running: &corev1.ContainerStateRunning{}},
+		Ready:        true,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{
+			StartedAt: metav1.NewTime(time.Now().Add(-30 * time.Minute)),
+		}},
 		LastTerminationState: corev1.ContainerState{
 			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", FinishedAt: metav1.NewTime(time.Now().Add(-3 * time.Hour))},
 		},
 	}}
 	state := &ClusterState{Pods: []*corev1.Pod{p}}
 	if got := frequentRestartsRule().Evaluate(state); len(got) != 0 {
-		t.Errorf("stable pod (old last restart) should not fire, got %d insights", len(got))
+		t.Errorf("observed-stable pod should not fire, got %d insights", len(got))
+	}
+}
+
+// A pod that churned 12 times and is STILL not Ready keeps firing however long
+// ago the last restart was — the old clock resolved this purely on age.
+func TestFrequentRestartsRule_KeepsFiringWhileNotReady(t *testing.T) {
+	p := pod("default", "flaky")
+	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+		Name:         "flaky",
+		RestartCount: 12,
+		State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{
+			StartedAt: metav1.NewTime(time.Now().Add(-30 * time.Minute)),
+		}},
+		LastTerminationState: corev1.ContainerState{
+			Terminated: &corev1.ContainerStateTerminated{Reason: "Error", FinishedAt: metav1.NewTime(time.Now().Add(-3 * time.Hour))},
+		},
+	}}
+	state := &ClusterState{Pods: []*corev1.Pod{p}}
+	if got := frequentRestartsRule().Evaluate(state); len(got) != 1 {
+		t.Errorf("never-Ready pod should still fire, got %d insights", len(got))
 	}
 }
 

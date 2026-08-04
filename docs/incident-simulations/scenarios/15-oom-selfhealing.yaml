@@ -1,0 +1,91 @@
+# Scenario 15 — OOMKilled once, then recovers IN PLACE
+#
+# Symptom    : the first container allocates 200 MiB under a 128 MiB limit and is
+#              OOM-killed. kubelet restarts it in the SAME pod, and the second run
+#              allocates 10 MiB and lives.
+# Insight    : "Container OOMKilled"
+#
+# WHY THIS SCENARIO EXISTS — scenario 01 makes a pod OOM forever, which never
+# exercises the CLEARING path. And "fix it with kubectl set resources" does not
+# either: changing the pod template creates a new ReplicaSet, so the OOM'd pod is
+# DELETED and the insight clears for the boring reason (the rule iterates
+# state.Pods; a deleted pod is not there). Both the old 30-minute clock and the
+# supersession fix pass that test, so it discriminates nothing — established in
+# vivo 2026-08-02.
+#
+# The discriminating case is recovery WITHOUT replacement. The pod survives, so
+# `lastState.terminated.reason` keeps saying OOMKilled forever — sticky state,
+# and the only thing that can keep the insight alive.
+#
+#   t+0:20   first run is OOM-killed  → RESTARTS becomes 1
+#   t+0:30   the replacement run allocates 10 MiB and stays Running/Ready
+#   t+1:00   the "Container OOMKilled" insight appears
+#   t+2:30   supersession holds (running.startedAt + readyGrace)
+#   t+3:00   ✅ the insight is GONE, with restartCount still 1 and
+#            lastState.terminated.reason still "OOMKilled"
+#
+#   ❌ REGRESSED if it survives to t+30:00 — that is the old clock
+#      (recentEventWindow = 30 min) deciding instead of the evidence.
+#
+# Cross-check that the sticky state really is still there while it clears:
+#   kubectl -n kobi-incident-lab get pod -l app=oomy-healer -o jsonpath=\
+#     '{.items[0].status.containerStatuses[0].lastState.terminated.reason}{"\n"}'
+#   → must still print OOMKilled AFTER the insight is gone. That is the whole
+#     point: the historical fact remains, the assertion about it does not.
+#
+# Clean up   : kubectl delete -f 15-oom-selfhealing.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oomy-healer
+  namespace: kobi-incident-lab
+  labels:
+    app: oomy-healer
+    incident: oomkilled-selfhealing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oomy-healer
+  template:
+    metadata:
+      labels:
+        app: oomy-healer
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import os, time
+              # emptyDir survives a container restart within the pod, so the
+              # marker makes the FIRST run greedy (OOMKilled) and every later run
+              # modest. A wall-clock rule would not work here: the process is
+              # replaced, so its clock restarts and the pod would OOM forever.
+              MARKER = "/state/booted"
+              first_boot = not os.path.exists(MARKER)
+              if first_boot:
+                  open(MARKER, "w").close()
+              size_mb = 200 if first_boot else 10
+              print(f"[oomy-healer] first_boot={first_boot} → allocating {size_mb} MiB "
+                    f"under a 128Mi limit", flush=True)
+              data = bytearray(size_mb * 1024 * 1024)
+              for i in range(0, len(data), 4096):
+                  data[i] = 1
+              print("[oomy-healer] allocated and holding — healthy from here on", flush=True)
+              while True:
+                  time.sleep(3600)
+          volumeMounts:
+            - name: state
+              mountPath: /state
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+      volumes:
+        - name: state
+          emptyDir: {}
