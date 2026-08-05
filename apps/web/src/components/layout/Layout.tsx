@@ -103,6 +103,12 @@ export function Layout() {
     location.pathname === p || location.pathname.startsWith(p + '/')
   )
 
+  // The Cluster Map is a full-bleed canvas that manages its own pan/zoom — it
+  // must fill <main> exactly, with no document padding and no outer scrollbar
+  // (its old fixed 100vh-52px height overflowed <main> once banners or padding
+  // ate into the column, producing a page scroll on top of the canvas pan).
+  const isMapRoute = location.pathname === '/map'
+
   // A metrics-only cluster's resource endpoints 503 by design (no connector) — that is
   // NOT "unreachable", so don't route it to the error page; it renders the dashboards.
   const isUnavailable = error instanceof ApiError && error.status === 503 && !isMetricsOnly
@@ -242,7 +248,9 @@ export function Layout() {
             right) — without it the last table's tail rows sit under
             the button and can't be read. */}
         <main
-          className="flex-1 overflow-y-auto p-5 pb-24 transition-[margin] duration-200 ease-out"
+          className={`flex-1 min-h-0 transition-[margin] duration-200 ease-out ${
+            isMapRoute ? 'overflow-hidden' : 'overflow-y-auto p-5 pb-24'
+          }`}
           style={{ marginRight: copilotReservation }}
         >
           {isSwitching ? (
