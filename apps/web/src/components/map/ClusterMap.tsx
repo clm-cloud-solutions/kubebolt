@@ -14,7 +14,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight, SlidersHorizontal, ChevronLeft } from 'lucide-react'
+import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight, SlidersHorizontal, ChevronLeft, Activity, Minimize2, Maximize2 } from 'lucide-react'
 import { useTopology } from '@/hooks/useResources'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { api } from '@/services/api'
@@ -338,19 +338,70 @@ function groupByNamespace(nodes: TopologyNode[]) {
     .map((ns) => ({ ns, resources: nsMap.get(ns)! }))
 }
 
+// Push overlapping namespace regions apart until each pair is separated by at
+// least `gap` px. Used after a region expands: the freshly-grown region is an
+// anchor (stays put) and its neighbours slide off it along the axis of least
+// overlap, cascading until nothing collides. Anchors never move; a non-anchor
+// pair splits the push evenly. Iterative, O(n²·iters) — trivial for ~20 regions;
+// the iteration cap is a convergence backstop, not a real limit.
+interface RegionRect { id: string; x: number; y: number; w: number; h: number }
+function separateRegions(
+  rects: RegionRect[],
+  anchors: Set<string>,
+  gap: number,
+): Map<string, { x: number; y: number }> {
+  const pos = new Map(rects.map((r) => [r.id, { x: r.x, y: r.y }]))
+  const size = new Map(rects.map((r) => [r.id, { w: r.w, h: r.h }]))
+  const ids = rects.map((r) => r.id)
+  for (let iter = 0; iter < 300; iter++) {
+    let moved = false
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const a = ids[i], b = ids[j]
+        const pa = pos.get(a)!, pb = pos.get(b)!
+        const sa = size.get(a)!, sb = size.get(b)!
+        const overlapX = Math.min(pa.x + sa.w, pb.x + sb.w) - Math.max(pa.x, pb.x) + gap
+        const overlapY = Math.min(pa.y + sa.h, pb.y + sb.h) - Math.max(pa.y, pb.y) + gap
+        if (overlapX <= 0 || overlapY <= 0) continue
+        moved = true
+        const aAnchor = anchors.has(a), bAnchor = anchors.has(b)
+        if (bAnchor && aAnchor) continue // two anchors can't both yield; leave them
+        if (overlapX < overlapY) {
+          const dir = pa.x <= pb.x ? -1 : 1 // a moves in `dir`, b opposite
+          if (aAnchor) pb.x -= dir * overlapX
+          else if (bAnchor) pa.x += dir * overlapX
+          else { pa.x += (dir * overlapX) / 2; pb.x -= (dir * overlapX) / 2 }
+        } else {
+          const dir = pa.y <= pb.y ? -1 : 1
+          if (aAnchor) pb.y -= dir * overlapY
+          else if (bAnchor) pa.y += dir * overlapY
+          else { pa.y += (dir * overlapY) / 2; pb.y -= (dir * overlapY) / 2 }
+        }
+      }
+    }
+    if (!moved) break
+  }
+  return pos
+}
+
 // ─── Grid Layout ───
-function buildGridLayout(filtered: TopologyNode[]) {
+function buildGridLayout(filtered: TopologyNode[], collapsed: Set<string>) {
   const groups = groupByNamespace(filtered)
   const allNodes: Node[] = []
 
-  interface NSBlock { ns: string; resources: TopologyNode[]; color: typeof NS_COLORS[number]; width: number; height: number }
+  interface NSBlock { ns: string; resources: TopologyNode[]; color: typeof NS_COLORS[number]; width: number; height: number; collapsed: boolean }
   const blocks: NSBlock[] = groups.map(({ ns, resources }, i) => {
     const color = pickNsColor(ns, i)
+    // Collapsed namespace → a compact super-node; children are omitted and the
+    // grid packer places it tight (natural reflow, no leftover gaps).
+    if (collapsed.has(ns)) {
+      return { ns, resources, color, width: 240, height: 64, collapsed: true }
+    }
     const cols = Math.min(resources.length, GRID_COLS)
     const rows = Math.ceil(resources.length / GRID_COLS)
     const width = Math.max(cols * (NODE_W + GAP_X) - GAP_X + NS_PAD_X * 2, 240)
     const height = rows * (NODE_H + GAP_Y) - GAP_Y + NS_PAD_TOP + NS_PAD_BOTTOM
-    return { ns, resources, color, width, height }
+    return { ns, resources, color, width, height, collapsed: false }
   })
 
   const gridRows: NSBlock[][] = []
@@ -368,17 +419,19 @@ function buildGridLayout(filtered: TopologyNode[]) {
       allNodes.push({
         id: nsId, type: 'namespaceRegion',
         position: { x: offsetX, y: offsetY },
-        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
+        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height, collapsed: block.collapsed },
         style: { width: block.width, height: block.height },
         selectable: false, draggable: true, dragHandle: ".ns-drag-handle",
       })
-      block.resources.forEach((n, i) => {
-        allNodes.push({
-          id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
-          position: { x: NS_PAD_X + (i % GRID_COLS) * (NODE_W + GAP_X), y: NS_PAD_TOP + Math.floor(i / GRID_COLS) * (NODE_H + GAP_Y) },
-          data: n,
+      if (!block.collapsed) {
+        block.resources.forEach((n, i) => {
+          allNodes.push({
+            id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
+            position: { x: NS_PAD_X + (i % GRID_COLS) * (NODE_W + GAP_X), y: NS_PAD_TOP + Math.floor(i / GRID_COLS) * (NODE_H + GAP_Y) },
+            data: n,
+          })
         })
-      })
+      }
       offsetX += block.width + NS_GAP_X
     })
     offsetY += rowMaxH + NS_GAP_Y
@@ -388,7 +441,7 @@ function buildGridLayout(filtered: TopologyNode[]) {
 }
 
 // ─── Flow Layout ───
-function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
+function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[], collapsed: Set<string>) {
   const groups = groupByNamespace(filtered)
   const allNodes: Node[] = []
 
@@ -400,11 +453,17 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
     height: number
     activeColumns: number[]
     columns: Map<number, TopologyNode[]>
+    collapsed: boolean
   }
 
   // Pre-compute dimensions for every namespace block
   const blocks: FlowBlock[] = groups.map(({ ns, resources }, nsIdx) => {
     const color = pickNsColor(ns, nsIdx)
+
+    // Collapsed → compact super-node, children omitted (progressive disclosure).
+    if (collapsed.has(ns)) {
+      return { ns, resources, color, width: 240, height: 64, activeColumns: [], columns: new Map(), collapsed: true }
+    }
 
     const columns = new Map<number, TopologyNode[]>()
     for (const n of resources) {
@@ -421,7 +480,7 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
     const width = Math.max(numCols * (FLOW_COL_W + FLOW_GAP_X) - FLOW_GAP_X + NS_PAD_X * 2, 300)
     const height = maxRows * (FLOW_NODE_H + FLOW_GAP_Y) - FLOW_GAP_Y + NS_PAD_TOP + NS_PAD_BOTTOM
 
-    return { ns, resources, color, width, height, activeColumns, columns }
+    return { ns, resources, color, width, height, activeColumns, columns, collapsed: false }
   })
 
   // Arrange namespace blocks in rows (same wrapping rule as grid layout)
@@ -440,23 +499,25 @@ function buildFlowLayout(filtered: TopologyNode[], _edges: TopologyEdge[]) {
       allNodes.push({
         id: nsId, type: 'namespaceRegion',
         position: { x: offsetX, y: offsetY },
-        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
+        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height, collapsed: block.collapsed },
         style: { width: block.width, height: block.height },
         selectable: false, draggable: true, dragHandle: ".ns-drag-handle",
       })
 
-      block.activeColumns.forEach((colNum, colVisualIdx) => {
-        block.columns.get(colNum)!.forEach((n, rowIdx) => {
-          allNodes.push({
-            id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
-            position: {
-              x: NS_PAD_X + colVisualIdx * (FLOW_COL_W + FLOW_GAP_X),
-              y: NS_PAD_TOP + rowIdx * (FLOW_NODE_H + FLOW_GAP_Y),
-            },
-            data: n,
+      if (!block.collapsed) {
+        block.activeColumns.forEach((colNum, colVisualIdx) => {
+          block.columns.get(colNum)!.forEach((n, rowIdx) => {
+            allNodes.push({
+              id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
+              position: {
+                x: NS_PAD_X + colVisualIdx * (FLOW_COL_W + FLOW_GAP_X),
+                y: NS_PAD_TOP + rowIdx * (FLOW_NODE_H + FLOW_GAP_Y),
+              },
+              data: n,
+            })
           })
         })
-      })
+      }
 
       offsetX += block.width + NS_GAP_X
     })
@@ -568,6 +629,7 @@ function buildTrafficLayout(
     dstIp?: string; dstFqdn?: string;
     ratePerSec: number;
   }[],
+  collapsed: Set<string>,
 ) {
   const groups = sortNamespacesByTrafficDirection(
     groupByNamespace(filtered),
@@ -582,6 +644,7 @@ function buildTrafficLayout(
     width: number
     height: number
     positions: Map<string, { x: number; y: number }>
+    collapsed: boolean
   }
 
   const resourceIds = new Set(filtered.map((n) => n.id))
@@ -596,6 +659,14 @@ function buildTrafficLayout(
 
   const blocks: TrafficBlock[] = groups.map(({ ns, resources }, nsIdx) => {
     const color = pickNsColor(ns, nsIdx)
+
+    // Collapsed → compact super-node; skip the dagre pass entirely and paint
+    // no children (progressive disclosure). Flows touching this namespace fall
+    // away with its hidden pods — the same "no aggregation yet" behaviour as
+    // the Grid/Flow layouts.
+    if (collapsed.has(ns)) {
+      return { ns, resources, color, width: 240, height: 64, positions: new Map(), collapsed: true }
+    }
 
     const g = new dagre.graphlib.Graph()
     g.setGraph({ rankdir: 'LR', nodesep: 18, ranksep: 70, marginx: 0, marginy: 0 })
@@ -672,7 +743,7 @@ function buildTrafficLayout(
     const width = Math.max(maxRight + NS_PAD_X * 2, 320)
     const height = Math.max(maxBottom + NS_PAD_TOP + NS_PAD_BOTTOM, 140)
 
-    return { ns, resources, color, width, height, positions }
+    return { ns, resources, color, width, height, positions, collapsed: false }
   })
 
   const rows: TrafficBlock[][] = []
@@ -690,19 +761,21 @@ function buildTrafficLayout(
       allNodes.push({
         id: nsId, type: 'namespaceRegion',
         position: { x: offsetX, y: offsetY },
-        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height },
+        data: { namespace: block.ns, nodeCount: block.resources.length, color: block.color, width: block.width, height: block.height, collapsed: block.collapsed },
         style: { width: block.width, height: block.height },
         selectable: false, draggable: true, dragHandle: ".ns-drag-handle",
       })
-      block.resources.forEach((n) => {
-        const pos = block.positions.get(n.id)
-        if (!pos) return
-        allNodes.push({
-          id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
-          position: { x: NS_PAD_X + pos.x, y: NS_PAD_TOP + pos.y },
-          data: n,
+      if (!block.collapsed) {
+        block.resources.forEach((n) => {
+          const pos = block.positions.get(n.id)
+          if (!pos) return
+          allNodes.push({
+            id: n.id, type: 'resource', parentNode: nsId, extent: 'parent' as const,
+            position: { x: NS_PAD_X + pos.x, y: NS_PAD_TOP + pos.y },
+            data: n,
+          })
         })
-      })
+      }
       offsetX += block.width + NS_GAP_X
     })
     offsetY += rowMaxH + NS_GAP_Y
@@ -752,6 +825,29 @@ function LegendItem({
 // Preferences live in localStorage and are keyed by feature name.
 const PREF_ANIMATIONS = 'kb-map-animations'
 const PREF_LAYOUT = 'kb-map-layout'
+const PREF_TRAFFIC_WINDOW = 'kb-map-traffic-window'
+const PREF_COLLAPSED_NS = 'kb-map-collapsed-ns'
+
+// Collapsed-namespace persistence — a JSON array of namespace names the user
+// has collapsed to super-nodes. Bad/missing data returns an empty Set (all
+// expanded, the current default).
+function loadCollapsedNs(): Set<string> {
+  try {
+    const raw = localStorage.getItem(PREF_COLLAPSED_NS)
+    if (!raw) return new Set()
+    const arr = JSON.parse(raw)
+    return Array.isArray(arr) ? new Set(arr.filter((x) => typeof x === 'string')) : new Set()
+  } catch {
+    return new Set()
+  }
+}
+function saveCollapsedNs(s: Set<string>) {
+  try { localStorage.setItem(PREF_COLLAPSED_NS, JSON.stringify([...s])) } catch { /* blocked */ }
+}
+// Selectable rate() windows for the Traffic layout (minutes). 1m is the
+// responsive "current activity" default; wider windows tolerate ingest-cadence
+// gaps (e.g. an agent reconnect) that would otherwise empty a tight 1m rate.
+const TRAFFIC_WINDOWS: number[] = [1, 2, 5, 10]
 const PREF_HIDDEN_EDGE_GROUPS = 'kb-map-hidden-edge-groups'
 const PREF_CONFIG_COLLAPSED = 'kb-map-config-collapsed'
 // Drag overrides are persisted PER LAYOUT MODE because each layout
@@ -854,7 +950,21 @@ function ClusterMapInner() {
     return new Set(raw.split(',').filter(Boolean) as EdgeGroupKey[])
   })
   const trafficEnabled = !hiddenEdgeGroups.has('traffic')
-  const { data: flowData } = useFlowEdges({ enabled: trafficEnabled, windowMinutes: 1 })
+  // Rate window for the Traffic layout, operator-selectable and persisted.
+  // Default 1m keeps the map a "current activity" view for healthy clusters;
+  // widening it rides out ingest gaps so a reconnect blip doesn't read as
+  // "no traffic".
+  const [trafficWindow, setTrafficWindow] = useState<number>(() => {
+    const v = parseInt(loadPref(PREF_TRAFFIC_WINDOW, '1'), 10)
+    return TRAFFIC_WINDOWS.includes(v) ? v : 1
+  })
+  const { data: flowData } = useFlowEdges({ enabled: trafficEnabled, windowMinutes: trafficWindow })
+  // Progressive disclosure: namespaces the user has collapsed to a compact
+  // super-node (children hidden, region shrunk). Persisted; default = all
+  // expanded. Grid layout honours it today; Flow/Traffic come next.
+  const [collapsedNs, setCollapsedNs] = useState<Set<string>>(() => loadCollapsedNs())
+  const collapseAllNs = useCallback((names: string[]) => setCollapsedNs(new Set(names)), [])
+  const expandAllNs = useCallback(() => setCollapsedNs(new Set()), [])
   // Live traffic comes from the agent's Hubble flow collector. Without
   // an agent (or a future flow-providing integration), the Traffic
   // layout has nothing to draw. We don't disable the layout outright —
@@ -892,6 +1002,15 @@ function ClusterMapInner() {
   useEffect(() => {
     saveDragOverrides(layoutMode, dragOverrides)
   }, [dragOverrides, layoutMode])
+
+  // Collapse-mode free positioning. A SEPARATE drag map (kept out of the
+  // expanded-layout arrangement) that starts empty so a freshly-collapsed map
+  // packs into a tidy grid, then remembers wherever the operator drags each
+  // super-node — the placement sticks and nothing auto-reflows to fight it.
+  // Overlap is the operator's to manage; the "Tidy" button re-packs on demand.
+  // Applied to namespace regions only, so an expanded region's child pods stay
+  // packer-placed inside their box. Session-only (a reload returns to tidy).
+  const [collapsedDragOverrides, setCollapsedDragOverrides] = useState<Map<string, { x: number; y: number }>>(new Map())
   // Tooltip state for traffic edges. ReactFlow's own interaction layer
   // swallows pointer events before they reach our custom edge's SVG, so
   // an SVG <title> doesn't fire — we use ReactFlow's onEdgeMouseEnter /
@@ -908,11 +1027,40 @@ function ClusterMapInner() {
     { id: string; source: string; target: string; x: number; y: number } | null
   >(null)
   const hideTimeoutRef = useRef<number | null>(null)
-  const { fitView } = useReactFlow()
+  const { fitView, getNodes } = useReactFlow()
   const navigate = useNavigate()
+
+  // When a region is expanded it grows into its neighbours. We flag it as the
+  // anchor so a post-layout effect can push the overlapping neighbours off it
+  // (see the collision-resolution effect below).
+  const [pendingExpandAnchor, setPendingExpandAnchor] = useState<string | null>(null)
+  const toggleNsCollapse = useCallback((ns: string) => {
+    const expanding = collapsedNs.has(ns)
+    if (expanding) {
+      // Freeze every region at its current spot BEFORE the expand so the packer
+      // can't re-flow un-pinned neighbours out from under the user; then flag
+      // the growing region so its overlaps get resolved (neighbours slide off).
+      const frozen = getNodes().filter((n) => n.type === 'namespaceRegion')
+      if (frozen.length > 0) {
+        setCollapsedDragOverrides((prev) => {
+          const next = new Map(prev)
+          for (const n of frozen) next.set(n.id, { x: n.position.x, y: n.position.y })
+          return next
+        })
+      }
+      setPendingExpandAnchor(`ns__${ns}`)
+    }
+    setCollapsedNs((prev) => {
+      const next = new Set(prev)
+      next.has(ns) ? next.delete(ns) : next.add(ns)
+      return next
+    })
+  }, [collapsedNs, getNodes])
 
   // Persist preferences on change
   useEffect(() => { savePref(PREF_LAYOUT, layoutMode) }, [layoutMode])
+  useEffect(() => { savePref(PREF_TRAFFIC_WINDOW, String(trafficWindow)) }, [trafficWindow])
+  useEffect(() => { saveCollapsedNs(collapsedNs) }, [collapsedNs])
   useEffect(() => { savePref(PREF_ANIMATIONS, animationsEnabled ? 'on' : 'off') }, [animationsEnabled])
   useEffect(() => { savePref(PREF_CONFIG_COLLAPSED, configCollapsed ? 'on' : 'off') }, [configCollapsed])
   useEffect(() => { savePref(PREF_HIDDEN_EDGE_GROUPS, Array.from(hiddenEdgeGroups).join(',')) }, [hiddenEdgeGroups])
@@ -932,6 +1080,7 @@ function ClusterMapInner() {
   // region, which was rendering ghost edges hanging in empty space.
   useEffect(() => {
     setDragOverrides(new Map())
+    setCollapsedDragOverrides(new Map())
   }, [layoutMode, visibleNamespaces, hiddenKinds, hiddenEdgeGroups])
 
   const allNamespaces = useMemo(() => {
@@ -1062,21 +1211,61 @@ function ClusterMapInner() {
           metadata: f.dstFqdn && f.dstIp ? { ip: f.dstIp } : undefined,
         } as TopologyNode)
       }
-      return buildTrafficLayout([...trafficVisible, ...externalNodes], topology.edges || [], flows)
+      return buildTrafficLayout([...trafficVisible, ...externalNodes], topology.edges || [], flows, collapsedNs)
     }
     const filtered = filterNodes(topology.nodes, hiddenKinds, visibleNamespaces)
     if (layoutMode === 'flow') {
-      return buildFlowLayout(filtered, topology.edges || [])
+      return buildFlowLayout(filtered, topology.edges || [], collapsedNs)
     }
-    return buildGridLayout(filtered)
-  }, [topology?.nodes, topology?.edges, hiddenKinds, visibleNamespaces, layoutMode, flowData?.edges])
+    return buildGridLayout(filtered, collapsedNs)
+  }, [topology?.nodes, topology?.edges, hiddenKinds, visibleNamespaces, layoutMode, flowData?.edges, collapsedNs])
+
+  // Collision resolution after an expand. `computedNodes` now carries the grown
+  // region's real size; every region is pinned (see toggleNsCollapse), so we
+  // read pinned position + fresh size, push neighbours off the just-expanded
+  // anchor, and write the nudged positions back as overrides. Runs once per
+  // expand — the guard + clearing pendingExpandAnchor stops the write from
+  // re-triggering it.
+  useEffect(() => {
+    if (!pendingExpandAnchor) return
+    const regions = computedNodes.filter((n) => n.type === 'namespaceRegion')
+    if (regions.length === 0) { setPendingExpandAnchor(null); return }
+    const rects: RegionRect[] = regions.map((n) => {
+      const p = collapsedDragOverrides.get(n.id) ?? n.position
+      const d = n.data as { width?: number; height?: number }
+      return { id: n.id, x: p.x, y: p.y, w: d.width ?? 240, h: d.height ?? 64 }
+    })
+    const resolved = separateRegions(rects, new Set([pendingExpandAnchor]), NS_GAP_X)
+    setCollapsedDragOverrides((prev) => {
+      const next = new Map(prev)
+      let changed = false
+      for (const [id, p] of resolved) {
+        const cur = next.get(id)
+        if (!cur || Math.abs(cur.x - p.x) > 0.5 || Math.abs(cur.y - p.y) > 0.5) {
+          next.set(id, p)
+          changed = true
+        }
+      }
+      return changed ? next : prev
+    })
+    setPendingExpandAnchor(null)
+  }, [pendingExpandAnchor, computedNodes, collapsedDragOverrides])
 
   // Apply drag overrides + animation flag on top of the computed layout.
   // This is what React Flow actually renders.
+  // Progressive-disclosure "collapse mode" is active the moment any namespace
+  // is collapsed. It uses its own free-position drag map (separate from the
+  // expanded arrangement) applied to namespace regions only — child pods of an
+  // expanded region stay packer-placed so they never spill outside their box.
+  const collapseModeActive = collapsedNs.size > 0
+  const activeDragOverrides = collapseModeActive ? collapsedDragOverrides : dragOverrides
   const initialNodes = useMemo(() => {
     return computedNodes.map((n) => {
-      const override = dragOverrides.get(n.id)
-      const next: Node = override
+      const override = activeDragOverrides.get(n.id)
+      // In collapse mode only regions are free-positioned; resources ignore any
+      // stray override and keep their packer position relative to the parent.
+      const applyOverride = override && (!collapseModeActive || n.type === 'namespaceRegion')
+      const next: Node = applyOverride
         ? { ...n, position: override }
         : n
       // Inject animationsEnabled into the data object so ResourceNode can
@@ -1086,7 +1275,7 @@ function ClusterMapInner() {
       }
       return next
     })
-  }, [computedNodes, dragOverrides, animationsEnabled])
+  }, [computedNodes, activeDragOverrides, collapseModeActive, animationsEnabled])
 
   // useNodesState lets React Flow manage node positions interactively
   // while we still drive the initial layout. We sync whenever the layout
@@ -1098,23 +1287,41 @@ function ClusterMapInner() {
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(initialNodes)
   useLayoutEffect(() => { setFlowNodes(initialNodes) }, [initialNodes, setFlowNodes])
 
-  // Persist drag deltas when the user lets go of a node. Applies to
-  // resource nodes *and* namespace regions — the user can reorganize
-  // the whole ns layout by grabbing a region's header label, which is
-  // the only element with pointer-events: auto (see NamespaceRegion).
+  // Persist drag deltas when the user lets go of a node. Both modes free-
+  // position; they just write to different maps so a collapse-mode arrangement
+  // never disturbs the expanded one. In collapse mode only namespace regions
+  // are draggable placements — a resource child drag is ignored so pods can't
+  // be dragged out of their (expanded) region box.
   const onNodeDragStop = useCallback(
     (_: React.MouseEvent, node: Node) => {
+      if (collapseModeActive) {
+        if (node.type !== 'namespaceRegion') return
+        setCollapsedDragOverrides((prev) => {
+          const next = new Map(prev)
+          next.set(node.id, { x: node.position.x, y: node.position.y })
+          return next
+        })
+        return
+      }
       setDragOverrides((prev) => {
         const next = new Map(prev)
         next.set(node.id, { x: node.position.x, y: node.position.y })
         return next
       })
     },
-    []
+    [collapseModeActive]
   )
 
-  const resetLayout = useCallback(() => {
+  // Two independent "snap back to the packer" actions, one per arrangement map,
+  // each surfaced by its own button so they never step on each other:
+  //   • resetExpandedLayout — clears the expanded free-drag arrangement.
+  //   • tidyCollapsedLayout  — re-packs the collapsed super-nodes.
+  const resetExpandedLayout = useCallback(() => {
     setDragOverrides(new Map())
+    setTimeout(() => fitView({ padding: 0.1 }), 100)
+  }, [fitView])
+  const tidyCollapsedLayout = useCallback(() => {
+    setCollapsedDragOverrides(new Map())
     setTimeout(() => fitView({ padding: 0.1 }), 100)
   }, [fitView])
 
@@ -1364,22 +1571,45 @@ function ClusterMapInner() {
   // We key off the computed layout (size + layout mode), not the live flowNodes
   // state which mutates on drag.
   //
-  // Auto-fit is GATED on dragOverrides.size === 0 — once the operator
-  // has manually arranged anything, every subsequent topology refetch
-  // (pod count delta, etc.) would otherwise re-center the viewport
-  // and visually erase their work. After a manual arrangement the
-  // camera stays put; the operator uses the Reset Layout button when
-  // they want to start over.
+  // Auto-fit is GATED on the ACTIVE arrangement being empty — once the operator
+  // has manually arranged anything (in whichever mode they're in), every
+  // subsequent topology refetch (pod count delta, etc.) would otherwise
+  // re-center the viewport and visually erase their work. After a manual
+  // arrangement the camera stays put; the operator uses the Reset Layout button
+  // when they want to start over. Using the active map means a tidy packed
+  // collapse view still auto-fits even when an expanded arrangement exists.
   useEffect(() => {
-    if (computedNodes.length > 0 && dragOverrides.size === 0) {
+    if (computedNodes.length > 0 && activeDragOverrides.size === 0) {
       const t = setTimeout(() => fitView({ padding: 0.1 }), 100)
       return () => clearTimeout(t)
     }
-  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView, dragOverrides.size])
+  }, [computedNodes.length, hiddenKinds, visibleNamespaces, layoutMode, fitView, activeDragOverrides.size])
+
+  // Re-frame when the collapse state changes — collapsing/expanding a namespace
+  // restructures the layout (regions shrink and re-pack), so the old camera no
+  // longer frames anything useful. Unlike the auto-fit above this runs even
+  // with manual drag arrangements present (a collapse intentionally reshapes
+  // the map), but only on an actual change: a ref guard skips the initial mount
+  // so a persisted collapse set doesn't hijack the operator's saved viewport.
+  const prevCollapsedRef = useRef(collapsedNs)
+  useEffect(() => {
+    if (prevCollapsedRef.current === collapsedNs) return
+    prevCollapsedRef.current = collapsedNs
+    if (computedNodes.length === 0) return
+    const t = setTimeout(() => fitView({ padding: 0.1, duration: 300 }), 80)
+    return () => clearTimeout(t)
+  }, [collapsedNs, computedNodes.length, fitView])
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node) => {
-      if (node.type === 'namespaceRegion') return
+      // Clicking a namespace region toggles its collapse (a compact super-node
+      // ⇄ its full contents). Dragging still moves it — ReactFlow only fires
+      // click on a non-drag release, and the header is the dragHandle.
+      if (node.type === 'namespaceRegion') {
+        const ns = (node.data as { namespace?: string })?.namespace
+        if (ns) toggleNsCollapse(ns)
+        return
+      }
       // Synthetic external-endpoint nodes aren't in topology; they
       // live purely in flow data. Open the external-specific panel
       // and clear any prior topology-node selection.
@@ -1399,7 +1629,7 @@ function ClusterMapInner() {
         setSelectedExternal(null)
       }
     },
-    [topology?.nodes]
+    [topology?.nodes, toggleNsCollapse]
   )
 
   const onNodeDoubleClick = useCallback(
@@ -1464,17 +1694,67 @@ function ClusterMapInner() {
     return (edge?.data as { tooltip?: TrafficTooltipData } | undefined)?.tooltip ?? null
   }, [hoveredEdge, renderedEdges])
 
+  // ── Focus mode ──────────────────────────────────────────────────────
+  // Selecting a resource (or external endpoint) focuses the map on it and
+  // its DIRECT neighbours — everything else dims out — so an operator can
+  // read one resource's connections without parsing the whole graph. Purely
+  // a display layer over the existing selection: no layout recompute.
+  const focusId = selectedNode?.id ?? selectedExternal?.id ?? null
+  const focusSet = useMemo(() => {
+    if (!focusId) return null
+    const s = new Set<string>([focusId])
+    edges.forEach((e) => {
+      if (e.source === focusId) s.add(e.target)
+      else if (e.target === focusId) s.add(e.source)
+    })
+    return s
+  }, [focusId, edges])
+
+  // Focus is only meaningful while the focused node is actually on-canvas.
+  // If it was hidden (its namespace got collapsed to a super-node), skip the
+  // dimming pass entirely — otherwise everything fades with nothing lit.
+  const focusActive = useMemo(
+    () => focusSet != null && flowNodes.some((n) => n.id === focusId),
+    [focusSet, flowNodes, focusId]
+  )
+
+  const displayNodes = useMemo(() => {
+    if (!focusSet || !focusActive) return flowNodes
+    // A namespace region stays lit if it holds at least one focused child.
+    const litRegions = new Set<string>()
+    flowNodes.forEach((n) => {
+      if (n.type === 'resource' && focusSet.has(n.id) && n.parentNode) litRegions.add(n.parentNode)
+    })
+    return flowNodes.map((n) => {
+      const lit = n.type === 'namespaceRegion' ? litRegions.has(n.id) : focusSet.has(n.id)
+      return { ...n, data: { ...n.data, dimmed: !lit, focused: n.id === focusId } }
+    })
+  }, [flowNodes, focusSet, focusId, focusActive])
+
+  const focusEdges = useMemo(() => {
+    if (!focusSet || !focusActive) return renderedEdges
+    // Dim via edge.data (ConnectionEdge draws its own SVG and ignores the
+    // `style` prop) — a `dimmed` flag it honors by fading the whole edge
+    // group and dropping its flow particles. Keeps focused traffic edges
+    // animated as before; only the off-focus ones fade.
+    return renderedEdges.map((e) =>
+      focusSet.has(e.source) && focusSet.has(e.target)
+        ? e
+        : { ...e, data: { ...(e.data || {}), dimmed: true } }
+    )
+  }, [renderedEdges, focusSet, focusActive])
+
   if (isLoading) return <LoadingSpinner />
   if (error) return <ErrorState message={error.message} onRetry={() => refetch()} />
 
   const nsCount = visibleNamespaces === null ? allNamespaces.length : visibleNamespaces.size
 
   return (
-    <div className="h-[calc(100vh-52px)] relative">
+    <div className="h-full relative">
       <ReactFlow
         key={reactFlowKey}
-        nodes={flowNodes}
-        edges={renderedEdges}
+        nodes={displayNodes}
+        edges={focusEdges}
         nodeTypes={nodeTypes}
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
@@ -1590,6 +1870,74 @@ function ClusterMapInner() {
           </div>
         </div>
 
+        {/* Flow window — only meaningful in Traffic mode. Widen the rate()
+            window to ride out ingest-cadence gaps (an agent reconnect empties
+            a tight 1m rate); narrow it for a more "right now" view. */}
+        {layoutMode === 'traffic' && (
+          <div>
+            <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Flow window</div>
+            <div className="flex rounded-md border border-kb-border overflow-hidden">
+              {TRAFFIC_WINDOWS.map((m, i) => (
+                <button
+                  key={m}
+                  onClick={() => setTrafficWindow(m)}
+                  title={`Aggregate observed flows over the last ${m} minute${m > 1 ? 's' : ''}`}
+                  className={`flex-1 flex items-center justify-center px-2 py-1 text-[10px] font-mono transition-colors ${i > 0 ? 'border-l border-kb-border' : ''} ${
+                    trafficWindow === m ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+                  }`}
+                >
+                  {m}m
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Namespace density — progressive disclosure. Collapse every region to
+            a compact super-node for a zoomed-out read, then click any one to
+            drill in. Honoured by all three layouts (Grid / Flow / Traffic). */}
+        {allNamespaces.length > 1 && (
+          <div>
+            <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Namespaces</div>
+            <div className="flex rounded-md border border-kb-border overflow-hidden">
+              <button
+                onClick={() => collapseAllNs(allNamespaces)}
+                title="Collapse every namespace to a compact super-node — a zoomed-out overview. Click any one to drill in."
+                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors ${
+                  collapsedNs.size >= allNamespaces.length ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+                }`}
+              >
+                <Minimize2 className="w-3 h-3" />
+                Collapse all
+              </button>
+              <button
+                onClick={expandAllNs}
+                title="Expand every namespace to show its resources"
+                className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border ${
+                  collapsedNs.size === 0 ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+                }`}
+              >
+                <Maximize2 className="w-3 h-3" />
+                Expand all
+              </button>
+            </div>
+            {/* Re-pack collapsed super-nodes into a tidy grid — the escape hatch
+                after free-dragging them around. Only meaningful in collapse
+                mode; disabled while everything is already packed. */}
+            {collapseModeActive && (
+              <button
+                onClick={tidyCollapsedLayout}
+                disabled={collapsedDragOverrides.size === 0}
+                title={collapsedDragOverrides.size === 0 ? 'Already tidy — nothing to re-pack' : 'Re-pack collapsed namespaces into a tidy grid'}
+                className="mt-1 w-full flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono rounded-md border border-kb-border transition-colors bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Tidy
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Edge category filters */}
         <div>
           <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Edges</div>
@@ -1642,7 +1990,7 @@ function ClusterMapInner() {
               {animationsEnabled ? 'Animated' : 'Static'}
             </button>
             <button
-              onClick={resetLayout}
+              onClick={resetExpandedLayout}
               disabled={dragOverrides.size === 0}
               title={dragOverrides.size === 0 ? 'No manual positions to reset' : `Reset ${dragOverrides.size} moved node(s)`}
               className="flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary disabled:opacity-40 disabled:cursor-not-allowed"
@@ -1722,38 +2070,61 @@ function ClusterMapInner() {
       </div>
       )}
 
-      {/* Traffic layout with the agent reachable but no flows arriving —
-          most likely the cluster doesn't run Cilium/Hubble, or the
-          agent runs in metrics-only mode, or simply no traffic in the
-          last minute. Canvas stays empty on purpose; this card carries
-          the entire signal. */}
+      {/* Traffic layout, agent reachable, but no edges in the selected window.
+          Two very different causes → two very different messages:
+            • sourcePresent: flow series EXIST for this cluster/tenant, just none
+              in the window — quiet cluster, or ingest catching up after a
+              reconnect. Neutral/info; nudge to widen the window (no scary CTA).
+            • otherwise: no flow series at all — Cilium/Hubble not installed or
+              the agent is in metrics-only mode. Warn + setup CTA.
+          Canvas stays empty on purpose; this card carries the whole signal. */}
       {layoutMode === 'traffic' && trafficSourceAvailable && (flowData?.edges?.length ?? 0) === 0 && (
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
-          <div className="rounded-lg border border-kb-border bg-kb-card/95 backdrop-blur-sm border-l-4 border-l-status-warn shadow-xl">
-            <div className="flex items-start gap-3 p-3.5">
-              <div className="w-8 h-8 rounded-lg bg-status-warn-dim flex items-center justify-center shrink-0">
-                <Lock className="w-4 h-4 text-status-warn" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center justify-between gap-2 flex-wrap">
-                  <h4 className="text-[13px] font-semibold text-kb-text-primary">
-                    No traffic observed (last 1m)
-                  </h4>
-                  <Link
-                    to="/admin/agents?tab=integrations"
-                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md border border-kb-border text-kb-text-secondary text-[11px] font-medium hover:bg-kb-elevated hover:text-kb-text-primary transition-colors shrink-0"
-                  >
-                    Check agent setup
-                    <ArrowRight className="w-3 h-3" strokeWidth={2.5} />
-                  </Link>
+        flowData?.sourcePresent ? (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
+            <div className="rounded-lg border border-kb-border bg-kb-card/95 backdrop-blur-sm border-l-4 border-l-status-info shadow-xl">
+              <div className="flex items-start gap-3 p-3.5">
+                <div className="w-8 h-8 rounded-lg bg-status-info-dim flex items-center justify-center shrink-0">
+                  <Activity className="w-4 h-4 text-status-info" />
                 </div>
-                <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">
-                  Pod-to-pod flows need Cilium / Hubble running in the cluster — if it isn't installed, this layout stays empty. The agent must also have Hubble flow collection enabled (off in metrics-only mode).
-                </p>
+                <div className="flex-1 min-w-0">
+                  <h4 className="text-[13px] font-semibold text-kb-text-primary">
+                    No active flows in the last {trafficWindow}m
+                  </h4>
+                  <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">
+                    Hubble flows are reaching KubeBolt for this cluster — there just weren't any in the last {trafficWindow} minute{trafficWindow > 1 ? 's' : ''}. The cluster may be quiet, or ingest is catching up after a reconnect. Widen the flow window above to ride out the gap.
+                  </p>
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-10 w-[460px] max-w-[calc(100vw-540px)]">
+            <div className="rounded-lg border border-kb-border bg-kb-card/95 backdrop-blur-sm border-l-4 border-l-status-warn shadow-xl">
+              <div className="flex items-start gap-3 p-3.5">
+                <div className="w-8 h-8 rounded-lg bg-status-warn-dim flex items-center justify-center shrink-0">
+                  <Lock className="w-4 h-4 text-status-warn" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <h4 className="text-[13px] font-semibold text-kb-text-primary">
+                      No traffic observed (last {trafficWindow}m)
+                    </h4>
+                    <Link
+                      to="/admin/agents?tab=integrations"
+                      className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md border border-kb-border text-kb-text-secondary text-[11px] font-medium hover:bg-kb-elevated hover:text-kb-text-primary transition-colors shrink-0"
+                    >
+                      Check agent setup
+                      <ArrowRight className="w-3 h-3" strokeWidth={2.5} />
+                    </Link>
+                  </div>
+                  <p className="text-[11px] text-kb-text-secondary mt-1 leading-relaxed">
+                    Pod-to-pod flows need Cilium / Hubble running in the cluster — if it isn't installed, this layout stays empty. The agent must also have Hubble flow collection enabled (off in metrics-only mode).
+                  </p>
+                </div>
+              </div>
+            </div>
+          </div>
+        )
       )}
 
       {/* Traffic layout without a flow source — agent isn't installed

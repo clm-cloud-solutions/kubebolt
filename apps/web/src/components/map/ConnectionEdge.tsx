@@ -61,6 +61,10 @@ function ConnectionEdgeComponent({
   data,
 }: EdgeProps) {
   const edgeType = (data?.edgeType as string) || ''
+  // Focus mode: ClusterMap flags off-focus edges with data.dimmed. Fade the
+  // whole edge group and drop the flow particles so the selection's own
+  // edges stand out.
+  const dimmed = data?.dimmed === true
 
   // Traffic edges are a special case: width and particle count scale with
   // the observed rate, and color swings on verdict ("forwarded" = emerald,
@@ -130,7 +134,7 @@ function ConnectionEdgeComponent({
   })
 
   return (
-    <g>
+    <g opacity={dimmed ? 0.07 : 1} style={{ transition: 'opacity 0.2s ease' }}>
       {/* Wide invisible interaction path. ReactFlow attaches pointer
           handlers to this <g>; a thin visible stroke (1-4px) makes
           hover fragile because a pixel of movement leaves the edge
@@ -183,8 +187,10 @@ function ConnectionEdgeComponent({
         </path>
       )}
 
-      {/* Flowing particles — suppressed entirely when animations are disabled */}
-      {particleCount > 0 && Array.from({ length: particleCount }).map((_, i) => (
+      {/* Flowing particles — suppressed when animations are off or the edge
+          is dimmed out by focus mode (moving dots read as "active" even at
+          low group opacity, which fights the focus). */}
+      {!dimmed && particleCount > 0 && Array.from({ length: particleCount }).map((_, i) => (
         <circle
           key={i}
           r={cfg.particleSize}

@@ -64,6 +64,10 @@ const ERROR_STATUSES = new Set(['failed', 'error', 'crashloopbackoff', 'imagepul
 // Extend TopologyNode with the runtime flag injected by ClusterMap.
 interface ResourceNodeData extends TopologyNode {
   animationsEnabled?: boolean
+  // Focus mode (injected by ClusterMap): `focused` is the selected node,
+  // `dimmed` is a node outside the selection's 1-hop neighbourhood.
+  focused?: boolean
+  dimmed?: boolean
 }
 
 function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) {
@@ -74,10 +78,17 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
   const status = (data.status || '').toLowerCase()
   const isOk = OK_STATUSES.has(status)
   const isError = ERROR_STATUSES.has(status)
-  const pulsing = data.animationsEnabled !== false && (isOk || isError)
+  const pulsing = data.animationsEnabled !== false && !data.dimmed && (isOk || isError)
 
   return (
-    <div className="relative w-[170px]">
+    <div
+      className="relative w-[170px]"
+      style={{
+        opacity: data.dimmed ? 0.13 : 1,
+        filter: data.dimmed ? 'saturate(0.5)' : undefined,
+        transition: 'opacity 0.2s ease, filter 0.2s ease',
+      }}
+    >
       {/* Pulse halo — absolute under the card, same rounded corners.
           Green for healthy resources, red for errors. Reduced motion honored. */}
       {pulsing && (
@@ -92,7 +103,13 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
       )}
       <div
         className={`relative bg-kb-card border ${accent.border} rounded-[10px] p-2.5 w-[170px] transition-all ${
-          selected ? 'ring-1 ring-status-info shadow-lg shadow-status-info/10' : 'hover:bg-kb-card-hover'
+          selected || data.focused
+            ? 'ring-1 ring-status-info shadow-lg shadow-status-info/10'
+            : // Light: a soft drop shadow lifts the white card off the near-white
+              // canvas (it would otherwise dissolve) while the kind's accent
+              // border keeps its colour. Off in dark, where the card already
+              // reads against the dark canvas.
+              'hover:bg-kb-card-hover shadow-[0_2px_8px_-3px_rgba(15,23,42,0.14)] dark:shadow-none'
         }`}
       >
       <Handle type="target" position={Position.Left} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-left-1" />

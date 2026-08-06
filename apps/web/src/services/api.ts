@@ -2206,6 +2206,11 @@ export interface FlowEdgesResponse {
   edges: FlowEdge[]
   windowMinutes: number
   source: string
+  // True when flow series exist for this cluster within a 15m lookback, even
+  // if none fell inside the rate window. Lets the map tell "ingest quiet /
+  // catching up" apart from "no Hubble source". Optional for backward-compat
+  // with older backends (treated as false when absent).
+  sourcePresent?: boolean
 }
 
 // --- Scrape coverage (Phase 2 Day 5) ---
