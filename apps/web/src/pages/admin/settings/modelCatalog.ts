@@ -133,10 +133,31 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
   // for API-key workflows (some IDs like raw gpt-5.5 require ChatGPT
   // sign-in and aren't available via /v1/chat/completions yet — when
   // ambiguous we err toward the IDs documented in developers.openai.com).
+  // ─── GPT-5.6 (current flagship line, Aug 2026) ────────────────────
+  // Three named variants on the same 1.05M-token window: sol (largest),
+  // terra (standard), luna (compact). sol is the new recommended primary.
+  {
+    id: 'gpt-5.6-sol',
+    label: 'GPT-5.6 Sol',
+    description: "OpenAI's GPT-5.6 flagship — deepest reasoning and coding on a 1.05M-token window. Recommended primary for OpenAI installs.",
+    group: 'OpenAI · GPT-5 (current)',
+  },
+  {
+    id: 'gpt-5.6-terra',
+    label: 'GPT-5.6 Terra',
+    description: "Standard GPT-5.6 — strong general-purpose default at a fraction of Sol's cost. Best balance for most operator work.",
+    group: 'OpenAI · GPT-5 (current)',
+  },
+  {
+    id: 'gpt-5.6-luna',
+    label: 'GPT-5.6 Luna',
+    description: 'Compact GPT-5.6 — fastest and cheapest of the line. Good for high-volume diagnostics and short turns.',
+    group: 'OpenAI · GPT-5 (current)',
+  },
   {
     id: 'gpt-5.5',
     label: 'GPT-5.5',
-    description: "OpenAI's flagship for complex reasoning and coding. Use this for the deepest API workflows when your account has access.",
+    description: 'Previous flagship (superseded by GPT-5.6). Still strong for complex reasoning and coding.',
     group: 'OpenAI · GPT-5 (current)',
   },
   {

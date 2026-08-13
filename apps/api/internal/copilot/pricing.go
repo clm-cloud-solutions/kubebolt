@@ -43,13 +43,13 @@ var modelPricing = map[string]ModelPricing{
 	// $3/$15 across the 4.x line.
 	//
 	// Claude 5 family (current): Opus 5 and Opus 4.8 share the Opus $5/$25
-	// tier; Sonnet 5 stays at $3/$15 (Anthropic runs a $2/$10 intro rate
-	// through 2026-08-31 — we track the durable list price for estimates);
+	// tier; Sonnet 5 is $2/$10 (Anthropic made the launch rate PERMANENT —
+	// it no longer reverts to $3/$15 after the 2026-08-31 intro window);
 	// Fable 5 is the premium tier at $10/$50.
 	"claude-fable-5":  {Input: 10, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
 	"claude-opus-5":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-8": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
-	"claude-sonnet-5": {Input: 3, CachedInput: 0.30, CacheCreation: 3.75, Output: 15},
+	"claude-sonnet-5": {Input: 2, CachedInput: 0.20, CacheCreation: 2.50, Output: 10},
 	"claude-opus-4-7": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-6": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-5": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
@@ -62,9 +62,17 @@ var modelPricing = map[string]ModelPricing{
 	"claude-haiku-4-5":  {Input: 1, CachedInput: 0.10, CacheCreation: 1.25, Output: 5},
 
 	// ─── OpenAI — https://openai.com/api/pricing ────────────────────
-	// CacheCreation = 0 → falls back to Input (OpenAI doesn't charge a
-	// premium for cache writes the way Anthropic does).
-	// GPT-5.5 (current flagship, May 2026).
+	// CacheCreation = 0 → falls back to Input for the older lines (OpenAI
+	// didn't charge a cache-write premium the way Anthropic does). The
+	// GPT-5.6 line DID introduce cache-write pricing (input × 1.25), so
+	// those three carry an explicit CacheCreation.
+	// GPT-5.6 (current flagship, Aug 2026) — sol/terra/luna. Standard
+	// (short-context, ≤272K input) rates; over 272K OpenAI bills 2× input /
+	// 1.5× output, which the single-rate struct can't model (estimate only).
+	"gpt-5.6-sol":   {Input: 5.00, CachedInput: 0.50, CacheCreation: 6.25, Output: 30},
+	"gpt-5.6-terra": {Input: 2.00, CachedInput: 0.20, CacheCreation: 2.50, Output: 12},
+	"gpt-5.6-luna":  {Input: 0.20, CachedInput: 0.02, CacheCreation: 0.25, Output: 1.20},
+	// GPT-5.5 (previous flagship, May 2026).
 	"gpt-5.5": {Input: 5.00, CachedInput: 0.50, Output: 30},
 	// GPT-5.4 family. Listed nano/mini ahead of base in source order
 	// but order doesn't matter for matching — pricingKeys() sorts by
