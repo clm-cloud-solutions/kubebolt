@@ -11,6 +11,27 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.0] — 2026-09-01
+
+Cardinality: per-pod veth peers stop minting series. Same v1.0 metric/label
+schema — drop-in within 1.x.
+
+### Added
+
+- `collectors.dropNetworkInterfaces` supports **prefix match**: entries ending
+  in `*` (e.g. `azv*`) drop every interface whose name starts with the prefix;
+  entries without `*` keep today's exact-match behaviour. A bare `*`, or a `*`
+  anywhere but the end, refuses to boot with a clear error — silently
+  mis-dropping either blinds the network panels or ships the bloat.
+- Default droplist extended with the mainstream cloud-CNI veth-peer patterns —
+  `azv*` (Azure CNI/AKS), `veth*` (kind, GKE, many CNIs), `eni*` (AWS VPC CNI),
+  `cali*` (Calico) — plus `lo`. Their hash-suffixed names are different for
+  every pod, so no exact list could ever catch them: measured on a 2,183-pod
+  AKS cluster they were 5,061 distinct `interface` values and ~85% of total
+  active series. Per-pod traffic stays visible through the pod's own `eth0`,
+  and node-level interfaces (`enP*`, `eth0`, `cilium_*`) are untouched. Set
+  `collectors.dropNetworkInterfaces: []` to keep every interface.
+
 ## [1.3.1] — 2026-07-27
 
 Security patch. Same v1.0 metric/label schema, drop-in within 1.3.x.

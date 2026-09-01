@@ -50,6 +50,13 @@ type FlowEdgesResponse struct {
 	Edges         []FlowEdge `json:"edges"`
 	WindowMinutes int        `json:"windowMinutes"`
 	Source        string     `json:"source"` // always "hubble" for now
+	// SourcePresent is true when pod_flow_events_total has series for this
+	// cluster within a 15m lookback — even when none fall inside the rate
+	// window. It lets the UI tell "flows exist, none in the window" (quiet
+	// cluster or ingest catching up after a reconnect) apart from "no Hubble
+	// source at all" (never installed / agent metrics-only), so a transient
+	// ingest gap doesn't read as a misconfiguration.
+	SourcePresent bool `json:"sourcePresent"`
 }
 
 // handleFlowEdges executes the PromQL that aggregates pod_flow_events_total
@@ -319,11 +326,24 @@ func (h *handlers) handleFlowEdges(w http.ResponseWriter, r *http.Request) {
 		edges = append(edges, edge)
 	}
 
-	respondJSON(w, http.StatusOK, FlowEdgesResponse{
+	resp := FlowEdgesResponse{
 		Edges:         edges,
 		WindowMinutes: windowMin,
 		Source:        "hubble",
-	})
+		SourcePresent: len(edges) > 0,
+	}
+	// If the rate window came back empty, probe a wider 15m lookback to
+	// distinguish "flows exist for this cluster but none landed in the window"
+	// (quiet cluster, or ingest catching up after an agent reconnect) from "no
+	// flow series at all" (Hubble not installed / agent in metrics-only mode).
+	// Same cluster scope as the main queries. Best-effort — on probe failure we
+	// leave SourcePresent=false and the UI shows the setup CTA.
+	if !resp.SourcePresent {
+		presence, _ := runInstantQuery(r.Context(), scopeQueryByCluster(
+			`count(count_over_time(pod_flow_events_total{source="hubble"}[15m]))`, uid))
+		resp.SourcePresent = len(presence) > 0 && presence[0].Value > 0
+	}
+	respondJSON(w, http.StatusOK, resp)
 }
 
 // pairKey identifies a directed pod-to-pod flow (source → destination) for

@@ -139,16 +139,23 @@ func main() {
 		slog.Info("tenant identity", slog.String("tenant_id", tenantID))
 	}
 	// KUBEBOLT_AGENT_DROP_NET_INTERFACES (helm value collectors.dropNetworkInterfaces;
-	// default = kernel tunnel devices sit0/gre0/tunl0/… that never carry traffic)
-	// excludes those interfaces from container_network_* / node_network_* to cut
-	// cardinality on kernels that load the modules (kind/bare-metal). No-op on cloud
-	// CNIs where the devices are absent. Empty value = keep all interfaces. Applied
-	// in BOTH network collectors: stats.go (/stats/summary) and cadvisor.go emit the
+	// default = kernel tunnel devices sit0/gre0/tunl0/… plus the "azv*"/"veth*"/
+	// "eni*"/"cali*" prefix patterns for per-pod veth peers on cloud CNIs, whose
+	// hash-suffixed names no exact list can capture — measured at ~85% of active
+	// series on a 2k-pod AKS cluster). Entries ending in "*" prefix-match;
+	// everything else is exact. Empty value = keep all interfaces. Applied in
+	// BOTH network collectors: stats.go (/stats/summary) and cadvisor.go emit the
 	// same per-interface series, so filtering only one lets the other re-introduce
-	// the tunnels (VM merges the duplicate series).
-	dropNetIfaces := csvSet(os.Getenv("KUBEBOLT_AGENT_DROP_NET_INTERFACES"))
-	if len(dropNetIfaces) > 0 {
-		slog.Info("container_network: dropping interfaces", slog.Int("count", len(dropNetIfaces)))
+	// the dropped names (VM merges the duplicate series).
+	dropNetIfaces, err := collector.NewInterfaceMatcher(csvList(os.Getenv("KUBEBOLT_AGENT_DROP_NET_INTERFACES")))
+	if err != nil {
+		// A bad pattern must stop the boot: silently mis-dropping either
+		// blinds the network panels or ships the 5k-interface bloat.
+		slog.Error("invalid KUBEBOLT_AGENT_DROP_NET_INTERFACES", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	if dropNetIfaces.Size() > 0 {
+		slog.Info("container_network: dropping interfaces", slog.Int("count", dropNetIfaces.Size()))
 	}
 	stats := collector.NewStats(kc, clusterID, clusterName, *nodeName, tenantID,
 		collector.WithDeferNodeNetwork(deferNodeNetwork),
@@ -607,20 +614,21 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
-// csvSet parses a comma-separated value into a set, trimming whitespace and
-// skipping empties. Returns nil for an empty/blank input so callers can treat
-// nil as "no filtering". Used for the container_network interface droplist.
-func csvSet(v string) map[string]struct{} {
+// csvList parses a comma-separated value into a slice, trimming whitespace
+// and skipping empties. Returns nil for an empty/blank input so callers can
+// treat nil as "no filtering". Used for the container_network interface
+// droplist, whose entries may carry a trailing "*" for prefix match.
+func csvList(v string) []string {
 	if strings.TrimSpace(v) == "" {
 		return nil
 	}
-	m := make(map[string]struct{})
+	var out []string
 	for _, p := range strings.Split(v, ",") {
 		if p = strings.TrimSpace(p); p != "" {
-			m[p] = struct{}{}
+			out = append(out, p)
 		}
 	}
-	return m
+	return out
 }
 
 // envBool reads a truthy/falsy env var. Empty/unset returns fallback.

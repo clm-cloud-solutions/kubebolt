@@ -295,7 +295,11 @@ func TestStatsCollector_DropsFilteredInterfaces(t *testing.T) {
 
 	// Node loop: fixture node has eth0 + eth1. Drop eth1 (stand-in for a
 	// tunnel device); it must vanish from node_network_* while eth0 stays.
-	c := NewStats(client, "cid", "cn", "node", "", WithDropInterfaces(map[string]struct{}{"eth1": {}}))
+	dropEth1, err := NewInterfaceMatcher([]string{"eth1"})
+	if err != nil {
+		t.Fatalf("NewInterfaceMatcher: %v", err)
+	}
+	c := NewStats(client, "cid", "cn", "node", "", WithDropInterfaces(dropEth1))
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -318,9 +322,14 @@ func TestStatsCollector_DropsFilteredInterfaces(t *testing.T) {
 		t.Error("node device eth0 was filtered but must be kept")
 	}
 
-	// Pod loop: fixture pod nginx-abc123 has interface eth0. Dropping eth0
-	// must remove its container_network_* series.
-	c2 := NewStats(client, "cid", "cn", "node", "", WithDropInterfaces(map[string]struct{}{"eth0": {}}))
+	// Pod loop: fixture pod nginx-abc123 has interface eth0. Dropping it
+	// via a "*" prefix entry must remove its container_network_* series —
+	// exercises the prefix path through the stats collector end to end.
+	dropEthStar, err := NewInterfaceMatcher([]string{"eth*"})
+	if err != nil {
+		t.Fatalf("NewInterfaceMatcher: %v", err)
+	}
+	c2 := NewStats(client, "cid", "cn", "node", "", WithDropInterfaces(dropEthStar))
 	s2, err := c2.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
