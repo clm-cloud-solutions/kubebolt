@@ -54,13 +54,14 @@ type StatsCollector struct {
 	// surgical, scoped only to the names that actually collide.
 	deferNodeNetwork bool
 	// dropInterfaces excludes always-zero kernel tunnel interfaces
-	// (sit0, gre0, tunl0, …) from per-interface network metrics — the
-	// SAME set CadvisorCollector filters. /stats/summary and cadvisor
-	// both emit container_network_* per interface, so the filter MUST
-	// live in both or the unfiltered source re-introduces the tunnels
-	// (VM collapses the duplicate series). Populated from the helm value
-	// collectors.dropNetworkInterfaces. Nil/empty = keep all.
-	dropInterfaces map[string]struct{}
+	// (sit0, gre0, tunl0, …) and prefix-matched per-pod veth peers
+	// (azv*/veth*/eni*/cali*) from per-interface network metrics — the
+	// SAME matcher CadvisorCollector filters with. /stats/summary and
+	// cadvisor both emit container_network_* per interface, so the filter
+	// MUST live in both or the unfiltered source re-introduces the
+	// dropped names (VM collapses the duplicate series). Populated from
+	// the helm value collectors.dropNetworkInterfaces. Nil = keep all.
+	dropInterfaces *InterfaceMatcher
 }
 
 // StatsOption is a functional option for NewStats.
@@ -80,7 +81,7 @@ func WithDeferNodeNetwork(defer_ bool) StatsOption {
 // sources drop the same always-zero kernel tunnel devices — otherwise
 // the unfiltered source re-introduces them via VM's duplicate-series
 // merge. Wired by the helm chart from collectors.dropNetworkInterfaces.
-func WithDropInterfaces(drop map[string]struct{}) StatsOption {
+func WithDropInterfaces(drop *InterfaceMatcher) StatsOption {
 	return func(c *StatsCollector) { c.dropInterfaces = drop }
 }
 
@@ -202,7 +203,7 @@ func (c *StatsCollector) collectNode(s *statsSummary, ts *timestamppb.Timestamp)
 			}
 		}
 		for _, iface := range nodeIfaces {
-			if _, drop := c.dropInterfaces[iface.Name]; drop {
+			if c.dropInterfaces.Drops(iface.Name) {
 				continue
 			}
 			ifaceLabels := mergeLabels(base, map[string]string{"device": iface.Name})
@@ -241,7 +242,7 @@ func (c *StatsCollector) collectPod(p *podStats, ts *timestamppb.Timestamp) []*a
 		}
 	}
 	for _, iface := range podIfaces {
-		if _, drop := c.dropInterfaces[iface.Name]; drop {
+		if c.dropInterfaces.Drops(iface.Name) {
 			continue
 		}
 		ifaceLabels := mergeLabels(netLabels, map[string]string{"interface": iface.Name})

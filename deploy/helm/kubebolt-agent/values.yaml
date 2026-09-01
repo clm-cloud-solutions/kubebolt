@@ -175,12 +175,20 @@ collectors:
   # scrape's metricRelabelConfigs — container_network_* rides the gRPC
   # AgentChannel, which relabel rules never see.
   #
-  # Default = the kernel tunnel/dummy devices that exist in EVERY network
-  # namespace (created by the sit/gre/ipip/ip6_tunnel modules) but never
-  # transmit a byte unless explicitly configured. cAdvisor reports the full
-  # container_network_* set for each → ~10x cardinality on kernels that load
-  # the modules (local kind/Docker, some bare-metal), all reading 0. They are
-  # ABSENT on cloud CNIs (EKS/GKE/AKS), so this list is a no-op there.
+  # Entries ending in "*" are prefix-matched — everything else is exact.
+  # The defaults cover two families:
+  #   • Kernel tunnel/dummy devices that exist in EVERY network namespace
+  #     (sit/gre/ipip/ip6_tunnel modules) but never transmit a byte —
+  #     ~10x cardinality on kernels that load the modules (local
+  #     kind/Docker, some bare-metal), all reading 0.
+  #   • Per-pod veth peers on the mainstream cloud CNIs (azv<hash> on
+  #     Azure CNI, veth<hash> on kind/GKE/many others, eni<hash> on AWS
+  #     VPC CNI, cali<hash> on Calico) plus loopback. Their hash-suffixed
+  #     names are different for every pod — 5k+ unique interface values
+  #     on a 2k-pod cluster, ~85% of total active series (empirical
+  #     measurement: kubebolt-infra-azure
+  #     docs/backend-proposals/agent-network-interface-prefix-match.md).
+  #     They duplicate the pod's own eth0 view, which stays reported.
   # Set to [] to keep every interface, or extend for your environment.
   dropNetworkInterfaces:
     - sit0
@@ -192,6 +200,11 @@ collectors:
     - ip6gre0
     - ip_vti0
     - ip6_vti0
+    - "azv*"    # Azure CNI (AKS) veth peers
+    - "veth*"   # generic CNI veth peers (kind, GKE, many others)
+    - "eni*"    # AWS VPC CNI (EKS) branch interfaces
+    - "cali*"   # Calico veth peers
+    - lo        # loopback — always-duplicate zero-signal traffic
 
   # Extra Prometheus exporters the agent scrapes and forwards
   # (leader-elected: ONE pod cluster-wide scrapes each, samples ship
