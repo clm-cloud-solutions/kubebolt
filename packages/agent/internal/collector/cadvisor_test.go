@@ -206,6 +206,7 @@ func TestCadvisorCollector_DropsFilteredInterfaces(t *testing.T) {
 	const body = `container_network_receive_bytes_total{namespace="ns1",pod="pod1",interface="eth0"} 12345
 container_network_receive_bytes_total{namespace="ns1",pod="pod1",interface="sit0"} 0
 container_network_transmit_bytes_total{namespace="ns1",pod="pod1",interface="gre0"} 0
+container_network_receive_bytes_total{namespace="ns1",pod="pod1",interface="azv3f9a1c"} 999
 container_network_transmit_bytes_total{namespace="ns1",pod="pod1",interface="eth0"} 678
 `
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -219,18 +220,23 @@ container_network_transmit_bytes_total{namespace="ns1",pod="pod1",interface="eth
 	t.Cleanup(srv.Close)
 	client := kubelet.New("127.0.0.1", kubelet.WithBaseURL(srv.URL), kubelet.WithTokenPath(""))
 
-	drop := map[string]struct{}{"sit0": {}, "gre0": {}}
+	// Exact entries + one "*" prefix entry — the hash-suffixed veth peer
+	// (azv3f9a1c) is exactly what no exact list can name in advance.
+	drop, err := NewInterfaceMatcher([]string{"sit0", "gre0", "azv*"})
+	if err != nil {
+		t.Fatalf("NewInterfaceMatcher: %v", err)
+	}
 	c := NewCadvisor(client, "cid", "cn", "node", "", drop)
 	samples, err := c.Collect(context.Background())
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
 	}
 
-	// The two dropped-interface lines must be gone; only the two eth0 lines remain.
+	// The three dropped-interface lines must be gone; only the two eth0 lines remain.
 	var sawEth0 bool
 	for _, s := range samples {
 		switch s.Labels["interface"] {
-		case "sit0", "gre0":
+		case "sit0", "gre0", "azv3f9a1c":
 			t.Errorf("dropped interface %q leaked into samples", s.Labels["interface"])
 		case "eth0":
 			sawEth0 = true

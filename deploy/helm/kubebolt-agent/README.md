@@ -618,14 +618,19 @@ keep everything.
 co-located agent scrapes it — **1× ingest, not N×** — with no VictoriaMetrics
 `--dedup` needed (see the Scrape sidecar section above).
 
-**3. Dummy network-interface filter (Mode A path).** cAdvisor reports
+**3. Network-interface filter (Mode A path).** cAdvisor reports
 `container_network_*` per interface, and every pod's network namespace carries
-kernel tunnel devices (`sit0`, `gre0`, `tunl0`, …) that never transmit a byte.
-On kernels that load those modules (local kind, some bare-metal) they multiply
-`container_network_*` cardinality ~10× while reading a permanent 0.
-`collectors.dropNetworkInterfaces` drops them by default. It's a **no-op on
-cloud CNIs (EKS/GKE/AKS)** where the devices don't exist. Set it to `[]` to keep
-all interfaces.
+at least one veth peer (`azv<hash>` on Azure CNI, `veth<hash>` on kind and many
+others, `eni<hash>` on AWS VPC CNI, `cali<hash>` on Calico) plus loopback —
+each a distinct `interface` label value. On a 2k-pod cluster the label set
+exceeds 5,000 unique values and dominates active series (~85% measured on AKS).
+Kernels that load the tunnel modules (local kind, some bare-metal) add the
+always-zero `sit0`/`gre0`/`tunl0` family on top. `collectors.dropNetworkInterfaces`
+supports **exact match** and **prefix match** (entries ending in `*`); the
+defaults cover the mainstream CNI patterns, the kernel tunnel devices, and
+loopback. Per-pod traffic stays visible through the pod's own `eth0`, and the
+node-level view (`enP*`, `eth0`, `cilium_host`, …) is untouched. Set it to `[]`
+to keep every interface.
 
 The net effect: **a fresh install consumes far fewer series than a stock
 Prometheus scrape would** — the annotation firehose, the KSM N× duplication, and
