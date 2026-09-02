@@ -546,6 +546,35 @@ GET  /insights
   Params: ?severity=critical,warning&resolved=false
   Response: { items: [Insight], total }
 
+GET  /findings
+  Security findings from the persisted store (Trivy Operator, Kyverno, CIS) —
+  org-scoped, active by default, outside requireConnector.
+  Params: ?group=vulnerability|configuration|rbac|compliance (scope)
+          &source=&severity=&kind= (facets: narrow the rows, not the summary)
+          &cluster=&status=&page=&pageSize=&resourceName=&resourceNamespace=
+  Response: { findings: [...], total, scopeTotal, bySeverity, bySeverityCluster,
+              bySource, byKind, activeWithRemediation, newLast24h, rollups,
+              affectedResources, topResource, topResourceCount, page, pageSize }
+
+GET  /findings/workloads
+  Workload-first aggregation: one row per workload with its severity counts,
+  fixable count, kinds, image(s); plus topImages / benchmarks / topChecks.
+  Params: ?group=&severity=&kind=&cluster=&page=
+
+GET  /findings/:fingerprint
+  Drill-down. Re-reads the scanner report live (packages, fixed versions,
+  failing resources of a CIS control); `live:false` + liveError when the
+  cluster is unreachable — the stored row still answers.
+
+GET  /runtime-events
+  Falco runtime events, newest first. Params: ?priority=&cluster=&since=(Go
+  duration or RFC3339)&limit= (capped at 500).
+
+POST /ingest/falco
+  Public Falco webhook. Authorization: Bearer <ingest token>; the token MUST
+  be scoped to a cluster (an unscoped one is refused — a pushed event carries
+  no other identity).
+
 GET  /insights/summary
   Fleet view: ACTIVE insights per cluster per severity, read from the persisted
   insight store (no connector needed — answers for every cluster in the org,

@@ -61,6 +61,32 @@ rules:
   - apiGroups: ["cilium.io"]
     resources: ["ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies"]
     verbs: ["get", "list", "watch"]
+  # Security & Compliance scanner CRDs (E2 A2). The findings sweep LISTs these
+  # cluster-wide every 10 min to build the Security dashboard. Same optional-CRD
+  # stance as above — harmless when the scanner isn't installed. WITHOUT these
+  # grants an in-cluster Helm deploy 403s on all four LISTs and the dashboard
+  # stays empty with no error, because the sweep's list-error branch treats a
+  # failure and "CRD absent" identically. Easy to miss in local dev: a kubeconfig
+  # context is usually cluster-admin, so the gap only shows up once deployed.
+  # Swept every pass: vulnerability, compliance, configaudit, BOTH rbac
+  # assessments and exposed secrets. The two infra assessments are read only on a
+  # click, by the compliance drill-down, to resolve a CIS control's check id into
+  # the resources that fail it: AVD-KSV-* land in configaudit/rbac, AVD-KCV-* in
+  # the infra assessments.
+  - apiGroups: ["aquasecurity.github.io"]
+    resources:
+      - "vulnerabilityreports"
+      - "clustercompliancereports"
+      - "configauditreports"
+      - "rbacassessmentreports"
+      - "clusterrbacassessmentreports"
+      - "exposedsecretreports"
+      - "infraassessmentreports"
+      - "clusterinfraassessmentreports"
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["wgpolicyk8s.io"]
+    resources: ["policyreports", "clusterpolicyreports"]
+    verbs: ["get", "list", "watch"]
   - apiGroups: ["metrics.k8s.io"]
     resources: ["pods", "nodes"]
     verbs: ["get", "list"]

@@ -16,6 +16,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -109,6 +110,10 @@ type handlers struct {
 	// Postgres-backed impl. May be nil in raw test fixtures, so call sites
 	// nil-guard before recording.
 	usage usage.UsageStore
+	// findingsStore persists normalized security findings (E2 SEC-C).
+	findingsStore findings.Store
+	// eventStore persists runtime security events (E2 SEC-E, Falco).
+	eventStore findings.EventStore
 	// agentRegistry is the in-memory directory of currently-connected
 	// agents. Spec #09 V2 Item 5b — the /admin/ingest-activity panel's
 	// heartbeat list reads this directly via a new admin endpoint
