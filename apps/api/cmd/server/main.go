@@ -296,6 +296,8 @@ func main() {
 	// Persistent insights store (Sprint 0) — same BoltDB-only gating as
 	// agentStore. nil → engines run in-memory-only (pre-Sprint-0 behavior).
 	var insightStore insights.InsightStore
+	var episodeReader insights.EpisodeReader
+	var insightPolicySvc *api.InsightPolicyService
 	// Security findings + runtime events (E2 SEC-C/E) — same BoltDB-only gating.
 	var findingsStore findings.Store
 	var eventStore findings.EventStore
@@ -567,6 +569,13 @@ func main() {
 		// notification dedup + Kobi/Autopilot provenance. Bucket created in
 		// auth.NewStore. tenantID = the auto-seeded "default" tenant in OSS.
 		insightStore = newInsightStore(boltHandle(store), auth.InsightsBucket())
+		// Insight lifecycle (2.1.0): the episode sink + expired watchdog, installed
+		// BEFORE the manager connects and the engines evaluate so the first events
+		// of the boot are not lost (the sink is package-level, so it reaches every
+		// engine wherever it is born), and the rule-policy source for the same
+		// reason.
+		episodeReader = startEpisodeLifecycle(context.Background(), boltHandle(store), insightStore)
+		insightPolicySvc = newInsightPolicyService(boltHandle(store), nil)
 		findingsStore = newFindingsStore(boltHandle(store), auth.FindingsBucket())
 		eventStore = newEventStore(boltHandle(store), auth.RuntimeEventsBucket())
 		insightTenantID := auth.DefaultTenantName
@@ -948,7 +957,7 @@ func main() {
 		go sweeper.Run(context.Background())
 	}
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, findingsStore, eventStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, findingsStore, eventStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc, insightPolicySvc, episodeReader)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
@@ -1275,6 +1284,9 @@ func main() {
 	// are org-scoped now — the shape the EE build needs under row-level
 	// security, where an unscoped DELETE matches nothing and reports success —
 	// so the pass iterates the org list; in OSS that is the single tenant.
+	// Episodes join the pass through a type assertion: the lifecycle wiring
+	// returns the read interface, but the store also prunes.
+	episodePruner, _ := episodeReader.(orgPruner)
 	startRetention(agentCtx, retentionDeps{
 		tenants:       tenantsStore,
 		insights:      insightStore,
@@ -1282,6 +1294,7 @@ func main() {
 		events:        eventStore,
 		audit:         actionAuditStore,
 		conversations: copilotConversations,
+		episodes:      episodePruner,
 	})
 
 	// Auto-register agent-proxy clusters: when an agent advertises the

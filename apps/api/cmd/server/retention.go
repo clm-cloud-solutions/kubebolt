@@ -61,6 +61,11 @@ type retentionDeps struct {
 	events        orgEventPruner
 	audit         orgPruner
 	conversations orgPruner
+	// episodes prunes insight episodes + transitions (2.1.0). The store only
+	// ever deletes NON-firing episodes — an old active episode is a live
+	// problem, not garbage — so the cutoff here bounds history, never
+	// detection. Nil when the lifecycle store is not wired.
+	episodes orgPruner
 }
 
 // envHorizon reads a Go duration from env, falling back to def when unset,
@@ -143,7 +148,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Warn("retention: cannot list orgs", slog.String("error", err.Error()))
 		return
 	}
-	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations int
+	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalEpisodes int
 	auditCutoff := now.Add(-auditRetentionHorizon())
 	insightsCutoff := now.Add(-insightsRetentionHorizon())
 	findingsCutoff := now.Add(-findingsRetentionHorizon())
@@ -163,6 +168,14 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 					slog.String("org", org.ID), slog.String("error", err.Error()))
 			} else {
 				totalInsights += n
+			}
+		}
+		if d.episodes != nil {
+			if n, err := d.episodes.PruneOrg(org.ID, findingsCutoff); err != nil {
+				slog.Warn("retention: episodes prune failed",
+					slog.String("org", org.ID), slog.String("error", err.Error()))
+			} else {
+				totalEpisodes += n
 			}
 		}
 		if d.findings != nil {
@@ -196,6 +209,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 	slog.Info("retention pass",
 		slog.Int("orgs", len(orgs)),
 		slog.Int("insights_pruned", totalInsights),
+		slog.Int("episodes_pruned", totalEpisodes),
 		slog.Int("findings_pruned", totalFindings),
 		slog.Int("runtime_events_pruned", totalEvents),
 		slog.Int("audit_records_pruned", totalAudit),

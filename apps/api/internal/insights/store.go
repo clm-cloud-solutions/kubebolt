@@ -220,6 +220,39 @@ func (s *BoltInsightStore) MarkResolved(tenantID, clusterID, fingerprint string,
 	})
 }
 
+// MarkExpired closes an insight's identity as EXPIRED rather than resolved:
+// the watchdog found no signal for longer than the TTL, so nobody observed a
+// recovery — the condition merely stopped being verifiable. The engine reads
+// the status on hydrate (a reopen after `expired` links to the previous
+// episode) and the Active list stops showing it.
+func (s *BoltInsightStore) MarkExpired(tenantID, clusterID, fingerprint string, at time.Time) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(s.bucket)
+		if b == nil {
+			return fmt.Errorf("bucket %s not found", s.bucket)
+		}
+		key := insightKey(tenantID, clusterID, fingerprint)
+		raw := b.Get(key)
+		if raw == nil {
+			return nil
+		}
+		var rec InsightRecord
+		if err := json.Unmarshal(raw, &rec); err != nil {
+			return fmt.Errorf("unmarshal InsightRecord: %w", err)
+		}
+		if rec.Status != "active" {
+			return nil
+		}
+		closeRecord(&rec, at)
+		rec.Status = EpisodeExpired
+		payload, err := json.Marshal(&rec)
+		if err != nil {
+			return fmt.Errorf("marshal InsightRecord: %w", err)
+		}
+		return b.Put(key, payload)
+	})
+}
+
 func (s *BoltInsightStore) Get(tenantID, clusterID, fingerprint string) (*InsightRecord, bool, error) {
 	var rec InsightRecord
 	var found bool

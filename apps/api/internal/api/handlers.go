@@ -110,6 +110,20 @@ type handlers struct {
 	// Postgres-backed impl. May be nil in raw test fixtures, so call sites
 	// nil-guard before recording.
 	usage usage.UsageStore
+	// insightPolicies is the rule-policy service (#44 step 1). nil-safe.
+	insightPolicies *InsightPolicyService
+	// episodes is the episode-history read side (2.1.0). nil-safe (503s).
+	episodes insights.EpisodeReader
+	// presence + mutes + operational + shiftStats are the shift-report
+	// anchors. All four are the same store as episodes, recovered by type
+	// assertion in NewRouter — nil on installs without it (the beacon
+	// 204-noops; mutes 503).
+	presence    insights.PresenceStore
+	mutes       insights.MuteStore
+	operational insights.OperationalReader
+	shiftStats  insights.ShiftStatsReader
+	// envFor: (tenant, cluster UID) → environment category; nil in OSS.
+	envFor func(tenant, cluster string) string
 	// findingsStore persists normalized security findings (E2 SEC-C).
 	findingsStore findings.Store
 	// eventStore persists runtime security events (E2 SEC-E, Falco).
@@ -288,7 +302,9 @@ func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
 	if eng := h.manager.Engine(r.Context()); eng != nil {
 		col := h.manager.Collector(r.Context())
 		metricsAvailable := col != nil && col.IsAvailable()
-		overview.Health = conn.GetHealth(metricsAvailable, eng.GetAllInsights())
+		// Mutes subtract here too (#54): a silenced insight must not keep
+		// inflating the Overview KPI it was silenced out of.
+		overview.Health = conn.GetHealth(metricsAvailable, h.visibleInsights(r, eng.GetAllInsights()))
 	}
 	respondJSON(w, http.StatusOK, overview)
 }
@@ -301,7 +317,7 @@ func (h *handlers) getClusterHealth(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
-	health := conn.GetHealth(col.IsAvailable(), eng.GetAllInsights())
+	health := conn.GetHealth(col.IsAvailable(), h.visibleInsights(r, eng.GetAllInsights()))
 	respondJSON(w, http.StatusOK, health)
 }
 
@@ -470,9 +486,31 @@ func (h *handlers) getInsights(w http.ResponseWriter, r *http.Request) {
 	}
 
 	items := eng.GetInsights(severity, resolved)
+	// Muted insights are subtracted by DEFAULT (#54 display overlay) so
+	// every consumer — panels, Kobi suggestions, counters — agrees with the
+	// Insights page. That page alone asks for includeMuted=true to build
+	// its «N muted» counter and the reveal-in-place view.
+	if r.URL.Query().Get("includeMuted") != "true" {
+		items = h.visibleInsights(r, items)
+	}
+	// Pantalla 4 (#44): what the profile layer is HIDING on this cluster,
+	// counted per rule, plus the profile's name. The silence must never be
+	// invisible — a product that omits silently answers "is everything
+	// fine?" with a yes it hasn't earned.
+	hidden := eng.HiddenByProfile()
+	profile := ""
+	if h.envFor != nil && len(hidden) > 0 {
+		clusterID := cluster.RuntimeKeyFromContext(r.Context()).Cluster
+		if h.manager != nil {
+			clusterID = h.manager.CanonicalClusterID(r.Context(), clusterID)
+		}
+		profile = h.envFor(auth.ContextTenantID(r), clusterID)
+	}
 	respondJSON(w, http.StatusOK, map[string]interface{}{
-		"items": items,
-		"total": len(items),
+		"hiddenByProfile": hidden,
+		"profile":         profile,
+		"items":           items,
+		"total":           len(items),
 	})
 }
 

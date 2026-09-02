@@ -13,6 +13,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
+	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/mcp"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -78,6 +79,13 @@ func NewRouter(
 	// /update-check endpoint (returns {"enabled": false}). Wired in
 	// main.go from `updatecheck.New(version, ...)`.
 	updateCheck *updatecheck.Service,
+	// insightPolicySvc is the rule-policy service (#44 step 1). nil-safe —
+	// nil makes /admin/insight-policies 503.
+	insightPolicySvc *InsightPolicyService,
+	// episodeReader serves the episode history (2.1.0). nil-safe — nil makes
+	// /insights/episodes 503. The same store carries the presence, mute,
+	// operational and shift-stat surfaces, recovered by type assertion below.
+	episodeReader insights.EpisodeReader,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -113,7 +121,16 @@ func NewRouter(
 		eventStore:           eventStore,
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
+		insightPolicies:      insightPolicySvc,
+		episodes:             episodeReader,
 	}
+	// The episode store also carries the presence + mute + operational +
+	// shift-stat surfaces; recovering them here keeps the NewRouter signature
+	// stable across editions.
+	h.presence, _ = episodeReader.(insights.PresenceStore)
+	h.mutes, _ = episodeReader.(insights.MuteStore)
+	h.operational, _ = episodeReader.(insights.OperationalReader)
+	h.shiftStats, _ = episodeReader.(insights.ShiftStatsReader)
 
 	// Kobi MCP server (read-only). Built once — the executor is stateless
 	// (it only wraps the manager) and the read-only tool catalogue is
@@ -220,6 +237,9 @@ func NewRouter(
 			// Any authenticated role; scoped to the caller's org via the
 			// ResolveTenant-stamped context. No active cluster required.
 			r.Get("/account/plan", h.handleAccountPlan)
+			// Capability states (#50): the one OSS axis is the active-series cap,
+			// live from the ingest gate; the Overview's truncation banner reads it.
+			r.Get("/account/capabilities", h.handleAccountCapabilities)
 			r.Get("/account/usage", h.handleAccountUsage)
 
 			// User management — admin only
@@ -494,6 +514,44 @@ func NewRouter(
 				r.Get("/runtime-events", h.handleListRuntimeEvents)
 
 				r.Get("/insights/summary", h.handleInsightsSummary)
+
+				// Episode history (2.1.0) — OUTSIDE requireConnector on purpose:
+				// history must answer for DEAD clusters, which is exactly when the
+				// question arrives.
+				r.Get("/insights/episodes", h.handleListEpisodes)
+				r.Get("/insights/episodes/{id}", h.handleGetEpisode)
+				// Operational episodes: the org's bursts — cross-cluster, so
+				// outside requireConnector like the rest of history.
+				r.Get("/insights/operational-episodes", h.handleOperationalEpisodes)
+				// The shift report: «while you were away», hung from the
+				// requesting user's presence anchor.
+				r.Get("/insights/shift-report", h.handleShiftReport)
+				// Presence beacon: Home renders → the user "saw" the dashboard.
+				// Any role; 204-noop where presence doesn't exist.
+				r.Post("/account/dashboard-seen", h.handleMarkDashboardSeen)
+				// Mutes (#54) — display state, no cluster required (a mute on a
+				// dead cluster must still be listable and removable). Reading is
+				// for everyone; mutating takes editor and leaves an audit record
+				// with what / why / until when (auditMutation in the handlers).
+				r.Route("/insights/mutes", func(r chi.Router) {
+					r.Get("/", h.handleListMutes)
+					r.Group(func(r chi.Router) {
+						r.Use(auth.RequireRole(auth.RoleEditor))
+						r.Post("/", h.handleCreateMute)
+						r.Delete("/{id}", h.handleDeleteMute)
+					})
+				})
+				// Rule policies (#44 step 1) — admin, OUTSIDE requireConnector
+				// (policy is install state, no cluster needed). Mutations are
+				// audited: a threshold / severity change alters what the operator
+				// gets told.
+				r.Route("/admin/insight-policies", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Use(h.auditAdminRoutes("insight-policy", false))
+					r.Get("/", h.handleListInsightPolicies)
+					r.Put("/{rule}", h.handlePutInsightPolicy)
+					r.Delete("/{rule}", h.handleDeleteInsightPolicy)
+				})
 			})
 
 			// Search lives OUTSIDE requireConnector for the same reason. Its fleet

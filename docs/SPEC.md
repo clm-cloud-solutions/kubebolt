@@ -546,6 +546,53 @@ GET  /insights
   Params: ?severity=critical,warning&resolved=false
   Response: { items: [Insight], total }
 
+GET  /insights/episodes
+  Episode history (2.1.0), OUTSIDE requireConnector — history answers for
+  dead clusters. Overlap semantics: episodes alive at any point of
+  [since, until] (defaults: the last 24h).
+  Params: ?since=&until= (RFC3339) &status=firing|resolved|expired
+          &severity= (matches the episode's MAX severity) &rule=
+          &cluster=<uid>|all (default: the request's cluster) &limit=&page=
+  Response: { episodes: [Episode], window: { since, until } }
+
+GET  /insights/episodes/:id
+  Response: { episode, transitions: [ {episodeId, from, to, at, actor, reason} ],
+              recurrence: [Episode] }  (+ capabilityChanges in EE)
+
+GET  /insights/operational-episodes
+  Deterministic bursts over the window (node_rotation | node_pressure |
+  mass_rollout | unknown_burst), recomputed and persisted with convergent ids.
+  Params: ?since=&until=   Response: { episodes: [OperationalEpisode] }
+
+GET  /insights/shift-report
+  «While you were away», hung from the requesting user's presence anchor
+  (first shift: 24h; anchor older than 30d: clamped + truncated:true).
+  Response: { windowFrom, windowTo, firstShift, truncated, bursts, episodes:
+              {opened, autoRecovered, remediated, expired, stillFiring, criticals},
+              worst?, mutes: {createdInWindow, activeNow}, rulesOff,
+              capabilities: [], capabilityChanges: 0, clusterNames? }
+POST /account/dashboard-seen
+  The presence beacon (Home rendered). 204; no-op where presence is not wired.
+
+GET  /insights/mutes            ?cluster=<uid>|all
+POST /insights/mutes            { clusterId?, ruleId, resource, reason?, expiresAt?, untilResolved? }
+DELETE /insights/mutes/:id
+  The silence overlay (#54): one expiry mode at a time; a permanent mute
+  requires a reason; critical severity pierces. Mutations: editor, audited.
+
+GET  /admin/insight-policies
+  Response: { rules: [ {id, class, name, description, defaultSeverity,
+              hasThreshold, defaultThreshold?, thresholdLabel?, threshold?,
+              severity?, updatedBy?, categories?, ignored30d?} ] }
+PUT  /admin/insight-policies/:rule     { threshold?, severity?, category? }
+DELETE /admin/insight-policies/:rule   ?category= (default global)
+  Malfunctions move only their bar; expectations move only their severity
+  (off allowed). Admin, audited. OSS: global layer only.
+
+GET  /account/capabilities
+  Response: { capabilities: [ {id, status, reason, detail?, since, audience} ] }
+  OSS reports the active_series row only (from the ingest cardinality gate).
+
 GET  /search
   Name-substring search across 24 resource types via the informer listers;
   outside requireConnector (the single-cluster path answers its own 503).
