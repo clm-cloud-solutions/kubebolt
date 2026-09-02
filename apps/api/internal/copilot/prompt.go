@@ -155,6 +155,56 @@ func GovernanceContextBlock(actionsEnabled, destructiveEnabled bool) string {
 	}
 }
 
+// ClusterProfileBlock returns a per-session note telling Kobi which cloud the
+// active cluster runs on, its k8s distribution, and its region — so it can
+// answer "what provider is this cluster on?" (and tailor provider-specific
+// advice, e.g. the EKS/VPC-CNI disk-IO caveat) WITHOUT spending a tool call to
+// inspect nodes. Values come from Connector.CloudProfile (providerID + node
+// labels).
+//
+// Like GovernanceContextBlock, this lives in the per-session prefix appended
+// after BuildSessionContext, NOT in the cached system prompt: it varies per
+// cluster, so baking it into BuildSystemPrompt would break the byte-identical
+// cache prefix. Returns "" when nothing is known (all fields empty), so the
+// undeterminable case adds nothing.
+func ClusterProfileBlock(platform, provider, region string) string {
+	var lines []string
+	if provider != "" {
+		lines = append(lines, "cloud: "+provider)
+	}
+	if platform != "" {
+		lines = append(lines, "platform: "+platform)
+	}
+	if region != "" {
+		lines = append(lines, "region: "+region)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	return "# Cluster profile\n" + strings.Join(lines, "\n")
+}
+
+// NoClusterContextBlock returns the per-session note for a session with NO
+// cluster available at all — no connector and no metrics-only cluster (org
+// with zero clusters, or nothing selected/reachable). Kobi must still be
+// Kobi: it answers about itself, KubeBolt and Kubernetes from knowledge (and
+// get_kubebolt_docs, which needs no cluster), and says in its own voice that
+// no cluster is connected when asked about live state — never a bare backend
+// error (the bug: chat 503'd "cluster not connected" before the model ever
+// saw the question).
+//
+// Like GovernanceContextBlock, this lives in the per-session prefix appended
+// after BuildSessionContext, NOT in the cached system prompt: it varies with
+// the org's cluster state, so baking it into BuildSystemPrompt would break
+// the byte-identical cache prefix.
+func NoClusterContextBlock() string {
+	return "# No cluster connected\n" +
+		"This organization has NO cluster connected right now — none registered, or none selected/reachable. " +
+		"You can and should still answer questions about yourself, about KubeBolt (use get_kubebolt_docs for product specifics), about Kubernetes concepts, and about how to get started. " +
+		"Do NOT call any cluster tool except get_kubebolt_docs — without a cluster they will only return errors. " +
+		"If the operator asks about live resources, metrics, insights or incidents, explain warmly that there is no cluster connected yet and point them to connecting one (Fleet → Add cluster, or installing the KubeBolt agent with Helm). Answer in the operator's language, as always."
+}
+
 // operationalAppendix is the static KubeBolt-specific appendix concatenated
 // onto the brand layers. Parameter-free as of Phase 6 — every byte is
 // stable across requests so the cache_control=ephemeral marker on the

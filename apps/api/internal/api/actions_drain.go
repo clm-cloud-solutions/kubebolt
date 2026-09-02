@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -157,6 +158,17 @@ func (h *handlers) handleDrain(w http.ResponseWriter, r *http.Request) {
 	streamDrainSession(w, r, session)
 }
 
+// cleanDrainError collapses an upstream kubectl stutter: drain's
+// unmanagedFatal message already starts with "cannot delete Pods that
+// declare no controller…" and filters.go then wraps EVERY fatal reason as
+// fmt.Errorf("cannot delete %s: …"), so that one reason surfaces as
+// "cannot delete cannot delete Pods…" (k8s.io/kubectl pkg/drain/filters.go,
+// consts at :36 vs wrap at :91). The other reasons compose fine, so the fix
+// is a targeted de-stutter, not a rewrite of library messages.
+func cleanDrainError(msg string) string {
+	return strings.ReplaceAll(msg, "cannot delete cannot delete", "cannot delete")
+}
+
 // runDrainGoroutine performs the actual drain. Long-running; emits
 // events to the session as it progresses; finalizes on exit (which
 // closes all subscriber channels and prevents further emissions).
@@ -228,7 +240,7 @@ func runDrainGoroutine(
 	status := "drained"
 	errStr := ""
 	if drainErr != nil {
-		errStr = drainErr.Error()
+		errStr = cleanDrainError(drainErr.Error())
 		switch {
 		case ctx.Err() != nil:
 			// Cancelled by handleDrainCancel or by cluster switch.

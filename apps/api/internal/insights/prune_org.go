@@ -29,7 +29,7 @@ func (s *BoltInsightStore) PruneOrg(orgID string, before time.Time) (int, error)
 			if err := json.Unmarshal(v, &rec); err != nil {
 				return nil
 			}
-			if rec.TenantID == orgID && rec.Status == "resolved" &&
+			if rec.TenantID == orgID && (rec.Status == "resolved" || rec.Status == EpisodeExpired) &&
 				rec.ResolvedAt != nil && rec.ResolvedAt.Before(before) {
 				keyCopy := make([]byte, len(k))
 				copy(keyCopy, k)

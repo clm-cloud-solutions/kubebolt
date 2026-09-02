@@ -38,5 +38,10 @@ type ClusterState struct {
 	Certificates []map[string]interface{}
 	ArgoApps     []map[string]interface{}
 	PodMetrics   map[string]*models.MetricPoint
-	NodeMetrics     map[string]*models.MetricPoint
+
+	// Policies is the org-effective rule policy for THIS evaluation (#44
+	// step 1) — attached by Engine.Evaluate from the policy source. nil is
+	// always safe: rules fall back to shipped defaults via stateThreshold.
+	Policies    *PolicySnapshot
+	NodeMetrics map[string]*models.MetricPoint
 }

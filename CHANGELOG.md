@@ -4,6 +4,37 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] — 2026-09-02
+
+Homologates EE 2.1.0-e2: insights grow a lifecycle. Seven new BoltDB buckets,
+created on boot; no migration. Full note:
+[docs/releases/v2.1.0.md](docs/releases/v2.1.0.md).
+
+### Added
+
+- **Episodes and history**: every insight opens an episode with a timeline,
+  a 10-minute reopen cooldown and an expired watchdog
+  (`KUBEBOLT_INSIGHT_EXPIRE_TTL`); Insights gains Active | History and an
+  episode detail page; `GET /insights/episodes[/{id}]`.
+- **Mutes** per (cluster, rule, resource) with expiry or until-resolved;
+  critical pierces; audited; `GET/POST/DELETE /insights/mutes`.
+- **Rule policies, global layer**: malfunctions move their bar, expectations
+  their severity (off included); Admin → Insights (Rules · Silenced ·
+  History) with the Ignored 30d column; `GET/PUT/DELETE /admin/insight-policies`.
+- **The shift report** on Home («while you were away») with the deterministic
+  burst clusterer; `GET /insights/shift-report`, `POST /account/dashboard-seen`.
+- **Truncation banner** on the Overview fed by `GET /account/capabilities`
+  (active-series cap).
+- Kobi answers without a connected cluster; knowledge base refreshed.
+
+### Changed
+
+- Overview and insight counts subtract muted insights; `GET /insights` adds
+  `hiddenByProfile` / `profile`.
+- Ingress lists drop the Address column; the drain modal no longer repeats
+  «cannot delete».
+- CI on actions v5 and Node 22; `web/Dockerfile` on `node:22-alpine`.
+
 ## [2.0.6] — 2026-09-02
 
 Homologates EE 2.0.6-e2 (API-only). Drop-in, no migration, no behaviour change

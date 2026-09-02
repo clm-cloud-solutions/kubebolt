@@ -328,6 +328,24 @@ func (m *Manager) AgentRegistry() *channel.AgentRegistry {
 	return m.agentRegistry
 }
 
+// DisplayNameForCluster resolves the display name persisted for a cluster
+// UID (its agent:<uid> context), "" when none. Deliberately works for
+// clusters NO LONGER in the fleet: episode history needs to name the dead
+// (the 2026-08-31 find: 131 expired episodes whose clusters can't be selected
+// anywhere, showing as bare UIDs).
+func (m *Manager) DisplayNameForCluster(ctx context.Context, clusterID string) string {
+	if clusterID == "" {
+		return ""
+	}
+	m.mu.RLock()
+	st := m.storage
+	m.mu.RUnlock()
+	if st == nil {
+		return ""
+	}
+	return st.GetDisplayName(ctx, AgentProxyContextName(clusterID))
+}
+
 // AddAgentProxyCluster registers a cluster reachable only via the
 // kubebolt-agent's outbound channel. The cluster shows up in
 // ListClusters alongside kubeconfig-backed contexts under the

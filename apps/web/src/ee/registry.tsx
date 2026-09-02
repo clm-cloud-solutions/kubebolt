@@ -41,3 +41,10 @@ export const eeRouteScopes: { global: string[]; cluster: string[]; public: strin
   cluster: [],
   public: [],
 }
+
+// Per-environment insight tuning (the Environment tuning tab of Admin →
+// Insights and the «Adjust rule» deep link into it) needs the cluster
+// environment classification, which is Enterprise billing metadata. OSS
+// keeps the global layer only: the tab is hidden and «Adjust rule» lands on
+// the Rules tab.
+export const eeInsightEnvironments = false

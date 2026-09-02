@@ -417,6 +417,11 @@ copilot:
 #     # (2160h). Active insights never expire.
 #     - name: KUBEBOLT_INSIGHTS_RETENTION_HORIZON
 #       value: "168h"
+#     # Expired watchdog (2.1.0): a firing insight episode with no signal for
+#     # longer than this flips to `expired` instead of staying active forever
+#     # after an agent leaves. Go duration.
+#     - name: KUBEBOLT_INSIGHT_EXPIRE_TTL
+#       value: "15m"
 #     - name: KUBEBOLT_FINDINGS_RETENTION_HORIZON
 #       value: "720h"
 #     - name: KUBEBOLT_AUDIT_RETENTION_HORIZON

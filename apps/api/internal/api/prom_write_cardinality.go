@@ -161,6 +161,14 @@ func (c *CardinalityTracker) Allow(tenantID string, tenantOverride *auth.TenantL
 	return true, 0
 }
 
+// Cap returns the effective MaxActiveSeries for the tenant — the ceiling
+// Allow() enforces — so read-side surfaces (the capability row behind the
+// Overview's truncation banner) can show the same number the gate uses.
+func (c *CardinalityTracker) Cap(tenantID string, tenantOverride *auth.TenantLimits) int {
+	_ = tenantID
+	return auth.ResolveLimits(tenantOverride, c.defaults).MaxActiveSeries
+}
+
 // CurrentCount returns the cached count for the tenant + a fresh flag.
 // Returned for testing / observability; the production path uses
 // Allow() which incorporates the cap check.

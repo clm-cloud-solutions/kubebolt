@@ -44,6 +44,11 @@ type Engine struct {
 	clusterID string
 	tenantID  string
 
+	// hiddenByProfile: what the LAST evaluation counted for rules the policy
+	// layer switched off (rule → findings it would have produced). Fase 4
+	// Pantalla 4: the silence is always counted, never invisible.
+	hiddenByProfile map[string]int
+
 	// broadcastGate, when non-nil and false, suppresses this engine's OUTBOUND
 	// signals — both WebSocket broadcasts (insight:new / insight:resolved) AND
 	// the notification hooks (onNew / onResolved → Slack/email). Set by the
@@ -240,20 +245,51 @@ func (e *Engine) hydrateLocked() {
 // marked resolved. Persistence preserves FirstSeen across restarts and
 // recurrences — the whole point of Sprint 0.
 func (e *Engine) Evaluate(state *ClusterState) {
+	// Org-effective rule policy (#44 step 1): thresholds reach the numeric
+	// rules through the state; severity overrides (expectations only — the
+	// store enforces the class contract) are applied here, centrally, and
+	// `off` stops the rule's output entirely. An insight that stops being
+	// produced resolves through the normal reconcile below — a rule turned
+	// off clears its actives instead of freezing them.
+	snap := snapshotFor(e.tenantID, e.clusterID)
+	state.Policies = &snap
+
 	var produced []models.Insight
+	// Rules a policy turned OFF this pass: their clearing actives resolve
+	// with kind=rule_changed, not auto_recovered — the narrative must not
+	// claim a recovery nobody observed.
+	offRules := map[string]bool{}
+	hidden := map[string]int{}
 	for _, rule := range e.rules {
+		sevOverride, hasSev := snap.Severities[rule.ID]
+		if hasSev && sevOverride == SeverityOff {
+			offRules[rule.ID] = true
+			// «Lo apagado por perfil se cuenta, siempre» (#44 / Pantalla 4):
+			// the rule still runs, but ONLY to count — nothing it finds
+			// becomes an insight, an episode, an incident or a credit spend.
+			// A product that omits silently answers "is everything fine?"
+			// with a yes it hasn't earned.
+			if n := len(rule.Evaluate(state)); n > 0 {
+				hidden[rule.ID] = n
+			}
+			continue
+		}
 		results := rule.Evaluate(state)
 		for i := range results {
 			results[i].RuleID = rule.ID
 			results[i].TenantID = e.tenantID
 			results[i].ClusterID = e.clusterID
 			results[i].Fingerprint = Fingerprint(e.tenantID, e.clusterID, rule.ID, results[i].Resource)
+			if hasSev {
+				results[i].Severity = sevOverride
+			}
 		}
 		produced = append(produced, results...)
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	e.hiddenByProfile = hidden
 
 	// One-shot, on the first evaluation rather than at construction: SetStore may
 	// land AFTER the engine is built (the async-connect boot race documented on
@@ -291,7 +327,11 @@ func (e *Engine) Evaluate(state *ClusterState) {
 			}
 			e.insights[i].Resolved = true
 			e.insights[i].ResolvedAt = &now
-			e.persistResolved(e.insights[i], now)
+			kind := ResolutionAutoRecovered
+			if offRules[e.insights[i].RuleID] {
+				kind = ResolutionRuleChanged
+			}
+			e.persistResolved(e.insights[i], now, kind)
 			e.broadcast(websocket.InsightResolved, e.insights[i])
 			// Always-on (W2 §10): notify regardless of active/parked — an insight
 			// resolving on ANY connected cluster fires its notification. The WS
@@ -380,29 +420,59 @@ func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bo
 			Namespace:   ins.Namespace,
 			FirstSeen:   now,
 		}
+		// Stamp content BEFORE the sink fires — it persists rec verbatim.
+		// In-vivo find 31-ago: brand-new identities emitted EpisodeOpened
+		// with empty severity/title (the stamping lived after this whole
+		// branch), so their episode rows showed a blank MAX SEVERITY chip.
+		stampRecordContent(rec, ins)
 		appendOccurrence(rec, occID, now)
 		ins.FirstSeen = now
 		ins.ID = occID
+		if s := sink(); s != nil {
+			s.EpisodeOpened(rec, occID, now, "")
+		}
 	} else {
-		// Known identity — recurred or survived a restart.
+		// Known identity — recurred or survived a restart. Same rule: the
+		// sink events below must carry the CURRENT content, not last
+		// evaluation's.
+		stampRecordContent(rec, ins)
 		ins.FirstSeen = rec.FirstSeen
-		if rec.Status == "active" && rec.CurrentOccurrenceID != "" {
+		switch {
+		case rec.Status == "active" && rec.CurrentOccurrenceID != "":
 			// Continuation after restart: keep the open occurrence and
 			// suppress the new-insight notification.
 			ins.ID = rec.CurrentOccurrenceID
 			freshEpisode = false
-		} else {
-			// Reopen: a new episode on the existing identity.
+		case rec.Status == "resolved" && rec.ResolvedAt != nil && now.Sub(*rec.ResolvedAt) < ReopenCooldown:
+			// A1 anti-flapping: re-fire inside the cooldown is the SAME
+			// episode flapping. flap_count++, no new notification — an
+			// intermittent crashloop is one episode with N flaps, not N
+			// rows and N pings.
+			if id, flaps := flapReopen(rec, now); id != "" {
+				ins.ID = id
+				freshEpisode = false
+				if s := sink(); s != nil {
+					s.EpisodeFlapped(rec, id, now, flaps)
+				}
+				break
+			}
+			fallthrough
+		default:
+			// New episode on the existing identity. A2: a reopen after
+			// `expired` links to the expired episode — there was a real
+			// observation gap, and the link says so.
+			prevID := ""
+			if rec.Status == EpisodeExpired && len(rec.Occurrences) > 0 {
+				prevID = rec.Occurrences[len(rec.Occurrences)-1].ID
+			}
 			appendOccurrence(rec, occID, now)
 			ins.ID = occID
+			if s := sink(); s != nil {
+				s.EpisodeOpened(rec, occID, now, prevID)
+			}
 		}
 	}
 
-	rec.Severity = ins.Severity
-	rec.Category = ins.Category
-	rec.Title = ins.Title
-	rec.Message = ins.Message
-	rec.Suggestion = ins.Suggestion
 	rec.Status = "active"
 	rec.ResolvedAt = nil
 	rec.LastSeen = now
@@ -410,6 +480,18 @@ func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bo
 		log.Printf("insights: persist new %s failed: %v", ins.Fingerprint, err)
 	}
 	return ins, freshEpisode
+}
+
+// stampRecordContent copies the evaluation's CURRENT content onto the record.
+// It must run before any episode-sink event fires — the sink persists rec
+// verbatim, and an event carrying stale (or zero) content becomes a wrong
+// row in insight_episodes.
+func stampRecordContent(rec *InsightRecord, ins models.Insight) {
+	rec.Severity = ins.Severity
+	rec.Category = ins.Category
+	rec.Title = ins.Title
+	rec.Message = ins.Message
+	rec.Suggestion = ins.Suggestion
 }
 
 // persistActive refreshes a still-active insight's record (content +
@@ -432,6 +514,14 @@ func (e *Engine) persistActive(ins *models.Insight, now time.Time) {
 		}
 		appendOccurrence(rec, ins.ID, now)
 	}
+	if s := sink(); s != nil && rec.CurrentOccurrenceID != "" {
+		if rec.Severity != "" && rec.Severity != ins.Severity {
+			// Escalation / de-escalation while firing: max_severity moves
+			// and the transition is what later pierces mutes (#54).
+			s.EpisodeSeverityChanged(rec, rec.CurrentOccurrenceID, rec.Severity, ins.Severity, now)
+		}
+		s.EpisodeTouched(rec, rec.CurrentOccurrenceID, now)
+	}
 	rec.Severity = ins.Severity
 	rec.Category = ins.Category
 	rec.Title = ins.Title
@@ -445,8 +535,20 @@ func (e *Engine) persistActive(ins *models.Insight, now time.Time) {
 	}
 }
 
-// persistResolved marks an insight's identity resolved in the store.
-func (e *Engine) persistResolved(ins models.Insight, now time.Time) {
+// persistResolved marks an insight's identity resolved in the store and
+// reports the episode's resolution (with its kind) to the sink.
+func (e *Engine) persistResolved(ins models.Insight, now time.Time, kind string) {
+	if s := sink(); s != nil && ins.ID != "" {
+		s.EpisodeResolved(&InsightRecord{
+			Fingerprint: ins.Fingerprint,
+			TenantID:    e.tenantID,
+			ClusterID:   e.clusterID,
+			RuleID:      ins.RuleID,
+			Resource:    ins.Resource,
+			Namespace:   ins.Namespace,
+			Severity:    ins.Severity,
+		}, ins.ID, now, kind)
+	}
 	if e.store == nil {
 		return
 	}
@@ -508,6 +610,19 @@ func (e *Engine) GetInsights(severity string, resolved bool) []models.Insight {
 }
 
 // GetAllInsights returns all unresolved insights.
+// HiddenByProfile returns the last evaluation's counts for rules the policy
+// layer switched off (rule → findings it would have produced). The Pantalla-4
+// banner reads this: the profile's silence stays visible as a number.
+func (e *Engine) HiddenByProfile() map[string]int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	out := make(map[string]int, len(e.hiddenByProfile))
+	for k, v := range e.hiddenByProfile {
+		out[k] = v
+	}
+	return out
+}
+
 func (e *Engine) GetAllInsights() []models.Insight {
 	return e.GetInsights("", false)
 }

@@ -12,6 +12,7 @@ export const ADMIN_ROUTES: { path: string }[] = [
   { path: '/admin/access' },
   { path: '/admin/agents' },
   { path: '/admin/ai' },
+  { path: '/admin/insights' },
   { path: '/admin/system' },
   { path: '/admin/api-tokens' },
 ]
