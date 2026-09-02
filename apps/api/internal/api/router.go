@@ -433,6 +433,19 @@ func NewRouter(
 			// genuine no-connector 503.
 			r.Get("/cluster/overview", h.getClusterOverview)
 
+			// Datos POR CLUSTER a nivel de ORGANIZACIÓN, fuera de requireConnector.
+			// Todo lo que va aquí dentro llega con el alcance de cluster ya resuelto
+			// en el contexto (cluster_scope.go): en OSS no estrecha nada, pero un
+			// handler nuevo hereda el filtro en vez de tener que acordarse de pedirlo.
+			r.Group(func(r chi.Router) {
+				r.Use(h.WithClusterScope)
+
+				// Estado REAL de cada cluster para la flota. Lee el store de
+				// insights —que no necesita connector— en vez del engine, que
+				// sí. Ver insights_summary.go.
+				r.Get("/insights/summary", h.handleInsightsSummary)
+			})
+
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
 				r.Use(h.requireConnector)

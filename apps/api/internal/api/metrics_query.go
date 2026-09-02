@@ -697,3 +697,20 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
 }
+
+// allowedClusterIDs returns the cluster_ids this caller may read, or nil when
+// no narrowing applies. OSS is single-org and has no team ownership of
+// clusters, so nothing ever narrows; the EE build layers team scoping on top
+// (a non-admin sees only agent-proxy clusters owned by a team they belong to).
+// Kept as the single seam cluster_scope.go consults so the middleware and
+// every handler behind it stay byte-identical across editions.
+func (h *handlers) allowedClusterIDs(r *http.Request) ([]string, bool) {
+	if !auth.MultiTenantEnabled {
+		return nil, false
+	}
+	org := auth.ContextTenantID(r)
+	if org == "" || org == auth.DefaultTenantName {
+		return nil, false
+	}
+	return nil, false
+}
