@@ -11,7 +11,7 @@
 
 export type KobiSigilState =
   | 'static' // semantic accent color, no animation
-  | 'watching' // emerald — idle, monitoring
+  | 'watching' // brand green — idle, monitoring (same hue as static)
   | 'investigating' // amber — active streaming / tool calls
   | 'awaiting' // sky — proposal pending operator action
 

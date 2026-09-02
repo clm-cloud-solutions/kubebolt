@@ -119,7 +119,12 @@
      600 would drop below the 3:1 floor). Watching sits on 600 — user
      QA flagged the 700 forest green as off-brand at hero size; #059669
      (= st-ok light) keeps ≥3.5:1 on its tile and matches the product
-     green family. Static uses the deep brand green. */
+     green family. Static uses the deep brand green.
+     NOTE: dark now runs watching == static == #00e07a (one brand green).
+     Light does not, on purpose: matching it would send watching to the
+     700 this QA note rejected, and the brand's paper accent #00b864 only
+     reaches 2.61:1 on white, under the 3:1 floor. Open question is whether
+     to instead move static down to #059669 so the rule holds here too. */
   --kobi-sigil-static: #009a54;
   --kobi-sigil-watching: #059669;
   --kobi-sigil-investigating: #b45309;
@@ -173,7 +178,7 @@
   --kobi-ink: #06130c;
   /* Sigil — 400 tier on dark (as shipped). */
   --kobi-sigil-static: #00e07a;
-  --kobi-sigil-watching: #34d399;
+  --kobi-sigil-watching: #00e07a;
   --kobi-sigil-investigating: #fbbf24;
   --kobi-sigil-awaiting: #38bdf8;
   --kobi-st-ok-rgb: 52 211 153;
