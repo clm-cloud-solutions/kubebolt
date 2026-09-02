@@ -310,7 +310,18 @@ GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
 
 `release` and `publish-chart` both have `image-scan` in `needs:` — a failed scan blocks chart publication and the GitHub Release. Note that the images themselves are already on GHCR by the time `image-scan` runs (push happens during build); a failure means **no Release is cut, but you must manually delete the orphaned image tags from GHCR Packages**, then bump the dependency and retag.
 
-**Suppressions** live in `.trivyignore` at the repo root — every entry needs an owner, a justification, and a remove-by date. Don't grow that file to push a release out the door; bump the dependency instead.
+**Suppressions** live in TWO files at the repo root, and which one applies depends on who builds the image:
+
+| File | Used by | Why it exists |
+|------|---------|---------------|
+| `.trivyignore` | `image-scan` — **our** images (api, web, single-container) | A CVE here has a fix we can apply. Keep it **empty of entries**: bump the dependency instead. |
+| `.trivyignore-thirdparty` | `preflight-third-party-scan` in release.yml **and** `pr-image-scan.yml` — victoria-metrics, vmagent | We don't build these binaries, so the only options are waiting for the vendor's rebuild or dropping the dependency. |
+
+The split landed in 2.0.1-e2 after a Go stdlib advisory hit both at once: our binary could be fixed by bumping the toolchain, VictoriaMetrics' could not. With one shared file, waiving it for the vendor would have muted it for us too.
+
+Every entry in either file still needs an owner, a justification, and a remove-by date. Don't grow them to push a release out the door.
+
+> `pr-image-scan.yml` is the early-warning copy of the release preflight and its header says "keep them in sync" — that includes **which waiver file each names**. Pointing only one of them at the new file is exactly how the split first shipped broken.
 
 **Renovate** (`renovate.json`) groups VictoriaMetrics bumps across `docker-compose.yml` and `values.yaml` into a single PR via a regex custom manager, since the helm values file isn't a stock Renovate manager target. The two pin sites are coupled — drift trips the preflight gate.
 

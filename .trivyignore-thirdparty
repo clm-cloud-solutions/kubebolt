@@ -1,0 +1,51 @@
+# Trivy exceptions for THIRD-PARTY images KubeBolt bundles but does not build.
+#
+# Used ONLY by the two `preflight-third-party-scan` steps in
+# .github/workflows/release.yml (victoria-metrics and vmagent). KubeBolt's own
+# images — api, web, single-container — are scanned by `image-scan` against the strict
+# `.trivyignore`, which stays empty of entries.
+#
+# The split exists because the two cases are not the same problem. When a CVE
+# lands in a dependency we compile, the answer is to bump and rebuild, and the
+# gate should keep failing until we do. When it lands inside a vendor's published
+# binary, we cannot fix it — only wait for their rebuild or drop the dependency.
+# One shared file would let the second silence the first.
+#
+# Every entry still needs an owner, a justification, and a remove-by date, and
+# the same rule applies: this is not a way to push an urgent release out.
+#
+# Format:
+#   CVE-YYYY-NNNNN  # YYYY-MM-DD <owner> — justification + remove-by date
+
+# --- Go stdlib in victoria-metrics / vmagent (no upstream rebuild) -----------
+# Applies to the two `preflight-third-party-scan` steps in release.yml and to
+# their early-warning copy in pr-image-scan.yml
+# (docker.io/victoriametrics/victoria-metrics and vmagent, pinned at
+# v1.148.0-scratch in deploy/helm/kubebolt/values.yaml + docker-compose.yml +
+# the kubebolt-agent chart). Nothing below is present in KubeBolt's own images:
+# api, web and the single-container binary build on Go 1.26.6, which fixes every
+# CVE listed here, and `image-scan` keeps failing for anything that reaches them.
+#
+# Go stdlib in victoria-metrics / vmagent (no upstream rebuild). v1.149.0-scratch
+# is newer but built with the same Go 1.26.5 and carries the SAME set, so moving
+# to it buys nothing; the pin stays at v1.148.0-scratch until VM publishes a
+# Go 1.26.6+ build. Exposure: VM runs in-cluster and its HTTP surface is reachable
+# only from the KubeBolt API over the pod network, never through the ingress —
+# that bounds the two that are not merely DoS (unencrypted HTTP/2, html/template
+# XSS which needs VM's own web UI). Mitigation, not a fix.
+#
+# The entries mirror kubebolt-ee's third-party waiver file verbatim — same owner,
+# same justification, same remove-by — so OSS and EE stay in sync.
+#
+# REMOVE-BY 2026-09-15 — check whether VM has published a Go 1.26.6+ build, bump
+# the pin in values.yaml + docker-compose.yml + the agent chart together (the
+# preflight fails on drift), and delete every line below. Do not renew without
+# re-checking; the whole point is that it expires.
+CVE-2026-39821  # 2026-08-14 lmaina — x/net/idna, privilege escalation via Punycode label processing. Remove by 2026-09-15.
+CVE-2026-46600  # 2026-08-14 lmaina — x/net/dns/dnsmessage, DoS via invalid DNS record parsing. Remove by 2026-09-15.
+CVE-2026-33818  # 2026-08-15 lmaina — encoding/asn1, DoS. Remove by 2026-09-15.
+CVE-2026-56853  # 2026-08-15 lmaina — net/http, unencrypted HTTP/2. Ingress-bounded, see above. Remove by 2026-09-15.
+CVE-2026-56858  # 2026-08-15 lmaina — html/template, XSS. Needs VM's web UI reachable; it is not. Remove by 2026-09-15.
+CVE-2026-56859  # 2026-08-15 lmaina — encoding/xml, DoS via XML decoding. Remove by 2026-09-15.
+CVE-2026-56860  # 2026-08-15 lmaina — net/url, DoS. Remove by 2026-09-15.
+CVE-2026-56862  # 2026-08-15 lmaina — crypto/tls, DoS. Remove by 2026-09-15.

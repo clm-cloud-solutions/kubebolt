@@ -178,18 +178,64 @@ func (c *Connector) podWorkloadOwner(namespace, name string) (string, string, bo
 // `agent:<uid>`. Any handler that starts from stored data and needs a live
 // connector has to cross that seam.
 //
-// Falls back to the input unchanged for a direct kubeconfig context, whose
-// name is arbitrary and whose UID lives in the persisted map — that case
-// already resolves correctly because the caller's own context name is used.
-func (m *Manager) ContextNameForClusterID(clusterID string) string {
+// TWO paths, because a cluster reaches the Manager two ways and only one of
+// them encodes its UID in the context name.
+//
+//	agent-proxy    context is `agent:<uid>`  → the in-memory map answers
+//	DIRECT         context is `in-cluster` /
+//	               a kubeconfig name         → only the persisted UID map answers
+//
+// The second path was missing, and the comment that used to sit here explains
+// how it was missed: it claimed a direct context "already resolves correctly
+// because the caller's own context name is used". True for a caller that STARTS
+// from the context name. Not true for one that starts from a stored UID — the
+// finding-detail panel — which has no context name to fall back on.
+//
+// It surfaces on the self-monitored cluster, where the backend deliberately
+// skips agent-proxy registration for its own cluster_id to avoid duplicating it
+// (main.go, cluster-validation BUG-3). Correct behaviour, but it means the
+// in-memory map can NEVER hold the platform's own cluster, so before this the
+// lookup always fell through. In SaaS that is only the operator's org; in EE
+// self-hosted it is the customer's MAIN cluster, where every finding detail
+// claimed "cluster not connected" about a cluster that was working.
+//
+// Reads AllClusterUIDs rather than adding a store method: it already exists,
+// already carries (context → uid), and in EE already runs org-scoped under RLS.
+// orgID is therefore load-bearing — the same reason SetClusterUID writes under
+// the runtime's real org (finding #17). Passing the wrong one returns nothing.
+//
+// Still falls back to the input unchanged, which is its own defect: a UID shaped
+// like a context name is a plausible lie rather than an error, and callers
+// disagree about it — account.go defends with `!= clusterID`, finding_detail.go
+// did not. Changing that is a separate commit across all three callers.
+func (m *Manager) ContextNameForClusterID(orgID, clusterID string) string {
 	if clusterID == "" {
 		return ""
 	}
+	// Snapshot under the lock, then release BEFORE the store call: AllClusterUIDs
+	// is a Postgres round-trip in EE, and holding the manager's lock across it
+	// would stall cluster switches and agent registrations for its duration.
 	m.mu.RLock()
-	defer m.mu.RUnlock()
 	for contextName, cid := range m.agentProxyContexts {
 		if cid == clusterID {
+			m.mu.RUnlock()
 			return contextName
+		}
+	}
+	// OSS is single-tenant: the store context carries no org, so orgID is
+	// accepted for signature parity with the EE build (where the persisted UID
+	// map is RLS-scoped and the wrong org finds nothing) and otherwise unused.
+	_ = orgID
+	store, ctx := m.storage, m.storeCtx()
+	m.mu.RUnlock()
+
+	if store != nil {
+		if uids, err := store.AllClusterUIDs(ctx); err == nil {
+			for contextName, uid := range uids {
+				if uid == clusterID {
+					return contextName
+				}
+			}
 		}
 	}
 	return clusterID

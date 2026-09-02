@@ -9,6 +9,12 @@ name: PR — third-party image scan
 # This workflow is a strict subset of release.yml's
 # preflight-third-party-scan job — keep them in sync. The release
 # pipeline is still authoritative; this is the early-warning copy.
+#
+# "In sync" includes the WAIVER FILE, which is the half that got missed when the
+# split landed: release.yml was pointed at `.trivyignore-thirdparty` and this copy
+# was left on `.trivyignore`, so the PR gate kept failing on findings the release
+# gate had already waived. Both must name the same file, or the early-warning copy
+# stops being a copy and starts being a second, stricter policy nobody declared.
 
 on:
   pull_request:
@@ -16,6 +22,7 @@ on:
       - 'deploy/helm/kubebolt/values.yaml'
       - 'deploy/docker-compose.yml'
       - '.trivyignore'
+      - '.trivyignore-thirdparty'
       - '.github/workflows/pr-image-scan.yml'
       - '.github/workflows/release.yml'
   workflow_dispatch:
@@ -50,6 +57,10 @@ jobs:
             exit 1
           fi
 
+      # `.trivyignore-thirdparty`, NOT `.trivyignore` — same reasoning as the
+      # release preflight: we do not build this binary, so a CVE inside it can
+      # only be waited out, while one in an image we compile must keep failing.
+      # The strict file stays reserved for our own images.
       - name: Trivy scan VictoriaMetrics image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -58,10 +69,13 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
-          trivyignores: .trivyignore
+          trivyignores: .trivyignore-thirdparty
         env:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
+      # Deliberately passes NO ignore file: it never gates (no exit-code) and only
+      # feeds the dashboard, where a waived CVE is still worth seeing — the waiver
+      # says "we cannot fix this yet", not "this is not there".
       - name: Trivy scan VictoriaMetrics image (SARIF)
         if: always()
         uses: aquasecurity/trivy-action@v0.36.0
