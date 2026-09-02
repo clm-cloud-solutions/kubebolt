@@ -10,6 +10,53 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 )
 
+// queryUsageInScope lee las sesiones y descarta las de clusters que el llamante
+// no tiene derecho a ver.
+//
+// HOY NO ESTRECHA NADA, y conviene decirlo en vez de dejar creer que arregla una
+// fuga: estas tres rutas son admin-de-organización (RequireRole(admin)), y un
+// admin de org lee toda su organización por regla deliberada —la misma que
+// aplica /clusters—. Existe para que ampliar el acceso a esta vista no amplíe
+// los datos en silencio: el día que un admin de equipo tenga pestaña propia, la
+// diferencia entre «se ve el gasto de mi equipo» y «se ve el de todos» tiene
+// que estar ya resuelta. El coste de tenerlo puesto es un early-return.
+//
+// LAS DOS IDENTIDADES. `SessionRecord.Cluster` guarda el NOMBRE DE CONTEXTO
+// activo cuando ocurrió la sesión; el alcance por equipo trabaja con los UID.
+// Compararlos a pelo no da un fallo ruidoso: da CERO filas para todo el que esté
+// estrechado, y una página vacía parece un arreglo que funciona. Por eso se
+// canonicaliza (CanonicalClusterID).
+//
+// OSS es single-tenant: el store de sesiones no lleva org, así que no hay
+// rechazo por org irresoluble (el EE lo tiene, porque allí la cadena vacía
+// significaría «todas las orgs»).
+func (h *handlers) queryUsageInScope(r *http.Request, from, to time.Time) ([]copilot.SessionRecord, error) {
+	scope := ClusterScopeFrom(r.Context())
+	if scope.EntitledToNothing() {
+		return nil, nil
+	}
+	recs, err := h.copilotUsage.Query(from, to, 0)
+	if err != nil || !scope.Narrowed() {
+		return recs, err
+	}
+	// Memo por contexto: una ventana de 30 días trae muchas sesiones y casi todas
+	// repiten un puñado de clusters. Sin esto se resolvería el mismo nombre
+	// cientos de veces, y CanonicalClusterID consulta almacenamiento.
+	canon := make(map[string]string, 8)
+	out := make([]copilot.SessionRecord, 0, len(recs))
+	for _, rec := range recs {
+		id, ok := canon[rec.Cluster]
+		if !ok {
+			id = h.manager.CanonicalClusterID(r.Context(), rec.Cluster)
+			canon[rec.Cluster] = id
+		}
+		if scope.May(id) {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
 // parseRange maps "24h" | "7d" | "30d" into a time window ending now.
 // Defaults to 7d.
 func parseRange(q string) (from, to time.Time) {
@@ -225,7 +272,7 @@ func (h *handlers) handleCopilotUsageSummary(w http.ResponseWriter, r *http.Requ
 	from, to := parseRange(rng)
 	groupBy := r.URL.Query().Get("groupBy")
 
-	records, err := h.copilotUsage.Query(from, to, 0)
+	records, err := h.queryUsageInScope(r, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -302,7 +349,7 @@ func (h *handlers) handleCopilotUsageTimeseries(w http.ResponseWriter, r *http.R
 		}
 	}
 
-	records, err := h.copilotUsage.Query(from, to, 0)
+	records, err := h.queryUsageInScope(r, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -352,7 +399,7 @@ func (h *handlers) handleCopilotUsageSessions(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	records, err := h.copilotUsage.Query(from, to, 0)
+	records, err := h.queryUsageInScope(r, from, to)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

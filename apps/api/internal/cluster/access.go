@@ -3,6 +3,7 @@ package cluster
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/client-go/rest"
@@ -114,7 +115,19 @@ func (a *ClusterAccess) Name() string {
 // helper because both Manager.AddAgentProxyCluster (write side) and
 // ListClusters (read side) need to agree on the format.
 func AgentProxyContextName(clusterID string) string {
-	return "agent:" + clusterID
+	return AgentProxyContextPrefix + clusterID
+}
+
+// AgentProxyContextPrefix is the marker that makes an agent-proxy context name
+// self-describing: the kube-system cluster_id follows it verbatim.
+const AgentProxyContextPrefix = "agent:"
+
+// RawClusterID strips the agent-proxy context prefix, returning the underlying
+// kube-system cluster_id. A non-agent-proxy context name (kubeconfig,
+// in-cluster) is returned unchanged. Use this at a boundary that keys by the
+// RAW cluster_id while the KubeBolt UI still speaks the context name.
+func RawClusterID(contextName string) string {
+	return strings.TrimPrefix(contextName, AgentProxyContextPrefix)
 }
 
 // agentProxyAPIServerURL is the synthetic Host that goes into the

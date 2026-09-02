@@ -507,6 +507,12 @@ type Rule struct {
 GET  /clusters
   Response: [{ name, context, server, active }]
 
+GET  /clusters/names
+  Response: { "<context-name>": "<display name>", "<cluster_uid>": "<display name>", ... }
+  Every cluster the org has ever registered, de-registered ones included — the
+  durable display-name map, keyed by BOTH identities so Kobi session rows
+  (context name) and other per-cluster history (UID) resolve to a label.
+
 POST /clusters/switch
   Body: { context: "context-name" }
   Response: { status: "ok", context: "context-name" }
