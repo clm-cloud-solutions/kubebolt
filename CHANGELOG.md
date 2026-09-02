@@ -4,6 +4,48 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.23.2] — 2026-09-02
+
+Maintenance release closing the 1.23 line before OSS tracks KubeBolt EE 2.x
+release by release. Drop-in, no schema change, no migration. Full note:
+[docs/releases/v1.23.2.md](docs/releases/v1.23.2.md).
+
+### Added
+
+- Cluster Map progressive disclosure: collapsible namespaces, focus mode,
+  selectable Traffic window with a stale-vs-absent empty state, full-bleed canvas.
+- Kobi Copilot pricing: Sonnet 5 at $2/$10 permanent, GPT-5.6 (sol / terra / luna).
+- OpenShift guide (`docs/guides/openshift.md`) and incident-scenario demo manifests
+  (`deploy/test/incident-scenarios.yaml`).
+
+### Changed
+
+- Kobi sigil resting / watching states use the brand green in both themes (first
+  slice of the Split Bolt brand).
+- `docs/COMPATIBILITY.md` current row: KubeBolt 1.10.x → 1.23.x ↔ agent 1.0.x → 1.4.x.
+- `deploy/helm/kubebolt-agent/Chart.yaml` aligned to the released agent 1.4.0.
+
+### Security
+
+- Go **1.26.6** on every build path (`go.mod` ×3, `ci.yml`, `codeql.yml`,
+  `release.yml` `build-binaries`): the krew / Homebrew binaries and the
+  single-container image no longer carry the 2026-08 stdlib wave
+  (CVE-2026-33818, -56853, -56858, -56859, -56860, -56862).
+- `golang.org/x/crypto` 0.55.0 (CVE-2026-56854); `golang.org/x/mod` 0.40.0
+  (CVE-2026-56864 / -56865); `google.golang.org/grpc` 1.83.1 (CVE-2026-84304) —
+  the last two are in the api binary and would have failed the release image scan.
+- Bundled VictoriaMetrics / vmagent `v1.148.0-scratch`: eight HIGH stdlib CVEs with
+  no upstream rebuild waived in `.trivyignore` (owner, justification, remove-by
+  2026-09-15; exposure bounded to the pod network).
+
+## [1.10.0 … 1.23.1] — 2026-05-18 … 2026-08-04
+
+This file was not maintained between 1.9.0 and 1.23.1. The per-version notes in
+[`docs/releases/`](docs/releases/) (`v1.10.0.md` … `v1.23.1.md`) are the record
+for that span, including the 1.22.0 note's version map of everything homologated
+from KubeBolt EE 1.17.2 → 1.22.0. From 1.23.2 on, every release gets an entry here
+again.
+
 ## [1.9.0] — 2026-05-08
 
 The k8s-operations release. The 1.8.x cycle was dedicated to
