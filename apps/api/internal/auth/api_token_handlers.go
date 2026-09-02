@@ -128,9 +128,18 @@ func (h *Handlers) CreateAPIToken(w http.ResponseWriter, r *http.Request) {
 	createdBy := ContextUserID(r)
 	plaintext, tok, err := h.apiTokens.Issue(r.Context(), typ, role, scopes, req.Label, createdBy, ttl)
 	if err != nil {
+		auditAdmin(r, "issue_api_token", "api_token", req.Label, map[string]any{"type": typ, "role": role}, err)
 		respondError(w, http.StatusInternalServerError, "issue api token")
 		return
 	}
+	// The token id, never the plaintext. Type/role/scopes are what a reviewer
+	// needs to judge whether the grant was appropriate.
+	auditAdmin(r, "issue_api_token", "api_token", tok.ID, map[string]any{
+		"label":  req.Label,
+		"type":   typ,
+		"role":   role,
+		"scopes": scopes,
+	}, nil)
 	respondJSON(w, http.StatusCreated, createAPITokenResponse{
 		Token:    plaintext,
 		APIToken: toAPITokenView(*tok),
@@ -145,6 +154,7 @@ func (h *Handlers) DeleteAPIToken(w http.ResponseWriter, r *http.Request) {
 	}
 	id := chi.URLParam(r, "id")
 	if err := h.apiTokens.Revoke(r.Context(), id); err != nil {
+		auditAdmin(r, "revoke_api_token", "api_token", id, nil, err)
 		if err == ErrTokenNotFound {
 			respondError(w, http.StatusNotFound, "token not found")
 			return
@@ -154,5 +164,6 @@ func (h *Handlers) DeleteAPIToken(w http.ResponseWriter, r *http.Request) {
 	}
 	// Return a JSON body (not 204) so the web client's deleteRequest helper,
 	// which always parses JSON, works uniformly (mirrors agent-token revoke).
+	auditAdmin(r, "revoke_api_token", "api_token", id, nil, nil)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
 }

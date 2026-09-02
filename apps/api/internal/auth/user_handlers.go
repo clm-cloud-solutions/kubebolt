@@ -151,9 +151,14 @@ func (h *Handlers) CreateUser(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.store.CreateUser(r.Context(), req.Username, req.Email, req.Name, req.Password, req.Role)
 	if err != nil {
+		auditAdmin(r, "create_user", "user", req.Username, map[string]any{"role": req.Role}, err)
 		respondError(w, http.StatusConflict, err.Error())
 		return
 	}
+	auditAdmin(r, "create_user", "user", user.ID, map[string]any{
+		"username": req.Username,
+		"role":     req.Role,
+	}, nil)
 
 	// Materialize the new user's team membership per edition (see enrollNewUser).
 	h.enrollNewUser(r.Context(), user.ID, req.TeamID, req.TeamRole)
@@ -262,10 +267,17 @@ func (h *Handlers) UpdateUser(w http.ResponseWriter, r *http.Request) {
 
 	user, err := h.store.UpdateUser(r.Context(), id, req.Username, req.Email, req.Name, req.Role)
 	if err != nil {
+		auditAdmin(r, "update_user", "user", id, map[string]any{"role": req.Role}, err)
 		respondError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
+	// The role is the field worth reading back months later: this is the record
+	// of who granted whom their privileges.
+	auditAdmin(r, "update_user", "user", id, map[string]any{
+		"username": req.Username,
+		"role":     req.Role,
+	}, nil)
 	respondJSON(w, http.StatusOK, user.ToResponse())
 }
 
@@ -296,6 +308,7 @@ func (h *Handlers) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.UpdatePassword(r.Context(), id, req.Password); err != nil {
+		auditAdmin(r, "reset_password", "user", id, nil, err)
 		respondError(w, http.StatusNotFound, "user not found")
 		return
 	}
@@ -303,6 +316,10 @@ func (h *Handlers) ResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Invalidate all refresh tokens for this user
 	h.store.DeleteUserRefreshTokens(r.Context(), id)
 
+	// No params at all — an admin resetting someone else's password is exactly
+	// the event where the trail must record that it happened and nothing about
+	// what was set.
+	auditAdmin(r, "reset_password", "user", id, nil, nil)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -346,9 +363,16 @@ func (h *Handlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.store.DeleteUser(r.Context(), id); err != nil {
+		auditAdmin(r, "delete_user", "user", id, nil, err)
 		respondError(w, http.StatusInternalServerError, "failed to delete user")
 		return
 	}
+	// The username and role are captured because the user row is gone: without
+	// them the record names an id that nothing can resolve any more.
+	auditAdmin(r, "delete_user", "user", id, map[string]any{
+		"username": user.Username,
+		"role":     string(user.Role),
+	}, nil)
 
 	// Drop every team membership so no orphan lingers.
 	for _, m := range memberships {

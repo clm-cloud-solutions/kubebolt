@@ -290,6 +290,10 @@ func NewRouter(
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
+				// Not cluster scoped: the target IS the cluster and it is named
+				// in the record, so stamping the *active* one would point at a
+				// different cluster than the one being changed.
+				r.Use(h.auditAdminRoutes("cluster", false))
 				r.Post("/clusters", h.handleAddCluster)
 				r.Delete("/clusters/{context}", h.handleDeleteCluster)
 				r.Put("/clusters/{context}/rename", h.handleRenameCluster)
@@ -356,6 +360,11 @@ func NewRouter(
 			if settingsRuntime != nil {
 				r.Route("/admin/settings", func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
+					// Subtree-wide, so a settings endpoint added later is
+					// audited without anyone having to remember. Not cluster
+					// scoped: settings belong to the install, not to whichever
+					// cluster the operator happened to have selected.
+					r.Use(h.auditAdminRoutes("settings", false))
 					r.Get("/copilot", h.handleGetSettingsCopilot)
 					r.Put("/copilot", h.handlePutSettingsCopilot)
 					r.Post("/copilot/reset", h.handleResetSettingsCopilot)
@@ -498,6 +507,9 @@ func NewRouter(
 				// even with no cluster connected.
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
+					// Cluster scoped: installing an integration happens ON the
+					// connected cluster, so the stamp is real information.
+					r.Use(h.auditAdminRoutes("integration", true))
 					r.Post("/integrations/{id}/install", h.handleInstallIntegration)
 					r.Get("/integrations/{id}/config", h.handleGetIntegrationConfig)
 					r.Put("/integrations/{id}/config", h.handlePutIntegrationConfig)

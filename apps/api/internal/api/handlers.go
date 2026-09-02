@@ -564,7 +564,13 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The applied document is NOT recorded, only its size. A manifest routinely
+	// carries Secret data, and an audit trail that copies it turns the
+	// compliance record into a second, longer-lived place secrets live.
+	yamlParams := map[string]any{"bytes": len(body)}
+
 	if err := conn.ApplyResourceYAML(resourceType, namespace, name, body); err != nil {
+		auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, err)
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
 			respondError(w, http.StatusForbidden, errMsg)
@@ -578,6 +584,7 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, nil)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 

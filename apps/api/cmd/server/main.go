@@ -1205,74 +1205,21 @@ func main() {
 		}()
 	}
 
-	// Insights retention (Sprint 0). Hourly prune of RESOLVED insight
-	// records older than the horizon; active insights never expire. The
-	// horizon is read from KUBEBOLT_INSIGHTS_RETENTION_HORIZON (default 7d)
-	// each tick, so a restart picks up a change without a code edit.
-	if insightStore != nil {
-		go func() {
-			ticker := time.NewTicker(1 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-agentCtx.Done():
-					return
-				case <-ticker.C:
-					horizon := 7 * 24 * time.Hour
-					if v := os.Getenv("KUBEBOLT_INSIGHTS_RETENTION_HORIZON"); v != "" {
-						if d, err := time.ParseDuration(v); err == nil && d > 0 {
-							horizon = d
-						}
-					}
-					removed, err := insightStore.Prune(time.Now().UTC().Add(-horizon))
-					if err != nil {
-						slog.Warn("insights prune failed", slog.String("error", err.Error()))
-						continue
-					}
-					if removed > 0 {
-						slog.Info("insights pruned",
-							slog.Int("removed", removed),
-							slog.Duration("horizon", horizon),
-						)
-					}
-				}
-			}
-		}()
-	}
-
-	// Action-audit retention (Sprint 1). Hourly prune of audit records older
-	// than KUBEBOLT_AUDIT_RETENTION_HORIZON (default 90d) — long enough for a
-	// quarter of compliance history without unbounded growth.
-	if actionAuditStore != nil {
-		go func() {
-			ticker := time.NewTicker(1 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-agentCtx.Done():
-					return
-				case <-ticker.C:
-					horizon := 90 * 24 * time.Hour
-					if v := os.Getenv("KUBEBOLT_AUDIT_RETENTION_HORIZON"); v != "" {
-						if d, err := time.ParseDuration(v); err == nil && d > 0 {
-							horizon = d
-						}
-					}
-					removed, err := actionAuditStore.Prune(time.Now().UTC().Add(-horizon))
-					if err != nil {
-						slog.Warn("audit prune failed", slog.String("error", err.Error()))
-						continue
-					}
-					if removed > 0 {
-						slog.Info("audit records pruned",
-							slog.Int("removed", removed),
-							slog.Duration("horizon", horizon),
-						)
-					}
-				}
-			}
-		}()
-	}
+	// History retention: insights + audit trail + Kobi conversations (and the
+	// security findings / runtime events once their stores exist), per org, one
+	// hourly pass with a first run shortly after boot (see retention.go).
+	//
+	// This REPLACES the two per-store tickers that pruned insights (7d) and the
+	// audit trail (90d) with a tenant-less delete each. The stores' delete verbs
+	// are org-scoped now — the shape the EE build needs under row-level
+	// security, where an unscoped DELETE matches nothing and reports success —
+	// so the pass iterates the org list; in OSS that is the single tenant.
+	startRetention(agentCtx, retentionDeps{
+		tenants:       tenantsStore,
+		insights:      insightStore,
+		audit:         actionAuditStore,
+		conversations: copilotConversations,
+	})
 
 	// Auto-register agent-proxy clusters: when an agent advertises the
 	// kube-proxy capability AND this flag is on, its cluster shows up

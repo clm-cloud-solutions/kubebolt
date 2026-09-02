@@ -63,6 +63,11 @@ type PortForward struct {
 	// /pf/{id}/ proxy via the kb_pf cookie. Never serialized to clients.
 	OrgID  string `json:"-"`
 	stopCh chan struct{}
+	// endAudit closes the access-audit session for this forward. It lives on
+	// the struct rather than in the delete handler so EVERY teardown path is
+	// covered — including StopAll on a cluster switch, which no HTTP handler
+	// observes. nil when auditing is off.
+	endAudit func(reason string, extra map[string]any)
 }
 
 // pfCookieName is the httpOnly, path-scoped cookie that authorizes /pf/{id}/
@@ -96,7 +101,15 @@ func NewPortForwardManager() *PortForwardManager {
 }
 
 // Start creates a new port-forward to a pod.
-func (m *PortForwardManager) Start(conn *cluster.Connector, namespace, pod, container string, remotePort int) (*PortForward, error) {
+//
+// openAudit, when non-nil, is called with the fully-built forward BEFORE the
+// forwarding goroutine launches, and returns the function that closes its audit
+// session. It is a callback rather than something the caller assigns afterwards
+// because a forward can fail within microseconds: assigning endAudit on the way
+// back would race the goroutine that fires it, and the loser is a tunnel that
+// never records having closed.
+func (m *PortForwardManager) Start(conn *cluster.Connector, namespace, pod, container string, remotePort int,
+	openAudit func(*PortForward) func(string, map[string]any)) (*PortForward, error) {
 	m.mu.Lock()
 	if len(m.forwards) >= maxPortForwards {
 		m.mu.Unlock()
@@ -172,15 +185,38 @@ func (m *PortForwardManager) Start(conn *cluster.Connector, namespace, pod, cont
 		slog.Int("localPort", localPort),
 	)
 
+	if openAudit != nil {
+		pf.endAudit = openAudit(pf)
+	}
+
 	// Run in background
 	go func() {
-		if err := fw.ForwardPorts(); err != nil {
-			m.mu.Lock()
-			if existing, ok := m.forwards[id]; ok {
-				existing.Status = "error"
-				existing.Error = err.Error()
-			}
-			m.mu.Unlock()
+		err := fw.ForwardPorts()
+		// The audit close belongs here too, not only in Stop. A forward that
+		// dies on its own — the pod goes away, the connection breaks — never
+		// passes through Stop and stays in m.forwards with Status "error", so
+		// without this the trail would show the tunnel open forever.
+		reason := "forward ended"
+		var extra map[string]any
+		if err != nil {
+			reason = "forward error"
+			extra = map[string]any{"error": err.Error()}
+		}
+		m.mu.Lock()
+		existing, ok := m.forwards[id]
+		if ok && err != nil {
+			existing.Status = "error"
+			existing.Error = err.Error()
+		}
+		var end func(string, map[string]any)
+		if ok {
+			end = existing.endAudit
+		}
+		m.mu.Unlock()
+		if end != nil {
+			end(reason, extra)
+		}
+		if err != nil {
 			slog.Warn("portforward ended with error",
 				slog.String("id", id),
 				slog.String("error", err.Error()),
@@ -235,6 +271,9 @@ func (m *PortForwardManager) Stop(id string) bool {
 	}
 	close(pf.stopCh)
 	delete(m.forwards, id)
+	if pf.endAudit != nil {
+		pf.endAudit("stopped by user", nil)
+	}
 	log.Printf("Port-forward stopped: %s", id)
 	return true
 }
@@ -245,6 +284,9 @@ func (m *PortForwardManager) StopAll() {
 	defer m.mu.Unlock()
 	for id, pf := range m.forwards {
 		close(pf.stopCh)
+		if pf.endAudit != nil {
+			pf.endAudit("cluster switch", nil)
+		}
 		log.Printf("Port-forward stopped (cluster switch): %s", id)
 	}
 	m.forwards = make(map[string]*PortForward)
@@ -285,7 +327,20 @@ func (h *handlers) handleCreatePortForward(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	pf, err := h.pfManager.Start(conn, body.Namespace, body.Pod, body.Container, body.RemotePort)
+	// A tunnel into a pod is an access, not a mutation: nothing changed, but
+	// whatever the pod serves became reachable from the operator's machine. The
+	// tunnelled bytes are never recorded — only that the tunnel existed, to
+	// where, and for how long.
+	actor := actorFromRequest(r)
+	pf, err := h.pfManager.Start(conn, body.Namespace, body.Pod, body.Container, body.RemotePort,
+		func(pf *PortForward) func(string, map[string]any) {
+			return auditAccessSession(actor, "port_forward", "pods", pf.Namespace, pf.Pod,
+				map[string]any{
+					"container":  pf.Container,
+					"remotePort": pf.RemotePort,
+					"localPort":  pf.LocalPort,
+				})
+		})
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return

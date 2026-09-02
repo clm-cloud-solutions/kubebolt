@@ -199,6 +199,15 @@ type ConversationStore interface {
 	// outcome) so a refresh before the next chat turn doesn't resurrect an
 	// already-run action's Execute button.
 	SetMessages(tenantID, userID, id string, msgs []Message) error
+	// PruneOrg deletes one org's conversations last touched before `before`,
+	// returning the count removed. Called by the hourly retention pass with the
+	// org's own window (plan band + post-downgrade grace) — which is why the
+	// caller supplies `before` instead of the store deciding.
+	//
+	// Retention is per ORG rather than per user because the two failure modes of
+	// the per-user version were both silent: it only ran for people who kept
+	// writing, and under RLS an unscoped delete matches nothing at all.
+	PruneOrg(orgID string, before time.Time) (int, error)
 }
 
 // NewConversationID returns a fresh conversation id.
@@ -416,32 +425,26 @@ func (s *BoltConversationStore) Upsert(rec *ConversationRecord) error {
 		if err := b.Put(conversationKey(rec.TenantID, rec.UserID, rec.ID), payload); err != nil {
 			return err
 		}
-		return s.pruneLocked(b, rec.UserID)
+		return s.pruneUserCapLocked(b, rec.TenantID, rec.UserID)
 	})
 }
 
-// pruneLocked drops age-expired records (any user) and enforces the per-user
-// cap for the just-written user. Called inside the Upsert transaction.
-func (s *BoltConversationStore) pruneLocked(b *bolt.Bucket, userID string) error {
-	cutoff := time.Now().Add(-s.retention)
-
+// pruneUserCapLocked enforces the per-user conversation cap for the user who
+// just wrote. It is an anti-runaway bound on one person's storage, NOT
+// retention — see PruneOrg for the age policy and why it moved.
+func (s *BoltConversationStore) pruneUserCapLocked(b *bolt.Bucket, tenantID, userID string) error {
 	type keyed struct {
 		key     []byte
 		updated time.Time
 	}
 	var userRecords []keyed
-	var expired [][]byte
 
 	err := b.ForEach(func(k, v []byte) error {
 		var rec ConversationRecord
 		if err := json.Unmarshal(v, &rec); err != nil {
 			return nil // skip corrupt
 		}
-		if !rec.UpdatedAt.IsZero() && rec.UpdatedAt.Before(cutoff) {
-			expired = append(expired, append([]byte(nil), k...))
-			return nil
-		}
-		if rec.UserID == userID {
+		if rec.UserID == userID && rec.TenantID == tenantID {
 			userRecords = append(userRecords, keyed{key: append([]byte(nil), k...), updated: rec.UpdatedAt})
 		}
 		return nil
@@ -449,12 +452,7 @@ func (s *BoltConversationStore) pruneLocked(b *bolt.Bucket, userID string) error
 	if err != nil {
 		return err
 	}
-	for _, k := range expired {
-		if err := b.Delete(k); err != nil {
-			return err
-		}
-	}
-	// Enforce per-user cap: keep the newest maxPerUser, drop the rest.
+	// Keep the newest maxPerUser, drop the rest.
 	if len(userRecords) > s.maxPerUser {
 		sort.Slice(userRecords, func(i, j int) bool {
 			return userRecords[i].updated.After(userRecords[j].updated)
@@ -466,6 +464,58 @@ func (s *BoltConversationStore) pruneLocked(b *bolt.Bucket, userID string) error
 		}
 	}
 	return nil
+}
+
+// PruneOrg deletes one org's conversations last touched before `before`.
+//
+// The age horizon used to be enforced here on write, and it was wrong twice
+// over: it deleted expired records belonging to EVERY user and every org
+// (whoever happened to write triggered it), and it only ran for people who were
+// still writing — so a user who stopped talking to Kobi never expired anything
+// and their transcripts, the highest-PII data the product holds, stayed forever.
+//
+// `before` is supplied by the retention pass from the ORG's window (its plan
+// band, widened by the post-downgrade grace), so the store never has to know
+// what a plan is.
+func (s *BoltConversationStore) PruneOrg(orgID string, before time.Time) (int, error) {
+	var removed int
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(s.bucket)
+		if b == nil {
+			return fmt.Errorf("bucket %s not found", s.bucket)
+		}
+		var expired [][]byte
+		if err := b.ForEach(func(k, v []byte) error {
+			var rec ConversationRecord
+			if err := json.Unmarshal(v, &rec); err != nil {
+				return nil // skip corrupt
+			}
+			if !conversationMatchesOrg(&rec, orgID) {
+				return nil
+			}
+			if !rec.UpdatedAt.IsZero() && rec.UpdatedAt.Before(before) {
+				expired = append(expired, append([]byte(nil), k...))
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+		for _, k := range expired {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		removed = len(expired)
+		return nil
+	})
+	return removed, err
+}
+
+// conversationMatchesOrg reports whether a record belongs to org, for the stores
+// that filter in Go. An empty record tenant is single-tenant or pre-upgrade
+// data, which in a Bolt-backed install belongs to the one org there is.
+func conversationMatchesOrg(rec *ConversationRecord, orgID string) bool {
+	return rec.TenantID == orgID || rec.TenantID == ""
 }
 
 func (s *BoltConversationStore) Get(tenantID, userID, id string) (*ConversationRecord, bool, error) {
@@ -638,19 +688,16 @@ func (s *MemoryConversationStore) Upsert(rec *ConversationRecord) error {
 	defer s.mu.Unlock()
 	cp := cloneConversation(rec)
 	s.records[string(conversationKey(rec.TenantID, rec.UserID, rec.ID))] = &cp
-	s.pruneLocked(rec.UserID)
+	s.pruneUserCapLocked(rec.TenantID, rec.UserID)
 	return nil
 }
 
-func (s *MemoryConversationStore) pruneLocked(userID string) {
-	cutoff := time.Now().Add(-s.retention)
+// pruneUserCapLocked mirrors the Bolt/Postgres split: the per-user cap runs on
+// write, the age horizon lives in PruneOrg.
+func (s *MemoryConversationStore) pruneUserCapLocked(tenantID, userID string) {
 	var userRecords []*ConversationRecord
-	for k, rec := range s.records {
-		if !rec.UpdatedAt.IsZero() && rec.UpdatedAt.Before(cutoff) {
-			delete(s.records, k)
-			continue
-		}
-		if rec.UserID == userID {
+	for _, rec := range s.records {
+		if rec.UserID == userID && rec.TenantID == tenantID {
 			userRecords = append(userRecords, rec)
 		}
 	}
@@ -662,6 +709,23 @@ func (s *MemoryConversationStore) pruneLocked(userID string) {
 			delete(s.records, string(conversationKey(rec.TenantID, rec.UserID, rec.ID)))
 		}
 	}
+}
+
+// PruneOrg deletes one org's conversations last touched before `before`.
+func (s *MemoryConversationStore) PruneOrg(orgID string, before time.Time) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	removed := 0
+	for k, rec := range s.records {
+		if !conversationMatchesOrg(rec, orgID) {
+			continue
+		}
+		if !rec.UpdatedAt.IsZero() && rec.UpdatedAt.Before(before) {
+			delete(s.records, k)
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 func (s *MemoryConversationStore) Get(tenantID, userID, id string) (*ConversationRecord, bool, error) {

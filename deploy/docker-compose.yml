@@ -74,6 +74,11 @@ services:
       - KUBEBOLT_AI_MAX_ROUNDS=${KUBEBOLT_AI_MAX_ROUNDS:-20}
       # Kobi conversation history — persisted per user (refresh / re-login resume).
       - KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON=${KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON:-2160h}
+      # History retention (one hourly pass): resolved insights, security findings /
+      # runtime events, and the mutation/access audit trail.
+      - KUBEBOLT_INSIGHTS_RETENTION_HORIZON=${KUBEBOLT_INSIGHTS_RETENTION_HORIZON:-168h}
+      - KUBEBOLT_FINDINGS_RETENTION_HORIZON=${KUBEBOLT_FINDINGS_RETENTION_HORIZON:-720h}
+      - KUBEBOLT_AUDIT_RETENTION_HORIZON=${KUBEBOLT_AUDIT_RETENTION_HORIZON:-2160h}
       - KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER=${KUBEBOLT_COPILOT_CONVERSATION_MAX_PER_USER:-200}
       # Update check — set to false for air-gapped installs so the
       # backend never reaches out to api.github.com. Cache TTL 6h.
