@@ -62,13 +62,17 @@ func (h *handlers) handleListEpisodes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Both conversions are bounded before narrowing to int32: the store clamps
+	// the limit to 200 anyway, and a page beyond 100 000 × limit is not a
+	// window anyone reads — an unbounded Atoi → int32 is a wraparound waiting
+	// for a crafted query string (CodeQL go/incorrect-integer-conversion).
 	if raw := r.URL.Query().Get("limit"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil {
+		if n, err := strconv.Atoi(raw); err == nil && n > 0 && n <= 200 {
 			q.Limit = int32(n)
 		}
 	}
 	if raw := r.URL.Query().Get("page"); raw != "" {
-		if n, err := strconv.Atoi(raw); err == nil && n > 1 {
+		if n, err := strconv.Atoi(raw); err == nil && n > 1 && n <= 100000 {
 			limit := q.Limit
 			if limit <= 0 {
 				limit = 50
