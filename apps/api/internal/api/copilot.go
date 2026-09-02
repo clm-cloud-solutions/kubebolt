@@ -237,7 +237,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 	// Build the system prompt — parameter-free as of Phase 6 so the cached
 	// prefix is byte-identical across clusters, views, and operators.
-	clusterName := h.manager.ActiveContext()
+	clusterName := h.manager.ActiveContextFor(r.Context())
 	systemPrompt := copilot.BuildSystemPrompt()
 
 	executor := copilot.NewExecutor(h.manager).WithMetricsRetention(h.metricsRetentionFor)
@@ -1116,7 +1116,7 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 	// isn't invisible spend (the "no LLM consumption without a usage record"
 	// rule). Resolve the model the summarizer actually used for pricing.
 	compactModel := copilot.ResolvedModel(cfg.Primary.Provider, cr.UsedModel)
-	h.recordAuxUsage(auth.ContextUserID(r), h.manager.ActiveContext(), req.ConversationID,
+	h.recordAuxUsage(auth.ContextUserID(r), h.manager.ActiveContextFor(r.Context()), req.ConversationID,
 		"manual_compact", cfg.Primary.Provider, compactModel, cr.Usage, time.Since(compactStart))
 
 	logger.Info("copilot manual compact",

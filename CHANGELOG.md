@@ -4,6 +4,18 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.6] — 2026-09-02
+
+Homologates EE 2.0.6-e2 (API-only). Drop-in, no migration, no behaviour change
+in a single-tenant install. Full note:
+[docs/releases/v2.0.6.md](docs/releases/v2.0.6.md).
+
+### Changed
+
+- Per-request cluster accessors (`ActiveContextFor`, `ConnErrorFor`,
+  `ActiveAgentProxyClusterIDFor`) replace every read of the global active
+  slot in the HTTP handlers; `shared_seat_test.go` keeps it that way.
+
 ## [2.0.5] — 2026-09-02
 
 Homologates EE 2.0.5-e2. Drop-in, no migration. Full note:
