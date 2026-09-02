@@ -504,6 +504,20 @@ func NewRouter(
 			// (search.go), so nothing loses its guard by moving out.
 			r.Get("/search", h.handleSearch)
 
+			// Copilot chat — any role can ask questions. OUTSIDE requireConnector
+			// on purpose: with no cluster (or a metrics-only one) Kobi still
+			// answers about itself, KubeBolt and Kubernetes — the handler injects
+			// the no-cluster session note and the executor gates tools per-tool.
+			// The middleware here was why "Hola" got a bare 503 before the model
+			// ever saw it. Kobi/AI stays gated until the org's email is verified
+			// (cost control).
+			r.Post("/copilot/chat", h.HandleCopilotChat)
+			// Sec #9: compact is part of the same Kobi surface — gate it too,
+			// else an unverified org can drive AI spend via /compact. It never
+			// touches the connector (it summarizes the transcript), so it needs
+			// no cluster either.
+			r.Post("/copilot/compact", h.HandleCopilotCompact)
+
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
 				r.Use(h.requireConnector)
@@ -550,10 +564,6 @@ func NewRouter(
 					r.Put("/integrations/{id}/config", h.handlePutIntegrationConfig)
 					r.Delete("/integrations/{id}", h.handleUninstallIntegration)
 				})
-
-				// Copilot chat — any role can ask questions
-				r.Post("/copilot/chat", h.HandleCopilotChat)
-				r.Post("/copilot/compact", h.HandleCopilotCompact)
 
 				// Write endpoints — Editor+ role required
 				r.Group(func(r chi.Router) {

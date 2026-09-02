@@ -336,12 +336,11 @@ function getColumns(resourceType: string): ColumnDef<ResourceItem, unknown>[] {
     )
   }
 
-  // Ingresses
+  // Ingresses. No Address column: the backend doesn't surface
+  // status.loadBalancer for Ingresses, so the column painted «—» on
+  // every HEALTHY Ingress — asserting a failure that doesn't exist.
   if (resourceType === 'ingresses') {
-    base.push(
-      { accessorKey: 'hosts', header: 'Hosts' },
-      { accessorKey: 'address', header: 'Address' }
-    )
+    base.push({ accessorKey: 'hosts', header: 'Hosts' })
   }
 
   // NetworkPolicies — the operator-actionable signal at list scope

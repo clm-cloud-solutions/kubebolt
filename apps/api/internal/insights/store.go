@@ -24,9 +24,13 @@ const maxOccurrences = 20
 // the pod crashes again); each active window is a distinct occurrence with
 // its own ID — that's what gives the historical timeline.
 type Occurrence struct {
-	ID       string     `json:"id"`             // opaque per-episode id (referenced by Kobi/Autopilot)
-	OpenedAt time.Time   `json:"openedAt"`
+	ID       string     `json:"id"` // opaque per-episode id (referenced by Kobi/Autopilot)
+	OpenedAt time.Time  `json:"openedAt"`
 	ClosedAt *time.Time `json:"closedAt,omitempty"`
+	// FlapCount counts A1 reopenings within ReopenCooldown: the SAME episode
+	// going resolved→firing. An intermittent 3h crashloop is ONE episode
+	// with N flaps, not N rows. JSON-additive: old records read as 0.
+	FlapCount int `json:"flapCount,omitempty"`
 }
 
 // InsightRecord is the persistent shape of one insight identity (one
@@ -402,6 +406,24 @@ func closeRecord(rec *InsightRecord, at time.Time) {
 		rec.Occurrences[n-1].ClosedAt = &at
 	}
 	rec.CurrentOccurrenceID = ""
+}
+
+// flapReopen is A1's other half: the fingerprint re-fired within
+// ReopenCooldown of resolving, so the LAST episode returns to firing with
+// one more flap instead of a new episode opening. Shared by both store
+// impls like closeRecord. Returns the reopened episode id and its flap
+// count; falls back to ("", 0) when there is no episode to reopen (caller
+// then opens a fresh one).
+func flapReopen(rec *InsightRecord, at time.Time) (string, int) {
+	n := len(rec.Occurrences)
+	if n == 0 {
+		return "", 0
+	}
+	occ := &rec.Occurrences[n-1]
+	occ.ClosedAt = nil
+	occ.FlapCount++
+	rec.CurrentOccurrenceID = occ.ID
+	return occ.ID, occ.FlapCount
 }
 
 // appendOccurrence opens a new episode on a record and trims the ring to the

@@ -63,7 +63,13 @@ func TestEngine_Hydrate_RecurrenceAfterRestartStillNotifies(t *testing.T) {
 		t.Fatalf("hydrated insight must resolve once unconfirmed twice, got status %q", got)
 	}
 
-	// The condition comes back. This is a NEW episode and must notify.
+	// The condition comes back OUTSIDE the reopen cooldown (A1, Fase 2): a
+	// genuine recurrence is a NEW episode and must notify. (Inside the
+	// cooldown it is the same episode flapping and deliberately does NOT
+	// re-notify — that path is pinned by TestEpisodeLifecycle_FlapCooldownAndReopen.)
+	prevCooldown := ReopenCooldown
+	ReopenCooldown = 0
+	defer func() { ReopenCooldown = prevCooldown }()
 	var fired2 int
 	e2.SetOnNewInsight(func(models.Insight) { fired2++ })
 	e2.Evaluate(broken)

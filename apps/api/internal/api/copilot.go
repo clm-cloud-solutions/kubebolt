@@ -192,14 +192,15 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A metrics-only cluster has no connector, but Kobi can still do metrics + docs
-	// analysis — the executor gates the resource/action tools per-tool. Only 503 the
-	// chat for the genuine no-connector case (no cluster selected / unreachable).
+	// Connector state decides which tools can work — never whether Kobi talks.
 	conn := h.manager.Connector(r.Context())
-	if conn == nil && h.manager.MetricsOnlyClusterID(r.Context()) == "" {
-		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
-		return
-	}
+	// A metrics-only cluster has no connector but Kobi still does metrics + docs
+	// analysis — the executor gates the resource/action tools per-tool. And with
+	// NO cluster at all, Kobi still answers about itself, KubeBolt and Kubernetes
+	// (docs tool included) and explains the missing cluster in its own voice —
+	// the NoClusterContextBlock below carries that instruction. The old 503 here
+	// ("cluster not connected") answered "Hola" with a backend error.
+	noCluster := conn == nil && h.manager.MetricsOnlyClusterID(r.Context()) == ""
 
 	// Set up SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -308,7 +309,18 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	//     blocks after 4 turns).
 	sessionCtx := ""
 	if len(messages) > 0 {
-		sessionCtx = copilot.BuildSessionContext(clusterName, req.CurrentPath, time.Now(), req.ClientTimezone)
+		sessionName := clusterName
+		if noCluster && sessionName == "" {
+			sessionName = "(none connected)"
+		}
+		sessionCtx = copilot.BuildSessionContext(sessionName, req.CurrentPath, time.Now(), req.ClientTimezone)
+		// No cluster at all: tell Kobi so it answers identity/product/K8s
+		// questions from knowledge (+ the docs tool) and explains the missing
+		// cluster itself instead of surfacing tool errors. Per-session prefix,
+		// same cache rule as the governance block.
+		if noCluster {
+			sessionCtx += "\n\n" + copilot.NoClusterContextBlock()
+		}
 		// Tell Kobi the live governance-toggle state so it explains a blocked
 		// action as policy (not RBAC). Appended to the per-session prefix —
 		// keeps the system prompt's cache prefix byte-identical. Empty when

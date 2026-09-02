@@ -1,6 +1,6 @@
 # Build stage: always runs on native amd64 (no QEMU)
 # Node.js + npm ci + Vite build is extremely slow under QEMU emulation
-FROM --platform=$BUILDPLATFORM node:20-alpine AS builder
+FROM --platform=$BUILDPLATFORM node:22-alpine AS builder
 
 WORKDIR /app
 COPY package.json package-lock.json ./
