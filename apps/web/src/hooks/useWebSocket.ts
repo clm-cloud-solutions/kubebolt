@@ -16,10 +16,33 @@ interface WSPayload {
   }
 }
 
-export function useWebSocket(resources: string[]) {
+/**
+ * useWebSocket — el canal en vivo de los eventos de recursos del cluster activo.
+ *
+ * `enabled` existe para el ámbito GLOBAL (Home / Fleet / Security / Admin), donde
+ * ninguna pantalla lee del cluster activo: el socket sirve el firehose de
+ * informers de UN cluster a páginas que están describiendo la flota entera. Ver
+ * `utils/scope.ts` y §5 del plan de dos ámbitos.
+ *
+ * Se apaga desconectando y no "suscribiéndose a nada", porque suscribirse a nada
+ * NO es lo que parece: el hub trata el conjunto vacío como «recibe todo»
+ * (`client.go`, IsSubscribed). Además hoy el frame de suscripción no llega a
+ * aplicarse nunca —el cliente manda `{type,resources}` y el servidor lee
+ * `{action,types}`—, así que todo cliente recibe todos los tipos. Anotado
+ * aparte; no se arregla aquí porque un cambio de navegación no es sitio para
+ * tocar un protocolo cuyo fallo actual es lo que mantiene vivo el live-update.
+ */
+export function useWebSocket(resources: string[], enabled = true) {
   const queryClient = useQueryClient()
 
   useEffect(() => {
+    if (!enabled) {
+      // Suelta el socket al SALIR a global. Sin esto, entrar a un cluster y
+      // volver a Home dejaría el firehose corriendo de fondo el resto de la
+      // sesión, invalidando queries que la página global no usa.
+      wsManager.disconnect()
+      return
+    }
     wsManager.connect()
     wsManager.subscribe(resources)
 
@@ -122,5 +145,5 @@ export function useWebSocket(resources: string[]) {
       if (topologyTimer) clearTimeout(topologyTimer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resources])
+  }, [resources, enabled])
 }

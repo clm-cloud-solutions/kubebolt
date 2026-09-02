@@ -1,8 +1,9 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { NavLink, useLocation } from 'react-router-dom'
 import { api } from '@/services/api'
 import { isDashboardPath } from '@/utils/routes'
+import { useScope, routeScope, type RouteScope } from '@/utils/scope'
 import {
   LayoutDashboard,
   Box,
@@ -38,6 +39,9 @@ import {
   UserCog,
   ChevronRight,
   MessageSquarePlus,
+  Boxes,
+  House,
+  ShieldAlert,
 } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import { useUIConfig } from '@/hooks/useUIConfig'
@@ -75,14 +79,38 @@ interface NavSection {
   items: NavItem[]
 }
 
-const sections: NavSection[] = [
+// Las dos alturas del producto tienen menú propio (§3 del plan de dos ámbitos).
+// `public` no aparece: esas rutas se montan fuera de Layout, así que nunca hay
+// sidebar que elegir.
+export type SidebarVariant = 'global' | 'cluster'
+
+// El ancho es por variante y no una constante: el menú global lleva cuatro
+// enlaces de una palabra, y 220px reservados para "Cilium Cluster Policies"
+// dejaban una columna medio vacía en la primera pantalla del producto.
+const EXPANDED_WIDTH: Record<SidebarVariant, string> = {
+  global: 'w-[190px]',
+  cluster: 'w-[220px]',
+}
+const RAIL_WIDTH = 'w-[56px]'
+
+// Los ítems fijados que aporta la edición se reparten por SU ámbito, no por
+// donde estén declarados: hoy `eePinnedNavItems` trae Autopilot (de cluster) y
+// Plan & usage (global) en la misma lista, y meterlos juntos en cualquiera de
+// los dos menús pondría un enlace que salta de altitud al pulsarlo.
+const eePinnedFor = (scope: RouteScope) =>
+  eePinnedNavItems.filter((i) => routeScope(i.path) === scope)
+
+// ─── El menú de CLUSTER ──────────────────────────────────────────────────────
+// Los 7 grupos de siempre, menos las superficies que suben a global (Home,
+// Fleet, Security, Clusters). El contenido no cambia; cambia dónde vive.
+const clusterSections: NavSection[] = [
   {
     title: 'Pinned',
     items: [
       { label: 'Insights', path: '/insights', icon: <Lightbulb className="w-4 h-4" /> },
       // EE extension point — edition-specific pinned items (e.g. Autopilot).
       // Empty in OSS via @/ee/registry; the Enterprise build overrides it.
-      ...eePinnedNavItems,
+      ...eePinnedFor('cluster'),
       { label: 'Applications', path: '/applications', icon: <Package className="w-4 h-4" />, countKey: 'helmReleases' },
       { label: 'Pods', path: '/pods', icon: <Box className="w-4 h-4" />, countKey: 'pods', permissionKey: 'pods' },
       { label: 'Nodes', path: '/nodes', icon: <Server className="w-4 h-4" />, countKey: 'nodes', permissionKey: 'nodes' },
@@ -142,10 +170,36 @@ const sections: NavSection[] = [
   {
     title: 'Cluster',
     items: [
+      // Administrar clusters —alta, renombrado, borrado— es trabajo DE cluster.
+      // Fleet, arriba, es la superficie global de la flota: mirarla entera.
+      // Ésta es la de operarla, y por eso vive aquí abajo.
       { label: 'Clusters', path: '/clusters', icon: <Server className="w-4 h-4" /> },
       { label: 'Namespaces', path: '/namespaces', icon: <FolderOpen className="w-4 h-4" />, countKey: 'namespaces', permissionKey: 'namespaces' },
       { label: 'RBAC', path: '/rbac', icon: <Shield className="w-4 h-4" />, permissionKey: 'roles' },
       { label: 'Events', path: '/events', icon: <Activity className="w-4 h-4" />, permissionKey: 'events' },
+    ],
+  },
+]
+
+// ─── El menú GLOBAL ──────────────────────────────────────────────────────────
+// Un solo grupo fijado. Nada de `countKey` ni `permissionKey`: esos salen del
+// overview del cluster activo, que aquí no existe — y ésa es exactamente la
+// razón de que Fleet y Security se apagaran en un cluster metrics-only pese a
+// no necesitar connector para nada.
+//
+// **Fleet** es la superficie de flota que se queda arriba: mirar todos los
+// clusters a la vez. Administrarlos —`/clusters`— baja al menú de cluster, que
+// es donde se opera. Las dos siguen la misma regla que sostiene el split y que
+// vigila un test: **todo ítem de un menú apunta a una ruta de la altitud de ese
+// menú**, para que pulsar un enlace nunca cambie el menú bajo el cursor.
+const globalSections: NavSection[] = [
+  {
+    title: 'Pinned',
+    items: [
+      { label: 'Home', path: '/home', icon: <House className="w-4 h-4" /> },
+      { label: 'Fleet', path: '/fleet', icon: <Boxes className="w-4 h-4" /> },
+      { label: 'Security', path: '/security', icon: <ShieldAlert className="w-4 h-4" /> },
+      ...eePinnedFor('global'),
     ],
   },
 ]
@@ -181,23 +235,50 @@ const adminItems = [
 // Every nav group EXCEPT Pinned is collapsible. Pinned is always visible so the
 // operator's most-used links never hide. Collapsed state persists in
 // localStorage (mirrors kb-sidebar-collapsed / kb-theme / kb-refresh-interval).
-// ('Platform' is EE-only and never renders here, but kept for parity with the EE build.)
-const COLLAPSIBLE_GROUPS = ['Workloads', 'Traffic', 'Storage', 'Config', 'Extensions', 'Cluster', 'Administration', 'Platform']
-const GROUPS_STORAGE_KEY = 'kb-sidebar-groups-collapsed'
+//
+// Los dos menús tienen grupos DISTINTOS, así que tanto los defaults como el
+// sitio donde se guardan van por variante. Compartirlos era la trampa que
+// avisaba el plan (riesgo 2 y 3 de §9):
+//
+//   · Defaults por título — el mapa se sembraba con los títulos del menú de
+//     cluster. El global, cuyos únicos grupos plegables son Administración y
+//     Platform, heredaba `true` para los dos y arrancaba mostrando sólo los
+//     ítems fijados: un menú de tres grupos con dos cerrados de fábrica.
+//   · Una sola key — plegar Workloads abajo escribía en el mismo sitio que
+//     plegar Administración arriba, así que los dos menús se pisaban el estado
+//     y el usuario veía cerrarse cosas que él no había tocado.
+const COLLAPSIBLE_BY_VARIANT: Record<SidebarVariant, string[]> = {
+  cluster: ['Workloads', 'Traffic', 'Storage', 'Config', 'Extensions', 'Cluster'],
+  // Administración y Platform sólo existen arriba; no son plegables por defecto
+  // porque en un menú de esta talla plegar no compra nada.
+  global: [],
+}
+
+// El grupo que arranca ABIERTO en cada menú. En cluster es Workloads —el resto
+// se pliega para que un usuario nuevo vea un menú corto en vez del firehose.
+const DEFAULT_OPEN_GROUP: Record<SidebarVariant, string> = {
+  cluster: 'Workloads',
+  global: '',
+}
+
+// Key distinta por variante. La vieja (`kb-sidebar-groups-collapsed`) se deja
+// morir sin migrar: guarda el estado de plegado de un menú que ya no existe con
+// esa forma, y lo peor que pasa al ignorarla es que el usuario vuelva a ver sus
+// defaults una vez.
+const groupsStorageKey = (variant: SidebarVariant) => `kb-sidebar-groups-collapsed:${variant}`
 
 // A map of group-title -> collapsed(bool). On first visit (nothing stored) every
-// group starts COLLAPSED except Workloads, so a new user sees a short, scannable
-// menu instead of the full firehose.
-function loadCollapsedGroups(): Record<string, boolean> {
+// group starts COLLAPSED except the variant's default-open one.
+function loadCollapsedGroups(variant: SidebarVariant): Record<string, boolean> {
   try {
-    const raw = localStorage.getItem(GROUPS_STORAGE_KEY)
+    const raw = localStorage.getItem(groupsStorageKey(variant))
     if (raw) {
       const parsed = JSON.parse(raw)
       if (parsed && typeof parsed === 'object') return parsed as Record<string, boolean>
     }
   } catch { /* private mode / bad JSON — fall through to defaults */ }
   const init: Record<string, boolean> = {}
-  for (const g of COLLAPSIBLE_GROUPS) init[g] = g !== 'Workloads'
+  for (const g of COLLAPSIBLE_BY_VARIANT[variant]) init[g] = g !== DEFAULT_OPEN_GROUP[variant]
   return init
 }
 
@@ -210,6 +291,11 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
   // over it (see the return). Peek only arms when the persisted state is collapsed.
   const [peeking, setPeeking] = useState(false)
   const collapsed = collapsedProp && !peeking
+  // Qué menú toca. `public` no llega aquí (esas rutas no montan Layout), pero
+  // se mapea a cluster para que el tipo cierre sin un default silencioso.
+  const scope = useScope()
+  const variant: SidebarVariant = scope === 'global' ? 'global' : 'cluster'
+  const sections = variant === 'global' ? globalSections : clusterSections
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
@@ -234,14 +320,23 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
 
   // Per-group collapse (Pinned excluded). Persisted so the layout is stable
   // across visits, like the other localStorage UI prefs.
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(loadCollapsedGroups)
+  //
+  // Se re-lee al cambiar de variante: cada menú guarda su plegado en su propia
+  // key, así que subir a global y volver devuelve el menú de cluster tal como
+  // lo dejaste, no como lo dejó el otro.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() =>
+    loadCollapsedGroups(variant),
+  )
+  useEffect(() => {
+    setCollapsedGroups(loadCollapsedGroups(variant))
+  }, [variant])
   const toggleGroup = useCallback((title: string) => {
     setCollapsedGroups((prev) => {
       const next = { ...prev, [title]: !prev[title] }
-      try { localStorage.setItem(GROUPS_STORAGE_KEY, JSON.stringify(next)) } catch { /* private mode */ }
+      try { localStorage.setItem(groupsStorageKey(variant), JSON.stringify(next)) } catch { /* private mode */ }
       return next
     })
-  }, [])
+  }, [variant])
   // Collapsible group header with a chevron; Pinned renders a plain label.
   // In rail mode (sidebar collapsed) headers are hidden entirely — there's no
   // room for the chevron and all items already render as icon-only.
@@ -291,13 +386,13 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
     // the peek in collapsed mode. No z-index here (plain stacking parent) so the
     // AboutModal sibling below stays free to overlay the app.
     <div
-      className={`h-full shrink-0 relative ${collapsedProp ? 'w-[56px]' : 'w-[220px]'}`}
+      className={`h-full shrink-0 relative ${collapsedProp ? RAIL_WIDTH : EXPANDED_WIDTH[variant]}`}
       onMouseEnter={collapsedProp ? () => setPeeking(true) : undefined}
       onMouseLeave={collapsedProp ? () => setPeeking(false) : undefined}
     >
     <aside
       className={`absolute inset-y-0 left-0 z-[500] h-full bg-kb-sidebar border-r border-kb-border flex flex-col overflow-hidden transition-[width] duration-200 ease-out ${
-        collapsed ? 'w-[56px]' : 'w-[220px]'
+        collapsed ? RAIL_WIDTH : EXPANDED_WIDTH[variant]
       } ${collapsedProp && peeking ? 'shadow-2xl' : ''}`}
     >
       {/* Celebration particles */}
@@ -354,7 +449,10 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
           kb-text-primary (instead of secondary) so the nav reads with
           presence; counts and section titles stay subdued as metadata. */}
       <nav className="flex-1 overflow-y-auto py-3 px-2 space-y-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        {/* Overview link */}
+        {/* Overview link — sólo en el menú de cluster: apunta al dashboard del
+            cluster ACTIVO, así que en global era el único enlace del menú que
+            cambiaba de altitud sin decirlo. */}
+        {variant === 'cluster' && (
         <div>
           <NavLink
             to="/"
@@ -372,6 +470,7 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
             {!collapsed && <span className="flex-1 truncate">Overview</span>}
           </NavLink>
         </div>
+        )}
 
         {sections.map((section) => {
           const collapsible = section.title !== 'Pinned'
@@ -469,8 +568,13 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
           )
         })}
 
-        {/* Administration section — admin only (or when auth disabled) */}
-        {hasRole('admin') && (
+        {/* Administration — admin only (or when auth disabled).
+
+            Sólo en global: identidad, agentes, IA y sistema son de la
+            ORGANIZACIÓN, no del cluster que tengas seleccionado. Que vivieran
+            en el mismo menú que Pods es la razón de que un cluster
+            metrics-only apagara media administración. */}
+        {variant === 'global' && hasRole('admin') && (
           <div>
             {renderSectionHeader('Administration', true)}
             {showGroupItems('Administration', true) && (

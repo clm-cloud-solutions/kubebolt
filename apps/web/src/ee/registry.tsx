@@ -28,3 +28,16 @@ export const authFeatures: string[] = [
 ]
 export const authTagline =
   'Kobi, your AI copilot, investigates incidents and proposes the fix you approve. Metrics, logs, topology, security and cost across every cluster.'
+
+// Route prefixes the edition adds to the scope table (utils/scope.ts) — the
+// altitude of every EE-only surface, declared where the surface's routes are.
+// OSS registers none: /account, /platform, /autopilot and the mail-driven
+// public flows (/signup, /onboarding, /forgot-password, /reset-password,
+// /accept-invite) exist only in the Enterprise build. The scope test walks the
+// routes actually registered and fails on a prefix nothing uses, so a stale
+// entry here cannot survive.
+export const eeRouteScopes: { global: string[]; cluster: string[]; public: string[] } = {
+  global: [],
+  cluster: [],
+  public: [],
+}
