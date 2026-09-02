@@ -36,3 +36,45 @@ func TestToOpenAIMessages_AlwaysSerializesContent(t *testing.T) {
 		}
 	}
 }
+
+// Prompted-tool-calling models (Qwen/DeepSeek via the OpenAI-compat fallback
+// bucket) emit <tool_call>{json}</tool_call> inside content; we read tool calls
+// from the native tool_calls field, so those blocks must not leak into the
+// user-visible answer. Regression for finding #49 / incident inc_6JBGfN5JDb.
+func TestStripToolCallTags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"no tags", "just a normal answer", "just a normal answer"},
+		{"empty", "", ""},
+		{
+			"single block only",
+			"<tool_call>\n{\"type\":\"pods\",\"name\":\"shop-web\"}\n</tool_call>",
+			"",
+		},
+		{
+			"prose plus block",
+			"Here is the root cause.\n<tool_call>{\"type\":\"pods\"}</tool_call>",
+			"Here is the root cause.",
+		},
+		{
+			"two blocks",
+			"<tool_call>{\"a\":1}</tool_call>mid<tool_call>{\"b\":2}</tool_call>",
+			"mid",
+		},
+		{
+			"dangling opener (truncated stream)",
+			"partial answer\n<tool_call>{\"type\":\"pod",
+			"partial answer",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := stripToolCallTags(c.in); got != c.want {
+				t.Fatalf("stripToolCallTags(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
+}

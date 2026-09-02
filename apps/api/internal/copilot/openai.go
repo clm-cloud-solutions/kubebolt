@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -181,7 +182,14 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	// Reasoning models (Qwen 3.x, DeepSeek-R1, GPT-o1, etc.) emit
 	// reasoning_content separately from content. Fall back to it if content
 	// is empty so the user at least sees what the model produced.
-	text := choice.Message.Content
+	//
+	// Those same prompted-tool-calling models also emit <tool_call>{json}</tool_call>
+	// blocks inside content instead of (or alongside) the native tool_calls field.
+	// We read tool_calls natively below, so those text blocks are pure duplication
+	// that would otherwise leak the raw tag + JSON args into the visible answer.
+	// Strip them here at the OpenAI-compat / fallback boundary. See finding #49
+	// (docs/49-…): surfaced by the fallback provider in incident inc_6JBGfN5JDb.
+	text := stripToolCallTags(choice.Message.Content)
 	if text == "" && choice.Message.ReasoningContent != "" && len(choice.Message.ToolCalls) == 0 {
 		text = "_(reasoning only — model did not produce a final response)_\n\n" + choice.Message.ReasoningContent
 	}
@@ -213,6 +221,28 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		})
 	}
 	return out, nil
+}
+
+// toolCallTagRe matches a complete prompted-style tool call block, e.g.
+// `<tool_call>\n{"type":"pods",...}\n</tool_call>`. Non-greedy + dotall so
+// multiple blocks and embedded newlines are handled.
+var toolCallTagRe = regexp.MustCompile(`(?s)<tool_call>.*?</tool_call>`)
+
+// stripToolCallTags removes prompted-style <tool_call>…</tool_call> blocks that
+// some OpenAI-compatible reasoning models emit inside message content. KubeBolt
+// consumes tool calls from the native tool_calls field, so these text blocks are
+// noise that leaks the raw tag into the user-visible answer. A streamed or
+// token-truncated response can also leave a dangling opener with no closer; drop
+// from that opener to the end. Returns the cleaned, trimmed content.
+func stripToolCallTags(s string) string {
+	if !strings.Contains(s, "<tool_call>") {
+		return s
+	}
+	s = toolCallTagRe.ReplaceAllString(s, "")
+	if i := strings.Index(s, "<tool_call>"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 func toOpenAIMessages(system string, msgs []Message) []openaiMessage {
