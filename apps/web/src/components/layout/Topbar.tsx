@@ -2,13 +2,14 @@ import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { isDashboardPath } from '@/utils/routes'
 import { useScope } from '@/utils/scope'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen, Building2, Users, LayoutDashboard, Network, Boxes } from 'lucide-react'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen, Building2, Users, LayoutDashboard, Network, Boxes, Shield } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { NewResourceModal } from '@/components/resources/NewResourceModal'
 import { UpdateAvailableChip } from '@/components/layout/UpdateAvailableChip'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api, API_ORIGIN } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
+import { useAdminLanding } from '@/hooks/useAdminLanding'
 import { useAuth } from '@/contexts/AuthContext'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { parseClusterDisplayName } from '@/utils/cluster'
@@ -597,6 +598,7 @@ function UserMenu() {
   const [pwSaving, setPwSaving] = useState(false)
   const dropdownRef = useRef<HTMLDivElement>(null)
   const navigate = useNavigate()
+  const adminLanding = useAdminLanding()
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -684,6 +686,24 @@ function UserMenu() {
           {/* Actions */}
           {!changingPw ? (
             <div className="py-1">
+              {/* Administration — el destino que este menú no ofrecía.
+                  Un usuario en producción preguntó cómo llegar a la parte
+                  administrativa de su cuenta estando dentro de un cluster. La
+                  respuesta era pulsar «Fleet» en el topbar, que nombra sus
+                  CLUSTERS y no su CUENTA. Aquí es donde va el instinto en
+                  cualquier producto web.
+
+                  Navegar no cambia el cluster activo: eso es estado del backend,
+                  no de la ruta, así que se vuelve donde se estaba. */}
+              {adminLanding && (
+                <button
+                  onClick={() => { setOpen(false); navigate(adminLanding) }}
+                  className="w-full text-left px-4 py-2 flex items-center gap-2 text-xs text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card-hover transition-colors"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>Administration</span>
+                </button>
+              )}
               <button
                 onClick={() => setChangingPw(true)}
                 className="w-full text-left px-4 py-2 flex items-center gap-2 text-xs text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card-hover transition-colors"

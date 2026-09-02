@@ -4,6 +4,23 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.5] — 2026-09-02
+
+Homologates EE 2.0.5-e2. Drop-in, no migration. Full note:
+[docs/releases/v2.0.5.md](docs/releases/v2.0.5.md).
+
+### Fixed
+
+- Kobi no longer diagnoses a dependency wired as a raw URL/IP in an env var as
+  a missing in-cluster workload: locality is decided by the address.
+- The OpenAI-compatible fallback strips `<tool_call>…</tool_call>` blocks from
+  the visible answer.
+
+### Added
+
+- A path back to Administration from the avatar menu and the sidebar footer
+  while inside a cluster (`useAdminLanding`).
+
 ## [2.0.4] — 2026-09-02
 
 Homologates EE 2.0.4-e2. Drop-in, no migration. Full note:
