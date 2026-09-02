@@ -496,6 +496,14 @@ func NewRouter(
 				r.Get("/insights/summary", h.handleInsightsSummary)
 			})
 
+			// Search lives OUTSIDE requireConnector for the same reason. Its fleet
+			// fan-out (?scope=fleet) searches every cluster the caller may see, so
+			// gating it on the ACTIVE cluster's connector meant ⌘K went 503 exactly
+			// when one cluster died — the moment you most want to look across the
+			// fleet. The single-cluster path owns its own no-connector 503 already
+			// (search.go), so nothing loses its guard by moving out.
+			r.Get("/search", h.handleSearch)
+
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
 				r.Use(h.requireConnector)
@@ -519,7 +527,6 @@ func NewRouter(
 				r.Get("/resources/cronjobs/{namespace}/{name}/jobs", h.getCronJobJobs)
 				r.Get("/resources/{type}/{namespace}/{name}/history", h.getWorkloadHistory)
 				r.Get("/portforward", h.handleListPortForwards)
-				r.Get("/search", h.handleSearch)
 				r.Get("/topology", h.getTopology)
 				r.Get("/insights", h.getInsights)
 				r.Get("/events", h.getEvents)

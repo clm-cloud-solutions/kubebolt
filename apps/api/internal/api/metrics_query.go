@@ -75,49 +75,6 @@ func (h *handlers) activeTenantID(r *http.Request) string {
 // value is intentionally not a valid UID so it can never collide.
 const noClusterUIDSentinel = "__kubebolt_no_uid__"
 
-// metricSelectorRE matches PromQL label selectors — the `{...}` chunk
-// that follows a metric name or appears bare (e.g. `{source="hubble"}`).
-// The simple `\{([^}]*)\}` pattern is enough because none of our query
-// shapes include nested braces; label values can contain them in
-// principle but all of ours are plain identifiers.
-var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
-
-// bareMetricRE matches metric references that follow our agent's
-// naming convention (one of these prefixes + `_` + body). Extend the
-// list when a new metric family ships from the agent.
-//
-// Phase 2 of the Universal Data Plane Plan introduced two more
-// scrape sources whose canonical metric names sit outside the
-// original five-prefix list:
-//
-//   - `kubelet_*`  emitted by the agent for kubelet_volume_stats_*
-//                  (Day 1 of Phase 1)
-//   - `kube_*`     emitted by kube-state-metrics scraped via vmagent
-//                  (Phase 2 Day 2-3)
-//
-// Without these prefixes, queries like `count(kube_pod_info)` or
-// `count(kubelet_volume_stats_used_bytes)` would leave VictoriaMetrics
-// unscoped, leaking samples across clusters that share the same VM.
-// Fix surfaced in Phase 2 in-vivo testing — the coverage banner
-// reported KSM as ACTIVE even when its cluster_id didn't match.
-//
-// Identifiers used as label names elsewhere — `cluster_id`, `pod_uid`,
-// and any future `pod_*` label — would also match this regex. Two
-// guards keep them from being misidentified as metric references:
-// step 2 of scopeQueryByCluster skips text inside `{...}` selectors,
-// AND skips text inside `by(...)` / `without(...)` aggregation clauses
-// (see groupingClauseRE). Anything outside both is a real metric ref.
-var bareMetricRE = regexp.MustCompile(
-	`\b(?:node|pod|container|kubebolt|kubelet|kube|hubble)_[a-zA-Z0-9_]+\b`,
-)
-
-// groupingClauseRE matches the start of a PromQL aggregation grouping
-// clause: `by(`, `by (`, `without(`, `without (`. The position right
-// after the opening `(` is used to walk to the matching `)` so the
-// inner identifiers — which are label names, not metric refs — can be
-// excluded from pass 2 injection.
-var groupingClauseRE = regexp.MustCompile(`\b(?:by|without)\s*\(`)
-
 // reservedScopeLabels are set by the SERVER to enforce isolation. Whatever a
 // client sends for them is discarded before injection (stripReservedScopeLabels).
 //
@@ -196,6 +153,147 @@ func isReservedMatcher(fragment string) bool {
 	return false
 }
 
+// noTenantSentinel is the org-axis twin of noClusterUIDSentinel, used ONLY on
+// the fleet path (see scopeQueryForRequest). Not a valid org UUID, so it
+// matches no stamped tenant_id and the query returns zero series.
+const noTenantSentinel = "__kubebolt_no_tenant__"
+
+// fleetScope is the opt-in value of the `scope` query param that widens a
+// metrics read from the active cluster to EVERY cluster in the caller's org.
+// The Fleet roll-up (fleet spend KPI + the per-cluster cost/pods columns)
+// aggregates `by (cluster_id)` across clusters, which the default scoping makes
+// impossible — scopeQueryByCluster pins cluster_id to the single active UID.
+const fleetScope = "fleet"
+
+// scopeQueryByAllowedClusters pins cluster_id to a SET — the fleet path's
+// replacement for the single-cluster pin it drops.
+//
+// Empty set fails closed with the same sentinel the single-cluster path uses:
+// a caller entitled to no clusters must read zero series, never everything.
+// Values are regex-quoted because a kube-system UID is hex-and-dashes today,
+// but nothing in the type system guarantees that forever, and one unescaped
+// metacharacter here would silently widen the matcher.
+func scopeQueryByAllowedClusters(promQL string, ids []string) string {
+	if len(ids) == 0 {
+		return injectLabelMatcher(promQL, "cluster_id", noClusterUIDSentinel)
+	}
+	quoted := make([]string, len(ids))
+	for i, id := range ids {
+		quoted[i] = regexp.QuoteMeta(id)
+	}
+	matcher := fmt.Sprintf("cluster_id=~%q", "^("+strings.Join(quoted, "|")+")$")
+	return injectMatcherExpr(promQL, "cluster_id", matcher)
+}
+
+// allowedClusterIDs returns the cluster_ids this caller may read, or nil when
+// no narrowing applies. OSS is single-org and has no team ownership of
+// clusters, so nothing ever narrows; the EE build layers team scoping on top
+// (a non-admin sees only agent-proxy clusters owned by a team they belong to).
+// Kept as the single seam cluster_scope.go consults so the middleware and
+// every handler behind it stay byte-identical across editions.
+func (h *handlers) allowedClusterIDs(r *http.Request) ([]string, bool) {
+	if !auth.MultiTenantEnabled {
+		return nil, false
+	}
+	org := auth.ContextTenantID(r)
+	if org == "" || org == auth.DefaultTenantName {
+		return nil, false
+	}
+	return nil, false
+}
+
+// scopeQueryForRequest applies read-side isolation to a public PromQL query.
+//
+// Org isolation is the HARD boundary and is applied unconditionally. Cluster
+// scoping is the selector WITHIN an org, so `?scope=fleet` skips only that: the
+// caller is asking for a roll-up over clusters its org already owns — exactly
+// the set the Fleet page lists. Widening can never cross an org, because
+// scopeQueryByTenant still pins tenant_id to the resolved org in EE; in OSS the
+// whole VM belongs to the single tenant anyway (see activeTenantID).
+//
+// This deliberately mirrors handleAdminMetricsQuery, which has shipped with the
+// same tenant-only shape since Spec #09 V2 — the fleet path reuses an existing
+// trust model rather than introducing a new one.
+func (h *handlers) scopeQueryForRequest(r *http.Request, q string) string {
+	tenant := h.activeTenantID(r)
+
+	if r.URL.Query().Get("scope") == fleetScope {
+		// Widening removes the cluster selector, which makes tenant_id the ONLY
+		// thing between this read and another org's series — the per-cluster
+		// path's fail-closed sentinel is gone. So fail closed on the org axis
+		// too: in multi-tenant an unresolved org yields a sentinel that matches
+		// nothing, rather than an entirely unscoped query. OSS keeps the empty
+		// tenant, where it is the normal single-tenant signal (nothing stamps
+		// tenant_id and the whole VM belongs to this install).
+		if auth.MultiTenantEnabled && tenant == "" {
+			tenant = noTenantSentinel
+		}
+		// Dropping the cluster pin also drops the confinement it was providing.
+		// GET /clusters hides clusters owned by teams the caller isn't in
+		// (scopeClustersByTeam), and switching to one is guarded — so before
+		// this scope existed, a per-cluster read could only ever describe a
+		// cluster the caller was entitled to. A fleet read must reinstate that
+		// boundary explicitly, or it hands a team member the cost, node and pod
+		// counts of clusters their own cluster list deliberately omits.
+		if ids, narrow := h.allowedClusterIDs(r); narrow {
+			q = scopeQueryByAllowedClusters(q, ids)
+		}
+		return scopeQueryByTenant(q, tenant)
+	}
+
+	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
+	return scopeQueryByTenant(q, tenant)
+}
+
+// metricSelectorRE matches PromQL label selectors — the `{...}` chunk
+// that follows a metric name or appears bare (e.g. `{source="hubble"}`).
+// The simple `\{([^}]*)\}` pattern is enough because none of our query
+// shapes include nested braces; label values can contain them in
+// principle but all of ours are plain identifiers.
+var metricSelectorRE = regexp.MustCompile(`\{([^}]*)\}`)
+
+// bareMetricRE matches metric references that follow our agent's
+// naming convention (one of these prefixes + `_` + body). Extend the
+// list when a new metric family ships from the agent.
+//
+// Phase 2 of the Universal Data Plane Plan introduced two more
+// scrape sources whose canonical metric names sit outside the
+// original five-prefix list:
+//
+//   - `kubelet_*`  emitted by the agent for kubelet_volume_stats_*
+//     (Day 1 of Phase 1)
+//   - `kube_*`     emitted by kube-state-metrics scraped via vmagent
+//     (Phase 2 Day 2-3)
+//
+// Without these prefixes, queries like `count(kube_pod_info)` or
+// `count(kubelet_volume_stats_used_bytes)` would leave VictoriaMetrics
+// unscoped, leaking samples across clusters that share the same VM.
+// Fix surfaced in Phase 2 in-vivo testing — the coverage banner
+// reported KSM as ACTIVE even when its cluster_id didn't match.
+//
+// Identifiers used as label names elsewhere — `cluster_id`, `pod_uid`,
+// and any future `pod_*` label — would also match this regex. Two
+// guards keep them from being misidentified as metric references:
+// step 2 of scopeQueryByCluster skips text inside `{...}` selectors,
+// AND skips text inside `by(...)` / `without(...)` aggregation clauses
+// (see groupingClauseRE). Anything outside both is a real metric ref.
+// E1 WS-C added `pv` for the OpenCost cost families: most of them
+// already sit under covered prefixes (node_total_hourly_cost,
+// container_cpu_allocation, pod_pvc_allocation) but `pv_hourly_cost`
+// did not — an unscoped `sum(pv_hourly_cost)` would have summed
+// EVERY tenant's volume costs on a shared VM. Exactly the
+// multi-cluster leak the lifecycle demo plan warned about.
+var bareMetricRE = regexp.MustCompile(
+	`\b(?:node|pod|container|kubebolt|kubelet|kube|hubble|pv)_[a-zA-Z0-9_]+\b`,
+)
+
+// groupingClauseRE matches the start of a PromQL aggregation grouping
+// clause: `by(`, `by (`, `without(`, `without (`. The position right
+// after the opening `(` is used to walk to the matching `)` so the
+// inner identifiers — which are label names, not metric refs — can be
+// excluded from pass 2 injection.
+var groupingClauseRE = regexp.MustCompile(`\b(?:by|without)\s*\(`)
+
 // scopeQueryByCluster injects `cluster_id="<uid>"` into every metric
 // reference in a PromQL expression so a query can't accidentally sum
 // series from other clusters that happen to report to the same VM.
@@ -271,8 +369,15 @@ func scopeQueryByTenant(promQL, tenantID string) string {
 //     appended, walking the string so label names inside selectors / `by(...)`
 //     clauses aren't mistaken for metrics.
 func injectLabelMatcher(promQL, labelName, value string) string {
-	injected := fmt.Sprintf("%s=%q", labelName, value)
+	return injectMatcherExpr(promQL, labelName, fmt.Sprintf("%s=%q", labelName, value))
+}
 
+// injectMatcherExpr is injectLabelMatcher with the matcher supplied verbatim,
+// so a caller can use an operator other than `=` — specifically `=~` for a set
+// of allowed values (see scopeQueryByAllowedClusters). `labelName` is still
+// needed on its own for the idempotency check: a selector that already carries
+// the label is left alone regardless of which operator it used.
+func injectMatcherExpr(promQL, labelName, injected string) string {
 	// Pass 0: mask quoted string literals so their content can't be
 	// misread as braces or metric refs by the later passes.
 	masked, saved := maskQuotedStrings(promQL)
@@ -502,12 +607,11 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "query, start, end, and step are all required")
 		return
 	}
-
 	// Strip any client-supplied tenant_id/cluster_id so the server's own
 	// injection below is authoritative (see stripReservedScopeLabels).
 	q = stripReservedScopeLabels(q)
-	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
-	q = scopeQueryByTenant(q, h.activeTenantID(r))
+
+	q = h.scopeQueryForRequest(r, q)
 
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
@@ -560,8 +664,7 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	// Strip any client-supplied tenant_id/cluster_id so the server's own
 	// injection below is authoritative (see stripReservedScopeLabels).
 	q = stripReservedScopeLabels(q)
-	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
-	q = scopeQueryByTenant(q, h.activeTenantID(r))
+	q = h.scopeQueryForRequest(r, q)
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {
@@ -607,11 +710,11 @@ func (h *handlers) handleAdminMetricsQuery(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusBadRequest, "query is required")
 		return
 	}
-	// kubebolt_* are tenant-scoped: skip cluster scoping but still filter by
-	// org so an admin sees only their own ingest activity. No-op in OSS.
 	// Strip any client-supplied tenant_id/cluster_id so the server's own
 	// injection below is authoritative (see stripReservedScopeLabels).
 	q = stripReservedScopeLabels(q)
+	// kubebolt_* are tenant-scoped: skip cluster scoping but still filter by
+	// org so an admin sees only their own ingest activity. No-op in OSS.
 	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
@@ -655,11 +758,11 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 		respondError(w, http.StatusBadRequest, "query, start, end, and step are all required")
 		return
 	}
-	// Tenant-scope the kubebolt_* range query (cluster scoping skipped — see
-	// handleAdminMetricsQuery). No-op in OSS.
 	// Strip any client-supplied tenant_id/cluster_id so the server's own
 	// injection below is authoritative (see stripReservedScopeLabels).
 	q = stripReservedScopeLabels(q)
+	// Tenant-scope the kubebolt_* range query (cluster scoping skipped — see
+	// handleAdminMetricsQuery). No-op in OSS.
 	q = scopeQueryByTenant(q, h.activeTenantID(r))
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
@@ -696,21 +799,4 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
-}
-
-// allowedClusterIDs returns the cluster_ids this caller may read, or nil when
-// no narrowing applies. OSS is single-org and has no team ownership of
-// clusters, so nothing ever narrows; the EE build layers team scoping on top
-// (a non-admin sees only agent-proxy clusters owned by a team they belong to).
-// Kept as the single seam cluster_scope.go consults so the middleware and
-// every handler behind it stay byte-identical across editions.
-func (h *handlers) allowedClusterIDs(r *http.Request) ([]string, bool) {
-	if !auth.MultiTenantEnabled {
-		return nil, false
-	}
-	org := auth.ContextTenantID(r)
-	if org == "" || org == auth.DefaultTenantName {
-		return nil, false
-	}
-	return nil, false
 }

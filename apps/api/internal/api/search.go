@@ -3,6 +3,8 @@ package api
 import (
 	"net/http"
 	"strings"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 type searchResult struct {
@@ -11,6 +13,10 @@ type searchResult struct {
 	Kind         string `json:"kind"`
 	ResourceType string `json:"resourceType"`
 	Status       string `json:"status,omitempty"`
+	// Cluster labels fleet-scope hits with the cluster they live in
+	// (display name when set, context name otherwise). Empty on
+	// single-cluster searches — the shape is backward-compatible.
+	Cluster string `json:"cluster,omitempty"`
 }
 
 func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
@@ -20,25 +26,36 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fleet scope (E2 Fleet C1): fan out across every searchable cluster
+	// in the caller's org instead of just the request's cluster.
+	if r.URL.Query().Get("scope") == "fleet" {
+		h.handleFleetSearch(w, r, query)
+		return
+	}
+
 	conn := h.manager.Connector(r.Context())
 	if conn == nil {
 		respondError(w, http.StatusServiceUnavailable, "cluster not connected")
 		return
 	}
+	respondJSON(w, http.StatusOK, searchConnector(conn, query, 50))
+}
 
-	// Search across all resource types using existing listers
-	types := []string{
-		"pods", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs",
-		"services", "ingresses", "networkpolicies", "configmaps", "secrets", "nodes", "namespaces",
-		"pvcs", "pvs", "hpas", "storageclasses", "pdbs",
-		"certificates", "argocdapps", "vpas", "serviceaccounts",
-		"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies",
-	}
+// searchTypes is the resource-type sweep a search covers — shared by
+// the single-cluster path and the fleet fan-out.
+var searchTypes = []string{
+	"pods", "deployments", "statefulsets", "daemonsets", "jobs", "cronjobs",
+	"services", "ingresses", "networkpolicies", "configmaps", "secrets", "nodes", "namespaces",
+	"pvcs", "pvs", "hpas", "storageclasses", "pdbs",
+	"certificates", "argocdapps", "vpas", "serviceaccounts",
+	"ciliumnetworkpolicies", "ciliumclusterwidenetworkpolicies",
+}
 
-	var results []searchResult
-	limit := 50
-
-	for _, rt := range types {
+// searchConnector runs the name-substring sweep against one cluster's
+// connector, capped at limit results.
+func searchConnector(conn *cluster.Connector, query string, limit int) []searchResult {
+	results := []searchResult{}
+	for _, rt := range searchTypes {
 		if len(results) >= limit {
 			break
 		}
@@ -59,8 +76,7 @@ func (h *handlers) handleSearch(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 	}
-
-	respondJSON(w, http.StatusOK, results)
+	return results
 }
 
 func resourceTypeToKind(rt string) string {
@@ -70,9 +86,9 @@ func resourceTypeToKind(rt string) string {
 		"services": "Service", "ingresses": "Ingress", "networkpolicies": "NetworkPolicy",
 		"configmaps": "ConfigMap", "secrets": "Secret", "nodes": "Node", "namespaces": "Namespace",
 		"pvcs": "PVC", "pvs": "PV", "hpas": "HPA", "storageclasses": "StorageClass",
-		"pdbs": "PodDisruptionBudget",
+		"pdbs":         "PodDisruptionBudget",
 		"certificates": "Certificate", "argocdapps": "Application", "vpas": "VerticalPodAutoscaler",
-		"serviceaccounts": "ServiceAccount",
+		"serviceaccounts":       "ServiceAccount",
 		"ciliumnetworkpolicies": "CiliumNetworkPolicy", "ciliumclusterwidenetworkpolicies": "CiliumClusterwideNetworkPolicy",
 	}
 	if k, ok := kinds[rt]; ok {

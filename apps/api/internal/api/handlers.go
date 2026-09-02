@@ -151,7 +151,9 @@ func (h *handlers) liveCopilotConfig() config.CopilotConfig {
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	clusters := h.manager.ListClusters()
-	respondJSON(w, http.StatusOK, h.filterClustersByOrg(r, clusters))
+	clusters = h.filterClustersByOrg(r, clusters)
+	clusters = h.scopeClustersByTeam(r, clusters)
+	respondJSON(w, http.StatusOK, clusters)
 }
 
 // filterClustersByOrg drops clusters the requesting org may not see (A.5).
@@ -202,6 +204,16 @@ func (h *handlers) filterClustersByOrg(r *http.Request, clusters []cluster.Clust
 		out = append(out, c)
 	}
 	return out
+}
+
+// scopeClustersByTeam narrows an org's cluster list to the agent-proxy clusters
+// the caller's teams own. Runs after filterClustersByOrg (org is the hard
+// wall; team is the intra-org refinement). OSS is single-tenant and has no
+// teams, so the list is returned unchanged; the EE build layers team ownership
+// on top. Kept as the one seam GET /clusters and the fleet search fan-out
+// (search_fleet.go) consult, so both stay byte-identical across editions.
+func (h *handlers) scopeClustersByTeam(_ *http.Request, clusters []cluster.ClusterInfo) []cluster.ClusterInfo {
+	return clusters
 }
 
 func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {

@@ -546,6 +546,25 @@ GET  /insights
   Params: ?severity=critical,warning&resolved=false
   Response: { items: [Insight], total }
 
+GET  /search
+  Name-substring search across 24 resource types via the informer listers;
+  outside requireConnector (the single-cluster path answers its own 503).
+  Params: ?q= (min 3 chars)&scope=fleet
+  Response (default): [ { name, namespace, kind, resourceType, status } ]
+  Response (scope=fleet): { results: [ ...same + cluster ], clustersSearched }
+    Fan-out over every cluster the caller may see (same filters as
+    GET /clusters), 3s per cluster, 25 hits per cluster, 50 merged, sorted
+    by cluster label then name so identical workloads render adjacent.
+
+GET  /metrics/query, /metrics/query_range
+  PromQL pass-through to VictoriaMetrics. The server strips any client-sent
+  tenant_id / cluster_id matcher and injects its own: cluster_id pinned to
+  the active cluster's kube-system UID (a sentinel that matches nothing when
+  unknown) plus tenant_id in multi-tenant builds.
+  Params: ?query=&time= | ?query=&start=&end=&step=  (+ &scope=fleet)
+    scope=fleet drops ONLY the cluster pin so `by (cluster_id)` roll-ups can
+    span the fleet; the tenant pin stays (EE) and OSS is single-tenant anyway.
+
 GET  /findings
   Security findings from the persisted store (Trivy Operator, Kyverno, CIS) —
   org-scoped, active by default, outside requireConnector.

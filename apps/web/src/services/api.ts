@@ -821,6 +821,14 @@ export const api = {
     }>(`${API_BASE}/runtime-events${qs ? `?${qs}` : ''}`)
   },
 
+  // Fleet-scoped search (E2 Fleet C1): fans out across every searchable
+  // cluster in the caller's org; hits carry the cluster they live in.
+  searchFleet: (query: string) =>
+    fetchJSON<{
+      results: Array<{ name: string; namespace: string; kind: string; resourceType: string; status: string; cluster?: string }>
+      clustersSearched: number
+    }>(`${API_BASE}/search?scope=fleet&q=${encodeURIComponent(query)}`),
+
 
   // Resource actions. The optional `source` tags the audit log entry —
   // UI buttons leave it default ("ui"); Copilot proposal cards pass
@@ -1311,24 +1319,37 @@ export const api = {
     deleteRequest<{ ok: boolean }>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
 
   // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
-  queryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>
+  //
+  // `scope: 'fleet'` widens the read from the active cluster to every cluster
+  // in the org — the backend then skips cluster_id injection but STILL pins
+  // tenant_id (see scopeQueryForRequest). Only the Fleet roll-up uses it; every
+  // per-cluster dashboard omits it and keeps the default scoping.
+  queryMetricsRange: (params: {
+    query: string
+    start: number
+    end: number
+    step: string
+    scope?: 'fleet'
+  }) =>
     fetchJSON<PromRangeResponse>(
       `${API_BASE}/metrics/query_range${buildQuery({
         query: params.query,
         start: params.start,
         end: params.end,
         step: params.step,
+        scope: params.scope,
       })}`
     ),
 
   // Instant PromQL query — single-point lookup. Used by panels that need
   // "current value" or topN snapshots, where running a range query and
   // picking the last point would be wasteful.
-  queryMetrics: (params: { query: string; time?: number }) =>
+  queryMetrics: (params: { query: string; time?: number; scope?: 'fleet' }) =>
     fetchJSON<PromVectorResponse>(
       `${API_BASE}/metrics/query${buildQuery({
         query: params.query,
         time: params.time,
+        scope: params.scope,
       })}`
     ),
 
