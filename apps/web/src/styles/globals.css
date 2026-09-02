@@ -120,13 +120,16 @@
      QA flagged the 700 forest green as off-brand at hero size; #059669
      (= st-ok light) keeps ≥3.5:1 on its tile and matches the product
      green family. Static uses the deep brand green.
-     NOTE: dark now runs watching == static == #00e07a (one brand green).
-     Light does not, on purpose: matching it would send watching to the
-     700 this QA note rejected, and the brand's paper accent #00b864 only
-     reaches 2.61:1 on white, under the 3:1 floor. Open question is whether
-     to instead move static down to #059669 so the rule holds here too. */
-  --kobi-sigil-static: #009a54;
-  --kobi-sigil-watching: #059669;
+     Resting state now carries the brand green in both themes: #00e07a on
+     dark, #00b864 on light, which is the paper accent the brand sheet fixes
+     for light surfaces. Deliberate trade-off: #00b864 reads 2.61:1 on white,
+     under the 3:1 floor for a graphical object. It is acceptable here because
+     colour is not the only channel — each state carries its own animation
+     (watching pulses the dot, investigating expands two rings, awaiting
+     marches a dashed circle), so state survives without relying on hue.
+     amber/sky stay on the 700 tier, where they do clear 3:1. */
+  --kobi-sigil-static: #00b864;
+  --kobi-sigil-watching: #00b864;
   --kobi-sigil-investigating: #b45309;
   --kobi-sigil-awaiting: #0369a1;
   /* Kobi-scoped status. The amber dim uses a LIVELIER base than the
