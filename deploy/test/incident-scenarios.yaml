@@ -1,0 +1,101 @@
+# KubeBolt incident-scenario demos.
+#
+# Two intentionally-broken workloads used to exercise KubeBolt's
+# incident detection (insights, Kobi, Autopilot) against a real cluster:
+#
+# - image-app   — pulls nginx:does-not-exist-2099 → ImagePullBackOff
+# - oomy-app    — Python allocates 80 MiB under a 128 MiB limit; lower the
+#                 limit (e.g. --limits=memory=64Mi) or raise size_mb to OOMKill
+#
+# Both ship with `replicas: 0` — scale to 1 to trigger the incident,
+# scale back to 0 (or `kubectl delete ns kubebolt-test`) to clean up.
+#
+# Apply:
+#   kubectl apply -f deploy/test/incident-scenarios.yaml
+#
+# Trigger:
+#   kubectl -n kubebolt-test scale deploy/image-app --replicas=1
+#   kubectl -n kubebolt-test scale deploy/oomy-app  --replicas=1
+#
+# Clean up:
+#   kubectl delete ns kubebolt-test
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubebolt-test
+  labels:
+    purpose: kubebolt-incident-demos
+    owner: leafar
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: image-app
+  namespace: kubebolt-test
+  labels:
+    app: image-app
+    incident: image-pull-backoff
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: image-app
+  template:
+    metadata:
+      labels:
+        app: image-app
+    spec:
+      containers:
+        - name: app
+          image: nginx:does-not-exist-2099
+          ports:
+            - containerPort: 80
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oomy-app
+  namespace: kubebolt-test
+  labels:
+    app: oomy-app
+    incident: crashloop-oom
+spec:
+  replicas: 0
+  selector:
+    matchLabels:
+      app: oomy-app
+  template:
+    metadata:
+      labels:
+        app: oomy-app
+    spec:
+      containers:
+        - name: app
+          image: python:3.12-alpine
+          command: ["python", "-u", "-c"]
+          args:
+            - |
+              import time, sys
+              size_mb = 80
+              print(f"[oomy-app] allocating {size_mb} MiB of RSS…", flush=True)
+              data = bytearray(size_mb * 1024 * 1024)
+              for i in range(0, len(data), 4096):
+                  data[i] = 1
+              print(f"[oomy-app] allocated. holding the buffer + sleeping forever.", flush=True)
+              while True:
+                  time.sleep(3600)
+          resources:
+            requests:
+              cpu: 10m
+              memory: 96Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
