@@ -404,6 +404,11 @@ KubeBolt includes built-in authentication with three roles (Admin, Editor, Viewe
 | `KUBEBOLT_ADMIN_PASSWORD` | (auto-generated) | Initial admin password. Printed to logs if not set |
 | `KUBEBOLT_JWT_SECRET` | (auto-generated) | JWT signing secret. Set explicitly to persist sessions across restarts |
 | `KUBEBOLT_DATA_DIR` | `./data` | Directory for the embedded user database |
+| `KUBEBOLT_WATCHLIST_CLIENT` | `false` | client-go 1.35 streaming initial list. Keep `false` unless every cluster is reached directly (never through an agent) — over the tunnel a dropped watch event silently shortens the informer cache |
+| `KUBEBOLT_INSIGHTS_RETENTION_HORIZON` | `168h` | Resolved insights older than this are pruned by the hourly retention pass |
+| `KUBEBOLT_FINDINGS_RETENTION_HORIZON` | `720h` | Resolved security findings and runtime events older than this are pruned |
+| `KUBEBOLT_AUDIT_RETENTION_HORIZON` | `2160h` | Action / access / admin audit entries older than this are pruned |
+| `KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON` | `2160h` | Kobi conversations older than this are pruned |
 
 **Local development:**
 ```bash
