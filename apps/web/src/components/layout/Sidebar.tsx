@@ -51,6 +51,7 @@ import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import type { ClusterOverview } from '@/types/kubernetes'
 import { eePinnedNavItems } from '@/ee/registry'
 import { useMetricsOnly } from '@/hooks/useMetricsOnly'
+import { useAdminLanding } from '@/hooks/useAdminLanding'
 
 interface SidebarProps {
   overview?: ClusterOverview
@@ -296,6 +297,11 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
   const scope = useScope()
   const variant: SidebarVariant = scope === 'global' ? 'global' : 'cluster'
   const sections = variant === 'global' ? globalSections : clusterSections
+  // Primer hub de administración que este usuario puede abrir, o null si ninguno.
+  // Compartido con el menú del avatar (Topbar) para que ambos ofrezcan el mismo
+  // destino: dos derivaciones distintas acabarían mostrando una entrada que
+  // lleva a un 403.
+  const adminLanding = useAdminLanding()
   const [clickCount, setClickCount] = useState(0)
   const [celebrating, setCelebrating] = useState(false)
   const [aboutOpen, setAboutOpen] = useState(false)
@@ -609,8 +615,34 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
         )}
       </nav>
 
-      {/* Feedback + About */}
+      {/* Administration (sólo DENTRO de un cluster) + Feedback + About */}
       <div className="px-2 py-3 border-t border-kb-border space-y-0.5">
+        {/* En global, Administration ya tiene su propia sección arriba con sus
+            hubs. Aquí, dentro de un cluster, va UNA entrada que navega a ella —
+            no el árbol entero.
+
+            No contradice el `variant !== 'global'` de arriba: aquella regla
+            existe para que identidad/agentes/IA no vivan en el mismo menú que
+            Pods, donde un cluster metrics-only apagaba media administración.
+            Un enlace que SALE de ahí no tiene ese problema, y este grupo del
+            pie ya es la excepción para lo que no es del cluster — Feedback y
+            About llevan aquí desde siempre y tampoco lo son.
+
+            El motivo de existir: un usuario en producción preguntó cómo llegar
+            a la administración de su cuenta estando dentro de un cluster. La
+            respuesta era pulsar «Fleet» en el topbar, que nombra sus clusters,
+            no su cuenta. Navegar aquí NO cambia el cluster activo — ese es
+            estado del backend, no de la ruta. */}
+        {variant !== 'global' && adminLanding && (
+          <NavLink
+            to={adminLanding}
+            title={collapsed ? 'Administration' : undefined}
+            className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] text-kb-text-primary hover:bg-kb-card transition-colors"
+          >
+            <Shield className="w-4 h-4 shrink-0" />
+            {!collapsed && <span>Administration</span>}
+          </NavLink>
+        )}
         {/* Links to the public feedback form with the signed-in email prefilled,
             in a new tab so the operator never loses their place in the app. */}
         <a
