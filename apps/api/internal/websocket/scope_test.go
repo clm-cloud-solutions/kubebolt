@@ -38,7 +38,7 @@ func TestHub_ScopedDeliveryFiltersByCluster(t *testing.T) {
 	go h.Run()
 
 	register := func(tenant, cluster string) *Client {
-		c := &Client{send: make(chan []byte, 8), subs: map[string]bool{}}
+		c := &Client{send: make(chan []byte, 8)}
 		c.SetScope(tenant, cluster)
 		h.register <- c
 		return c

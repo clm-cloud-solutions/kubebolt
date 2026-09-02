@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"reflect"
 	"regexp"
 	"sort"
 	"strconv"
@@ -26,6 +27,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -168,6 +170,33 @@ type metricsCollector interface {
 }
 
 // NewConnector creates a new cluster connector using the default kubeconfig context.
+// informerResync is the SharedInformerFactory resync period.
+//
+// It was 30 SECONDS until 2026-08-19 (finding #42). Two things make that both
+// expensive and pointless:
+//
+//  1. A resync does NOT re-fetch from the apiserver. client-go re-delivers the
+//     informer's EXISTING cache to every handler as UpdateFunc(old, new) with
+//     old == new. Actual re-listing is the Reflector's job and happens when the
+//     watch breaks or the resourceVersion expires — on a different trigger
+//     entirely. Measured in isolation: 3 pods, zero real changes, ~3 resync
+//     windows produced 9 UpdateFunc calls.
+//  2. Our handler does not reconcile. onResourceChange broadcasts a notification
+//     and schedules a debounced topology rebuild — both are change-driven, and
+//     neither has an action that could have failed and want retrying. Resync
+//     exists for CONTROLLERS that need that second chance; we are not one.
+//
+// So at 30s every object in all 46 informers ran through the handler twice a
+// minute, taking c.mu once per object to reschedule a rebuild that coalesces to
+// one — and, before finding #43 capped the payload, pushing the whole object at
+// every connected browser.
+//
+// What live updates actually depend on is the WATCH, which is untouched by this
+// value: a real change still arrives in milliseconds. 10 minutes follows the
+// Kubernetes convention and is deliberately not 0 — it keeps a cheap safety net
+// in case a rebuild is ever missed, without paying for it 20 times an hour.
+const informerResync = 10 * time.Minute
+
 func NewConnector(kubeconfigPath string, wsHub *websocket.Hub) (*Connector, error) {
 	restConfig, err := clientcmd.BuildConfigFromFlags("", kubeconfigPath)
 	if err != nil {
@@ -225,7 +254,7 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		log.Printf("Warning: metrics client creation failed: %v", err)
 	}
 
-	factory := informers.NewSharedInformerFactoryWithOptions(clientset, 30*time.Second, stripManagedFieldsOption)
+	factory := informers.NewSharedInformerFactoryWithOptions(clientset, informerResync, stripManagedFieldsOption)
 
 	c := &Connector{
 		restConfig:    restConfig,
@@ -256,8 +285,12 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 		log.Printf("Warning: failed to read kube-system UID for cluster %q: %v — VM queries for this cluster will return empty results until reconnect", clusterName, err)
 	}
 
-	c.permissions = probePermissions(clientset)
-	c.canWrite.Store(probeCanWrite(clientset))
+	// The probe runs on its own client: client-go's default QPS 5 / Burst 10
+	// throttles the probe's own SSAR burst hard enough that queueing waits blow
+	// past checkSSAR's deadline and get recorded as denials. See newProbeClientset.
+	probeClient := newProbeClientset(restConfig, clientset)
+	c.permissions = probePermissions(probeClient)
+	c.canWrite.Store(probeCanWrite(probeClient))
 	c.setupInformers()
 	return c, nil
 }
@@ -388,7 +421,7 @@ func (c *Connector) setupInformers() {
 		nsFactories = make(map[string]informers.SharedInformerFactory, len(nsNamespaces))
 		for _, ns := range nsNamespaces {
 			nsFactories[ns] = informers.NewSharedInformerFactoryWithOptions(
-				c.clientset, 30*time.Second, informers.WithNamespace(ns), stripManagedFieldsOption,
+				c.clientset, informerResync, informers.WithNamespace(ns), stripManagedFieldsOption,
 			)
 		}
 	}
@@ -744,7 +777,69 @@ func (c *Connector) broadcast(msgType string, obj interface{}) {
 	if c.broadcastGate != nil && !c.broadcastGate.Load() {
 		return
 	}
-	c.wsHub.BroadcastScoped(c.wsTenant, c.wsCluster, msgType, obj)
+	c.wsHub.BroadcastScoped(c.wsTenant, c.wsCluster, msgType, resourceRef(obj))
+}
+
+// resourceRef reduces an informer object to the NOTIFICATION the WebSocket
+// actually needs: which object changed, not what it now contains.
+//
+// Finding #43: this used to marshal the raw informer object. Secrets have an
+// informer like everything else, so every Secret in the cluster went out in full
+// — `Data map[string][]byte` renders as base64 of the real contents — to every
+// authenticated browser, on every change AND on every 30s informer resync. One
+// observed burst carried a 468 KB Helm release Secret
+// (`sh.helm.release.v1.trivy-operator.v2`) among ~863 KB in 7ms. The redaction
+// that exists in GetResourceYAML guards the YAML viewer only; nothing guarded
+// this path, and /ws has no role check, so a `viewer` received it too.
+//
+// The client never wanted the body. `hooks/useWebSocket.ts` reads exactly
+// `data.metadata.namespace` and `data.metadata.name` to invalidate a query key
+// and discards the rest — forty bytes used out of 468 818.
+//
+// The shape below KEEPS `metadata.namespace` / `metadata.name` so the deployed
+// frontend keeps working with no change, which is what lets this ship as a
+// backend-only fix. `kind` is added because it costs nothing and removes the
+// limitation the frontend comment complains about ("the kind isn't on the wire"),
+// which forces detail-page invalidation to match on ns+name alone.
+func resourceRef(obj interface{}) map[string]interface{} {
+	// Deletes can arrive wrapped when the watch missed the final state.
+	if tomb, ok := obj.(cache.DeletedFinalStateUnknown); ok {
+		obj = tomb.Obj
+	}
+	ref := map[string]interface{}{
+		"kind": refKind(obj),
+		"metadata": map[string]interface{}{
+			"namespace": "",
+			"name":      "",
+		},
+	}
+	accessor, err := meta.Accessor(obj)
+	if err != nil {
+		// Not a Kubernetes object (or a tombstone we could not unwrap). Emit the
+		// bare ref rather than dropping the event: the client debounces on it, and
+		// a notification with empty names still triggers the overview refresh.
+		return ref
+	}
+	ref["metadata"] = map[string]interface{}{
+		"namespace": accessor.GetNamespace(),
+		"name":      accessor.GetName(),
+		"uid":       string(accessor.GetUID()),
+	}
+	return ref
+}
+
+// refKind derives the kind from the concrete Go type. Objects handed out by a
+// typed informer have an EMPTY TypeMeta — client-go does not populate it — so
+// GetObjectKind() cannot be used here.
+func refKind(obj interface{}) string {
+	t := reflect.TypeOf(obj)
+	if t == nil {
+		return ""
+	}
+	for t.Kind() == reflect.Ptr {
+		t = t.Elem()
+	}
+	return t.Name()
 }
 
 func (c *Connector) onResourceChange(action string, obj interface{}) {

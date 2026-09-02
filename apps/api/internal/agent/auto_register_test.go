@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
@@ -272,3 +273,68 @@ func TestHasCapability(t *testing.T) {
 		}
 	}
 }
+
+// TestMaybeAutoRegister_CapabilityLessAgentDoesNotDemoteProxyCapableCluster pins
+// finding #41. A DaemonSet puts a proxy-capable agent on every node; a Mode C
+// (promread) Deployment adds one more that advertises NO capabilities. In
+// production 2026-08-19 that single pod registered one second after the DaemonSet
+// and its AddMetricsOnlyCluster deleted the cluster's agent-proxy context, so
+// every subsequent request 403'd with "you do not have access to this cluster" —
+// on a cluster whose owner was an org admin AND a member of the owning team.
+//
+// The cluster's mode is the UNION over its live agents, not the opinion of
+// whichever one registered last.
+func TestMaybeAutoRegister_CapabilityLessAgentDoesNotDemoteProxyCapableCluster(t *testing.T) {
+	reg := &fakeRegistrar{}
+	registry := channel.NewAgentRegistry()
+
+	// The DaemonSet is already up: one proxy-capable agent is live for this cluster.
+	registry.Register(channel.NewAgent(
+		"c-eks", "ds-node-1", "ip-10-0-36-79",
+		&auth.AgentIdentity{TenantID: "org-1", Mode: auth.ModeIngestToken},
+		[]string{"metrics", "kube-proxy"}, nil,
+	))
+
+	// Now the promread pod says Hello with no capabilities at all.
+	got := maybeAutoRegisterCluster(reg, registry, true, "c-eks", "yagan-eks-prod",
+		nil, "")
+
+	if len(reg.metricsAdded) != 0 {
+		t.Fatalf("cluster was demoted to metrics-only while a proxy-capable agent is live: %+v", reg.metricsAdded)
+	}
+	if got {
+		t.Errorf("maybeAutoRegisterCluster = true; a no-op re-registration should report false")
+	}
+}
+
+// The other direction must keep working: with no proxy-capable agent anywhere,
+// a capability-less agent still registers the cluster as metrics-only.
+func TestMaybeAutoRegister_DemotesWhenNoProxyCapableAgentExists(t *testing.T) {
+	reg := &fakeRegistrar{}
+	registry := channel.NewAgentRegistry()
+
+	// A metrics-only sibling is live, but it cannot proxy either.
+	registry.Register(channel.NewAgent(
+		"c-metrics", "sibling", "node-b",
+		&auth.AgentIdentity{TenantID: "org-1", Mode: auth.ModeIngestToken},
+		[]string{"metrics"}, nil,
+	))
+
+	got := maybeAutoRegisterCluster(reg, registry, true, "c-metrics", "metrics-cluster",
+		[]string{"metrics"}, "")
+
+	if !got {
+		t.Fatal("a cluster with no proxy-capable agent should register as metrics-only")
+	}
+	if len(reg.metricsAdded) != 1 {
+		t.Errorf("expected exactly one AddMetricsOnlyCluster call, got %+v", reg.metricsAdded)
+	}
+	if len(reg.added) != 0 {
+		t.Errorf("must not register agent-proxy for a capability-less agent: %+v", reg.added)
+	}
+}
+
+// (The EE build adds a third case here: another org's proxy-capable agent on the
+// same cluster_id must not keep this org's cluster out of metrics-only. OSS is
+// single-tenant — HasProxyCapableAgent is called with an empty tenant and the
+// union spans every live agent of the cluster — so that case does not exist.)

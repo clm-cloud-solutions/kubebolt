@@ -1,7 +1,6 @@
 package websocket
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
 	"sync"
@@ -27,10 +26,9 @@ var upgrader = gorilla.Upgrader{
 
 // Client represents a single WebSocket connection.
 type Client struct {
-	hub       *Hub
-	conn      *gorilla.Conn
-	send      chan []byte
-	subs      map[string]bool
+	hub  *Hub
+	conn *gorilla.Conn
+	send chan []byte
 	// tenant/cluster scope the events this client wants (A.4). Empty = receive
 	// every cluster's events (the OSS-degenerate default). EE sets these so a
 	// tenant's client never sees another tenant's resource/insight events.
@@ -65,22 +63,31 @@ func (c *Client) matchesScope(tenant, cluster string) bool {
 	return c.tenant == tenant && c.cluster == cluster
 }
 
-// subscribeMessage is the incoming subscribe/unsubscribe request.
-type subscribeMessage struct {
-	Action string   `json:"action"` // "subscribe" or "unsubscribe"
-	Types  []string `json:"types"`
-}
-
-// IsSubscribed checks whether the client subscribes to a given message type.
-func (c *Client) IsSubscribed(msgType string) bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	// If no subscriptions set, receive everything
-	if len(c.subs) == 0 {
-		return true
-	}
-	return c.subs[msgType]
-}
+// NOTE — there is deliberately no per-message-type subscription here.
+//
+// One existed until 2026-08-19 and had never worked: the client sent
+// `{"type":"subscribe","resources":["pods",…]}` while this file decoded
+// `{"action":…,"types":…}`, so neither field ever matched and the subscription
+// set stayed empty. An empty set meant "deliver everything", so the mechanism
+// failed OPEN and looked correct for as long as it existed.
+//
+// It was removed rather than repaired, for two reasons:
+//
+//  1. The vocabularies did not match either. The client listed RESOURCE KINDS
+//     (`pods`, `nodes`) while the gate was consulted with MESSAGE TYPES
+//     (`resource:updated`). Aligning only the field names would have made every
+//     lookup miss and silenced every browser at once — a latent outage sitting
+//     one well-intentioned commit away.
+//  2. After finding #43 reduced broadcasts to small notifications, filtering
+//     buys very little: the highest-volume kinds (Pods, Events) are precisely
+//     the ones the UI needs, so a correct filter would cut a minority of an
+//     already-small payload while risking that some detail page silently stops
+//     updating.
+//
+// What scopes a client today is (tenant, cluster) — see matchesScope — and that
+// is enforced, tested, and enough. If per-kind filtering is ever wanted, design
+// it against the `kind` field that #43 put on the wire, and change both sides in
+// the same release.
 
 // ServeWS upgrades an HTTP connection to WebSocket and registers the client.
 func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
@@ -93,7 +100,6 @@ func ServeWS(hub *Hub, w http.ResponseWriter, r *http.Request) {
 		hub:  hub,
 		conn: conn,
 		send: make(chan []byte, 256),
-		subs: make(map[string]bool),
 	}
 	hub.register <- client
 	go client.writePump()
@@ -125,22 +131,10 @@ func (c *Client) readPump() {
 			}
 			break
 		}
-		var sub subscribeMessage
-		if err := json.Unmarshal(message, &sub); err != nil {
-			continue
-		}
-		c.mu.Lock()
-		switch sub.Action {
-		case "subscribe":
-			for _, t := range sub.Types {
-				c.subs[t] = true
-			}
-		case "unsubscribe":
-			for _, t := range sub.Types {
-				delete(c.subs, t)
-			}
-		}
-		c.mu.Unlock()
+		// Frames from the client are drained and ignored: the read loop must keep
+		// running for gorilla to process pongs and close frames, but the client
+		// has nothing to tell us — see the note above.
+		_ = message
 	}
 }
 

@@ -15,8 +15,6 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { SetupWizard } from '@/components/setup/SetupWizard'
 import { useScope, survivesDeadCluster } from '@/utils/scope'
 
-const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
-
 // Friendly names for optional-CRD permission keys, so the "not detected" note
 // reads in product terms. Both Cilium CRDs collapse to one "Cilium".
 const ABSENT_INTEGRATION_NAMES: Record<string, string> = {
@@ -44,7 +42,7 @@ export function Layout() {
   // pages describing the whole fleet, invalidating queries nobody there looks
   // at. The one item of the two-scope plan (§5) that isn't cosmetic: the others
   // hide chrome, this one stops spending.
-  useWebSocket(WS_RESOURCES, scope === 'cluster')
+  useWebSocket(scope === 'cluster')
 
   // First-login wizard gate. Fires only for admins on installs where
   // auth is on (the wizard's step 1 is password rotation; meaningless
