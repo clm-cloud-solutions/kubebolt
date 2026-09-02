@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { opencostPromUrlFor, parseOpenCostPrometheus } from '@/utils/opencostPrometheus'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Check, Copy, Eye, EyeOff, Loader2, KeyRound, ExternalLink } from 'lucide-react'
 import { api, type AgentInstallConfig, type AgentIssueTokenResponse } from '@/services/api'
@@ -470,9 +471,38 @@ function buildHelmCommand(cfg: AgentInstallConfig, nodeSelector: Array<{ k: stri
   // (the picker sets metricsSource='promread', so the block above already emits
   // promRead.enabled + url) — here we only flip cost on.
   switch (cfg.opencostMode) {
-    case 'bundled':
+    case 'bundled': {
       flags.push('opencost.enabled=true')
+      // The sub-chart's OWN Prometheus. Omitting it is not a soft default: the
+      // official chart points at prometheus-server.prometheus-system and
+      // OpenCost dies on boot when that name does not resolve.
+      //
+      // ONE source for the URL: when the metrics source is promRead, that URL is
+      // the one — the dedicated field is not even rendered — otherwise the
+      // dedicated field. Never a fallback between them; see opencostPromUrlFor.
+      const promUrl = opencostPromUrlFor(cfg.metricsSource, cfg.promRead?.url, cfg.opencostPrometheusUrl)
+      const target = parseOpenCostPrometheus(promUrl)
+      if (target.kind === 'internal') {
+        flags.push(`opencost.opencost.prometheus.internal.serviceName=${escVal(target.serviceName)}`)
+        flags.push(`opencost.opencost.prometheus.internal.namespaceName=${escVal(target.namespaceName)}`)
+        flags.push(`opencost.opencost.prometheus.internal.port=${target.port}`)
+        if (target.scheme !== 'http') flags.push(`opencost.opencost.prometheus.internal.scheme=${target.scheme}`)
+        if (target.path) flags.push(`opencost.opencost.prometheus.internal.path=${escVal(target.path)}`)
+      } else if (target.kind === 'external') {
+        // internal.enabled defaults TRUE in the official chart, so the external
+        // branch only takes effect once it is turned off explicitly.
+        flags.push('opencost.opencost.prometheus.internal.enabled=false')
+        flags.push('opencost.opencost.prometheus.external.enabled=true')
+        flags.push(`opencost.opencost.prometheus.external.url=${escVal(target.url)}`)
+      } else {
+        // Nothing given. A placeholder is the honest rendering — it makes the
+        // missing piece visible in the command instead of shipping a default
+        // that crash-loops.
+        flags.push('opencost.opencost.prometheus.internal.serviceName=<PROMETHEUS_SERVICE>')
+        flags.push('opencost.opencost.prometheus.internal.namespaceName=<PROMETHEUS_NAMESPACE>')
+      }
       break
+    }
     case 'scrape':
       flags.push(`collectors.exporters.opencost=${escVal(cfg.opencostScrapeUrl?.trim() || '<OPENCOST_METRICS_URL>')}`)
       break

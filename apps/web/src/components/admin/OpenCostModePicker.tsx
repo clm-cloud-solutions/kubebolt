@@ -74,6 +74,11 @@ export function OpenCostModePicker({ cfg, setCfg }: Props) {
   // then changing your mind leaves promRead enabled — and that setting lives in
   // the collapsed Advanced section, so it silently rides along in the command.
   const priorMetricsSource = useRef<AgentInstallConfig['metricsSource']>(undefined)
+  // When the metrics source is already promRead there is exactly ONE Prometheus
+  // in play, so this section asks for nothing: showing a second box for the same
+  // server is an invitation to type it twice and get one of them wrong.
+  const promReadActive = cfg.metricsSource === 'promread'
+  const promReadUrl = cfg.promRead?.url?.trim() ?? ''
 
   const select = (next: Mode) => {
     if (next === mode) return
@@ -170,9 +175,30 @@ export function OpenCostModePicker({ cfg, setCfg }: Props) {
       )}
 
       {mode === 'bundled' && (
-        <p className="text-[10px] text-kb-text-tertiary leading-relaxed pt-1">
-          OpenCost needs a Prometheus for full container allocation — node pricing flows without one, but per-workload attribution is incomplete until you point it at yours (<span className="font-mono">opencost.opencost.prometheus.*</span> in values, or see the agent README).
-        </p>
+        promReadActive ? (
+          <p className="text-[10px] text-kb-text-tertiary leading-relaxed pt-1">
+            OpenCost will query the Prometheus you set under Advanced → Metrics source
+            {promReadUrl ? <> (<span className="font-mono">{promReadUrl}</span>)</> : <> — still empty, so fill it there</>}. One Prometheus, entered once.
+          </p>
+        ) : (
+          <div className="pt-1 space-y-2">
+            <div>
+              <label className={subLabel}>
+                Prometheus URL for OpenCost <span className="text-status-error">*</span>
+              </label>
+              <input
+                type="text"
+                placeholder="https://prometheus.monitoring.svc:9090"
+                value={cfg.opencostPrometheusUrl ?? ''}
+                onChange={(e) => setCfg({ ...cfg, opencostPrometheusUrl: e.target.value })}
+                className={subInput}
+              />
+            </div>
+            <p className="text-[10px] text-kb-text-tertiary leading-relaxed">
+              Required. OpenCost queries a Prometheus to attribute cost to workloads and <em>exits on startup</em> if it cannot reach one — it does not fall back to node pricing. An in-cluster address is recognised by its <span className="font-mono">.svc</span> label; anything else is passed through as an external URL.
+            </p>
+          </div>
+        )
       )}
     </div>
   )

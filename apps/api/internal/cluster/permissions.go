@@ -216,15 +216,7 @@ func newProbeClientset(restConfig *rest.Config, shared kubernetes.Interface) kub
 	if restConfig == nil {
 		return shared
 	}
-	cfg := rest.CopyConfig(restConfig)
-	cfg.QPS = probeQPS
-	cfg.Burst = probeBurst
-	cs, err := kubernetes.NewForConfig(cfg)
-	if err != nil {
-		log.Printf("Warning: permission probe could not build a dedicated client (%v) — falling back to the shared one; the probe will be slower and may under-report", err)
-		return shared
-	}
-	return cs
+	return newDedicatedClientset(restConfig, shared, probeQPS, probeBurst, "the permission probe")
 }
 
 // probePermissions uses SelfSubjectAccessReview to check permissions for all resource types.

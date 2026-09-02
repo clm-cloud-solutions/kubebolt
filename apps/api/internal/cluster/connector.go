@@ -102,7 +102,13 @@ type Connector struct {
 	recentWrites *RecentWritesOverlay
 	mu           sync.RWMutex
 	clusterName  string
-	clusterUID   string // kube-system namespace UID, used to scope VM queries per cluster
+	// uidClient reads the kube-system UID on its own rate limiter — see
+	// newDedicatedClientset. Held so the background resolver reuses it.
+	uidClient kubernetes.Interface
+	// clusterUID is the kube-system namespace UID, used to scope VM queries per
+	// cluster. atomic because the background resolver (EnsureClusterUID) may set
+	// it long after construction, while readers run on request goroutines.
+	clusterUID atomic.Value // string
 	// profileHook recibe el perfil resuelto (proveedor/región/versión) cada vez
 	// que se construye el overview. Ver SetProfileHook.
 	profileHook   func(clusterID, provider, region, version, platform string)
@@ -277,12 +283,19 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 	// is exec'd cold, and a too-short timeout here leaves the connector
 	// with an empty UID, which previously caused unscoped queries to
 	// leak data from other clusters in the same VM.
-	uidCtx, uidCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	c.uidClient = newDedicatedClientset(restConfig, clientset, clusterUIDQPS, clusterUIDBurst, "the kube-system UID read")
+	uidCtx, uidCancel := context.WithTimeout(context.Background(), clusterUIDReadTimeout)
 	defer uidCancel()
-	if ns, err := clientset.CoreV1().Namespaces().Get(uidCtx, "kube-system", metav1.GetOptions{}); err == nil {
-		c.clusterUID = string(ns.UID)
+	if ns, err := c.uidClient.CoreV1().Namespaces().Get(uidCtx, "kube-system", metav1.GetOptions{}); err == nil {
+		c.clusterUID.Store(string(ns.UID))
 	} else {
-		log.Printf("Warning: failed to read kube-system UID for cluster %q: %v — VM queries for this cluster will return empty results until reconnect", clusterName, err)
+		// NOT fatal, and NOT final — see EnsureClusterUID. This first attempt runs
+		// milliseconds after the agent's Hello, which is the worst possible moment:
+		// maybeAutoRegisterCluster fires the reconnect BEFORE registry.Register, so
+		// a proxy-capable agent that is still mid-handshake is not yet resolvable
+		// and the read has nobody to route to. Measured window on a kind lab: 29ms
+		// (finding #46).
+		log.Printf("Warning: failed to read kube-system UID for cluster %q: %v — retrying in the background; VM queries for this cluster stay empty until it resolves", clusterName, err)
 	}
 
 	// The probe runs on its own client: client-go's default QPS 5 / Burst 10
@@ -301,7 +314,115 @@ func newConnectorFromConfig(restConfig *rest.Config, clusterName string, wsHub *
 // should treat empty as "no scoping available" and fall back to
 // unscoped queries rather than blocking.
 func (c *Connector) ClusterUID() string {
-	return c.clusterUID
+	uid, _ := c.clusterUID.Load().(string)
+	return uid
+}
+
+// newDedicatedClientset returns a clientset with its OWN rate limiter, or the
+// shared one unchanged when a dedicated client cannot be built (the caller must
+// still work — degraded beats dead).
+//
+// The point is ISOLATION, not throughput. RestConfig() for AccessModeAgentProxy
+// sets only Host and Transport, so client-go applies QPS 5 / Burst 10 to ONE
+// bucket shared by ~26 informers and every proxied request. A short, latency-
+// sensitive call that shares that bucket queues behind whatever the informers
+// are doing, and if it carries a deadline it loses. Giving it a separate bucket
+// costs nothing and removes the coupling; it does not let more traffic onto the
+// tunnel, because the caller's own concurrency still bounds that.
+func newDedicatedClientset(restConfig *rest.Config, shared kubernetes.Interface, qps float32, burst int, purpose string) kubernetes.Interface {
+	if restConfig == nil {
+		return shared
+	}
+	cfg := rest.CopyConfig(restConfig)
+	cfg.QPS = qps
+	cfg.Burst = burst
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		log.Printf("Warning: could not build a dedicated client for %s (%v) — falling back to the shared one", purpose, err)
+		return shared
+	}
+	return cs
+}
+
+// clusterUIDQPS / clusterUIDBurst size the bucket of the client that reads the
+// kube-system UID. Deliberately small: it is ONE GET of one small object, once
+// per connector. The fix is not headroom — it is not sharing a bucket with the
+// informers.
+//
+// Measured 2026-08-20 on the kind lab: with the shared client, that read failed
+// with `client rate limiter Wait returned an error` while several connectors
+// started at once, and the cluster stayed blind to VictoriaMetrics until a
+// retry (or, before the retry existed, until an API restart). Finding #46.
+const (
+	clusterUIDQPS   = 5
+	clusterUIDBurst = 5
+)
+
+// clusterUIDReadTimeout bounds ONE attempt at reading the kube-system UID. 15s
+// matches rest.Config.Timeout — EKS in particular can take several seconds on
+// the first call when aws-iam-authenticator is exec'd cold.
+const clusterUIDReadTimeout = 15 * time.Second
+
+// EnsureClusterUID guarantees the kube-system UID is eventually known, and calls
+// onResolved once when it becomes so. A no-op when the constructor already got it.
+//
+// WHY A RETRY AT ALL (finding #46, reproduced 2026-08-20): the UID is what scopes
+// every VictoriaMetrics query for this cluster, and it was read exactly once, in
+// the milliseconds after an agent registered. Lose that read and the cluster is
+// blind — metrics arriving, every chart empty, the Coverage bar dark — until
+// somebody restarts the API. That is not a rare corner: on a fleet with a Mode C
+// promread pod the read lands inside a ~29ms window where no proxy-capable agent
+// is resolvable yet, and it loses that race on most restarts.
+//
+// WHY NO OVERALL DEADLINE: any budget just moves the cliff. Give up at five
+// minutes and an agent that returns at minute six leaves the cluster blind until
+// the next restart — the exact failure being removed. So this runs for the
+// connector's lifetime and stops on stopCh. The steady-state cost is one tiny GET
+// per minute per still-blind cluster, and it self-heals with no operator action
+// the moment the tunnel recovers.
+func (c *Connector) EnsureClusterUID(onResolved func(uid string)) {
+	if c.ClusterUID() != "" {
+		return
+	}
+	// Degrade to the shared client rather than dereference nil. NewConnector
+	// always wires uidClient, but this runs in a background goroutine and a
+	// panic there takes the whole API down — a disproportionate outcome for a
+	// construction path that forgot a field.
+	client := c.uidClient
+	if client == nil {
+		client = c.clientset
+	}
+	if client == nil {
+		return
+	}
+	go func() {
+		backoff := time.Second
+		const maxBackoff = time.Minute
+		for {
+			select {
+			case <-c.stopCh:
+				return
+			case <-time.After(backoff):
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), clusterUIDReadTimeout)
+			ns, err := client.CoreV1().Namespaces().Get(ctx, "kube-system", metav1.GetOptions{})
+			cancel()
+			if err == nil {
+				uid := string(ns.UID)
+				c.clusterUID.Store(uid)
+				log.Printf("resolved kube-system UID for cluster %q on retry — VM queries for it are scoped from now on", c.clusterName)
+				if onResolved != nil {
+					onResolved(uid)
+				}
+				return
+			}
+			if backoff < maxBackoff {
+				if backoff *= 2; backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+		}
+	}()
 }
 
 // Permissions returns the probed resource permissions for this cluster.
@@ -1345,7 +1466,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 
 	// Cluster info
 	overview.ClusterName = c.clusterName
-	overview.ClusterUID = c.clusterUID
+	overview.ClusterUID = c.ClusterUID()
 	overview.KubernetesVersion, overview.Platform = c.serverVersionCached()
 
 	// Nodes
@@ -1361,7 +1482,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	// Deja el perfil donde la lista de clusters pueda servirlo para ESTE cluster
 	// aunque no sea el activo. Es una escritura en un mapa, no una consulta.
 	if c.profileHook != nil {
-		c.profileHook(c.clusterUID, overview.CloudProvider, overview.Region, overview.KubernetesVersion, overview.Platform)
+		c.profileHook(c.ClusterUID(), overview.CloudProvider, overview.Region, overview.KubernetesVersion, overview.Platform)
 	}
 	overview.Nodes.Total = len(nodes)
 	for _, node := range nodes {

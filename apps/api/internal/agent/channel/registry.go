@@ -296,10 +296,10 @@ func (r *AgentRegistry) Get(tenantID, clusterID string) *Agent {
 // GetProxyAgent returns a connected agent for cluster_id that
 // advertised the "kube-proxy" capability — i.e. one that can service
 // apiserver-proxy round-trips dispatched by AgentProxyTransport. Falls
-// back to ANY connected agent when none advertise the capability, so
-// pre-1.13 agents (which may not have explicit capability declaration
-// but DO serve proxy when the chart's RBAC tier permits it) keep
-// working. Returns nil only when no agents are connected at all.
+// back to an agent that declared NO capabilities at all, so pre-1.13
+// agents (which predate capability declaration but DO serve proxy when
+// the chart's RBAC tier permits it) keep working. Returns nil when no
+// agent for this tenant can proxy.
 //
 // Discovered necessary in session 11-A re-validation (2026-05-27):
 // after Fix #4 stopped the eviction loop, the DS pod (kube-proxy
@@ -321,7 +321,22 @@ func (r *AgentRegistry) GetProxyAgent(tenantID, clusterID string) *Agent {
 		if !agentMatchesTenant(a, tenantID) {
 			continue
 		}
-		if fallback == nil {
+		// Fallback candidates are agents that declared NOTHING — the pre-1.13
+		// shape this fallback was written for. An agent that DID declare its
+		// capabilities and left kube-proxy out has said, explicitly, that it
+		// cannot proxy; picking it anyway means the KubeProxyRequest is ignored
+		// by design and the caller blocks until its deadline.
+		//
+		// That is not hypothetical (finding #46, reproduced 2026-08-20): a Mode C
+		// promread pod declares ["metrics"] and coexists with the DaemonSet. On an
+		// API restart both register in the same millisecond; when the runtime spun
+		// before the DaemonSet's Hello landed, this fell back to the promread pod,
+		// the kube-system UID read sat for the full 15s timeout, and cluster_uids
+		// was never written — so every VictoriaMetrics query for that cluster came
+		// back empty. Metrics flowing in, Coverage bar dark, and only an API
+		// restart cleared it. The two orgs on the same cluster with homogeneous
+		// fleets resolved in half a second.
+		if fallback == nil && len(a.Capabilities) == 0 {
 			fallback = a
 		}
 		for _, c := range a.Capabilities {
