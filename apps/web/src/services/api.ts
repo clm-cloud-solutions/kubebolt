@@ -2378,6 +2378,15 @@ export interface AgentInstallConfig {
     bearerToken?: string
     awsRegion?: string
   }
+  // Prometheus the BUNDLED OpenCost queries for allocation math — only for
+  // opencostMode='bundled' AND only when metricsSource is not 'promread'.
+  // A different consumer from promRead.url: the agent scrapes OpenCost's
+  // /metrics directly, while OpenCost itself needs a Prometheus to attribute
+  // cost to workloads, and without a reachable one it exits fatally on boot.
+  //
+  // When metricsSource IS 'promread' this field is neither shown nor read —
+  // that URL is the single source. See opencostPromUrlFor.
+  opencostPrometheusUrl?: string
   // mTLS material (only meaningful when tlsEnabled). Secrets must pre-exist in
   // the target namespace.
   tlsCaSecret?: string
