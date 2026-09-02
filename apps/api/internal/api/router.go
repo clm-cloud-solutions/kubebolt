@@ -12,6 +12,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/mcp"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -53,6 +54,11 @@ func NewRouter(
 	// EE passes a Postgres-backed impl. Call sites (e.g. prom_write accepted
 	// samples) record billable usage through it unconditionally.
 	usageStore usage.UsageStore,
+	// findingsStore persists normalized security findings (E2 SEC-C).
+	// Optional — nil when persistence is disabled; /findings 503s.
+	findingsStore findings.Store,
+	// eventStore persists runtime security events (Falco ingest). Optional.
+	eventStore findings.EventStore,
 	// settingsRuntime is the BoltDB-first config resolver introduced by
 	// spec #09. Optional — nil when auth/persistence is disabled (the
 	// /settings/* admin endpoints simply 503 in that mode, and the
@@ -103,6 +109,8 @@ func NewRouter(
 		promNameFilter:       promNameFilter,
 		promWriteMetrics:     promWriteMetrics,
 		usage:                usageStore,
+		findingsStore:        findingsStore,
+		eventStore:           eventStore,
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
 	}
@@ -170,6 +178,11 @@ func NewRouter(
 		// path (separate from the user-session JWT auth) and remove
 		// the env-var gate.
 		r.Post("/prom/write", h.handlePromWrite)
+
+		// Falco runtime-event ingest (E2 SEC-E). PUBLIC route, bearer
+		// INGEST-token auth inside the handler (strict — no permissive fallback
+		// for security events, and the token must be scoped to a cluster).
+		r.Post("/ingest/falco", h.handleFalcoIngest)
 
 		// EE extension point — register edition-specific unauthenticated
 		// routes (e.g. an internal service dispatch endpoint). No-op in OSS;
@@ -465,6 +478,21 @@ func NewRouter(
 				// Estado REAL de cada cluster para la flota. Lee el store de
 				// insights —que no necesita connector— en vez del engine, que
 				// sí. Ver insights_summary.go.
+				// Security findings live OUTSIDE requireConnector too: they are
+				// PERSISTED by the sweep, so serving them needs no live connection —
+				// and they span every cluster, so gating them on the ACTIVE cluster's
+				// connector would 503 the whole dashboard because one unrelated cluster
+				// went away. Both handlers own their genuine 503 when persistence is
+				// disabled (nil store).
+				r.Get("/findings", h.handleListFindings)
+				// Workload-first aggregation. Registered BEFORE the {fingerprint} route
+				// so "workloads" is not swallowed as a fingerprint.
+				r.Get("/findings/workloads", h.handleListFindingWorkloads)
+				// Per-row drill-down: the stored record comes back even when the
+				// cluster is gone; the handler degrades to live:false rather than 503.
+				r.Get("/findings/{fingerprint}", h.handleFindingDetail)
+				r.Get("/runtime-events", h.handleListRuntimeEvents)
+
 				r.Get("/insights/summary", h.handleInsightsSummary)
 			})
 

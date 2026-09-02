@@ -364,6 +364,7 @@ quickstart + config reference.
 
 ### Developer Experience
 - **Global Search (Cmd+K)** — Search across all resource types. Results grouped by kind with icons. Keyboard navigation.
+- **Security & Compliance** — Four lenses (vulnerabilities, configuration, RBAC, compliance) plus a runtime feed, fed by the scanners you already run: Trivy Operator (image CVEs, ConfigAudit, RBAC assessments, exposed secrets — the secret itself is never stored), Kyverno PolicyReports, CIS via `ClusterComplianceReport`, and Falco events pushed to `POST /ingest/falco` with a cluster-scoped ingest token. Findings are swept from every connected cluster every 10 minutes into the embedded store, aggregated **per workload** (one image with 47 CVEs is one thing to fix), and survive a cluster going unreachable. Routes: `/security`, `/security/configuration`, `/security/permissions`, `/security/compliance`, `/security/runtime`. See `docs/integrations/{trivy,kyverno,falco}.md`.
 - **Gateway API** — Native support for `gateway.networking.k8s.io` Gateways and HTTPRoutes
 - **YAML viewer** — Syntax highlighted with theme-aware colors, works in light and dark mode
 - **Search & filter** — Debounced search across resources with namespace filtering

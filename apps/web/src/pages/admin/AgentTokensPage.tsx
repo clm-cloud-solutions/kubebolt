@@ -518,9 +518,17 @@ function IssueTokenModal({ tenantID, onClose, onIssued }: IssueTokenModalProps) 
               onChange={setClusterId}
             />
             <p className="text-[10px] text-kb-text-tertiary">
-              For <span className="text-kb-text-secondary">Prometheus remote_write</span>{' '}
-              tokens, pick the cluster the Prom instance monitors so
-              KubeBolt can attribute samples correctly. For{' '}
+              {/* Falco is the one consumer that REFUSES an unscoped token, so it
+                  is named first and in those words. The agent announces its
+                  cluster when it connects and Prometheus can be attributed by
+                  label; a pushed Falco event carries nothing but this token, so
+                  without a cluster here its alerts cannot be routed to one. */}
+              <span className="text-kb-text-secondary">Falco</span> requires a
+              cluster — a pushed event carries no other identity, and the ingest
+              endpoint refuses an unscoped token. For{' '}
+              <span className="text-kb-text-secondary">Prometheus remote_write</span>{' '}
+              pick the cluster the Prom instance monitors so samples are
+              attributed correctly. For{' '}
               <span className="text-kb-text-secondary">agent-install</span>{' '}
               tokens, "Any cluster" is fine — the agent stamps its
               own cluster_id at runtime.

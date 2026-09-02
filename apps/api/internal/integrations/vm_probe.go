@@ -212,3 +212,30 @@ func (c *VMProbeClient) PromreadActiveForCluster(ctx context.Context, clusterID 
 	}
 	return n > 0, nil
 }
+
+// OpenCostSamplesForCluster is the shape main.go wires into the
+// OpenCost provider's sampleProbe. Confirms VM holds at least one
+// `node_total_hourly_cost` series tagged with the given cluster_id —
+// i.e. OpenCost cost samples for that cluster are reaching THIS
+// backend (via the agent's exporter collector or a promread matcher).
+//
+// Why `node_total_hourly_cost`: it's OpenCost's flagship per-node
+// cost gauge — emitted by every OpenCost install regardless of
+// cloud provider or pricing mode, and by nothing else in the stack.
+// Presence for cluster X means "cost data for X is flowing here";
+// absence means the install is running but nothing scrapes it into
+// KubeBolt yet (the card surfaces exactly that hint).
+func (c *VMProbeClient) OpenCostSamplesForCluster(ctx context.Context, clusterID string) (bool, error) {
+	if clusterID == "" {
+		// Without a cluster UID we can't form a safe scoped query.
+		// Mirror PromSamplesForCluster: report "confirmed" so the
+		// advisory hint stays quiet rather than nagging incorrectly.
+		return true, nil
+	}
+	q := fmt.Sprintf(`count(node_total_hourly_cost{cluster_id=%q})`, clusterID)
+	n, err := c.CountQuery(ctx, q)
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
