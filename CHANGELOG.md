@@ -4,6 +4,43 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] — 2026-09-02
+
+First OSS release that tracks KubeBolt EE release by release: everything in EE
+2.0.0-e2 that does not depend on the multi-organization SaaS machinery, ported
+as seven pull requests (#184 – #190). Drop-in, no migration. Full note:
+[docs/releases/v2.0.0.md](docs/releases/v2.0.0.md).
+
+### Added
+
+- **Security & Compliance pillar** — findings store, Trivy Operator / Kyverno /
+  Falco / OpenCost signals, four lenses + runtime feed at `/security*`,
+  `GET /findings*`, `GET /runtime-events`, `POST /ingest/falco`, four guides.
+- **Fleet** — `/fleet` overview, `GET /search?scope=fleet` fan-out, `?scope=fleet`
+  on the metrics API, cluster profiles (provider / region / version).
+- **Home** (`/home`) and the **two-altitude navigation** (`utils/scope.ts`, global
+  and cluster menus, Topbar chrome gating, WebSocket only in cluster scope);
+  sign-in lands on Home.
+- `GET /insights/summary`, `GET /clusters/names`; Kobi workload metrics over
+  7d / 14d / 30d as bucket aggregates; Copilot usage by cluster.
+- Audit classes (`action` / `access` / `admin`), `GET /admin/actions?class=`,
+  scheduled retention pass with per-store horizons.
+- `AddClusterButton` component, sign-in shell copy from the edition registry.
+
+### Changed
+
+- client-go streaming initial list disabled by default (`KUBEBOLT_WATCHLIST_CLIENT`),
+  with an informer cache audit.
+- `GET /search` served outside `requireConnector`.
+- Active-series metering uses a 15-minute window and bills p95.
+- Helm ClusterRole reads the scanner report CRDs.
+- Sidebar collapse state stored per menu.
+- `docs/COMPATIBILITY.md` current row: KubeBolt 1.10.x → 2.0.x ↔ agent 1.0.x → 1.4.x.
+
+### Security
+
+- `golang.org/x/net` v0.57.0 in `packages/proto` (CVE-2026-46600).
+
 ## [1.23.2] — 2026-09-02
 
 Maintenance release closing the 1.23 line before OSS tracks KubeBolt EE 2.x
