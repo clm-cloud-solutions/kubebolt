@@ -4,10 +4,16 @@ import "time"
 
 // ClusterOverview is the top-level summary returned by GET /cluster/overview
 type ClusterOverview struct {
-	ClusterName          string        `json:"clusterName"`
-	ClusterUID           string        `json:"clusterUID,omitempty"` // kube-system namespace UID; used by the UI to scope metric queries
-	KubernetesVersion    string        `json:"kubernetesVersion"`
-	Platform             string        `json:"platform"`
+	ClusterName       string `json:"clusterName"`
+	ClusterUID        string `json:"clusterUID,omitempty"` // kube-system namespace UID; used by the UI to scope metric queries
+	KubernetesVersion string `json:"kubernetesVersion"`
+	Platform          string `json:"platform"`
+	// CloudProvider is the cloud the cluster runs on (AWS / GCP / Azure /
+	// on-prem / …), derived from node spec.providerID + labels. Region is the
+	// topology region when discoverable. Both omitempty — empty means not yet
+	// warmed or not determinable (e.g. an SA that can't list nodes).
+	CloudProvider        string        `json:"cloudProvider,omitempty"`
+	Region               string        `json:"region,omitempty"`
 	Nodes                ResourceCount `json:"nodes"`
 	Pods                 ResourceCount `json:"pods"`
 	Namespaces           ResourceCount `json:"namespaces"`

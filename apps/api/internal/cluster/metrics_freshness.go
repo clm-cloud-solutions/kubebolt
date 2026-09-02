@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 // metricsFreshnessTTL bounds how stale a cached freshness verdict may be before
@@ -61,63 +63,93 @@ func newMetricsFreshnessCache() *metricsFreshnessCache {
 	}
 }
 
-// fresh reports the cached verdict for clusterID and, when stale, schedules an
-// async refresh. Returns false until the first probe completes (a brand-new
-// metrics-only cluster reads OFFLINE for one TTL, then flips once VM confirms
-// ingest — acceptable, and self-heals on the UI's 30s refetch). Nil-safe so
-// direct-struct test managers don't panic.
-func (c *metricsFreshnessCache) fresh(clusterID string) bool {
+// freshKey is the cache key, and it is (org, cluster) rather than cluster alone.
+//
+// The key IS part of the isolation. The same physical cluster connected to two
+// orgs carries ONE cluster_id, so a cache keyed on cluster alone would hand org
+// B the verdict computed from org A's series — the very leak the query filter
+// below closes, just served from memory instead of from VM.
+func freshKey(orgID, clusterID string) string { return orgID + "/" + clusterID }
+
+// fresh reports the cached verdict for (orgID, clusterID) and, when stale,
+// schedules an async refresh. Returns false until the first probe completes (a
+// brand-new metrics-only cluster reads OFFLINE for one TTL, then flips once VM
+// confirms ingest — acceptable, and self-heals on the UI's 30s refetch).
+// Nil-safe so direct-struct test managers don't panic.
+func (c *metricsFreshnessCache) fresh(orgID, clusterID string) bool {
 	if c == nil || clusterID == "" {
 		return false
 	}
+	key := freshKey(orgID, clusterID)
 	c.mu.Lock()
-	e, ok := c.entries[clusterID]
+	e, ok := c.entries[key]
 	stale := !ok || time.Since(e.at) > metricsFreshnessTTL
-	if stale && !c.inFlight[clusterID] {
-		c.inFlight[clusterID] = true
-		go c.refresh(clusterID)
+	if stale && !c.inFlight[key] {
+		c.inFlight[key] = true
+		go c.refresh(orgID, clusterID)
 	}
 	c.mu.Unlock()
 	return ok && e.fresh
 }
 
-// refresh runs one VM instant probe for clusterID and stores the verdict.
-func (c *metricsFreshnessCache) refresh(clusterID string) {
+// refresh runs one VM instant probe for (orgID, clusterID) and stores the verdict.
+func (c *metricsFreshnessCache) refresh(orgID, clusterID string) {
+	key := freshKey(orgID, clusterID)
 	defer func() {
 		c.mu.Lock()
-		delete(c.inFlight, clusterID)
+		delete(c.inFlight, key)
 		c.mu.Unlock()
 	}()
 	ctx, cancel := context.WithTimeout(context.Background(), metricsFreshnessQueryTimeout)
 	defer cancel()
-	fresh, err := c.probe(ctx, clusterID)
+	fresh, err := c.probe(ctx, orgID, clusterID)
 	if err != nil {
 		slog.Debug("metrics-freshness probe failed",
 			slog.String("cluster_id", clusterID), slog.String("error", err.Error()))
 		// Keep the previous verdict but bump the timestamp so we don't hot-loop
 		// retries against a persistently-down VM; the next read after TTL retries.
 		c.mu.Lock()
-		prev := c.entries[clusterID]
-		c.entries[clusterID] = metricsFreshEntry{fresh: prev.fresh, at: time.Now()}
+		prev := c.entries[key]
+		c.entries[key] = metricsFreshEntry{fresh: prev.fresh, at: time.Now()}
 		c.mu.Unlock()
 		return
 	}
 	c.mu.Lock()
-	c.entries[clusterID] = metricsFreshEntry{fresh: fresh, at: time.Now()}
+	c.entries[key] = metricsFreshEntry{fresh: fresh, at: time.Now()}
 	c.mu.Unlock()
 }
 
 // probe issues the VM instant query and reports whether the cluster has any
 // recently-active series.
 //
-// count({cluster_id="X"}) returns >0 only when at least one series for the
-// cluster carries a sample inside VM's staleness window (~5m) — i.e. the cluster
-// is actively shipping. cluster_id is the globally-unique kube cluster UID, so
-// this can't match another org's data; no tenant scope is needed for correctness
-// (and adding one would false-negative if the agent self-stamped a different
-// tenant_id than the viewer's org).
-func (c *metricsFreshnessCache) probe(ctx context.Context, clusterID string) (bool, error) {
-	q := fmt.Sprintf(`count({cluster_id=%q})`, clusterID)
+// count(...) returns >0 only when at least one matching series carries a sample
+// inside VM's staleness window (~5m) — i.e. the cluster is actively shipping.
+//
+// Scoped by tenant_id, NOT by cluster_id alone. cluster_id is the kube cluster
+// UID, and an operator can connect the same physical cluster to a second org by
+// installing the agent in another namespace: one cluster_id, two tenant_ids.
+// Unscoped, this reported "connected" to an org receiving nothing because a
+// DIFFERENT org's agent was shipping — the operator sees a green cluster and no
+// data, and has no reason to go looking. (The same false premise fed the Copilot
+// metrics tool, where it leaked series rather than a verdict; see
+// findings.SecurityGroup's neighbours and the 2026-08-12 fix.)
+//
+// This comment previously argued AGAINST scoping: a tenant filter false-negatives
+// when the agent self-stamped a tenant_id other than the viewer's org. That is
+// true and it is the point. A permissive ingest trusts the Helm chart's
+// tenant.id, so a mis-stamped agent is shipping this org's metrics into another
+// org's accounting; reading OFFLINE is the signal that makes someone look. The
+// unscoped query was hiding that misconfiguration, not tolerating it.
+//
+// orgID "" means DO NOT SCOPE, and is correct only where the series carry no
+// tenant_id at all — OSS/single-tenant, where the whole VM belongs to this
+// install.
+func (c *metricsFreshnessCache) probe(ctx context.Context, orgID, clusterID string) (bool, error) {
+	selector := fmt.Sprintf(`cluster_id=%q`, clusterID)
+	if orgID != "" {
+		selector = fmt.Sprintf(`tenant_id=%q,%s`, orgID, selector)
+	}
+	q := fmt.Sprintf(`count({%s})`, selector)
 	endpoint := metricsStorageURLForFreshness() + "/api/v1/query?" + url.Values{"query": {q}}.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -159,8 +191,19 @@ func (c *metricsFreshnessCache) probe(ctx context.Context, clusterID string) (bo
 // metricsFresh reports whether a metrics-only cluster is actively shipping
 // samples into VM (independent of its AgentChannel session). Off the request
 // path: a cache read that schedules an async VM probe when stale.
-func (m *Manager) metricsFresh(clusterID string) bool {
-	return m.metricsFreshness.fresh(clusterID)
+func (m *Manager) metricsFresh(orgID, clusterID string) bool {
+	return m.metricsFreshness.fresh(m.freshnessScope(orgID), clusterID)
+}
+
+// freshnessScope maps an org to the tenant_id its series actually carry, or ""
+// when nothing stamps that label. Mirrors api.activeTenantID: the OSS default is
+// a NAME, never a stamped value, so filtering on it would match nothing and read
+// every cluster as OFFLINE.
+func (m *Manager) freshnessScope(orgID string) string {
+	if orgID == auth.DefaultTenantName {
+		return ""
+	}
+	return orgID
 }
 
 // metricsStorageURLForFreshness mirrors api.metricsStorageURL() — the cluster

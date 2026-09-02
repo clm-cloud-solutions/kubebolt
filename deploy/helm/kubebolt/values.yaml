@@ -403,6 +403,14 @@ copilot:
 #       value: "45s"
 #     - name: KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT
 #       value: "30s"
+#     # Informer initial-list shape. KubeBolt disables client-go 1.35's
+#     # streaming initial list by default: over the agent tunnel a dropped
+#     # watch event means the object never enters the cache, and
+#     # WaitForCacheSync reports success anyway — a short list served as
+#     # healthy. Set to "true" ONLY if every cluster is reached directly
+#     # (kubeconfig / in-cluster) and never via an agent.
+#     - name: KUBEBOLT_WATCHLIST_CLIENT
+#       value: "false"
 #     # Air-gapped installs: disable the GitHub update-check so the
 #     # backend never reaches out to api.github.com.
 #     - name: KUBEBOLT_UPDATE_CHECK_ENABLED

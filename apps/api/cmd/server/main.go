@@ -127,6 +127,12 @@ func main() {
 	// kubectl-exec to inspect /proc/1/environ.
 	bootEnv := api.SnapshotKubeboltEnv(os.Environ())
 
+	// Must run before anything can build a Kubernetes client: client-go parses
+	// its feature gates from the environment on first read and caches them.
+	// Placed after the snapshot on purpose — booted-with reports what Helm wired
+	// in, not what we injected on top of it. See watchlist_gate.go.
+	configureWatchListClient()
+
 	// Enterprise-only one-shot subcommands (e.g. migrate-bolt-to-pg). No-op in
 	// OSS; in EE it runs and exits the process if invoked, otherwise returns
 	// and normal boot continues.

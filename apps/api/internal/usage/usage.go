@@ -46,6 +46,23 @@ const (
 	MetricCopilotTokens Metric = "copilot_tokens"
 )
 
+// ActiveSeriesWindow is the definition of "active": a series counts if it has
+// received at least one sample in this window. It is the one number in the
+// metering path that is a PROMISE — it appears on the pricing page and it
+// decides what a customer is charged — so it is stated here and passed into
+// every query, never inherited from VictoriaMetrics' default.
+//
+// 15 minutes, chosen against the two neighbours it will be compared to: Grafana
+// Cloud counts a series active for 20 minutes, Datadog doesn't use a window at
+// all (distinct series per hour). Fifteen is the customer-favourable end of that
+// band — a shorter window counts fewer series — while staying long enough that a
+// scrape gap or an agent restart doesn't drop a live series out of the count and
+// then re-admit it as brand new, which is what makes the cap flap.
+//
+// Change this and you change both the bill and the published definition. The
+// pricing copy must move with it.
+const ActiveSeriesWindow = 15 * time.Minute
+
 // UsageRecord is a single metered event: tenant X consumed Quantity of Metric
 // at time At. ClusterID is optional (empty for tenant-wide events like API
 // requests). Quantity is an absolute count for cumulative metrics
@@ -77,6 +94,23 @@ type UsageStore interface {
 	// sums usage_records RLS-scoped via app.current_org. An org with no rows in
 	// the window returns 0, not an error.
 	UsedSince(ctx context.Context, org string, m Metric, since time.Time) (int64, error)
+	// BillableGauge returns the 95th percentile of one gauge metric's hourly
+	// readings for an org over [from, to) — the figure a gauge is CHARGED on, as
+	// opposed to Summary's peak (what it reached) or Current's last reading (what
+	// it is now).
+	//
+	// The percentile is what makes the number defensible. A peak bills the worst
+	// single hour of the month, so one rollout that briefly doubles cardinality
+	// sets the price for all thirty days; a mean does the opposite and lets a
+	// permanent 20% overshoot hide inside the average. p95 forgives roughly the
+	// worst 36 hours and charges the level actually held — which is also the
+	// level we actually have to store and serve.
+	//
+	// ok=false means the window holds no readings at all. That is NOT zero: zero
+	// asserts "you ingested nothing", and an org whose metering was down looks
+	// identical. The caller decides how to render an absence; it must not invoice
+	// one. OSS (NoopUsageStore) always returns ok=false.
+	BillableGauge(ctx context.Context, org string, m Metric, from, to time.Time) (value int64, ok bool, err error)
 }
 
 // UsagePoint is one metric's rolled-up total for an org, the read shape behind
@@ -100,6 +134,11 @@ func (NoopUsageStore) Record(context.Context, UsageRecord) error { return nil }
 // Summary returns an empty slice — OSS meters nothing.
 func (NoopUsageStore) Summary(context.Context, string) ([]UsagePoint, error) {
 	return []UsagePoint{}, nil
+}
+
+// BillableGauge reports "no readings" — OSS meters nothing and bills nobody.
+func (NoopUsageStore) BillableGauge(context.Context, string, Metric, time.Time, time.Time) (int64, bool, error) {
+	return 0, false, nil
 }
 
 // UsedSince returns 0 — OSS meters nothing, so no org is ever over a cap.

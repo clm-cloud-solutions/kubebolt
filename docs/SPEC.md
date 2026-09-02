@@ -512,7 +512,7 @@ POST /clusters/switch
   Response: { status: "ok", context: "context-name" }
 
 GET  /cluster/overview
-  Response: { clusterName, kubernetesVersion, platform,
+  Response: { clusterName, clusterUID, kubernetesVersion, platform, cloudProvider, region,
               nodes, pods, namespaces, services, deployments, statefulSets, daemonSets, jobs,
               cpu, memory, health, events, namespaceWorkloads }
   ResourceCount: { total, ready, notReady, warning }
@@ -539,6 +539,15 @@ GET  /topology
 GET  /insights
   Params: ?severity=critical,warning&resolved=false
   Response: { items: [Insight], total }
+
+GET  /insights/summary
+  Fleet view: ACTIVE insights per cluster per severity, read from the persisted
+  insight store (no connector needed — answers for every cluster in the org,
+  including ones whose runtime is down). Same shape as findings' bySeverityCluster.
+  Params: ?cluster=<cluster_id> (optional; narrows to one cluster)
+  Response: { bySeverityCluster: { "<cluster_id>": { critical, warning, info } },
+              bySeverity: { critical, warning, info } }
+  Note: 200 with empty maps when persistence is disabled — never 503.
 
 GET  /events
   Params: ?type=Warning&namespace=X&limit=100

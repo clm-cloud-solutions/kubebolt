@@ -87,6 +87,10 @@ services:
       # default. Must match the agent's KUBEBOLT_AGENT_MAX_MSG_BYTES.
       # Default 67108864 (64 MiB).
       - KUBEBOLT_AGENT_MAX_MSG_BYTES=${KUBEBOLT_AGENT_MAX_MSG_BYTES:-67108864}
+      # Informer initial-list shape: streaming initial list OFF by default (it
+      # silently truncates caches over the agent tunnel). "true" only when no
+      # cluster is reached through an agent.
+      - KUBEBOLT_WATCHLIST_CLIENT=${KUBEBOLT_WATCHLIST_CLIENT:-false}
   web:
     build: ../apps/web
     ports: ["3000:3000"]
