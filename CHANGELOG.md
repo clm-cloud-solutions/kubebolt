@@ -4,6 +4,26 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] — 2026-09-02
+
+Homologates EE 2.0.1-e2. Drop-in, no migration. Full note:
+[docs/releases/v2.0.1.md](docs/releases/v2.0.1.md).
+
+### Fixed
+
+- Finding detail on a directly-connected cluster (in-cluster or kubeconfig) no
+  longer claims "cluster not connected": `ContextNameForClusterID` resolves a
+  direct context from its persisted UID.
+- Local clusters draw a server, not a cloud: provider names normalise to a
+  canonical key before the icon is chosen.
+
+### Changed
+
+- Official provider logos in brand colour (`CloudProviderIcon`).
+- Trivy waivers split: `.trivyignore` (strict, our images) and
+  `.trivyignore-thirdparty` (VictoriaMetrics / vmagent, used by the release
+  preflight and `pr-image-scan.yml`).
+
 ## [2.0.0] — 2026-09-02
 
 First OSS release that tracks KubeBolt EE release by release: everything in EE

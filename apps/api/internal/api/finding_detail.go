@@ -155,9 +155,18 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	// anything an operator could act on.
 	//
 	// The two ids also differ in shape: the record carries the kube-system UID,
-	// while runtime routing keys on the context name (agent:<uid>).
+	// while runtime routing keys on the context name — `agent:<uid>` for an
+	// agent-proxy cluster, a plain name (`in-cluster`, a kubeconfig entry) for a
+	// direct one. The resolver covers both; it only covered the first before, so
+	// a direct cluster's UID came back unchanged and the routing key was set to
+	// something no runtime answers to → "cluster not connected" about a cluster
+	// that was live. That is the self-monitored case, which in EE self-hosted is
+	// the customer's main cluster.
+	//
+	// The org is not optional: the persisted UID map is RLS-scoped, so resolving
+	// with the wrong one finds nothing (finding #17).
 	detailCtx := r.Context()
-	if name := h.manager.ContextNameForClusterID(rec.ClusterID); name != "" {
+	if name := h.manager.ContextNameForClusterID(h.activeTenantID(r), rec.ClusterID); name != "" {
 		key := cluster.RuntimeKeyFromContext(detailCtx)
 		key.Cluster = name
 		detailCtx = cluster.WithRuntimeKey(detailCtx, key)

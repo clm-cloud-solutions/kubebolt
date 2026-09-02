@@ -132,8 +132,8 @@ export function FindingDetailBody({ finding }: { finding: FindingRow }) {
             <Notice tone="neutral">Reading the scan report from the cluster…</Notice>
           ) : error || !data?.live ? (
             <Notice tone="warn">
-              {data?.liveError || 'The cluster did not answer.'} The finding itself is stored, so
-              what you see above is accurate — only the affected packages are unknown.
+              {asSentence(data?.liveError) || 'The cluster did not answer.'} The finding itself is
+              stored, so what you see above is accurate — only the affected packages are unknown.
             </Notice>
           ) : images.length === 0 ? (
             <Notice tone="ok">
@@ -302,6 +302,17 @@ export function FindingDetailBody({ finding }: { finding: FindingRow }) {
         </div>
       </div>
   )
+}
+
+// asSentence terminates a backend message so it does not run into the sentence
+// that follows it. Both are needed: our own liveError literal has no full stop,
+// and the other two sources are err.Error(), which by Go convention is lowercase
+// and unpunctuated — so the frontend can never assume the backend punctuated.
+// It read: "…showing the stored finding only The finding itself is stored".
+function asSentence(msg?: string): string {
+  const t = (msg ?? '').trim()
+  if (!t) return ''
+  return /[.!?]$/.test(t) ? t : `${t}.`
 }
 
 export function FindingDetailModal({ finding, onClose }: { finding: FindingRow; onClose: () => void }) {
