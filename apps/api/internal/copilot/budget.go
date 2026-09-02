@@ -25,7 +25,11 @@ func ContextWindowFor(provider, model string) int {
 		}
 		return 200000
 	case "openai":
-		// GPT-5 family: 400K. GPT-4o / 4.x: 128K.
+		// GPT-5.6 line (sol/terra/luna): 1.05M window. Rest of GPT-5
+		// family: 400K. GPT-4o / 4.x: 128K.
+		if strings.HasPrefix(m, "gpt-5.6") {
+			return 1_050_000
+		}
 		if strings.HasPrefix(m, "gpt-5") || strings.HasPrefix(m, "o5") {
 			return 400000
 		}
