@@ -20,15 +20,17 @@ var (
 	settingsBucket     = []byte("settings")
 	// Buckets used by other packages (cluster management, etc.) —
 	// initialized here so there's a single place where DB schema is defined.
-	clustersBucket         = []byte("clusters")         // uploaded kubeconfigs
-	clusterDisplayBucket   = []byte("cluster_display")  // display name overrides
-	clusterUIDBucket       = []byte("cluster_uid")      // kube-system UID per kubeconfig context (resolved at connect time)
-	copilotSessionsBucket  = []byte("copilot_sessions") // copilot usage analytics
-	copilotConvBucket      = []byte("copilot_conversations") // persistent Kobi conversation transcripts (per user)
-	agentsBucket           = []byte("agents")           // persistent agent registry records
-	insightsBucket         = []byte("insights")         // persistent insight records (Sprint 0)
-	kobiActionsBucket      = []byte("kobi_actions")     // durable mutation audit trail (Sprint 1)
-	orgSettingsBucket      = []byte("org_settings")     // per-org UI settings blobs (keyed org\x00key)
+	clustersBucket        = []byte("clusters")              // uploaded kubeconfigs
+	clusterDisplayBucket  = []byte("cluster_display")       // display name overrides
+	clusterUIDBucket      = []byte("cluster_uid")           // kube-system UID per kubeconfig context (resolved at connect time)
+	copilotSessionsBucket = []byte("copilot_sessions")      // copilot usage analytics
+	copilotConvBucket     = []byte("copilot_conversations") // persistent Kobi conversation transcripts (per user)
+	agentsBucket          = []byte("agents")                // persistent agent registry records
+	insightsBucket        = []byte("insights")              // persistent insight records (Sprint 0)
+	findingsBucket        = []byte("findings")              // normalized security findings (E2 SEC-C)
+	runtimeEventsBucket   = []byte("runtime_events")        // runtime security events (E2 SEC-E)
+	kobiActionsBucket     = []byte("kobi_actions")          // durable mutation audit trail (Sprint 1)
+	orgSettingsBucket     = []byte("org_settings")          // per-org UI settings blobs (keyed org\x00key)
 )
 
 // orgSettingKey composes the BoltDB key for a per-org setting: the org id, a
@@ -147,7 +149,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -207,6 +209,17 @@ func AgentsBucket() []byte {
 // store (apps/api/internal/insights/store.go). Holds insight identities
 // (active + recently-resolved) keyed by tenant/cluster/fingerprint so
 // history survives restarts and feeds notifications, Kobi, and Autopilot.
+// FindingsBucket returns the bucket name used by the security
+// findings store — same exposure pattern as InsightsBucket.
+func FindingsBucket() []byte {
+	return findingsBucket
+}
+
+// RuntimeEventsBucket returns the bucket for runtime security events.
+func RuntimeEventsBucket() []byte {
+	return runtimeEventsBucket
+}
+
 func InsightsBucket() []byte {
 	return insightsBucket
 }

@@ -35,6 +35,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
@@ -43,6 +44,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
+	"k8s.io/client-go/dynamic"
 )
 
 // version is set at build time via -ldflags.
@@ -126,6 +128,12 @@ func main() {
 	// can answer "what did Helm wire into this container?" without
 	// kubectl-exec to inspect /proc/1/environ.
 	bootEnv := api.SnapshotKubeboltEnv(os.Environ())
+
+	// Must run before anything can build a Kubernetes client: client-go parses
+	// its feature gates from the environment on first read and caches them.
+	// Placed after the snapshot on purpose — booted-with reports what Helm wired
+	// in, not what we injected on top of it. See watchlist_gate.go.
+	configureWatchListClient()
 
 	// Enterprise-only one-shot subcommands (e.g. migrate-bolt-to-pg). No-op in
 	// OSS; in EE it runs and exits the process if invoked, otherwise returns
@@ -288,6 +296,9 @@ func main() {
 	// Persistent insights store (Sprint 0) — same BoltDB-only gating as
 	// agentStore. nil → engines run in-memory-only (pre-Sprint-0 behavior).
 	var insightStore insights.InsightStore
+	// Security findings + runtime events (E2 SEC-C/E) — same BoltDB-only gating.
+	var findingsStore findings.Store
+	var eventStore findings.EventStore
 	// Durable mutation-audit store (Sprint 1) — same BoltDB-only gating.
 	// nil → mutations are slog-audited only (pre-Sprint-1 behavior).
 	var actionAuditStore audit.Store
@@ -556,6 +567,8 @@ func main() {
 		// notification dedup + Kobi/Autopilot provenance. Bucket created in
 		// auth.NewStore. tenantID = the auto-seeded "default" tenant in OSS.
 		insightStore = newInsightStore(boltHandle(store), auth.InsightsBucket())
+		findingsStore = newFindingsStore(boltHandle(store), auth.FindingsBucket())
+		eventStore = newEventStore(boltHandle(store), auth.RuntimeEventsBucket())
 		insightTenantID := auth.DefaultTenantName
 		if dt, err := tenantsStore.GetDefaultTenant(); err == nil && dt != nil {
 			insightTenantID = dt.ID
@@ -722,6 +735,24 @@ func main() {
 	// samples tagged with this cluster's UID are arriving here.
 	integrationRegistry.Register(integrations.NewAgent(activeClusterUID, vmProbeClient.AgentSamplesForCluster))
 
+	// OpenCost: detection card + the pricing oracle behind the Cost dashboard.
+	// Detection is a VM probe for node_total_hourly_cost samples tagged with this
+	// cluster's UID — an OpenCost that is installed but shipping elsewhere reads
+	// as "no cost samples reaching KubeBolt yet".
+	integrationRegistry.Register(integrations.NewOpenCost(activeClusterUID, vmProbeClient.OpenCostSamplesForCluster))
+
+	// Trivy Operator: detection card (E2 SEC-B). Its VulnerabilityReports
+	// become CVE findings via the ingest sweep (SEC-C wiring).
+	integrationRegistry.Register(integrations.NewTrivy())
+
+	// Kyverno: detection card (E2 SEC-D). Failed PolicyReport results
+	// become policy_violation findings via the same sweep.
+	integrationRegistry.Register(integrations.NewKyverno())
+
+	// Falco: detection card (E2 SEC-E). Events arrive via the bearer
+	// ingest endpoint (/ingest/falco), not the sweep.
+	integrationRegistry.Register(integrations.NewFalco())
+
 	// Prometheus integrations are gated on the TenantsStore: detection
 	// reads ingest-token usage from there as the heartbeat signal.
 	// When auth is disabled the store isn't wired and the receiver
@@ -881,7 +912,43 @@ func main() {
 	// GitHub call ever leaves the process.
 	updateCheckSvc := updatecheck.New(version, updatecheck.DefaultRepo, updatecheck.DefaultCacheTTL)
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
+	// Findings ingest sweep (E2 SEC-C): every live cluster runtime gets
+	// its CRD providers listed + normalized into the findings store on a
+	// fixed cadence. Skipped when persistence is off (no store).
+	if findingsStore != nil {
+		trivyCRD, _ := integrations.NewTrivy().(integrations.CRDSignalProvider)
+		kyvernoCRD, _ := integrations.NewKyverno().(integrations.CRDSignalProvider)
+		sweeper := findings.NewSweeper(findingsStore,
+			[]integrations.CRDSignalProvider{trivyCRD, kyvernoCRD},
+			func(fn func(tenant, cluster string, dyn dynamic.Interface, owner findings.OwnerResolver)) {
+				manager.ForEachLiveConnector(func(tenant, ctxName string, conn *cluster.Connector) {
+					// Stamp the kube-system UID, not the kubeconfig context name.
+					// The UID is this cluster's canonical identity everywhere else:
+					// it is what the agent puts on every sample's cluster_id label,
+					// what ClusterInfo.clusterId carries to the UI, and what the
+					// Falco ingest path already stamps from its token. Using the
+					// context name here would fork identity — one selector value
+					// would match findings but not runtime events (or the metrics
+					// roll-up), and the panel would go silently empty.
+					//
+					// Fall back to the context name when the UID is unknown (RBAC
+					// couldn't read kube-system, or the connector isn't warm): a
+					// stable-but-local id beats an empty one.
+					clusterID := conn.ClusterUID()
+					if clusterID == "" {
+						clusterID = ctxName
+					}
+					// The connector doubles as the OwnerResolver: it already runs a
+					// ReplicaSet informer, so collapsing a Trivy finding to its owning
+					// Deployment costs a cache read rather than an apiserver round-trip
+					// — which on an agent-proxy cluster would be seconds, per sweep.
+					fn(tenant, clusterID, conn.Dynamic(), conn)
+				})
+			}, 0)
+		go sweeper.Run(context.Background())
+	}
+
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, findingsStore, eventStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
@@ -1199,74 +1266,23 @@ func main() {
 		}()
 	}
 
-	// Insights retention (Sprint 0). Hourly prune of RESOLVED insight
-	// records older than the horizon; active insights never expire. The
-	// horizon is read from KUBEBOLT_INSIGHTS_RETENTION_HORIZON (default 7d)
-	// each tick, so a restart picks up a change without a code edit.
-	if insightStore != nil {
-		go func() {
-			ticker := time.NewTicker(1 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-agentCtx.Done():
-					return
-				case <-ticker.C:
-					horizon := 7 * 24 * time.Hour
-					if v := os.Getenv("KUBEBOLT_INSIGHTS_RETENTION_HORIZON"); v != "" {
-						if d, err := time.ParseDuration(v); err == nil && d > 0 {
-							horizon = d
-						}
-					}
-					removed, err := insightStore.Prune(time.Now().UTC().Add(-horizon))
-					if err != nil {
-						slog.Warn("insights prune failed", slog.String("error", err.Error()))
-						continue
-					}
-					if removed > 0 {
-						slog.Info("insights pruned",
-							slog.Int("removed", removed),
-							slog.Duration("horizon", horizon),
-						)
-					}
-				}
-			}
-		}()
-	}
-
-	// Action-audit retention (Sprint 1). Hourly prune of audit records older
-	// than KUBEBOLT_AUDIT_RETENTION_HORIZON (default 90d) — long enough for a
-	// quarter of compliance history without unbounded growth.
-	if actionAuditStore != nil {
-		go func() {
-			ticker := time.NewTicker(1 * time.Hour)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-agentCtx.Done():
-					return
-				case <-ticker.C:
-					horizon := 90 * 24 * time.Hour
-					if v := os.Getenv("KUBEBOLT_AUDIT_RETENTION_HORIZON"); v != "" {
-						if d, err := time.ParseDuration(v); err == nil && d > 0 {
-							horizon = d
-						}
-					}
-					removed, err := actionAuditStore.Prune(time.Now().UTC().Add(-horizon))
-					if err != nil {
-						slog.Warn("audit prune failed", slog.String("error", err.Error()))
-						continue
-					}
-					if removed > 0 {
-						slog.Info("audit records pruned",
-							slog.Int("removed", removed),
-							slog.Duration("horizon", horizon),
-						)
-					}
-				}
-			}
-		}()
-	}
+	// History retention: insights + audit trail + Kobi conversations (and the
+	// security findings / runtime events once their stores exist), per org, one
+	// hourly pass with a first run shortly after boot (see retention.go).
+	//
+	// This REPLACES the two per-store tickers that pruned insights (7d) and the
+	// audit trail (90d) with a tenant-less delete each. The stores' delete verbs
+	// are org-scoped now — the shape the EE build needs under row-level
+	// security, where an unscoped DELETE matches nothing and reports success —
+	// so the pass iterates the org list; in OSS that is the single tenant.
+	startRetention(agentCtx, retentionDeps{
+		tenants:       tenantsStore,
+		insights:      insightStore,
+		findings:      findingsStore,
+		events:        eventStore,
+		audit:         actionAuditStore,
+		conversations: copilotConversations,
+	})
 
 	// Auto-register agent-proxy clusters: when an agent advertises the
 	// kube-proxy capability AND this flag is on, its cluster shows up

@@ -12,6 +12,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/mcp"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -53,6 +54,11 @@ func NewRouter(
 	// EE passes a Postgres-backed impl. Call sites (e.g. prom_write accepted
 	// samples) record billable usage through it unconditionally.
 	usageStore usage.UsageStore,
+	// findingsStore persists normalized security findings (E2 SEC-C).
+	// Optional — nil when persistence is disabled; /findings 503s.
+	findingsStore findings.Store,
+	// eventStore persists runtime security events (Falco ingest). Optional.
+	eventStore findings.EventStore,
 	// settingsRuntime is the BoltDB-first config resolver introduced by
 	// spec #09. Optional — nil when auth/persistence is disabled (the
 	// /settings/* admin endpoints simply 503 in that mode, and the
@@ -103,6 +109,8 @@ func NewRouter(
 		promNameFilter:       promNameFilter,
 		promWriteMetrics:     promWriteMetrics,
 		usage:                usageStore,
+		findingsStore:        findingsStore,
+		eventStore:           eventStore,
 		agentRegistry:        agentRegistry,
 		updateCheck:          updateCheck,
 	}
@@ -112,7 +120,11 @@ func NewRouter(
 	// static. Registered as a route inside the authenticated group below.
 	mcpServer := mcp.NewServer(
 		mcp.ServerInfo{Name: "kubebolt-kobi", Version: "1"},
-		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager)),
+		// Same per-org metrics-retention clamp as the chat handler. This door
+		// serves the identical get_workload_metrics tool to an external MCP host,
+		// so wiring the entitlement on only one of them would mean a plan limit
+		// that holds in the product and not through the integration.
+		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager).WithMetricsRetention(h.metricsRetentionFor)),
 		mcp.NewKobiPromptProvider(),
 	)
 
@@ -166,6 +178,11 @@ func NewRouter(
 		// path (separate from the user-session JWT auth) and remove
 		// the env-var gate.
 		r.Post("/prom/write", h.handlePromWrite)
+
+		// Falco runtime-event ingest (E2 SEC-E). PUBLIC route, bearer
+		// INGEST-token auth inside the handler (strict — no permissive fallback
+		// for security events, and the token must be scoped to a cluster).
+		r.Post("/ingest/falco", h.handleFalcoIngest)
 
 		// EE extension point — register edition-specific unauthenticated
 		// routes (e.g. an internal service dispatch endpoint). No-op in OSS;
@@ -233,6 +250,10 @@ func NewRouter(
 
 			// Cluster management — always available, no active connector required
 			r.Get("/clusters", h.listClusters)
+			// Nombres de clusters, incluidos los dados de baja. Fuera de
+			// requireConnector como /clusters, y con el alcance de cluster puesto
+			// para que la etiqueta siga el mismo criterio que el dato que rotula.
+			r.With(h.WithClusterScope).Get("/clusters/names", h.handleClusterNames)
 			r.Post("/clusters/switch", h.switchCluster)
 
 			// Update check — reports the latest stable KubeBolt release
@@ -282,6 +303,10 @@ func NewRouter(
 			// Cluster CRUD — admin only (add/remove/rename clusters from UI)
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
+				// Not cluster scoped: the target IS the cluster and it is named
+				// in the record, so stamping the *active* one would point at a
+				// different cluster than the one being changed.
+				r.Use(h.auditAdminRoutes("cluster", false))
 				r.Post("/clusters", h.handleAddCluster)
 				r.Delete("/clusters/{context}", h.handleDeleteCluster)
 				r.Put("/clusters/{context}/rename", h.handleRenameCluster)
@@ -301,6 +326,11 @@ func NewRouter(
 			// Copilot usage analytics — admin only
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
+				// WithClusterScope no estrecha nada mientras el guard de arriba sea
+				// admin-de-organización: un admin lee su org entera por diseño.
+				// Va montado para que abrir esta vista a un rol más estrecho no
+				// abra también los datos, en silencio. Ver queryUsageInScope.
+				r.Use(h.WithClusterScope)
 				r.Get("/admin/copilot/usage/summary", h.handleCopilotUsageSummary)
 				r.Get("/admin/copilot/usage/timeseries", h.handleCopilotUsageTimeseries)
 				r.Get("/admin/copilot/usage/sessions", h.handleCopilotUsageSessions)
@@ -343,6 +373,11 @@ func NewRouter(
 			if settingsRuntime != nil {
 				r.Route("/admin/settings", func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
+					// Subtree-wide, so a settings endpoint added later is
+					// audited without anyone having to remember. Not cluster
+					// scoped: settings belong to the install, not to whichever
+					// cluster the operator happened to have selected.
+					r.Use(h.auditAdminRoutes("settings", false))
 					r.Get("/copilot", h.handleGetSettingsCopilot)
 					r.Put("/copilot", h.handlePutSettingsCopilot)
 					r.Post("/copilot/reset", h.handleResetSettingsCopilot)
@@ -433,6 +468,42 @@ func NewRouter(
 			// genuine no-connector 503.
 			r.Get("/cluster/overview", h.getClusterOverview)
 
+			// Datos POR CLUSTER a nivel de ORGANIZACIÓN, fuera de requireConnector.
+			// Todo lo que va aquí dentro llega con el alcance de cluster ya resuelto
+			// en el contexto (cluster_scope.go): en OSS no estrecha nada, pero un
+			// handler nuevo hereda el filtro en vez de tener que acordarse de pedirlo.
+			r.Group(func(r chi.Router) {
+				r.Use(h.WithClusterScope)
+
+				// Estado REAL de cada cluster para la flota. Lee el store de
+				// insights —que no necesita connector— en vez del engine, que
+				// sí. Ver insights_summary.go.
+				// Security findings live OUTSIDE requireConnector too: they are
+				// PERSISTED by the sweep, so serving them needs no live connection —
+				// and they span every cluster, so gating them on the ACTIVE cluster's
+				// connector would 503 the whole dashboard because one unrelated cluster
+				// went away. Both handlers own their genuine 503 when persistence is
+				// disabled (nil store).
+				r.Get("/findings", h.handleListFindings)
+				// Workload-first aggregation. Registered BEFORE the {fingerprint} route
+				// so "workloads" is not swallowed as a fingerprint.
+				r.Get("/findings/workloads", h.handleListFindingWorkloads)
+				// Per-row drill-down: the stored record comes back even when the
+				// cluster is gone; the handler degrades to live:false rather than 503.
+				r.Get("/findings/{fingerprint}", h.handleFindingDetail)
+				r.Get("/runtime-events", h.handleListRuntimeEvents)
+
+				r.Get("/insights/summary", h.handleInsightsSummary)
+			})
+
+			// Search lives OUTSIDE requireConnector for the same reason. Its fleet
+			// fan-out (?scope=fleet) searches every cluster the caller may see, so
+			// gating it on the ACTIVE cluster's connector meant ⌘K went 503 exactly
+			// when one cluster died — the moment you most want to look across the
+			// fleet. The single-cluster path owns its own no-connector 503 already
+			// (search.go), so nothing loses its guard by moving out.
+			r.Get("/search", h.handleSearch)
+
 			// All other endpoints require an active cluster connection
 			r.Group(func(r chi.Router) {
 				r.Use(h.requireConnector)
@@ -456,7 +527,6 @@ func NewRouter(
 				r.Get("/resources/cronjobs/{namespace}/{name}/jobs", h.getCronJobJobs)
 				r.Get("/resources/{type}/{namespace}/{name}/history", h.getWorkloadHistory)
 				r.Get("/portforward", h.handleListPortForwards)
-				r.Get("/search", h.handleSearch)
 				r.Get("/topology", h.getTopology)
 				r.Get("/insights", h.getInsights)
 				r.Get("/events", h.getEvents)
@@ -472,6 +542,9 @@ func NewRouter(
 				// even with no cluster connected.
 				r.Group(func(r chi.Router) {
 					r.Use(auth.RequireRole(auth.RoleAdmin))
+					// Cluster scoped: installing an integration happens ON the
+					// connected cluster, so the stamp is real information.
+					r.Use(h.auditAdminRoutes("integration", true))
 					r.Post("/integrations/{id}/install", h.handleInstallIntegration)
 					r.Get("/integrations/{id}/config", h.handleGetIntegrationConfig)
 					r.Put("/integrations/{id}/config", h.handlePutIntegrationConfig)

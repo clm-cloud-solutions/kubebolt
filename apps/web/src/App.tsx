@@ -22,6 +22,9 @@ import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { InsightsList } from '@/components/insights/InsightsList'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
+import { SecurityPage } from '@/pages/SecurityPage'
+import { FleetPage } from '@/pages/FleetPage'
+import { HomePage } from '@/pages/HomePage'
 import { ApplicationsPage } from '@/pages/ApplicationsPage'
 import { HelmReleaseDetailPage } from '@/pages/HelmReleaseDetailPage'
 import { LoginPage } from '@/pages/LoginPage'
@@ -139,6 +142,22 @@ export default function App() {
                   that module to inject its routes. Keeps App.tsx identical OSS↔EE. */}
               {eeRoutes}
               <Route path="/clusters" element={<ClustersPage />} />
+              {/* Security's four lenses. Separate ROUTES rather than internal
+                  state so a tab is linkable and survives a reload — an operator
+                  sharing "the compliance view of this cluster" should be able to
+                  paste a URL. Same shape as the dashboard sub-tabs. */}
+              {/* Plan-aware landing. Mounted at /home rather than replacing "/"
+                  on purpose: promoting it to the default route changes where
+                  every existing user lands, which is a product call to make
+                  deliberately, not a side effect of adding the page. Swapping
+                  it in later is a one-line change. */}
+              <Route path="/home" element={<HomePage />} />
+              <Route path="/fleet" element={<FleetPage />} />
+              <Route path="/security" element={<SecurityPage group="vulnerability" />} />
+              <Route path="/security/configuration" element={<SecurityPage group="configuration" />} />
+              <Route path="/security/permissions" element={<SecurityPage group="rbac" />} />
+              <Route path="/security/compliance" element={<SecurityPage group="compliance" />} />
+              <Route path="/security/runtime" element={<SecurityPage group="runtime" />} />
               <Route path="/namespaces" element={<NamespacesPage />} />
               <Route path="/events" element={<EventsPage />} />
               <Route path="/rbac" element={<RBACPage />} />

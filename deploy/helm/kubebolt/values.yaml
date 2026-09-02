@@ -403,6 +403,26 @@ copilot:
 #       value: "45s"
 #     - name: KUBEBOLT_AGENT_PROXY_REQUEST_TIMEOUT
 #       value: "30s"
+#     # Informer initial-list shape. KubeBolt disables client-go 1.35's
+#     # streaming initial list by default: over the agent tunnel a dropped
+#     # watch event means the object never enters the cache, and
+#     # WaitForCacheSync reports success anyway — a short list served as
+#     # healthy. Set to "true" ONLY if every cluster is reached directly
+#     # (kubeconfig / in-cluster) and never via an agent.
+#     - name: KUBEBOLT_WATCHLIST_CLIENT
+#       value: "false"
+#     # History retention — one hourly pass, per org. Go durations; defaults
+#     # in parentheses. Resolved insights (168h), security findings + runtime
+#     # events (720h), mutation/access audit trail (2160h), Kobi transcripts
+#     # (2160h). Active insights never expire.
+#     - name: KUBEBOLT_INSIGHTS_RETENTION_HORIZON
+#       value: "168h"
+#     - name: KUBEBOLT_FINDINGS_RETENTION_HORIZON
+#       value: "720h"
+#     - name: KUBEBOLT_AUDIT_RETENTION_HORIZON
+#       value: "2160h"
+#     - name: KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON
+#       value: "2160h"
 #     # Air-gapped installs: disable the GitHub update-check so the
 #     # backend never reaches out to api.github.com.
 #     - name: KUBEBOLT_UPDATE_CHECK_ENABLED

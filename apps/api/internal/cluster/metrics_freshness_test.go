@@ -57,11 +57,11 @@ func TestMetricsFreshness_FreshWhenSeriesPresent(t *testing.T) {
 	c := newMetricsFreshnessCache()
 
 	// First read is a cache miss → false now, kicks the async probe.
-	if c.fresh("cid-1") {
+	if c.fresh("", "cid-1") {
 		t.Fatal("expected false on first (cold) read")
 	}
 	// After the probe completes, the cluster reads fresh.
-	waitFor(t, time.Second, func() bool { return c.fresh("cid-1") })
+	waitFor(t, time.Second, func() bool { return c.fresh("", "cid-1") })
 
 	// The probe scoped by cluster_id (and only cluster_id — no tenant scope).
 	q, _ := lastQuery.Load().(string)
@@ -84,11 +84,11 @@ func TestMetricsFreshness_NotFreshWhenNoSeries(t *testing.T) {
 	t.Setenv("KUBEBOLT_METRICS_STORAGE_URL", srv.URL)
 
 	c := newMetricsFreshnessCache()
-	c.fresh("cid-empty") // kick probe
+	c.fresh("", "cid-empty") // kick probe
 	// Give the probe time to run, then confirm it settled on not-fresh.
 	waitFor(t, time.Second, func() bool { return hits.Load() > 0 })
 	time.Sleep(20 * time.Millisecond)
-	if c.fresh("cid-empty") {
+	if c.fresh("", "cid-empty") {
 		t.Fatal("expected not-fresh when VM returns zero series")
 	}
 }
@@ -101,8 +101,8 @@ func TestMetricsFreshness_CachesAndDeduplicates(t *testing.T) {
 	t.Setenv("KUBEBOLT_METRICS_STORAGE_URL", srv.URL)
 
 	c := newMetricsFreshnessCache()
-	c.fresh("cid-2")
-	waitFor(t, time.Second, func() bool { return c.fresh("cid-2") })
+	c.fresh("", "cid-2")
+	waitFor(t, time.Second, func() bool { return c.fresh("", "cid-2") })
 	hitsAfterFirst := hits.Load()
 	if hitsAfterFirst < 1 {
 		t.Fatalf("expected at least one VM hit, got %d", hitsAfterFirst)
@@ -110,7 +110,7 @@ func TestMetricsFreshness_CachesAndDeduplicates(t *testing.T) {
 
 	// Within the TTL, repeated reads serve from cache — no new VM hits.
 	for i := 0; i < 20; i++ {
-		if !c.fresh("cid-2") {
+		if !c.fresh("", "cid-2") {
 			t.Fatal("expected cached fresh=true within TTL")
 		}
 	}
@@ -122,11 +122,11 @@ func TestMetricsFreshness_CachesAndDeduplicates(t *testing.T) {
 func TestMetricsFreshness_NilAndEmptySafe(t *testing.T) {
 	// A direct-struct test Manager has a nil cache — must not panic.
 	var nilCache *metricsFreshnessCache
-	if nilCache.fresh("x") {
+	if nilCache.fresh("", "x") {
 		t.Fatal("nil cache should read not-fresh")
 	}
 	c := newMetricsFreshnessCache()
-	if c.fresh("") {
+	if c.fresh("", "") {
 		t.Fatal("empty clusterID should read not-fresh")
 	}
 }
@@ -151,29 +151,106 @@ func TestMetricsFreshness_ErrorKeepsPreviousVerdict(t *testing.T) {
 	t.Setenv("KUBEBOLT_METRICS_STORAGE_URL", srv.URL)
 
 	c := newMetricsFreshnessCache()
-	c.fresh("cid-3")
-	waitFor(t, time.Second, func() bool { return c.fresh("cid-3") })
+	c.fresh("", "cid-3")
+	waitFor(t, time.Second, func() bool { return c.fresh("", "cid-3") })
 
 	// Force the cached entry stale so the next read re-probes, and make VM fail.
 	fail.Store(true)
 	c.mu.Lock()
-	c.entries["cid-3"] = metricsFreshEntry{fresh: true, at: time.Now().Add(-2 * metricsFreshnessTTL)}
+	c.entries[freshKey("", "cid-3")] = metricsFreshEntry{fresh: true, at: time.Now().Add(-2 * metricsFreshnessTTL)}
 	c.mu.Unlock()
 
 	hitsBefore := hits.Load()
-	c.fresh("cid-3") // stale → kicks a probe that will error
+	c.fresh("", "cid-3") // stale → kicks a probe that will error
 	waitFor(t, time.Second, func() bool { return hits.Load() > hitsBefore })
 	time.Sleep(20 * time.Millisecond)
-	if !c.fresh("cid-3") {
+	if !c.fresh("", "cid-3") {
 		t.Fatal("expected previous fresh verdict to survive a transient VM error")
 	}
 }
 
-// sanity: the probe endpoint is well-formed (URL-encoded query).
+// sanity: the probe endpoint is well-formed (URL-encoded query), with both
+// scope labels surviving the encoding.
 func TestMetricsFreshness_QueryEncoding(t *testing.T) {
-	q := fmt.Sprintf(`count({cluster_id=%q})`, "abc-123")
+	q := fmt.Sprintf(`count({tenant_id=%q,cluster_id=%q})`, "org-1", "abc-123")
 	enc := url.Values{"query": {q}}.Encode()
-	if !strings.Contains(enc, "cluster_id") {
-		t.Fatalf("encoded query lost cluster_id: %s", enc)
+	for _, want := range []string{"cluster_id", "tenant_id"} {
+		if !strings.Contains(enc, want) {
+			t.Fatalf("encoded query lost %s: %s", want, enc)
+		}
+	}
+}
+
+// The probe must ask VM for THIS org's series, and the cache must remember the
+// answer per org — both halves are the boundary.
+//
+// cluster_id is the kube cluster UID, so connecting the same physical cluster to
+// a second org (install the agent in another namespace) yields one cluster_id
+// under two tenant_ids. Unscoped, an org receiving nothing was told "connected"
+// because the OTHER org's agent was shipping: a green cluster, no data, and no
+// reason to go looking.
+func TestMetricsFreshness_ProbeIsScopedToTheOrg(t *testing.T) {
+	var lastQuery atomic.Value
+	var hits atomic.Int64
+	srv := vmStub(t, 1, &lastQuery, &hits)
+	defer srv.Close()
+	t.Setenv("KUBEBOLT_METRICS_STORAGE_URL", srv.URL)
+
+	c := newMetricsFreshnessCache()
+	c.fresh("org-a", "cid-shared")
+	waitFor(t, time.Second, func() bool { return c.fresh("org-a", "cid-shared") })
+
+	q, _ := lastQuery.Load().(string)
+	if !strings.Contains(q, `tenant_id="org-a"`) {
+		t.Errorf("probe reads across organisations — no tenant in query: %s", q)
+	}
+	if !strings.Contains(q, `cluster_id="cid-shared"`) {
+		t.Errorf("probe lost the cluster pin: %s", q)
+	}
+}
+
+// A verdict computed for one org must not be served to another from cache. The
+// key is part of the isolation: keyed on cluster alone, the filter above would
+// be defeated by memory.
+func TestMetricsFreshness_CacheIsNotSharedBetweenOrgs(t *testing.T) {
+	var lastQuery atomic.Value
+	var hits atomic.Int64
+	srv := vmStub(t, 1, &lastQuery, &hits)
+	defer srv.Close()
+	t.Setenv("KUBEBOLT_METRICS_STORAGE_URL", srv.URL)
+
+	c := newMetricsFreshnessCache()
+	c.fresh("org-a", "cid-shared")
+	waitFor(t, time.Second, func() bool { return c.fresh("org-a", "cid-shared") })
+	before := hits.Load()
+
+	// Same cluster, different org: must NOT be answered from org-a's entry.
+	if c.fresh("org-b", "cid-shared") {
+		t.Fatal("org-b was served org-a's cached verdict for the same cluster")
+	}
+	waitFor(t, time.Second, func() bool { return hits.Load() > before })
+
+	q, _ := lastQuery.Load().(string)
+	if !strings.Contains(q, `tenant_id="org-b"`) {
+		t.Errorf("org-b's refresh did not query its own tenant: %s", q)
+	}
+}
+
+// OSS stamps no tenant_id, so scoping there would match nothing and read every
+// cluster OFFLINE. The empty org means "do not filter", never "filter on empty".
+func TestMetricsFreshness_UnscopedWhenNoTenantLabel(t *testing.T) {
+	var lastQuery atomic.Value
+	var hits atomic.Int64
+	srv := vmStub(t, 1, &lastQuery, &hits)
+	defer srv.Close()
+	t.Setenv("KUBEBOLT_METRICS_STORAGE_URL", srv.URL)
+
+	c := newMetricsFreshnessCache()
+	c.fresh("", "cid-oss")
+	waitFor(t, time.Second, func() bool { return c.fresh("", "cid-oss") })
+
+	q, _ := lastQuery.Load().(string)
+	if strings.Contains(q, "tenant_id") {
+		t.Errorf("single-tenant probe filters on a label its series do not carry: %s", q)
 	}
 }

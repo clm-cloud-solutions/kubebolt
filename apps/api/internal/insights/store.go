@@ -112,6 +112,11 @@ type InsightStore interface {
 	// Prune deletes resolved records whose ResolvedAt is older than
 	// `before`. Active records never expire. Returns the count removed.
 	Prune(before time.Time) (int, error)
+	// PruneOrg is Prune scoped to ONE org — the only form that deletes under
+	// RLS, and what per-plan retention needs (each org has its own horizon).
+	// Prefer it everywhere; the global Prune above is a silent no-op on the
+	// EE/Postgres path.
+	PruneOrg(orgID string, before time.Time) (int, error)
 }
 
 // insightKey is the BoltDB key: tenant/cluster/fingerprint. Tenant-prefixed

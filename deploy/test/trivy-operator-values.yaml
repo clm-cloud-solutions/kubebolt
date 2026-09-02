@@ -1,0 +1,47 @@
+# trivy-operator — Helm values for the kind dev cluster.
+#
+# NOT installed by KubeBolt. This is lab infrastructure: the operator runs in the
+# dev cluster so there is a real source of vulnerability CRDs to build the
+# security views against. (`internal/integrations/signal.go` sketches a future
+# `trivyProvider` with IngestMode() == IngestCRD; that does not exist yet.)
+#
+# Recorded here because it was installed straight from the CLI on 2026-07-15 and
+# these values lived ONLY in the Helm release state — recreating the kind cluster
+# would have lost them silently, and the failure would show up as scan jobs that
+# never schedule rather than as an error.
+#
+# Install / upgrade:
+#   helm repo add aqua https://aquasecurity.github.io/helm-charts/
+#   helm upgrade --install trivy-operator aqua/trivy-operator \
+#     --namespace trivy-system --create-namespace \
+#     --version 0.34.0 \
+#     -f deploy/test/trivy-operator-values.yaml
+#
+# Chart 0.34.0 / app 0.32.0 — the versions the dev cluster actually runs. Pinned
+# rather than floating so a rebuild reproduces what was tested against.
+
+# kind's control-plane node carries the standard NoSchedule taint, and a
+# single-node-ish lab has nowhere else to put these. Both the node collector and
+# the per-workload scan jobs need the toleration; they are separate settings and
+# missing either one leaves that half silently unscheduled.
+nodeCollector:
+  tolerations:
+    - effect: NoSchedule
+      key: node-role.kubernetes.io/control-plane
+      operator: Exists
+
+trivyOperator:
+  scanJobTolerations:
+    - effect: NoSchedule
+      key: node-role.kubernetes.io/control-plane
+      operator: Exists
+
+operator:
+  # Keeps the lab usable while scans run. The default fans out wide enough to
+  # starve everything else on a laptop-sized cluster.
+  scanJobsConcurrentLimit: 3
+
+trivy:
+  # Report only what can actually be acted on. Matches the policy the release
+  # pipeline uses for its own image gates (see .trivyignore and release.yml).
+  ignoreUnfixed: true

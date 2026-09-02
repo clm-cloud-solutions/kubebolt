@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -96,10 +97,13 @@ type Connector struct {
 	// auto-expire (default 5s). Without this, a manual Refresh in
 	// the first second after Pause/Resume reads stale informer
 	// state and the UI looks like the action didn't take.
-	recentWrites  *RecentWritesOverlay
-	mu            sync.RWMutex
-	clusterName   string
-	clusterUID    string // kube-system namespace UID, used to scope VM queries per cluster
+	recentWrites *RecentWritesOverlay
+	mu           sync.RWMutex
+	clusterName  string
+	clusterUID   string // kube-system namespace UID, used to scope VM queries per cluster
+	// profileHook recibe el perfil resuelto (proveedor/región/versión) cada vez
+	// que se construye el overview. Ver SetProfileHook.
+	profileHook   func(clusterID, provider, region, version, platform string)
 	k8sVersion    string // cached GitVersion — ServerVersion() over agent-proxy is slow, and it never changes; fetch once
 	platform      string // cached, derived from k8sVersion
 	collector     metricsCollector
@@ -714,6 +718,18 @@ func (c *Connector) SetBroadcastGate(g *atomic.Bool) {
 	c.broadcastGate = g
 }
 
+// SetProfileHook registers a sink for the cluster's resolved profile (cloud
+// provider, region, Kubernetes version).
+//
+// El connector ya calcula esos tres valores al construir el overview; el hook
+// sólo los deja donde la LISTA de clusters pueda leerlos, que es el sitio donde
+// hacían falta y no estaban. Deliberadamente NO se recalculan al otro lado: dos
+// formas de deducir el proveedor acaban discrepando, y la que se vea primero
+// será la equivocada.
+func (c *Connector) SetProfileHook(fn func(clusterID, provider, region, version, platform string)) {
+	c.profileHook = fn
+}
+
 // SetWSScope tags this connector's WS broadcasts with (tenant, cluster-context)
 // so EE clients only receive their own cluster's resource events (A.4).
 func (c *Connector) SetWSScope(tenant, cluster string) {
@@ -1043,6 +1059,10 @@ func (c *Connector) Start() error {
 		}
 	}
 	log.Println("Informer caches synced")
+	// …and that claim is exactly what needs auditing: on 2026-08-05 it was
+	// reported over a cache short by one object, which then served short lists
+	// for the connector's whole life. See cache_audit.go.
+	c.StartCacheAudit()
 	c.rebuildTopology()
 	return nil
 }
@@ -1078,6 +1098,15 @@ func (c *Connector) serverVersionCached() (version, platform string) {
 	}
 	c.mu.Unlock()
 	return "", ""
+}
+
+// ServerVersionCached expone la versión ya cacheada para que el manager selle el
+// perfil del cluster al arrancar su runtime sin repetir la llamada al apiserver.
+// Hereda la propiedad de arriba —nunca busca en el request path—, así que un
+// cluster recién arrancado devuelve vacío y el perfil se completa en un tick
+// posterior; el mapa de perfiles fusiona resoluciones parciales justo por esto.
+func (c *Connector) ServerVersionCached() (version, platform string) {
+	return c.serverVersionCached()
 }
 
 // warmServerVersion fetches ServerVersion() once OFF the request path and caches the
@@ -1228,6 +1257,16 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 	var nodes []*corev1.Node
 	if c.nodeLister != nil {
 		nodes, _ = c.nodeLister.List(everythingSelector())
+	}
+	// Cloud provider + region from node spec.providerID / labels, and the
+	// platform refined by node labels — the same nodes we already listed here, no
+	// extra round-trip.
+	overview.CloudProvider, overview.Region = detectCloudProvider(nodes)
+	overview.Platform = refinePlatform(overview.Platform, nodes)
+	// Deja el perfil donde la lista de clusters pueda servirlo para ESTE cluster
+	// aunque no sea el activo. Es una escritura en un mapa, no una consulta.
+	if c.profileHook != nil {
+		c.profileHook(c.clusterUID, overview.CloudProvider, overview.Region, overview.KubernetesVersion, overview.Platform)
 	}
 	overview.Nodes.Total = len(nodes)
 	for _, node := range nodes {
@@ -5988,3 +6027,229 @@ var (
 	_ *rbacv1.RoleBinding
 	_ *rbacv1.ClusterRoleBinding
 )
+
+// ── Cloud provider / platform detection ─────────────────────────────────────
+// Derived from node spec.providerID and characteristic labels; feeds the
+// overview identity header and the per-cluster profile cache (profile.go).
+
+// knownProviderSchemes maps the providerID URL scheme each cloud-controller-
+// manager sets (the part before "://") to a friendly cloud name. This list is
+// NOT exhaustive by design — see providerFromID: an unrecognised scheme is still
+// surfaced (title-cased), never dropped, so a cloud we haven't catalogued here is
+// never mistaken for on-prem. Add entries only to prettify a label.
+var knownProviderSchemes = map[string]string{
+	"aws":          "AWS",
+	"gce":          "GCP",
+	"azure":        "Azure",
+	"vsphere":      "vSphere",
+	"openstack":    "OpenStack",
+	"digitalocean": "DigitalOcean",
+	"hcloud":       "Hetzner",
+	"linode":       "Linode",
+	"kind":         "kind (local)",
+	"huaweicloud":  "Huawei Cloud",
+	"ibm":          "IBM Cloud",
+	"oci":          "Oracle Cloud",
+	"ovh":          "OVHcloud",
+	"scaleway":     "Scaleway",
+	"equinixmetal": "Equinix Metal",
+	"packet":       "Equinix Metal", // legacy scheme, same cloud
+	"tencentcloud": "Tencent Cloud",
+	"baiducloud":   "Baidu Cloud",
+	"cloudstack":   "CloudStack",
+	"nifcloud":     "NIFCLOUD",
+	"brightbox":    "Brightbox",
+	"exoscale":     "Exoscale",
+	"vcloud":       "VMware vCloud",
+}
+
+// alibabaProviderID matches Alibaba Cloud's schemeless providerID shape
+// "<region>.<instance-id>" (e.g. "cn-shanghai.i-uf6xxxxxxxx"). Alibaba's CCM does
+// NOT use a "scheme://" prefix, so it would otherwise fall through as on-prem.
+var alibabaProviderID = regexp.MustCompile(`^[a-z]{2}-[a-z]+(-[a-z0-9]+)?\.i-[0-9a-z]+$`)
+
+// detectCloudProvider derives the cloud provider (and region, when discoverable)
+// from the cluster's Nodes. The authoritative signal is node.Spec.ProviderID: a
+// NON-EMPTY providerID means a cloud-controller-manager initialised the node, so
+// it is a managed/cloud node — we never call such a node "on-prem" just because
+// we can't name its cloud. This is more reliable than parsing the API-server
+// GitVersion (detectPlatform), which many managed distros report as vanilla.
+//
+// Resolution order (first hit wins), designed so an uncatalogued provider is
+// downgraded gracefully rather than dismissed:
+//  1. Name the provider from providerID — known/unknown scheme, or a known
+//     schemeless shape (Oracle OCID, Alibaba region.instance-id).
+//  2. Name it from characteristic node labels (covers CCM-less nodes and
+//     schemeless ids we don't recognise but whose addons tag the nodes).
+//  3. Any non-empty providerID we still couldn't name → "cloud (unrecognised)".
+//  4. No providerID anywhere AND no cloud labels → genuinely "on-prem".
+//
+// Returns ("", "") only when there are no nodes at all (e.g. a namespace-scoped
+// SA that can't list nodes), so callers can treat empty as "not determinable".
+func detectCloudProvider(nodes []*corev1.Node) (provider, region string) {
+	if len(nodes) == 0 {
+		return "", ""
+	}
+
+	region = firstNodeRegion(nodes)
+
+	// 1. Name from providerID.
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if p := providerFromID(node.Spec.ProviderID); p != "" {
+			return p, region
+		}
+	}
+
+	// 2. Name from characteristic node labels.
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if p := providerFromLabels(node.Labels); p != "" {
+			return p, region
+		}
+	}
+
+	// 3. A providerID is present but unnamed — still a managed/cloud node.
+	for _, node := range nodes {
+		if node != nil && node.Spec.ProviderID != "" {
+			return "cloud (unrecognised)", region
+		}
+	}
+
+	// 4. No cloud signal at all.
+	return "on-prem", region
+}
+
+// providerFromID maps a Node's spec.providerID to a friendly cloud name. Two
+// shapes exist in the wild: the common "scheme://..." convention, and schemeless
+// ids used by a few clouds (Oracle's bare OCID, Alibaba's "region.instance-id").
+// A known scheme maps via knownProviderSchemes; an UNKNOWN but well-formed scheme
+// is title-cased and returned as-is (surface "Foocloud", never hide it behind
+// on-prem). Returns "" only for an empty id or a schemeless id we don't
+// recognise, so the caller can fall back to labels / the managed-but-unnamed
+// bucket — an empty id never claims a provider.
+func providerFromID(providerID string) string {
+	if providerID == "" {
+		return ""
+	}
+	if scheme, _, found := strings.Cut(providerID, "://"); found && scheme != "" {
+		if name, ok := knownProviderSchemes[strings.ToLower(scheme)]; ok {
+			return name
+		}
+		return capitalize(strings.ToLower(scheme))
+	}
+	// Schemeless known shapes.
+	switch {
+	case strings.HasPrefix(providerID, "ocid1."):
+		return "Oracle Cloud"
+	case alibabaProviderID.MatchString(providerID):
+		return "Alibaba Cloud"
+	}
+	return ""
+}
+
+// providerFromLabels infers the cloud from characteristic node labels applied by
+// each cloud's addons — a fallback when providerID is absent or unrecognised.
+// Substring matching on the label domain keeps it resilient to key variations.
+func providerFromLabels(nodeLabels map[string]string) string {
+	for k := range nodeLabels {
+		lk := strings.ToLower(k)
+		switch {
+		case strings.Contains(lk, "eks.amazonaws.com"):
+			return "AWS"
+		case strings.Contains(lk, "cloud.google.com/gke"):
+			return "GCP"
+		case strings.Contains(lk, "kubernetes.azure.com"):
+			return "Azure"
+		case strings.Contains(lk, "oraclecloud.com"):
+			return "Oracle Cloud"
+		case strings.Contains(lk, "alibabacloud.com"), strings.Contains(lk, "aliyun.com"):
+			return "Alibaba Cloud"
+		case strings.Contains(lk, "huaweicloud"), strings.Contains(lk, "huawei.com"):
+			return "Huawei Cloud"
+		case strings.Contains(lk, "ibm.com"), strings.Contains(lk, "bluemix"):
+			return "IBM Cloud"
+		}
+	}
+	return ""
+}
+
+// firstNodeRegion returns the first non-empty topology region label across the
+// given nodes (stable/beta key, then the deprecated failure-domain key).
+func firstNodeRegion(nodes []*corev1.Node) string {
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		if r := node.Labels["topology.kubernetes.io/region"]; r != "" {
+			return r
+		}
+		if r := node.Labels["failure-domain.beta.kubernetes.io/region"]; r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+// capitalize upper-cases the first rune of s (ASCII scheme names only).
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+// refinePlatform upgrades an ambiguous GitVersion-derived platform ("Kubernetes")
+// using cloud-specific node labels. It closes the AKS gap — AKS commonly reports a
+// vanilla GitVersion so detectPlatform returns "Kubernetes", but its nodes carry
+// kubernetes.azure.com/* labels. A non-ambiguous base (already EKS/GKE/AKS/k3s/…)
+// is returned untouched.
+func refinePlatform(base string, nodes []*corev1.Node) string {
+	if base != "" && base != "Kubernetes" {
+		return base
+	}
+	for _, node := range nodes {
+		if node == nil {
+			continue
+		}
+		for k := range node.Labels {
+			lk := strings.ToLower(k)
+			switch {
+			case strings.Contains(lk, "node.openshift.io/"), strings.Contains(lk, "machine.openshift.io/"):
+				return "OpenShift"
+			case strings.Contains(lk, "eks.amazonaws.com"):
+				return "EKS"
+			case strings.Contains(lk, "cloud.google.com/gke"):
+				return "GKE"
+			case strings.Contains(lk, "kubernetes.azure.com"):
+				return "AKS"
+			case strings.Contains(lk, "oke.oraclecloud.com"):
+				return "OKE"
+			case strings.Contains(lk, "aliyun.com"), strings.Contains(lk, "alibabacloud.com"):
+				return "ACK"
+			}
+		}
+	}
+	return base
+}
+
+// CloudProfile returns the cluster's distribution platform, cloud provider, and
+// region — the same values GetOverview computes, exposed as a lightweight
+// accessor for the Copilot session-context prefix. Nodes are read from the local
+// informer cache (no agent round-trip); platform comes from the cached
+// GitVersion (empty until warmed) refined by node labels. Any field may be empty
+// when not yet warmed or not determinable, and callers must tolerate that.
+func (c *Connector) CloudProfile() (platform, provider, region string) {
+	_, platform = c.serverVersionCached()
+	var nodes []*corev1.Node
+	if c.nodeLister != nil {
+		nodes, _ = c.nodeLister.List(everythingSelector())
+	}
+	provider, region = detectCloudProvider(nodes)
+	platform = refinePlatform(platform, nodes)
+	return platform, provider, region
+}

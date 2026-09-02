@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
 // CardinalityTracker monitors the number of active series each tenant
@@ -213,6 +214,11 @@ func (c *CardinalityTracker) refresh(ctx context.Context) {
 	}
 	q := target.Query()
 	q.Set("query", query)
+	// The lookbehind is usage.ActiveSeriesWindow — the SAME window the metering
+	// collector counts on. Enforcement and billing have to agree on what "active"
+	// means, or the customer reads one number on their usage page and gets capped
+	// against a different one, with no way to tell which is real.
+	q.Set("step", usage.ActiveSeriesWindow.String())
 	target.RawQuery = q.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)

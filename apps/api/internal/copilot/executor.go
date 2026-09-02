@@ -35,11 +35,27 @@ const (
 // other endpoints.
 type Executor struct {
 	manager *cluster.Manager
+	// metricsRetention answers how far back this request's org keeps metrics.
+	// nil, or a non-positive result, means no cap — self-hosted and OSS, where
+	// retention is whatever the operator configured on their own storage.
+	//
+	// A function rather than a value because the answer is per-ORG and resolved
+	// from the request context, and an interface rather than importing settings
+	// because this package must not depend on the EE plan machinery.
+	metricsRetention func(ctx context.Context) time.Duration
 }
 
 // NewExecutor creates a new tool executor bound to a cluster manager.
 func NewExecutor(manager *cluster.Manager) *Executor {
 	return &Executor{manager: manager}
+}
+
+// WithMetricsRetention wires the per-org metrics-retention lookup, so a range
+// wider than the org actually keeps is narrowed to what exists instead of being
+// served half-empty. Chainable; nil is accepted and means "no cap".
+func (e *Executor) WithMetricsRetention(fn func(ctx context.Context) time.Duration) *Executor {
+	e.metricsRetention = fn
+	return e
 }
 
 // Execute runs a single tool call against the default-tenant + active-cluster
@@ -992,7 +1008,7 @@ func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
 		res.Content = jsonString(p)
 
 	case "get_workload_metrics":
-		out, err := e.execGetWorkloadMetrics(call, args, conn)
+		out, err := e.execGetWorkloadMetrics(ctx, call, args, conn)
 		if err != nil {
 			res.Content = err.Error()
 			res.IsError = true

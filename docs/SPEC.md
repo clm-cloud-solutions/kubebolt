@@ -507,12 +507,18 @@ type Rule struct {
 GET  /clusters
   Response: [{ name, context, server, active }]
 
+GET  /clusters/names
+  Response: { "<context-name>": "<display name>", "<cluster_uid>": "<display name>", ... }
+  Every cluster the org has ever registered, de-registered ones included — the
+  durable display-name map, keyed by BOTH identities so Kobi session rows
+  (context name) and other per-cluster history (UID) resolve to a label.
+
 POST /clusters/switch
   Body: { context: "context-name" }
   Response: { status: "ok", context: "context-name" }
 
 GET  /cluster/overview
-  Response: { clusterName, kubernetesVersion, platform,
+  Response: { clusterName, clusterUID, kubernetesVersion, platform, cloudProvider, region,
               nodes, pods, namespaces, services, deployments, statefulSets, daemonSets, jobs,
               cpu, memory, health, events, namespaceWorkloads }
   ResourceCount: { total, ready, notReady, warning }
@@ -539,6 +545,63 @@ GET  /topology
 GET  /insights
   Params: ?severity=critical,warning&resolved=false
   Response: { items: [Insight], total }
+
+GET  /search
+  Name-substring search across 24 resource types via the informer listers;
+  outside requireConnector (the single-cluster path answers its own 503).
+  Params: ?q= (min 3 chars)&scope=fleet
+  Response (default): [ { name, namespace, kind, resourceType, status } ]
+  Response (scope=fleet): { results: [ ...same + cluster ], clustersSearched }
+    Fan-out over every cluster the caller may see (same filters as
+    GET /clusters), 3s per cluster, 25 hits per cluster, 50 merged, sorted
+    by cluster label then name so identical workloads render adjacent.
+
+GET  /metrics/query, /metrics/query_range
+  PromQL pass-through to VictoriaMetrics. The server strips any client-sent
+  tenant_id / cluster_id matcher and injects its own: cluster_id pinned to
+  the active cluster's kube-system UID (a sentinel that matches nothing when
+  unknown) plus tenant_id in multi-tenant builds.
+  Params: ?query=&time= | ?query=&start=&end=&step=  (+ &scope=fleet)
+    scope=fleet drops ONLY the cluster pin so `by (cluster_id)` roll-ups can
+    span the fleet; the tenant pin stays (EE) and OSS is single-tenant anyway.
+
+GET  /findings
+  Security findings from the persisted store (Trivy Operator, Kyverno, CIS) —
+  org-scoped, active by default, outside requireConnector.
+  Params: ?group=vulnerability|configuration|rbac|compliance (scope)
+          &source=&severity=&kind= (facets: narrow the rows, not the summary)
+          &cluster=&status=&page=&pageSize=&resourceName=&resourceNamespace=
+  Response: { findings: [...], total, scopeTotal, bySeverity, bySeverityCluster,
+              bySource, byKind, activeWithRemediation, newLast24h, rollups,
+              affectedResources, topResource, topResourceCount, page, pageSize }
+
+GET  /findings/workloads
+  Workload-first aggregation: one row per workload with its severity counts,
+  fixable count, kinds, image(s); plus topImages / benchmarks / topChecks.
+  Params: ?group=&severity=&kind=&cluster=&page=
+
+GET  /findings/:fingerprint
+  Drill-down. Re-reads the scanner report live (packages, fixed versions,
+  failing resources of a CIS control); `live:false` + liveError when the
+  cluster is unreachable — the stored row still answers.
+
+GET  /runtime-events
+  Falco runtime events, newest first. Params: ?priority=&cluster=&since=(Go
+  duration or RFC3339)&limit= (capped at 500).
+
+POST /ingest/falco
+  Public Falco webhook. Authorization: Bearer <ingest token>; the token MUST
+  be scoped to a cluster (an unscoped one is refused — a pushed event carries
+  no other identity).
+
+GET  /insights/summary
+  Fleet view: ACTIVE insights per cluster per severity, read from the persisted
+  insight store (no connector needed — answers for every cluster in the org,
+  including ones whose runtime is down). Same shape as findings' bySeverityCluster.
+  Params: ?cluster=<cluster_id> (optional; narrows to one cluster)
+  Response: { bySeverityCluster: { "<cluster_id>": { critical, warning, info } },
+              bySeverity: { critical, warning, info } }
+  Note: 200 with empty maps when persistence is disabled — never 503.
 
 GET  /events
   Params: ?type=Warning&namespace=X&limit=100

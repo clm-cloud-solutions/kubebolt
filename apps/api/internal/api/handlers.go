@@ -16,6 +16,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
@@ -109,6 +110,10 @@ type handlers struct {
 	// Postgres-backed impl. May be nil in raw test fixtures, so call sites
 	// nil-guard before recording.
 	usage usage.UsageStore
+	// findingsStore persists normalized security findings (E2 SEC-C).
+	findingsStore findings.Store
+	// eventStore persists runtime security events (E2 SEC-E, Falco).
+	eventStore findings.EventStore
 	// agentRegistry is the in-memory directory of currently-connected
 	// agents. Spec #09 V2 Item 5b — the /admin/ingest-activity panel's
 	// heartbeat list reads this directly via a new admin endpoint
@@ -146,7 +151,9 @@ func (h *handlers) liveCopilotConfig() config.CopilotConfig {
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	clusters := h.manager.ListClusters()
-	respondJSON(w, http.StatusOK, h.filterClustersByOrg(r, clusters))
+	clusters = h.filterClustersByOrg(r, clusters)
+	clusters = h.scopeClustersByTeam(r, clusters)
+	respondJSON(w, http.StatusOK, clusters)
 }
 
 // filterClustersByOrg drops clusters the requesting org may not see (A.5).
@@ -197,6 +204,16 @@ func (h *handlers) filterClustersByOrg(r *http.Request, clusters []cluster.Clust
 		out = append(out, c)
 	}
 	return out
+}
+
+// scopeClustersByTeam narrows an org's cluster list to the agent-proxy clusters
+// the caller's teams own. Runs after filterClustersByOrg (org is the hard
+// wall; team is the intra-org refinement). OSS is single-tenant and has no
+// teams, so the list is returned unchanged; the EE build layers team ownership
+// on top. Kept as the one seam GET /clusters and the fleet search fan-out
+// (search_fleet.go) consult, so both stay byte-identical across editions.
+func (h *handlers) scopeClustersByTeam(_ *http.Request, clusters []cluster.ClusterInfo) []cluster.ClusterInfo {
+	return clusters
 }
 
 func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
@@ -564,7 +581,13 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The applied document is NOT recorded, only its size. A manifest routinely
+	// carries Secret data, and an audit trail that copies it turns the
+	// compliance record into a second, longer-lived place secrets live.
+	yamlParams := map[string]any{"bytes": len(body)}
+
 	if err := conn.ApplyResourceYAML(resourceType, namespace, name, body); err != nil {
+		auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, err)
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "forbidden") || strings.Contains(errMsg, "Forbidden") {
 			respondError(w, http.StatusForbidden, errMsg)
@@ -578,6 +601,7 @@ func (h *handlers) putResourceYAML(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	auditMutation(r, "apply_yaml", resourceType, namespace, name, yamlParams, nil)
 	respondJSON(w, http.StatusOK, map[string]string{"status": "applied"})
 }
 

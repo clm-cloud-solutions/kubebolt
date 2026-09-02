@@ -16,7 +16,7 @@ import {
   ChevronRight,
 } from 'lucide-react'
 import { api } from '@/services/api'
-import { parseClusterDisplayName } from '@/utils/cluster'
+import { useClusterLabel } from '@/hooks/useClusterLabel'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ReliabilityStrip, BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
 import type {
@@ -388,6 +388,14 @@ function SessionsTable({
   onSelect: (s: CopilotSessionEnriched) => void
   isLoading: boolean
 }) {
+  // La tabla vive a altura de organización, así que dos filas idénticas pueden
+  // ser de clusters distintos y sin esta columna no hay forma de saber cuál
+  // mirar. Autopilot ya la tenía; esto cierra la divergencia entre las dos
+  // vistas de consumo, que responden la misma pregunta.
+  //
+  // El hook resuelve tanto el `agent:<uid>` que guarda Kobi como el UID pelado
+  // de Autopilot, y comparte queryKey con la barra superior — no añade petición.
+  const clusterLabel = useClusterLabel()
   const [page, setPage] = useState(1)
   const pageSize = 20
   const totalPages = Math.max(1, Math.ceil(sessions.length / pageSize))
@@ -411,6 +419,7 @@ function SessionsTable({
             <thead>
               <tr className="border-b border-kb-border text-[10px] font-mono uppercase tracking-[0.06em] text-kb-text-tertiary">
                 <th className="text-left px-4 py-2">When</th>
+                <th className="text-left px-4 py-2">Cluster</th>
                 <th className="text-left px-4 py-2">Model</th>
                 <th className="text-left px-4 py-2">Trigger</th>
                 <th className="text-right px-4 py-2">Rounds</th>
@@ -433,6 +442,16 @@ function SessionsTable({
                   >
                     <td className="px-4 py-2 text-kb-text-secondary font-mono">
                       {fmtRelative(s.timestamp)}
+                    </td>
+                    {/* Guion cuando el cluster ya no resuelve — dado de baja o
+                        contexto renombrado. Enseñar el identificador crudo no
+                        informa y parece un error; el gasto sigue contando.
+                        Mismo tratamiento que la tabla de Autopilot. */}
+                    <td
+                      className="px-4 py-2 text-kb-text-secondary font-mono max-w-[160px] truncate"
+                      title={clusterLabel(s.cluster) || s.cluster}
+                    >
+                      {clusterLabel(s.cluster) || '—'}
                     </td>
                     <td className="px-4 py-2 text-kb-text-secondary font-mono">
                       {s.provider}·{s.model || 'default'}
@@ -522,17 +541,12 @@ function SessionModal({
   onClose: () => void
 }) {
   // The stored `cluster` field is the raw agent-proxy context (e.g.
-  // "agent:<uid>") — noise. Resolve it to the cluster's friendly display name
-  // via the clusters list (already cached by the topbar). Falls back to just the
-  // timestamp when the cluster isn't resolvable (deleted / unknown) — never the
-  // cryptic raw context.
-  const { data: clusters } = useQuery({
-    queryKey: ['clusters'],
-    queryFn: api.listClusters,
-    staleTime: 5 * 60_000,
-  })
-  const cluster = (clusters ?? []).find((c) => c.context === session.cluster)
-  const clusterLabel = cluster ? parseClusterDisplayName(cluster) : ''
+  // "agent:<uid>") — noise. useClusterLabel lo resuelve al nombre legible y
+  // devuelve vacío cuando el cluster ya no existe, para caer al timestamp a
+  // secas en vez de enseñar el contexto críptico. Se comparte con la vista de
+  // Autopilot, que guarda el UID en vez del contexto: un resolutor por vista
+  // habría dejado una de las dos mostrando jeroglíficos.
+  const clusterLabel = useClusterLabel()(session.cluster)
   const when = new Date(session.timestamp).toLocaleString()
   const title = clusterLabel ? `${when} · ${clusterLabel}` : when
 

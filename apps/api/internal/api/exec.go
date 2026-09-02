@@ -120,6 +120,11 @@ func detectShell(clientset kubernetes.Interface, restConfig *restclient.Config, 
 }
 
 func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
+	// The actor is captured from the WS-token claims, not from the request
+	// context: a browser cannot set an Authorization header when opening a
+	// WebSocket, so this route authenticates from the query string and the
+	// context carries no claims (see accessActor).
+	actor := actorFromRequest(r)
 	// Validate auth + Editor role for exec (token via query param)
 	if h.authHandlers != nil && h.authHandlers.IsEnabled() {
 		token := r.URL.Query().Get("token")
@@ -132,6 +137,7 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "insufficient permissions — Editor role required for terminal access", http.StatusForbidden)
 			return
 		}
+		actor = actorFromClaims(claims, actor.TenantID)
 	}
 
 	namespace := chi.URLParam(r, "namespace")
@@ -212,6 +218,18 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("Exec session started: %s/%s container=%s shell=%s", namespace, name, container, shell)
 
+	// Recorded from here, AFTER detectShell — that probe opens an exec of its
+	// own, and auditing it would make every terminal look like two sessions.
+	// The stream itself is never recorded: this is where passwords get typed.
+	endSession := auditAccessSession(actor, "pod_exec_session", "pods", namespace, name, map[string]any{
+		"container": container,
+		"shell":     shell,
+	})
+	// Backstop for every path that leaves this handler without reaching the
+	// explicit close below — a panic, or a future early return. Idempotent, so
+	// the explicit call wins and this only fires when nothing else did.
+	defer endSession("handler returned", nil)
+
 	// Read pump: reads WebSocket messages, feeds stdin pipe and resize queue
 	done := make(chan struct{})
 	go func() {
@@ -261,6 +279,7 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 	})
 
 	exitCode := 0
+	streamErr := err
 	if err != nil {
 		errMsg := err.Error()
 		log.Printf("Exec stream ended: %v", err)
@@ -277,6 +296,21 @@ func (h *handlers) handleExec(w http.ResponseWriter, r *http.Request) {
 	} else {
 		ws.writeJSON(execMessage{Type: "exit", Code: 0})
 	}
+
+	// Closed HERE, as soon as the exec stream returns — not after the wait
+	// below. The access ends when the shell ends; `<-done` waits for the read
+	// pump, which only unblocks when the CLIENT tears down the WebSocket. A user
+	// who types `exit` but leaves the tab open would otherwise produce no close
+	// record at all, and once it finally arrived its duration would measure "how
+	// long the browser stayed connected" rather than how long the shell was
+	// open. Both make the record say something other than what happened.
+	reason := "shell exited"
+	closeParams := map[string]any{"exitCode": exitCode}
+	if streamErr != nil {
+		reason = "stream error"
+		closeParams["error"] = streamErr.Error()
+	}
+	endSession(reason, closeParams)
 
 	// Small delay to ensure the error/exit frames are sent before WS close
 	time.Sleep(100 * time.Millisecond)

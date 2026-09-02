@@ -49,6 +49,9 @@ type Manager struct {
 	// Lookup-on-connect lets the manager pick the right ClusterAccess
 	// without bolting a new field onto every kubeconfig entry.
 	agentProxyContexts map[string]string
+	// profiles cachea proveedor/región/versión por cluster_id para que la LISTA
+	// de clusters pueda servirlos sin conectar a ninguno. Ver profile.go.
+	profiles *profileCache
 	// metricsOnlyContexts maps the synthetic contextName of a cluster whose agent
 	// ships metrics but does NOT advertise kube-proxy → cluster_id. Parallel to
 	// agentProxyContexts but NEVER gets a connector: connectToContextLocked skips
@@ -155,6 +158,27 @@ type clusterRuntime struct {
 // store (the boot race). Future engines pick up m.insightStore; the live one
 // is updated in place via engine.SetStore so it persists + serves history this
 // session too. tenantID defaults to "default" (OSS single-tenant) when empty.
+// InsightStore expone el store persistido de insights.
+//
+// Existe para que la FLOTA pueda leer el estado real de cada cluster sin
+// conectar a ninguno. Hasta ahora el único camino al store pasaba por el
+// engine (`/insights` → `eng.ListHistory`), y el engine exige un connector
+// vivo — así que una vista de flota sólo podía hablar del cable, y decía
+// «Healthy» de un cluster cuyo propio Overview decía «warning».
+//
+// El store no necesita connector: guarda por (tenant, cluster, fingerprint) y
+// sobrevive a reinicios. Leer de aquí garantiza además que la flota y el
+// Overview digan lo MISMO, porque es el mismo dato y no una segunda forma de
+// deducirlo.
+func (m *Manager) InsightStore() insights.InsightStore {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.insightStore
+}
+
 func (m *Manager) SetInsightStore(store insights.InsightStore, tenantID string) {
 	m.mu.Lock()
 	m.insightStore = store
@@ -371,7 +395,26 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	// without a manual view. The active context is covered by the retry above;
 	// here we cover the non-active connected clusters. Skip if already pooled.
 	if contextName != m.activeContext {
-		if _, ok := m.runtimes[poolKey{tenant: m.tenantID, cluster: contextName}]; !ok {
+		pk := poolKey{tenant: m.tenantID, cluster: contextName}
+		rt, pooled := m.runtimes[pk]
+		// "Already pooled" is only a reason to skip when that runtime WORKS. A
+		// pooled runtime that failed to connect is indistinguishable from a
+		// healthy one to a bare presence check, and the agent's Hello is exactly
+		// the event that makes a retry worth attempting — it is the signal that
+		// the channel is now up.
+		//
+		// Without this, one failed spin is permanent. Observed locally: API up
+		// at 20:21:45, agents registered 72s later (the eager spin's own wait is
+		// 6s, so the boot attempt was always going to lose that race), the retry
+		// on Hello then spun and failed, and both clusters sat "disconnected"
+		// with live agents shipping metrics the whole time. The pool metric told
+		// the story — runtimes{state="parked"}=2 while ListClusters said zero
+		// connected. Only a manual cluster switch revived them.
+		if pooled && rt != nil && rt.connErr != nil {
+			m.evictPoolEntryLocked(pk, rt, "failed runtime, agent re-registered")
+			pooled = false
+		}
+		if !pooled {
 			go m.eagerSpinPooledRuntime(contextName, clusterID)
 		}
 	}
@@ -562,6 +605,30 @@ func (m *Manager) SetStorage(s ClusterStore) error {
 }
 
 // Storage returns the attached storage, or nil if none was set.
+// CanonicalClusterID maps a UI-supplied context name to the kube-system UID that
+// keys per-cluster state. This reconciles the two identities of a cluster: an
+// agent-proxy context encodes the UID in its name (agent:<uid>), while a direct
+// context (in-cluster / kubeconfig) carries a plain name whose UID lives in the
+// persisted UID map. Falls back to the context name unchanged when no UID is
+// known.
+func (m *Manager) CanonicalClusterID(ctx context.Context, contextName string) string {
+	if contextName == "" {
+		return ""
+	}
+	// Agent-proxy context: the name is agent:<uid> — strip the prefix.
+	if uid := RawClusterID(contextName); uid != contextName {
+		return uid
+	}
+	// Direct context: the kube-system UID was persisted when its runtime resolved
+	// (SetClusterUID).
+	if m.storage != nil {
+		if uid := m.storage.GetClusterUID(ctx, contextName); uid != "" {
+			return uid
+		}
+	}
+	return contextName
+}
+
 func (m *Manager) Storage() ClusterStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -670,6 +737,18 @@ type ClusterInfo struct {
 	// connector-backed cluster (""). The UI shows the metrics dashboards and degrades
 	// the resource views when Mode == "metrics-only", and badges the connection type.
 	Mode string `json:"mode,omitempty"`
+
+	// CloudProvider / Region / KubernetesVersion identify WHERE the cluster runs
+	// and on what — lo que la vista de flota pinta como icono del proveedor y
+	// versión, para cada cluster y no sólo para el activo.
+	//
+	// Salen de la caché de perfiles (profile.go), no de una conexión: la flota se
+	// pinta a propósito sin conectar a ningún cluster. Vacíos mientras el perfil
+	// de ese cluster no se haya resuelto nunca en este proceso — el UI debe
+	// pintarlos como «no lo sabemos», jamás como un valor por defecto.
+	CloudProvider     string `json:"cloudProvider,omitempty"`
+	Region            string `json:"region,omitempty"`
+	KubernetesVersion string `json:"kubernetesVersion,omitempty"`
 }
 
 // Pool bounds (A.3d). A parked runtime keeps live informers, so the pool is
@@ -704,6 +783,7 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 				activeContext:    "in-cluster",
 				wsHub:            wsHub,
 				metricInterval:   metricInterval,
+				profiles:         newProfileCache(),
 				insightInterval:  insightInterval,
 				poolIdleTimeout:  defaultPoolIdleTimeout,
 				poolMaxRuntimes:  defaultPoolMaxRuntimes,
@@ -733,6 +813,7 @@ func NewManager(kubeconfigPath string, wsHub *websocket.Hub, metricInterval, ins
 		activeContext:    kubeConfig.CurrentContext,
 		wsHub:            wsHub,
 		metricInterval:   metricInterval,
+		profiles:         newProfileCache(),
 		insightInterval:  insightInterval,
 		poolIdleTimeout:  defaultPoolIdleTimeout,
 		poolMaxRuntimes:  defaultPoolMaxRuntimes,
@@ -814,6 +895,11 @@ func (m *Manager) ListClusters() []ClusterInfo {
 	if m.agentRegistry != nil {
 		lastSeenByCluster = m.agentRegistry.LastSeenByCluster()
 	}
+	// El perfil conocido del cluster. Cero cuando nunca se resolvió: el UI lo
+	// pinta como ausencia en vez de inventar un proveedor.
+	profileOf := func(clusterID string) ClusterProfile {
+		return m.ProfileFor(clusterID)
+	}
 
 	var clusters []ClusterInfo
 	for ctxName, ctx := range m.kubeConfig.Contexts {
@@ -833,16 +919,27 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			// live-channel signal (instant, no VM round-trip); fall back to VM
 			// freshness so durable ingest reads as connected on its own.
 			channelLive := m.agentRegistry != nil && m.agentRegistry.CountByCluster(metricsOnlyCID) > 0
-			if channelLive || m.metricsFresh(metricsOnlyCID) {
+			if channelLive || m.metricsFresh(m.tenantID, metricsOnlyCID) {
 				status = "connected"
 			}
 		} else if isActive {
+			// The globally-active slot: its health is the active connector's.
 			if m.connector != nil {
 				status = "connected"
 			} else if m.connErr != nil {
 				status = "error"
 				connErrMsg = m.connErr.Error()
 			}
+		} else if rt, ok := m.runtimes[poolKey{tenant: m.tenantID, cluster: ctxName}]; ok && rt.connector != nil {
+			// A PARKED runtime with a live connector is connected, and saying so
+			// is the whole point of always-on: its informers run, its insights
+			// tick and the findings sweep visits it with nobody viewing it. This
+			// check used to sit inside `isActive`, so every cluster the user was
+			// not currently looking at reported "disconnected" — an operator with
+			// ten monitored clusters saw nine offline, and the one cure that
+			// appeared to work was selecting each in turn, which only flipped
+			// isActive.
+			status = "connected"
 		}
 		source := "file"
 		switch {
@@ -898,7 +995,7 @@ func (m *Manager) ListClusters() []ClusterInfo {
 		if source == "agent-proxy" {
 			agentConnected = clusterID != "" && m.agentRegistry != nil && m.agentRegistry.CountByCluster(clusterID) > 0
 			if !agentConnected && metricsOnlyCID != "" {
-				agentConnected = m.metricsFresh(metricsOnlyCID)
+				agentConnected = m.metricsFresh(m.tenantID, metricsOnlyCID)
 			}
 			if ls, ok := lastSeenByCluster[clusterID]; ok && !ls.IsZero() {
 				lsCopy := ls
@@ -918,6 +1015,10 @@ func (m *Manager) ListClusters() []ClusterInfo {
 			AgentConnected: agentConnected,
 			LastSeen:       lastSeen,
 			Mode:           mode,
+
+			CloudProvider:     profileOf(clusterID).Provider,
+			Region:            profileOf(clusterID).Region,
+			KubernetesVersion: profileOf(clusterID).Version,
 		})
 	}
 	sort.Slice(clusters, func(i, j int) bool {
@@ -1718,6 +1819,12 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// clients only receive their own cluster's events. OSS clients carry no
 	// scope, so this is inert there.
 	connector.SetWSScope(tenantID, contextName)
+	// El perfil del cluster va a la caché que sirve la lista de flota.
+	connector.SetProfileHook(func(clusterID, provider, region, version, platform string) {
+		m.RememberProfile(clusterID, ClusterProfile{
+			Provider: provider, Region: region, Version: version, Platform: platform,
+		})
+	})
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)
@@ -1736,6 +1843,25 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 			engineClusterID = contextName
 		}
 	}
+	// Resuelve el perfil del cluster AQUÍ, al arrancar su runtime — no sólo al
+	// construir su overview.
+	//
+	// El hook de GetOverview sólo dispara para el cluster ACTIVO, así que la
+	// flota enseñaba el proveedor únicamente del seleccionado y el resto salía
+	// sin icono: exactamente el indicador intermitente que la caché venía a
+	// evitar, movido un paso más arriba.
+	//
+	// Aquí cuesta una lectura de la caché del informer, que ya está sincronizada
+	// a esta altura, y cubre TODO cluster que llegue a tener runtime — incluidos
+	// los agent-proxy, que lo obtienen al registrarse su agente.
+	if engineClusterID != "" {
+		platform, provider, region := connector.CloudProfile()
+		version, _ := connector.ServerVersionCached()
+		m.RememberProfile(engineClusterID, ClusterProfile{
+			Provider: provider, Region: region, Version: version, Platform: platform,
+		})
+	}
+
 	engine := insights.NewEngine(m.wsHub, insightStore, engineClusterID, tenantID)
 	engine.SetBroadcastGate(gate)
 	engine.SetWSScope(tenantID, contextName)

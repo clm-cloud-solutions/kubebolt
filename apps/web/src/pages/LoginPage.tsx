@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { AuthShell } from '@/components/shared/AuthShell'
+import { landingAfterAuth } from '@/utils/routes'
 import { useAuth } from '@/contexts/AuthContext'
 
 export function LoginPage() {
@@ -14,7 +15,9 @@ export function LoginPage() {
   const { login, isAuthEnabled, isSignupEnabled, isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = (location.state as { from?: string })?.from || '/'
+  // Deep link respected; only the default destination changes. See
+  // landingAfterAuth in utils/routes.ts.
+  const from = landingAfterAuth((location.state as { from?: string })?.from)
 
   // If auth disabled or already logged in, redirect
   if (!isAuthEnabled || isAuthenticated) {
@@ -41,7 +44,7 @@ export function LoginPage() {
     'w-full px-3 py-2 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors'
 
   return (
-    <AuthShell title="Welcome back" subtitle="Sign in to your account.">
+    <AuthShell title="Welcome back">
       <form onSubmit={handleSubmit} className="bg-kb-card border border-kb-border rounded-xl p-6 shadow-sm space-y-4">
         {error && (
           <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>

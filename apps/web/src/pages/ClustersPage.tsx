@@ -1,12 +1,12 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
-import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Plus, Pencil, Trash2, Upload, FileText, ChevronDown, Cable, Eye, Wrench } from 'lucide-react'
+import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive, AlertTriangle, Pencil, Trash2, Upload, Eye, Wrench } from 'lucide-react'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { Modal } from '@/components/shared/Modal'
-import { AddClusterWizard } from '@/components/admin/AddClusterWizard'
+import { AddClusterButton } from '@/components/admin/AddClusterButton'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterInfo, ClusterOverview, ClusterHealth } from '@/types/kubernetes'
 
@@ -303,106 +303,6 @@ function ClusterCard({
   )
 }
 
-// --- Add Cluster Modal ---
-
-function AddClusterModal({ onClose }: { onClose: () => void }) {
-  const queryClient = useQueryClient()
-  const fileInputRef = useRef<HTMLInputElement>(null)
-  const [kubeconfig, setKubeconfig] = useState('')
-  const [error, setError] = useState<string | null>(null)
-  const [uploading, setUploading] = useState(false)
-
-  async function handleFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    if (file.size > 1024 * 1024) {
-      setError('File too large (max 1MB)')
-      return
-    }
-    const text = await file.text()
-    setKubeconfig(text)
-    setError(null)
-  }
-
-  async function handleSubmit() {
-    if (!kubeconfig.trim()) {
-      setError('Please paste a kubeconfig or choose a file')
-      return
-    }
-    setUploading(true)
-    setError(null)
-    try {
-      const result = await api.addCluster(kubeconfig)
-      queryClient.invalidateQueries({ queryKey: ['clusters'] })
-      onClose()
-      console.log(`Added ${result.added.length} cluster context(s):`, result.added)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to add cluster')
-    } finally {
-      setUploading(false)
-    }
-  }
-
-  return (
-    <Modal badge="Add cluster" title="Upload kubeconfig" onClose={onClose} size="lg">
-        <div className="p-6 space-y-4">
-          <p className="text-xs text-kb-text-secondary">
-            Paste the content of a kubeconfig file or choose a file to upload. All contexts in the file will be added.
-          </p>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={() => fileInputRef.current?.click()}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-kb-elevated hover:bg-kb-card-hover text-xs text-kb-text-primary transition-colors border border-kb-border"
-            >
-              <FileText className="w-3.5 h-3.5" />
-              Choose file...
-            </button>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".yaml,.yml,.kubeconfig,text/yaml,application/yaml"
-              onChange={handleFile}
-              className="hidden"
-            />
-            <span className="text-[10px] font-mono text-kb-text-tertiary">or paste below</span>
-          </div>
-
-          <textarea
-            value={kubeconfig}
-            onChange={(e) => { setKubeconfig(e.target.value); setError(null) }}
-            placeholder="apiVersion: v1&#10;kind: Config&#10;clusters:&#10;  - name: my-cluster&#10;    cluster:&#10;      server: https://..."
-            className="w-full h-64 px-3 py-2 rounded-lg bg-kb-bg border border-kb-border text-[11px] font-mono text-kb-text-primary placeholder:text-kb-text-tertiary/50 focus:outline-none focus:border-kb-border-active resize-none"
-          />
-
-          {error && (
-            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-error-dim">
-              <AlertTriangle className="w-3.5 h-3.5 text-status-error shrink-0 mt-0.5" />
-              <span className="text-[11px] text-status-error">{error}</span>
-            </div>
-          )}
-        </div>
-
-        <div className="flex items-center justify-end gap-2 px-6 py-4 border-t border-kb-border bg-kb-surface">
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 rounded-lg text-xs text-kb-text-secondary hover:text-kb-text-primary transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit}
-            disabled={uploading || !kubeconfig.trim()}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <Upload className="w-3 h-3" />
-            {uploading ? 'Uploading...' : 'Add cluster'}
-          </button>
-        </div>
-    </Modal>
-  )
-}
-
 // --- Rename Cluster Modal ---
 
 function RenameClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClose: () => void }) {
@@ -574,21 +474,9 @@ export function ClustersPage() {
   // cluster's agent dials back via gRPC. Both are valid in any
   // deployment mode (in-cluster Helm, desktop binary, Compose), so we
   // always offer both and let the operator pick.
-  const [addModalType, setAddModalType] = useState<'kubeconfig' | 'agent' | null>(null)
-  const [addMenuOpen, setAddMenuOpen] = useState(false)
-  const addMenuRef = useRef<HTMLDivElement>(null)
   const [renaming, setRenaming] = useState<ClusterInfo | null>(null)
   const [deleting, setDeleting] = useState<ClusterInfo | null>(null)
 
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
-        setAddMenuOpen(false)
-      }
-    }
-    if (addMenuOpen) document.addEventListener('mousedown', handleClick)
-    return () => document.removeEventListener('mousedown', handleClick)
-  }, [addMenuOpen])
 
   const { data: clusters } = useQuery({
     queryKey: ['clusters'],
@@ -662,49 +550,7 @@ export function ClustersPage() {
             {uploadedCount > 0 && ` · ${uploadedCount} uploaded`}
           </p>
         </div>
-        {canManage && (
-          <div className="relative" ref={addMenuRef}>
-            <button
-              onClick={() => setAddMenuOpen(o => !o)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              Add cluster
-              <ChevronDown className={`w-3 h-3 transition-transform ${addMenuOpen ? 'rotate-180' : ''}`} />
-            </button>
-            {addMenuOpen && (
-              <div className="absolute top-full right-0 mt-1 w-72 bg-kb-card border border-kb-border rounded-lg shadow-xl z-50 py-1 overflow-hidden">
-                <button
-                  type="button"
-                  onClick={() => { setAddMenuOpen(false); setAddModalType('kubeconfig') }}
-                  className="w-full text-left px-3 py-2.5 hover:bg-kb-card-hover transition-colors"
-                >
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <FileText className="w-3.5 h-3.5 text-kb-text-secondary" />
-                    <span className="text-xs font-medium text-kb-text-primary">Import kubeconfig</span>
-                  </div>
-                  <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
-                    KubeBolt dials the apiserver directly. Best when you have a SA token and the cluster is reachable from this backend.
-                  </div>
-                </button>
-                <div className="border-t border-kb-border" />
-                <button
-                  type="button"
-                  onClick={() => { setAddMenuOpen(false); setAddModalType('agent') }}
-                  className="w-full text-left px-3 py-2.5 hover:bg-kb-card-hover transition-colors"
-                >
-                  <div className="flex items-center gap-2 mb-0.5">
-                    <Cable className="w-3.5 h-3.5 text-kb-text-secondary" />
-                    <span className="text-xs font-medium text-kb-text-primary">Install agent</span>
-                  </div>
-                  <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
-                    Remote agent dials back over gRPC. Best when the cluster's apiserver isn't reachable from this backend.
-                  </div>
-                </button>
-              </div>
-            )}
-          </div>
-        )}
+        <AddClusterButton canManage={canManage} label="Add cluster" />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
@@ -723,8 +569,6 @@ export function ClustersPage() {
         ))}
       </div>
 
-      {addModalType === 'kubeconfig' && <AddClusterModal onClose={() => setAddModalType(null)} />}
-      {addModalType === 'agent' && <AddClusterWizard onClose={() => setAddModalType(null)} />}
       {renaming && <RenameClusterModal cluster={renaming} onClose={() => setRenaming(null)} />}
       {deleting && <DeleteClusterModal cluster={deleting} onClose={() => setDeleting(null)} />}
     </div>

@@ -537,7 +537,7 @@ func ToolDefinitions() []ToolDefinition {
 						"minItems": 1,
 						"maxItems": 4,
 					},
-					"range": strPropEnum("Time range relative to now. Default 15m if omitted. Wider ranges cost more tokens (longer trend, more downsampling) — pick the smallest that answers the question.", []string{"5m", "15m", "1h", "6h", "24h"}),
+					"range": strPropEnum("Time range relative to now. Default 15m if omitted. The response is always ~12 points, so a wider range costs no more tokens — it costs RESOLUTION: each point becomes the peak of a longer step. Pick the smallest window that answers the question, and use the multi-day ranges for trends and sizing (\"is this growing\", \"what should the limit be\") rather than for incidents. If the organization's plan retains less history than requested, the range is narrowed and rangeAdjusted says so.", []string{"5m", "15m", "1h", "6h", "24h", "7d", "14d", "30d"}),
 					"perContainer": boolProp("When true, split CPU/memory by container instead of aggregating to the workload. Ignored for network metrics (pod-level only) and for kind=Node (nodes don't have containers). Default false. Use when the operator is asking which container is responsible for a usage pattern."),
 				},
 				"required": []string{"kind", "namespace", "name", "metrics"},

@@ -438,6 +438,13 @@ export const api = {
   // --- Cluster management ---
   listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
 
+  // Nombres legibles de TODOS los clusters de la org, incluidos los dados de
+  // baja. No es la lista de /clusters: aquella es la de los vivos y alimenta el
+  // selector, donde ofrecer uno retirado sería ofrecer entrar en algo que no
+  // está. Éste sólo rotula historial. Viene indexado por las dos identidades
+  // (contexto y UID).
+  getClusterNames: () => fetchJSON<Record<string, string>>(`${API_BASE}/clusters/names`),
+
   switchCluster: (context: string) =>
     postJSON<{ status: string; context: string }>(`${API_BASE}/clusters/switch`, { context }),
 
@@ -618,6 +625,210 @@ export const api = {
     fetchJSON<Array<{ name: string; namespace: string; kind: string; resourceType: string; status: string }>>(
       `${API_BASE}/search?q=${encodeURIComponent(query)}`
     ),
+
+  // Security findings (E2 SEC-C): org-scoped, actives by default.
+  //
+  // `source` / `severity` / `kind` are FACETS — they narrow the returned rows
+  // but NOT the summary, which is always computed over the whole scope. That is
+  // what keeps the filter chips from erasing themselves and the KPIs from
+  // silently re-scoping as you click. `cluster` / `status` are scope: they
+  // narrow both.
+  /**
+   * Estado REAL de cada cluster: insights ACTIVOS por severidad, para toda la
+   * flota. Sale del store persistido, así que no necesita cluster conectado —
+   * y es el MISMO dato con el que el Overview calcula su salud, de modo que las
+   * dos vistas no pueden discrepar.
+   */
+  getInsightsSummary: () =>
+    fetchJSON<{
+      /** cluster_id → severidad → nº de insights activos. */
+      bySeverityCluster: Record<string, Record<string, number>>
+      /** Totales en el alcance del llamante, ya sumados por el backend. */
+      bySeverity: Record<string, number>
+    }>(`${API_BASE}/insights/summary`),
+
+  listFindings: (opts?: {
+    source?: string
+    severity?: string
+    kind?: string
+    cluster?: string
+    status?: string
+    // group is the Security sub-tab's SCOPE, not a chip: it selects which
+    // question is being answered, and the summary is computed within it. A CVE
+    // and a CIS control are not comparable, so they are never counted together.
+    group?: 'vulnerability' | 'configuration' | 'rbac' | 'compliance'
+    page?: number
+    pageSize?: number
+    resourceName?: string
+    resourceNamespace?: string
+  }) => {
+    const p = new URLSearchParams()
+    if (opts?.group) p.set('group', opts.group)
+    if (opts?.page && opts.page > 1) p.set('page', String(opts.page))
+    if (opts?.pageSize) p.set('pageSize', String(opts.pageSize))
+    if (opts?.resourceName) p.set('resourceName', opts.resourceName)
+    if (opts?.resourceNamespace) p.set('resourceNamespace', opts.resourceNamespace)
+    if (opts?.pageSize) p.set('pageSize', String(opts.pageSize))
+    if (opts?.resourceName) p.set('resourceName', opts.resourceName)
+    if (opts?.resourceNamespace) p.set('resourceNamespace', opts.resourceNamespace)
+    if (opts?.source) p.set('source', opts.source)
+    if (opts?.severity) p.set('severity', opts.severity)
+    if (opts?.kind) p.set('kind', opts.kind)
+    if (opts?.cluster) p.set('cluster', opts.cluster)
+    if (opts?.status) p.set('status', opts.status)
+    const qs = p.toString()
+    return fetchJSON<{
+      findings: Array<{
+        fingerprint: string; tenantId: string; clusterId: string
+        kind: string; source: string; severity: string; title: string
+        resourceKind?: string; resourceNamespace?: string; resourceName?: string
+        cisControl?: string
+        remediation?: string; detectedAt: string; status: string
+        rollup?: boolean
+        firstSeen: string; lastSeen: string
+      }>
+      /** Facet-filtered count, before the 200-row table cap. */
+      total: number
+      /** Scope-wide denominator — >= total whenever a facet is active. */
+      scopeTotal: number
+      // Per-cluster tally so a page focused on a team can FOLD instead of
+      // trusting the org-wide sum. The team lens never travels to the server, so
+      // the narrowing has to happen here — and a summary cannot be recomputed
+      // from one page of rows.
+      bySeverityCluster?: Record<string, Record<string, number>>
+      bySeverity: Record<string, number>
+      bySource: Record<string, number>
+      byKind: Record<string, number>
+      activeWithRemediation: number
+      newLast24h: number
+      rollups: number
+      affectedResources: number
+      topResource?: string
+      topResourceCount?: number
+      page: number
+      pageSize: number
+    }>(`${API_BASE}/findings${qs ? `?${qs}` : ''}`)
+  },
+
+  // Workload-first view. The unit of work is the WORKLOAD: 47 CVEs on one image
+  // are fixed by rebuilding it once, so a CVE-ranked list makes the operator
+  // visit the same workload 47 times for a single change.
+  listFindingWorkloads: (opts?: {
+    group?: 'vulnerability' | 'configuration' | 'rbac' | 'compliance'
+    severity?: string
+    // The kind facet must reach THIS endpoint too, not only the finding list —
+    // otherwise a chip narrows the summary and leaves the table showing
+    // everything, which reads as a filter that does nothing.
+    kind?: string
+    cluster?: string
+    page?: number
+  }) => {
+    const p = new URLSearchParams()
+    if (opts?.group) p.set('group', opts.group)
+    if (opts?.severity) p.set('severity', opts.severity)
+    if (opts?.kind) p.set('kind', opts.kind)
+    if (opts?.cluster) p.set('cluster', opts.cluster)
+    if (opts?.page && opts.page > 1) p.set('page', String(opts.page))
+    const qs = p.toString()
+    return fetchJSON<{
+      workloads: Array<{
+        clusterId?: string
+        kind?: string; namespace?: string; name: string
+        critical: number; high: number; medium: number; low: number
+        // kinds replaced a `sources` field that named the SCANNER — useless here,
+        // since CVE, misconfiguration, RBAC and secrets all report "trivy". The
+        // kind is the discriminator. Open-ended on purpose: a kind we have not
+        // shipped yet renders without touching this type.
+        total: number; fixable: number; kinds?: Record<string, number>; secrets?: number
+        image?: string; images?: number; oldestSeen?: string
+      }>
+      total: number
+      page: number
+      pageSize: number
+      findings: number
+      unassigned: number
+      topImages?: Array<{
+        image: string; workloads: number; findings: number; critical: number; high: number
+        workloadNames?: string[]; clusters?: string[]
+      }>
+      benchmarks?: Array<{
+        name: string; failing: number; critical: number; high: number
+        medium: number; rollups: number
+      }>
+      topChecks?: Array<{
+        title: string; workloads: number; findings: number
+        critical: number; high: number; medium: number
+        workloadNames?: string[]; clusters?: string[]
+      }>
+    }>(`${API_BASE}/findings/workloads${qs ? `?${qs}` : ''}`)
+  },
+
+  // Per-finding drill-down. The stored finding is deliberately lossy — its
+  // identity excludes the package name, so one CVE across several packages of a
+  // workload is ONE row. This re-reads Trivy in the cluster to recover them,
+  // which is why `live` can be false: the row survives a disconnected cluster,
+  // the package list cannot.
+  getFindingDetail: (fingerprint: string, cluster?: string) => {
+    const qs = cluster ? `?cluster=${encodeURIComponent(cluster)}` : ''
+    return fetchJSON<{
+      fingerprint: string; clusterId: string; kind: string; source: string
+      severity: string; title: string; status: string
+      resourceKind?: string; resourceNamespace?: string; resourceName?: string
+      cisControl?: string; remediation?: string
+      firstSeen: string; lastSeen: string
+      live: boolean
+      liveError?: string
+      images?: Array<{
+        containers: string[]; pods: number
+        image?: string; digest?: string; os?: string
+        packages: Array<{
+          name: string; installedVersion?: string; fixedVersion?: string
+          severity?: string; score?: number; link?: string
+        }>
+      }>
+      compliance?: {
+        benchmark?: string; control?: string; description?: string; severity?: string
+        failingTotal: number
+        failingResources?: Array<{
+          kind?: string; namespace?: string; name?: string; message?: string
+        }>
+      }
+    }>(`${API_BASE}/findings/${encodeURIComponent(fingerprint)}${qs}`)
+  },
+
+  // Runtime security events (E2 SEC-E, Falco): org-scoped, newest first.
+  // `since` takes a Go duration ("24h") or RFC3339; `limit` is capped at 500
+  // server-side — Falco can emit thousands of hits a day per cluster.
+  listRuntimeEvents: (opts?: {
+    priority?: string
+    cluster?: string
+    since?: string
+    limit?: number
+  }) => {
+    const p = new URLSearchParams()
+    if (opts?.priority) p.set('priority', opts.priority)
+    if (opts?.cluster) p.set('cluster', opts.cluster)
+    if (opts?.since) p.set('since', opts.since)
+    if (opts?.limit) p.set('limit', String(opts.limit))
+    const qs = p.toString()
+    return fetchJSON<{
+      events: Array<{
+        id: string; clusterId: string; at: string; priority: string
+        ruleName: string; namespace?: string; podName?: string
+        detectedBehavior: string; source: string; fields?: Record<string, string>
+      }>
+      total: number
+    }>(`${API_BASE}/runtime-events${qs ? `?${qs}` : ''}`)
+  },
+
+  // Fleet-scoped search (E2 Fleet C1): fans out across every searchable
+  // cluster in the caller's org; hits carry the cluster they live in.
+  searchFleet: (query: string) =>
+    fetchJSON<{
+      results: Array<{ name: string; namespace: string; kind: string; resourceType: string; status: string; cluster?: string }>
+      clustersSearched: number
+    }>(`${API_BASE}/search?scope=fleet&q=${encodeURIComponent(query)}`),
+
 
   // Resource actions. The optional `source` tags the audit log entry —
   // UI buttons leave it default ("ui"); Copilot proposal cards pass
@@ -1108,24 +1319,37 @@ export const api = {
     deleteRequest<{ ok: boolean }>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
 
   // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
-  queryMetricsRange: (params: { query: string; start: number; end: number; step: string }) =>
+  //
+  // `scope: 'fleet'` widens the read from the active cluster to every cluster
+  // in the org — the backend then skips cluster_id injection but STILL pins
+  // tenant_id (see scopeQueryForRequest). Only the Fleet roll-up uses it; every
+  // per-cluster dashboard omits it and keeps the default scoping.
+  queryMetricsRange: (params: {
+    query: string
+    start: number
+    end: number
+    step: string
+    scope?: 'fleet'
+  }) =>
     fetchJSON<PromRangeResponse>(
       `${API_BASE}/metrics/query_range${buildQuery({
         query: params.query,
         start: params.start,
         end: params.end,
         step: params.step,
+        scope: params.scope,
       })}`
     ),
 
   // Instant PromQL query — single-point lookup. Used by panels that need
   // "current value" or topN snapshots, where running a range query and
   // picking the last point would be wasteful.
-  queryMetrics: (params: { query: string; time?: number }) =>
+  queryMetrics: (params: { query: string; time?: number; scope?: 'fleet' }) =>
     fetchJSON<PromVectorResponse>(
       `${API_BASE}/metrics/query${buildQuery({
         query: params.query,
         time: params.time,
+        scope: params.scope,
       })}`
     ),
 

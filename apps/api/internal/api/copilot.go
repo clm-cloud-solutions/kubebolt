@@ -240,7 +240,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	clusterName := h.manager.ActiveContext()
 	systemPrompt := copilot.BuildSystemPrompt()
 
-	executor := copilot.NewExecutor(h.manager)
+	executor := copilot.NewExecutor(h.manager).WithMetricsRetention(h.metricsRetentionFor)
 	// Action governance (Sprint 1): withhold propose_* tools when actions
 	// are disabled, and the destructive verbs when the sub-switch is off —
 	// the LLM can't propose what it can't see. Defaults are ON (the action
@@ -1137,4 +1137,19 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 		ToolResultsStubbed: cr.ToolResultsStubbed,
 		Model:              cr.UsedModel,
 	})
+}
+
+// metricsRetentionFor answers how far back the requesting org keeps metrics, so
+// Kobi's multi-day ranges are narrowed to what exists rather than served with
+// the missing half looking like idle time.
+//
+// 0 means no cap: single-tenant and self-hosted keep whatever the operator
+// configured on their own storage, and inventing a limit there would hide data
+// the operator chose to retain. OSS has no per-plan retention, so this always
+// answers 0; the EE build resolves the org's plan window here (the same
+// resolver behind GET /account/plan), so the range the operator sees offered
+// and the range Kobi will actually serve cannot drift apart.
+func (h *handlers) metricsRetentionFor(ctx context.Context) time.Duration {
+	_ = ctx
+	return 0
 }
