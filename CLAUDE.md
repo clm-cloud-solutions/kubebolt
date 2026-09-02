@@ -252,7 +252,10 @@ When adding a new platform-level route that doesn't depend on a cluster, append 
 - `PermissionDenied` component for 403 pages (instead of generic error)
 - Summary cards show "No access" for restricted resources; CPU/Memory panels show "No access to Nodes" when capacity unavailable
 - Overview workload cards link to resource detail views
-- WebSocket broadcast invalidation debounced (2s) to prevent request storms
+- WebSocket broadcast invalidation debounced (2s) to prevent request storms. `wsManager.disconnect()` really stops (handlers detached before close, pending reconnect timer cleared, `isConnecting` reset) so a caller can drop the feed and reconnect later; an external close still reconnects with backoff.
+- **Sign-in panel copy comes from `ee/registry.tsx`** (`authFeatures`, `authTagline`): `AuthShell.tsx` stays byte-identical across editions while each edition lists only what it ships. `AuthShell`'s `subtitle` is optional (Login passes none).
+- **Add cluster is a component** (`components/admin/AddClusterButton.tsx` → kubeconfig modal or agent wizard), not a page-local menu, so it can be offered wherever the operator is.
+- Dashboard hero cards: `StripCard` `hero` accepts an accent (`warn` / `crit` / `info`) to wash the card in its own state; `KpiCards` Pods uses total − Completed as the denominator so the fraction, the ring and the headline agree; `EfficiencyBand` reports "N% of requests" (amber, Right-size CTA) when usage passes the reservation instead of capping at "100% efficient"; `CostKpis` idle goes `crit` at ≥60 %; `MetricChart` renders an inline series legend (toggle, max 6 names) on charts without the stats panel; `shortenNodeName` elides node names in the middle on a segment boundary so AKS/GKE pools keep their identity.
 - Sensitive value redaction: Secrets always redacted, ConfigMap values with sensitive keys auto-redacted in YAML view
 
 ### Data Flow

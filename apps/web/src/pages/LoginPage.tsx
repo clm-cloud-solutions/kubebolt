@@ -41,7 +41,7 @@ export function LoginPage() {
     'w-full px-3 py-2 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors'
 
   return (
-    <AuthShell title="Welcome back" subtitle="Sign in to your account.">
+    <AuthShell title="Welcome back">
       <form onSubmit={handleSubmit} className="bg-kb-card border border-kb-border rounded-xl p-6 shadow-sm space-y-4">
         {error && (
           <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>

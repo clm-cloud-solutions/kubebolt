@@ -294,6 +294,17 @@ export interface ClusterInfo {
   // the durable agent record — drives the "last seen …" tooltip. Absent when the
   // cluster is live or has no durable record.
   lastSeen?: string
+  // Dónde corre el cluster y sobre qué. Vienen de la caché de perfiles del
+  // backend (cluster/profile.go), no de una conexión: la flota se pinta a
+  // propósito sin conectar a ninguno.
+  //
+  // AUSENTES mientras ese cluster no se haya resuelto nunca en el proceso
+  // actual de la API. Hay que pintarlos como «no lo sabemos» —omitir el icono—
+  // y jamás caer a un proveedor por defecto: un cluster etiquetado como AWS
+  // cuando en realidad es on-prem es peor que uno sin etiqueta.
+  cloudProvider?: string
+  region?: string
+  kubernetesVersion?: string
   // Connection mode of an agent-proxy cluster, derived server-side:
   //   'metrics-only' — agent ships metrics but advertises no kube-proxy, so there is
   //     no live-resource connector; the UI shows dashboards and degrades resource views.

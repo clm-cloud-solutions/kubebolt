@@ -174,6 +174,11 @@ interface MetricChartProps {
 
 const REFS_PERSIST_PREFIX = 'kb-chart-hidden-refs:'
 
+// Most names the inline legend will show before it collapses to a count.
+// Sized for the curated charts that use it (2-3 series); the overflow guard
+// only matters for the per-cluster ingest chart.
+const LEGEND_MAX = 6
+
 // Stable identity for a reference line's toggle pill — shortLabel
 // when provided, else the label's first word. Doubles as the
 // localStorage unit for refsPersistKey.
@@ -513,6 +518,11 @@ export function MetricChart({
 
   const visibleSeries = series.filter(s => !hidden.has(s.name))
   const hasData = points.length > 0 && series.length > 0
+  // A chart that mirrors a series below the zero line (network RX/TX) prints
+  // MAGNITUDES on both halves of the Y axis, so its labels read 0.82 · 0.41 ·
+  // 1.07 · 1.74 top-to-bottom — non-monotonic, and nothing on screen says the
+  // bottom half is outbound. The legend carries that direction.
+  const mirrored = allQueries.some(q => q.negate)
 
   return (
     <div
@@ -639,6 +649,55 @@ export function MetricChart({
           )}
         </div>
       </div>
+
+      {/* Series legend — the color↔name key for charts that don't render the
+          stats panel (Capacity's trends, Cost's run-rates, Reliability). Until
+          this existed, a three-series area chart was three unexplained colors:
+          the only way to learn that green is Compute and purple is Storage was
+          to hover a data point, and the reference-line pills sitting right
+          above it made the absence read as "these colors have no meaning".
+          Doubles as the visibility toggle the stats panel already offers, so
+          both layouts can mute a series that dwarfs the rest.
+
+          Capped: a legend is a key, not a list. Charts with many series
+          (per-cluster ingest) keep the top few and count the rest — the stats
+          panel is the right surface when every series needs naming. */}
+      {hasData && !showStats && series.length > 1 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 -mt-1 mb-3">
+          {series.slice(0, LEGEND_MAX).map(s => {
+            const isHidden = hidden.has(s.name)
+            return (
+              <button
+                key={s.name}
+                type="button"
+                onClick={() => toggleSeries(s.name)}
+                title={`${isHidden ? 'Show' : 'Hide'} ${s.name}`}
+                className={`flex items-center gap-1.5 text-[10px] font-mono transition-colors ${
+                  isHidden
+                    ? 'text-kb-text-tertiary opacity-50 hover:opacity-90'
+                    : 'text-kb-text-secondary hover:text-kb-text-primary'
+                }`}
+              >
+                <span
+                  className="w-3 h-[3px] rounded-full shrink-0"
+                  style={{ background: isHidden ? 'var(--kb-text-tertiary)' : s.color }}
+                />
+                <span className={isHidden ? 'line-through' : undefined}>{s.name}</span>
+                {mirrored && (
+                  <span className="text-kb-text-tertiary" aria-hidden>
+                    {s.negated ? '▼' : '▲'}
+                  </span>
+                )}
+              </button>
+            )
+          })}
+          {series.length > LEGEND_MAX && (
+            <span className="text-[10px] font-mono text-kb-text-tertiary">
+              +{series.length - LEGEND_MAX} more
+            </span>
+          )}
+        </div>
+      )}
 
       {isLoading && <LoadingSpinner size="sm" />}
 

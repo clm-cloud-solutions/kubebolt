@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity, AlertCircle, CheckCircle2, Database, Gauge, KeyRound, Network, Power, Server, Timer } from 'lucide-react'
 import { api, type AdminAgentEntry, type Tenant } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
+import { DonutGauge } from '@/components/shared/DonutGauge'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { RangeSelector, OVERVIEW_RANGE_OPTIONS } from '@/components/shared/RangeSelector'
 
@@ -289,32 +290,18 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
             </p>
           </div>
         </div>
-        <div className="flex items-center gap-5 shrink-0">
+        {/* Las dos métricas, con la MISMA forma: cifra arriba, tendencia abajo.
+            El desequilibrio anterior no venía de tener dos gráficas — venía de
+            tratarlas distinto. Samples/sec tenía titular y gráfica; las series
+            activas no tenían titular y sí una tarjeta dentro de otra, con dos
+            títulos y dos botones de Kobi. Simétricas, se equilibran solas. */}
+        <div className="flex items-start gap-5 shrink-0">
           <HeadlineStat
             label="samples/sec"
             value={samplesPerSecValue !== null ? formatRate(samplesPerSecValue) : '—'}
             icon={<Activity className="w-3 h-3" />}
           />
-          <HeadlineStat
-            label={cap ? `active series / ${formatInt(cap)}` : 'active series'}
-            value={activeSeriesValue !== null ? formatInt(activeSeriesValue) : '—'}
-            icon={<Database className="w-3 h-3" />}
-            extra={
-              seriesPercent !== null ? (
-                <span
-                  className={
-                    seriesPercent >= 90
-                      ? 'ml-2 text-[10px] text-status-error font-mono'
-                      : seriesPercent >= 70
-                        ? 'ml-2 text-[10px] text-status-warn font-mono'
-                        : 'ml-2 text-[10px] text-kb-text-tertiary font-mono'
-                  }
-                >
-                  {seriesPercent}%
-                </span>
-              ) : null
-            }
-          />
+          <SeriesHeadroom current={activeSeriesValue} cap={cap} percent={seriesPercent} />
         </div>
       </header>
 
@@ -323,8 +310,15 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
         <EmptyTenantState />
       ) : (
         <div className="px-5 py-4 space-y-5">
-          {/* Sparkline — two series side by side */}
-          <div>
+          {/* Los DOS techos, uno al lado del otro y cada uno en su unidad.
+              El caudal (muestras/segundo) es una serie temporal con su línea de
+              límite; el stock (series activas) es un anillo, porque a 241 de
+              25.000 una gráfica de líneas con el techo dibujado es una raya
+              plana pegada al suelo y una línea roja arriba sin nada en medio —
+              parece rota justo cuando el consumo es sano. El anillo se lee igual
+              de bien al 1% que al 95%. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
             <MetricChart
               title={`Samples per second (last ${rangeLabel})`}
               icon={<Network className="w-4 h-4" />}
@@ -357,7 +351,14 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
                   ? [
                       {
                         y: limits.effective.writeSamplesPerSec,
-                        label: `rate limit ${formatRate(limits.effective.writeSamplesPerSec)}`,
+                        // «ingest rate limit … /s», no «rate limit …». Esta
+                        // tarjeta enseña DOS techos —muestras por segundo y
+                        // series activas— y con la etiqueta corta el de caudal
+                        // se leía como el del plan: «me limitaron a 10.000
+                        // cuando me prometieron 25.000». Son magnitudes
+                        // distintas (un caudal y un stock) y la etiqueta tiene
+                        // que decir cuál es sin obligar a leer el título.
+                        label: `ingest rate limit ${formatRate(limits.effective.writeSamplesPerSec)}/s`,
                         shortLabel: 'limit',
                         color: '#ef4444',
                       },
@@ -365,6 +366,49 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
                   : undefined
               }
             />
+            </div>
+            <div>
+              {/* Auto-escalada a propósito: NO se dibuja el tope. A 229 de
+                  25.000 la línea del límite aplastaría la curva contra el eje y
+                  la tendencia —lo único que esta gráfica aporta— desaparecería.
+                  De cuánto queda se encarga el anillo de la cabecera. */}
+              <MetricChart
+                title={`Active series (last ${rangeLabel})`}
+                icon={<Database className="w-4 h-4" />}
+                unit="count"
+                bypassClusterScope
+                query={`kubebolt_prom_write_active_series{${tenantLabel}}`}
+                // Sin esto el tooltip enseña el selector crudo —
+                // «tenant_id=62148473-bca…»— que es el UUID de la org que el
+                // usuario YA está mirando. Nombra la serie por lo que mide.
+                seriesLabel={() => 'Active series'}
+                accents={['#22c55e']}
+                chartType="area"
+                showStats={false}
+                height={160}
+                controlledRangeMinutes={rangeMinutes}
+                // El tope del plan existe como pastilla, igual que en la gráfica
+                // de al lado, pero OCULTO por defecto — que es justo para lo que
+                // está `defaultHidden`: una línea un orden de magnitud por encima
+                // del dato aplastaría la curva contra el eje y mataría la
+                // tendencia, que es lo único que esta gráfica aporta. Un clic la
+                // enseña cuando alguien quiere ver la distancia al techo; el
+                // anillo de la cabecera ya la resume.
+                referenceLines={
+                  cap && cap > 0
+                    ? [
+                        {
+                          y: cap,
+                          label: `plan limit ${formatInt(cap)} series`,
+                          shortLabel: 'limit',
+                          color: '#ef4444',
+                          defaultHidden: true,
+                        },
+                      ]
+                    : undefined
+                }
+              />
+            </div>
           </div>
 
           {/* Active series by cluster — per-cluster consumption lens (#65) */}
@@ -409,6 +453,66 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
 }
 
 // ─── Sub-components ────────────────────────────────────────────────────
+
+// SeriesHeadroom — el titular de las series activas, con la misma forma que el
+// de samples/sec: una cifra en la cabecera cuya tendencia vive en la gráfica de
+// abajo. La diferencia es el anillo, y se gana el sitio porque esta métrica sí
+// tiene un techo del plan contra el que medirse: «229» no dice nada solo, «229,
+// el 1% de lo tuyo» sí.
+//
+// Un anillo y no una barra porque se lee igual de bien al 1% que al 95%, que es
+// justo lo que una gráfica de líneas con el tope dibujado no consigue.
+function SeriesHeadroom({
+  current,
+  cap,
+  percent,
+}: {
+  current: number | null
+  cap?: number
+  percent: number | null
+}) {
+  // Hex literales, NO `var(--status-error)`: ese token no existe. Los colores de
+  // estado son clases de Tailwind, y un `var()` inventado no falla — pinta el
+  // anillo transparente y nadie se entera hasta que alguien al 95% ve verde.
+  const tone =
+    percent === null
+      ? 'var(--kb-text-tertiary)'
+      : percent >= 100
+        ? '#ef4056'
+        : percent >= 80
+          ? '#f5a623'
+          : 'var(--kb-accent)'
+
+  // Reutiliza HeadlineStat en vez de replicar su maquetación: así la etiqueta y
+  // la cifra caen a la MISMA altura que las de samples/sec por construcción, no
+  // por coincidencia de píxeles. Antes eran dos bloques distintos —uno de dos
+  // líneas y otro de tres— y por eso no alineaban.
+  //
+  // El anillo va DESPUÉS de la cifra, no antes: colocado en medio de los dos
+  // titulares no pertenecía visualmente a ninguno y se leía como si midiera las
+  // muestras. Al final del grupo, es su cola y no hay duda.
+  return (
+    <div className="flex items-start gap-2.5">
+      <HeadlineStat
+        label="active series"
+        value={current !== null ? formatInt(current) : '—'}
+        icon={<Database className="w-3 h-3" />}
+        extra={
+          cap && cap > 0 ? (
+            <span className="ml-1.5 text-[10px] font-mono text-kb-text-tertiary">
+              of {formatInt(cap)}
+            </span>
+          ) : null
+        }
+      />
+      <DonutGauge percent={percent ?? 0} color={tone} size={38} strokeWidth={4} className="mt-0.5">
+        <span className="text-[9px] font-mono font-semibold text-kb-text-primary">
+          {percent !== null ? `${percent}%` : '—'}
+        </span>
+      </DonutGauge>
+    </div>
+  )
+}
 
 function HeadlineStat({
   label,

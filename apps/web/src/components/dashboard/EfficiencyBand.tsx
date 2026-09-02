@@ -37,6 +37,12 @@ import { HoverTooltip, TooltipHeader, TooltipRow, TooltipNote } from '@/componen
 
 const IDLE_WARN_RATIO = 0.3
 
+// Above this share of the reservation, "efficiency" stops being the story and
+// OVER-CONSUMPTION starts: the pods are burning more than they reserved.
+// 1.05 rather than 1.0 so a workload sitting exactly on its request doesn't
+// flip the card back and forth between two tones on every poll.
+const OVER_COMMIT_RATIO = 1.05
+
 interface EfficiencyBandProps {
   cpu?: ResourceUsageType
   memory?: ResourceUsageType
@@ -127,14 +133,31 @@ export function EfficiencyBand({
   )
 }
 
-// efficiencyOf — used/requested as a 0-100 score, or null when either
-// side is missing (no metrics, no requests declared, restricted).
-function efficiencyOf(usage: ResourceUsageType | undefined, metricsAvailable: boolean): number | null {
+// commitmentOf — used/requested as a percentage, UNCLAMPED. Above 100 means
+// the pods are consuming more than they reserved, which is a real and
+// different condition from being efficient.
+function commitmentOf(usage: ResourceUsageType | undefined, metricsAvailable: boolean): number | null {
   if (!metricsAvailable) return null
   const used = usage?.used ?? 0
   const requested = usage?.requested ?? 0
   if (used <= 0 || requested <= 0) return null
-  return Math.min(100, Math.round((used / requested) * 100))
+  return Math.round((used / requested) * 100)
+}
+
+// efficiencyOf — the same ratio capped at 100, for the blended footer score.
+// Capping is right THERE: "% of the reservation in use" can't exceed all of
+// it, and letting a 190% memory reading average out a 40% CPU reading would
+// invent headroom that doesn't exist.
+//
+// It is NOT right for the per-resource card, which used to render this score
+// alone: memory at 7.1 GiB against 3.7 GiB of requests came out as "100%
+// efficient · Well sized", praising a cluster whose pods were running at
+// nearly double their reservation — the state most likely to end in an
+// eviction or an OOMKill under node pressure. See the over-commit branch in
+// EfficiencyCard.
+function efficiencyOf(usage: ResourceUsageType | undefined, metricsAvailable: boolean): number | null {
+  const pct = commitmentOf(usage, metricsAvailable)
+  return pct == null ? null : Math.min(100, pct)
 }
 
 function EfficiencyCard({
@@ -180,12 +203,15 @@ function EfficiencyCard({
   const limitPct = limit > 0 ? Math.min(100, (limit / allocatable) * 100) : 0
   const overCommitted = limit > allocatable
   const score = efficiencyOf(usage, metricsAvailable)
+  const commitment = commitmentOf(usage, metricsAvailable)
+  const overCommit =
+    hasUsage && commitment != null && commitment >= OVER_COMMIT_RATIO * 100
   // Share of the reservation sitting idle — drives the callout tone.
   const idleRatio = requested > 0 && hasUsage ? idle / requested : 0
 
   return (
     <div className="rounded-[10px] border border-kb-border p-4" style={{ background: 'color-mix(in srgb, var(--kb-bg) 40%, var(--kb-card))' }}>
-      <CardHeader label={label} icon={icon} score={score} />
+      <CardHeader label={label} icon={icon} score={score} commitment={overCommit ? commitment : null} />
 
       {/* Tooltip anchors on the axis block only — same rows the old
           ResourceUsage card taught (Used / Requests / Limits /
@@ -194,7 +220,15 @@ function EfficiencyCard({
       <HoverTooltip
         body={
           <>
-            <TooltipHeader right={score != null ? `${score}% efficient` : undefined}>
+            <TooltipHeader
+              right={
+                overCommit
+                  ? `${commitment}% of requests`
+                  : score != null
+                    ? `${score}% efficient`
+                    : undefined
+              }
+            >
               {label}
             </TooltipHeader>
             <div className="space-y-1">
@@ -297,7 +331,25 @@ function EfficiencyCard({
           meaningful share of the reservation idles; the threshold is
           a product constant, not derived. */}
       {hasUsage && requested > 0 ? (
-        idleRatio > IDLE_WARN_RATIO ? (
+        overCommit ? (
+          // Over-consumption. Not a sizing WIN — pods are running above what
+          // they reserved, so the scheduler placed them on a promise the
+          // cluster isn't holding them to. Burstable QoS makes this legal and
+          // often deliberate, which is why the tone is amber and not red; it
+          // becomes an eviction under node pressure, in usage order.
+          <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-status-warn/30 bg-status-warn-dim px-3 py-2 text-xs">
+            <span className="text-kb-text-secondary min-w-0">
+              <b className="text-status-warn">{commitment}% of requests</b> in use — pods
+              consume more {unitNoun} than they reserve
+            </span>
+            <Link
+              to="/capacity"
+              className="text-[10px] font-mono text-kb-accent shrink-0 hover:opacity-80 transition-opacity"
+            >
+              Right-size →
+            </Link>
+          </div>
+        ) : idleRatio > IDLE_WARN_RATIO ? (
           <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-status-warn/30 bg-status-warn-dim px-3 py-2 text-xs">
             <span className="text-kb-text-secondary min-w-0">
               <b className="text-status-warn">{formatFn(idle)}</b> requested but idle —{' '}
@@ -344,10 +396,15 @@ function CardHeader({
   label,
   icon,
   score,
+  commitment,
 }: {
   label: string
   icon: React.ReactNode
   score: number | null
+  // Set only when usage has passed the reservation. The pill then reports the
+  // true ratio instead of the capped score — "192% efficient" would be a
+  // contradiction, and "100% efficient" was a lie by rounding down.
+  commitment?: number | null
 }) {
   return (
     <div className="flex items-center justify-between gap-2">
@@ -355,14 +412,20 @@ function CardHeader({
         <span className="text-kb-text-secondary">{icon}</span>
         {label}
       </span>
-      {score != null && (
-        <span
-          className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
-            score >= 70 ? 'bg-kb-accent-light text-kb-accent' : 'bg-status-warn-dim text-status-warn'
-          }`}
-        >
-          {score}% efficient
+      {commitment != null ? (
+        <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-status-warn-dim text-status-warn">
+          {commitment}% of requests
         </span>
+      ) : (
+        score != null && (
+          <span
+            className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
+              score >= 70 ? 'bg-kb-accent-light text-kb-accent' : 'bg-status-warn-dim text-status-warn'
+            }`}
+          >
+            {score}% efficient
+          </span>
+        )
       )}
     </div>
   )
