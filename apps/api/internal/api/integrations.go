@@ -254,7 +254,7 @@ func (h *handlers) handleGetIntegrationConfig(w http.ResponseWriter, r *http.Req
 	// the UI so it can render a banner instead of letting the user
 	// click Save and watch the connection error mid-rollout.
 	if id == "agent" {
-		if proxyID := h.manager.ActiveAgentProxyClusterID(); proxyID != "" {
+		if proxyID := h.manager.ActiveAgentProxyClusterIDFor(r.Context()); proxyID != "" {
 			w.Header().Set("X-Self-Targeted-Proxy", proxyID)
 		}
 	}
@@ -356,11 +356,11 @@ func (h *handlers) handleUninstallIntegration(w http.ResponseWriter, r *http.Req
 	// The UI surfaces this as a typed-name confirmation modal that
 	// flips force=true on submit.
 	if id == "agent" && !force {
-		if proxyID := h.manager.ActiveAgentProxyClusterID(); proxyID != "" {
+		if proxyID := h.manager.ActiveAgentProxyClusterIDFor(r.Context()); proxyID != "" {
 			respondJSON(w, http.StatusConflict, map[string]interface{}{
 				"error":              "Refusing to uninstall the agent that backs the active cluster session — this would make the cluster unreachable from KubeBolt.",
 				"selfTargetedProxy":  true,
-				"activeContext":      h.manager.ActiveContext(),
+				"activeContext":      h.manager.ActiveContextFor(r.Context()),
 				"proxyClusterId":     proxyID,
 				"hint":               "Switch to a different cluster context before uninstalling, or pass force=true with a typed-name confirmation if you have an alternate path to this cluster.",
 			})

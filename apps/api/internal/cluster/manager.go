@@ -863,10 +863,11 @@ func (m *Manager) resolveConnectorLocked(ctxName string, isActive bool) *Connect
 // context. Lets requireConnector degrade (not 503) and the metrics query path scope to
 // VM by UID without a connector. The ctx param is kept for signature parity with the
 // EE multi-tenant variant; OSS resolves the single active context.
-func (m *Manager) MetricsOnlyClusterID(_ context.Context) string {
+func (m *Manager) MetricsOnlyClusterID(ctx context.Context) string {
+	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.metricsOnlyContexts[m.activeContext]
+	return m.metricsOnlyContexts[m.activeContextForLocked(key.Cluster)]
 }
 
 func (m *Manager) ListClusters() []ClusterInfo {
@@ -1373,6 +1374,79 @@ func (m *Manager) ActiveAgentProxyClusterID() string {
 	return m.agentProxyContexts[m.activeContext]
 }
 
+// activeContextForLocked answers "which cluster context is this request
+// operating on?" — the single resolution shared by resolveRuntime,
+// MetricsOnlyClusterID and the ctx-aware accessors below. It was copied
+// verbatim in the first two, each carrying a "keep in sync with" comment; a
+// third copy is exactly how the global slot leaks into per-request paths
+// (finding #55). Caller holds m.mu.
+//
+// explicitCluster is the request's X-KubeBolt-Cluster when present; otherwise
+// the active context. OSS is single-tenant, so the active context is that
+// tenant's own selection — the EE build inserts the org's own selection
+// (activeByTenant) and its first reachable cluster between the two.
+func (m *Manager) activeContextForLocked(explicitCluster string) string {
+	if explicitCluster != "" {
+		return explicitCluster
+	}
+	return m.activeContext
+}
+
+// ActiveContextFor is the per-request replacement for ActiveContext(). Handlers
+// must use this: ActiveContext returns the single global slot, which in a
+// multi-organization install is owned by whichever org switched cluster most
+// recently, so reading it inside a request answers for the wrong tenant
+// (finding #55). Keeping the handlers on this family is what lets OSS and EE
+// share them byte for byte.
+func (m *Manager) ActiveContextFor(ctx context.Context) string {
+	key := RuntimeKeyFromContext(ctx)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.activeContextForLocked(key.Cluster)
+}
+
+// ConnErrorFor is the per-request replacement for ConnError(). m.connErr
+// belongs to the global slot; a pooled runtime carries its own. Returns nil
+// when the request's cluster has no recorded failure.
+//
+// Note this cannot go through resolveRuntime: activeRuntimeLocked returns nil
+// precisely when m.connector is nil, which is the failed-connect case whose
+// error we need.
+func (m *Manager) ConnErrorFor(ctx context.Context) error {
+	key := RuntimeKeyFromContext(ctx)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	contextName := m.activeContextForLocked(key.Cluster)
+	if contextName == "" {
+		return nil
+	}
+	if contextName == m.activeContext {
+		return m.connErr
+	}
+	if rt, ok := m.runtimes[poolKey{tenant: key.Tenant, cluster: contextName}]; ok && rt != nil {
+		return rt.connErr
+	}
+	return nil
+}
+
+// ActiveAgentProxyClusterIDFor is the per-request replacement for
+// ActiveAgentProxyClusterID(). Returns the cluster_id when the cluster THIS
+// request operates on is reached via agent-proxy, else "".
+//
+// The destructive-action guards (uninstall agent, force restart) depend on it:
+// reading the global slot instead would answer for whichever cluster was
+// switched to last, not the one the request names.
+func (m *Manager) ActiveAgentProxyClusterIDFor(ctx context.Context) string {
+	key := RuntimeKeyFromContext(ctx)
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	contextName := m.activeContextForLocked(key.Cluster)
+	if contextName == "" {
+		return ""
+	}
+	return m.agentProxyContexts[contextName]
+}
+
 // resolveRuntime returns the runtime for the request's (tenant,cluster),
 // read from ctx's RuntimeKey (W2 A.1).
 //
@@ -1387,7 +1461,9 @@ func (m *Manager) ActiveAgentProxyClusterID() string {
 func (m *Manager) resolveRuntime(ctx context.Context) *clusterRuntime {
 	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
-	active := key.Cluster == "" || key.Cluster == m.activeContext
+	// Shares activeContextForLocked with MetricsOnlyClusterID and the ctx-aware
+	// accessors, so the four cannot drift.
+	active := m.activeContextForLocked(key.Cluster) == m.activeContext
 	if active {
 		rt := m.activeRuntimeLocked()
 		m.mu.RUnlock()

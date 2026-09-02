@@ -267,12 +267,12 @@ func (h *handlers) getClusterOverview(w http.ResponseWriter, r *http.Request) {
 		}
 		// Genuine no-connector — mirror requireConnector's messages (the middleware no
 		// longer guards this route).
-		if h.manager.ActiveContext() == "" {
+		if h.manager.ActiveContextFor(r.Context()) == "" {
 			respondError(w, http.StatusServiceUnavailable, "no cluster selected — choose a cluster to continue")
 			return
 		}
 		msg := "cluster not connected"
-		if err := h.manager.ConnError(); err != nil {
+		if err := h.manager.ConnErrorFor(r.Context()); err != nil {
 			msg = err.Error()
 		}
 		respondError(w, http.StatusServiceUnavailable, msg)
@@ -699,12 +699,12 @@ func (h *handlers) requireConnector(next http.Handler) http.Handler {
 			// uncontrolled crash — surface a clean, actionable message instead.
 			// Real connection failures (cache-sync timeout, unreachable) keep
 			// their specific ConnError below.
-			if h.manager.ActiveContext() == "" {
+			if h.manager.ActiveContextFor(r.Context()) == "" {
 				respondError(w, http.StatusServiceUnavailable, "no cluster selected — choose a cluster to continue")
 				return
 			}
 			msg := "cluster not connected"
-			if err := h.manager.ConnError(); err != nil {
+			if err := h.manager.ConnErrorFor(r.Context()); err != nil {
 				msg = err.Error()
 			}
 			respondError(w, http.StatusServiceUnavailable, msg)
