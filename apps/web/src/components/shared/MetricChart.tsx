@@ -262,6 +262,19 @@ export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
     // tells the user how to read the axis.
     return { divisor: 1, label: '%' }
   }
+  if (unit === 'count') {
+    // Plain counts of things — inodes, samples, requests. No unit exists for
+    // them, so the label carries only the magnitude.
+    //
+    // The k threshold sits at 10_000, not 1_000 like currency: "1500" is
+    // perfectly readable and "1.50 k" is strictly worse — it costs precision to
+    // save one character. Above five digits the raw number stops being
+    // scannable (a volume's 4194304 inodes reads as 4.19 M at a glance) and the
+    // trade flips.
+    if (absMax >= 1_000_000) return { divisor: 1_000_000, label: 'M' }
+    if (absMax >= 10_000) return { divisor: 1000, label: 'k' }
+    return { divisor: 1, label: '' }
+  }
   if (unit === 'usd') {
     // Currency: '$' prefix + compact k/M suffix so a $1,842/mo trend
     // and a $0.95/h run-rate both read cleanly on the same axis.
