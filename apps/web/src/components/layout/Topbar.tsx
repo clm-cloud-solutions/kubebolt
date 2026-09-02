@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from 'react'
 import { NavLink, useNavigate, useLocation } from 'react-router-dom'
 import { isDashboardPath } from '@/utils/routes'
-import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen, Building2, Users, LayoutDashboard, Network } from 'lucide-react'
+import { useScope } from '@/utils/scope'
+import { Search, Server, ChevronDown, Check, Sun, Moon, Cable, ExternalLink, X, LogOut, KeyRound, Settings, Plus, PanelLeftClose, PanelLeftOpen, Building2, Users, LayoutDashboard, Network, Boxes } from 'lucide-react'
 import { SearchModal } from '@/components/shared/SearchModal'
 import { NewResourceModal } from '@/components/resources/NewResourceModal'
 import { UpdateAvailableChip } from '@/components/layout/UpdateAvailableChip'
@@ -38,6 +39,20 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
   // every sub-tab (Overview / Capacity / Reliability) so the user
   // always knows which mode they're in.
   const dashboardActive = isDashboardPath(location.pathname)
+  // Altitud de la pantalla. En global (Home / Fleet / Security / Admin) el
+  // chrome que DESCRIBE el cluster activo no sólo sobra: miente. Un pill LIVE
+  // verde y "2 nodes" junto a una portada que está resumiendo cuatro clusters
+  // se lee como que esos números son de lo que estás mirando.
+  const scope = useScope()
+  const inCluster = scope === 'cluster'
+
+  // Salir a global desmonta el modal de "New", pero su estado seguiría en true
+  // y volvería a abrirse solo al entrar en el siguiente cluster — sobre un
+  // cluster distinto del que lo abrió, que es la confusión que este gating
+  // existe para evitar.
+  useEffect(() => {
+    if (!inCluster) setNewResourceOpen(false)
+  }, [inCluster])
 
   // Cluster management (add / rename / delete) lives on /clusters —
   // the dropdown only routes there. Keeps the switcher focused on its
@@ -148,8 +163,13 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
 
   // The dropdown is interactive when there's more than one cluster to
   // pick from OR when the admin has access to the manage link.
+  //
+  // Y siempre en ámbito global, donde el desplegable ya no es sólo un selector:
+  // es la puerta de ENTRADA al cluster. Sin esto, un usuario no-admin con un
+  // solo cluster —nada que elegir, ningún enlace de gestión— se quedaba en
+  // Home sin ninguna forma de volver a entrar desde la barra superior.
   const hasMultipleClusters = clusters && clusters.length > 1
-  const dropdownInteractive = hasMultipleClusters || isAdmin
+  const dropdownInteractive = hasMultipleClusters || isAdmin || !inCluster
 
   return (
     <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]">
@@ -172,11 +192,41 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
             (8px each side instead of 16px) without changing spacing
             between the other top-level items. */}
         <div className="w-px h-5 bg-kb-border -mx-2" aria-hidden />
+
+        {/* Miga de vuelta — la salida.
+            Al subir Home, Fleet y Security al menú global, entrar en un cluster
+            dejaba al usuario sin ninguna forma visible de volver: había que
+            adivinar que "Manage clusters", dentro del desplegable del selector,
+            era la puerta. Esto la pone donde se busca, a la izquierda del
+            nombre del cluster y leyéndose como lo que es: estás DENTRO de algo.
+
+            Navegar a Fleet NO cambia el cluster activo. El ámbito es función de
+            la ruta y el cluster es estado del cliente, así que volver a entrar
+            te devuelve donde estabas — que es justo lo que permite que la
+            salida sea barata. */}
+        {inCluster && (
+          <>
+            <NavLink
+              to="/fleet"
+              title="Back to fleet"
+              className="flex items-center gap-1.5 text-xs font-mono text-kb-text-tertiary hover:text-kb-text-primary transition-colors shrink-0"
+            >
+              <Boxes className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Fleet</span>
+            </NavLink>
+            <span className="text-kb-text-tertiary text-xs shrink-0" aria-hidden>/</span>
+          </>
+        )}
+
         {/* Cluster selector */}
         <div className="relative" ref={dropdownRef}>
           <button
             onClick={() => dropdownInteractive && setOpen(!open)}
-            title={activeCluster?.context || clusterName}
+            title={
+              inCluster
+                ? (activeCluster?.context || clusterName)
+                : `Enter ${clusterName}${activeCluster?.context ? ` — ${activeCluster.context}` : ''}`
+            }
             className={`flex items-center gap-2 px-2.5 py-1 rounded-md bg-kb-card border border-kb-border transition-colors ${
               dropdownInteractive ? 'cursor-pointer hover:border-kb-border-active' : 'cursor-default'
             }`}
@@ -202,7 +252,29 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
                   {clusters.map((cl) => (
                     <button
                       key={cl.context}
-                      onClick={() => !cl.active && switchMutation.mutate(cl.context)}
+                      // CAMBIAR y ENTRAR no son lo mismo, y el selector sólo
+                      // sabía cambiar. Estando en global con cluster1 ya
+                      // seleccionado, pulsarlo no hacía nada —no hay nada que
+                      // cambiar— así que para volver a su detalle había que
+                      // irse a otro cluster y regresar, o entrar por Fleet.
+                      //
+                      // El cluster activo se PRESERVA al salir a global (es lo
+                      // que hace barata la salida), de modo que en global casi
+                      // siempre pulsas el que ya está activo. Ahí ese clic
+                      // tiene que ser la puerta de entrada.
+                      //
+                      // Dentro de un cluster se queda como estaba: pulsar el
+                      // activo no hace nada porque ya estás dentro.
+                      onClick={() => {
+                        if (!cl.active) {
+                          // El switch ya navega a la portada del cluster en su
+                          // onSuccess, así que cambiar desde global también entra.
+                          switchMutation.mutate(cl.context)
+                          return
+                        }
+                        setOpen(false)
+                        if (!inCluster) navigate('/')
+                      }}
                       disabled={switchMutation.isPending}
                       title={cl.context}
                       className={`w-full text-left px-3 py-2 flex items-center gap-2 transition-colors ${
@@ -223,7 +295,16 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
                         </div>
                         <div className="text-[10px] font-mono text-kb-text-tertiary truncate">{cl.server}</div>
                       </div>
-                      {cl.active && <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />}
+                      {/* El check dice "seleccionado", que en global se lee como
+                          "no hay nada que hacer aquí" — justo lo contrario de
+                          la verdad. Ahí la fila activa anuncia que es una
+                          puerta; dentro del cluster, donde sí es sólo un
+                          estado, sigue siendo un check. */}
+                      {cl.active && (inCluster ? (
+                        <Check className="w-3.5 h-3.5 text-status-ok shrink-0" />
+                      ) : (
+                        <span className="shrink-0 text-[10px] font-mono text-kb-accent">Open →</span>
+                      ))}
                     </button>
                   ))}
                 </>
@@ -254,7 +335,12 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
         {/* View toggle. Dashboard + Cluster Map are the operator's two
             primary lenses on the cluster — they deserve sans-serif at the
             same scale as other primary nav, not a small uppercase-mono
-            chip that reads as metadata. */}
+            chip that reads as metadata.
+
+            Sólo en ámbito de cluster: las dos llevan a pantallas del cluster
+            activo, así que desde Home eran un salto de altitud disfrazado de
+            cambio de vista. */}
+        {inCluster && (
         <div className="flex rounded-md border border-kb-border overflow-hidden">
           <NavLink
             to="/"
@@ -283,6 +369,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
             </NavLink>
           )}
         </div>
+        )}
       </div>
 
       {/* Right side — three grouped zones separated by vertical dividers:
@@ -294,16 +381,25 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
                 action or state).
           The 1px dividers match the sidebar-toggle separator pattern. */}
       <div className="flex items-center gap-3">
-        {/* — Cluster state group — */}
+        {/* — Cluster state group —
+            Los tres primeros describen el CLUSTER ACTIVO, así que sólo salen en
+            su ámbito. El chip de actualización no: habla de la versión de
+            KubeBolt, que es de la instalación entera, y esconderlo en Home
+            —donde más gente aterriza— sería esconder el aviso justo en la
+            pantalla con más ojos. */}
         <div className="flex items-center gap-2">
-          {/* Live indicator */}
-          <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-ok-dim">
-            <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse-live" />
-            <span className="text-[10px] font-mono font-medium text-status-ok uppercase tracking-[0.08em]">Live</span>
-          </div>
+          {inCluster && (
+            <>
+              {/* Live indicator */}
+              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-ok-dim">
+                <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse-live" />
+                <span className="text-[10px] font-mono font-medium text-status-ok uppercase tracking-[0.08em]">Live</span>
+              </div>
 
-          {/* Active port-forwards (renders nothing when 0 active) */}
-          <PortForwardIndicator />
+              {/* Active port-forwards (renders nothing when 0 active) */}
+              <PortForwardIndicator />
+            </>
+          )}
 
           {/* Update-available chip (renders nothing until backend
               confirms a newer stable release on GitHub) */}
@@ -311,10 +407,12 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
 
           {/* Node count — matched to the LIVE / FWD chip shell so the
               three read as one row instead of "two pills + raw text". */}
-          <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-md bg-kb-card border border-kb-border text-kb-text-secondary">
-            <Server className="w-3.5 h-3.5" />
-            <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount}<span className="hidden xl:inline"> nodes</span></span>
-          </div>
+          {inCluster && (
+            <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-md bg-kb-card border border-kb-border text-kb-text-secondary">
+              <Server className="w-3.5 h-3.5" />
+              <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount}<span className="hidden xl:inline"> nodes</span></span>
+            </div>
+          )}
         </div>
 
         <div className="w-px h-5 bg-kb-border" aria-hidden />
@@ -331,18 +429,52 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
             <span className="hidden xl:block flex-1 text-left">Search...</span>
             <kbd className="hidden xl:inline-block px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
           </button>
-          {searchOpen && <SearchModal onClose={() => setSearchOpen(false)} />}
+          {/* On /fleet the palette opens already fanned out across the org —
+              the page's whole premise is cross-cluster, so defaulting to the
+              active cluster there would contradict it. Everywhere else the
+              active cluster is the right default. This is the ONLY search
+              affordance: Fleet deliberately has no in-page duplicate. */}
+          {searchOpen && (
+            <SearchModal
+              // El mismo criterio que el botón de arriba, aplicado a la
+              // búsqueda: en global no hay "este cluster" que valga, así que
+              // ⌘K abre en flota. Sustituye a `pathname === '/fleet'`, la
+              // segunda inferencia por string que la tabla de ámbitos vino a
+              // eliminar — y que dejaba a ⌘K en Home buscando dentro de un
+              // cluster que la página no está mostrando.
+              initialScope={inCluster ? 'cluster' : 'fleet'}
+              onClose={() => setSearchOpen(false)}
+            />
+          )}
 
-          {/* New resource — global create-from-manifest CTA. */}
-          <button
-            onClick={() => setNewResourceOpen(true)}
-            title="Create a new resource from a manifest"
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span className="hidden xl:inline">New</span>
-          </button>
-          {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
+          {/* New resource — crea desde manifiesto EN EL CLUSTER ACTIVO, así que
+              sólo existe en su ámbito.
+              Se quedó cuando S5 escondió el resto del cromo de cluster (LIVE,
+              nodos, port-forwards, el toggle Dashboard/Map), y es el que peor
+              aguantaba el descuido: los demás sólo describen mal: éste ESCRIBE.
+              `createResource` viaja con la cabecera X-KubeBolt-Cluster del
+              seleccionado, de modo que en global aplicaba un manifiesto contra
+              el último cluster activo — invisible, porque en global ya no
+              enseñamos cuál es. Un dato que engaña se corrige mirando otra vez;
+              un Deployment creado en el cluster equivocado, no.
+              Etiquetar el botón con el cluster de destino era la alternativa,
+              pero pone la carga en que el usuario lea una etiqueta antes de
+              cada clic, y Home no es sitio para escribir manifiestos: la ruta
+              honesta es entrar al cluster —un clic, y el menú entero lo
+              confirma— y crear ahí. */}
+          {inCluster && (
+            <>
+              <button
+                onClick={() => setNewResourceOpen(true)}
+                title="Create a new resource from a manifest"
+                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span className="hidden xl:inline">New</span>
+              </button>
+              {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
+            </>
+          )}
 
           {/* Theme toggle */}
           <button

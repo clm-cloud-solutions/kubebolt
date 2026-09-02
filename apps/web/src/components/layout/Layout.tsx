@@ -13,6 +13,7 @@ import { CopilotPanel } from '@/components/copilot/CopilotPanel'
 import { CopilotToggle } from '@/components/copilot/CopilotToggle'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { SetupWizard } from '@/components/setup/SetupWizard'
+import { useScope, survivesDeadCluster } from '@/utils/scope'
 
 const WS_RESOURCES = ['pods', 'nodes', 'deployments', 'services', 'events']
 
@@ -30,11 +31,20 @@ export function Layout() {
   const { data: rawOverview, error, refetch } = useClusterOverview()
   const isSwitching = useIsMutating({ mutationKey: ['switch-cluster'] }) > 0
   const location = useLocation()
+  // La altitud de la pantalla actual (global / cluster / public). Ver
+  // utils/scope.ts — sale de la RUTA, nunca del estado.
+  const scope = useScope()
   const navigate = useNavigate()
   const { hasRole, isAuthEnabled } = useAuth()
   const isAdmin = hasRole('admin')
   const queryClient = useQueryClient()
-  useWebSocket(WS_RESOURCES)
+  // Live WS feed of the active cluster's resource events — and only in CLUSTER
+  // scope. In global (Home / Fleet / Security / Admin) no screen reads from the
+  // active cluster, so the socket was serving ONE cluster's informer firehose to
+  // pages describing the whole fleet, invalidating queries nobody there looks
+  // at. The one item of the two-scope plan (§5) that isn't cosmetic: the others
+  // hide chrome, this one stops spending.
+  useWebSocket(WS_RESOURCES, scope === 'cluster')
 
   // First-login wizard gate. Fires only for admins on installs where
   // auth is on (the wizard's step 1 is password rotation; meaningless
@@ -98,10 +108,38 @@ export function Layout() {
   // the no-clusters CTA and the cluster-unreachable error page.
   // /account (EE org plan + usage) is also cluster-agnostic — a brand-new org
   // has no clusters yet but must still reach its plan page. Empty path in OSS.
-  const PLATFORM_ROUTE_PREFIXES = ['/clusters', '/admin', '/settings', '/account']
-  const isPlatformRoute = PLATFORM_ROUTE_PREFIXES.some(p =>
-    location.pathname === p || location.pathname.startsWith(p + '/')
-  )
+  // Account-level routes that must render even when the ACTIVE cluster is
+  // unreachable, because none of them read from it:
+  //
+  //   /home     — fleet-wide numbers and the upgrade CTA. An org with ZERO
+  //               clusters is the one most likely to be upgrading, and it must
+  //               still land.
+  //   /fleet    — lists every cluster the org owns WITHOUT connecting to any.
+  //               Leaving it out meant one unreachable cluster replaced the whole
+  //               page with "Cluster unreachable" — hiding the very screen that
+  //               shows which OTHER clusters are fine.
+  //   /security — the backend deliberately serves `/findings` outside
+  //               `requireConnector` (router.go): findings are org-scoped and
+  //               survive a cluster being unreachable. Without the prefix the
+  //               empty-state branches below swallow a page the API would have
+  //               answered.
+  // La lista vivía aquí y ahora la responde `ROUTE_SCOPE` (utils/scope.ts): la
+  // pregunta que hacía —¿me salto la cascada de empty-states del cluster?— es
+  // exactamente "¿esta ruta es de ámbito global?".
+  //
+  // Sustitución de comportamiento IDÉNTICO: las siete entradas vivas coinciden
+  // una a una con GLOBAL_ROUTES. La octava era `/settings`, que no tiene
+  // ninguna ruta registrada — el tipo de entrada muerta que la tabla, con su
+  // test de prefijos huérfanos, ya no deja sobrevivir.
+  //
+  // La ganancia no es de líneas: es que añadir una superficie global nueva ya
+  // no depende de que alguien recuerde ESTA lista. Pasó dos veces —`/fleet` y
+  // `/security` llegaron tarde— y las dos veces el síntoma fue el mismo: un
+  // cluster inalcanzable sustituía una página que la API sabía responder.
+  // Global, MÁS la salida de emergencia: /clusters es de ámbito de cluster pero
+  // no lee de ninguno, y es justo la pantalla a la que vas cuando el activo no
+  // responde. Ver survivesDeadCluster en utils/scope.ts.
+  const isPlatformRoute = survivesDeadCluster(location.pathname)
 
   // The Cluster Map is a full-bleed canvas that manages its own pan/zoom — it
   // must fill <main> exactly, with no document padding and no outer scrollbar

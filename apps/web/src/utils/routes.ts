@@ -40,3 +40,54 @@ const TYPE_ALIAS_FOR_ROUTE: Record<string, string> = {
 export function canonicalListRoute(resourceType: string): string {
   return TYPE_ALIAS_FOR_ROUTE[resourceType] ?? resourceType
 }
+
+// ─── Dónde aterriza alguien que acaba de entrar ──────────────────────────────
+//
+// Home, no la portada del primer cluster.
+//
+// Overview responde "¿cómo está ESTE cluster?", que sólo puedes formular cuando
+// ya sabes cuál mirar; Home responde la de antes: "¿qué me necesita?". Y "el
+// primero de la lista" no es el que importa — es el que quedó primero por orden
+// de alta, así que cada sesión empezaba mirando datos de un cluster que nadie
+// eligió, con la autoridad que da estar en la pantalla de inicio.
+//
+// Lo peor era el alta: una org recién creada no tiene clusters, así que los
+// tres flujos de entrada (signup, OAuth, wizard) desembocaban en "No clusters
+// configured" — un estado de error como PRIMERA pantalla del producto. Home
+// está hecho para ese caso y lleva el CTA de conectar.
+//
+// Coste asumido: quien tiene un solo cluster paga un clic por sesión. A cambio
+// Home sigue diciéndole si el agente se calló, si no llegan métricas, qué
+// hallazgos críticos tiene y qué hizo Autopilot mientras no miraba.
+//
+// Deliberadamente NO depende del número de clusters: cambiaría solo el día que
+// alguien conecta el segundo, y "depende" es la peor respuesta que puede dar el
+// soporte a "¿dónde entro?".
+//
+// Esto NO mueve ninguna URL. `/` sigue siendo Overview; lo que cambia es el
+// destino por defecto tras autenticarse. La promoción de `/` (S8 del plan de
+// dos ámbitos) rompe marcadores y va aparte.
+export const POST_AUTH_LANDING = '/home'
+
+// Rutas que nunca son un destino válido de vuelta: aterrizar ahí tras
+// autenticarse manda al usuario de vuelta al formulario que acaba de rellenar.
+const NOT_A_DESTINATION = ['/login', '/signup', '/onboarding', '/forgot-password', '/reset-password', '/accept-invite']
+
+/**
+ * landingAfterAuth — a dónde ir después de autenticarse.
+ *
+ * Respeta el enlace profundo: si a alguien lo mandó al login una URL concreta
+ * (RequireAuth guarda el pathname en `state.from`), vuelve a ESA. Sólo cambia
+ * el DEFAULT, que es lo que se decidió.
+ */
+export function landingAfterAuth(from?: string | null): string {
+  // `//host` empieza por `/` pero es una URL relativa al protocolo. React Router
+  // la resuelve contra el mismo origen, así que hoy no saca a nadie de la app —
+  // se rechaza igual porque el valor viene del estado del cliente y esta función
+  // es la que alguien copiará el día que el destino sí se pase a `location`.
+  if (!from || !from.startsWith('/') || from.startsWith('//')) return POST_AUTH_LANDING
+  if (NOT_A_DESTINATION.some((p) => from === p || from.startsWith(p + '/'))) {
+    return POST_AUTH_LANDING
+  }
+  return from
+}

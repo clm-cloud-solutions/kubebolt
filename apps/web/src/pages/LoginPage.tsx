@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react'
 import { useNavigate, useLocation, Link } from 'react-router-dom'
 import { Eye, EyeOff } from 'lucide-react'
 import { AuthShell } from '@/components/shared/AuthShell'
+import { landingAfterAuth } from '@/utils/routes'
 import { useAuth } from '@/contexts/AuthContext'
 
 export function LoginPage() {
@@ -14,7 +15,9 @@ export function LoginPage() {
   const { login, isAuthEnabled, isSignupEnabled, isAuthenticated } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const from = (location.state as { from?: string })?.from || '/'
+  // Deep link respected; only the default destination changes. See
+  // landingAfterAuth in utils/routes.ts.
+  const from = landingAfterAuth((location.state as { from?: string })?.from)
 
   // If auth disabled or already logged in, redirect
   if (!isAuthEnabled || isAuthenticated) {
