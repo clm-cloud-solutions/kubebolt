@@ -7,7 +7,7 @@ The Sigil is Kobi's mark — a deconstructed K with an intelligence dot. Product
 | File | Purpose |
 |---|---|
 | `kobi-sigil.svg` | Default static mark, semantic color (uses `currentColor`) |
-| `kobi-sigil-watching.svg` | State: idle / monitoring (emerald `#34d399`) |
+| `kobi-sigil-watching.svg` | State: idle / monitoring (KubeBolt green `#00e07a`, same as static) |
 | `kobi-sigil-investigating.svg` | State: active work / streaming (amber `#fbbf24`) |
 | `kobi-sigil-awaiting.svg` | State: paused / proposal pending Execute or Dismiss (sky `#38bdf8`) |
 | `kobi-sigil-mono-dark.svg` | State-agnostic for dark surfaces (stone-200) |

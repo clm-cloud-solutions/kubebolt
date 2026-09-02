@@ -471,7 +471,13 @@ jobs:
           # 1.22.1: bumped 1.25.11 -> 1.25.12 to clear CVE-2026-39822 (HIGH) /
           # -42505 (os, crypto/tls) — the single-container binary (built here, not
           # from apps/api/Dockerfile) still carried them after the api Dockerfile bump.
-          go-version: '1.25.12'
+          # 1.23.2: bumped 1.25.12 -> 1.26.6 — the api Dockerfile moved to
+          # golang:1.26.6-alpine in 1.23.1's follow-up (x/crypto CVE-2026-56854)
+          # but this job stayed on 1.25.12, so the krew/Homebrew binaries and the
+          # single-container image still carried the 2026-08 stdlib wave
+          # (encoding/asn1, net/http HTTP/2, html/template, encoding/xml, net/url,
+          # crypto/tls — all HIGH, all fixed in 1.25.13 / 1.26.6).
+          go-version: '1.26.6'
 
       - uses: actions/setup-node@v4
         with:

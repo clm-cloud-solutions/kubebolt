@@ -2,11 +2,15 @@ module github.com/kubebolt/kubebolt/apps/api
 
 go 1.25.0
 
-// Forces Go 1.25.10+ for local + CI builds (downloaded automatically by
-// `go build` if the system toolchain is older). Closes the 5 HIGH stdlib
-// CVEs that landed under 1.25.9 — see .github/workflows/release.yml
-// setup-go comment for details.
-toolchain go1.25.12
+// Forces Go 1.26.6+ for local + CI builds (downloaded automatically by
+// `go build` if the system toolchain is older). Closes the 5 HIGH stdlib CVEs
+// that landed under 1.25.9, plus CVE-2026-39821 (x/net/idna, privilege
+// escalation via Punycode label processing), CVE-2026-46600 (x/net/dns/dnsmessage,
+// DoS) and the 2026-08 stdlib wave (encoding/asn1, net/http HTTP/2, html/template,
+// encoding/xml, net/url, crypto/tls) — all fixed in 1.25.13 / 1.26.6. The api
+// image was already on golang:1.26.6-alpine; this brings go.mod, CI and the
+// cross-compiled krew/Homebrew binaries onto the same line.
+toolchain go1.26.6
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 
@@ -24,9 +28,9 @@ require (
 	github.com/prometheus/common v0.66.1
 	go.etcd.io/bbolt v1.4.3
 	golang.org/x/crypto v0.55.0
-	golang.org/x/mod v0.38.0
+	golang.org/x/mod v0.40.0
 	golang.org/x/time v0.15.0
-	google.golang.org/grpc v1.82.1
+	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -96,7 +100,7 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/cli-runtime v0.35.3 // indirect
