@@ -24,15 +24,15 @@ interface WSPayload {
  * informers de UN cluster a páginas que están describiendo la flota entera. Ver
  * `utils/scope.ts` y §5 del plan de dos ámbitos.
  *
- * Se apaga desconectando y no "suscribiéndose a nada", porque suscribirse a nada
- * NO es lo que parece: el hub trata el conjunto vacío como «recibe todo»
- * (`client.go`, IsSubscribed). Además hoy el frame de suscripción no llega a
- * aplicarse nunca —el cliente manda `{type,resources}` y el servidor lee
- * `{action,types}`—, así que todo cliente recibe todos los tipos. Anotado
- * aparte; no se arregla aquí porque un cambio de navegación no es sitio para
- * tocar un protocolo cuyo fallo actual es lo que mantiene vivo el live-update.
+ * Se apaga desconectando, no "suscribiéndose a nada". El protocolo de
+ * suscripción por tipo se ELIMINÓ el 2026-08-19: nunca llegó a aplicarse (el
+ * cliente mandaba `{type,resources}` y el servidor leía `{action,types}`) y sus
+ * vocabularios tampoco casaban — el cliente listaba KINDS y la puerta se
+ * consultaba con TIPOS DE MENSAJE. Alinear solo los nombres habría dejado mudos
+ * a todos los navegadores de golpe. Hoy el socket se acota por (org, cluster) y
+ * ya está; ver la nota en `internal/websocket/client.go`.
  */
-export function useWebSocket(resources: string[], enabled = true) {
+export function useWebSocket(enabled = true) {
   const queryClient = useQueryClient()
 
   useEffect(() => {
@@ -44,7 +44,6 @@ export function useWebSocket(resources: string[], enabled = true) {
       return
     }
     wsManager.connect()
-    wsManager.subscribe(resources)
 
     let overviewTimer: ReturnType<typeof setTimeout> | null = null
     let topologyTimer: ReturnType<typeof setTimeout> | null = null
@@ -145,5 +144,5 @@ export function useWebSocket(resources: string[], enabled = true) {
       if (topologyTimer) clearTimeout(topologyTimer)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resources, enabled])
+  }, [enabled])
 }

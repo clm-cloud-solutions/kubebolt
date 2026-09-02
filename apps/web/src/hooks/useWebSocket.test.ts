@@ -66,7 +66,7 @@ beforeEach(() => {
 
 describe('useWebSocket — insight lifecycle reaches the client', () => {
   it.each(['insight:new', 'insight:resolved'])('%s invalidates the insights list', (type) => {
-    renderHook(() => useWebSocket(['pods']))
+    renderHook(() => useWebSocket())
 
     emit({ type, data: { ruleId: 'liveness-probe-failing', resource: 'Pod/prod/api' } })
 
@@ -78,7 +78,7 @@ describe('useWebSocket — insight lifecycle reaches the client', () => {
   it('does not fall through to the resource-detail path', () => {
     // An Insight payload has no .metadata, so without an early return it would
     // reach the debounced overview/topology invalidation and pay for nothing.
-    renderHook(() => useWebSocket(['pods']))
+    renderHook(() => useWebSocket())
 
     emit({ type: 'insight:resolved', data: { ruleId: 'oom-killed', resource: 'Pod/prod/api' } })
 
@@ -89,7 +89,7 @@ describe('useWebSocket — insight lifecycle reaches the client', () => {
     // Guards the opposite failure: a cluster under load emits thousands of
     // resource:updated frames (1,449 in 90s while an image-pull pod retried,
     // measured 2026-08-02). Refetching insights on each would be a request storm.
-    renderHook(() => useWebSocket(['pods']))
+    renderHook(() => useWebSocket())
 
     emit({ type: 'resource:updated', data: { metadata: { namespace: 'prod', name: 'api' } } })
 

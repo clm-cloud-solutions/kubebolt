@@ -462,8 +462,9 @@ type HomeTone = 'ok' | 'warn' | 'crit'
 
 // La paleta de estado, no el acento de marca — es lo que tiñe cada indicador de
 // estado del producto. `ok` en particular tuvo que salir de --kb-accent, que en
-// modo claro resuelve a un #16a34a más oscuro y hacía que el verde de Home
-// discrepara del mismo "todo bien" del resto.
+// modo claro resuelve a un verde más oscuro (#009a54) y hacía que el verde de
+// Home discrepara del mismo "todo bien" del resto. Sigue valiendo tras mover el
+// acento a la familia de marca: esto es estado, no marca.
 const TONE_TINT: Record<HomeTone, string> = {
   ok: '#22d68a',
   warn: '#f5a623',
@@ -968,7 +969,7 @@ export function HomePage() {
                           <div className="h-1.5 bg-kb-elevated rounded-full mt-1 overflow-hidden">
                             {/* status-ok, NOT --kb-accent. The two greens agree in
                                 dark mode and diverge in light (#22d68a vs the
-                                accent's #16a34a), so this bar read as a darker,
+                                accent's #009a54), so this bar read as a darker,
                                 different green than the Cost breakdown's bars
                                 sitting one click away. Same trap EfficiencyBand
                                 documents: brand accent is for chrome — buttons,

@@ -11,8 +11,8 @@ import { authFeatures, authTagline } from '@/ee/registry'
 // vignette) under a green-glowing headline. Right: the form. The whole shell is
 // forced to the DARK theme (`.dark` wrapper) so the kb-* tokens resolve to the
 // site-matching dark palette regardless of the user's in-app theme — these pages
-// own their look. Uses ONLY existing tokens/fonts; the accent #1DBD7D ≈
-// rgb(29,189,125) drives every glow.
+// own their look. Uses ONLY existing tokens/fonts; the brand accent #00e07a ≈
+// rgb(0,224,122) drives every glow.
 
 // The four pillars, in the order they matter to someone who has not bought yet.
 //
@@ -64,7 +64,7 @@ export function AuthShell({
             height: '62%',
             transform: 'translateX(-50%)',
             background:
-              'radial-gradient(60% 100% at 50% 100%, rgba(29,189,125,0.28), rgba(29,189,125,0.12) 38%, transparent 70%)',
+              'radial-gradient(60% 100% at 50% 100%, rgba(0,224,122,0.28), rgba(0,224,122,0.12) 38%, transparent 70%)',
             filter: 'blur(40px)',
             mixBlendMode: 'screen',
           }}
@@ -74,7 +74,7 @@ export function AuthShell({
           className="absolute inset-x-0 bottom-0 z-[1] pointer-events-none"
           style={{
             height: '34%',
-            background: 'linear-gradient(180deg, transparent, rgba(29,189,125,0.06) 60%, rgba(29,189,125,0.11))',
+            background: 'linear-gradient(180deg, transparent, rgba(0,224,122,0.06) 60%, rgba(0,224,122,0.11))',
             mixBlendMode: 'screen',
           }}
         />
@@ -91,7 +91,7 @@ export function AuthShell({
 
         <div className="relative z-[5] flex items-center gap-2.5">
           <div className="w-9 h-9 2xl:w-11 2xl:h-11 rounded-lg bg-kb-accent-light flex items-center justify-center">
-            <KubeBoltLogo className="w-5 h-5 2xl:w-6 2xl:h-6 text-kb-accent" />
+            <KubeBoltLogo className="w-6 h-6 2xl:w-7 2xl:h-7 text-kb-accent" />
           </div>
           <span className="text-lg 2xl:text-xl font-semibold tracking-tight">KubeBolt</span>
         </div>
@@ -106,7 +106,7 @@ export function AuthShell({
           </p>
           <h2 className="text-[clamp(2.6rem,3.6vw,4.4rem)] font-semibold leading-[1.05] tracking-tight">
             Root cause in{' '}
-            <span className="text-kb-accent [text-shadow:0_0_34px_rgba(29,189,125,0.4)]">seconds, not hours.</span>
+            <span className="text-kb-accent [text-shadow:0_0_34px_rgba(0,224,122,0.4)]">seconds, not hours.</span>
           </h2>
           <p className="text-sm xl:text-base 2xl:text-lg text-kb-text-secondary mt-4 xl:mt-5 leading-relaxed max-w-md xl:max-w-lg">
             {authTagline}
@@ -131,7 +131,7 @@ export function AuthShell({
         {/* faint glow behind the form on small screens (branding panel hidden below lg) */}
         <div
           className="absolute inset-0 pointer-events-none lg:hidden"
-          style={{ background: 'radial-gradient(80% 50% at 50% 0%, rgba(29,189,125,0.08), transparent 60%)' }}
+          style={{ background: 'radial-gradient(80% 50% at 50% 0%, rgba(0,224,122,0.08), transparent 60%)' }}
         />
         {/* Desktop: the horizon of the left panel, continued across the seam.
             Without it this half is FLAT BLACK next to a half carrying aurora,
@@ -142,7 +142,7 @@ export function AuthShell({
         <div
           className="absolute inset-0 pointer-events-none hidden lg:block"
           style={{
-            background: 'radial-gradient(75% 55% at 50% 100%, rgba(29,189,125,0.05), transparent 68%)',
+            background: 'radial-gradient(75% 55% at 50% 100%, rgba(0,224,122,0.05), transparent 68%)',
             mixBlendMode: 'screen',
           }}
         />
