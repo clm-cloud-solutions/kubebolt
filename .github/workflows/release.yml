@@ -76,6 +76,13 @@ jobs:
             exit 1
           fi
 
+      # Table format so findings are visible in the log (Free plan → no GHAS → the
+      # SARIF Security-tab upload 403s).
+      #
+      # These two read `.trivyignore-thirdparty`, NOT `.trivyignore`. We do not
+      # build these binaries, so a CVE inside one can only be waited out; a CVE in
+      # an image we compile must keep failing until we bump and rebuild. Sharing
+      # one file would let a vendor's unfixable finding silence our own.
       - name: Trivy scan VictoriaMetrics image
         uses: aquasecurity/trivy-action@v0.36.0
         with:
@@ -84,7 +91,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
-          trivyignores: .trivyignore
+          trivyignores: .trivyignore-thirdparty
         env:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
@@ -96,7 +103,7 @@ jobs:
           severity: CRITICAL,HIGH
           ignore-unfixed: true
           exit-code: '1'
-          trivyignores: .trivyignore
+          trivyignores: .trivyignore-thirdparty
         env:
           TRIVY_DISABLE_VEX_NOTICE: 'true'
 
@@ -256,6 +263,17 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Table format (visible in the log) + explicit `scanners: vuln` — the org is
+      # on the Free plan without GitHub Advanced Security, so the SARIF upload to
+      # the Security tab 403s ("Resource not accessible") and just hid the findings.
+      # `.trivyignore` (with an owner + remove-by date) suppresses a transient DB
+      # false-positive without dropping the whole gate.
+      #
+      # This is the STRICT file, and it is not the one the preflight uses. These
+      # three images are ours: a CVE here has a fix we can apply, so the gate must
+      # keep failing until we bump and rebuild. Third-party images we only bundle
+      # get `.trivyignore-thirdparty`, because there the only options are waiting
+      # for the vendor or dropping the dependency.
       - name: Trivy scan API image (by digest)
         uses: aquasecurity/trivy-action@v0.36.0
         with:
