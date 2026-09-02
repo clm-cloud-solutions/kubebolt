@@ -1,8 +1,12 @@
 package api
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
 func TestScopeQueryByCluster(t *testing.T) {
@@ -258,6 +262,238 @@ func TestScopeQueryByClusterIdempotent(t *testing.T) {
 			t.Errorf("not idempotent\n once: %s\n twice: %s", once, twice)
 		}
 	}
+}
+
+// TestScopeQueryCostFamilies pins the scoping of the OpenCost metric
+// families (E1 WS-C). Most sit under prefixes bareMetricRE already
+// covered — those cases are regression pins — but pv_hourly_cost
+// needed the new `pv` prefix: unscoped it would sum every tenant's
+// volume costs on a shared VM.
+func TestScopeQueryCostFamilies(t *testing.T) {
+	const uid = "cluster-uid-1"
+	const inj = `cluster_id="cluster-uid-1"`
+
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "pv_hourly_cost bare (the family the pv prefix fixes)",
+			in:   `sum(pv_hourly_cost)`,
+			want: `sum(pv_hourly_cost{` + inj + `})`,
+		},
+		{
+			name: "pv_hourly_cost with selector",
+			in:   `pv_hourly_cost{persistentvolume="pvc-123"}`,
+			want: `pv_hourly_cost{` + inj + `,persistentvolume="pvc-123"}`,
+		},
+		{
+			name: "node_total_hourly_cost bare (regression: node_ prefix)",
+			in:   `sum(node_total_hourly_cost)`,
+			want: `sum(node_total_hourly_cost{` + inj + `})`,
+		},
+		{
+			name: "container allocation × node rate join (regression: container_/node_)",
+			in:   `sum by (namespace) (container_cpu_allocation * on(node) group_left node_cpu_hourly_cost)`,
+			want: `sum by (namespace) (container_cpu_allocation{` + inj + `} * on(node) group_left node_cpu_hourly_cost{` + inj + `})`,
+		},
+		{
+			name: "pod_pvc_allocation bare (regression: pod_ prefix)",
+			in:   `sum(pod_pvc_allocation)`,
+			want: `sum(pod_pvc_allocation{` + inj + `})`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := scopeQueryByCluster(tt.in, uid); got != tt.want {
+				t.Errorf("scopeQueryByCluster(%q)\n got:  %s\n want: %s", tt.in, got, tt.want)
+			}
+		})
+	}
+
+	// Tenant composition: the org boundary must land on cost families
+	// too (same both-scopes contract the coverage probes use).
+	in := `sum(pv_hourly_cost)`
+	got := scopeQueryByTenant(scopeQueryByCluster(in, uid), "org-1")
+	want := `sum(pv_hourly_cost{tenant_id="org-1",` + inj + `})`
+	if got != want {
+		t.Errorf("tenant+cluster compose:\n got:  %s\n want: %s", got, want)
+	}
+}
+
+// TestScopeQueryForRequestFleet pins the read-side isolation contract of the
+// `?scope=fleet` opt-in (E2 A1 · Fleet roll-up):
+//
+//   - default scope keeps BOTH scopes — and fails closed on an unknown cluster
+//     UID by injecting the sentinel, so a broken connector returns 0 series
+//     rather than every cluster sharing the VM;
+//   - fleet scope drops ONLY the cluster selector, so `by (cluster_id)`
+//     aggregations can span the org's clusters;
+//   - fleet scope STILL pins tenant_id. This is the security-critical row: the
+//     org boundary must survive the widening, otherwise a fleet roll-up would
+//     read another org's series off a shared VM.
+func TestScopeQueryForRequestFleet(t *testing.T) {
+	const org = "org-42"
+	// h.manager is nil → activeClusterUID returns "" → sentinel path.
+	h := &handlers{}
+
+	newReq := func(scope, tenant string) *http.Request {
+		url := "/api/v1/metrics/query?query=x"
+		if scope != "" {
+			url += "&scope=" + scope
+		}
+		r := httptest.NewRequest(http.MethodGet, url, nil)
+		if tenant != "" {
+			r = r.WithContext(auth.WithTenantID(r.Context(), tenant))
+		}
+		return r
+	}
+
+	tests := []struct {
+		name, scope, tenant, in, want string
+		// singleTenant runs the row as an OSS build. It is not decoration: this
+		// package is compiled with the `saas` tag in CI, where an init() sets
+		// auth.MultiTenantEnabled = true, so an "OSS" row that does not flip it is
+		// silently asserting SaaS behaviour under an OSS name.
+		singleTenant bool
+	}{
+		{
+			name: "default scope pins cluster (fail-closed sentinel) and tenant",
+			in:   `sum(node_total_hourly_cost)`,
+			want: `sum(node_total_hourly_cost{tenant_id="org-42",cluster_id="` + noClusterUIDSentinel + `"})`,
+			// scope left "" → per-cluster behaviour, unchanged by this feature.
+			tenant: org,
+		},
+		{
+			name:   "fleet scope drops the cluster selector but keeps the org",
+			scope:  "fleet",
+			tenant: org,
+			in:     `sum by (cluster_id) (node_total_hourly_cost)`,
+			want:   `sum by (cluster_id) (node_total_hourly_cost{tenant_id="org-42"})`,
+		},
+		{
+			name:  "fleet scope in OSS (no tenant) leaves the query unscoped",
+			scope: "fleet",
+			in:    `sum by (cluster_id) (node_total_hourly_cost)`,
+			want:  `sum by (cluster_id) (node_total_hourly_cost)`,
+			// Single-tenant: every series in the VM belongs to this install, so a
+			// sentinel would hide the user's own data rather than protect anyone.
+			singleTenant: true,
+		},
+		{
+			name:   "an unknown scope value is NOT treated as fleet",
+			scope:  "everything",
+			tenant: org,
+			in:     `sum(node_total_hourly_cost)`,
+			want:   `sum(node_total_hourly_cost{tenant_id="org-42",cluster_id="` + noClusterUIDSentinel + `"})`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.singleTenant {
+				prev := auth.MultiTenantEnabled
+				auth.MultiTenantEnabled = false
+				defer func() { auth.MultiTenantEnabled = prev }()
+			}
+			got := h.scopeQueryForRequest(newReq(tt.scope, tt.tenant), tt.in)
+			if got != tt.want {
+				t.Errorf("scopeQueryForRequest(scope=%q, tenant=%q)\n got:  %s\n want: %s",
+					tt.scope, tt.tenant, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestScopeQueryFleetFailsClosedWithoutOrg covers the one shape that could cross
+// an org boundary: fleet scope drops the cluster selector, so if the org ALSO
+// failed to resolve the query would run completely unscoped against a shared VM.
+// In multi-tenant that must degrade to zero series, never to everyone's series.
+func TestScopeQueryFleetFailsClosedWithoutOrg(t *testing.T) {
+	prev := auth.MultiTenantEnabled
+	auth.MultiTenantEnabled = true
+	defer func() { auth.MultiTenantEnabled = prev }()
+
+	h := &handlers{}
+	// No tenant in context — the pathological case.
+	r := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?query=x&scope=fleet", nil)
+
+	got := h.scopeQueryForRequest(r, `sum by (cluster_id) (node_total_hourly_cost)`)
+	want := `sum by (cluster_id) (node_total_hourly_cost{tenant_id="` + noTenantSentinel + `"})`
+	if got != want {
+		t.Errorf("fleet scope without a resolved org must fail closed\n got:  %s\n want: %s", got, want)
+	}
+
+	// Single-tenant (OSS) keeps the empty tenant: there, no series carries a
+	// tenant_id at all, so a sentinel would hide the user's own data.
+	auth.MultiTenantEnabled = false
+	got = h.scopeQueryForRequest(r, `sum by (cluster_id) (node_total_hourly_cost)`)
+	if want := `sum by (cluster_id) (node_total_hourly_cost)`; got != want {
+		t.Errorf("OSS fleet scope must stay unscoped\n got:  %s\n want: %s", got, want)
+	}
+}
+
+// TestScopeQueryByAllowedClusters pins the fleet path's replacement for the
+// single-cluster confinement it drops.
+//
+// GET /clusters already hides agent-proxy clusters owned by teams the caller
+// isn't in (scopeClustersByTeamPure), and switching to one is guarded — so
+// before `scope=fleet` existed, a metrics read could only ever describe a
+// cluster the caller was entitled to. Widening removed that guarantee, and
+// without this narrowing a team member reads the cost, node and pod counts of
+// clusters their own cluster list omits.
+func TestScopeQueryByAllowedClusters(t *testing.T) {
+	const in = `sum by (cluster_id) (node_total_hourly_cost)`
+
+	t.Run("empty set fails closed", func(t *testing.T) {
+		// A caller entitled to nothing must read zero series, never everything.
+		got := scopeQueryByAllowedClusters(in, nil)
+		want := `sum by (cluster_id) (node_total_hourly_cost{cluster_id="` + noClusterUIDSentinel + `"})`
+		if got != want {
+			t.Errorf("\n got:  %s\n want: %s", got, want)
+		}
+	})
+
+	t.Run("single id", func(t *testing.T) {
+		got := scopeQueryByAllowedClusters(in, []string{"uid-a"})
+		want := `sum by (cluster_id) (node_total_hourly_cost{cluster_id=~"^(uid-a)$"})`
+		if got != want {
+			t.Errorf("\n got:  %s\n want: %s", got, want)
+		}
+	})
+
+	t.Run("several ids are anchored and alternated", func(t *testing.T) {
+		got := scopeQueryByAllowedClusters(in, []string{"uid-a", "uid-b"})
+		want := `sum by (cluster_id) (node_total_hourly_cost{cluster_id=~"^(uid-a|uid-b)$"})`
+		if got != want {
+			t.Errorf("\n got:  %s\n want: %s", got, want)
+		}
+	})
+
+	t.Run("metacharacters are quoted, not honoured", func(t *testing.T) {
+		// UIDs are hex-and-dashes today, but nothing enforces that forever. One
+		// unescaped metacharacter would silently widen the matcher — `.*` here
+		// would match every cluster in the org.
+		got := scopeQueryByAllowedClusters(in, []string{".*"})
+		if strings.Contains(got, `~"^(.*)$"`) {
+			t.Fatalf("metacharacter reached the matcher unescaped: %s", got)
+		}
+		want := `sum by (cluster_id) (node_total_hourly_cost{cluster_id=~"^(\\.\\*)$"})`
+		if got != want {
+			t.Errorf("\n got:  %s\n want: %s", got, want)
+		}
+	})
+
+	t.Run("the by(cluster_id) clause is not mistaken for a metric", func(t *testing.T) {
+		// The grouping label must survive untouched — otherwise the roll-up
+		// loses the very dimension it aggregates on.
+		got := scopeQueryByAllowedClusters(in, []string{"uid-a"})
+		if !strings.HasPrefix(got, `sum by (cluster_id) (`) {
+			t.Errorf("grouping clause was rewritten: %s", got)
+		}
+	})
 }
 
 // TestStripReservedScopeLabels is the regression lock for a cross-ORG read, and

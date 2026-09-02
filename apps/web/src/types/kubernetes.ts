@@ -311,6 +311,11 @@ export interface ClusterInfo {
   //   'reader' — agent-proxy with read-only RBAC (live resources visible, no mutations).
   //   'operator' — agent-proxy with write RBAC (restart/scale/delete/exec available).
   // Undefined for disconnected clusters or direct kubeconfig/in-cluster connections.
+  // Team that owns this agent-proxy cluster (Track D — team-scoped
+  // clusters). Populated in multi-tenant (Cloud) for the cluster list;
+  // empty in OSS and for unassigned clusters. Drives the owner-team badge
+  // and the admin assign/move action.
+  ownerTeamId?: string
   mode?: 'metrics-only' | 'reader' | 'operator'
 }
 

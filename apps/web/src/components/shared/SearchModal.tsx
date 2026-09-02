@@ -15,6 +15,8 @@ interface SearchResult {
   kind: string
   resourceType: string
   status: string
+  // Present on fleet-scope hits: which cluster the resource lives in.
+  cluster?: string
 }
 
 const MIN_CHARS = 3
@@ -38,8 +40,20 @@ const kindIcons: Record<string, React.ReactNode> = {
   Namespace: <FolderOpen className="w-3.5 h-3.5" />,
 }
 
-export function SearchModal({ onClose }: { onClose: () => void }) {
+export function SearchModal({
+  onClose,
+  initialScope = 'cluster',
+}: {
+  onClose: () => void
+  /** Fleet opens the palette already fanned out — its whole premise is
+   *  cross-cluster, so starting scoped to one cluster would be wrong. */
+  initialScope?: 'cluster' | 'fleet'
+}) {
   const [query, setQuery] = useState('')
+  // 'cluster' searches the active cluster (existing behavior);
+  // 'fleet' fans out across the org's searchable clusters (E2 C1).
+  const [scope, setScope] = useState<'cluster' | 'fleet'>(initialScope)
+  const [clustersSearched, setClustersSearched] = useState(0)
   const [results, setResults] = useState<SearchResult[]>([])
   const [loading, setLoading] = useState(false)
   const [selectedIndex, setSelectedIndex] = useState(0)
@@ -71,14 +85,21 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
     setLoading(true)
     const timer = setTimeout(async () => {
       try {
-        const data = await api.search(query)
-        setResults(data ?? [])
+        if (scope === 'fleet') {
+          const data = await api.searchFleet(query)
+          setResults(data?.results ?? [])
+          setClustersSearched(data?.clustersSearched ?? 0)
+        } else {
+          const data = await api.search(query)
+          setResults(data ?? [])
+          setClustersSearched(0)
+        }
         setSelectedIndex(0)
       } catch {}
       setLoading(false)
     }, 200)
     return () => clearTimeout(timer)
-  }, [query])
+  }, [query, scope])
 
   useEffect(() => {
     if (resultsRef.current) {
@@ -136,6 +157,20 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
           {query && totalResults > 0 && (
             <span className="text-[10px] font-mono text-kb-text-tertiary shrink-0">{totalResults} results</span>
           )}
+          <div className="flex rounded-md border border-kb-border overflow-hidden shrink-0">
+            {(['cluster', 'fleet'] as const).map((sc) => (
+              <button
+                key={sc}
+                type="button"
+                onClick={() => setScope(sc)}
+                className={`px-2 py-1 text-[10px] font-mono transition-colors ${
+                  scope === sc ? 'bg-kb-accent text-white' : 'text-kb-text-tertiary hover:text-kb-text-primary'
+                }`}
+              >
+                {sc === 'cluster' ? 'This cluster' : 'All clusters'}
+              </button>
+            ))}
+          </div>
           <button onClick={onClose} className="p-0.5 rounded hover:bg-kb-elevated text-kb-text-tertiary hover:text-kb-text-primary transition-colors">
             <X className="w-4 h-4" />
           </button>
@@ -197,9 +232,11 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
                     <span className="text-kb-text-tertiary shrink-0">{kindIcons[kind] ?? <Box className="w-3.5 h-3.5" />}</span>
                     <div className="flex-1 min-w-0">
                       <div className="text-xs text-kb-text-primary truncate">{result.name}</div>
-                      {result.namespace && (
-                        <div className="text-[10px] font-mono text-kb-text-tertiary">
-                          Namespace: {result.namespace}
+                      {(result.namespace || result.cluster) && (
+                        <div className="text-[10px] font-mono text-kb-text-tertiary truncate">
+                          {result.namespace ? `Namespace: ${result.namespace}` : ''}
+                          {result.namespace && result.cluster ? ' · ' : ''}
+                          {result.cluster ? `Cluster: ${result.cluster}` : ''}
                         </div>
                       )}
                     </div>
@@ -217,6 +254,9 @@ export function SearchModal({ onClose }: { onClose: () => void }) {
             <span><kbd className="px-1 py-0.5 rounded bg-kb-bg border border-kb-border">↑↓</kbd> navigate</span>
             <span><kbd className="px-1 py-0.5 rounded bg-kb-bg border border-kb-border">↵</kbd> open</span>
             <span><kbd className="px-1 py-0.5 rounded bg-kb-bg border border-kb-border">esc</kbd> close</span>
+            {scope === 'fleet' && clustersSearched > 0 && (
+              <span className="ml-auto">{clustersSearched} clusters searched</span>
+            )}
           </div>
         )}
       </div>
