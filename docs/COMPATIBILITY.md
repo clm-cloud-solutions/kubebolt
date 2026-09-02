@@ -19,7 +19,7 @@ empty, even though the agent is online and samples are reaching VictoriaMetrics.
 
 | KubeBolt | kubebolt-agent | Schema | Notes |
 |---|---|---|---|
-| **1.10.x** | **1.0.x** ✅ | v1.0 (Prom-canonical) | Current. Both sides consume / emit the canonical schema. |
+| **1.10.x → 1.23.x** | **1.0.x → 1.4.x** ✅ | v1.0 (Prom-canonical) | Current. Both sides consume / emit the canonical schema. Agent 1.1–1.4 are reliability / cardinality / OpenCost-sourcing releases on the same schema (1.4.0 only widens the default `dropNetworkInterfaces` list); pair any 1.x agent ≥ 1.0 with any KubeBolt ≥ 1.10. |
 | 1.10.x | 0.2.x ❌ | mismatch | Agent emits the legacy schema but kubebolt's queries look for canonical names → empty dashboards. Backend logs `WARN msg="agent below minimum version — legacy schema"` on registration. |
 | 1.9.x and earlier | 1.0.x ❌ | mismatch | Agent emits canonical names but kubebolt's queries still look for legacy → empty dashboards. **Don't run this combination.** |
 | 1.9.x and earlier | 0.2.x ✅ | legacy v0.x | Pre-canonical era. Both sides on the legacy schema. Supported as-is, but new features (right-sizing P95, network drops, external endpoints with FQDN) only land in the canonical pair. |

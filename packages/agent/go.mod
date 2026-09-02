@@ -2,9 +2,11 @@ module github.com/kubebolt/kubebolt/packages/agent
 
 go 1.25.0
 
-// Forces Go 1.25.12+ — closes 5 HIGH stdlib CVEs that landed under
-// 1.25.9. Bumped in lockstep with apps/api/go.mod and packages/proto/go.mod.
-toolchain go1.25.12
+// Forces Go 1.26.6+ — closes the 5 HIGH stdlib CVEs that landed under 1.25.9,
+// plus CVE-2026-39821 (x/net/idna), CVE-2026-46600 (x/net/dns/dnsmessage) and
+// the 2026-08 stdlib wave, all fixed in 1.26.6. Bumped in lockstep with
+// apps/api/go.mod and packages/proto/go.mod.
+toolchain go1.26.6
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
@@ -14,7 +16,7 @@ require (
 	github.com/cilium/cilium v1.19.3
 	github.com/kubebolt/kubebolt/packages/proto v0.0.0
 	golang.org/x/oauth2 v0.36.0
-	google.golang.org/grpc v1.82.1
+	google.golang.org/grpc v1.83.1
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
@@ -75,7 +77,7 @@ require (
 	golang.org/x/term v0.45.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
-	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
