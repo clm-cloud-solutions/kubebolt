@@ -227,6 +227,8 @@ const adminItems = [
   { label: 'Agents & Ingest', path: '/admin/agents', icon: <Radio className="w-4 h-4" /> },
   // AI (Kobi) — copilot Config · Usage.
   { label: 'AI (Kobi)', path: '/admin/ai', icon: <Bot className="w-4 h-4" /> },
+  // Insights — the #44 rule matrix + both suppression layers + history.
+  { label: 'Insights', path: '/admin/insights', icon: <Lightbulb className="w-4 h-4" /> },
   // System — instance-wide: General · Notifications.
   { label: 'System', path: '/admin/system', icon: <SlidersHorizontal className="w-4 h-4" /> },
   // API Tokens — long-lived REST tokens (kbs_/kbk_). Standalone.

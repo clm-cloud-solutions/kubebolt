@@ -304,6 +304,154 @@ export interface AccountUsagePoint {
   total: number
 }
 
+// AccountSoftLimit is the org's position against a soft cap (E.7 nodes/pods):
+// over-limit is signalled, never blocked. `over` drives a gentle UI notice.
+export interface AccountSoftLimit {
+  dimension: 'nodes' | 'pods' | 'clusters'
+  current: number
+  cap: number
+  over: boolean
+}
+
+export interface InsightEpisode {
+  id: string
+  clusterId: string
+  clusterName?: string
+  fingerprint: string
+  ruleId: string
+  resource: string
+  namespace?: string
+  title?: string
+  status: 'firing' | 'resolved' | 'expired' | 'superseded'
+  severity: string
+  maxSeverity: string
+  firstSeen: string
+  lastSeen: string
+  resolvedAt?: string
+  resolutionKind?: string
+  flapCount: number
+  prevEpisodeId?: string
+}
+
+export interface EpisodeTransition {
+  episodeId: string
+  from: string
+  to: string
+  at: string
+  actor: string
+  reason?: string
+}
+
+export interface EpisodeDetail {
+  episode: InsightEpisode
+  transitions: EpisodeTransition[]
+  recurrence: InsightEpisode[] | null
+  capabilityChanges?: { capability: string; from: string; to: string; reason: string; at: string }[]
+}
+
+export interface CapabilityState {
+  id: string
+  status: 'ok' | 'near' | 'degraded' | 'off' | 'unclassified'
+  reason: string
+  detail?: Record<string, unknown>
+  since: string
+  audience: 'customer' | 'operator'
+}
+
+export interface AccountCapabilities {
+  capabilities: CapabilityState[]
+}
+
+// Fase 4 (#44): one rule of the policy matrix — catalog defaults + the org's
+// sparse overrides per layer.
+export interface InsightPolicyOverride {
+  threshold?: number
+  severity?: string
+  updatedBy?: string
+}
+export interface InsightPolicyRule {
+  id: string
+  class: 'malfunction' | 'expectation'
+  name?: string
+  description?: string
+  defaultSeverity: string
+  hasThreshold: boolean
+  defaultThreshold?: number
+  thresholdLabel?: string
+  // Global layer override, when set.
+  threshold?: number
+  severity?: string
+  updatedBy?: string
+  // Env-category layers (production/staging/testing/development).
+  categories?: Record<string, InsightPolicyOverride>
+  // Closed in the last 30d without ack, action or mute (#44's honesty column).
+  ignored30d?: { ignored: number; total: number }
+}
+
+// Fase 3 (#54): one per-resource silence. A display overlay — the engine
+// keeps evaluating; only the default view is spared.
+export interface InsightMute {
+  id: string
+  clusterId: string
+  // Display name resolved by the API (dead clusters included) — the UI
+  // shows names, not UUIDs.
+  clusterName?: string
+  ruleId: string
+  resource: string
+  reason?: string
+  createdBy?: string
+  createdAt: string
+  expiresAt?: string
+  untilResolved: boolean
+}
+
+// Fase 3: one classified burst from the deterministic clusterer (§3.3).
+export interface OperationalBurst {
+  id: string
+  kind: 'node_rotation' | 'mass_rollout' | 'node_pressure' | 'unknown_burst'
+  clusters: string[]
+  windowFrom: string
+  windowTo: string
+  seedIds: string[]
+  memberIds: string[]
+  blast: {
+    affected: number
+    autoRecovered: number
+    remediated: number
+    stillFiring: number
+    expired: number
+    worstSeconds: number
+    worstResource: string
+  }
+}
+
+// Fase 3: «while you were away», hung from the user's presence anchor.
+export interface ShiftReport {
+  windowFrom: string
+  windowTo: string
+  firstShift: boolean
+  truncated: boolean
+  bursts: OperationalBurst[]
+  // EVENTS inside the window (opened/resolved/expired while away) — standing
+  // conditions that merely overlap belong to the Active list, not here.
+  episodes: {
+    opened: number
+    autoRecovered: number
+    remediated: number
+    expired: number
+    stillFiring: number
+    criticals: number
+  }
+  worst?: { id: string; resource: string; ruleId: string; title?: string; status: string; seconds: number } | null
+  mutes: { createdInWindow: number; activeNow: number }
+  rulesOff: number
+  capabilities: CapabilityState[]
+  capabilityChanges: number
+  // Burst cluster UIDs → display names, for the narrative («gke-orquestador»,
+  // not a UUID). Survives dead clusters.
+  clusterNames?: Record<string, string>
+}
+
 export interface AccountUsage {
   usage: AccountUsagePoint[]
 }
@@ -340,6 +488,70 @@ export const api = {
   getAccountPlan: () => fetchJSON<AccountPlan>(`${API_BASE}/account/plan`),
 
   getAccountUsage: () => fetchJSON<AccountUsage>(`${API_BASE}/account/usage`),
+
+  // Capability registry (#50): what this org is NOT getting right now, and
+  // why. 503 on installs without the registry (OSS / no DB) — callers hide.
+  // Fase 2: episode history (window-overlap semantics). 503 without the
+  // episode store (OSS) — the Historial tab hides.
+  getInsightEpisodes: (params: { since?: string; until?: string; status?: string; severity?: string; cluster?: string; limit?: number; page?: number }) => {
+    const q = new URLSearchParams()
+    if (params.since) q.set('since', params.since)
+    if (params.until) q.set('until', params.until)
+    if (params.status) q.set('status', params.status)
+    if (params.severity) q.set('severity', params.severity)
+    if (params.cluster) q.set('cluster', params.cluster)
+    if (params.limit) q.set('limit', String(params.limit))
+    if (params.page && params.page > 1) q.set('page', String(params.page))
+    return fetchJSON<{ episodes: InsightEpisode[]; window: { since: string; until: string } }>(
+      `${API_BASE}/insights/episodes?${q.toString()}`,
+    )
+  },
+  getInsightEpisode: (id: string) => fetchJSON<EpisodeDetail>(`${API_BASE}/insights/episodes/${id}`),
+
+  // Fase 3 presence beacon: Home rendered for this user — the anchor the
+  // shift report's "while you were away" window hangs from. Fire-and-forget;
+  // the backend 204-noops on installs without the store.
+  markDashboardSeen: () => postJSON<void>(`${API_BASE}/account/dashboard-seen`, {}),
+
+  // Fase 3: the shift report. Read it BEFORE the beacon fires — the window
+  // hangs from the stored anchor, and marking first would collapse it.
+  getShiftReport: () => fetchJSON<ShiftReport>(`${API_BASE}/insights/shift-report`),
+
+  // Fase 4 (#44): the rule-policy matrix. GET returns the full catalog with
+  // global + per-category overrides and «Ignored 30d»; PUT writes one layer
+  // (category defaults to global); DELETE removes one layer (falls back to
+  // the layer below).
+  getInsightPolicies: () =>
+    fetchJSON<{ rules: InsightPolicyRule[] }>(`${API_BASE}/admin/insight-policies`),
+  putInsightPolicy: (
+    rule: string,
+    body: { threshold?: number; severity?: string; category?: string },
+  ) => putJSON<unknown>(`${API_BASE}/admin/insight-policies/${encodeURIComponent(rule)}`, body),
+  deleteInsightPolicy: (rule: string, category?: string) =>
+    deleteRequest<unknown>(
+      `${API_BASE}/admin/insight-policies/${encodeURIComponent(rule)}${
+        category ? `?category=${encodeURIComponent(category)}` : ''
+      }`,
+    ),
+
+  // Fase 3 (#54): the per-resource silence overlay. List scopes to the
+  // request's cluster by default (pass 'all' for the org). 503 on installs
+  // without the store — callers treat that as "no mutes".
+  getInsightMutes: (cluster?: string) =>
+    fetchJSON<{ mutes: InsightMute[] }>(
+      `${API_BASE}/insights/mutes${cluster ? `?cluster=${encodeURIComponent(cluster)}` : ''}`,
+    ),
+  createInsightMute: (body: {
+    ruleId: string
+    resource: string
+    reason?: string
+    expiresAt?: string
+    untilResolved?: boolean
+  }) => postJSON<InsightMute>(`${API_BASE}/insights/mutes`, body),
+  deleteInsightMute: (id: string) =>
+    deleteRequest<void>(`${API_BASE}/insights/mutes/${encodeURIComponent(id)}`),
+
+  getAccountCapabilities: () => fetchJSON<AccountCapabilities>(`${API_BASE}/account/capabilities`),
 
   // --- User management (admin) ---
   listUsers: () => fetchJSON<AuthUser[]>(`${API_BASE}/users`),
@@ -515,7 +727,14 @@ export const api = {
     ),
 
   getInsights: (params?: InsightParams) =>
-    fetchJSON<{ items: Insight[]; total: number }>(`${API_BASE}/insights${buildQuery(params as Record<string, string | undefined>)}`),
+    fetchJSON<{
+      items: Insight[]
+      total: number
+      // Pantalla 4 (#44): rule → findings the profile layer is hiding on
+      // this cluster, plus the profile's name ("" = unclassified).
+      hiddenByProfile?: Record<string, number>
+      profile?: string
+    }>(`${API_BASE}/insights${buildQuery(params as Record<string, string | undefined>)}`),
 
   getEvents: (params?: EventParams) =>
     fetchJSON<ResourceList>(`${API_BASE}/events${buildQuery(params as Record<string, string | number | undefined>)}`),

@@ -35,7 +35,7 @@ jobs:
   third-party-scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Extract pinned VictoriaMetrics tag from values.yaml
         id: vm

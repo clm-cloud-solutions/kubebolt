@@ -93,3 +93,20 @@ func TestWithSessionContextPrefix_EmptyInputs(t *testing.T) {
 		}
 	})
 }
+
+// TestNoClusterContextBlock_Contract pins the no-cluster session note (the
+// fix for the chat 503ing "cluster not connected" before the model ever saw
+// the question). The block must instruct the three behaviors the feature is:
+// answer from knowledge, keep the docs tool, refuse the rest of the tools —
+// and it must never leak into the cached system prompt.
+func TestNoClusterContextBlock_Contract(t *testing.T) {
+	block := copilot.NoClusterContextBlock()
+	for _, want := range []string{"get_kubebolt_docs", "NO cluster connected", "Fleet"} {
+		if !strings.Contains(block, want) {
+			t.Errorf("NoClusterContextBlock missing %q", want)
+		}
+	}
+	if strings.Contains(copilot.BuildSystemPrompt(), "No cluster connected") {
+		t.Error("no-cluster note leaked into the cached system prompt — breaks the byte-identical cache prefix")
+	}
+}

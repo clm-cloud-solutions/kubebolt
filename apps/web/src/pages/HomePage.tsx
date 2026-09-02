@@ -12,6 +12,7 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { KobiSigilIcon } from '@/components/kobi'
+import { ShiftReportChip, ShiftReportSection, useShiftReport } from '@/components/home/ShiftReportCard'
 import { api } from '@/services/api'
 import { useFleetRollup } from '@/hooks/useFleetRollup'
 import { usePlan, type PlanTier } from '@/hooks/usePlan'
@@ -563,6 +564,12 @@ export function HomePage() {
   const { data: allClusters = [] } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: api.getMe, retry: false })
 
+  // ONE hook call feeds both halves of the shift report (the chip in the
+  // greeting's chip row and the section inside the card) so dismissal stays
+  // in sync. The presence beacon fires inside the hook AFTER the report is
+  // read — marking first would collapse the window to seconds.
+  const shift = useShiftReport()
+
   const paid = plan.atLeast('team' as PlanTier)
 
   // What Free actually includes, which is NOT "everything behind one veil".
@@ -780,6 +787,9 @@ export function HomePage() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
+            {/* Dismissed report → the «⟳ while you were away» chip lives HERE,
+                in the greeting's own chip row (the design's placement). */}
+            <ShiftReportChip report={shift.report} dismissed={shift.dismissed} reopen={shift.reopen} />
             <VerdictPill tone={tone} count={attention_items.length} />
             {plan.label && (
               <Link
@@ -806,6 +816,11 @@ export function HomePage() {
         {/* Cierre de zona: fuerte a la izquierda, apagándose a la derecha —
             marca el límite sin dibujar otra caja dentro de la caja. */}
         <div className="relative h-px" style={zoneHairline(tone, scale)} aria-hidden />
+
+        {/* El parte de guardia (Fase 3): la sección inferior de ESTA misma
+            caja — el saludo se expande con «mientras no estabas» (diseño
+            Home), no con una tarjeta suelta debajo. */}
+        <ShiftReportSection report={shift.report} dismissed={shift.dismissed} dismiss={shift.dismiss} />
       </header>
 
       {/* StripCard, no una tarjeta propia. Es la gramática documentada de la app

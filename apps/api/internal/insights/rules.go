@@ -71,7 +71,7 @@ func certExpiringRule() Rule {
 						fmt.Sprintf("cert-manager Certificate %s/%s expired %d day(s) ago — TLS against it now fails.", ns, name, -days),
 						"Renewal likely failed; check the issuer and cert-manager logs. kubectl describe certificate "+name+" -n "+ns,
 					))
-				case days < 14:
+				case float64(days) < stateThreshold(state, "cert-expiring", 14):
 					insights = append(insights, newInsight(
 						"warning",
 						fmt.Sprintf("Certificate/%s/%s", ns, name),
@@ -295,7 +295,7 @@ func crashLoopRule() Rule {
 			var insights []models.Insight
 			for _, pod := range state.Pods {
 				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" && cs.RestartCount > 3 {
+					if cs.State.Waiting != nil && cs.State.Waiting.Reason == "CrashLoopBackOff" && float64(cs.RestartCount) > stateThreshold(state, "crash-loop", 3) {
 						insights = append(insights, newInsight(
 							"critical",
 							fmt.Sprintf("Pod/%s/%s", pod.Namespace, pod.Name),
@@ -582,7 +582,7 @@ func cpuThrottleRiskRule() Rule {
 				for _, c := range pod.Spec.Containers {
 					cpuLimit += c.Resources.Limits.Cpu().MilliValue()
 				}
-				if cpuLimit > 0 && float64(metrics.CPUUsage)/float64(cpuLimit) > 0.8 {
+				if cpuLimit > 0 && float64(metrics.CPUUsage)/float64(cpuLimit) > stateThreshold(state, "cpu-throttle-risk", 0.8) {
 					over[key] = true
 					pending[key] = newInsight(
 						"warning",
@@ -627,7 +627,7 @@ func memoryPressureRule() Rule {
 				for _, c := range pod.Spec.Containers {
 					memLimit += c.Resources.Limits.Memory().Value()
 				}
-				if memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > 0.85 {
+				if memLimit > 0 && float64(metrics.MemUsage)/float64(memLimit) > stateThreshold(state, "memory-pressure", 0.85) {
 					pct := float64(metrics.MemUsage) / float64(memLimit) * 100
 					over[key] = true
 					pending[key] = newInsight(
@@ -675,7 +675,7 @@ func resourceUnderrequestRule() Rule {
 					cpuReq += c.Resources.Requests.Cpu().MilliValue()
 					memReq += c.Resources.Requests.Memory().Value()
 				}
-				if cpuReq > 0 && metrics.CPUUsage > 0 && float64(cpuReq)/float64(metrics.CPUUsage) < 0.4 {
+				if cpuReq > 0 && metrics.CPUUsage > 0 && float64(cpuReq)/float64(metrics.CPUUsage) < stateThreshold(state, "resource-underrequest", 0.4) {
 					over[key+"/cpu"] = true
 					pending[key+"/cpu"] = newInsight(
 						"info",
@@ -685,7 +685,7 @@ func resourceUnderrequestRule() Rule {
 						"Increase CPU requests to better reflect actual usage for improved scheduling.",
 					)
 				}
-				if memReq > 0 && metrics.MemUsage > 0 && float64(memReq)/float64(metrics.MemUsage) < 0.4 {
+				if memReq > 0 && metrics.MemUsage > 0 && float64(memReq)/float64(metrics.MemUsage) < stateThreshold(state, "resource-underrequest", 0.4) {
 					over[key+"/mem"] = true
 					pending[key+"/mem"] = newInsight(
 						"info",
@@ -872,7 +872,7 @@ func frequentRestartsRule() Rule {
 					// readyGrace. A container with no recorded termination cannot be
 					// churning right now, so it does not fire.
 					term := cs.LastTerminationState.Terminated
-					if cs.RestartCount > 5 && term != nil && !term.FinishedAt.IsZero() &&
+					if float64(cs.RestartCount) > stateThreshold(state, "frequent-restarts", 5) && term != nil && !term.FinishedAt.IsZero() &&
 						!containerRecovered(cs, term.FinishedAt.Time) {
 						insights = append(insights, newInsight(
 							"warning",
@@ -1424,4 +1424,3 @@ func isSystemNamespace(ns string) bool {
 	}
 	return false
 }
-

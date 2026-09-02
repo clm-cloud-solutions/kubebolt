@@ -12,6 +12,7 @@ import { EventsFeed } from './EventsFeed'
 import { NamespaceTiles } from './NamespaceTiles'
 import { DashboardSubTabs } from './DashboardSubTabs'
 import { CoverageBanner } from './CoverageBanner'
+import { IngestTruncatedBanner } from './IngestTruncatedBanner'
 import { useMetricsOnly } from '@/hooks/useMetricsOnly'
 import { MetricsOnlyBanner } from '@/components/shared/MetricsOnlyNotice'
 
@@ -49,6 +50,10 @@ export function OverviewPage() {
       </div>
 
       <DashboardSubTabs />
+
+      {/* Permanent while the install is over its series cap: truncated ingest
+          silently changes what every panel below can see. */}
+      <IngestTruncatedBanner />
 
       <CoverageBanner />
 

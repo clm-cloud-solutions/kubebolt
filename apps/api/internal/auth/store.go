@@ -31,6 +31,16 @@ var (
 	runtimeEventsBucket   = []byte("runtime_events")        // runtime security events (E2 SEC-E)
 	kobiActionsBucket     = []byte("kobi_actions")          // durable mutation audit trail (Sprint 1)
 	orgSettingsBucket     = []byte("org_settings")          // per-org UI settings blobs (keyed org\x00key)
+	// Insight lifecycle (2.1.0): episodes + their append-only history, the
+	// per-resource silences, the per-user presence anchor of the shift report,
+	// the deterministic operational bursts, and the per-rule policy overrides.
+	insightEpisodesBucket     = []byte("insight_episodes")
+	insightTransitionsBucket  = []byte("insight_transitions")
+	insightMutesBucket        = []byte("insight_mutes")
+	insightMuteKeysBucket     = []byte("insight_mute_keys")
+	dashboardSeenBucket       = []byte("user_dashboard_seen")
+	operationalEpisodesBucket = []byte("operational_episodes")
+	rulePoliciesBucket        = []byte("rule_policies")
 )
 
 // orgSettingKey composes the BoltDB key for a per-org setting: the org id, a
@@ -149,7 +159,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket, insightEpisodesBucket, insightTransitionsBucket, insightMutesBucket, insightMuteKeysBucket, dashboardSeenBucket, operationalEpisodesBucket, rulePoliciesBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -230,6 +240,21 @@ func InsightsBucket() []byte {
 // view survives restarts. (Sprint 1.)
 func KobiActionsBucket() []byte {
 	return kobiActionsBucket
+}
+
+// InsightEpisodeBuckets returns the six buckets of the insight lifecycle
+// store (apps/api/internal/insights/episodestore_bolt.go): episodes, their
+// transitions, mutes + the mute upsert index, the dashboard presence anchor
+// and the operational bursts. Created on boot like every other bucket, so a
+// 2.0.x data directory upgrades in place.
+func InsightEpisodeBuckets() (episodes, transitions, mutes, muteKeys, presence, operational []byte) {
+	return insightEpisodesBucket, insightTransitionsBucket, insightMutesBucket, insightMuteKeysBucket, dashboardSeenBucket, operationalEpisodesBucket
+}
+
+// RulePoliciesBucket returns the bucket of the per-rule policy overrides
+// (apps/api/internal/insights/policystore_bolt.go).
+func RulePoliciesBucket() []byte {
+	return rulePoliciesBucket
 }
 
 // UserStore is the W1 seam for the User domain

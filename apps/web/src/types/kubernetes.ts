@@ -338,6 +338,9 @@ export interface InsightParams {
   severity?: string
   category?: string
   namespace?: string
+  // Muted insights are subtracted by default (#54); the Insights page alone
+  // asks for them to build its «N muted» counter.
+  includeMuted?: string
 }
 
 export interface EventParams {

@@ -20,6 +20,8 @@ import { NamespacesPage } from '@/components/resources/NamespacesPage'
 import { RBACPage } from '@/components/resources/RBACPage'
 import { ResourceDetailPage } from '@/components/resources/ResourceDetailPage'
 import { InsightsList } from '@/components/insights/InsightsList'
+import { EpisodeDetailPage } from '@/components/insights/EpisodeDetailPage'
+import { InsightsHubPage } from '@/pages/admin/InsightsHubPage'
 import { ClusterMap } from '@/components/map/ClusterMap'
 import { ClustersPage } from '@/pages/ClustersPage'
 import { SecurityPage } from '@/pages/SecurityPage'
@@ -107,6 +109,7 @@ export default function App() {
               <Route path="/reliability" element={<ReliabilityPage />} />
               <Route path="/cost" element={<CostPage />} />
               <Route path="/insights" element={<InsightsList />} />
+              <Route path="/insights/episodes/:id" element={<EpisodeDetailPage />} />
               <Route path="/applications" element={<ApplicationsPage />} />
               <Route path="/applications/:namespace/:name" element={<HelmReleaseDetailPage />} />
               <Route path="/map" element={<ClusterMap />} />
@@ -171,6 +174,9 @@ export default function App() {
               <Route path="/admin/ai" element={<RequireRole role="admin"><AIHub /></RequireRole>} />
               <Route path="/admin/system" element={<RequireRole role="admin"><SystemHub /></RequireRole>} />
               <Route path="/admin/api-tokens" element={<RequireRole role="admin"><APITokensPage /></RequireRole>} />
+              {/* Admin / Insights — the #44 matrix hub: Rules, both suppression
+                  layers (policy + mutes) and the install-wide episode history. */}
+              <Route path="/admin/insights" element={<RequireRole role="admin"><InsightsHubPage /></RequireRole>} />
             </Route>
           </Routes>
         </CopilotProvider>
