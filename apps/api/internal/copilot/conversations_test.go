@@ -242,18 +242,52 @@ func TestConversationStore_SetMessages(t *testing.T) {
 	}
 }
 
-func TestConversationStore_PruneByAgeAndCap(t *testing.T) {
-	// Retention 1h, cap 3.
+// TestConversationStore_CapOnWriteAgeOnPrune pins the split between the two
+// policies, which used to be one.
+//
+// Writing enforces the per-user CAP only. Age is not a write-time concern any
+// more: it belongs to PruneOrg, driven by the org's plan band in the hourly
+// retention pass. The previous version of this test asserted both at once and,
+// after the split, still passed — but for the wrong reason: its age-expired
+// record was also the oldest, so the cap evicted it and the age assertion never
+// actually exercised age. Hence the deliberately generous cap below.
+func TestConversationStore_CapOnWriteAgeOnPrune(t *testing.T) {
 	for name, store := range newConvStores(t, time.Hour, 3) {
 		t.Run(name, func(t *testing.T) {
 			old := newConv("old", "alice", "prod", "ancient", userMsg("old"))
-			old.UpdatedAt = time.Now().Add(-2 * time.Hour) // beyond retention
+			old.UpdatedAt = time.Now().Add(-2 * time.Hour)
 			old.CreatedAt = old.UpdatedAt
 			if err := store.Upsert(old); err != nil {
 				t.Fatalf("upsert old: %v", err)
 			}
+			// One fresh write, well under the cap, so nothing can be evicted by
+			// the cap and the age question is asked on its own.
+			fresh := newConv("f0", "alice", "prod", "fresh", userMsg("hi"))
+			if err := store.Upsert(fresh); err != nil {
+				t.Fatalf("upsert fresh: %v", err)
+			}
+			if _, ok, _ := store.Get(DefaultConversationTenant, "alice", "old"); !ok {
+				t.Fatal("a write expired an old record: age must not be enforced on write")
+			}
 
-			// Five fresh ones for alice → cap 3 keeps the newest 3.
+			// The pass supplies the cutoff; only then does age apply.
+			n, err := store.PruneOrg(DefaultConversationTenant, time.Now().Add(-time.Hour))
+			if err != nil || n != 1 {
+				t.Fatalf("PruneOrg: err=%v n=%d, want 1", err, n)
+			}
+			if _, ok, _ := store.Get(DefaultConversationTenant, "alice", "old"); ok {
+				t.Fatal("age-expired record survived PruneOrg")
+			}
+			if _, ok, _ := store.Get(DefaultConversationTenant, "alice", "f0"); !ok {
+				t.Fatal("PruneOrg removed a record inside the window")
+			}
+		})
+	}
+}
+
+func TestConversationStore_CapEvictsOldestOnWrite(t *testing.T) {
+	for name, store := range newConvStores(t, time.Hour, 3) {
+		t.Run(name, func(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				r := newConv(fmt.Sprintf("f%d", i), "alice", "prod", fmt.Sprintf("fresh %d", i), userMsg("hi"))
 				r.UpdatedAt = time.Now().Add(time.Duration(i) * time.Minute)
@@ -262,18 +296,48 @@ func TestConversationStore_PruneByAgeAndCap(t *testing.T) {
 					t.Fatalf("upsert fresh: %v", err)
 				}
 			}
-
 			got, _ := store.List(ConversationQuery{TenantID: DefaultConversationTenant, UserID: "alice", IncludeArchived: true})
 			if len(got) != 3 {
 				t.Fatalf("expected cap=3, got %d (%v)", len(got), titles(got))
 			}
-			// The age-expired record must be gone.
-			if _, ok, _ := store.Get(DefaultConversationTenant, "alice", "old"); ok {
-				t.Fatalf("age-expired record survived pruning")
-			}
-			// Newest 3 are f4,f3,f2.
 			if got[0].ID != "f4" || got[2].ID != "f2" {
 				t.Fatalf("cap kept the wrong records: %v", titles(got))
+			}
+		})
+	}
+}
+
+// TestConversationStore_PruneOrgIsolated is the regression test for the shape
+// the age prune used to have: an unscoped DELETE that ran on any user's write
+// and removed expired rows belonging to every user and every org.
+func TestConversationStore_PruneOrgIsolated(t *testing.T) {
+	for name, store := range newConvStores(t, time.Hour, 50) {
+		t.Run(name, func(t *testing.T) {
+			stale := time.Now().Add(-48 * time.Hour)
+			for _, tc := range []struct{ id, user, tenant string }{
+				{"a-old", "alice", "org-a"},
+				{"b-old", "bob", "org-b"},
+			} {
+				rec := newConv(tc.id, tc.user, "prod", tc.id, userMsg("hi"))
+				rec.TenantID = tc.tenant
+				rec.UpdatedAt = stale
+				rec.CreatedAt = stale
+				if err := store.Upsert(rec); err != nil {
+					t.Fatalf("upsert %s: %v", tc.id, err)
+				}
+			}
+
+			n, err := store.PruneOrg("org-a", time.Now().Add(-24*time.Hour))
+			if err != nil || n != 1 {
+				t.Fatalf("PruneOrg(org-a): err=%v n=%d, want 1", err, n)
+			}
+			if _, ok, _ := store.Get("org-a", "alice", "a-old"); ok {
+				t.Fatal("org-a's expired record survived its own prune")
+			}
+			// org-b is equally expired and must be untouched: its retention is
+			// its own plan's business, resolved on its own pass.
+			if _, ok, _ := store.Get("org-b", "bob", "b-old"); !ok {
+				t.Fatal("org-a's prune deleted org-b's history")
 			}
 		})
 	}

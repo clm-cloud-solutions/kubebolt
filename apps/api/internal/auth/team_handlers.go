@@ -199,6 +199,11 @@ func (h *Handlers) CreateTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	team, err := h.teams.CreateTeam(r.Context(), h.callerOrgID(r), name)
+	if err == nil {
+		auditAdmin(r, "create_team", "team", team.ID, map[string]any{"name": name}, nil)
+	} else {
+		auditAdmin(r, "create_team", "team", name, nil, err)
+	}
 	if err != nil {
 		if errors.Is(err, ErrTeamExists) {
 			respondError(w, http.StatusConflict, err.Error())
@@ -251,6 +256,7 @@ func (h *Handlers) UpdateTeam(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	auditAdmin(r, "update_team", "team", team.ID, map[string]any{"name": team.Name}, nil)
 	respondJSON(w, http.StatusOK, h.summarizeTeam(r.Context(), team))
 }
 
@@ -271,6 +277,7 @@ func (h *Handlers) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := h.teams.DeleteTeam(r.Context(), id); err != nil {
+		auditAdmin(r, "delete_team", "team", id, nil, err)
 		if errors.Is(err, ErrTeamNotFound) {
 			respondError(w, http.StatusNotFound, "team not found")
 			return
@@ -278,6 +285,9 @@ func (h *Handlers) DeleteTeam(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// Memberships cascade, so this one line is the only surviving trace of who
+	// lost access to what.
+	auditAdmin(r, "delete_team", "team", id, map[string]any{"name": team.Name}, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -309,7 +319,9 @@ func (h *Handlers) AddTeamMember(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "invalid role")
 		return
 	}
+	memberParams := map[string]any{"userId": req.UserID, "teamRole": string(req.Role)}
 	if _, err := h.teams.AddMember(r.Context(), chi.URLParam(r, "id"), req.UserID, req.Role); err != nil {
+		auditAdmin(r, "add_team_member", "team", chi.URLParam(r, "id"), memberParams, err)
 		if errors.Is(err, ErrTeamNotFound) {
 			respondError(w, http.StatusNotFound, "team not found")
 			return
@@ -317,6 +329,8 @@ func (h *Handlers) AddTeamMember(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	// teamRole is an elevation, so this is a privilege grant, not bookkeeping.
+	auditAdmin(r, "add_team_member", "team", chi.URLParam(r, "id"), memberParams, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -329,10 +343,13 @@ func (h *Handlers) RemoveTeamMember(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusForbidden, "you do not manage this team")
 		return
 	}
+	removeParams := map[string]any{"userId": chi.URLParam(r, "userId")}
 	if err := h.teams.RemoveMember(r.Context(), chi.URLParam(r, "id"), chi.URLParam(r, "userId")); err != nil {
+		auditAdmin(r, "remove_team_member", "team", chi.URLParam(r, "id"), removeParams, err)
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	auditAdmin(r, "remove_team_member", "team", chi.URLParam(r, "id"), removeParams, nil)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -89,14 +89,14 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 	// store. OriginatingInsightID closes the insight→Kobi→action provenance
 	// loop opened in Sprint 0 (frontend sends X-KubeBolt-Origin-Insight when
 	// the Kobi chat was seeded from an insight).
-	if auditStore != nil {
-		clusterID := ""
-		if auditClusterID != nil {
-			clusterID = auditClusterID()
-		}
+	if audit.Enabled() {
+		clusterID := audit.ClusterID()
 		rec := &audit.Record{
-			ID:                   uuid.New().String(),
-			Timestamp:            time.Now().UTC(),
+			ID:        uuid.New().String(),
+			Timestamp: time.Now().UTC(),
+			// Isolation key, taken from the resolved request context — the same
+			// org RLS will pin the INSERT to. Never a header or body field.
+			TenantID:             auth.ContextTenantID(r),
 			Source:               source,
 			UserID:               userID,
 			Username:             username,
@@ -114,9 +114,7 @@ func auditMutation(r *http.Request, action, resourceType, namespace, name string
 		if err != nil {
 			rec.Error = err.Error()
 		}
-		if e := auditStore.Append(rec); e != nil {
-			slog.Warn("audit persist failed", slog.String("error", e.Error()))
-		}
+		audit.Emit(rec)
 	}
 }
 

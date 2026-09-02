@@ -251,6 +251,14 @@ func (h *handlers) handleFileContent(w http.ResponseWriter, r *http.Request) {
 
 	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"cat", filePath})
+	// The path and the size, never the bytes. Reading a file out of a running
+	// pod is how data leaves, so it is recorded; recording WHAT was read would
+	// copy the pod's secrets into the audit trail, which outlives them.
+	auditAccess(actorFromRequest(r), "pod_file_read", "pods", namespace, name, map[string]any{
+		"container": container,
+		"path":      filePath,
+		"bytes":     len(stdout),
+	}, err)
 	if err != nil {
 		respondError(w, http.StatusNotFound, fmt.Sprintf("cannot read file: %s %s", stderr, err))
 		return
@@ -273,6 +281,11 @@ func (h *handlers) handleFileDownload(w http.ResponseWriter, r *http.Request) {
 
 	stdout, stderr, err := h.execCommand(r.Context(), namespace, name, container,
 		[]string{"cat", filePath})
+	auditAccess(actorFromRequest(r), "pod_file_download", "pods", namespace, name, map[string]any{
+		"container": container,
+		"path":      filePath,
+		"bytes":     len(stdout),
+	}, err)
 	if err != nil {
 		respondError(w, http.StatusNotFound, fmt.Sprintf("cannot read file: %s %s", stderr, err))
 		return
