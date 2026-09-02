@@ -112,7 +112,11 @@ func NewRouter(
 	// static. Registered as a route inside the authenticated group below.
 	mcpServer := mcp.NewServer(
 		mcp.ServerInfo{Name: "kubebolt-kobi", Version: "1"},
-		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager)),
+		// Same per-org metrics-retention clamp as the chat handler. This door
+		// serves the identical get_workload_metrics tool to an external MCP host,
+		// so wiring the entitlement on only one of them would mean a plan limit
+		// that holds in the product and not through the integration.
+		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager).WithMetricsRetention(h.metricsRetentionFor)),
 		mcp.NewKobiPromptProvider(),
 	)
 
@@ -233,6 +237,10 @@ func NewRouter(
 
 			// Cluster management — always available, no active connector required
 			r.Get("/clusters", h.listClusters)
+			// Nombres de clusters, incluidos los dados de baja. Fuera de
+			// requireConnector como /clusters, y con el alcance de cluster puesto
+			// para que la etiqueta siga el mismo criterio que el dato que rotula.
+			r.With(h.WithClusterScope).Get("/clusters/names", h.handleClusterNames)
 			r.Post("/clusters/switch", h.switchCluster)
 
 			// Update check — reports the latest stable KubeBolt release
@@ -301,6 +309,11 @@ func NewRouter(
 			// Copilot usage analytics — admin only
 			r.Group(func(r chi.Router) {
 				r.Use(auth.RequireRole(auth.RoleAdmin))
+				// WithClusterScope no estrecha nada mientras el guard de arriba sea
+				// admin-de-organización: un admin lee su org entera por diseño.
+				// Va montado para que abrir esta vista a un rol más estrecho no
+				// abra también los datos, en silencio. Ver queryUsageInScope.
+				r.Use(h.WithClusterScope)
 				r.Get("/admin/copilot/usage/summary", h.handleCopilotUsageSummary)
 				r.Get("/admin/copilot/usage/timeseries", h.handleCopilotUsageTimeseries)
 				r.Get("/admin/copilot/usage/sessions", h.handleCopilotUsageSessions)

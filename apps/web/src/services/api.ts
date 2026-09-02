@@ -438,6 +438,13 @@ export const api = {
   // --- Cluster management ---
   listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
 
+  // Nombres legibles de TODOS los clusters de la org, incluidos los dados de
+  // baja. No es la lista de /clusters: aquella es la de los vivos y alimenta el
+  // selector, donde ofrecer uno retirado sería ofrecer entrar en algo que no
+  // está. Éste sólo rotula historial. Viene indexado por las dos identidades
+  // (contexto y UID).
+  getClusterNames: () => fetchJSON<Record<string, string>>(`${API_BASE}/clusters/names`),
+
   switchCluster: (context: string) =>
     postJSON<{ status: string; context: string }>(`${API_BASE}/clusters/switch`, { context }),
 

@@ -605,6 +605,30 @@ func (m *Manager) SetStorage(s ClusterStore) error {
 }
 
 // Storage returns the attached storage, or nil if none was set.
+// CanonicalClusterID maps a UI-supplied context name to the kube-system UID that
+// keys per-cluster state. This reconciles the two identities of a cluster: an
+// agent-proxy context encodes the UID in its name (agent:<uid>), while a direct
+// context (in-cluster / kubeconfig) carries a plain name whose UID lives in the
+// persisted UID map. Falls back to the context name unchanged when no UID is
+// known.
+func (m *Manager) CanonicalClusterID(ctx context.Context, contextName string) string {
+	if contextName == "" {
+		return ""
+	}
+	// Agent-proxy context: the name is agent:<uid> — strip the prefix.
+	if uid := RawClusterID(contextName); uid != contextName {
+		return uid
+	}
+	// Direct context: the kube-system UID was persisted when its runtime resolved
+	// (SetClusterUID).
+	if m.storage != nil {
+		if uid := m.storage.GetClusterUID(ctx, contextName); uid != "" {
+			return uid
+		}
+	}
+	return contextName
+}
+
 func (m *Manager) Storage() ClusterStore {
 	m.mu.RLock()
 	defer m.mu.RUnlock()

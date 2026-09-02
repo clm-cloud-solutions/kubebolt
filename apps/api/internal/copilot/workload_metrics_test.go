@@ -29,9 +29,15 @@ func TestParseMetricsRange(t *testing.T) {
 		{"1h", 1 * time.Hour, 5 * time.Minute, 5 * time.Minute, false},
 		{"6h", 6 * time.Hour, 30 * time.Minute, 5 * time.Minute, false},
 		{"24h", 24 * time.Hour, 2 * time.Hour, 15 * time.Minute, false},
+		// History ranges — the product's own selector offers these, so the tool
+		// rejecting them was a dead end the operator reached through Kobi.
+		{"7d", 7 * 24 * time.Hour, 14 * time.Hour, 15 * time.Minute, false},
+		{"14d", 14 * 24 * time.Hour, 28 * time.Hour, 30 * time.Minute, false},
+		{"30d", 30 * 24 * time.Hour, 60 * time.Hour, 1 * time.Hour, false},
 		{"", 15 * time.Minute, 75 * time.Second, 1 * time.Minute, false}, // default
 		{"30m", 0, 0, 0, true},
 		{"1d", 0, 0, 0, true},
+		{"90d", 0, 0, 0, true},
 		{"garbage", 0, 0, 0, true},
 	}
 	for _, c := range cases {
@@ -534,5 +540,167 @@ func TestDownsample_Reduces(t *testing.T) {
 	}
 	if out[len(out)-1].V != 57.0 {
 		t.Errorf("last bucket average: want 57, got %v", out[len(out)-1].V)
+	}
+}
+
+// Every range yields the same ~12 trend points. That invariant is what makes a
+// wider window cost RESOLUTION rather than tokens, and it is the whole answer
+// to "can we afford 30d": a month costs the model exactly what 15 minutes does.
+func TestMetricsRangeTable_TwelvePointsEverywhere(t *testing.T) {
+	for name, spec := range metricsRangeTable {
+		points := int(spec.Duration / spec.Step)
+		if points != trendTargetPoints {
+			t.Errorf("range %s yields %d points (duration %s / step %s), want %d",
+				name, points, spec.Duration, spec.Step, trendTargetPoints)
+		}
+	}
+}
+
+// Long ranges must summarise their step, not sample an instant inside it.
+//
+// Without a bucket, a 30d response is twelve 15-minute windows spread across a
+// month — 0.4% of the timeline — and the peak that OOMKilled a pod last Tuesday
+// is invisible unless it happened to land inside one of them. This tool's
+// description makes it mandatory before proposing resource limits, so an
+// under-reported peak here becomes an under-sized limit there.
+func TestMetricsRangeTable_LongRangesSummariseTheirStep(t *testing.T) {
+	for _, name := range []string{"6h", "24h", "7d", "14d", "30d"} {
+		if metricsRangeTable[name].Bucket <= 0 {
+			t.Errorf("range %s samples an instant per point instead of its step's peak", name)
+		}
+	}
+	// Below an hour the step is at or under the rate window, so a bucket would
+	// re-smooth what rate() already smoothed — noise, not information.
+	for _, name := range []string{"5m", "15m", "1h"} {
+		if metricsRangeTable[name].Bucket != 0 {
+			t.Errorf("range %s buckets a step no wider than its rate window", name)
+		}
+	}
+}
+
+// The CPU peak has to be taken AFTER the sum: the workload's worst moment, not
+// the sum of each pod's worst moment — a number no instant ever produced.
+func TestPromBuilder_CPU_BucketedTakesThePeakOfTheSum(t *testing.T) {
+	b := promBuilder{
+		kind: "Deployment", namespace: "default", name: "api", clusterUID: "uid-abc",
+		rateWindow: 15 * time.Minute, bucket: 14 * time.Hour,
+	}
+	want := `max_over_time(sum(rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[15m]))[14h:15m])`
+	if got := b.buildCPU(); got != want {
+		t.Errorf("bucketed CPU mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+}
+
+// Memory is a gauge, so it takes a plain range — no subquery, and therefore no
+// inner-evaluation cost at all.
+func TestPromBuilder_Memory_BucketedUsesAPlainRange(t *testing.T) {
+	b := promBuilder{
+		kind: "Deployment", namespace: "default", name: "api", clusterUID: "uid-abc",
+		rateWindow: 1 * time.Hour, bucket: 60 * time.Hour,
+	}
+	want := `max_over_time(sum(container_memory_working_set_bytes{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""})[60h])`
+	got := b.buildMemory()
+	if got != want {
+		t.Errorf("bucketed memory mismatch:\n  want: %s\n  got:  %s", want, got)
+	}
+	if strings.Contains(got, ":") {
+		t.Errorf("gauge query became a subquery, paying for inner evaluations it does not need: %s", got)
+	}
+}
+
+// Short ranges keep the exact query they had. The bucket is an addition to the
+// long end, not a rewrite of what already worked.
+func TestPromBuilder_UnbucketedRangesAreUnchanged(t *testing.T) {
+	b := promBuilder{
+		kind: "Deployment", namespace: "default", name: "api", clusterUID: "uid-abc",
+		rateWindow: 1 * time.Minute,
+	}
+	want := `sum(rate(container_cpu_usage_seconds_total{cluster_id="uid-abc",namespace="default",pod=~"api-[a-z0-9]+-[a-z0-9]+",pod_uid!=""}[1m]))`
+	if got := b.buildCPU(); got != want {
+		t.Errorf("unbucketed CPU changed:\n  want: %s\n  got:  %s", want, got)
+	}
+}
+
+// A plan that keeps less history than the question asks for gets the widest
+// range that EXISTS, and is told. Serving the requested window with its first
+// half empty is the failure this prevents: the model reads absent data as idle
+// and sizes from zeros.
+func TestClampRangeToRetention(t *testing.T) {
+	day := 24 * time.Hour
+	cases := []struct {
+		req       string
+		retention time.Duration
+		want      string
+		adjusted  bool
+	}{
+		{"30d", 15 * day, "14d", true},  // Free: 15 days retained
+		{"30d", 30 * day, "30d", false}, // Team: exactly enough
+		{"7d", 15 * day, "7d", false},
+		{"30d", 0, "30d", false},        // no cap — self-hosted
+		{"24h", 15 * day, "24h", false}, // short ranges are never touched
+		{"30d", 3 * day, "24h", true},   // a very short window still answers something
+		{"garbage", 15 * day, "garbage", false},
+	}
+	for _, c := range cases {
+		got, adjusted := ClampRangeToRetention(c.req, c.retention)
+		if got != c.want || adjusted != c.adjusted {
+			t.Errorf("Clamp(%s, %s) = (%s, %v), want (%s, %v)",
+				c.req, c.retention, got, adjusted, c.want, c.adjusted)
+		}
+	}
+}
+
+// The isolation boundary. cluster_id does NOT provide it.
+//
+// Observed in vivo 2026-08-12: an operator connected an existing cluster to a
+// SECOND org on the Free plan by installing the agent in another namespace. The
+// new org had five minutes of data. Kobi answered a 14d node question with two
+// weeks of history — the FIRST org's — because the same physical cluster carries
+// one cluster_id under two tenant_ids, and these selectors keyed only on
+// cluster_id. Worse than reading it: every query wraps the selector in sum(), so
+// the other org's series were ADDED to the caller's own.
+//
+// Every selector this builder writes must carry the tenant. A new metric added
+// without it reopens the leak silently, which is why this walks all of them
+// rather than spot-checking one.
+func TestPromBuilder_EverySelectorIsTenantScoped(t *testing.T) {
+	b := promBuilder{
+		kind: "Deployment", namespace: "default", name: "api",
+		clusterUID: "uid-abc", tenantID: "org-1",
+		rateWindow: 1 * time.Minute, pods: []string{"api-1"},
+	}
+	queries := map[string]string{
+		"cpu":      b.buildCPU(),
+		"memory":   b.buildMemory(),
+		"net rx":   b.buildNetwork(MetricNetworkRX),
+		"net tx":   b.buildNetwork(MetricNetworkTX),
+		"requests": b.buildRequestsLimits("requests", "cpu"),
+		"limits":   b.buildRequestsLimits("limits", "memory"),
+	}
+	nb := promBuilder{
+		kind: "Node", name: "node-1", clusterUID: "uid-abc", tenantID: "org-1",
+		rateWindow: 1 * time.Minute,
+	}
+	queries["node cpu"] = nb.buildCPU()
+	queries["node memory"] = nb.buildMemory()
+	queries["node net"] = nb.buildNetwork(MetricNetworkRX)
+	queries["node capacity"] = nb.buildRequestsLimits("requests", "cpu")
+
+	for label, q := range queries {
+		if !strings.Contains(q, `tenant_id="org-1"`) {
+			t.Errorf("%s reads across organisations — no tenant_id in:\n  %s", label, q)
+		}
+	}
+}
+
+// OSS carries no tenant_id label at all, so scoping there would match nothing
+// and blank every chart. The sentinel is a NAME, never a stamped value.
+func TestPromBuilder_UnscopedWhenThereIsNoTenantLabel(t *testing.T) {
+	b := promBuilder{
+		kind: "Deployment", namespace: "default", name: "api",
+		clusterUID: "uid-abc", rateWindow: 1 * time.Minute,
+	}
+	if got := b.buildCPU(); strings.Contains(got, "tenant_id") {
+		t.Errorf("single-tenant query filters on a label its series do not carry:\n  %s", got)
 	}
 }

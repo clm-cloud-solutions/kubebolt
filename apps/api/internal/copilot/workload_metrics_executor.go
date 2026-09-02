@@ -6,6 +6,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
@@ -51,7 +52,17 @@ type workloadMetricsResponse struct {
 	End          string                    `json:"end"`
 	PodsResolved int                       `json:"podsResolved"`
 	Metrics      map[string]metricResponse `json:"metrics"`
-	Note         string                    `json:"note,omitempty"`
+	// Aggregation tells the model what a trend point MEANS. On bucketed ranges
+	// each point is the peak of its step, so `max` is the true peak of the whole
+	// window while `avg` is a mean of peaks and reads high. Without this the
+	// model would read the same numbers as instantaneous samples and describe a
+	// month of peaks as a month of typical load.
+	Aggregation string `json:"aggregation,omitempty"`
+	// RangeAdjusted is set when the requested range exceeded the org's metrics
+	// retention and was narrowed. Stated rather than silently served, so the
+	// model does not present a fortnight as a month.
+	RangeAdjusted string `json:"rangeAdjusted,omitempty"`
+	Note          string `json:"note,omitempty"`
 }
 
 type workloadRef struct {
@@ -87,7 +98,10 @@ type utilizationPercent struct {
 // execGetWorkloadMetrics is the bulk of the tool. Returns a JSON string on
 // success, or a JSON string error wrapped in a non-nil error on failure (so
 // the executor switch can mark IsError without duplicating the marshal).
-func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{}, conn *cluster.Connector) (string, error) {
+// reqCtx carries the resolved (tenant, cluster) — needed to ask what this
+// org's plan retains. The VM call below still builds its own bounded context;
+// this one is only read from.
+func (e *Executor) execGetWorkloadMetrics(reqCtx context.Context, _ ToolCall, args map[string]interface{}, conn *cluster.Connector) (string, error) {
 	kind := stringArg(args, "kind")
 	namespace := stringArg(args, "namespace")
 	name := stringArg(args, "name")
@@ -113,6 +127,18 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 	metrics, err := parseMetricsArg(args["metrics"])
 	if err != nil {
 		return "", fmt.Errorf(`{"error":%q}`, err.Error())
+	}
+
+	// Narrow to what this org actually keeps BEFORE resolving the window. A
+	// plan holding 15 days answering a 30d question with half the range empty
+	// is worse than answering 14d honestly: the model reads the empty half as
+	// idle, and on a sizing question that becomes a proposal built from zeros.
+	var retentionNote string
+	if e.metricsRetention != nil {
+		if narrowed, adjusted := ClampRangeToRetention(rangeStr, e.metricsRetention(reqCtx)); adjusted {
+			retentionNote = fmt.Sprintf("requested %s, served %s — this organization's plan retains metrics for a shorter window", rangeStr, narrowed)
+			rangeStr = narrowed
+		}
 	}
 
 	now := time.Now().UTC()
@@ -169,6 +195,12 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 		PodsResolved: len(pods),
 		Metrics:      map[string]metricResponse{},
 	}
+	resp.RangeAdjusted = retentionNote
+	if spec.Bucket > 0 {
+		resp.Aggregation = fmt.Sprintf("each trend point is the PEAK of its %s step (max_over_time); "+
+			"summary.max is therefore the true peak of the whole range, and avg/p95 are computed over "+
+			"per-step peaks so they read higher than typical load", promDuration(spec.Bucket))
+	}
 	// Empty-target short-circuit applies to non-Pod, non-Node kinds where
 	// pod resolution yielded nothing (workload paused, scaled to 0, etc).
 	// Node kind never hits this — the existence check above already 404'd
@@ -199,6 +231,12 @@ func (e *Executor) execGetWorkloadMetrics(_ ToolCall, args map[string]interface{
 		pods:         pods,
 		perContainer: perContainer,
 		rateWindow:   spec.RateWindow,
+		bucket:       spec.Bucket,
+		// The isolation boundary. cluster_id alone does NOT provide it — the
+		// same physical cluster connected to two orgs carries one cluster_id and
+		// two tenant_ids — so without this every selector below reads, and sums,
+		// the other org's series.
+		tenantID: copilotTenantScope(reqCtx),
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -508,4 +546,25 @@ func containsAny(set []MetricKind, targets ...MetricKind) bool {
 // same JSON encoder + dedup the "marshal failed" fallback.
 func marshal(v interface{}) string {
 	return jsonString(v)
+}
+
+
+// copilotTenantScope resolves the org whose series this request may read.
+//
+// Mirrors handlers.activeTenantID in internal/api/metrics_query.go, which is the
+// same decision for the dashboard's PromQL proxy — and the reason the dashboard
+// was already isolated while this path was not. Kept as a copy rather than an
+// import because copilot must not depend on the HTTP layer; the two are tied by
+// this comment and by the cross-tenant test.
+//
+// "" means DO NOT SCOPE, and is correct only where the series carry no tenant_id
+// label to filter on: OSS resolves to the DefaultTenantName sentinel, which is a
+// NAME and never a stamped label value. It must never become the fallback for a
+// failed lookup — an empty scope in a multi-tenant install is the leak itself.
+func copilotTenantScope(ctx context.Context) string {
+	tid := auth.TenantIDFromContext(ctx)
+	if tid == auth.DefaultTenantName {
+		return ""
+	}
+	return tid
 }

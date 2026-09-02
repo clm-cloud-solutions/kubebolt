@@ -37,16 +37,75 @@ type metricsRangeSpec struct {
 	Step       time.Duration // VM step for range queries
 	RateWindow time.Duration // window inside rate(...[X])
 	Duration   time.Duration // total span of the range
+
+	// Bucket, when non-zero, makes each trend point the PEAK of its own step
+	// instead of an instantaneous sample at that step's timestamp.
+	//
+	// Without it a 12-point response is 12 pin-pricks: at 24h that is twelve
+	// 15-minute windows spread over a day — 12% of the timeline — and at 30d it
+	// would be twelve 15-minute windows in a month, 0.4%. A spike between two
+	// samples is invisible, and this tool's own description makes it mandatory
+	// before proposing resource limits, where an under-reported peak is what
+	// OOMKills a pod.
+	//
+	// So each point answers "what was the worst moment in these N hours". The
+	// summary's max becomes the true max of the whole range rather than the max
+	// of twelve samples. min/avg/p95 are then computed over per-bucket peaks and
+	// therefore read HIGH — deliberately the safe direction for sizing, and
+	// declared to the caller as `aggregation` in the payload so the model knows
+	// it is reading peaks, not means.
+	Bucket time.Duration
 }
 
 // metricsRangeTable maps the input enum to VM parameters. Keep in lockstep
-// with the spec's "Range-to-step mapping" table.
+// with the spec's "Range-to-step mapping" table AND with the UI's
+// OVERVIEW_RANGE_OPTIONS (apps/web/src/components/shared/RangeSelector.tsx) —
+// a range the product offers but the tool rejects is a dead end the operator
+// reaches through Kobi, which is how 7d surfaced.
+//
+// Every entry is sized so Duration/Step == 12 points. Bucket is set only where
+// it adds information: below 1h the step is at or under the rate window, so a
+// bucket would cover the same samples the rate already smooths.
 var metricsRangeTable = map[string]metricsRangeSpec{
 	"5m":  {Step: 25 * time.Second, RateWindow: 1 * time.Minute, Duration: 5 * time.Minute},
 	"15m": {Step: 75 * time.Second, RateWindow: 1 * time.Minute, Duration: 15 * time.Minute},
 	"1h":  {Step: 5 * time.Minute, RateWindow: 5 * time.Minute, Duration: 1 * time.Hour},
-	"6h":  {Step: 30 * time.Minute, RateWindow: 5 * time.Minute, Duration: 6 * time.Hour},
-	"24h": {Step: 2 * time.Hour, RateWindow: 15 * time.Minute, Duration: 24 * time.Hour},
+	"6h":  {Step: 30 * time.Minute, RateWindow: 5 * time.Minute, Duration: 6 * time.Hour, Bucket: 30 * time.Minute},
+	"24h": {Step: 2 * time.Hour, RateWindow: 15 * time.Minute, Duration: 24 * time.Hour, Bucket: 2 * time.Hour},
+	// History ranges. The rate window grows with the bucket so the CPU subquery
+	// stays around 60 inner evaluations per point — bounded work regardless of
+	// how wide the window gets.
+	"7d":  {Step: 14 * time.Hour, RateWindow: 15 * time.Minute, Duration: 7 * 24 * time.Hour, Bucket: 14 * time.Hour},
+	"14d": {Step: 28 * time.Hour, RateWindow: 30 * time.Minute, Duration: 14 * 24 * time.Hour, Bucket: 28 * time.Hour},
+	"30d": {Step: 60 * time.Hour, RateWindow: 1 * time.Hour, Duration: 30 * 24 * time.Hour, Bucket: 60 * time.Hour},
+}
+
+// metricsRangeOrder lists the enum shortest-first, for error messages and for
+// the clamp to pick the widest range that still fits inside retention.
+var metricsRangeOrder = []string{"5m", "15m", "1h", "6h", "24h", "7d", "14d", "30d"}
+
+// ClampRangeToRetention returns the widest range that fits inside `retention`,
+// and whether it had to narrow the request.
+//
+// An org whose plan keeps 15 days of metrics asking for 30d does not get an
+// error — it gets 14d and is told. The alternative is worse in both directions:
+// erroring makes a legitimate question fail, and answering with half the window
+// empty invites the model to read "no data" as "no usage", which on a sizing
+// question means proposing limits from a fortnight of zeros.
+//
+// retention <= 0 means no cap (self-hosted, or a plan without one).
+func ClampRangeToRetention(rangeStr string, retention time.Duration) (string, bool) {
+	spec, ok := metricsRangeTable[rangeStr]
+	if !ok || retention <= 0 || spec.Duration <= retention {
+		return rangeStr, false
+	}
+	best := metricsRangeOrder[0]
+	for _, k := range metricsRangeOrder {
+		if metricsRangeTable[k].Duration <= retention {
+			best = k
+		}
+	}
+	return best, best != rangeStr
 }
 
 // trendTargetPoints is the downsample target. Matches the spec's "12 points
@@ -92,6 +151,54 @@ type promBuilder struct {
 	pods         []string // resolved pod names — required for Pod kind AND for network metrics
 	perContainer bool
 	rateWindow   time.Duration
+	// bucket mirrors metricsRangeSpec.Bucket: 0 = sample the instant, non-zero =
+	// report the peak of the step. See that field for why.
+	bucket time.Duration
+	// tenantID scopes every selector to ONE organisation. Empty means no
+	// scoping, which is correct only where the series carry no tenant_id label
+	// at all (OSS / single-tenant) — never as a fallback when resolution fails.
+	//
+	// This is not a filter for tidiness, it is the isolation boundary. cluster_id
+	// does NOT provide it: the same physical cluster connected to two orgs
+	// produces the SAME cluster_id under two different tenant_ids, so a query
+	// keyed only on cluster_id reads both — and since these queries wrap the
+	// selector in sum(), it ADDS the other org's series to yours. Observed in
+	// vivo 2026-08-12: a five-minute-old Free org was served two weeks of
+	// another org's node history for the same node name.
+	tenantID string
+}
+
+// scope returns the label matchers that decide WHICH ORG'S series this query may
+// read, always first in the selector so it is impossible to write one of these
+// builders without it being visible in the golden test output.
+func (b *promBuilder) scope() string {
+	if b.tenantID == "" {
+		return fmt.Sprintf(`cluster_id=%q`, b.clusterUID)
+	}
+	return fmt.Sprintf(`tenant_id=%q,cluster_id=%q`, b.tenantID, b.clusterUID)
+}
+
+// peakOverBucket makes a point the maximum its step saw, rather than the value
+// at the step's timestamp.
+//
+// Two shapes, because PromQL needs them:
+//   - a gauge (memory) takes a plain range: max_over_time(expr[bucket])
+//   - anything already carrying a range selector (rate(...)) needs a SUBQUERY,
+//     max_over_time(rate(...)[bucket:resolution]), because a range vector
+//     cannot be nested directly.
+//
+// The subquery resolution is the rate window, which the range table grows
+// alongside the bucket — that is what keeps the inner evaluation count near 60
+// per point instead of scaling with the window. A 30d CPU query is ~720 inner
+// evaluations over one already-summed series, not a walk of the raw month.
+func (b *promBuilder) peakOverBucket(expr string, isRange bool) string {
+	if b.bucket <= 0 {
+		return expr
+	}
+	if isRange {
+		return fmt.Sprintf(`max_over_time(%s[%s:%s])`, expr, promDuration(b.bucket), promDuration(b.rateWindow))
+	}
+	return fmt.Sprintf(`max_over_time(%s[%s])`, expr, promDuration(b.bucket))
 }
 
 // buildCPU returns the PromQL for the CPU range query. Uses the regex
@@ -119,16 +226,18 @@ func (b *promBuilder) buildCPU() string {
 		// tenant_id} — no pod_uid, no namespace, no container. Different
 		// metric name from node-exporter's `node_cpu_seconds_total` (with
 		// mode=user|system|idle), so no name collision.
-		return fmt.Sprintf(
-			`sum(rate(node_cpu_usage_seconds_total{cluster_id=%q,node=%q}[%s]))`,
-			b.clusterUID, b.name, promDuration(b.rateWindow),
-		)
+		return b.peakOverBucket(fmt.Sprintf(
+			`sum(rate(node_cpu_usage_seconds_total{%s,node=%q}[%s]))`,
+			b.scope(), b.name, promDuration(b.rateWindow),
+		), true)
 	}
 	inner := fmt.Sprintf(
-		`rate(container_cpu_usage_seconds_total{cluster_id=%q,namespace=%q,%s,pod_uid!=""}[%s])`,
-		b.clusterUID, b.namespace, b.podSelector(), promDuration(b.rateWindow),
+		`rate(container_cpu_usage_seconds_total{%s,namespace=%q,%s,pod_uid!=""}[%s])`,
+		b.scope(), b.namespace, b.podSelector(), promDuration(b.rateWindow),
 	)
-	return b.wrapAggregation(inner)
+	// Peak AFTER the sum: the workload's worst moment, not the sum of each
+	// pod's worst moment (which no instant ever produced).
+	return b.peakOverBucket(b.wrapAggregation(inner), true)
 }
 
 // buildMemory returns the PromQL for working-set memory. Memory is a gauge —
@@ -137,16 +246,16 @@ func (b *promBuilder) buildCPU() string {
 // has no equivalent at the container level for nodes themselves.
 func (b *promBuilder) buildMemory() string {
 	if b.isNode() {
-		return fmt.Sprintf(
-			`sum(node_memory_working_set_bytes{cluster_id=%q,node=%q})`,
-			b.clusterUID, b.name,
-		)
+		return b.peakOverBucket(fmt.Sprintf(
+			`sum(node_memory_working_set_bytes{%s,node=%q})`,
+			b.scope(), b.name,
+		), false)
 	}
 	inner := fmt.Sprintf(
-		`container_memory_working_set_bytes{cluster_id=%q,namespace=%q,%s,pod_uid!=""}`,
-		b.clusterUID, b.namespace, b.podSelector(),
+		`container_memory_working_set_bytes{%s,namespace=%q,%s,pod_uid!=""}`,
+		b.scope(), b.namespace, b.podSelector(),
 	)
-	return b.wrapAggregation(inner)
+	return b.peakOverBucket(b.wrapAggregation(inner), false)
 }
 
 // isNode is a small helper to keep the kind check terse where it appears
@@ -254,8 +363,8 @@ func (b *promBuilder) buildNetwork(direction MetricKind) string {
 			metricName = "node_network_transmit_bytes_total"
 		}
 		return fmt.Sprintf(
-			`sum(rate(%s{cluster_id=%q,node=%q,device=~%q}[%s]))`,
-			metricName, b.clusterUID, b.name, nodeNetworkDeviceFilter, promDuration(b.rateWindow),
+			`sum(rate(%s{%s,node=%q,device=~%q}[%s]))`,
+			metricName, b.scope(), b.name, nodeNetworkDeviceFilter, promDuration(b.rateWindow),
 		)
 	}
 	metricName := "container_network_receive_bytes_total"
@@ -264,8 +373,8 @@ func (b *promBuilder) buildNetwork(direction MetricKind) string {
 	}
 	selector := b.podSelector()
 	return fmt.Sprintf(
-		`sum(rate(%s{cluster_id=%q,namespace=%q,%s,pod_uid!=""}[%s]))`,
-		metricName, b.clusterUID, b.namespace, selector, promDuration(b.rateWindow),
+		`sum(rate(%s{%s,namespace=%q,%s,pod_uid!=""}[%s]))`,
+		metricName, b.scope(), b.namespace, selector, promDuration(b.rateWindow),
 	)
 }
 
@@ -299,8 +408,8 @@ func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "reque
 			metricName = "kube_node_status_capacity"
 		}
 		return fmt.Sprintf(
-			`sum(%s{cluster_id=%q,node=%q,resource=%q})`,
-			metricName, b.clusterUID, b.name, resource,
+			`sum(%s{%s,node=%q,resource=%q})`,
+			metricName, b.scope(), b.name, resource,
 		)
 	}
 	metricName := "kube_pod_container_resource_requests"
@@ -308,8 +417,8 @@ func (b *promBuilder) buildRequestsLimits(resource string, mode string /* "reque
 		metricName = "kube_pod_container_resource_limits"
 	}
 	return fmt.Sprintf(
-		`sum(%s{cluster_id=%q,namespace=%q,%s,resource=%q})`,
-		metricName, b.clusterUID, b.namespace, b.podSelector(), resource,
+		`sum(%s{%s,namespace=%q,%s,resource=%q})`,
+		metricName, b.scope(), b.namespace, b.podSelector(), resource,
 	)
 }
 

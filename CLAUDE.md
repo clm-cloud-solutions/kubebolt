@@ -126,6 +126,7 @@ Key packages under `internal/`:
 | `DELETE /users/:id` | Delete user (Admin only) |
 | `GET /clusters` | List all kubeconfig contexts |
 | `POST /clusters/switch` | Switch active cluster |
+| `GET /clusters/names` | `identifier → display name` for every cluster the org has ever registered, including de-registered ones (keyed by both context name and cluster UID); labels historical usage rows |
 | `GET /cluster/overview` | Cluster summary with resource counts, CPU/Memory, health |
 | `GET /resources/:type` | List resources with pagination, filtering, metrics |
 | `GET /resources/:type/:ns/:name` | Resource detail with metrics injection |
