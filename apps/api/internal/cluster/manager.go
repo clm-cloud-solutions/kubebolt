@@ -440,10 +440,14 @@ func (m *Manager) AddMetricsOnlyCluster(clusterID, displayName string) (string, 
 		m.metricsOnlyContexts = make(map[string]string)
 	}
 	m.metricsOnlyContexts[contextName] = clusterID
-	// Mutually exclusive with agent-proxy: an agent that (re)registers WITHOUT kube-proxy
-	// — a downgrade — drops the agent-proxy registration so the cluster flips to
-	// metrics-only.
-	delete(m.agentProxyContexts, contextName)
+	// NOTE (finding #46): this used to also `delete(m.agentProxyContexts, contextName)`.
+	// It must not. That map is IDENTITY — "which cluster is this context" — and
+	// deleting it made ClusterIDForContext return "" for every later request on the
+	// cluster, turning a routing failure into an authorization-looking one. The
+	// downgrade is expressed by the metrics-only entry alone, which is checked ahead
+	// of the proxy path everywhere it matters. (EE additionally keys this map by
+	// org, so two organizations watching the same cluster can disagree about its
+	// mode; OSS has one tenant and keeps the single key.)
 	// Live-downgrade teardown: a metrics-only agent has no proxy, so the stale agent-proxy
 	// runtime for this cluster MUST go — otherwise its informers relist-storm on "no agent
 	// connected" and the connector keeps issuing kube_request to the now-metrics-only agent,
@@ -1886,6 +1890,16 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	if m.storage != nil {
 		if uid := connector.ClusterUID(); uid != "" {
 			_ = m.storage.SetClusterUID(m.storeCtx(), contextName, uid)
+		} else {
+			// The read lost its race (finding #46). Persist it the moment the
+			// background resolver wins one, instead of leaving the cluster blind
+			// until someone restarts the API. The closure captures THIS runtime's
+			// org and context, so a late write still lands under the right tenant
+			// — same reasoning as the branch above (finding #17).
+			ctxName := contextName
+			connector.EnsureClusterUID(func(uid string) {
+				_ = m.storage.SetClusterUID(m.storeCtx(), ctxName, uid)
+			})
 		}
 	}
 

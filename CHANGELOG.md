@@ -4,6 +4,28 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.4] — 2026-09-02
+
+Homologates EE 2.0.4-e2. Drop-in, no migration. Full note:
+[docs/releases/v2.0.4.md](docs/releases/v2.0.4.md).
+
+### Fixed
+
+- A new cluster no longer stays blind when the first `kube-system` UID read
+  fails: the read retries on backoff, is never dispatched to an agent that
+  declared no `kube-proxy` (15 s → 3 ms), and has its own client-go rate-limit
+  bucket instead of queueing behind the informers.
+- Only a definitive 401 from `/auth/me` ends the session; a transient failure
+  on tab focus no longer bounces the operator to the login page.
+- The OpenCost install from the add-cluster wizard asks for the Prometheus URL
+  and derives the chart values from it, instead of pointing at a server that
+  does not exist.
+
+### Changed
+
+- The context → cluster_id mapping is never deleted when an agent without
+  `kube-proxy` registers: identity is not capability.
+
 ## [2.0.3] — 2026-09-02
 
 Homologates EE 2.0.3-e2. Drop-in, no migration; deploy the API before the web

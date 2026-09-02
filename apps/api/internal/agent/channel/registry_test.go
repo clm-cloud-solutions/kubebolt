@@ -112,12 +112,32 @@ func TestAgentRegistry_GetProxyAgent(t *testing.T) {
 		}
 	}
 
-	// Fallback: when no peer has kube-proxy, return any.
+	// Fallback: ONLY for an agent that declared no capabilities at all — the
+	// pre-1.13 shape, which predates declaration and does serve proxy.
 	r2 := NewAgentRegistry()
-	onlyMetrics := NewAgent("c2", "agent-m", "node", nil, []string{"metrics"}, nil)
-	r2.Register(onlyMetrics)
-	if got := r2.GetProxyAgent("", "c2"); got != onlyMetrics {
-		t.Errorf("fallback: GetProxyAgent should return any agent when none have kube-proxy; got %p, want %p", got, onlyMetrics)
+	legacy := NewAgent("c2", "agent-legacy", "node", nil, nil, nil)
+	r2.Register(legacy)
+	if got := r2.GetProxyAgent("", "c2"); got != legacy {
+		t.Errorf("a pre-1.13 agent (no declared capabilities) must still be usable for proxy; got %p, want %p", got, legacy)
+	}
+
+	// And NOT for an agent that declared capabilities WITHOUT kube-proxy.
+	//
+	// This assertion used to say the opposite. Finding #46 (reproduced
+	// 2026-08-20) is what changed it: a Mode C promread pod declares
+	// ["metrics"], and returning it here meant the KubeProxyRequest was
+	// ignored by design while the caller blocked for its full 15s deadline.
+	// The kube-system UID read timed out, cluster_uids was never written, and
+	// every VictoriaMetrics query for that cluster came back empty — metrics
+	// arriving, Coverage bar dark, cleared only by restarting the API.
+	//
+	// Declaring your capabilities and omitting kube-proxy IS saying you cannot
+	// proxy. nil is the honest answer, and it fails fast instead of hanging.
+	r3 := NewAgentRegistry()
+	promread := NewAgent("c3", "agent-pr2", "node", nil, []string{"metrics"}, nil)
+	r3.Register(promread)
+	if got := r3.GetProxyAgent("", "c3"); got != nil {
+		t.Errorf("an agent that declared caps without kube-proxy must not be picked for proxy; got %p (caps=%v)", got, got.Capabilities)
 	}
 
 	// Empty cluster: nil.
