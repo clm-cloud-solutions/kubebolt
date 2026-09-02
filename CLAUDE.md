@@ -200,6 +200,7 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 | CronJobs | ✅ | ✅ | — | — | — | — | — | — | ✅ | — | ✅ | — |
 | Services | ✅ | ✅ | — | — | — | — | — | — | ✅ | — | ✅ | — |
 | Nodes | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| PVCs | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | ✅ |
 | Others | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | — |
 
 **Key features:**
@@ -215,6 +216,7 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 - CPU/Memory bars with request/limit markers and hover tooltip (ResourceUsageCell component)
 - Related tab uses topology API edges for parent+child navigation
 - Monitor tab: SVG donut gauges from Metrics Server (Network/Disk require agent)
+- PVC Monitor tab: space used (bytes + %), inodes used (% + count) from `kubelet_volume_stats_*`, every query collapsed with `max by (persistentvolumeclaim)` (two ingest paths / RWX mounts would otherwise break the division), thresholds 85 % / 95 %; empty on kind's hostPath PVs (no kubelet metrics provider), `csi-driver-host-path` or a cloud CSI driver reports
 - Cross-resource links: Pod→Node, PVC→PV/StorageClass, HPA→target, namespace links
 - Configurable refresh interval (5s–2m) persisted in localStorage, selector in DataFreshnessIndicator
 

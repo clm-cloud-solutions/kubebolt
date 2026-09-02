@@ -4,6 +4,17 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.2] — 2026-09-02
+
+Homologates EE 2.0.2-e2. Drop-in, no migration. Full note:
+[docs/releases/v2.0.2.md](docs/releases/v2.0.2.md).
+
+### Added
+
+- Monitor tab for PersistentVolumeClaims: space used (bytes and %), inodes used
+  (% and count) from `kubelet_volume_stats_*`, thresholds at 85 % / 95 %;
+  `MetricChart` gains a `count` unit.
+
 ## [2.0.1] — 2026-09-02
 
 Homologates EE 2.0.1-e2. Drop-in, no migration. Full note:
