@@ -22,8 +22,15 @@
   --kb-text-tertiary: #8b8d9a;
   --kb-scrollbar: rgba(0, 0, 0, 0.14);
   --kb-bar-track: rgba(0, 0, 0, 0.1);
-  --kb-accent: #16a34a;
-  --kb-accent-light: #dcf5e7;
+  /* Acento de marca. La app tenía su propia familia --kb-*, heredada, con un
+     verde que no era el de KubeBolt: #16a34a (green-600 de Tailwind) en claro
+     y #1DBD7D en oscuro. Ahora resuelve en la familia de marca, el mismo
+     escalonado que ya usa --kobi-accent: el acento en oscuro y el escalón
+     profundo en claro, porque text-kb-accent pinta 219 usos de texto y el
+     acento sobre papel (#00b864) da 2.61:1 sobre blanco. El cambio mejora el
+     contraste en los dos temas respecto a lo que había. */
+  --kb-accent: #009a54;
+  --kb-accent-light: #e0f3ea;
   /* YAML syntax highlighting (code block always has dark bg) */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;
@@ -47,8 +54,8 @@
   --kb-text-tertiary: #555770;
   --kb-scrollbar: rgba(255, 255, 255, 0.14);
   --kb-bar-track: rgba(255, 255, 255, 0.06);
-  --kb-accent: #1DBD7D;
-  --kb-accent-light: rgba(29, 189, 125, 0.12);
+  --kb-accent: #00e07a;
+  --kb-accent-light: rgba(0, 224, 122, 0.12);
   /* YAML syntax highlighting */
   --kb-yaml-key: #d2a8ff;
   --kb-yaml-string: #a5d6ff;

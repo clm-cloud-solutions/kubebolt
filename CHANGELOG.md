@@ -4,6 +4,32 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.3] — 2026-09-02
+
+Homologates EE 2.0.3-e2. Drop-in, no migration; deploy the API before the web
+bundle. Full note: [docs/releases/v2.0.3.md](docs/releases/v2.0.3.md).
+
+### Security
+
+- **Secrets are no longer on the wire**: the WebSocket broadcast carries a
+  `{kind, namespace, name, uid}` notification instead of the raw informer
+  object (every Secret went out in full to every authenticated session).
+
+### Fixed
+
+- A cluster running both agent topologies no longer flips to "you do not have
+  access": proxy capability is the union over the cluster's live agents.
+- An unresolvable context returns 503 (the UI waits for the agent) instead of 403.
+- The permission probe runs on a dedicated client, so rate-limiter queueing no
+  longer records timed-out reviews as denials.
+
+### Changed
+
+- Informer resync 30 s → 10 min; per-kind WebSocket subscriptions removed
+  (they never applied).
+- The Split Bolt brand: logo, favicons, brand green as the app accent, Kobi's
+  sigil green.
+
 ## [2.0.2] — 2026-09-02
 
 Homologates EE 2.0.2-e2. Drop-in, no migration. Full note:

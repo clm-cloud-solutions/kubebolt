@@ -95,7 +95,7 @@ export function LoginPage() {
         <button
           type="submit"
           disabled={loading || !username || !password}
-          className="w-full py-2 px-4 text-sm font-medium rounded-lg bg-kb-accent text-white hover:-translate-y-px hover:shadow-[0_8px_24px_-8px_rgba(29,189,125,0.5)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none transition-all"
+          className="btn-primary w-full py-2 px-4 text-sm font-medium rounded-lg bg-kb-accent text-white hover:-translate-y-px hover:shadow-[0_8px_24px_-8px_rgba(29,189,125,0.5)] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 disabled:hover:shadow-none transition-all"
         >
           {loading ? 'Signing in...' : 'Sign in'}
         </button>

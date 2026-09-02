@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
 )
 
 // ResourcePermission represents access rights for a single resource type.
@@ -177,6 +178,53 @@ func checkSSAR(clientset kubernetes.Interface, group, resource, verb, namespace 
 // default, so a narrowed ClusterRole never reads as operator.
 func probeCanWrite(clientset kubernetes.Interface) bool {
 	return checkSSAR(clientset, "apps", "deployments", "update", "")
+}
+
+// probeQPS / probeBurst size the rate limiter of the DEDICATED client the
+// permission probe runs on.
+//
+// Why a separate client at all: RestConfig() for AccessModeAgentProxy sets only
+// Host and Transport, so client-go applies its defaults — QPS 5, Burst 10. The
+// probe fires 31 cluster-scoped SSARs behind a concurrency semaphore of 10, then
+// one more per discovered namespace. The first 10 drain the burst instantly and
+// everything after queues at 5/s, so on a 34-namespace cluster the tail waits
+// tens of seconds. checkSSAR carries a flat 3s deadline and returns
+// `err == nil && Allowed`, so a queueing wait longer than that is recorded as a
+// DENIAL — the probe reports permissions the ServiceAccount actually has as
+// missing. Measured in production 2026-08-19 on one cluster within one hour:
+// 29/31, 27/31, 15/31, 9/31, 16/31, 29/31, with the API logging
+// `client-side throttling` waits of ~1.03s before each run. Probes took 39-49s.
+//
+// Why these numbers are safe: the semaphore already caps in-flight requests at
+// 10, so the token bucket is redundant — it paces requests that concurrency has
+// already bounded, and the only thing it adds is latency. Raising it lets the
+// semaphore be the single control. It cannot increase the load the tunnel sees.
+//
+// Why NOT raise QPS on the shared rest.Config: that same config drives ~26
+// informers whose initial LIST storm would then fire at once over a single
+// AgentChannel, which is the pattern behind the stuck-agent force-closes in
+// finding #09. Widening the probe must not widen steady-state traffic.
+const (
+	probeQPS   = 100
+	probeBurst = 100
+)
+
+// newProbeClientset returns a clientset dedicated to the permission probe, or the
+// shared one unchanged if a dedicated client cannot be built (the probe must
+// still run — a slower probe beats no probe).
+func newProbeClientset(restConfig *rest.Config, shared kubernetes.Interface) kubernetes.Interface {
+	if restConfig == nil {
+		return shared
+	}
+	cfg := rest.CopyConfig(restConfig)
+	cfg.QPS = probeQPS
+	cfg.Burst = probeBurst
+	cs, err := kubernetes.NewForConfig(cfg)
+	if err != nil {
+		log.Printf("Warning: permission probe could not build a dedicated client (%v) — falling back to the shared one; the probe will be slower and may under-report", err)
+		return shared
+	}
+	return cs
 }
 
 // probePermissions uses SelfSubjectAccessReview to check permissions for all resource types.

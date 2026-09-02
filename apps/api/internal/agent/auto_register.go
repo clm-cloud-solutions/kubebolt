@@ -96,6 +96,35 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 		return false
 	}
 	if !hasCapability(capabilities, "kube-proxy") {
+		// A capability-less agent only speaks for ITSELF. The cluster's mode is the
+		// union over its live agents, so a cluster that still has a proxy-capable
+		// agent must NOT be demoted just because this one cannot proxy.
+		//
+		// Finding #41 (production, 2026-08-19): an EKS cluster ran five DaemonSet
+		// agents with kube-proxy plus one Mode C (promread) Deployment pod without it.
+		// The promread pod registered one second after the DaemonSet and its
+		// AddMetricsOnlyCluster deleted the agent-proxy context mapping, which made
+		// ClusterIDForContext return "" and every request 403 with "you do not have
+		// access to this cluster" — an authorization error for a routing failure, on a
+		// cluster whose owner was an org admin AND in the owning team.
+		//
+		// The check is safe against ordering: maybeAutoRegisterCluster runs BEFORE
+		// registry.Register (server.go), so the agent handling this Hello is not yet in
+		// the bucket and cannot vote for itself. A genuinely metrics-only cluster sees
+		// an empty bucket on its first agent and demotes correctly; if a promread pod
+		// happens to register first, the next proxy-capable agent promotes the cluster
+		// back — AddAgentProxyCluster already clears the metrics-only entry.
+		//
+		// OSS is single-tenant: an empty tenant matches any live agent of the
+		// cluster (the EE build passes the owning org so two orgs monitoring the
+		// same physical cluster cannot vote for each other).
+		if registry.HasProxyCapableAgent("", clusterID) {
+			slog.Info("auto-register: keeping cluster agent-proxy — another live agent has kube-proxy",
+				slog.String("cluster_id", clusterID),
+				slog.String("display_name", displayName),
+			)
+			return false
+		}
 		// Metrics-only agent (no kube-proxy): surface the cluster as monitored-only
 		// instead of leaving it invisible. Its metrics reach VM independently of the
 		// proxy, so it gets a switchable, connector-less entry in the selector — the UI
@@ -107,7 +136,10 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 			)
 			return false
 		}
-		slog.Info("auto-registered metrics-only cluster",
+		// WARN, not INFO: this is a state change that removes every resource view for
+		// the cluster. It read like routine registration in the log that took 95
+		// minutes to diagnose in finding #41.
+		slog.Warn("cluster registered as metrics-only — no live agent advertises kube-proxy; resource views are unavailable",
 			slog.String("cluster_id", clusterID),
 			slog.String("display_name", displayName),
 		)

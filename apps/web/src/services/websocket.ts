@@ -9,7 +9,6 @@ class WebSocketManager {
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null
   private reconnectDelay = 1000
   private maxReconnectDelay = 30000
-  private subscribedResources: string[] = []
   private isConnecting = false
 
   connect() {
@@ -26,9 +25,6 @@ class WebSocketManager {
       this.ws.onopen = () => {
         this.isConnecting = false
         this.reconnectDelay = 1000
-        if (this.subscribedResources.length > 0) {
-          this.send({ type: 'subscribe', resources: this.subscribedResources })
-        }
       }
 
       this.ws.onmessage = (event) => {
@@ -80,13 +76,6 @@ class WebSocketManager {
     // `connect()` sale temprano cuando lo ve — o sea que volver a entrar a un
     // cluster no reabriría nada.
     this.isConnecting = false
-  }
-
-  subscribe(resources: string[]) {
-    this.subscribedResources = resources
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.send({ type: 'subscribe', resources })
-    }
   }
 
   onMessage(handler: MessageHandler) {

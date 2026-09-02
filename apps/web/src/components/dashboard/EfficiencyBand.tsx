@@ -272,8 +272,10 @@ function EfficiencyCard({
               {hasUsage && (
                 // status-ok, not --kb-accent: the "Used" fill must match the
                 // usage green the rings + workload-health bars use app-wide.
-                // --kb-accent diverges in light mode (#16a34a vs #22d68a), so
-                // the band's bar read as a different green there.
+                // --kb-accent resolves darker in light mode (#009a54 vs #22d68a),
+                // so the band's bar read as a different green there. Still true
+                // after the accent moved to the brand family: this is usage, not
+                // brand.
                 <div
                   className="h-full transition-all duration-700 bg-status-ok"
                   style={{ width: `${usedPct}%` }}

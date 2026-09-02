@@ -55,10 +55,6 @@ func (h *Hub) Run() {
 			h.mu.RLock()
 			var slowClients []*Client
 			for client := range h.clients {
-				// Check if the client is subscribed to this message type
-				if !client.IsSubscribed(msg.Type) {
-					continue
-				}
 				// A.4 scope gate: deliver a cluster-scoped event only to clients
 				// viewing that (tenant, cluster). Unscoped message or unscoped
 				// client → deliver (OSS-degenerate: clients carry no scope, so

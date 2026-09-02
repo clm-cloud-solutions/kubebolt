@@ -442,6 +442,35 @@ func (r *AgentRegistry) Count() int {
 	return n
 }
 
+// HasProxyCapableAgent reports whether ANY live agent of this cluster (within
+// tenantID's org) advertises the kube-proxy capability.
+//
+// "Can this cluster be proxied" is a property of the CLUSTER — the union over
+// its live agents — while kube-proxy is advertised per AGENT. A DaemonSet puts
+// one agent on every node, and a Mode C (promread) Deployment adds one more that
+// carries no kube-proxy at all; deciding the cluster's mode from whichever agent
+// happened to register last let that single capability-less pod demote a fully
+// proxy-capable cluster (finding #41, production 2026-08-19).
+//
+// Deliberately NOT GetProxyAgent() != nil: that helper falls back to any agent
+// of the cluster when none is proxy-capable, which is right for picking a target
+// but would answer "yes" here for a purely metrics-only cluster.
+func (r *AgentRegistry) HasProxyCapableAgent(tenantID, clusterID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, a := range r.agents[clusterID] {
+		if !agentMatchesTenant(a, tenantID) {
+			continue
+		}
+		for _, c := range a.Capabilities {
+			if c == "kube-proxy" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // CountByCluster returns the number of agents connected for the given
 // cluster_id. 0 when no bucket exists.
 func (r *AgentRegistry) CountByCluster(clusterID string) int {
