@@ -47,6 +47,12 @@ export interface ModalProps {
   // Small uppercase pill shown to the left of the title. Omit when
   // the title alone is self-explanatory.
   badge?: ReactNode
+  // Overrides the badge's colour classes. Default is the neutral
+  // tertiary-on-elevated pill. Pass a severity class when the badge
+  // carries a level the operator reads as a colour elsewhere in the
+  // app — a CRITICAL that renders grey here contradicts the same
+  // word rendered red in the table it was opened from.
+  badgeClass?: string
   // Main title — shown next to the badge in the header.
   title: ReactNode
   onClose: () => void
@@ -58,7 +64,7 @@ export interface ModalProps {
   unbounded?: boolean
 }
 
-export function Modal({ badge, title, onClose, size = 'md', children, unbounded }: ModalProps) {
+export function Modal({ badge, badgeClass, title, onClose, size = 'md', children, unbounded }: ModalProps) {
   useEscapeClose(onClose)
 
   // Only close on backdrop-click when BOTH mousedown and mouseup landed
@@ -91,7 +97,11 @@ export function Modal({ badge, title, onClose, size = 'md', children, unbounded 
         <div className="px-5 py-3 border-b border-kb-border flex items-center justify-between shrink-0">
           <div className="flex items-center gap-3 min-w-0">
             {badge && (
-              <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary bg-kb-elevated px-2 py-0.5 rounded shrink-0">
+              <span
+                className={`text-[10px] font-mono uppercase tracking-[0.08em] px-2 py-0.5 rounded shrink-0 ${
+                  badgeClass ?? 'text-kb-text-tertiary bg-kb-elevated'
+                }`}
+              >
                 {badge}
               </span>
             )}

@@ -55,6 +55,17 @@ export function KpiCards({ overview }: KpiCardsProps) {
   // Completed Job pods: a normal terminal state, not "Running" and not a
   // problem. Shown as its own neutral row so Running reflects the true count.
   const podsSucceeded = overview.pods?.succeeded ?? 0
+  // The card's denominator is the pods that are supposed to be RUNNING —
+  // total minus the terminal Completed ones. With 12 finished Job pods the
+  // old "66 / 78" read as twelve pods missing while the ring beside it sat
+  // at a full 100% (it already excluded them) and the headline said "all
+  // running": three numbers, three different stories. The Completed row
+  // below keeps the other twelve accounted for.
+  //
+  // A batch-only cluster (every pod Succeeded) would leave a 0 denominator,
+  // so fall back to the raw total there rather than printing "0 / 0".
+  const podsActive = podsTotal - podsSucceeded
+  const podsDenom = podsActive > 0 ? podsActive : podsTotal
 
   const healthAccent: Accent =
     health?.status === 'healthy' ? 'ok' : health?.status === 'warning' ? 'warn' : 'err'
@@ -113,7 +124,7 @@ export function KpiCards({ overview }: KpiCardsProps) {
         }
         pill={restricted('pods') ? null : { kind: 'link', text: 'view all', to: '/pods' }}
         value={restricted('pods') ? null : `${podsReady}`}
-        valueSuffix={restricted('pods') ? undefined : `/ ${podsTotal}`}
+        valueSuffix={restricted('pods') ? undefined : `/ ${podsDenom}`}
         sub={
           // Headline priority: problems first (Not-running, then Degraded) —
           // those are the only states worth surfacing above Running. Otherwise
@@ -127,13 +138,13 @@ export function KpiCards({ overview }: KpiCardsProps) {
                 ? `${podsDegraded} degraded`
                 : 'all running'
         }
-        // Completed pods count as "fine" toward the ring so a batch of finished
-        // Jobs doesn't drop the gauge (and turn the card amber-looking); only
-        // Degraded / Not-running pods pull the fill below 100%.
+        // Same denominator the centre text prints, so the ring and the
+        // fraction inside it can never tell different stories. Completed pods
+        // are out of both — a batch of finished Jobs must not drag the gauge
+        // down (and turn the card amber-looking); only Degraded / Not-running
+        // pods pull the fill below 100%.
         gaugePercent={
-          !restricted('pods') && podsTotal > 0
-            ? ((podsReady + podsSucceeded) / podsTotal) * 100
-            : undefined
+          !restricted('pods') && podsDenom > 0 ? (podsReady / podsDenom) * 100 : undefined
         }
         rows={
           restricted('pods')
@@ -232,9 +243,14 @@ interface KpiProps {
   // breakdown grammar the CPU/Memory usage cards use, so the whole
   // top half of the dashboard reads as one family.
   rows?: KpiRow[]
+  // Width of the row label column. 88 aligns the Nodes/Pods/Insights
+  // cards, whose labels run long ("Not running"). Health's labels are
+  // short but its VALUES are long ("4/4 passing"), and at 88 the value
+  // clipped to "4/4 pass…" — a truncated ellipsis in a hero card.
+  rowLabelWidth?: number
 }
 
-function Kpi({ label, accent, pill, value, valueSuffix, sub, gaugePercent, rows }: KpiProps) {
+function Kpi({ label, accent, pill, value, valueSuffix, sub, gaugePercent, rows, rowLabelWidth = 88 }: KpiProps) {
   const restricted = accent === 'restricted'
   const subColor =
     accent === 'err'
@@ -290,7 +306,7 @@ function Kpi({ label, accent, pill, value, valueSuffix, sub, gaugePercent, rows 
             {rows && rows.length > 0 && (
               <div className="space-y-1.5">
                 {rows.map((r) => (
-                  <LegendRow key={r.label} color={r.color} label={r.label} value={r.value} labelWidth={88} to={r.to} />
+                  <LegendRow key={r.label} color={r.color} label={r.label} value={r.value} labelWidth={rowLabelWidth} to={r.to} />
                 ))}
               </div>
             )}
@@ -320,7 +336,7 @@ function Kpi({ label, accent, pill, value, valueSuffix, sub, gaugePercent, rows 
             {rows && rows.length > 0 && (
               <div className="space-y-1.5">
                 {rows.map((r) => (
-                  <LegendRow key={r.label} color={r.color} label={r.label} value={r.value} labelWidth={88} to={r.to} />
+                  <LegendRow key={r.label} color={r.color} label={r.label} value={r.value} labelWidth={rowLabelWidth} to={r.to} />
                 ))}
               </div>
             )}
@@ -353,10 +369,43 @@ function severityRows(insights?: {
   return rows
 }
 
-// healthRows — breakdown column for the Cluster health card: the
-// component-check tally first, then the active-insight severities
-// (the same buckets the score deduction comes from, so the rows
-// visually audit the ring).
+// scoreDeductions mirrors the connector's insight penalty (GetHealth):
+// −5 per critical capped at −25, −2 per warning capped at −10, and BOTH
+// apply. Kept in one place so the card's rows and its tooltip can't drift
+// from each other or from the backend.
+function scoreDeductions(insights?: {
+  critical?: number
+  warning?: number
+}): { label: string; points: number; color: string }[] {
+  const out: { label: string; points: number; color: string }[] = []
+  const critical = insights?.critical ?? 0
+  const warning = insights?.warning ?? 0
+  if (critical > 0) {
+    out.push({
+      label: critical === 1 ? 'Critical' : 'Criticals',
+      points: Math.min(critical * 5, 25),
+      color: ACCENT_COLOR.err,
+    })
+  }
+  if (warning > 0) {
+    out.push({
+      label: warning === 1 ? 'Warning' : 'Warnings',
+      points: Math.min(warning * 2, 10),
+      color: ACCENT_COLOR.warn,
+    })
+  }
+  return out
+}
+
+// healthRows — breakdown column for the Cluster health card. These rows
+// AUDIT the ring: the component-check tally, then what each severity took
+// off the score, so "94" is explained on the card instead of only inside a
+// hover.
+//
+// They deliberately do NOT restate the severity counts. The Insights card
+// sits immediately to the right showing exactly "Warning 3 · Info 15" — two
+// of the four hero cards were printing the same two lines, which spent half
+// the row on one fact and made the strip read as filler.
 function healthRows(health?: ClusterOverview['health']): KpiRow[] {
   if (!health) return []
   const rows: KpiRow[] = []
@@ -371,7 +420,9 @@ function healthRows(health?: ClusterOverview['health']): KpiRow[] {
       value: `${passing}/${checks.length} passing`,
     })
   }
-  rows.push(...severityRows(health.insights))
+  for (const d of scoreDeductions(health.insights)) {
+    rows.push({ color: d.color, label: d.label, value: `− ${d.points} pts` })
+  }
   return rows
 }
 
@@ -450,25 +501,20 @@ function HealthCard({
               value={c.message}
             />
           ))}
-          {/* Insights line spells out the score deduction the
-              connector applied, so "100 - 5 = 95" is auditable from
-              the tooltip rather than implicit. Only renders when
-              there's something to report (criticals or warnings),
-              keeping the tooltip terse on healthy clusters. */}
-          {insights && insights.critical > 0 && (
+          {/* Insight lines spell out the score deduction the connector
+              applied, so "100 − 6 = 94" is auditable rather than implicit.
+              BOTH severities are listed when both are present: the backend
+              subtracts critical AND warning penalties (GetHealth), so hiding
+              the warning line whenever a critical existed made the arithmetic
+              stop adding up exactly on the clusters worth auditing. */}
+          {scoreDeductions(insights).map((d) => (
             <TooltipRow
-              color={CHECK_DOT_COLOR.fail}
-              label="insights"
-              value={`${insights.critical} critical · −${Math.min(insights.critical * 5, 25)} pts`}
+              key={d.label}
+              color={d.color}
+              label={d.label.toLowerCase()}
+              value={`− ${d.points} pts`}
             />
-          )}
-          {insights && insights.warning > 0 && insights.critical === 0 && (
-            <TooltipRow
-              color={CHECK_DOT_COLOR.warn}
-              label="insights"
-              value={`${insights.warning} warning · −${Math.min(insights.warning * 2, 10)} pts`}
-            />
-          )}
+          ))}
         </div>
       </>
     ) : null
@@ -487,6 +533,7 @@ function HealthCard({
       sub={summarizeHealth(health)}
       gaugePercent={health?.score ?? undefined}
       rows={healthRows(health)}
+      rowLabelWidth={64}
     />
   )
 

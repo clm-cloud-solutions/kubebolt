@@ -55,13 +55,31 @@ class WebSocketManager {
     }
   }
 
+  // disconnect para de verdad. Hasta ahora nadie lo llamaba, y era mentira: el
+  // `onclose` de un socket abierto programa la reconexión, así que cerrarlo con
+  // el handler puesto convertía "desconectar" en una pausa de ~1s y el socket
+  // volvía solo. Al empezar a usarlo para soltar el feed en ámbito global
+  // (useWebSocket), el gating habría compilado, pasado los tests y no hecho
+  // absolutamente nada.
+  //
+  // Los handlers se desatan ANTES de cerrar, incluidos `onerror` —que también
+  // cierra— y el temporizador pendiente de reconexión, que si no reabriría el
+  // socket que acabamos de tirar.
   disconnect() {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer)
       this.reconnectTimer = null
     }
-    this.ws?.close()
-    this.ws = null
+    if (this.ws) {
+      this.ws.onclose = null
+      this.ws.onerror = null
+      this.ws.close()
+      this.ws = null
+    }
+    // Un intento en vuelo dejaría `isConnecting` en true para siempre, y
+    // `connect()` sale temprano cuando lo ve — o sea que volver a entrar a un
+    // cluster no reabriría nada.
+    this.isConnecting = false
   }
 
   subscribe(resources: string[]) {

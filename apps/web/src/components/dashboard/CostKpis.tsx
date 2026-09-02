@@ -53,7 +53,12 @@ function dotColor(accent: 'ok' | 'warn' | 'crit' | 'info' | 'default'): string {
 }
 
 export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preliminary, windowDays }: Props) {
-  const idleAccent = cost.idlePct != null && cost.idlePct >= 30 ? 'warn' : 'default'
+  // Two thresholds, not one. At 31% idle a cluster is carrying normal burst
+  // and HA headroom — amber, worth a look. At 90% it is paying for a cluster
+  // it isn't running, and the card was reporting that in the same amber as
+  // the merely-sloppy case.
+  const idleAccent: 'crit' | 'warn' | 'default' =
+    cost.idlePct == null ? 'default' : cost.idlePct >= 60 ? 'crit' : cost.idlePct >= 30 ? 'warn' : 'default'
   // A young P95 window makes idle/savings read optimistically — say so in the
   // sub-line so the headline number carries its own caveat.
   const prelimSpan =
@@ -128,6 +133,19 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
       />
       <StripCard
         label="Cost / pod"
+        info={
+          <>
+            <TooltipHeader right="derived">Cost / pod</TooltipHeader>
+            <TooltipRow color="#8b93a7" label="Basis" value="run-rate ÷ running pods" />
+            <TooltipNote>
+              A blunt unit cost — the whole monthly run-rate spread evenly over every
+              running pod, idle capacity included. It tracks density, not any single
+              workload's bill: pack more pods onto the same nodes and it falls even
+              though nothing got cheaper. For per-workload attribution use the Cost
+              breakdown below.
+            </TooltipNote>
+          </>
+        }
         value={cost.costPerPod != null ? formatMoney(cost.costPerPod, { exact: cost.costPerPod < 100_000 }) : '—'}
         sub={cost.podCount != null ? `${cost.podCount} running pods` : '/ month'}
         subAccent="default"

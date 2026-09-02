@@ -3,6 +3,7 @@ import { Check } from 'lucide-react'
 import { KubeBoltLogo } from '@/components/shared/KubeBoltLogo'
 import { Starfield } from '@/components/shared/Starfield'
 import { VERSION } from '@/version'
+import { authFeatures, authTagline } from '@/ee/registry'
 
 // AuthShell — the shared split-panel chrome for the pre-login pages (Login,
 // SignUp). Left: a cinematic dark branding panel ported from the site's "3am"
@@ -13,11 +14,22 @@ import { VERSION } from '@/version'
 // own their look. Uses ONLY existing tokens/fonts; the accent #1DBD7D ≈
 // rgb(29,189,125) drives every glow.
 
-const FEATURES = [
-  'Kobi, your AI copilot for Kubernetes',
-  'Investigate incidents & apply fixes',
-  'Metrics, logs & topology across clusters',
-]
+// The four pillars, in the order they matter to someone who has not bought yet.
+//
+// "Metrics, logs & topology across clusters" used to be the third line and was
+// dropped: every competitor says it, so it differentiated nothing and spent a
+// slot. Security and Fleet took its place — both shipped in 2.0.0 and neither
+// was represented here at all, which made this panel describe the previous
+// product.
+//
+// Security is phrased "from your own scanners" on purpose. KubeBolt does not
+// scan: it ingests Trivy, Kyverno, Falco and CIS reports. Claiming otherwise
+// would be a promise the product does not keep, and the people reading this page
+// are exactly the ones who would notice.
+// The pillars and the tagline come from the edition registry (ee/registry.tsx):
+// each edition describes what it actually ships, so the sign-in panel can never
+// promise a feature the build behind it does not have.
+const FEATURES = authFeatures
 
 export function AuthShell({
   title,
@@ -25,13 +37,19 @@ export function AuthShell({
   children,
 }: {
   title: string
-  subtitle: string
+  // Optional, and Login passes nothing. It read "Sign in to your account."
+  // under a heading that says "Welcome back", above a form labelled Email and
+  // Password — the same fact stated three times. A subtitle earns its place only
+  // when it says something the title and the form do not, which is the case on
+  // signup ("Put your Kubernetes ops on autopilot") and on the OAuth hand-off
+  // ("Name your organization to finish signing up"), and is not the case here.
+  subtitle?: string
   children: ReactNode
 }) {
   return (
     <div className="dark min-h-screen flex bg-kb-bg text-kb-text-primary">
       {/* Branding panel — desktop only */}
-      <div className="hidden lg:flex lg:w-[46%] relative overflow-hidden flex-col justify-between p-12 xl:p-16 2xl:p-24 isolate">
+      <div className="hidden lg:flex lg:w-[52%] xl:w-[56%] relative overflow-hidden flex-col justify-between p-12 xl:p-16 2xl:p-24 isolate">
         {/* sky */}
         <div
           className="absolute inset-0 z-0 pointer-events-none"
@@ -90,8 +108,8 @@ export function AuthShell({
             Root cause in{' '}
             <span className="text-kb-accent [text-shadow:0_0_34px_rgba(29,189,125,0.4)]">seconds, not hours.</span>
           </h2>
-          <p className="text-sm xl:text-base 2xl:text-lg text-kb-text-secondary mt-4 xl:mt-5 leading-relaxed max-w-sm xl:max-w-md">
-            Kobi, your AI copilot, investigates incidents and proposes the fix you approve. Metrics, logs, and topology across clusters.
+          <p className="text-sm xl:text-base 2xl:text-lg text-kb-text-secondary mt-4 xl:mt-5 leading-relaxed max-w-md xl:max-w-lg">
+            {authTagline}
           </p>
           <ul className="mt-7 xl:mt-9 space-y-3 xl:space-y-4">
             {FEATURES.map((f) => (
@@ -115,6 +133,19 @@ export function AuthShell({
           className="absolute inset-0 pointer-events-none lg:hidden"
           style={{ background: 'radial-gradient(80% 50% at 50% 0%, rgba(29,189,125,0.08), transparent 60%)' }}
         />
+        {/* Desktop: the horizon of the left panel, continued across the seam.
+            Without it this half is FLAT BLACK next to a half carrying aurora,
+            starfield, horizon and vignette — and that contrast, not the card's
+            width, is what made the form read as floating in a void. Far fainter
+            than the branding side (0.05 vs 0.11) so it reads as the same scene
+            seen from further away, never as a second light source. */}
+        <div
+          className="absolute inset-0 pointer-events-none hidden lg:block"
+          style={{
+            background: 'radial-gradient(75% 55% at 50% 100%, rgba(29,189,125,0.05), transparent 68%)',
+            mixBlendMode: 'screen',
+          }}
+        />
         <div className="relative w-full max-w-sm">
           {/* mobile logo */}
           <div className="lg:hidden flex flex-col items-center mb-8">
@@ -125,7 +156,7 @@ export function AuthShell({
           </div>
           <div className="mb-6">
             <h1 className="text-2xl font-semibold tracking-tight text-kb-text-primary">{title}</h1>
-            <p className="text-sm text-kb-text-tertiary mt-1">{subtitle}</p>
+            {subtitle && <p className="text-sm text-kb-text-tertiary mt-1">{subtitle}</p>}
           </div>
           {children}
         </div>

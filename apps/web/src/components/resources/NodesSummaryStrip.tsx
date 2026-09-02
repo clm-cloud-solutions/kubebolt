@@ -97,7 +97,21 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
             </TooltipNote>
           </>
         }
-        value={idle ? idleShort(idle) : '—'}
+        // The one card in this strip whose value is a NAME, not a count. The
+        // shared slot is sized for "58" / "3/4" — at text-2xl a 34-character
+        // hostname wraps to two lines and dominates the whole strip, and
+        // tabular-nums does nothing for letters. Stepped down here only; the
+        // other four keep the number treatment. `title` carries the full name,
+        // since the middle elision is not recoverable by eye.
+        value={
+          idle ? (
+            <span className="block text-base font-medium truncate" title={String(idle.name ?? '')}>
+              {idleShort(idle)}
+            </span>
+          ) : (
+            '—'
+          )
+        }
         valueAccent={idle ? 'info' : 'default'}
         sub={
           idle
@@ -209,9 +223,39 @@ function leastLoadedNode(nodes: ResourceItem[]): ResourceItem | undefined {
   return undefined
 }
 
+// Managed node pools bury the identity at DIFFERENT ends depending on the cloud,
+// so a one-sided trim is right for exactly one of them.
+//
+//   AWS   ip-10-0-1-23.ec2.internal          identity in the TAIL ("ip-" is noise)
+//   AKS   aks-tmpdefault-30800577-vmss000000 identity in the HEAD (pool name)
+//   GKE   gke-<cluster>-<pool>-<hash>-<sfx>  identity in the HEAD
+//
+// This used to keep the last 20 characters, which is correct for AWS and cuts
+// exactly the wrong end everywhere else: an AKS node rendered as
+// "…-30800577-vmss000000", where the visible half is what every node in the pool
+// shares and "aks-tmpdefault" — the only distinguishing part — was gone.
+//
+// So elide the MIDDLE, on a segment boundary. The generated hash lives there and
+// nobody reads it, while both surviving halves say something: the pool and the
+// instance ordinal.
+export function shortenNodeName(name: string, max = 26): string {
+  const short = String(name ?? '')
+    .replace(/\.ec2\.internal$/, '')
+    .replace(/\.compute\.internal$/, '')
+  if (short.length <= max) return short
+
+  const parts = short.split('-')
+  if (parts.length >= 4) {
+    const collapsed = `${parts[0]}-${parts[1]}…${parts[parts.length - 1]}`
+    if (collapsed.length <= max) return collapsed
+  }
+  // No usable segments (or still too long): fall back to a character split that
+  // favours the head, since that is where the identity sits on every cloud but
+  // AWS — and AWS names are short enough to never reach this branch.
+  const head = Math.max(1, Math.ceil((max - 1) * 0.6))
+  return `${short.slice(0, head)}…${short.slice(-(max - 1 - head))}`
+}
+
 function idleShort(n: ResourceItem): string {
-  // Trim the AWS-style FQDN to the recognizable segment.
-  const name = String(n.name ?? '')
-  const short = name.replace(/\.ec2\.internal$/, '').replace(/\.compute\.internal$/, '')
-  return short.length > 22 ? `…${short.slice(-20)}` : short
+  return shortenNodeName(String(n.name ?? ''))
 }
