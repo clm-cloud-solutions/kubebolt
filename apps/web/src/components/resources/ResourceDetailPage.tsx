@@ -296,6 +296,16 @@ function getTabsForResource(type: string, item: ResourceItem): TabDef[] {
         { id: 'events', label: 'Events' },
       )
       break
+    case 'pvcs':
+      // Monitor here answers the one question a PVC provokes and the object
+      // itself cannot: how full is it. `status.capacity` says how big the
+      // volume is, never how much of it is left.
+      base.push(
+        { id: 'yaml', label: 'YAML' },
+        { id: 'events', label: 'Events' },
+        { id: 'monitor', label: 'Monitor' },
+      )
+      break
     default:
       base.push(
         { id: 'yaml', label: 'YAML' },
@@ -2344,6 +2354,8 @@ function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
       return <DaemonSetMonitorCharts item={item} />
     case 'nodes':
       return <NodeMonitorCharts item={item} />
+    case 'pvcs':
+      return <PVCMonitorCharts item={item} />
     default:
       return <MonitorDonuts item={item} agentInstalled />
   }
@@ -2772,6 +2784,138 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
             { y: 30, label: '30% page', color: '#ef4444', shortLabel: '30%' },
           ]}
           chartType="line"
+        />
+      </div>
+    </div>
+  )
+}
+
+// ─── PVC Monitor Charts ─────────────────────────────────────────────────
+//
+// The kubelet has always reported these — `kubelet_volume_stats_*` reaches
+// VictoriaMetrics with the volume's used/capacity bytes and its inode counts —
+// and nothing in the product read them. The cluster card counted PVCs
+// (`count(kube_persistentvolumeclaim_info)`); how full any of them was could
+// only be answered by exec'ing into a pod and running `df`.
+//
+// WHY INODES GET EQUAL BILLING with space: a volume can be 3% full and still
+// fail every write, because inodes ran out. That failure looks like a broken
+// application — writes error, `df` shows plenty of room — and nothing else in
+// the product would have shown the cause. It is the one number here an operator
+// cannot get any other way.
+//
+// EVERY query aggregates with `max by (namespace, persistentvolumeclaim)` before
+// doing anything else, and that is not decoration — the ratios are a hard error
+// without it. PromQL refuses to divide when either side has more than one series
+// per match group, and a PVC produces several for two independent reasons:
+//
+//   - TWO INGEST PATHS. A cluster running its own kube-prometheus-stack scrapes
+//     the same kubelet endpoint the KubeBolt agent already reports, so the same
+//     volume arrives twice under one cluster_id, distinguishable only by labels
+//     nobody should have to know about (`job="kubelet"`, `prometheus="…"`).
+//     Found exactly this way on a dev cluster: "duplicate time series on the
+//     left side of /".
+//   - RWX VOLUMES. One claim mounted by several pods emits one series per pod,
+//     which breaks identically and has nothing to do with the above.
+//
+// Collapsing to one series per claim fixes both, and it is what the chart wants
+// anyway: this panel is about the CLAIM, not about who mounted it.
+//
+// `max` rather than `avg` because the two sources scrape at different instants
+// and a fullness reading should err toward the fuller answer. Averaging a fresh
+// sample with a stale one invents a number neither source reported.
+function PVCMonitorCharts({ item }: { item: ResourceItem }) {
+  const name = String(item.name)
+  const namespace = String(item.namespace ?? '')
+  const sel = `persistentvolumeclaim="${name}",namespace="${namespace}"`
+  // One series per claim, whatever the ingest topology upstream looks like.
+  //
+  // Two label choices here are about READING the chart, not about correctness:
+  //
+  // `namespace` is left out of the grouping even though it identifies the claim,
+  // because the selector already pins it — one namespace can only contribute one
+  // claim of this name. Keeping it would put `namespace=…, persistentvolumeclaim=…`
+  // in every legend entry and every tooltip row, on a page whose header already
+  // says both. Long enough to be unreadable, and it repeats what the reader is
+  // looking at.
+  //
+  // The result is then relabelled to `volume`, which MetricChart's
+  // defaultSeriesLabel prefers over the generic key=value join. So a series reads
+  // `used demo-data` instead of
+  // `used namespace=pvc-demo, persistentvolumeclaim=demo-data`.
+  const byClaim = (metric: string) =>
+    `label_replace(max by (persistentvolumeclaim) (${metric}{${sel}}),` +
+    ` "volume", "$1", "persistentvolumeclaim", "(.*)")`
+
+  // 85% is "plan the expansion", 95% is "you have hours". Both default to
+  // visible: on a chart that spends its life near the bottom, thresholds ARE
+  // the context — hiding them would leave a flat line with no sense of scale.
+  const fullnessRefs = [
+    { y: 85, label: '85% — plan an expansion', color: '#eab308' },
+    { y: 95, label: '95% — running out', color: '#ef4444' },
+  ]
+
+  return (
+    <div className="space-y-4">
+      <p className="text-[11px] font-mono text-kb-text-secondary">
+        Reported by the kubelet while the volume is mounted. A PVC no running
+        pod has mounted publishes nothing, so the charts stay empty — the
+        honest answer, rather than a zero that would read as "not full".
+      </p>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MetricChart
+          title="Space used"
+          unit="bytes"
+          queries={[
+            {
+              query: byClaim('kubelet_volume_stats_used_bytes'),
+              prefix: 'used',
+              accent: METRIC_ACCENTS.filesystem[0],
+            },
+            {
+              // Capacity as a SERIES, not a reference line: a volume that gets
+              // expanded steps up mid-chart, and a flat line drawn from a
+              // single current reading would quietly misrepresent the past.
+              query: byClaim('kubelet_volume_stats_capacity_bytes'),
+              prefix: 'capacity',
+              accent: '#64748b',
+            },
+          ]}
+          chartType="area"
+        />
+        <MetricChart
+          title="Space used"
+          unit="percent"
+          query={`100 * (${byClaim('kubelet_volume_stats_used_bytes')} / ${byClaim('kubelet_volume_stats_capacity_bytes')})`}
+          referenceLines={fullnessRefs}
+          accents={METRIC_ACCENTS.filesystem}
+          chartType="area"
+        />
+        <MetricChart
+          title="Inodes used"
+          unit="percent"
+          query={`100 * (${byClaim('kubelet_volume_stats_inodes_used')} / ${byClaim('kubelet_volume_stats_inodes')})`}
+          referenceLines={fullnessRefs}
+          accents={METRIC_ACCENTS.memory}
+          chartType="area"
+        />
+        <MetricChart
+          title="Inodes used"
+          unit="count"
+          queries={[
+            {
+              query: byClaim('kubelet_volume_stats_inodes_used'),
+              prefix: 'used',
+              accent: METRIC_ACCENTS.memory[0],
+            },
+            {
+              query: byClaim('kubelet_volume_stats_inodes'),
+              prefix: 'total',
+              accent: '#64748b',
+            },
+          ]}
+          chartType="area"
         />
       </div>
     </div>
