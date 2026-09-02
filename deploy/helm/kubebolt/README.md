@@ -190,6 +190,7 @@ DeepSeek, Mistral, self-hosted Ollama/vLLM, and more).
 - [Amazon EKS](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/eks.md)
 - [Google GKE](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/gke.md)
 - [Azure AKS](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/aks.md)
+- [Red Hat OpenShift](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/openshift.md) — required reading: the web pod needs a workaround under `restricted-v2`
 - [AI Copilot configuration](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot.md)
 - [AI Copilot providers reference](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/guides/copilot-providers.md)
 
