@@ -6,8 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.1.0] — 2026-09-02
 
-Homologates EE 2.1.0-e2: insights grow a lifecycle. Seven new BoltDB buckets,
-created on boot; no migration. Full note:
+Insights grow a lifecycle. Seven new BoltDB buckets, created on boot; no
+migration. Full note:
 [docs/releases/v2.1.0.md](docs/releases/v2.1.0.md).
 
 ### Added
@@ -37,8 +37,8 @@ created on boot; no migration. Full note:
 
 ## [2.0.6] — 2026-09-02
 
-Homologates EE 2.0.6-e2 (API-only). Drop-in, no migration, no behaviour change
-in a single-tenant install. Full note:
+API-only. Drop-in, no migration, no behaviour change in a single-tenant
+install. Full note:
 [docs/releases/v2.0.6.md](docs/releases/v2.0.6.md).
 
 ### Changed
@@ -49,7 +49,7 @@ in a single-tenant install. Full note:
 
 ## [2.0.5] — 2026-09-02
 
-Homologates EE 2.0.5-e2. Drop-in, no migration. Full note:
+Drop-in, no migration. Full note:
 [docs/releases/v2.0.5.md](docs/releases/v2.0.5.md).
 
 ### Fixed
@@ -66,7 +66,7 @@ Homologates EE 2.0.5-e2. Drop-in, no migration. Full note:
 
 ## [2.0.4] — 2026-09-02
 
-Homologates EE 2.0.4-e2. Drop-in, no migration. Full note:
+Drop-in, no migration. Full note:
 [docs/releases/v2.0.4.md](docs/releases/v2.0.4.md).
 
 ### Fixed
@@ -88,8 +88,8 @@ Homologates EE 2.0.4-e2. Drop-in, no migration. Full note:
 
 ## [2.0.3] — 2026-09-02
 
-Homologates EE 2.0.3-e2. Drop-in, no migration; deploy the API before the web
-bundle. Full note: [docs/releases/v2.0.3.md](docs/releases/v2.0.3.md).
+Drop-in, no migration; deploy the API before the web bundle. Full note:
+[docs/releases/v2.0.3.md](docs/releases/v2.0.3.md).
 
 ### Security
 
@@ -99,9 +99,9 @@ bundle. Full note: [docs/releases/v2.0.3.md](docs/releases/v2.0.3.md).
 
 ### Fixed
 
-- A cluster running both agent topologies no longer flips to "you do not have
-  access": proxy capability is the union over the cluster's live agents.
-- An unresolvable context returns 503 (the UI waits for the agent) instead of 403.
+- A cluster running both agent topologies no longer becomes unreachable when the
+  metrics-only pod registers: proxy capability is the union over the cluster's
+  live agents.
 - The permission probe runs on a dedicated client, so rate-limiter queueing no
   longer records timed-out reviews as denials.
 
@@ -114,7 +114,7 @@ bundle. Full note: [docs/releases/v2.0.3.md](docs/releases/v2.0.3.md).
 
 ## [2.0.2] — 2026-09-02
 
-Homologates EE 2.0.2-e2. Drop-in, no migration. Full note:
+Drop-in, no migration. Full note:
 [docs/releases/v2.0.2.md](docs/releases/v2.0.2.md).
 
 ### Added
@@ -125,7 +125,7 @@ Homologates EE 2.0.2-e2. Drop-in, no migration. Full note:
 
 ## [2.0.1] — 2026-09-02
 
-Homologates EE 2.0.1-e2. Drop-in, no migration. Full note:
+Drop-in, no migration. Full note:
 [docs/releases/v2.0.1.md](docs/releases/v2.0.1.md).
 
 ### Fixed
@@ -145,9 +145,8 @@ Homologates EE 2.0.1-e2. Drop-in, no migration. Full note:
 
 ## [2.0.0] — 2026-09-02
 
-First OSS release that tracks KubeBolt EE release by release: everything in EE
-2.0.0-e2 that does not depend on the multi-organization SaaS machinery, ported
-as seven pull requests (#184 – #190). Drop-in, no migration. Full note:
+Three pillars — Security & Compliance, Fleet and Home — landed as seven pull
+requests (#184 – #190). Drop-in, no migration. Full note:
 [docs/releases/v2.0.0.md](docs/releases/v2.0.0.md).
 
 ### Added
@@ -182,8 +181,8 @@ as seven pull requests (#184 – #190). Drop-in, no migration. Full note:
 
 ## [1.23.2] — 2026-09-02
 
-Maintenance release closing the 1.23 line before OSS tracks KubeBolt EE 2.x
-release by release. Drop-in, no schema change, no migration. Full note:
+Maintenance release closing the 1.23 line before 2.0.0. Drop-in, no schema
+change, no migration. Full note:
 [docs/releases/v1.23.2.md](docs/releases/v1.23.2.md).
 
 ### Added
@@ -218,16 +217,15 @@ release by release. Drop-in, no schema change, no migration. Full note:
 
 This file was not maintained between 1.9.0 and 1.23.1. The per-version notes in
 [`docs/releases/`](docs/releases/) (`v1.10.0.md` … `v1.23.1.md`) are the record
-for that span, including the 1.22.0 note's version map of everything homologated
-from KubeBolt EE 1.17.2 → 1.22.0. From 1.23.2 on, every release gets an entry here
-again.
+for that span (1.22.0 follows 1.17.1 directly; there were no 1.18 – 1.21
+releases). From 1.23.2 on, every release gets an entry here again.
 
 ## [1.9.0] — 2026-05-08
 
 The k8s-operations release. The 1.8.x cycle was dedicated to
 dashboard sub-tabs (Capacity, Reliability) and agent resilience;
-this release ships the **entire k8s-operations roadmap** the
-internal spec calls Tiers 1 and 2 — every kubectl-equivalent verb
+this release ships **Tiers 1 and 2 of the k8s-operations roadmap** —
+every kubectl-equivalent verb
 needed to edit a workload's spec from the dashboard without
 dropping to a terminal. Operators get set-image / rollout history /
 node maintenance / cronjob controls (Tier 1) AND set-resources /
@@ -240,8 +238,8 @@ per-kind primary buttons + a single Actions ▾ overflow menu.
 
 The first two **Hybrid OSS** features (Secret reveal with mandatory
 audit, Apply new manifest from a topbar CTA) land here too — both
-ship a complete OSS path today with a documented Enterprise upgrade
-lane (audit chain-of-custody for reveal, policy-gate for apply).
+ship a complete OSS path today with a documented KubeBolt Cloud
+upgrade lane (audit chain-of-custody for reveal, policy-gate for apply).
 
 ### Added
 
@@ -336,7 +334,7 @@ lane (audit chain-of-custody for reveal, policy-gate for apply).
   sha256+length descriptors instead of crashing the UI render. The
   modal has per-key 60s auto-hide timers (each value's window
   starts when it becomes visible; restarts on re-show), and "copy"
-  buttons transition to "copied!" for 1.5s. **Enterprise upgrade**
+  buttons transition to "copied!" for 1.5s. **KubeBolt Cloud upgrade**
   (specced) layers cryptographic chain-of-custody, SIEM export,
   retention policies, approval gates, and JIT reveal tokens.
 - **Apply new manifest from UI** (Tier 2 #10, PR #8) — **Hybrid OSS**.
@@ -356,7 +354,7 @@ lane (audit chain-of-custody for reveal, policy-gate for apply).
   Status, managedFields, and last-applied-configuration are stripped
   from the body so paste-from-`kubectl get -o yaml` workflows don't
   carry stale state. Post-create navigation to the new resource's
-  detail page. **Enterprise upgrade** (specced) layers org policy
+  detail page. **KubeBolt Cloud upgrade** (specced) layers org policy
   enforcement (Kyverno / OPA / DSL), required-field templates,
   approval workflows for high-impact kinds, Secret-creation
   policies.
@@ -510,9 +508,9 @@ installable before connecting anything.
   `/tmp/kb-empty-kubeconfig.yaml` on every invocation — useful for
   testing the persistent-registry boot-restore path and the
   no-clusters empty-state UX without touching `~/.kube/config`.
-- **Agent-proxy tunnel idle timeout + audit log** (Sprint A.5 §0.9
-  commit 8f, partial — idle timeout and audit; max-duration / quotas
-  / Prometheus metrics deferred). Every SPDY tunnel opened through
+- **Agent-proxy tunnel idle timeout + audit log** (partial — idle
+  timeout and audit; max-duration / quotas / Prometheus metrics
+  deferred). Every SPDY tunnel opened through
   the agent (exec, port-forward, file browser) now ships with a
   watchdog goroutine that closes the tunnel when no Read/Write has
   happened for `KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT` (default 5m) —
@@ -536,7 +534,7 @@ installable before connecting anything.
   future sub-tabs land in one place. Active underline switched from
   `kb-accent` (brand green, reserved for Kobi / health-OK signals)
   to `status-info` (blue, the same selection color the Sidebar and
-  Topbar use), which homologates the "I'm here" palette across the
+  Topbar use), which unifies the "I'm here" palette across the
   app.
 - **Capacity sub-tab.** Investigation surface for "how is the cluster
   consuming, and is it sized right for what it's actually doing?"
@@ -745,8 +743,8 @@ tracked; defensive coverage-gap banner planned for the next release.
 Patch release with two changes: a relicense to Apache 2.0 (the standard
 for cloud-infrastructure projects in the CNCF / Hashicorp / Kubernetes
 ecosystem), and a `go vet` fix that was failing CI on `main` since
-Sprint A.5 introduced an if-true scope idiom the lostat checker cannot
-follow. v1.6.0 stays MIT — Apache 2.0 applies starting here.
+the agent-proxy work introduced an if-true scope idiom the lostat
+checker cannot follow. v1.6.0 stays MIT — Apache 2.0 applies starting here.
 
 ### Changed
 
@@ -879,7 +877,7 @@ on 2026-04-29 and required for any A/B agent-channel functionality.
     Endpoint, Cluster Map, Metric Charts), proposal card header, sidebar
     admin entry, About modal. Internal identifiers (component names,
     hooks, types, endpoint paths) unchanged — purely UX-visible.
-- **Agent-as-K8s-API-proxy** (Sprint A.5)
+- **Agent-as-K8s-API-proxy**
   - The agent can now proxy arbitrary Kubernetes API requests back to
     the apiserver, so KubeBolt can drive clusters it has no direct
     access to. Backend wires this through `AgentProxyTransport` with a
@@ -898,7 +896,7 @@ on 2026-04-29 and required for any A/B agent-channel functionality.
     serves N agents per cluster (DaemonSets ship one per node).
   - **Operator-tier RBAC manifest** for agents that need full proxy
     access.
-- **Agent ingest auth** (Sprint A)
+- **Agent ingest auth**
   - Bearer-token authentication on the agent ingest gRPC channel, with
     optional mTLS and Kubernetes ServiceAccount projected-token review
     via the apiserver TokenReview API.
