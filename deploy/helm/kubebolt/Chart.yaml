@@ -32,4 +32,17 @@ annotations:
   artifacthub.io/links: |
     - name: GitHub
       url: https://github.com/clm-cloud-solutions/kubebolt
+  artifacthub.io/screenshots: |
+    - title: Cluster Overview
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-overview.webp
+    - title: Home — what needs you across every cluster
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-home.webp
+    - title: Insight episode with timeline and recurrence
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-insight-episode.webp
+    - title: Security & Compliance, grouped per workload
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-security.webp
+    - title: Kobi Copilot proposing a fix you approve
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-kobi.webp
+    - title: Cluster Map
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-cluster-map.webp
   artifacthub.io/containsSecurityUpdates: "false"

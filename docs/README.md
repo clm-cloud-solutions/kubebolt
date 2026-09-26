@@ -48,6 +48,7 @@ with the code, so they are versioned with each release.
 | | |
 |---|---|
 | [Incident simulations](incident-simulations/README.md) | Break things on purpose: scenarios that trigger insights and give Kobi something to investigate, plus a three-tier demo shop |
+| [Screenshots](images/README.md) | Which screenshots the README uses and how to capture them |
 
 ## Engineering records
 

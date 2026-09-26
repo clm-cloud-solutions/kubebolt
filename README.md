@@ -18,7 +18,7 @@ same context and acts only when you approve.
 
 [Website](https://kubebolt.io/en/) · [Documentation](https://kubebolt.io/docs) · [Quick start](#quick-start) · [KubeBolt Cloud](https://kubebolt.io/docs/cloud) · [Roadmap](https://kubebolt.io/en/roadmap) · [Changelog](CHANGELOG.md)
 
-![KubeBolt — cluster Overview](docs/images/kubebolt-dashboard.webp)
+![KubeBolt — cluster Overview](docs/images/kubebolt-overview.webp)
 
 </div>
 
@@ -76,6 +76,25 @@ reachable from where KubeBolt runs.
   layout drawn from observed Hubble flows (who calls whom, and what leaves
   the cluster).
 
+<table>
+  <tr>
+    <td width="50%"><img src="docs/images/kubebolt-home.webp" alt="Home — what needs you across every cluster, and what happened while you were away"></td>
+    <td width="50%"><img src="docs/images/kubebolt-fleet.webp" alt="Fleet — every cluster's health, findings, nodes, pods and spend"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Home</sub></td>
+    <td align="center"><sub>Fleet</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/kubebolt-capacity.webp" alt="Capacity — trends with deploy markers and right-sizing"></td>
+    <td width="50%"><img src="docs/images/kubebolt-cluster-map.webp" alt="Cluster Map — the topology of a namespace"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Capacity</sub></td>
+    <td align="center"><sub>Cluster Map</sub></td>
+  </tr>
+</table>
+
 ### Insights with memory
 
 - **24 built-in rules**: crash loops, OOM kills, image pull errors, failing
@@ -92,6 +111,8 @@ reachable from where KubeBolt runs.
   severities install-wide; a rule you turn off is still counted, so the
   silence is never invisible.
 
+![An insight episode — timeline, recurrence and the recommendation](docs/images/kubebolt-insight-episode.webp)
+
 ### Operations with guardrails
 
 - Scale, restart, roll back to a revision, pause/resume rollouts, set image,
@@ -106,6 +127,8 @@ reachable from where KubeBolt runs.
 - Three roles — viewer, editor, admin — enforced by the backend, on top of
   whatever the cluster credentials allow.
 
+![A Deployment — actions, pods, history and events in one place](docs/images/kubebolt-workload.webp)
+
 ### Security and compliance
 
 Vulnerabilities, configuration, RBAC and CIS compliance, plus a runtime feed —
@@ -115,6 +138,8 @@ normalized from the scanners you already run: **Trivy Operator**, **Kyverno**
 **Falco** events pushed with a cluster-scoped token. Findings are grouped per
 workload (one image with 47 CVEs is one thing to fix) and survive the cluster
 going away. KubeBolt doesn't scan; it doesn't replace your tools.
+
+![Security & Compliance — findings grouped per workload](docs/images/kubebolt-security.webp)
 
 ### Kobi Copilot — your AI SRE, with your own key
 
@@ -134,6 +159,8 @@ going away. KubeBolt doesn't scan; it doesn't replace your tools.
 - **MCP server** — the same 17 read tools for Claude Code, Cursor or any MCP
   client, over HTTP (`/api/v1/mcp`, authenticated with an API token) or stdio
   (`kubebolt-mcp`).
+
+![Kobi Copilot — investigating an incident and proposing a fix you approve](docs/images/kubebolt-kobi.webp)
 
 ### Administration
 
