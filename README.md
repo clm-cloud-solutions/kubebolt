@@ -51,9 +51,10 @@ reachable from where KubeBolt runs.
   cluster (unreachable clusters, silent agents, critical findings), fleet-wide
   pods, spend and findings, what happened *while you were away*, and your
   recent Kobi conversations.
-- **Fleet** — every cluster's health, findings, nodes, pods and spend without
-  connecting to any of them; grid or table, worst first. ⌘K searches across
-  all of them.
+- **Fleet** — every cluster's health and findings without switching to it,
+  plus nodes and pods (from agent metrics) and spend (from OpenCost); grid or
+  table, worst first. From the global pages, ⌘K searches every connected
+  cluster at once.
 - **Cluster dashboard** — four lenses on the active cluster:
   - *Overview*: KPIs, commitment, workload health, namespaces, recent events.
   - *Capacity*: CPU, memory, network and filesystem trends with deploy
@@ -62,11 +63,13 @@ reachable from where KubeBolt runs.
     drops from Hubble (appears when Cilium/Hubble data exists).
   - *Cost* (beta): spend, idle and savings from OpenCost (appears when
     OpenCost data exists).
-- **26 resource views** with live CPU/memory, including Gateway API, Cilium
+- **26 resource views** — with live CPU/memory where it applies — including Gateway API, Cilium
   network policies, cert-manager certificates, Argo CD applications and VPAs,
   plus Namespaces, Events and cluster RBAC. Detail pages carry YAML, logs,
   terminal, file browser (pods), related resources, revision history, events
-  and a Monitor tab.
+  and a Monitor tab (pods, workloads, nodes, PVCs). Works with
+  namespace-scoped ServiceAccounts too: KubeBolt probes what it may read and
+  watches only that.
 - **Applications** — Helm releases with status, values, notes, the resources
   they own and their revision history (read-only).
 - **Cluster Map** — the topology in Grid and Flow layouts, and a Traffic
@@ -98,7 +101,8 @@ reachable from where KubeBolt runs.
   delete.
 - Pod terminal, file browser, logs and port-forwarding from the browser.
 - Server-side dry-run on proposed changes; every mutation and every access
-  session (exec, port-forward, file read) lands in the audit trail.
+  session (exec, port-forward, file read) is recorded in an audit trail,
+  readable through the admin API (`GET /api/v1/admin/actions`).
 - Three roles — viewer, editor, admin — enforced by the backend, on top of
   whatever the cluster credentials allow.
 
@@ -106,7 +110,8 @@ reachable from where KubeBolt runs.
 
 Vulnerabilities, configuration, RBAC and CIS compliance, plus a runtime feed —
 normalized from the scanners you already run: **Trivy Operator**, **Kyverno**
-(or Gatekeeper via PolicyReports), CIS `ClusterComplianceReport`, and
+(or any tool that writes `wgpolicyk8s.io` PolicyReports), CIS
+`ClusterComplianceReport`, and
 **Falco** events pushed with a cluster-scoped token. Findings are grouped per
 workload (one image with 47 CVEs is one thing to fix) and survive the cluster
 going away. KubeBolt doesn't scan; it doesn't replace your tools.
@@ -119,19 +124,25 @@ going away. KubeBolt doesn't scan; it doesn't replace your tools.
   metrics history, insights, permissions, KubeBolt's own docs) and 9 that
   *propose* an action — restart, scale, roll back, debug, set image /
   resources / env, patch an HPA, delete. Nothing runs until you approve it.
-- Bring your own key: Anthropic, or any OpenAI-compatible endpoint (OpenAI,
-  Azure OpenAI, Grok, DeepSeek, Mistral, Groq, OpenRouter, or self-hosted
-  models via Ollama, vLLM, LM Studio), with an automatic fallback provider.
-  Off until you configure it.
+- Bring your own key: Anthropic, or any OpenAI-compatible chat-completions
+  endpoint (OpenAI, xAI Grok, DeepSeek, Mistral, Groq, OpenRouter, or
+  self-hosted models via Ollama, vLLM, LM Studio), with an automatic fallback
+  provider. Off until you configure it.
+- Conversations are saved per user and can be resumed; long ones are
+  compacted automatically; Administration → AI (Kobi) → Usage shows tokens
+  and estimated cost per model.
 - **MCP server** — the same 17 read tools for Claude Code, Cursor or any MCP
   client, over HTTP (`/api/v1/mcp`, authenticated with an API token) or stdio
   (`kubebolt-mcp`).
 
 ### Administration
 
-Built-in authentication with local users and roles, API tokens for
-automation, agent tokens and ingest activity, Slack / Discord / email
-notifications, Kobi configuration and usage, and the insight rule matrix —
+Built-in authentication with local users and roles, path-scoped API tokens
+for automation, clusters (add from a kubeconfig or the agent wizard, rename,
+remove), an integrations catalog that detects Trivy, Kyverno, Falco,
+OpenCost and Prometheus and installs the agent, agent tokens and ingest
+activity, Slack / Discord / email notifications, Kobi configuration and
+usage, and the insight rule matrix —
 all configurable from the UI after first login, with environment variables as
 boot defaults.
 
@@ -147,8 +158,9 @@ it to the same context.
 | **Cilium / Hubble** | Traffic map, Reliability dashboard, network drops |
 | **OpenCost** | Cost dashboard, spend on Home and Fleet, right-sizing savings |
 | **Trivy Operator · Kyverno · Falco** | Security & Compliance lenses and runtime feed |
-| **Helm · Argo CD** | Applications view, release and sync-state insights |
-| **Gateway API · cert-manager · VPA** | Native resource views and relationships |
+| **Helm** | Applications view (releases, values, history) and failed-release insights |
+| **Argo CD** | Application list and an out-of-sync insight |
+| **Gateway API · cert-manager · VPA** | Native resource views; Gateway → HTTPRoute → Service edges on the map |
 
 Grafana stays where it is.
 
@@ -169,8 +181,10 @@ kubectl -n kubebolt get secret kubebolt-admin-password \
   -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
-The chart deploys the API, the web UI and a single-node VictoriaMetrics for
-history (10 GiB PVC, 30-day retention). A first-run wizard walks you through
+The chart deploys the API, the web UI and a single-node VictoriaMetrics
+(10 GiB PVC, 30-day retention); history panels fill once the
+[agent](#connecting-clusters) (or a Prometheus `remote_write`) ships samples
+to it. A first-run wizard walks you through
 the password, Kobi, the agent and notifications — every step can be skipped.
 Chart reference: [deploy/helm/kubebolt](deploy/helm/kubebolt/README.md).
 
@@ -199,7 +213,10 @@ Binaries for Linux and macOS (amd64, arm64) and Windows (amd64) — plus the
 `kubebolt-mcp` stdio server — are attached to every
 [release](https://github.com/clm-cloud-solutions/kubebolt/releases/latest).
 The single-process installs read every context in your kubeconfig and serve
-API and UI on one port; they don't bundle a time-series store, so point
+API and UI on one port — <http://localhost:8080> for Homebrew, krew and the
+binaries (`--port` to change it), <http://localhost:3000> for the container —
+and keep their state in `./data` (`KUBEBOLT_DATA_DIR`). They don't bundle a
+time-series store, so point
 `KUBEBOLT_METRICS_STORAGE_URL` at a VictoriaMetrics (or run the Compose stack
 below) if you want history.
 
@@ -207,7 +224,7 @@ below) if you want history.
 
 ```bash
 git clone https://github.com/clm-cloud-solutions/kubebolt.git && cd kubebolt
-./deploy/docker-kubeconfig.sh   # only for Docker Desktop's built-in Kubernetes
+./deploy/docker-kubeconfig.sh   # copies your kubeconfig for the containers (and fixes Docker Desktop's 127.0.0.1)
 cd deploy && docker compose up -d
 ```
 
@@ -239,7 +256,7 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 |---|:---:|:---:|
 | `metrics` | — | — |
 | `reader` (default) | ✅ | — |
-| `operator` | ✅ | ✅ (requires auth) |
+| `operator` | ✅ | ✅ (enable agent auth — strongly recommended) |
 
 The agent can also read an existing Prometheus instead of scraping, and ships
 an optional vmagent sidecar and OpenCost. Details:
@@ -268,13 +285,14 @@ edition is not a demo, and it stays Apache 2.0.
 - RBAC-aware: KubeBolt probes what its credentials may do and only watches
   that; restricted resources are shown as restricted, not as errors.
 - Secret values are redacted in YAML views; revealing one is an explicit,
-  audited action. The live-update WebSocket carries notifications, never
-  objects.
+  audited action. The live-update WebSocket carries change notifications,
+  never Kubernetes objects.
 - The agent is outbound-only and its RBAC tier caps what the backend can do
   through it.
 - No telemetry. Apart from the AI provider and notification channels you
-  configure, the only outbound call KubeBolt makes on its own is a check for
-  new releases on GitHub (`KUBEBOLT_UPDATE_CHECK_ENABLED=false` turns it off).
+  configure, the only outbound call the backend makes on its own is a check
+  for new releases on GitHub (`KUBEBOLT_UPDATE_CHECK_ENABLED=false` turns it
+  off). The web UI loads its fonts from Google Fonts.
 
 Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
@@ -287,9 +305,9 @@ to set:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `KUBEBOLT_AUTH_ENABLED` | `true` | `false` gives open access with no login |
+| `KUBEBOLT_AUTH_ENABLED` | `true` | `false` gives open access with no login — and also turns off the embedded store, so insight history, mutes, Security findings, the audit trail, UI settings and Kobi conversations are unavailable |
 | `KUBEBOLT_ADMIN_PASSWORD` | generated | Initial admin password (printed once if generated) |
-| `KUBEBOLT_JWT_SECRET` | generated | Set it so sessions survive restarts |
+| `KUBEBOLT_JWT_SECRET` | generated | Generated once and stored in the data dir; set it to pin or share it |
 | `KUBEBOLT_DATA_DIR` | `./data` | Embedded database location |
 | `KUBEBOLT_METRICS_STORAGE_URL` | — | VictoriaMetrics / Prometheus-compatible endpoint for history |
 | `KUBEBOLT_AI_API_KEY` | — | Enables Kobi Copilot |

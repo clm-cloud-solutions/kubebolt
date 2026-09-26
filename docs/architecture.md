@@ -48,7 +48,7 @@ immediately and connects to clusters in the background, so the UI can report
   resolved, expired) persisted in BoltDB, with mutes and an install-wide rule
   policy layer.
 - **Findings sweeper** — every 10 minutes, reads the reports that Trivy
-  Operator, Kyverno (or Gatekeeper through PolicyReports) and CIS benchmarks
+  Operator, Kyverno (or any tool writing `wgpolicyk8s.io` PolicyReports) and CIS benchmarks
   already produce in each connected cluster. Falco pushes runtime events to
   `POST /api/v1/ingest/falco`.
 - **Kobi Copilot** — a server-side tool-calling loop over a provider you
@@ -76,13 +76,13 @@ container metrics from the agent, Hubble flows, OpenCost series, and anything
 received over Prometheus `remote_write` (`/api/v1/prom/write`). The Helm chart
 and Docker Compose bundle a single-node instance; you can point at your own
 with `KUBEBOLT_METRICS_STORAGE_URL`. Without it, live CPU/memory still comes
-from metrics-server and only the historical panels stay empty. Ingest is
-capped by active series (1M by default) and the Overview warns when the cap
-is near.
+from metrics-server and only the historical panels stay empty. Prometheus
+`remote_write` ingest is capped at 1M active series by default, and the
+Overview warns when the cap is near.
 
 **Web** (`apps/web`, React 18 + TypeScript + Vite + Tailwind). TanStack Query
-for server state, a WebSocket for change notifications (the socket carries
-`{kind, namespace, name, uid}` notifications, never the objects), ReactFlow
+for server state, a WebSocket for change notifications (resource changes
+travel as `{kind, namespace, name, uid}`, never as Kubernetes objects), ReactFlow
 for the Cluster Map, xterm.js for the terminal and CodeMirror 6 for YAML.
 Routes are declared as *global* (Home, Fleet, Security, Administration) or
 *cluster* scope, so global pages keep working when a cluster is down.

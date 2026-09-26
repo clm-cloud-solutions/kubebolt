@@ -11,7 +11,7 @@ Security issues go through [SECURITY.md](SECURITY.md), not public issues.
 - **Bugs** — open an issue with the KubeBolt version, how it's deployed
   (Helm, Docker, binary…), the Kubernetes distribution and version, and what
   you expected versus what happened. Logs from the API help
-  (`LOG_LEVEL=debug`).
+  (`KUBEBOLT_LOG_LEVEL=debug`).
 - **Features and larger changes** — open an issue or a
   [discussion](https://github.com/clm-cloud-solutions/kubebolt/discussions)
   first, so we can agree on the approach before you invest the time.
@@ -56,7 +56,8 @@ Useful variants:
   to work on the no-clusters and waiting-for-agent states.
 - `KUBEBOLT_ADMIN_PASSWORD=...` sets the admin password; otherwise one is
   generated and printed to the terminal. `KUBEBOLT_AUTH_ENABLED=false` skips
-  login entirely.
+  login, but also the embedded store — insight history, Security findings,
+  settings and Kobi conversations won't be available.
 - Copy [`.env.example`](.env.example) to `.env` to enable optional features
   (Kobi, notifications…). `make dev` loads it.
 - For historical metrics, start VictoriaMetrics with

@@ -57,7 +57,7 @@ body:
     id: logs
     attributes:
       label: Logs
-      description: Relevant API or agent logs (`LOG_LEVEL=debug` helps). Remove secrets and hostnames you don't want public.
+      description: Relevant API or agent logs (`KUBEBOLT_LOG_LEVEL=debug` helps). Remove secrets and hostnames you don't want public.
       render: text
   - type: textarea
     id: extra

@@ -67,7 +67,7 @@ with the chart's `rbac.mode`:
 |---|---|---|---|
 | **metrics** | ❌ (only metrics + flows ship) | ❌ | optional |
 | **reader** (default) | ✅ everything | ❌ (returns 403) | recommended |
-| **operator** | ✅ everything | ✅ exec, scale, restart, delete, YAML edit | **REQUIRED** |
+| **operator** | ✅ everything | ✅ exec, scale, restart, delete, YAML edit | **strongly recommended** (not enforced by the chart) |
 
 ### When to pick which
 
@@ -110,7 +110,7 @@ helm install kubebolt-agent \
 | Reachable host / LoadBalancer | `<host>:9090` |
 | Remote backend over TLS, for example [KubeBolt Cloud](https://kubebolt.io) | `agent.kubebolt.io:443` + `tls.enabled=true` + `auth.mode=ingest-token` |
 
-With authentication (required for `operator` and for a remote backend):
+With authentication (strongly recommended for `operator`; required by a remote backend such as KubeBolt Cloud):
 
 ```bash
 kubectl create namespace kubebolt-system

@@ -54,6 +54,8 @@ Every release is built by GitHub Actions from a tag and:
 - signs the container images and Helm charts with Cosign;
 - scans third-party images before building and our own images by digest
   after pushing, with Trivy (a critical or high vulnerability that has a fix blocks the release);
-- attaches CycloneDX SBOMs for each image to the GitHub release.
+- attaches CycloneDX SBOMs for the api, web and single-container images to
+  the GitHub release.
 
-Pull requests are scanned with Trivy and the codebase with CodeQL.
+Pull requests that change third-party image pins are scanned with Trivy, and
+the codebase is analysed with CodeQL.

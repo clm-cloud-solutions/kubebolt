@@ -168,7 +168,7 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 |-----------|-------------|---------|
 | `auth.enabled` | Built-in login with Admin / Editor / Viewer roles | `true` |
 | `auth.adminPassword` | Initial `admin` password; generated on first boot if empty | `""` |
-| `auth.jwtSecret` | JWT signing secret; generated if empty (sessions do not survive a restart) | `""` |
+| `auth.jwtSecret` | JWT signing secret; if empty, one is generated and persisted in the embedded store on the data PVC | `""` |
 | `auth.existingSecret` | Existing Secret with `admin-password` and/or `jwt-secret` keys | `""` |
 | `auth.resetAdminPassword` | Reset the `admin` password to this value on next start — see [Forgot-password recovery](#forgot-password-recovery) | `""` |
 | `auth.persistence.enabled` | PVC for the embedded database (users, settings, history); `emptyDir` if false | `true` |
@@ -184,7 +184,7 @@ preferred place to configure it.
 | Parameter | Description | Default |
 |-----------|-------------|---------|
 | `copilot.enabled` | Enable Kobi Copilot from chart values | `false` |
-| `copilot.provider` | `anthropic`, `openai` or `custom` | `anthropic` |
+| `copilot.provider` | `anthropic` or `openai` (use `openai` + `copilot.baseUrl` for any OpenAI-compatible endpoint) | `anthropic` |
 | `copilot.model` | Model name; provider default if empty | `""` |
 | `copilot.baseUrl` | Custom / self-hosted endpoint | `""` |
 | `copilot.maxTokens` | Max output tokens per response | `4096` |
