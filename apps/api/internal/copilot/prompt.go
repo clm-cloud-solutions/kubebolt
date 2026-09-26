@@ -145,11 +145,11 @@ func GovernanceContextBlock(actionsEnabled, destructiveEnabled bool) string {
 	case !actionsEnabled:
 		return "# Action governance\n" +
 			"Kobi action proposals are DISABLED by the admin — you are in read-only advisory mode and cannot propose or execute any cluster mutation. " +
-			"If asked to change the cluster, explain that action proposals are turned off in this KubeBolt (admin setting under Administration → Copilot) — this is a governance policy, NOT an RBAC or role limit — and offer the equivalent kubectl command instead. Never tell the user to ask for a higher role; it would not unblock this."
+			"If asked to change the cluster, explain that action proposals are turned off in this KubeBolt (admin setting under Administration → AI (Kobi) → Configuration) — this is a governance policy, NOT an RBAC or role limit — and offer the equivalent kubectl command instead. Never tell the user to ask for a higher role; it would not unblock this."
 	case !destructiveEnabled:
 		return "# Action governance\n" +
 			"Destructive actions (deleting a resource, scaling a workload to 0) are DISABLED by the admin's destructive-ops governance setting. Non-destructive proposals (restart, scale to N>0, edit resources, set image/env, patch HPA) work normally. " +
-			"If a delete or scale-to-0 is blocked, do NOT attribute it to RBAC or the user's role — explain it is the destructive-ops governance policy (admin setting under Administration → Copilot) and offer the equivalent kubectl command. Never tell the user to ask for a higher role for these; it would not unblock them."
+			"If a delete or scale-to-0 is blocked, do NOT attribute it to RBAC or the user's role — explain it is the destructive-ops governance policy (admin setting under Administration → AI (Kobi) → Configuration) and offer the equivalent kubectl command. Never tell the user to ask for a higher role for these; it would not unblock them."
 	default:
 		return ""
 	}

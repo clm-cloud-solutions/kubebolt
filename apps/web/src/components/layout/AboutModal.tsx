@@ -23,9 +23,9 @@ export function AboutModal({ onClose }: Props) {
           <div className="min-w-0">
             <div className="text-base font-semibold text-kb-text-primary">KubeBolt</div>
             <div className="text-[11px] text-kb-text-secondary leading-relaxed mt-1">
-              The AI operations platform for Kubernetes. Autopilot
-              investigates incidents, finds the root cause, and applies
-              the fix on its own — with Kobi, your built-in AI copilot.
+              The Kubernetes operations platform. See, understand and
+              operate your clusters in one place — with Kobi, your AI SRE,
+              investigating alongside you.
             </div>
           </div>
         </div>

@@ -366,7 +366,7 @@ function StepPassword({ onDone, alreadyDone }: { onDone: () => void; alreadyDone
 // ─── Step 2: AI Copilot (optional) ────────────────────────────────────
 //
 // Covers the PRIMARY provider only — fallback is power-user territory
-// and lives in Settings → AI Copilot for operators who care. Loads the
+// and lives in Administration → AI (Kobi) → Configuration for operators who care. Loads the
 // current effective Copilot config so an env-driven baseline doesn't
 // get accidentally wiped by submitting partial overrides.
 
@@ -423,7 +423,7 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
     },
     onSuccess: (newData) => {
       setError(null)
-      // Seed the Settings → AI Copilot tab's cache so the change is
+      // Seed the Administration → AI (Kobi) → Configuration tab's cache so the change is
       // visible there immediately after the wizard saves. Also bust
       // the public /copilot/config cache so the chat panel's pill
       // flips to the new provider/model without a reload.
@@ -460,7 +460,7 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
       {alreadyDone ? (
         <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">
           <Check className="w-4 h-4 mt-0.5 shrink-0" />
-          <div>Saved. Tune fallback model, auto-compact thresholds and other advanced knobs from Settings → AI Copilot.</div>
+          <div>Saved. Tune fallback model, auto-compact thresholds and other advanced knobs from Administration → AI (Kobi) → Configuration.</div>
         </div>
       ) : (
         <form onSubmit={handleSave} className="space-y-3">
@@ -511,13 +511,13 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
 
           <Field
             label="Base URL (optional)"
-            helper="Override the provider endpoint — needed for OpenAI-compatible gateways like xAI Grok (api.x.ai/v1), DeepSeek, Groq, Together."
+            helper="Override the provider endpoint with the FULL URL, used as-is (no path is appended) — e.g. https://api.x.ai/v1/chat/completions for xAI Grok; same shape for DeepSeek, Groq, Together."
           >
             <input
               type="text"
               value={baseURL}
               onChange={(e) => setBaseURL(e.target.value)}
-              placeholder={provider === 'anthropic' ? 'https://api.anthropic.com (default)' : 'https://api.openai.com/v1 (default)'}
+              placeholder={provider === 'anthropic' ? 'https://api.anthropic.com/v1/messages (default)' : 'https://api.openai.com/v1/chat/completions (default)'}
               className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
             />
           </Field>
@@ -559,7 +559,7 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
           </label>
 
           <p className="text-[11px] text-kb-text-tertiary">
-            Fallback model + auto-compact thresholds are tunable from Settings → AI Copilot after you finish the wizard.
+            Fallback model + auto-compact thresholds are tunable from Administration → AI (Kobi) → Configuration after you finish the wizard.
           </p>
 
           {error && (
@@ -595,7 +595,7 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
 // WizardModelPicker is a slimmed-down variant of the Settings tab's
 // ModelPicker — same provider catalog + optgroups + "Custom…" escape
 // hatch, no model description popover. Operators wanting the full
-// picker with trade-off blurbs head to Settings → AI Copilot post-
+// picker with trade-off blurbs head to Administration → AI (Kobi) → Configuration post-
 // wizard.
 function WizardModelPicker({
   provider,
@@ -682,7 +682,7 @@ function StepAgent() {
       const firstActive = authInfo?.tenants?.find((t) => !t.disabled)
       const tenantId = firstActive?.id || ''
       if (!tenantId) {
-        throw new Error('No active tenant available — issue tokens from Admin → Agent Tokens')
+        throw new Error('No active tenant available — issue tokens from Administration → Agents & Ingest → Agent Tokens')
       }
       return api.issueAgentTokenAndMaterializeSecret({
         tenantId,
@@ -784,7 +784,7 @@ function StepAgent() {
           which the agent pod will read via projected volume. We only
           surface the secret name (for the helm flag) and the
           tokenPrefix so the operator can later identify the token in
-          Admin → Agent Tokens if they need to revoke it. */}
+          Administration → Agents & Ingest → Agent Tokens if they need to revoke it. */}
       {issuedSecret && (
         <div className="rounded-md border border-status-ok-dim bg-status-ok-dim/30 p-3 text-xs space-y-2">
           <div className="flex items-start gap-2 text-status-ok">
@@ -795,7 +795,7 @@ function StepAgent() {
               </div>
               <div className="text-kb-text-secondary mt-0.5 leading-relaxed">
                 Token prefix <code className="font-mono">{issuedSecret.tokenPrefix}</code> — find
-                it in Admin → Agent Tokens to rotate or revoke. The helm command below already
+                it in Administration → Agents & Ingest → Agent Tokens to rotate or revoke. The helm command below already
                 references the Secret by name.
               </div>
             </div>
@@ -833,8 +833,8 @@ function StepAgent() {
 
       <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
         {needsToken
-          ? 'Run the command above after the Secret has been created. Need more tokens or a different tenant? Admin → Agent Tokens.'
-          : 'Channel auth is on disabled — no token needed. For multi-cluster fleets, switch the channel to enforced via Settings → Agents & Ingest and re-run this wizard for token issuance.'}
+          ? 'Run the command above after the Secret has been created. Need more tokens? Administration → Agents & Ingest → Agent Tokens.'
+          : 'Channel auth is on disabled — no token needed. For multi-cluster fleets, switch the channel to enforced via Administration → Agents & Ingest → Configuration and re-run this wizard for token issuance.'}
       </p>
     </div>
   )
@@ -842,7 +842,7 @@ function StepAgent() {
 
 // ─── Step 4: Notifications (optional) ────────────────────────────────
 //
-// Mirrors the Settings → Notifications tab's coverage: global toggles
+// Mirrors the Administration → System → Notifications tab's coverage: global toggles
 // + per-channel enable + Slack/Discord webhooks + SMTP. Seeds from
 // the current effective config so existing env-baseline values don't
 // get wiped by partial overrides on save.
@@ -936,7 +936,7 @@ function StepNotifications({ onDone, alreadyDone }: { onDone: () => void; alread
     },
     onSuccess: (newData) => {
       setError(null)
-      // Seed the Settings → Notifications tab's cache so the wizard's
+      // Seed the Administration → System → Notifications tab's cache so the wizard's
       // change is visible immediately after Finish. Without this the
       // tab keeps its stale data until the next refetch tick.
       queryClient.setQueryData(['admin', 'settings', 'notifications'], newData)
@@ -959,14 +959,14 @@ function StepNotifications({ onDone, alreadyDone }: { onDone: () => void; alread
       <div>
         <h2 className="text-base font-semibold text-kb-text-primary mb-1">Insight notifications</h2>
         <p className="text-xs text-kb-text-secondary leading-relaxed">
-          KubeBolt's insights engine detects crash loops, OOMs, NetworkPolicy gaps, etc. Pipe them to Slack, Discord or email so on-call sees them outside the UI. Per-tenant overrides and test-send live in Settings → Notifications.
+          KubeBolt's insights engine detects crash loops, OOMs, NetworkPolicy gaps, etc. Pipe them to Slack, Discord or email so on-call sees them outside the UI. Test-send and the remaining options live in Administration → System → Notifications.
         </p>
       </div>
 
       {alreadyDone ? (
         <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-status-ok-dim text-status-ok text-xs">
           <Check className="w-4 h-4 mt-0.5 shrink-0" />
-          <div>Notifications saved. Test each channel from Settings → Notifications when ready.</div>
+          <div>Notifications saved. Test each channel from Administration → System → Notifications when ready.</div>
         </div>
       ) : (
         <form onSubmit={handleSave} className="space-y-4">

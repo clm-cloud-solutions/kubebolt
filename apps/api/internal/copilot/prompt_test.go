@@ -321,7 +321,7 @@ func TestGovernanceContextBlock(t *testing.T) {
 	}
 
 	actionsOff := GovernanceContextBlock(false, true)
-	for _, w := range []string{"read-only advisory", "NOT an RBAC", "Administration → Copilot"} {
+	for _, w := range []string{"read-only advisory", "NOT an RBAC", "Administration → AI (Kobi) → Configuration"} {
 		if !strings.Contains(actionsOff, w) {
 			t.Errorf("actions-off block missing %q\n%s", w, actionsOff)
 		}

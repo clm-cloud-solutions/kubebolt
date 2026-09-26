@@ -134,7 +134,7 @@ func TestPricingFor_LongestPrefixWins(t *testing.T) {
 }
 
 // TestPricingFor_AdminCatalogCoverage pins that every model ID surfaced
-// by the admin Settings → AI Copilot catalog has a pricing entry that
+// by the Administration → AI (Kobi) → Configuration catalog has a pricing entry that
 // PricingFor can resolve. Without this, an operator who selects a model
 // from the dropdown sees "$0.0000 / no known pricing" in the Kobi Usage
 // dashboard for that model — confusing and undermines the cost-tracking

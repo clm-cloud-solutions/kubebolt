@@ -37,10 +37,10 @@ const (
 
 // ProviderConfig holds settings for a single LLM provider (primary or fallback).
 type ProviderConfig struct {
-	Provider string // "anthropic" | "openai" | "custom"
+	Provider string // "anthropic" | "openai" (OpenAI-compatible gateways use "openai" + BaseURL)
 	APIKey   string // never exposed to the frontend
 	Model    string // optional, provider default if empty
-	BaseURL  string // optional, for custom/self-hosted endpoints
+	BaseURL  string // optional full endpoint URL, used verbatim (e.g. https://api.x.ai/v1/chat/completions)
 }
 
 // CopilotConfig holds the AI Copilot configuration loaded from env vars.

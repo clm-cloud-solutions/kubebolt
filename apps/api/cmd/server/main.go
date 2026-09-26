@@ -89,7 +89,7 @@ ENVIRONMENT VARIABLES:
     KUBEBOLT_DATA_DIR               Directory for user database (default: ./data)
 
   AI Copilot (optional, BYO key):
-    KUBEBOLT_AI_PROVIDER            anthropic | openai | custom
+    KUBEBOLT_AI_PROVIDER            anthropic | openai
     KUBEBOLT_AI_API_KEY             Provider API key (enables copilot)
     KUBEBOLT_AI_MODEL               Model name (uses provider default if unset)
     KUBEBOLT_AI_BASE_URL            Custom endpoint for self-hosted providers

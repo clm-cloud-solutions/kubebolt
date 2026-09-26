@@ -202,7 +202,7 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
           msg =
             typeof e.payload.error === 'string'
               ? e.payload.error
-              : `This action is disabled by the Kobi action-governance policy — not your role. An admin can enable it in Administration → Copilot.`
+              : `This action is disabled by the Kobi action-governance policy — not your role. An admin can enable it in Administration → AI (Kobi) → Configuration.`
         } else if (e.status === 403) {
           // Not an agent-RBAC or governance block (those carry payload flags
           // handled above) → it's the USER's own KubeBolt role that's too low.

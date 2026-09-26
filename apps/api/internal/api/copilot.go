@@ -284,7 +284,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	)
 
 	// Multi-step tool calling loop. The round budget is configurable
-	// (KUBEBOLT_AI_MAX_ROUNDS / Settings → Copilot) because a small,
+	// (KUBEBOLT_AI_MAX_ROUNDS / Administration → AI (Kobi) → Configuration) because a small,
 	// sequential model (e.g. Haiku, which calls tools one at a time) needs
 	// more headroom to converge on a deep RCA than a model that batches calls.
 	maxRounds := cfg.MaxRounds
