@@ -12,7 +12,7 @@ embedded VictoriaMetrics for metrics history. To monitor other clusters or
 collect kubelet / Hubble metrics, pair it with the
 [`kubebolt-agent`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/README.md) chart.
 
-User documentation: [kubebolt.io/docs/helm](https://kubebolt.io/docs/helm) ·
+User documentation: [kubebolt.io/docs](https://kubebolt.io/docs) ·
 [installation](https://kubebolt.io/docs/installation) ·
 [environment variables](https://kubebolt.io/docs/environment-variables) ·
 [troubleshooting](https://kubebolt.io/docs/troubleshooting).

@@ -50,7 +50,7 @@ cd deploy && docker compose up -d
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 Frontend on http://localhost:3000 (nginx proxies /api and /ws to backend).
-EKS clusters require `~/.aws` mounted (already in compose) with an active AWS session.
+EKS kubeconfigs that use `aws eks get-token` don't work from Compose today: `apps/api/Dockerfile` no longer installs the AWS CLI (only `deploy/Dockerfile.single` does), even though the compose file still mounts `~/.aws`.
 
 ### Helm Chart
 ```bash

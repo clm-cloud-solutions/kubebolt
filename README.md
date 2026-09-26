@@ -228,8 +228,10 @@ git clone https://github.com/clm-cloud-solutions/kubebolt.git && cd kubebolt
 cd deploy && docker compose up -d
 ```
 
-API, web UI and VictoriaMetrics on <http://localhost:3000>. For EKS the
-compose file mounts `~/.aws`; make sure your AWS session is active.
+API, web UI and VictoriaMetrics on <http://localhost:3000>. Compose builds
+the images from source, and its API image doesn't include the AWS CLI: for
+EKS kubeconfigs that authenticate with `aws eks get-token`, use Helm or the
+single-container image (which ships `aws`) instead.
 
 More options, platform guides (EKS, GKE, AKS, OpenShift, Docker Desktop) and
 troubleshooting: <https://kubebolt.io/docs/installation>.
