@@ -1,8 +1,7 @@
 # Agent Scraping — vmagent sidecar
 
-Phase 2 of the [Universal Data Plane Plan](../internal/agent-universal-data-plane-plan.md)
-ships an opt-in `vmagent` sidecar inside the kubebolt-agent
-DaemonSet pod. When enabled, each agent pod scrapes
+The kubebolt-agent chart ships an opt-in `vmagent` sidecar inside the
+agent DaemonSet pod. When enabled, each agent pod scrapes
 Prom-compatible `/metrics` endpoints on its own node and ships the
 samples to the KubeBolt backend's remote_write receiver.
 
@@ -13,10 +12,21 @@ own Prometheus**. KubeBolt's backend already runs VictoriaMetrics; the
 vmagent sidecar just feeds it.
 
 > **Default off.** The feature is gated by `scrape.enabled: true` in
-> the agent helm values AND `KUBEBOLT_REMOTE_WRITE_ENABLED=true` on
-> the backend. Both must be on. Phase 3 of the plan replaces the
-> env-var gate with a bearer-token middleware specific to this
-> ingest path.
+> the agent helm values AND the backend's remote_write receiver
+> (`metrics.remoteWrite.enabled: true` in the kubebolt chart, i.e.
+> `KUBEBOLT_REMOTE_WRITE_ENABLED=true`). Both must be on.
+>
+> **Auth.** The receiver has its own bearer-token gate,
+> `metrics.remoteWrite.authMode` (`KUBEBOLT_REMOTE_WRITE_AUTH_MODE`):
+> `disabled` (default — the bearer is ignored), `permissive` (a bearer
+> is validated when present; missing or bad ones are logged and
+> accepted) or `enforced` (a valid ingest token is required, otherwise
+> `401`). Tokens come from the same store as the agent's gRPC ingest
+> tokens: with `auth.mode=ingest-token` on the agent chart, vmagent
+> sends the same mounted token (`-remoteWrite.bearerTokenFile`), so one
+> token covers both paths. Use `enforced` in production. See
+> [`integrations/prometheus.md`](integrations/prometheus.md) for the
+> full receiver reference.
 
 ---
 
@@ -29,7 +39,7 @@ make dev   # or: helm upgrade kubebolt ... --set metrics.remoteWrite.enabled=tru
 
 # 2. Agent: deploy with the sidecar enabled
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0 \
+    --version 1.4.0 \
     -n kubebolt-agent --reset-then-reuse-values \
     --set scrape.enabled=true \
     --set scrape.remoteWriteUrl=http://kubebolt.kubebolt.svc.cluster.local/api/v1/prom/write
@@ -113,9 +123,7 @@ to whatever name the upstream chart used:
 
 ### Why a per-pod sidecar (not a cluster-wide deployment)
 
-[ADR-003](../internal/agent-universal-data-plane-plan.md#adr-003-sidecar-per-pod-no-cluster-wide)
-in the data plane plan: each agent pod scrapes only the targets that
-sit on its own node. The `kubernetes-pods` job has a relabel rule
+Each agent pod scrapes only the targets that sit on its own node. The `kubernetes-pods` job has a relabel rule
 that filters discovered pods to the local node:
 
 ```yaml
@@ -150,7 +158,7 @@ scrape:
   enabled: false                  # Master switch.
   image:
     repository: victoriametrics/vmagent
-    tag: v1.143.0                 # Pinned to the same VM line as the
+    tag: v1.148.0-scratch         # Pinned to the same VM line as the
                                   # bundled VictoriaMetrics in the kubebolt
                                   # chart. Bump in lockstep on upgrade.
     pullPolicy: IfNotPresent
@@ -210,9 +218,11 @@ Step 2 is what matters. It mirrors the kubebolt-agent's own
 identifier. Without this matching, the backend filters by the
 agent's UID and the vmagent samples become invisible to the UI.
 
-> **Phase 3 changes this.** When bearer-token auth lands at the
-> receiver, the backend will assert `cluster_id` from the token's
-> tenant scope rather than trusting the relabel-applied label.
+> **The receiver trusts `cluster_id`.** Bearer auth
+> (`metrics.remoteWrite.authMode`) validates the token and the
+> `tenant_id` label against the token's tenant, but `cluster_id` is
+> still taken from the label vmagent stamps — so it must match the
+> agent's own identity.
 
 ### Cardinality protection
 
@@ -222,9 +232,10 @@ families KubeBolt queries and drops everything else — chiefly the app metrics 
 annotation scrape would otherwise sweep in (GitLab, sidekiq, client-library
 histograms). Validated on a production cluster: **96k → 19k active series
 (−80%)**, zero KubeBolt metrics lost. It also drops two unused high-cardinality
-labels (`endpoint_id`, `container_id`). Keep it in lockstep with
-[`kubebolt-metric-label-registry.md`](kubebolt-metric-label-registry.md). Set
-`scrape.metricRelabelConfigs: []` to keep everything.
+labels (`endpoint_id`, `container_id`). If you extend it, keep every family
+KubeBolt queries (see the agent chart README's
+[Metric footprint](../deploy/helm/kubebolt-agent/README.md#metric-footprint--cardinality-is-controlled-by-default)
+section). Set `scrape.metricRelabelConfigs: []` to keep everything.
 
 **Defensive caps.** On top of the allowlist, the `limits` block rejects samples
 beyond a hard bound with a vmagent log line — operators see the rejection and can
@@ -267,24 +278,11 @@ kube-state-metrics, hubble. Active sources show a green checkmark;
 inactive sources show a dash. The banner is informational — UI
 panels themselves have their own empty-state copy.
 
-For CLI-side verification, the testbed includes a `verify.sh`
-script that probes VictoriaMetrics directly and the backend's
-`/api/v1/coverage` endpoint:
-
-```bash
-internal/testbed-extras/phase2/verify.sh
-# Output:
-#   ── VictoriaMetrics probes (http://localhost:8428) ──
-#     kubebolt-agent (self)         ACTIVE   (count=2)
-#     kubelet (cAdvisor stats)      ACTIVE   (count=40)
-#     node-exporter                 ACTIVE   (count=448)
-#     kube-state-metrics            ACTIVE   (count=47)
-#     Hubble flows                  ACTIVE   (count=25)
-```
-
-The full testbed (`prom-stack.yaml` + verify.sh + walkthrough) lives
-under `internal/testbed-extras/phase2/` (gitignored — local-only dev
-tooling).
+For CLI-side verification, query the backend's `/api/v1/coverage`
+endpoint (the same data the banner renders) with an authenticated
+session, or count series per source in VictoriaMetrics directly, for
+example `count(kube_pod_info)` for kube-state-metrics and
+`count(node_load1)` for node-exporter.
 
 ### Inspecting vmagent's targets
 
@@ -416,7 +414,7 @@ generates one target per containerPort; the relabel that rewrites
 target with identical labels. vmagent drops the duplicate but logs
 the warning every cycle.
 
-**Fix in current chart (post-Phase-2.5):** the `kubernetes-pods`,
+**Fix in current chart:** the `kubernetes-pods`,
 `node-exporter`, and `kube-state-metrics` scrape jobs all ship with
 a `keep` filter on `__meta_kubernetes_pod_container_port_number`
 that drops non-matching containerPorts before the address rewrite,
@@ -452,14 +450,17 @@ unexpected status code received after sending a block ... :
 inside the JWT-protected route group. vmagent doesn't carry a user
 session JWT.
 
-**Fix:** Already fixed in the v1.10.0 backend — the route lives in
-the public-routes block, gated only by the
-`KUBEBOLT_REMOTE_WRITE_ENABLED` env var. If you see this on a newer
-release, double-check the env var:
+**Fix:** Already fixed since the v1.10.0 backend — the route lives
+outside the user-session (JWT) group. On a current release a 401
+comes from the receiver's own bearer gate: with
+`metrics.remoteWrite.authMode=enforced`, vmagent must send a valid
+ingest token (agent chart `auth.mode=ingest-token`). Check both env
+vars on the backend:
 
 ```bash
-kubectl exec -n kubebolt deployment/kubebolt -- env | grep REMOTE_WRITE
-# Should show: KUBEBOLT_REMOTE_WRITE_ENABLED=true
+kubectl exec -n kubebolt deployment/kubebolt-api -- env | grep REMOTE_WRITE
+# KUBEBOLT_REMOTE_WRITE_ENABLED=true
+# KUBEBOLT_REMOTE_WRITE_AUTH_MODE=disabled|permissive|enforced
 ```
 
 ### 6. vmagent's scrape works but the UI shows the source as inactive
@@ -522,22 +523,21 @@ data from cache: hard-refresh the browser (Cmd+Shift+R).
 
 ## What this feature is NOT
 
-Phase 2 of the data plane plan covers vmagent + receiver. It does
-NOT cover:
+The sidecar scrapes and ships; it does NOT cover:
 
-- **Bearer-token auth on the receiver** — Phase 3.
-  `KUBEBOLT_REMOTE_WRITE_ENABLED` is the only gate today.
-- **OTLP ingestion** — Phase 4 adds an OTLP HTTP/gRPC endpoint and
-  translates OTel semantic conventions to the canonical Prom schema.
-- **Helm chart split** — Phase 5 splits the bundled `kubebolt` chart
-  into `kubebolt` (control plane) + `kubebolt-agent` (already its
-  own chart).
+- **OTLP ingestion** — there is no OTLP endpoint; metrics arrive via
+  the agent's gRPC channel or Prometheus `remote_write`.
 - **Pushgateway pattern** — short-lived Jobs/CronJobs metrics aren't
   captured. kube-state-metrics covers their state.
-- **Federation cross-cluster** — Etapa 2+ of the plan.
-
-For the strategic context and roadmap, see
-[`internal/agent-universal-data-plane-plan.md`](../internal/agent-universal-data-plane-plan.md).
+- **Cross-cluster federation** — each agent's sidecar scrapes only its
+  own cluster.
+- **Reading an existing Prometheus** — if the cluster already runs a
+  Prometheus (including managed ones such as AMP, Azure Managed
+  Prometheus or GMP), either point its `remote_write` at KubeBolt
+  ([`integrations/prometheus.md`](integrations/prometheus.md)) or use
+  the agent's read mode, `agent.promRead.enabled=true`
+  ([`integrations/self-managed-prom-readonly.md`](integrations/self-managed-prom-readonly.md)).
+  `scrape.enabled` and `agent.promRead.enabled` are mutually exclusive.
 
 ---
 

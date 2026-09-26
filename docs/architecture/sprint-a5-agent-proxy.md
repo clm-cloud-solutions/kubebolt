@@ -1,5 +1,13 @@
 # Sprint A.5 — Design Doc: agent-as-K8s-API-proxy
 
+> **Design record (Spanish).** The original design of the agent-proxy tunnel
+> (gRPC `AgentChannel`, SPDY over the tunnel, agent RBAC tiers), kept because
+> `packages/proto` cites it. Mentions of SaaS or tenants describe KubeBolt
+> Cloud. For a current overview in English see
+> [docs/architecture.md](../architecture.md) and
+> [deploy/agent/README.md](../../deploy/agent/README.md).
+
+
 **Estado**: Funcional core ✅. Commits 1-8e + fixes de smoke test ✅. Pendientes: 8f-8h (hardening + tests), 9-10 (helm), 11-12 (integration + e2e).
 **Pre-requisito**: Sprint A ✅ (17 commits en `feat/agent-auth`).
 **Branch**: `feat/agent-kube-proxy` (25 commits ahead de `develop` al cerrar el core).

@@ -1,103 +1,115 @@
-# Laboratorio de simulación de incidentes para Kobi
+# Incident simulation lab for Kobi
 
-Un set de escenarios de Kubernetes intencionalmente rotos para probar, demostrar
-y validar las capacidades de **Kobi** (el copilot de KubeBolt): detección de
-incidentes, diagnóstico, y **acciones propuestas** (`propose_*`).
+A set of deliberately broken Kubernetes scenarios for testing, demoing and
+validating what **Kobi Copilot** (KubeBolt's AI assistant) can do: incident
+detection, diagnosis, and **proposed actions** (the `propose_*` tools).
 
-Todo usa imágenes estándar (`alpine`, `python`, `nginx`, `postgres`, `pause`) —
-sin imágenes custom — para que cualquiera lo aplique en su propio cluster.
+Everything uses stock images (`alpine`, `python`, `nginx`, `postgres`, `pause`),
+with no custom images, so anyone can apply it to their own cluster.
 
-Hay dos partes:
+There are two parts:
 
-| Carpeta | Qué es | Para qué |
-|---------|--------|----------|
-| [`scenarios/`](./scenarios/) | 13 incidentes de **un solo workload**, uno por capacidad | Probar cada acción de Kobi de forma aislada y limpia |
-| [`three-tier-shop/`](./three-tier-shop/) | App e-commerce de **3 capas** (front → APIs → BD externa) en namespaces separados | Probar **fallos en cascada** y el razonamiento de causa-raíz a través de la topología |
-
----
-
-## Las 9 acciones que Kobi puede proponer
-
-Kobi nunca ejecuta cambios: **propone** una acción que la UI renderiza como una
-tarjeta de confirmación con botón *Execute* (la ejecución corre bajo el rol RBAC
-del operador, no el de Kobi). Estos escenarios cubren las 9:
-
-| Acción `propose_*` | Qué hace | Escenario que la dispara |
-|--------------------|----------|--------------------------|
-| `set_resources` | Sube/baja CPU·memoria (requests/limits) | `01-oomkilled`, `06-cpu-throttle`, `07-under-requested` |
-| `restart_workload` | Rollout restart (Deploy/STS/DS) | `02-crashloop-exit` |
-| `set_env` | Agrega/cambia variables de entorno | `03-crashloop-missing-env` |
-| `set_image` | Cambia la imagen de un contenedor | `04-imagepullbackoff` |
-| `rollback_deployment` | `kubectl rollout undo` a una revisión sana | `05-bad-rollout` |
-| `patch_hpa` | Ajusta min/maxReplicas de un HPA | `08-hpa-maxed-out` |
-| `scale_workload` | Escala a N réplicas (incl. 0) | `09-zero-replicas` |
-| `debug_pod` | Adjunta un contenedor efímero de debug | `10-distroless-debug` |
-| `delete_resource` | Borra un recurso (destructivo, pide confirmación) | `13-orphaned-resources` |
-
-Además, dos escenarios disparan insights que Kobi **diagnostica** (sin acción
-auto-remediable): `11-orphan-service` (service-no-endpoints) y
-`12-orphan-networkpolicy` (policy-no-match).
+| Folder | What it is | What it's for |
+|--------|------------|---------------|
+| [`scenarios/`](./scenarios/) | 15 **single-workload** incidents, one per capability | Exercise each Kobi action in isolation, cleanly |
+| [`three-tier-shop/`](./three-tier-shop/) | A **3-tier** e-commerce app (frontend → APIs → external DB) split across namespaces | Exercise **cascading failures** and root-cause reasoning across the topology |
 
 ---
 
-## Parte 1 — Escenarios de un solo workload (`scenarios/`)
+## The 9 actions Kobi can propose
 
-Todos viven en el namespace `kobi-incident-lab`.
+Kobi never changes anything on its own: it **proposes** an action, which the UI
+renders as a confirmation card with an *Execute* button. You approve it, and it
+runs under your RBAC role, not Kobi's. These scenarios cover all nine:
 
-### Aplicar todo
+| Tool | What it does | Scenario that triggers it |
+|------|--------------|---------------------------|
+| `propose_set_resources` | Raises/lowers CPU and memory (requests/limits) | `01-oomkilled`, `06-cpu-throttle`, `07-under-requested` |
+| `propose_restart_workload` | Rollout restart (Deployment/StatefulSet/DaemonSet) | `02-crashloop-exit` |
+| `propose_set_env` | Adds/changes environment variables | `03-crashloop-missing-env` |
+| `propose_set_image` | Changes a container's image | `04-imagepullbackoff` |
+| `propose_rollback_deployment` | `kubectl rollout undo` to a healthy revision | `05-bad-rollout` |
+| `propose_patch_hpa` | Adjusts an HPA's min/maxReplicas | `08-hpa-maxed-out` |
+| `propose_scale_workload` | Scales to N replicas (including 0) | `09-zero-replicas` |
+| `propose_debug_pod` | Attaches an ephemeral debug container | `10-distroless-debug` |
+| `propose_delete_resource` | Deletes a resource (destructive, asks for confirmation) | `13-orphaned-resources` |
+
+On top of that, two scenarios fire insights that Kobi **diagnoses** without a
+remediation action: `11-orphan-service` (`service-no-endpoints`) and
+`12-orphan-networkpolicy` (`policy-no-match`).
+
+> **Autopilot** (autonomous remediation, where KubeBolt applies a fix on its own
+> within guardrails) is available in **KubeBolt Cloud** only. In the open-source
+> edition you follow every scenario with Kobi Copilot: Kobi proposes, you approve.
+
+---
+
+## Part 1 — Single-workload scenarios (`scenarios/`)
+
+They all live in the `kobi-incident-lab` namespace.
+
+### Apply everything
 
 ```bash
 kubectl apply -f scenarios/
 ```
 
-Espera 1–2 minutos a que los incidentes maduren (los crash-loops necesitan
-acumular reinicios; el HPA necesita métricas). Luego ábre KubeBolt → Insights, o
-pregúntale a Kobi.
+Wait 1–2 minutes for the incidents to mature (crash loops need to accumulate
+restarts; the HPA needs metrics). Then open KubeBolt → Insights, or ask Kobi.
 
-### Tabla de escenarios
+### Scenario table
 
-| # | Archivo | Síntoma | Insight | Acción Kobi |
-|---|---------|---------|---------|-------------|
-| 01 | `01-oomkilled.yaml` | OOMKilled (aloca 200Mi bajo límite de 128Mi) | OOMKilled | `set_resources` (mem limit) |
-| 02 | `02-crashloop-exit.yaml` | Sale con exit 1 en loop | frequent-restarts | diagnóstico + `restart_workload` |
-| 03 | `03-crashloop-missing-env.yaml` | Falta `DATABASE_URL` | crash-loop | `set_env` |
-| 04 | `04-imagepullbackoff.yaml` | Tag de imagen inexistente | image-pull-backoff | `set_image` |
-| 05 | `05-bad-rollout.yaml` | Deploy malo con revisión previa sana | image-pull/crash con rev. sana | `rollback_deployment` |
-| 06 | `06-cpu-throttle.yaml` | Busy-loop con límite de 50m CPU | cpuThrottleRisk | `set_resources` (CPU) |
-| 07 | `07-under-requested.yaml` | Usa mucho más de lo que pide | resource-underrequest | `set_resources` (requests) |
-| 08 | `08-hpa-maxed-out.yaml` | HPA pineado en maxReplicas | hpaMaxedOut | `patch_hpa` |
-| 09 | `09-zero-replicas.yaml` | `replicas: 0` | zeroReplicas | `scale_workload` |
-| 10 | `10-distroless-debug.yaml` | Pod sin shell que hay que depurar | — (triage) | `debug_pod` |
-| 11 | `11-orphan-service.yaml` | Service sin endpoints | service-no-endpoints | diagnóstico |
-| 12 | `12-orphan-networkpolicy.yaml` | NetworkPolicy sin matches | policy-no-match | diagnóstico |
-| 13 | `13-orphaned-resources.yaml` | Recursos zombie | (orphaned) | `delete_resource` |
-| 14 | `14-liveness-flapping.yaml` | Liveness falla y luego se auto-cura | liveness-probe-failing | diagnóstico + **ciclo de vida** |
-| 15 | `15-oom-selfhealing.yaml` | OOM una vez y se recupera **en el sitio** | oom-killed | diagnóstico + **ciclo de vida** |
+The Insight column lists KubeBolt's rule IDs, the same IDs you tune under
+Administration → Insights → Rules.
 
-> El 14 y el 15 no son para ver disparar la regla: son los **tests de regresión
-> del ciclo de vida** (2026-08-02). Lo que se cronometra es cuándo *desaparece*
-> el insight, no cuándo aparece.
+| # | File | Symptom | Insight (rule ID) | Kobi action |
+|---|------|---------|-------------------|-------------|
+| 01 | `01-oomkilled.yaml` | OOMKilled (allocates 200Mi under a 128Mi limit) | `oom-killed` | `propose_set_resources` (memory limit) |
+| 02 | `02-crashloop-exit.yaml` | Exits with code 1 in a loop | `crash-loop` / `frequent-restarts` | diagnosis + `propose_restart_workload` |
+| 03 | `03-crashloop-missing-env.yaml` | `DATABASE_URL` is missing | `crash-loop` | `propose_set_env` |
+| 04 | `04-imagepullbackoff.yaml` | Image tag doesn't exist | `image-pull-backoff` | `propose_set_image` |
+| 05 | `05-bad-rollout.yaml` | Bad deploy with a healthy previous revision | `image-pull-backoff` (then `progress-deadline-exceeded` after the 10 min deadline) | `propose_rollback_deployment` |
+| 06 | `06-cpu-throttle.yaml` | Busy loop under a 50m CPU limit | `cpu-throttle-risk` | `propose_set_resources` (CPU) |
+| 07 | `07-under-requested.yaml` | Uses far more than it requests | `resource-underrequest` | `propose_set_resources` (requests) |
+| 08 | `08-hpa-maxed-out.yaml` | HPA pinned at maxReplicas | `hpa-maxed-out` | `propose_patch_hpa` |
+| 09 | `09-zero-replicas.yaml` | `replicas: 0` | — (see note) | `propose_scale_workload` |
+| 10 | `10-distroless-debug.yaml` | Shell-less pod that needs debugging | — (triage) | `propose_debug_pod` |
+| 11 | `11-orphan-service.yaml` | Service with no endpoints | `service-no-endpoints` | diagnosis |
+| 12 | `12-orphan-networkpolicy.yaml` | NetworkPolicy that matches no pods | `policy-no-match` | diagnosis |
+| 13 | `13-orphaned-resources.yaml` | Zombie resources | — (orphaned objects) | `propose_delete_resource` |
+| 14 | `14-liveness-flapping.yaml` | Liveness fails, then self-heals | `liveness-probe-failing` | diagnosis + **lifecycle** |
+| 15 | `15-oom-selfhealing.yaml` | OOMs once and recovers **in place** | `oom-killed` | diagnosis + **lifecycle** |
+
+> **09:** the `zero-replicas` rule fires only when a Deployment wants replicas
+> (`spec.replicas > 0`) and none are available. An explicit `replicas: 0` reads
+> as intentional, so this scenario raises no insight; drive it by asking Kobi
+> (e.g. *"scaled-down has no pods, bring it back to 2 replicas"*).
+
+> 14 and 15 are not about watching the rule fire: they are the **lifecycle
+> regression tests** (2026-08-02). What you time is when the insight
+> *disappears*, not when it appears.
 >
-> El 15 existe porque "arreglarlo con `kubectl set resources`" **no prueba nada**:
-> cambia el pod template, nace otro ReplicaSet y el pod que hizo OOM se borra, así
-> que el insight se apaga por la razón aburrida. El único caso que discrimina es
-> la recuperación **sin reemplazar el pod**, donde `lastState.terminated.reason`
-> sigue diciendo `OOMKilled` para siempre.
+> 15 exists because "fixing it with `kubectl set resources`" **proves nothing**:
+> it changes the pod template, a new ReplicaSet is born and the pod that OOMed is
+> deleted, so the insight clears for the boring reason. The only case that
+> discriminates is recovery **without replacing the pod**, where
+> `lastState.terminated.reason` keeps saying `OOMKilled` forever.
 >
-> Criterio de fallo y comandos de contraste, en la cabecera de cada YAML.
+> The failure criteria and the commands to check against are in the header of
+> each YAML.
 
-### Dos escenarios necesitan un paso extra
+### Two scenarios need an extra step
 
-- **05 (rollback):** un rollback necesita ≥2 revisiones. Tras aplicar, arma la
-  segunda (rota) con:
+- **05 (rollback):** a rollback needs ≥2 revisions. After applying, push the
+  second (broken) revision with:
   ```bash
   cd scenarios && ./break.sh
   ```
-- **08 (HPA):** el HPA lee CPU de `metrics.k8s.io`, así que necesita
-  **metrics-server**. Viene de fábrica en la mayoría de clusters gestionados; en
-  kind instálalo si falta.
+- **08 (HPA):** the HPA reads CPU from `metrics.k8s.io`, so it needs
+  **metrics-server**. It ships by default on most managed clusters; on kind,
+  install it if it's missing.
 
-### Limpiar
+### Clean up
 
 ```bash
 kubectl delete ns kobi-incident-lab
@@ -105,41 +117,42 @@ kubectl delete ns kobi-incident-lab
 
 ---
 
-## Parte 2 — App de 3 capas en cascada (`three-tier-shop/`)
+## Part 2 — Cascading 3-tier app (`three-tier-shop/`)
 
-El escenario estrella: una tienda e-commerce de 3 capas donde **tumbar la base
-de datos** dispara una cascada de readiness que sube capa por capa. Incluye su
-propio README detallado con el diagrama de arquitectura, el walkthrough de la
-cascada y la inyección de fallos:
+The flagship scenario: a 3-tier e-commerce store where **taking down the
+database** sets off a readiness cascade that climbs tier by tier. It has its own
+detailed README with the architecture diagram, the cascade walkthrough and fault
+injection:
 
 ➡️ **[three-tier-shop/README.md](./three-tier-shop/README.md)**
 
-Resumen rápido:
+Quick summary:
 
 ```bash
 cd three-tier-shop
-database/run-db.sh     # levanta postgres FUERA del cluster (docker)
-./apply.sh             # despliega front + APIs y los conecta a la BD
-database/stop-db.sh    # 💥 dispara la cascada: BD ↓ → backend NotReady → front sirve 503
-database/start-db.sh   # recuperación end-to-end
-database/fault-api.sh orders error   # 💥 tumba UNA sola API (error|unready|slow)
-database/heal-api.sh  orders         # sana esa API
-./teardown.sh          # limpia todo
+database/run-db.sh     # starts postgres OUTSIDE the cluster (docker)
+./apply.sh             # deploys frontend + APIs and wires them to the DB
+database/stop-db.sh    # 💥 triggers the cascade: DB ↓ → backend NotReady → frontend serves 503
+database/start-db.sh   # end-to-end recovery
+database/fault-api.sh orders error   # 💥 takes down ONE API only (error|unready|slow)
+database/heal-api.sh  orders         # heals that API
+./teardown.sh          # removes everything
 ```
 
 ---
 
-## Portabilidad
+## Portability
 
-- **kind** (probado): la BD corre como contenedor docker en la red `kind` y los
-  pods la alcanzan por IP. Es el camino por defecto de los scripts.
-- **Docker Desktop / minikube / otros:** la red docker puede llamarse distinto o
-  no ser enrutable desde los pods. Pasa `DB_NETWORK=<tu-red>` a los scripts, o
-  apunta el `Endpoints` de `three-tier-shop/10-data-tier.yaml` a una IP que tus
-  pods sí alcancen (p. ej. la IP de `host.docker.internal`, o un postgres real).
-  Detalles en el README de la app de 3 capas.
-- Los escenarios de la **Parte 1** no dependen de nada externo y corren igual en
-  cualquier cluster (solo el 08 pide metrics-server).
+- **kind** (tested): the DB runs as a docker container on the `kind` network and
+  pods reach it by IP. This is the scripts' default path.
+- **Docker Desktop / minikube / others:** the docker network may be named
+  differently or not be routable from pods. Pass `DB_NETWORK=<your-network>` to
+  the scripts, or point the `Endpoints` in
+  [`three-tier-shop/10-data-tier.yaml`](./three-tier-shop/10-data-tier.yaml) at
+  an IP your pods can reach (e.g. the `host.docker.internal` IP, or a real
+  postgres). Details in the 3-tier app's README.
+- The **Part 1** scenarios depend on nothing external and run the same on any
+  cluster (only 08 needs metrics-server).
 
-> Nota: estos manifiestos describen estados de fallo **a propósito**. No los
-> apliques en un cluster de producción.
+> Note: these manifests describe failure states **on purpose**. Do not apply
+> them to a production cluster.

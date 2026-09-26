@@ -4,13 +4,14 @@
 #              then starts answering 200. kubelet fails the probe 3× (period 10s,
 #              failureThreshold 3), kills the container, and the replacement comes
 #              up healthy.
-# Insight    : "Liveness probe failing"
+# Insight    : liveness-probe-failing ("Liveness probe failing")
 #
 # WHY THIS SCENARIO EXISTS — it is the regression test for the fix of 2026-08-02.
 # The rule reads kubelet's `Unhealthy` Events, and Events are historical. Before
 # the fix its only exit was the apiserver garbage-collecting the Event at
 # --event-ttl, so the insight stayed on screen for up to an HOUR after the pod
-# was healthy, and Autopilot re-opened an incident on every cooldown.
+# was healthy, and Autopilot (KubeBolt Cloud) re-opened an incident on every
+# cooldown.
 #
 # What to watch (this is the whole point — time it):
 #

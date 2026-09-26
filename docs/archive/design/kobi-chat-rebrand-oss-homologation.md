@@ -6,7 +6,7 @@ cálido `#0a0b0a`, verde eléctrico `#00e07a` como acento nunca relleno, bisel
 fino), con fixes de legibilidad de mensajes. **El tema global `--kb-*` de la
 app NO cambia** (alcance aprobado explícitamente: solo Kobi).
 
-Mockup as-built: `docs/design/kobi-chat-rebrand-ui-mockup.html`.
+Mockup as-built: `docs/archive/design/kobi-chat-rebrand-ui-mockup.html`.
 
 ## Inventario para el port a OSS (`kubebolt`)
 

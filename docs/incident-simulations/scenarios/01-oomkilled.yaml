@@ -2,7 +2,7 @@
 #
 # Symptom    : Python allocates 200 MiB of RSS under a 128 MiB memory limit.
 #              The kernel OOM-kills the container; it restarts and OOMs again.
-# Insight    : "OOMKilled" / memory pressure, frequent-restarts
+# Insight    : oom-killed ("Container OOMKilled"), plus crash-loop / frequent-restarts
 # Kobi action: propose_set_resources — raise the memory LIMIT. A plain restart
 #              is NOT a fix: the next pod OOMs on the same allocation.
 #

@@ -5,18 +5,19 @@ agent (`packages/agent`).
 
 ## Current schema
 
-- `agent/v2/channel.proto` — `AgentChannel` service. Single bidi RPC
+- `kubebolt/agent/v2/channel.proto` — `AgentChannel` service. Single bidi RPC
   `Channel(stream AgentMessage) returns (stream BackendMessage)` that
   multiplexes everything the agent ↔ backend exchange: Hello/Welcome
   handshake, heartbeat, metrics push, and the K8s API proxy
   (`kube_request` / `kube_response` / `kube_event`).
 
 The previous `agent/v1/agent.proto` (3 unary/server-streaming RPCs:
-Register / StreamMetrics / Heartbeat) was replaced by v2 in Sprint A.5.
+Register / StreamMetrics / Heartbeat) was replaced by v2 before the agent's first public release.
 Hard cutover — the agent was not yet published externally, so no
 fleets needed a migration window.
 
-Design context: `docs/architecture/sprint-a5-agent-proxy.md`.
+Overview: [`docs/architecture.md`](../../docs/architecture.md). Original design
+(Spanish): [`docs/architecture/sprint-a5-agent-proxy.md`](../../docs/architecture/sprint-a5-agent-proxy.md).
 
 ## Generating Go code
 

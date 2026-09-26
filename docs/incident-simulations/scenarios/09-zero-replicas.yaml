@@ -3,7 +3,9 @@
 # Symptom    : A Deployment that should be serving traffic is sitting at
 #              replicas: 0. Nothing is running; any Service in front of it has
 #              no endpoints.
-# Insight    : zeroReplicasRule
+# Insight    : none by design — zero-replicas only fires when spec.replicas > 0
+#              and no replica is available; an explicit replicas: 0 reads as
+#              intentional. This scenario is driven by asking Kobi.
 # Kobi action: propose_scale_workload — scale back up to N > 0.
 #
 # Try in Kobi: "scaled-down has no pods, bring it back to 2 replicas"

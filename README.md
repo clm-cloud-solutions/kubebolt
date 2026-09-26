@@ -1,525 +1,332 @@
-# ⚡ KubeBolt
+<div align="center">
 
-[![GitHub stars](https://img.shields.io/github/stars/clm-cloud-solutions/kubebolt?style=social)](https://github.com/clm-cloud-solutions/kubebolt)
+<img src="docs/images/kubebolt-icon.svg" alt="KubeBolt" width="72" height="72">
+
+# KubeBolt
+
+**The open-source Kubernetes operations platform.**
+
+One place to see, understand and operate your clusters — health, topology,
+operations, cost and security — with Kobi, an AI SRE that reasons over the
+same context and acts only when you approve.
+
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![React](https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=white)](https://react.dev)
-[![Kubernetes](https://img.shields.io/badge/Kubernetes-client--go-326CE5?logo=kubernetes&logoColor=white)](https://kubernetes.io)
+[![Release](https://img.shields.io/github/v/release/clm-cloud-solutions/kubebolt?sort=semver)](https://github.com/clm-cloud-solutions/kubebolt/releases/latest)
+[![CI](https://github.com/clm-cloud-solutions/kubebolt/actions/workflows/ci.yml/badge.svg)](https://github.com/clm-cloud-solutions/kubebolt/actions/workflows/ci.yml)
 [![Artifact Hub](https://img.shields.io/endpoint?url=https://artifacthub.io/badge/repository/kubebolt)](https://artifacthub.io/packages/search?repo=kubebolt)
+[![GitHub stars](https://img.shields.io/github/stars/clm-cloud-solutions/kubebolt?style=social)](https://github.com/clm-cloud-solutions/kubebolt)
 
-**Instant Kubernetes Monitoring & Management**
+[Website](https://kubebolt.io/en/) · [Documentation](https://kubebolt.io/docs) · [Quick start](#quick-start) · [KubeBolt Cloud](https://kubebolt.io/docs/cloud) · [Roadmap](https://kubebolt.io/en/roadmap) · [Changelog](CHANGELOG.md)
 
-Full cluster visibility in under 2 minutes. No agents, no configuration, no Prometheus required. Connect your kubeconfig and go.
+![KubeBolt — cluster Overview](docs/images/kubebolt-dashboard.webp)
 
-### Why KubeBolt?
+</div>
 
-| | kubectl | k9s | Lens | KubeBolt |
-|---|:---:|:---:|:---:|:---:|
-| Web-based UI | | | | **Yes** |
-| Zero install | | | | **Yes** |
-| Multi-cluster | | | Yes | **Yes** |
-| RBAC-aware degradation | | | | **Yes** |
-| Pod terminal | | Yes | Yes | **Yes** |
-| Pod file browser | | | | **Yes** |
-| Port forwarding | | Yes | Yes | **Yes** |
-| YAML editing & apply | Yes | Yes | Yes | **Yes** |
-| kubectl describe | Yes | Yes | | **Yes** |
-| Restart / Scale / Delete | | Yes | Yes | **Yes** |
-| Global search (Cmd+K) | | Yes | Yes | **Yes** |
-| Cluster topology map | | | | **Yes** |
-| Insights engine | | | | **Yes** |
-| AI Copilot (BYO key) | | | | **Yes** |
-| Built-in auth & roles | | | | **Yes** |
-| Gateway API support | | | | **Yes** |
-| Helm chart (OCI) | | | | **Yes** |
-| < 70 MB RAM | | Yes | | **Yes** |
+## Why KubeBolt
 
----
+A Kubernetes alert tells you *what* broke. Finding out *why* usually means
+hopping between kubectl, dashboards, logs, the deploy history and a chat
+thread. KubeBolt puts that context in one place and keeps it there for the
+rest of the day, not just during incidents:
 
-### Dashboard Overview
+- **See** — every cluster at a glance, live resource state, history, the
+  service graph and what changed.
+- **Understand** — 24 deterministic rules turn state into named findings with
+  a recommendation, each with a history you can follow. Kobi reasons over
+  that already-built context instead of going to look for it.
+- **Act** — scale, restart, roll back, drain, edit, exec: the operations you
+  already run through kubectl, one click away, with your RBAC and an audit
+  trail. Or let Kobi prepare the change, dry-run it and wait for your
+  approval.
 
-The dashboard is split into three sub-tabs that share the same range
-selector and freshness indicator but offer different lenses on the
-cluster.
+It starts with just a kubeconfig. Add the optional agent when you want
+history, network flows, cost, or to reach clusters whose API server is not
+reachable from where KubeBolt runs.
 
-**Overview — at-a-glance scan.** KPIs, commitment bars, workload
-health, namespace tiles, recent events. Answers "is everything fine
-right now?".
+## What's inside
 
-![KubeBolt Dashboard — Overview](docs/images/kubebolt-dashboard.webp)
+### Fleet and cluster views
 
-**Capacity — investigation surface.** 2×2 trend charts (CPU / Memory
-/ Network / Filesystem) overlaid with deploy markers so a metric
-shift can be correlated with what changed; Recent Deploys table;
-cluster-wide Top Workloads · CPU; deterministic Right-sizing
-Recommendations driven by 7d P95 (over-provisioned / near-limit /
-no-specs).
+- **Home** — where you land after signing in: what needs you across every
+  cluster (unreachable clusters, silent agents, critical findings), fleet-wide
+  pods, spend and findings, what happened *while you were away*, and your
+  recent Kobi conversations.
+- **Fleet** — every cluster's health, findings, nodes, pods and spend without
+  connecting to any of them; grid or table, worst first. ⌘K searches across
+  all of them.
+- **Cluster dashboard** — four lenses on the active cluster:
+  - *Overview*: KPIs, commitment, workload health, namespaces, recent events.
+  - *Capacity*: CPU, memory, network and filesystem trends with deploy
+    markers, top consumers and right-sizing recommendations from p95 usage.
+  - *Reliability*: error rates, traffic, latency, error hot-spots and network
+    drops from Hubble (appears when Cilium/Hubble data exists).
+  - *Cost* (beta): spend, idle and savings from OpenCost (appears when
+    OpenCost data exists).
+- **26 resource views** with live CPU/memory, including Gateway API, Cilium
+  network policies, cert-manager certificates, Argo CD applications and VPAs,
+  plus Namespaces, Events and cluster RBAC. Detail pages carry YAML, logs,
+  terminal, file browser (pods), related resources, revision history, events
+  and a Monitor tab.
+- **Applications** — Helm releases with status, values, notes, the resources
+  they own and their revision history (read-only).
+- **Cluster Map** — the topology in Grid and Flow layouts, and a Traffic
+  layout drawn from observed Hubble flows (who calls whom, and what leaves
+  the cluster).
 
-![KubeBolt Dashboard — Capacity](docs/images/kubebolt-dashboard-capacity.webp)
+### Insights with memory
 
-**Reliability — Hubble L7 lens.** Surfaces only when Hubble HTTP
-metrics are flowing into VictoriaMetrics: cluster error rate split
-by 4xx / 5xx; Top Workloads · Traffic with status_class distribution;
-Top Workloads · Latency with min..max range; Error Hot-spots ranked
-by absolute error req/s; L4 Network Drops for NetworkPolicy
-violations and connection refused. Empty when Hubble isn't installed
-— no placeholder banner; the tab simply doesn't appear until L7
-data exists.
+- **24 built-in rules**: crash loops, OOM kills, image pull errors, failing
+  probes, missing ConfigMaps/Secrets, stuck rollouts, NotReady nodes, pending
+  PVCs, CPU throttling risk, memory pressure, under-requested workloads,
+  maxed-out HPAs, services without endpoints, NetworkPolicy and PDB gaps,
+  expiring certificates, failed Helm releases, out-of-sync Argo CD apps, and
+  more. Zero configuration.
+- **Episodes** — each finding has a timeline (opened, flapped, escalated,
+  muted, resolved, expired) and a recurrence count, so the third time the
+  same thing breaks reads as a pattern, not bad luck.
+- **Mutes and rule policies** — silence one resource on one rule, with an
+  expiry or until it resolves (critical always pierces). Tune thresholds and
+  severities install-wide; a rule you turn off is still counted, so the
+  silence is never invisible.
 
-![KubeBolt Dashboard — Reliability](docs/images/kubebolt-dashboard-reliability.webp)
+### Operations with guardrails
 
-Each panel ships with an Ask-Kobi affordance — panel-level for
-summarization, plus per-row on rows where each one is its own
-actionable investigation (Recent Deploys, Right-sizing, Error
-Hot-spots, Network Drops).
+- Scale, restart, roll back to a revision, pause/resume rollouts, set image,
+  resources or env, edit labels and annotations, create resources, apply
+  YAML, cordon/uncordon, drain (with live progress), evict (respects
+  PodDisruptionBudgets), debug containers, suspend/resume/trigger CronJobs,
+  delete.
+- Pod terminal, file browser, logs and port-forwarding from the browser.
+- Server-side dry-run on proposed changes; every mutation and every access
+  session (exec, port-forward, file read) lands in the audit trail.
+- Three roles — viewer, editor, admin — enforced by the backend, on top of
+  whatever the cluster credentials allow.
 
-### Cluster Topology Map
-![KubeBolt Cluster Map](docs/images/kubebolt-cluster-map.webp)
+### Security and compliance
 
-### Resource Views with Live Metrics
-![KubeBolt Deployments](docs/images/kubebolt-deployments.webp)
+Vulnerabilities, configuration, RBAC and CIS compliance, plus a runtime feed —
+normalized from the scanners you already run: **Trivy Operator**, **Kyverno**
+(or Gatekeeper via PolicyReports), CIS `ClusterComplianceReport`, and
+**Falco** events pushed with a cluster-scoped token. Findings are grouped per
+workload (one image with 47 CVEs is one thing to fix) and survive the cluster
+going away. KubeBolt doesn't scan; it doesn't replace your tools.
 
-## Quick Start
+### Kobi Copilot — your AI SRE, with your own key
 
-### Option 1: Homebrew (macOS, Linux)
+- Chat with your cluster (⌘J) or click **Ask Kobi** on an insight, a
+  resource, an event or a dashboard panel.
+- 26 tools: 17 to read (resources, YAML, describe, logs, events, topology,
+  metrics history, insights, permissions, KubeBolt's own docs) and 9 that
+  *propose* an action — restart, scale, roll back, debug, set image /
+  resources / env, patch an HPA, delete. Nothing runs until you approve it.
+- Bring your own key: Anthropic, or any OpenAI-compatible endpoint (OpenAI,
+  Azure OpenAI, Grok, DeepSeek, Mistral, Groq, OpenRouter, or self-hosted
+  models via Ollama, vLLM, LM Studio), with an automatic fallback provider.
+  Off until you configure it.
+- **MCP server** — the same 17 read tools for Claude Code, Cursor or any MCP
+  client, over HTTP (`/api/v1/mcp`, authenticated with an API token) or stdio
+  (`kubebolt-mcp`).
 
-```bash
-brew install clm-cloud-solutions/tap/kubebolt
-kubebolt --kubeconfig ~/.kube/config
-```
+### Administration
 
-Automatic updates via `brew upgrade kubebolt`. Single-process — no TSDB
-bundled. For historical metrics (Monitor tab, Top Consumers) run a
-sibling VictoriaMetrics and set `KUBEBOLT_METRICS_STORAGE_URL`; see the
-[historical-metrics note below](#historical-metrics-single-process-installs).
+Built-in authentication with local users and roles, API tokens for
+automation, agent tokens and ingest activity, Slack / Discord / email
+notifications, Kobi configuration and usage, and the insight rule matrix —
+all configurable from the UI after first login, with environment variables as
+boot defaults.
 
-### Option 2: Docker (single container)
+## Works with what you already run
 
-```bash
-docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \
-  ghcr.io/clm-cloud-solutions/kubebolt:latest
-```
+Nothing on this list is required. KubeBolt detects what's installed and adds
+it to the same context.
 
-Single multi-arch image (amd64/arm64) with embedded frontend. Signed
-with Cosign. No TSDB bundled — for historical metrics, run a sibling
-VictoriaMetrics container and pass `-e KUBEBOLT_METRICS_STORAGE_URL=...`
-(see the [historical-metrics note below](#historical-metrics-single-process-installs)),
-or use Option 6 (Compose) which bundles VM.
+| Component | What KubeBolt does with it |
+|---|---|
+| **metrics-server** | Live CPU/memory on every list and detail page |
+| **Prometheus** | Keep it: receive its `remote_write`, or have the agent read from it — including Amazon Managed Prometheus, Azure Monitor managed Prometheus and Google Managed Prometheus |
+| **Cilium / Hubble** | Traffic map, Reliability dashboard, network drops |
+| **OpenCost** | Cost dashboard, spend on Home and Fleet, right-sizing savings |
+| **Trivy Operator · Kyverno · Falco** | Security & Compliance lenses and runtime feed |
+| **Helm · Argo CD** | Applications view, release and sync-state insights |
+| **Gateway API · cert-manager · VPA** | Native resource views and relationships |
 
-### Option 3: kubectl Plugin (krew)
+Grafana stays where it is.
 
-```bash
-kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git
-kubectl krew install clm/kubebolt
-kubectl kubebolt
-```
+## Quick start
 
-Uses your current kubectl context. Same single-process binary as the
-Homebrew install — no TSDB bundled. For historical metrics see the
-[note below](#historical-metrics-single-process-installs).
-
-### Option 4: Single Binary (manual download)
-
-Download directly from the [latest release](https://github.com/clm-cloud-solutions/kubebolt/releases/latest):
-
-```bash
-# macOS Apple Silicon
-curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-darwin-arm64
-chmod +x kubebolt-darwin-arm64 && mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt
-
-# Linux amd64
-curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-linux-amd64
-chmod +x kubebolt-linux-amd64 && sudo mv kubebolt-linux-amd64 /usr/local/bin/kubebolt
-
-# Run
-kubebolt --kubeconfig ~/.kube/config
-```
-
-Available for `darwin-arm64`, `darwin-amd64`, `linux-arm64`, `linux-amd64`, and `windows-amd64`. The binary includes the React frontend embedded — API + UI on a single port. A `.env` file in the current directory is auto-loaded for configuration.
-
-#### Historical metrics — single-process installs
-
-Options 1–4 (Homebrew, Docker single container, krew, raw binary) don't
-bundle a TSDB. Live CPU/memory bars on resource lists work out of the
-box from `metrics-server`, but the Monitor tab, Node Top Consumers, and
-any agent-driven historical charts need a Prometheus-compatible
-endpoint. Either run VictoriaMetrics next to the binary
-(`docker run -d -p 8428:8428 victoriametrics/victoria-metrics`), point
-an existing one via `KUBEBOLT_METRICS_STORAGE_URL=http://host:8428`, or
-use the Helm chart / Docker Compose options below — both bundle
-VictoriaMetrics. Without it, the Monitor tab simply stays empty;
-nothing else degrades.
-
-### Option 5: Helm Chart (recommended for Kubernetes)
-
-```bash
-helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt
-```
-
-The chart deploys three workloads: the API, the web frontend, and a
-single-node **VictoriaMetrics** StatefulSet (10 GiB PVC, 30-day retention)
-that stores metrics and Hubble flow events shipped by the agent. Bundled
-by default so the install works out of the box; if your cluster already
-runs VictoriaMetrics or a compatible TSDB, see the chart README for how
-to disable the embedded instance and point at your own. Access via
-`kubectl port-forward svc/kubebolt 3000:80` or configure an Ingress.
-
-> **Pairing with kubebolt-agent.** KubeBolt and the agent ship as
-> independently versioned charts coupled at the metric/label schema.
-> KubeBolt 1.10.0+ requires `kubebolt-agent` >= 1.0.0; running them out
-> of generation produces empty dashboards (no crash, no data loss —
-> samples still ingest, the queries just don't match). See
-> [`docs/COMPATIBILITY.md`](docs/COMPATIBILITY.md) for the full matrix.
-
-For custom configuration:
+### Helm (recommended for Kubernetes)
 
 ```bash
 helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --set ingress.enabled=true \
-  --set ingress.hosts[0].host=kubebolt.example.com
+  --namespace kubebolt --create-namespace
+kubectl -n kubebolt port-forward svc/kubebolt 3000:80
 ```
 
-### Option 6: Docker Compose
-
-Runs the full stack (Go API + React frontend via nginx) in containers.
-
-**Prerequisites:** Docker Desktop with a reachable Kubernetes cluster.
-
-#### Remote clusters (EKS, GKE, AKS, etc.)
-
-If your kubeconfig points to remote cluster endpoints, it works directly:
+Open <http://localhost:3000> and sign in as `admin`. The generated password:
 
 ```bash
-# Set your kubectl context to the desired cluster
-kubectl config use-context my-cluster
-
-# Start the stack
-cd deploy
-docker compose up -d
+kubectl -n kubebolt get secret kubebolt-admin-password \
+  -o jsonpath='{.data.password}' | base64 -d; echo
 ```
 
-> **EKS note:** The API container needs the AWS CLI to obtain tokens. The Dockerfile already includes `aws-cli`, and the compose file mounts `~/.aws` for credentials. Make sure your AWS profile/SSO session is active before starting.
+The chart deploys the API, the web UI and a single-node VictoriaMetrics for
+history (10 GiB PVC, 30-day retention). A first-run wizard walks you through
+the password, Kobi, the agent and notifications — every step can be skipped.
+Chart reference: [deploy/helm/kubebolt](deploy/helm/kubebolt/README.md).
 
-#### Docker Desktop Kubernetes
-
-Docker Desktop's built-in K8s uses `127.0.0.1:6443` as the API server address, which doesn't work from inside a container. A helper script rewrites the kubeconfig to use `kubernetes.docker.internal` instead:
+### On your laptop
 
 ```bash
-# 1. Enable Kubernetes in Docker Desktop (Settings > Kubernetes > Enable)
-# 2. Switch to the docker-desktop context
-kubectl config use-context docker-desktop
+# Homebrew (macOS, Linux)
+brew install clm-cloud-solutions/tap/kubebolt
+kubebolt --kubeconfig ~/.kube/config
 
-# 3. Generate a container-compatible kubeconfig
-./deploy/docker-kubeconfig.sh
+# kubectl plugin (krew, custom index)
+kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git
+kubectl krew install clm/kubebolt
+kubectl kubebolt
 
-# 4. Start the stack
-cd deploy
-docker compose up -d
+# Docker (single container, multi-arch, Cosign-signed; runs as a non-root user)
+docker run -p 3000:3000 \
+  -v ~/.kube/config:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest
 ```
 
-Open http://localhost:3000 — the nginx frontend proxies API and WebSocket requests to the backend.
+On Linux, the mounted kubeconfig must be readable by the container's
+non-root user.
 
-The compose stack also brings up a **VictoriaMetrics** container (30-day
-retention, named volume `kubebolt-vm-data`) so historical metrics, Monitor
-tab, and Node Top Consumers work end-to-end. To point at an existing
-VictoriaMetrics / vmselect instead, set
-`KUBEBOLT_METRICS_STORAGE_URL=http://host:8428` in `deploy/.env` and
-remove (or stop) the bundled `victoriametrics` service. Retention can be
-tuned via `KUBEBOLT_METRICS_RETENTION` (default `30d`).
+Binaries for Linux and macOS (amd64, arm64) and Windows (amd64) — plus the
+`kubebolt-mcp` stdio server — are attached to every
+[release](https://github.com/clm-cloud-solutions/kubebolt/releases/latest).
+The single-process installs read every context in your kubeconfig and serve
+API and UI on one port; they don't bundle a time-series store, so point
+`KUBEBOLT_METRICS_STORAGE_URL` at a VictoriaMetrics (or run the Compose stack
+below) if you want history.
 
-To stop: `docker compose down`
-
-To rebuild after code changes: `docker compose up -d --build`
-
-### Option 7: Local development — single command
-
-Requires Go 1.25+ and Node 20+.
+### Docker Compose (full stack with history)
 
 ```bash
-# Runs both API and Web in a single terminal
-make dev
+git clone https://github.com/clm-cloud-solutions/kubebolt.git && cd kubebolt
+./deploy/docker-kubeconfig.sh   # only for Docker Desktop's built-in Kubernetes
+cd deploy && docker compose up -d
 ```
 
-API on http://localhost:8080, Web on http://localhost:5173. Press
-`Ctrl+C` to stop both. For historical metrics during local dev, the
-fastest path is `cd deploy && docker compose up -d victoriametrics` and
-exporting `KUBEBOLT_METRICS_STORAGE_URL=http://localhost:8428` before
-`make dev` — see the [single-process note above](#historical-metrics-single-process-installs).
+API, web UI and VictoriaMetrics on <http://localhost:3000>. For EKS the
+compose file mounts `~/.aws`; make sure your AWS session is active.
 
-Other useful commands:
+More options, platform guides (EKS, GKE, AKS, OpenShift, Docker Desktop) and
+troubleshooting: <https://kubebolt.io/docs/installation>.
 
-```bash
-make build        # Build API binary + frontend bundle
-make build-api    # Build only the Go binary
-make build-web    # Build only the frontend
-make test         # Run Go tests
-```
+## Connecting clusters
 
-### Option 8: Local development — separate terminals
+KubeBolt reads every context in the kubeconfig it's given, or its own
+ServiceAccount when it runs in-cluster. From the UI, **Add cluster** takes a
+kubeconfig or walks you through installing the agent.
 
-If you prefer running each service independently:
+You need the **agent** when you want history, network flows and cost, or
+when the cluster's API server isn't reachable from KubeBolt (private network,
+on-prem behind NAT). It runs inside the cluster and **dials out** over gRPC —
+no inbound ports, no VPN, no kubeconfig to hand over:
 
 ```bash
-# Terminal 1 — Start the backend
-cd apps/api
-go run cmd/server/main.go --kubeconfig ~/.kube/config
-
-# Terminal 2 — Start the frontend
-cd apps/web
-npm install && npm run dev
-```
-
-Open http://localhost:5173 — Vite proxies `/api` and `/ws` to the
-backend on port 8080. Same TSDB requirement as Option 7 — see the
-[single-process note above](#historical-metrics-single-process-installs)
-if you need historical metrics in dev.
-
-## Do I need the agent?
-
-The default install (kubeconfig + KubeBolt running on your laptop, or
-in-cluster Helm install) needs **no agent**. KubeBolt reads the
-apiserver directly via the credentials it already has.
-
-You only need the agent (`kubebolt-agent`) when **the apiserver of the
-cluster you want to monitor is not reachable from KubeBolt's backend**
-— private network, on-prem behind NAT, SaaS-style topology where
-KubeBolt doesn't get to hold customer kubeconfigs. The agent runs as a
-DaemonSet inside that cluster, dials OUT to the backend's gRPC port,
-and exposes the apiserver through an SPDY tunnel.
-
-Three install tiers depending on what you want the dashboard to be
-able to do (full picker in
-[`deploy/agent/README.md`](deploy/agent/README.md)):
-
-| Tier | Read inventory | Mutate (exec / scale / delete) | Auth required |
-|---|---|---|---|
-| `metrics` | ❌ | ❌ | optional |
-| `reader` | ✅ | ❌ | recommended |
-| `operator` | ✅ | ✅ | **yes** |
-
-Once an agent has connected, its cluster registration **survives
-backend restarts** — the cluster selector keeps showing the agent-
-proxy entry from boot, instead of going blank for the agent's
-reconnect window. See `docs/architecture/sprint-a5-agent-proxy.md`
-for the persistent-registry details.
-
-Install paths — pick whichever fits your shop:
-
-```bash
-# Helm (most flexible)
 helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
   --namespace kubebolt-system --create-namespace \
-  --set backendUrl=YOUR_BACKEND:9090 --set rbac.mode=reader
-
-# Raw manifest (simplest)
-kubectl apply -f https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/deploy/agent/kubebolt-agent-reader.yaml
-
-# UI wizard (only when KubeBolt's backend already has kubeconfig
-# access to the target cluster — Administration → Integrations)
+  --set backendUrl=<kubebolt-host>:9090 \
+  --set rbac.mode=reader
 ```
 
-The agent v1.0+ also ships an opt-in **vmagent sidecar** that scrapes
-Prom-compatible `/metrics` endpoints (kube-state-metrics, node-exporter,
-any pod with `prometheus.io/scrape: "true"`) and ships the samples to
-KubeBolt's bundled VictoriaMetrics — so you get the depth of a
-Prometheus stack without running your own Prom. See
-[`docs/agent-scraping.md`](docs/agent-scraping.md) for the
-quickstart + config reference.
+| `rbac.mode` | Read inventory | Operate (exec, scale, delete…) |
+|---|:---:|:---:|
+| `metrics` | — | — |
+| `reader` (default) | ✅ | — |
+| `operator` | ✅ | ✅ (requires auth) |
 
-## Features
+The agent can also read an existing Prometheus instead of scraping, and ships
+an optional vmagent sidecar and OpenCost. Details:
+[agent chart](deploy/helm/kubebolt-agent/README.md) ·
+[agent guide](deploy/agent/README.md) ·
+[deployment scenarios](docs/deployment-scenarios.md) ·
+[compatibility](docs/COMPATIBILITY.md).
 
-### Monitoring & Observability
-- **23 resource views** — Pods, Deployments, Services, Ingresses, NetworkPolicies, Gateways, HTTPRoutes, Nodes, and more
-- **Cluster Map** — Interactive topology with Grid and Flow layouts, namespace grouping, resource type filters
-- **Live metrics** — CPU/Memory usage bars with request/limit markers and hover tooltips
-- **Insights Engine** — 15 built-in rules: crash loops, OOM kills, CPU throttling, HPA saturation, pending PVCs, NetworkPolicy coverage gaps
-- **Real-time updates** — WebSocket-powered live updates via K8s shared informers
-- **Configurable refresh** — Choose refresh interval from 5s to 2m, persisted across sessions
+## Open Source and KubeBolt Cloud
 
-### Cluster Management
-- **Pod Terminal** — Interactive shell access from the browser (xterm.js + SPDY exec). Auto-detects bash/sh. Multi-container support. Workload pod selector for Deployments/StatefulSets/DaemonSets.
-- **Pod File Browser** — Browse directories, view file contents, and download files from any container. Works with distroless images via `find` fallback.
-- **Port Forwarding** — Forward pod ports with one click. Active forwards shown in Topbar with Open/Stop controls.
-- **Restart & Scale** — Rollout restart for Deployments/StatefulSets/DaemonSets. Scale replicas for Deployments/StatefulSets. Confirmation popovers.
-- **YAML Editing** — CodeMirror 6 editor with YAML syntax highlighting. Edit and apply changes directly from the browser.
-- **Export/Copy YAML** — Copy to clipboard or download as `.yaml` file.
-- **Delete Resources** — Confirmation modal with name-to-confirm input, force delete option, and cascade control.
-- **kubectl describe** — Full `kubectl describe` output in a modal with syntax highlighting.
-- **Workload History** — Deployment revision history via ReplicaSets. StatefulSet/DaemonSet history via ControllerRevisions.
-- **CronJob Jobs** — Child job listing with status, completions, duration, and age.
-- **Multi-cluster** — All kubeconfig contexts auto-discovered, switch clusters in one click with connection overlay
+KubeBolt ships in two editions built on the same engine. The open-source
+edition is not a demo, and it stays Apache 2.0.
 
-### Authentication & Access Control
-- **Built-in auth** — Username/password login with JWT sessions. Enabled by default, can be disabled for open access.
-- **Three roles** — **Viewer** (read-only), **Editor** (edit YAML, scale, restart, port-forward, exec), **Admin** (full access + user management)
-- **Default admin** — Auto-created on first boot with configurable password (or randomly generated, printed to logs)
-- **User management** — Grafana-style admin UI: create/edit/delete users, assign roles, reset passwords
-- **Session security** — Access tokens in memory (not localStorage), httpOnly refresh cookies, token rotation
-
-### Security & RBAC
-- **RBAC-aware** — Auto-detects permissions at connect time via SelfSubjectAccessReview
-- **Namespace-scoped SAs** — Works with RoleBinding-only ServiceAccounts using per-namespace informers
-- **Sensitive data redaction** — Secret values always redacted. ConfigMap values with sensitive keys (passwords, tokens, API keys) auto-redacted in YAML view.
-- **Graceful degradation** — Restricted resources dimmed in sidebar, "Access Restricted" pages, "No access" indicators on dashboard cards
-
-### Developer Experience
-- **Global Search (Cmd+K)** — Search across all resource types. Results grouped by kind with icons. Keyboard navigation.
-- **Insight lifecycle** — An insight is no longer a light that is on or off. Every finding opens an *episode* with a timeline (opened, flapped, escalated, muted, resolved, expired) and a 10-minute flap cooldown; a watchdog expires episodes whose cluster went silent instead of leaving them "active" forever. Insights gets Active | History with filters and an episode detail page; mutes silence one (cluster, rule, resource) with an expiry or until it resolves — critical pierces, everything is audited; Admin → Insights carries the rule matrix (malfunctions move their threshold, expectations their severity, off included) with an honest *Ignored 30d* column; and Home's greeting tells you what happened while you were away.
-- **Home & Fleet** — Two altitudes. `/home` is where you land after signing in: what needs you this morning, anywhere — unreachable clusters, silent agents, critical findings — plus fleet-wide pods, spend and findings, and your recent Kobi conversations. `/fleet` is every cluster at a glance (health, findings, cost, nodes, pods; grid or table, worst first) without connecting to any of them, and ⌘K searches across all of them. Global pages (Home, Fleet, Security, Administration) get their own menu and never depend on the active cluster; enter a cluster from the switcher or a Fleet card and the familiar per-cluster menu comes back.
-- **Security & Compliance** — Four lenses (vulnerabilities, configuration, RBAC, compliance) plus a runtime feed, fed by the scanners you already run: Trivy Operator (image CVEs, ConfigAudit, RBAC assessments, exposed secrets — the secret itself is never stored), Kyverno PolicyReports, CIS via `ClusterComplianceReport`, and Falco events pushed to `POST /ingest/falco` with a cluster-scoped ingest token. Findings are swept from every connected cluster every 10 minutes into the embedded store, aggregated **per workload** (one image with 47 CVEs is one thing to fix), and survive a cluster going unreachable. Routes: `/security`, `/security/configuration`, `/security/permissions`, `/security/compliance`, `/security/runtime`. See `docs/integrations/{trivy,kyverno,falco}.md`.
-- **Gateway API** — Native support for `gateway.networking.k8s.io` Gateways and HTTPRoutes
-- **YAML viewer** — Syntax highlighted with theme-aware colors, works in light and dark mode
-- **Search & filter** — Debounced search across resources with namespace filtering
-- **Dark/Light mode** — Full theme support with CSS custom properties
-
-### AI Copilot (Optional)
-- **In-app chat (Cmd+J)** — Ask questions about your cluster, troubleshoot issues, explain insights
-- **17 cluster tools** — Fetch resource details, logs (with grep + since), events, topology, history, kubectl describe, product docs, and more
-- **Contextual "Ask Copilot"** — One-click buttons on insights, resource detail pages (Pods, Deployments, StatefulSets, Services, Nodes) and every Warning event. Each button pre-loads a prompt with the relevant context.
-- **Conversation memory** — Auto-compact at 80% of the budget using the provider's cheap-tier model (Haiku 4.5 / gpt-4o-mini). Manual "new session with summary" via the Scissors button. Long sessions stay usable.
-- **Multi-provider** — Anthropic Claude, OpenAI (including GPT-5 with `max_completion_tokens`), xAI Grok, MiniMax, Groq, OpenRouter, Azure OpenAI, DeepSeek, Mistral, or self-hosted (Ollama, vLLM, LM Studio). Prompt caching on both Anthropic and OpenAI.
-- **Fallback model** — Auto-retry with a secondary provider on rate limits or 5xx errors
-- **BYO API key** — KubeBolt has no managed AI service. You bring your own provider key. Disabled by default.
-- **Scope guardrail** — The system prompt keeps the assistant scoped to Kubernetes/DevOps/KubeBolt topics; out-of-scope questions get a polite refusal with a redirect.
-- **Product knowledge base** — `get_kubebolt_docs` tool answers how-to questions about KubeBolt features without hallucinating.
-- Setup: [docs/guides/copilot.md](docs/guides/copilot.md) · Provider reference: [docs/guides/copilot-providers.md](docs/guides/copilot-providers.md)
-
-### Notifications
-- **Slack & Discord webhooks** — Rich messages with severity colour-coding and deep-link buttons back to the resource
-- **Email (SMTP)** — Instant, hourly digest, or daily digest modes. Multiple recipients.
-- **Global settings** — Master toggle (maintenance windows), min severity threshold, dedup cooldown, base URL for deep links, resolved-insight alerts
-- Admin page at `/admin/notifications` with test-send buttons per channel
-
-### Admin analytics
-- **Copilot Usage page** — Sessions, tokens billed, cache hit rate, estimated USD cost by provider/model, top tools with error rates, per-session drill-down with tool breakdown and compact events
-- **BoltDB-backed** — 30-day / 5000-entry retention, shared with the auth database. Zero telemetry, zero SaaS.
-- Available at `/admin/copilot-usage` when authentication is enabled (Admin role only)
-
-## Authentication
-
-KubeBolt includes built-in authentication with three roles (Admin, Editor, Viewer). Enabled by default.
-
-| Environment Variable | Default | Description |
+| | Open Source (this repository) | [KubeBolt Cloud](https://kubebolt.io/en/pricing) |
 |---|---|---|
-| `KUBEBOLT_AUTH_ENABLED` | `true` | Set `false` for open access (no login) |
-| `KUBEBOLT_ADMIN_PASSWORD` | (auto-generated) | Initial admin password. Printed to logs if not set |
-| `KUBEBOLT_JWT_SECRET` | (auto-generated) | JWT signing secret. Set explicitly to persist sessions across restarts |
-| `KUBEBOLT_DATA_DIR` | `./data` | Directory for the embedded user database |
-| `KUBEBOLT_WATCHLIST_CLIENT` | `false` | client-go 1.35 streaming initial list. Keep `false` unless every cluster is reached directly (never through an agent) — over the tunnel a dropped watch event silently shortens the informer cache |
-| `KUBEBOLT_INSIGHTS_RETENTION_HORIZON` | `168h` | Resolved insights older than this are pruned by the hourly retention pass |
-| `KUBEBOLT_INSIGHT_EXPIRE_TTL` | `15m` | A firing insight episode with no signal from its cluster for longer than this flips to `expired` (the watchdog) instead of staying active after an agent leaves |
-| `KUBEBOLT_FINDINGS_RETENTION_HORIZON` | `720h` | Resolved security findings and runtime events older than this are pruned |
-| `KUBEBOLT_AUDIT_RETENTION_HORIZON` | `2160h` | Action / access / admin audit entries older than this are pruned |
-| `KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON` | `2160h` | Kobi conversations older than this are pruned |
+| Dashboards, insights, operations, security, cost, Fleet | ✅ Unlimited | ✅ |
+| Kobi Copilot | ✅ Bring your own API key | ✅ AI credits included |
+| Kobi Autopilot (autonomous remediation from a closed catalog) | — | ✅ Open beta |
+| Sign-in | Local users and roles | Email or Google / Microsoft / GitHub, organizations and teams |
+| Hosting, upgrades, backups | You | Managed (or Enterprise Self-Hosted) |
+| Price | Free forever | Free tier; paid plans priced by infrastructure, not per seat |
 
-**Local development:**
-```bash
-# With auth (default) — password printed to terminal:
-go run cmd/server/main.go --kubeconfig ~/.kube/config
+## Security model
 
-# With a fixed password:
-KUBEBOLT_ADMIN_PASSWORD=admin123456 go run cmd/server/main.go --kubeconfig ~/.kube/config
+- Authentication on by default; the backend enforces roles on every route.
+- RBAC-aware: KubeBolt probes what its credentials may do and only watches
+  that; restricted resources are shown as restricted, not as errors.
+- Secret values are redacted in YAML views; revealing one is an explicit,
+  audited action. The live-update WebSocket carries notifications, never
+  objects.
+- The agent is outbound-only and its RBAC tier caps what the backend can do
+  through it.
+- No telemetry. Apart from the AI provider and notification channels you
+  configure, the only outbound call KubeBolt makes on its own is a check for
+  new releases on GitHub (`KUBEBOLT_UPDATE_CHECK_ENABLED=false` turns it off).
 
-# Without auth (legacy mode):
-KUBEBOLT_AUTH_ENABLED=false go run cmd/server/main.go --kubeconfig ~/.kube/config
-```
+Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
-**Docker Compose:** set variables in `deploy/.env` (see `deploy/.env.example`).
+## Configuration
 
-**Helm:** configure under `auth:` in `values.yaml`. Passwords can be managed via `existingSecret` for production.
+Most settings — Kobi, notifications, agent ingest — can be changed in
+**Administration** at runtime and are persisted in the embedded store.
+Environment variables provide boot-time values; the ones you're most likely
+to set:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `KUBEBOLT_AUTH_ENABLED` | `true` | `false` gives open access with no login |
+| `KUBEBOLT_ADMIN_PASSWORD` | generated | Initial admin password (printed once if generated) |
+| `KUBEBOLT_JWT_SECRET` | generated | Set it so sessions survive restarts |
+| `KUBEBOLT_DATA_DIR` | `./data` | Embedded database location |
+| `KUBEBOLT_METRICS_STORAGE_URL` | — | VictoriaMetrics / Prometheus-compatible endpoint for history |
+| `KUBEBOLT_AI_API_KEY` | — | Enables Kobi Copilot |
+| `KUBEBOLT_UPDATE_CHECK_ENABLED` | `true` | Release check against GitHub |
+
+The complete, commented list is in [`.env.example`](.env.example) and
+<https://kubebolt.io/docs/environment-variables>.
 
 ## Architecture
 
-```
-┌─────────────────────────────────┐         ┌────────────────────────┐
-│      Kubernetes Cluster(s)      │ ◄─ ──── │  kubebolt-agent        │
-│   API Server + Metrics Server   │  gRPC   │  (DaemonSet, optional) │
-└───────────────┬─────────────────┘         │   metrics + flows      │
-                │ kubeconfig (all contexts) └────────────┬───────────┘
-                │                                        │ samples
-┌───────────────▼─────────────────┐                      │
-│   KubeBolt Backend (Go)         │ ◄────────────────────┘
-│   ├─ Auth (BoltDB + JWT)        │ ──┐
-│   ├─ Permission Probe (SSAR)    │   │ writes + queries
-│   ├─ Shared Informers (gated)   │   │
-│   ├─ Dynamic Client (GW API)    │   ▼
-│   ├─ Metrics Collector          │ ┌──────────────────────┐
-│   ├─ Insights Engine (15 rules) │ │  VictoriaMetrics     │
-│   ├─ Agent Channel (gRPC bidi)  │ │  (StatefulSet)       │
-│   ├─ SPDY Exec Bridge           │ │  TSDB for metrics    │
-│   └─ Port Forward Manager       │ │  + Hubble flows      │
-└───────────────┬─────────────────┘ └──────────────────────┘
-                │ REST API + WebSocket
-┌───────────────▼─────────────────┐
-│   KubeBolt Frontend (React)     │
-│   ├─ Dashboard Overview         │
-│   ├─ Cluster Map (Grid/Flow/    │
-│   │    Traffic)                 │
-│   ├─ 23 Resource Views          │
-│   ├─ Pod Terminal (xterm.js)    │
-│   ├─ Pod File Browser           │
-│   ├─ Port Forward UI            │
-│   └─ Kobi (AI Copilot)          │
-└─────────────────────────────────┘
-```
+A Go backend with per-cluster informer caches, an embedded BoltDB for state
+and VictoriaMetrics for history; a React frontend with live WebSocket
+updates; and an optional outbound-only agent. See
+[docs/architecture.md](docs/architecture.md).
 
-The bundled VictoriaMetrics is optional — for clusters that already run
-a TSDB it can be replaced via `metrics.storage.externalUrl`. The agent
-is also optional — KubeBolt reads the apiserver directly via kubeconfig
-when the backend can reach it; the agent is for clusters where the
-apiserver isn't reachable from the backend (private network, SaaS-style
-multi-cluster) or when you want kubelet-level metrics without metrics-server.
-
-## RBAC & Permissions
-
-KubeBolt works with any level of Kubernetes access — from full cluster-admin to namespace-scoped read-only ServiceAccounts.
-
-| Access Level | What You See |
+| Layer | Technology |
 |---|---|
-| **Cluster-admin** | Everything — all resources, metrics, insights, terminal, port-forward |
-| **Cluster read-only** (ClusterRoleBinding `view`) | All namespace resources, no Secrets/RBAC. Restricted items dimmed in sidebar |
-| **Namespace-scoped** (RoleBindings in specific namespaces) | Only resources in permitted namespaces. Metrics polled per-namespace |
+| Backend | Go, client-go (shared informers + dynamic client), chi, gRPC, BoltDB |
+| Frontend | React 18, TypeScript, Vite, Tailwind CSS, TanStack Query & Table, React Flow, xterm.js, CodeMirror 6 |
+| Metrics | metrics-server, VictoriaMetrics, kubebolt-agent, Prometheus remote_write |
 
-At connection time, KubeBolt probes permissions via `SelfSubjectAccessReview` and adapts:
-- Informers only start for accessible resources (no 403 errors in logs)
-- Namespace-scoped SAs get per-namespace informer factories with merged results
-- UI shows a "Limited access" banner, dims restricted sidebar items, and displays clear "Access Restricted" pages
+## Documentation
 
-## Tech Stack
+- **User documentation:** <https://kubebolt.io/docs>
+- **In this repository:** [docs/](docs/README.md) — guides, integrations,
+  architecture, compatibility and release notes.
+- **Release notes:** [CHANGELOG.md](CHANGELOG.md) and
+  [docs/releases](docs/releases/).
 
-| Component | Technology |
-|-----------|-----------|
-| Backend | Go 1.25+ with client-go, Chi v5, gorilla/websocket |
-| K8s Client | Shared informers (typed) + dynamic client (Gateway API CRDs) |
-| Terminal | SPDY exec bridge + xterm.js |
-| YAML Editor | CodeMirror 6 with One Dark theme + YAML language |
-| Frontend | React 18 + TypeScript + Vite 5 + Tailwind CSS 3.4 |
-| Cluster Map | React Flow 11 with custom nodes, edges, namespace group nodes |
-| Data Fetching | TanStack Query 5 + TanStack Table 8 |
-| Icons | Lucide React |
+## Contributing
 
-## Performance
-
-| Metric | Value |
-|--------|-------|
-| Backend RAM | ~70 MB (production cluster) |
-| Frontend bundle | ~2.1 MB JS + 64 KB CSS (~605 KB gzipped) |
-| API response time | < 5ms (from informer cache) |
-| Startup time | < 5s (permission probe + informer sync) |
-| VictoriaMetrics RAM | ~256 MB request, scales with cardinality |
-| TSDB disk | ~1 GiB / 100 pods at 30-day retention (default) |
-
-## Roadmap
-
-See [docs/SPEC.md](docs/SPEC.md) for the detailed technical specification and roadmap.
-
-**Coming next:**
-- Install script (`curl get.kubebolt.dev | sh`) and Kubernetes Operator (pending custom domain setup)
-- OAuth2/OIDC authentication (GitHub, Google, Azure AD)
-- Teams and organizations
-- Hierarchical AI agents (detectors → router → investigator → planner → executor → postmortem) with per-incident economy via tiered model selection
-- JSON-aware truncation in tool results (structure-aware rather than byte-aligned)
+Issues, ideas and pull requests are welcome. Start with
+[CONTRIBUTING.md](CONTRIBUTING.md) for the local setup (`make dev`), tests and
+conventions. Questions and feedback: [GitHub Discussions](https://github.com/clm-cloud-solutions/kubebolt/discussions)
+or <hello@kubebolt.io>.
 
 ## License
 
-Apache License 2.0 — see [LICENSE](LICENSE) for the full text and [NOTICE](NOTICE) for attribution.
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Built by [CLM Cloud Solutions](https://www.clmcloudsolutions.es/en).
