@@ -1,18 +1,23 @@
 # Kobi MCP server (read-only)
 
-KubeBolt exposes Kobi's read-only investigation tools over the
+Kobi is KubeBolt's AI SRE. KubeBolt exposes the read-only investigation tools
+of Kobi Copilot over the
 [Model Context Protocol (MCP)](https://modelcontextprotocol.io), so you can
-drive a live Kubernetes cluster from any MCP host — Claude Code, Cursor, a
-CI/CD step, or another agent — using **that host's own LLM**.
+investigate a live Kubernetes cluster from any MCP host — Claude Code, Cursor,
+a CI/CD step, or another agent — using **that host's own LLM**. No KubeBolt AI
+provider key is needed for this: the host's model does the reasoning, KubeBolt
+only serves the tools.
 
 It is **read-only**: it exposes the inspection tools (overview, resources,
 YAML, describe, pod logs, events, insights, topology, time-series metrics) and
 withholds every mutating action. The read-only guarantee is enforced
-server-side — a client cannot invoke a mutating tool even by name.
+server-side — a client cannot invoke a mutating tool even by name. Kobi's
+action proposals (restart, scale, rollback, ...) exist only inside the KubeBolt
+UI, where a person approves them; see [copilot.md](copilot.md#actions-and-approval).
 
 There are two ways to run it.
 
-## 1. Remote, over HTTP (works with the OSS server, and SaaS/EE)
+## 1. Remote, over HTTP (open-source server and KubeBolt Cloud)
 
 The main `kubebolt` server publishes the MCP endpoint at:
 
@@ -21,21 +26,38 @@ POST /api/v1/mcp
 ```
 
 It uses the standard **Streamable HTTP** transport (one JSON-RPC request →
-one JSON response) and is authenticated with a normal KubeBolt **API token**.
+one JSON response) and sits behind normal KubeBolt authentication: a long-lived
+**API token** (`kbk_…` or `kbs_…`, from **Administration → API Tokens**) or a
+session access token. Session tokens expire after 15 minutes by default, so use
+an API token for MCP hosts.
+
+**Pick the token type by how the host reaches KubeBolt:**
+
+| Host reaches KubeBolt through… | Use | Scopes |
+|---|---|---|
+| The bundled web container's nginx — the UI URL of a Helm or Docker Compose install (the usual case) | **API token** (`kbk_`) | Must include `/api/v1/mcp` or `*` |
+| The API directly — the single binary / single-container image, or the chart's `<release>-api` Service from inside your network | API token or **service token** (`kbs_`) | A `kbs_` token's default scopes already include `/api/v1/mcp` |
+
+> **Why not a service token over the public URL?** The bundled nginx marks every
+> request it proxies with `X-KubeBolt-Edge: public`, and the API rejects `kbs_`
+> service tokens on such requests with `401 invalid or expired token`. That is
+> deliberate: a leaked service token is useless from the internet.
+>
+> **Scopes for `kbk_` tokens.** An API key is issued with the scopes you pick
+> and has **no default scopes**; without `/api/v1/mcp` (or `*`) it returns
+> `403 token scope does not permit this path`. The scope checkboxes in the UI
+> don't list `/api/v1/mcp`, so either tick **Everything (all authenticated
+> paths)**, or create the token through the API with an explicit scope:
+>
+> ```bash
+> curl -sS -X POST https://kubebolt.example.com/api/v1/admin/api-tokens \
+>   -H "Authorization: Bearer <admin-access-token>" -H 'Content-Type: application/json' \
+>   -d '{"label":"claude-code-mcp","type":"apikey","role":"viewer","scopes":["/api/v1/mcp"]}'
+> ```
 
 **Setup:**
 
-1. In KubeBolt, create a **service token** — Admin → API Tokens, type
-   **Service** (the default). You get a `kbs_…` value. Its default scopes
-   already include `/api/v1/mcp`, so it works against this endpoint out of the
-   box.
-
-   > **Use a service token (`kbs_`), not an API key (`kbk_`).** A `kbs_` service
-   > token created with the default scopes can reach `/api/v1/mcp`. A `kbk_` API
-   > key is issued with **no default scopes**, so it returns
-   > `403 token scope does not permit this path` unless you explicitly grant it
-   > `/api/v1/mcp` (or `*`). The same applies to **any** token you mint with
-   > custom scopes — include `/api/v1/mcp` (or `*`).
+1. Create the token as described above. The value is shown once.
 2. Point your MCP host at the endpoint with the token as a bearer header.
 
 Example MCP host config (Claude Code / Cursor `mcpServers`):
@@ -46,7 +68,7 @@ Example MCP host config (Claude Code / Cursor `mcpServers`):
     "kubebolt": {
       "type": "http",
       "url": "https://kubebolt.example.com/api/v1/mcp",
-      "headers": { "Authorization": "Bearer kbs_xxxxxxxxxxxxxxxx" }
+      "headers": { "Authorization": "Bearer kbk_xxxxxxxxxxxxxxxx" }
     }
   }
 }
@@ -55,16 +77,20 @@ Example MCP host config (Claude Code / Cursor `mcpServers`):
 **Multi-cluster / multi-tenant:** the endpoint resolves the target cluster the
 same way the rest of the API does:
 
-- The token identifies the **tenant** (always `default` in OSS; a real tenant
-  in EE/SaaS). The tenant is taken from the token, never from a request
-  parameter, so one tenant can't read another's clusters.
+- The token identifies the **tenant** (always `default` in the open-source
+  edition; the customer's organization in KubeBolt Cloud). The tenant is taken
+  from the token, never from a request parameter, so one tenant can't read
+  another's clusters.
 - The **cluster** defaults to the server's active context. To target a
-  specific cluster, send the `X-KubeBolt-Cluster: <cluster-id>` header — one
-  endpoint then serves every cluster the token is authorized for.
+  specific cluster, send the `X-KubeBolt-Cluster: <context-name>` header with
+  a cluster name as listed by `GET /api/v1/clusters` (or the `list_clusters`
+  tool) — one endpoint then serves every cluster the token is authorized for.
 
 `initialize` and `tools/list` work even when the cluster is momentarily
-disconnected; a `tools/call` in that window returns a graceful
-`{"error":"cluster not connected"}` result rather than failing the session.
+disconnected; a `tools/call` in that window returns a graceful `isError`
+result (`{"error":"This needs live cluster access. …","needsProxy":true}`)
+rather than failing the session. `get_kubebolt_docs` keeps working, since it
+needs no cluster.
 
 ## 2. Local, over stdio (`kubebolt-mcp`)
 
@@ -73,10 +99,14 @@ running locally, or a CI runner), use the standalone `kubebolt-mcp` binary. It
 talks MCP over stdin/stdout and connects straight to your kubeconfig — no
 server, no auth.
 
-Build it:
+Download it from the [GitHub release](https://github.com/clm-cloud-solutions/kubebolt/releases)
+assets — `kubebolt-mcp-linux-amd64`, `kubebolt-mcp-linux-arm64`,
+`kubebolt-mcp-darwin-amd64`, `kubebolt-mcp-darwin-arm64`,
+`kubebolt-mcp-windows-amd64.exe` — rename it to `kubebolt-mcp`, make it
+executable and put it on your `PATH`. Or build it from source:
 
 ```bash
-cd apps/api && go build -o kubebolt-mcp ./cmd/mcp
+make build-mcp            # or: cd apps/api && go build -o kubebolt-mcp ./cmd/mcp
 ```
 
 MCP host config:
@@ -114,14 +144,15 @@ stdout.
 `get_permissions`, `list_clusters`, `get_workload_metrics`,
 `get_kubebolt_docs`.
 
-These are the same tool definitions the in-product Copilot uses, filtered to
-the read-only set (`GovernedToolDefinitions(false, false)`).
+These are the same tool definitions Kobi uses inside KubeBolt, filtered to
+the read-only set (`GovernedToolDefinitions(false, false)`) — the 9
+`propose_*` action tools are neither listed nor callable.
 
 ## Prompts
 
 The server also exposes one MCP **prompt**, `kobi-guidance`, which returns
-Kobi's operating guidance (sourced from the same embedded prompt layers the
-in-product Copilot uses) so the host LLM can adopt Kobi's voice and diagnostic
+Kobi's operating guidance (sourced from the same embedded prompt layers Kobi
+uses inside KubeBolt) so the host LLM can adopt Kobi's voice and diagnostic
 approach. It is prefixed with a note that this surface is read-only.
 
 ## Verifying it works (manual test plan)
@@ -164,10 +195,10 @@ Expect: an `initialize` result, **no** line for the notification, then a
 #### B. Raw JSON-RPC over HTTP with curl (needs a live server + token)
 
 This is the path the automated tests can't reach. Create an API token in
-KubeBolt (Admin → API Tokens), then:
+KubeBolt (Administration → API Tokens; see the token table in section 1), then:
 
 ```bash
-TOKEN=kbs_xxxxxxxxxxxxxxxx
+TOKEN=kbk_xxxxxxxxxxxxxxxx
 BASE=https://kubebolt.example.com/api/v1/mcp
 auth=(-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json')
 
@@ -202,7 +233,7 @@ npx @modelcontextprotocol/inspector
 
 - **stdio:** command `kubebolt-mcp`, args `--kubeconfig ~/.kube/config`.
 - **HTTP:** transport "Streamable HTTP", URL `https://…/api/v1/mcp`, and add an
-  `Authorization: Bearer kbs_…` header.
+  `Authorization: Bearer kbk_…` header.
 
 #### D. A real host (Claude Code / Cursor)
 
@@ -220,13 +251,14 @@ answers from live data.
 | 3 | Read works | `tools/call get_cluster_overview` on a connected cluster | `result.content[0].text` is the overview JSON; **no** `isError` |
 | 4 | Args plumb through | `tools/call list_resources {type:pods,namespace:…}` | filtered list in the result |
 | 5 | **Read-only guard** | `tools/call` with `name:"propose_delete_resource"` | JSON-RPC **error**, code `-32602`, message `unknown tool: …` — the mutation is rejected even by name |
-| 6 | Graceful when disconnected | `tools/call` while the cluster is down | `result.isError = true`, text `{"error":"cluster not connected"}` — **not** a session failure |
+| 6 | Graceful when disconnected | `tools/call` while the cluster is down | `result.isError = true`, text `{"error":"This needs live cluster access. …","needsProxy":true}` — **not** a session failure |
 | 7 | Prompts | `prompts/list` then `prompts/get {name:"kobi-guidance"}` | one prompt; one `user` message starting with the read-only preamble |
 | 8 | Notification (HTTP) | POST `notifications/initialized` | HTTP **202**, empty body |
 | 9 | Wrong verb (HTTP) | `GET /api/v1/mcp` | HTTP **405**, `Allow: POST` |
 | 10 | **Auth required** (HTTP) | POST with no / bad token (when `KUBEBOLT_AUTH_ENABLED=true`) | HTTP **401** `{"error":"authentication required"}` / `invalid or expired token` |
-| 11 | Multi-cluster routing | add header `X-KubeBolt-Cluster: <id>` | `tools/call` results reflect that cluster (EE/SaaS, or OSS with multiple contexts) |
-| 12 | Tenant isolation (EE/SaaS) | use token from tenant A | only tenant A's clusters are visible; there is no way to pass another tenant as a parameter |
+| 11 | Multi-cluster routing | add header `X-KubeBolt-Cluster: <context-name>` | `tools/call` results reflect that cluster (with multiple clusters registered) |
+| 12 | Tenant isolation (KubeBolt Cloud) | use token from tenant A | only tenant A's clusters are visible; there is no way to pass another tenant as a parameter |
+| 13 | Edge guard (HTTP, through the web container) | POST with a `kbs_` service token via the public URL | HTTP **401** `{"error":"invalid or expired token"}` even though the token is valid |
 
 ### Notes / gotchas
 
