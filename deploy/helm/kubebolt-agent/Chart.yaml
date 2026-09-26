@@ -1,6 +1,6 @@
 apiVersion: v2
 name: kubebolt-agent
-description: KubeBolt node agent — Mode A (kubelet stats + Hubble) + Mode C (read managed Prom) + SPDY-tunneled K8s API proxy with 3-tier RBAC
+description: KubeBolt agent — outbound-only agent that connects a cluster to KubeBolt. Kubelet and Hubble metrics, optional reads from an existing Prometheus, and a tunneled Kubernetes API proxy with metrics/reader/operator RBAC tiers
 type: application
 version: 1.4.0
 appVersion: "1.4.0"
@@ -17,8 +17,12 @@ keywords:
   - observability
   - agent
   - daemonset
+  - metrics
+  - prometheus
   - cilium
   - hubble
+  - opencost
+  - multi-cluster
   - kubebolt
 annotations:
   artifacthub.io/license: Apache-2.0
@@ -27,9 +31,9 @@ annotations:
       url: https://github.com/clm-cloud-solutions/kubebolt
   artifacthub.io/containsSecurityUpdates: "true"
 
-# OpenCost bundled mode (E1 WS-D): optional sub-chart, off by default
-# (condition opencost.enabled). Pinned exact — bumps go through the
-# release gates (image pin table, Trivy preflight, Renovate).
+# Optional OpenCost sub-chart, installed only when opencost.enabled=true
+# (off by default). The version is pinned exactly; upgrades are reviewed
+# and security-scanned as part of the KubeBolt release process.
 dependencies:
   - name: opencost
     version: "2.5.25"
