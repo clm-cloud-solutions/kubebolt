@@ -1,12 +1,14 @@
 # Falco — runtime security
 
+> **Applies to:** KubeBolt ≥ 2.0.0.
+
 Falco watches every node's syscalls and speaks up when something steps outside
 the expected: a shell inside a container, a sensitive file read, a binary dropped
 and executed. Unlike Trivy and Kyverno, **KubeBolt does not go looking for this
 data: Falco pushes it.** It is the only source that works that way, and that
 shapes how it is configured.
 
-Events show up under **Security → Runtime**.
+Events show up under **Security → Runtime** (`/security/runtime`).
 
 ---
 
@@ -15,11 +17,16 @@ Events show up under **Security → Runtime**.
 | Value | Where it comes from | What happens without it |
 |---|---|---|
 | **Ingest URL** | `https://<your-kubebolt>/api/v1/ingest/falco` | falcosidekick logs a connection error and drops the event |
-| **Ingest token** | Administration → API Tokens, **cluster-scoped** | `401` — nothing is accepted without one |
+| **Ingest token** | **Administration → Agents & Ingest → Agent Tokens**, issued with a **cluster scope** (a `kb_…` ingest token — not a REST API token) | `401` — nothing is accepted without one |
 | **`cluster_id`** | the `kube-system` namespace UID | optional; if set and it disagrees with the token, `403` |
 
-The **tenant is never sent**: it comes from the token. A sender cannot write into
-another organization's feed even if it tries.
+The **tenant is never sent**: it comes from the token. A self-hosted install has
+a single tenant; in [KubeBolt Cloud](https://kubebolt.io), this is also what stops
+a sender from writing into another organization's feed.
+
+The endpoint needs app auth enabled (`KUBEBOLT_AUTH_ENABLED=true`, the chart
+default) — ingest tokens do not exist without it, and the endpoint answers `503
+ingest auth is not configured`.
 
 ### The token MUST be cluster-scoped
 
@@ -33,7 +40,10 @@ than accepting it half-attributed:
      for Falco so its events can be attributed
 ```
 
-Issue the token **for this specific cluster** — do not reuse the agent's.
+Issue the token **for this specific cluster** (pick it in the token dialog's
+cluster-scope dropdown) — do not reuse the agent's, which is often issued for
+"Any cluster". An unscoped token is refused; there is no permissive fallback for
+runtime security events.
 
 ### Getting the `cluster_id`
 
@@ -113,7 +123,7 @@ kubectl logs -n falco -l app.kubernetes.io/name=falcosidekick --tail=5
 #   → Webhook - POST OK (202)
 ```
 
-The event lands in **Security → Runtime** in under a minute.
+The event lands in **Security → Runtime** (`/security/runtime`) in under a minute.
 
 | Symptom | Cause |
 |---|---|

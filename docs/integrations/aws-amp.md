@@ -42,8 +42,8 @@ AMP (managed Prom in AWS)
 ```
 
 The agent runs as a **Deployment with replicas=1** (separate from the
-Mode A DaemonSet — see [topology rationale in the agent's CLAUDE.md
-section](../../CLAUDE.md#packagesagent)). One leader polls AMP; if
+Mode A DaemonSet — see [agent topologies in the architecture
+overview](../architecture.md#components)). One leader polls AMP; if
 the pod dies the next scheduled pod takes over via Kubernetes Lease.
 
 ---
@@ -170,7 +170,8 @@ nailed down before Step 3 will work:
 
 1. **Backend URL** — the host:port the agent dials via gRPC. Example:
    `kubebolt.example.com:443` for a TLS-terminated backend,
-   `kubebolt-api.kubebolt.svc:9090` for in-cluster.
+   `kubebolt-agent-ingest.kubebolt.svc:9090` for in-cluster (the chart's
+   `<release>-agent-ingest` Service).
 2. **TLS** — almost always yes for production. The chart's
    `--set tls.enabled=true` (Step 3) plus matching CA / serverName
    if your cert chain is non-public.
@@ -179,9 +180,9 @@ nailed down before Step 3 will work:
 
 | Mode | Best for | What you prepare here |
 |---|---|---|
-| **`ingest-token`** (recommended for SaaS / cross-cluster) | Backend is remote from the agent; multi-cluster operators | Issue a bearer token in the backend UI → `Admin` → `Agent tokens` → label it (e.g. `eks-prod`), keep the `kb_...` value handy |
+| **`ingest-token`** (recommended whenever the backend runs outside this cluster) | Backend is remote from the agent — a central self-hosted KubeBolt watching several clusters, or [KubeBolt Cloud](https://kubebolt.io) | Issue a bearer token in the KubeBolt UI → **Administration → Agents & Ingest → Agent Tokens** → label it (e.g. `eks-prod`), keep the `kb_...` value handy |
 | **`tokenreview`** | Backend runs in the SAME cluster as the agent (self-hosted single-cluster) | Backend chart already grants `tokenreviews/create`; no per-cluster prep |
-| **`none`** | Dev only | Skip |
+| **`disabled`** (chart default) | Dev only — the backend must accept unauthenticated agents | Skip |
 
 If you chose **`ingest-token`** (the common path), prepare the
 Secret in the EKS cluster's `kubebolt` namespace BEFORE Step 3:
@@ -196,9 +197,10 @@ kubectl -n kubebolt create secret generic kubebolt-ingest-token \
   --from-literal=token='<paste-token-from-UI>'
 ```
 
-The Secret name `kubebolt-ingest-token` matches the chart's default
-expected key (`auth.ingestToken.existingSecret`). Override that
-chart value if you used a different Secret name.
+The chart has no default Secret name: Step 3 passes
+`auth.ingestToken.existingSecret=kubebolt-ingest-token` (the token is
+read from the Secret's `token` key). Use a different name there if
+you named the Secret differently.
 
 ### D. Network egress from the cluster
 
@@ -486,11 +488,14 @@ kubectl -n kubebolt logs -l kubebolt.dev/role=promread --tail=30 \
 ```
 
 In the KubeBolt UI, the **Prometheus (read)** card under
-`/admin/integrations` should flip from `Not installed` to `Installed`
+**Administration → Agents & Ingest → Integrations** should flip from `Not installed` to `Installed`
 within ~30-60 seconds. The wait is the lease handover (~5-15s) +
 first poll cycle (~`agent.promRead.pollInterval`, default 30s). The
 cluster also shows up in the UI's cluster selector with the
 `cluster.name` you set in Step 3.
+(The card is only listed when app auth is enabled —
+`KUBEBOLT_AUTH_ENABLED=true`, the chart default. With auth off,
+confirm through the agent logs and the metrics instead.)
 
 ---
 
@@ -585,7 +590,7 @@ For Mode C (where Mode A is off), the defaults pull:
 You can override `agent.promRead.matchers` in the helm install if
 you have additional series the UI panels need. Keep matchers
 **surgical** — broad matchers cause ~65% sample bloat in our
-benchmarks (S1 multi-node smoke 2026-05-26) and run up the AMP
+benchmarks (a multi-node test cluster) and run up the AMP
 query bill.
 
 ---

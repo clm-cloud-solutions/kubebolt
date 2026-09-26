@@ -1,8 +1,11 @@
 # Kyverno — policy enforcement
 
+> **Applies to:** KubeBolt ≥ 2.0.0.
+
 Kyverno enforces the rules *you* wrote: no `hostNetwork`, images from an approved
 registry, every workload declares limits. Failed checks land in
-**Security → Policy** as policy-violation findings.
+**Security → Configuration** (`/security/configuration`) as policy-violation
+findings, next to Trivy's workload misconfiguration.
 
 KubeBolt reads **PolicyReports**, not Kyverno's own API. That is a deliberate
 choice with a useful consequence: `wgpolicyk8s.io` is a shared standard, so
@@ -54,7 +57,8 @@ kubectl get policyreports -A -o json |
   jq '.items[].results[] | select(.result=="fail") | {policy, rule, message}' | head
 ```
 
-Those failures show up in **Security → Policy** after the next sweep.
+Those failures show up in **Security → Configuration** after the next sweep
+(every 10 minutes).
 
 | Symptom | Cause |
 |---|---|
