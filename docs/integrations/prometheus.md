@@ -2,30 +2,51 @@
 
 Ship samples from an existing Prometheus (or any Prom-compatible
 agent like `vmagent`, OpenTelemetry Collector with the Prom
-exporter, Grafana Agent, etc.) into KubeBolt's backend. Phase 3
-of the [Universal Data Plane Plan](../../internal/agent-universal-data-plane-plan.md)
-makes the receiver production-ready: per-tenant bearer auth,
-per-tenant rate limiting, per-tenant cardinality caps, and
-`/metrics` observability so you can see exactly what's being
-accepted, throttled, or rejected.
+exporter, Grafana Agent, etc.) into KubeBolt's backend. The
+receiver gates every batch with bearer-token auth (ingest tokens),
+a rate limit, an active-series cap, and exposes `/metrics`
+counters so you can see exactly what's being accepted, throttled,
+or rejected.
 
 The result: operators with an existing Prom stack don't have to
 swap it out — they point `remote_write` at KubeBolt and start
 seeing their workloads in the UI within a scrape cycle.
 
 > **Available from KubeBolt 1.10.0+.** Earlier releases shipped a
-> Phase 2 receiver gated only by an env var (no auth, no
-> per-tenant limits). Phase 3 supersedes it; the endpoint URL is
-> unchanged so existing clients keep working through the upgrade.
+> receiver gated only by an env var (no auth, no limits). The
+> endpoint URL is unchanged, so existing clients keep working
+> through the upgrade.
+
+> **Single-tenant by default.** A self-hosted KubeBolt runs one
+> tenant — the auto-seeded `default` tenant — and every ingest
+> token you issue belongs to it. The `tenant_id` label, per-tenant
+> limits and per-tenant `/metrics` series described below still
+> apply; in a self-hosted install they simply all resolve to that
+> one tenant. Serving many isolated tenants from one backend is
+> what [KubeBolt Cloud](https://kubebolt.io) does.
+
+> **The receiver is off by default.** Set
+> `KUBEBOLT_REMOTE_WRITE_ENABLED=true` on the backend (Helm:
+> `metrics.remoteWrite.enabled=true`), or turn it on under
+> **Administration → Agents & Ingest → Configuration → Remote
+> write receiver**. While it is off, `POST /api/v1/prom/write`
+> answers `404` with a hint pointing at this setting.
+>
+> The **Prometheus** and **Prometheus (read)** integration cards
+> are only registered when app auth is enabled
+> (`KUBEBOLT_AUTH_ENABLED=true`, the chart default); with auth off
+> the backend has no tenant / ingest-token store, and the
+> Prometheus card's detection reads ingest-token usage from it. The
+> receiver itself still works with auth off, but without
+> token validation — `enforced` falls back to `disabled` at boot
+> with a WARN.
 
 ---
 
 ## Which ingest mode fits your cluster?
 
-KubeBolt supports two shipped ingest modes today, plus one
-planned mode for managed-Prom topologies where outbound
-`remote_write` isn't available. Pick by what your cluster
-already runs.
+KubeBolt ships three ingest modes (A, B, C); a fourth (D) is
+under research. Pick by what your cluster already runs.
 
 | # | Mode | Who scrapes targets | Who writes to KubeBolt VM | When to pick | Status |
 |---|---|---|---|---|---|
@@ -54,7 +75,13 @@ later is a one-line change on the customer's Prom plus
 ## TL;DR — point an existing Prometheus at KubeBolt
 
 ```bash
-# 1. Issue an ingest token (Admin UI → Agent Tokens, or curl below)
+# 0. Enable the receiver (off by default): Helm value
+#    metrics.remoteWrite.enabled=true, env KUBEBOLT_REMOTE_WRITE_ENABLED=true,
+#    or Administration → Agents & Ingest → Configuration.
+
+# 1. Issue an ingest token (Administration → Agents & Ingest → Agent Tokens,
+#    or curl below). <TENANT_ID> is the id of the "default" tenant:
+#    curl -s http://kubebolt.example.com/api/v1/admin/tenants -H "Authorization: Bearer <ADMIN_JWT>"
 TOKEN=$(curl -s -X POST http://kubebolt.example.com/api/v1/admin/tenants/<TENANT_ID>/tokens \
   -H "Authorization: Bearer <ADMIN_JWT>" \
   -H "Content-Type: application/json" \
@@ -67,9 +94,9 @@ remote_write:
     authorization:
       credentials: ${TOKEN}
     write_relabel_configs:
-      # Required when the receiver runs in enforced mode (recommended).
-      # Stamps every sample with the tenant_id label so the receiver
-      # can validate it against the bearer's tenant.
+      # Optional: when the label is missing the receiver stamps it
+      # from the bearer token's tenant. When present it MUST match
+      # the bearer's tenant, or the batch is rejected with 401.
       - target_label: tenant_id
         replacement: <TENANT_ID>
 EOF
@@ -88,8 +115,9 @@ When **the same KubeBolt instance receives samples from more than
 one cluster** — multi-cluster monitoring topologies, federation
 setups, AMP-bridge configurations — every Prometheus shipping to
 KubeBolt MUST stamp two labels so KubeBolt can attribute samples
-to the right cluster. Without them, the
-`/admin/integrations` Prometheus card can't tell sources apart,
+to the right cluster. Without them, the Prometheus integration
+card (**Administration → Agents & Ingest → Integrations**) can't
+tell sources apart,
 the Reliability tab can't scope L7 metrics by cluster, and every
 PromQL query in the UI quietly mixes data across clusters.
 
@@ -122,14 +150,14 @@ Prom-emitted samples joinable on a single label.
   production cluster — the UI surfaces this string in lists and
   selectors where disambiguation matters.
 
-**Wire it into `prometheus.yml`** (three labels — all needed):
+**Wire it into `prometheus.yml`** (`cluster_id` and `cluster_name` are needed; `tenant_id` is optional):
 
 ```yaml
 global:
   external_labels:
     cluster_id: "5368e0d2-0a38-490d-afac-04cd73bb9d04"   # kube-system UID — required for per-cluster attribution
     cluster_name: "prod-eks-us-east-1"                    # operator-chosen — display only
-    tenant_id: "<TENANT_ID>"                              # tenant UUID — required by the receiver's anti-spoof check
+    tenant_id: "<TENANT_ID>"                              # tenant UUID — optional, checked against the bearer's tenant
 
 remote_write:
   - url: https://kubebolt.example.com/api/v1/prom/write
@@ -145,11 +173,14 @@ The three labels do distinct jobs:
 - `cluster_name` — display only. Surfaces in cluster selectors,
   integration cards, error messages. Pick something a human can
   read at a glance.
-- `tenant_id` — security boundary. The receiver's anti-spoof
-  check (active in permissive + enforced modes) verifies this
-  label matches the bearer token's tenant. A mismatch is rejected
-  with HTTP 401 in enforced mode, logged as
-  `tenant_id_mismatch` and bucket-rejected in permissive.
+- `tenant_id` — tenant attribution. The security boundary is the
+  bearer token; this label just echoes its tenant. When a request
+  authenticates with a valid token (permissive or enforced mode),
+  the receiver reads `tenant_id` from the first series: if it is
+  absent, the receiver stamps it from the token; if it names a
+  different tenant, the batch is rejected with HTTP 401
+  (`tenant_id_mismatch` on `/metrics`) in **both** modes — a spoof
+  attempt gets no permissive fallback.
 
 `external_labels` is the most-portable way to stamp these — they
 attach to every sample regardless of which scrape job emitted it,
@@ -167,11 +198,12 @@ disambiguate. The clean path for multi-cluster monitoring is a
 Prometheus per cluster, each shipping its own `cluster_id`.
 
 **KubeBolt admin UI shows the right `cluster_id` per cluster** —
-the cluster switcher in the topbar lists each cluster KubeBolt
-knows about along with its UID, and the Prometheus integration's
-Manage panel renders a copy-pasteable snippet pre-filled with the
-active cluster's `cluster_id` and a default `cluster_name`. Use
-that when you're not sure which UID to put in `external_labels`.
+the Prometheus integration's Manage panel (**Administration →
+Agents & Ingest → Integrations → Prometheus**) renders a
+copy-pasteable `external_labels` snippet pre-filled with the
+active cluster's `cluster_id`, a default `cluster_name` and your
+`tenant_id`. Use that when you're not sure which UID to put in
+`external_labels`.
 
 ---
 
@@ -190,44 +222,48 @@ that when you're not sure which UID to put in `external_labels`.
 ## Auth modes
 
 The receiver supports three enforcement modes, selected via
-`KUBEBOLT_PROM_WRITE_AUTH_MODE` on the backend. Pick based on
-where the client lives and your trust posture:
+`KUBEBOLT_REMOTE_WRITE_AUTH_MODE` on the backend (Helm:
+`metrics.remoteWrite.authMode`, default `disabled`; also editable
+under **Administration → Agents & Ingest → Configuration**, where
+a mode change takes effect after a restart). Pick based on where
+the client lives and your trust posture:
 
 | Mode | Bearer required | Tenant validation | When to use |
 |---|---|---|---|
-| `disabled` | ignored | none | Single-cluster OSS, trusted internal network. Default for backwards compatibility. |
-| `permissive` | optional | validated when present, otherwise auto-stamped as `tenant_id="anonymous"` | Rollout window — letting legacy unauthenticated clients keep working while you migrate them. |
-| `enforced` | required | anti-spoof: the `tenant_id` label on samples MUST match the bearer's tenant | Production / SaaS / multi-tenant. Reject ambiguous traffic. |
+| `disabled` | ignored | none — traffic is attributed to the `default` tenant | Trusted internal network, receiver not reachable from outside. Default for backwards compatibility. |
+| `permissive` | optional | a valid bearer is resolved to its tenant; a missing / empty / invalid bearer falls back to the `default` tenant | Rollout window — letting legacy unauthenticated clients keep working while you migrate them. |
+| `enforced` | required | the bearer must be a valid, non-revoked ingest token | Production, or any receiver reachable beyond a trusted network. |
 
 In `enforced` mode, requests are rejected with `401 Unauthorized`
-when:
-- the `Authorization` header is missing, empty, or carries an
-  invalid token, OR
-- the request body has no `tenant_id` label, OR
-- the request body carries a `tenant_id` that doesn't match the
-  bearer's tenant (spoof attempt).
+when the `Authorization` header is missing, empty, or carries an
+invalid / revoked token. In `permissive` and `enforced` mode, a
+batch whose `tenant_id` label names a tenant other than the
+bearer's is always rejected with `401` (see
+[Per-cluster labels](#per-cluster-labels--cluster_id--cluster_name)).
 
-In `permissive` mode the same conditions log a single
+In `permissive` mode a bad or missing bearer logs a single
 `WARN msg="prom remote_write permissive-fallback engaged"` per
-process (subsequent fallbacks → DEBUG) and accept the request
-under the synthetic `tenant_id="anonymous"` identity. Track the
-ongoing rate via `kubebolt_prom_write_requests_total{tenant_id="anonymous"}`
-on `/metrics` rather than the log.
+process (subsequent fallbacks → DEBUG) and accepts the request
+under the `default` tenant. `enforced` requires app auth
+(`KUBEBOLT_AUTH_ENABLED=true`): without it there is no token store
+to validate against and the backend falls back to `disabled` with
+a WARN at boot.
 
 ---
 
-## Multi-tenant deployment
+## One token per Prometheus
 
-In SaaS or shared-backend topologies, issue one ingest token per
-tenant. Each Prometheus instance carries its own bearer AND
-stamps every sample with its `tenant_id` label, so the receiver
-can validate one against the other:
+A self-hosted install has a single tenant, but issuing **one
+ingest token per Prometheus** is still worth it: each token shows
+its own last-used time under **Administration → Agents & Ingest →
+Agent Tokens**, and you can rotate or revoke one source without
+touching the others.
 
 ```yaml
-# customer-A's prometheus.yml
+# prometheus.yml
 global:
   external_labels:
-    tenant_id: aaaa-1111-aaaa-1111   # customer A's tenant UUID
+    tenant_id: <TENANT_ID>   # optional — the default tenant's UUID
 
 remote_write:
   - url: https://kubebolt.example.com/api/v1/prom/write
@@ -236,15 +272,15 @@ remote_write:
 ```
 
 `external_labels` is preferred over `write_relabel_configs`
-because it stamps every series cluster-wide, including alerting
-and recording rule output. The agent's stock `prometheus_remote_storage_*`
-metrics still ship out without that label, but the receiver
-auto-stamps them on accept (Day 4.1 of Phase 3) so they end up
-correctly attributed.
+because it stamps every series, including alerting and recording
+rule output. Batches that arrive without the label are stamped
+with the bearer's tenant on accept.
 
-Anti-spoofing: if a client tries `tenant_id: bbbb-2222-bbbb-2222`
-with a bearer that authenticates as customer A, the receiver
-returns `401` and logs `prom remote_write tenant_id mismatch`.
+Anti-spoofing: if a client asserts a `tenant_id` other than the
+one its bearer authenticates as, the receiver returns `401` and
+logs `prom remote_write tenant_id mismatch`. This matters most in
+[KubeBolt Cloud](https://kubebolt.io), where one backend serves
+many tenants.
 
 ---
 
@@ -255,14 +291,32 @@ configured:
 
 | Knob | Default | Env var to change globally | Override per-tenant |
 |---|---|---|---|
-| Write rate (samples/s) | 10,000 | `KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC` | UI `/admin/ingest-limits` |
+| Write rate (samples/s) | 10,000 | `KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC` | **Administration → Agents & Ingest → Configuration** (per-tenant limits card) |
 | Burst (samples) | 100,000 | `KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES` | same |
 | Max active series | 1,000,000 | `KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES` | same |
 
-Per-tenant overrides live in BoltDB and survive restarts. Use
-them when a single tenant ships substantially more (or less)
-than the fleet baseline. The UI form sends only the dirty fields,
+Per-tenant overrides live in BoltDB and survive restarts. In a
+self-hosted install the card edits the `default` tenant — the one
+all your tokens belong to. The form sends only the dirty fields,
 so unchanged values inherit the system default automatically.
+
+### Custom (non-KubeBolt) series are dropped by default
+
+The receiver keeps only the metric families KubeBolt reads:
+names starting with `kube_`, `node_`, `container_`, `kubelet_`,
+`pod_flow_`, `pod_dns_`, `hubble_`, `kubebolt_`, `process_`, plus
+`up`. Everything else — your own application metrics — is dropped
+at ingest and counted in
+`kubebolt_prom_write_dropped_series_total`. A batch made entirely
+of custom series still gets `204`.
+
+To keep your own metrics in KubeBolt's VictoriaMetrics, set
+`KUBEBOLT_PROM_WRITE_ALLOW_CUSTOM_SERIES=true` on the backend
+(the fleet-wide default; a per-tenant `allowCustomSeries`
+override on `PUT /api/v1/admin/tenants/<TENANT_ID>/limits` wins
+over it). `KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED=false` switches
+the filter off entirely. Kept custom series count toward the
+max-active-series cap.
 
 When a limit trips:
 
@@ -281,7 +335,9 @@ natively; older clients fall back to exponential backoff.
 ## Observability — `/metrics`
 
 The backend exposes its own Prom-style metrics at `GET /metrics`
-(no auth — firewall this port at the load balancer in SaaS).
+(no auth — keep that path off any public load balancer or
+Ingress, or firewall it with a NetworkPolicy). In a self-hosted
+install every `tenant_id` below is the `default` tenant's id.
 Useful PromQL for each operator question:
 
 ```promql
@@ -289,21 +345,25 @@ Useful PromQL for each operator question:
 rate(kubebolt_prom_write_requests_total{tenant_id="<id>",status="rate_limit"}[5m])
 
 # "Is this tenant near the cardinality cap?"
+# (compare against the effective max active series — 1,000,000 by default)
 kubebolt_prom_write_active_series{tenant_id="<id>"}
-  / on(tenant_id) group_left
-kubebolt_prom_write_active_series_limit  # configured separately
 
 # "How much data is each tenant shipping?"
 sum by (tenant_id) (rate(kubebolt_prom_write_samples_accepted_total[5m]))
 
 # "What's the rejection rate, and why?"
 sum by (status) (rate(kubebolt_prom_write_requests_total{status!="accepted"}[5m]))
+
+# "How many custom series is the name filter dropping?"
+sum by (tenant_id, reason) (rate(kubebolt_prom_write_dropped_series_total[5m]))
 ```
 
 The `status` label takes one of: `accepted`, `rate_limit`,
 `cardinality`, `auth`, `body_size`, `malformed`,
-`tenant_id_mismatch`, `tenant_id_missing`, `injection_failed`,
-`upstream_error`.
+`tenant_id_mismatch`, `injection_failed`, `upstream_error`.
+Requests rejected before a tenant is resolved (`auth`) and
+unauthenticated traffic when auth is off are labelled
+`tenant_id="anonymous"`.
 
 The gRPC ingest path emits two additional counters that pair with
 the `kubebolt_prom_write_*` set above:
@@ -323,81 +383,50 @@ in the OSS build.
 
 ---
 
-## Scraping `/metrics` into VictoriaMetrics — `additionalScrapeConfigs`
+## Getting `/metrics` into VictoriaMetrics
 
-The admin UI's **Ingest Activity** panel (`/admin/ingest-activity`)
-runs PromQL queries against the same VictoriaMetrics the rest of
-KubeBolt uses. For those queries to return data, the backend's
-`/metrics` endpoint must be scraped into VM.
+The **Activity** tab (**Administration → Agents & Ingest →
+Activity**) runs PromQL against the same VictoriaMetrics the rest
+of KubeBolt uses. **No scrape configuration is needed for it:** the
+backend writes its own `/metrics` counters into VictoriaMetrics
+every 30 seconds (VM's `/api/v1/import/prometheus` endpoint), as
+long as `KUBEBOLT_METRICS_STORAGE_URL` is set — which the Helm
+chart always does. Give a freshly started backend a few seconds
+before expecting the first points.
 
-Two paths, pick whichever matches your setup:
+If an Activity card stays empty when you expected traffic, check
+the backend log for `self-write metrics to VM failed` (VM
+unreachable) and confirm the receiver is enabled (a disabled
+receiver answers `404`, which never reaches the counters as
+`accepted`).
 
-### Path A — kubebolt-agent's vmagent sidecar (default for most installs)
+### Optional — scrape `/metrics` from your own Prometheus
 
-When `kubebolt-agent` is installed with `scrape.enabled=true` (the
-default), its vmagent sidecar auto-discovers the `kubebolt-api`
-Service and ships `/metrics` into VM. **No operator action needed.**
-
-To verify the scrape is working:
-
-```bash
-kubectl -n kubebolt logs -l app=kubebolt-agent -c vmagent --tail=20 | grep kubebolt-api
-```
-
-You should see `200 OK` responses with the body size of the
-`/metrics` output. If you see `404` or `connection refused`,
-double-check the Service exists and the agent's RBAC includes the
-backend's namespace.
-
-### Path B — `additionalScrapeConfigs` for kube-prometheus-stack
-
-If you run kube-prometheus-stack (or any vanilla Prometheus install)
-and want IT to scrape `kubebolt-api/metrics` rather than the
-kubebolt-agent's vmagent, add the following to your
-`additionalScrapeConfigs`:
+If you want these counters in your own monitoring stack too, the
+Helm chart exposes the API as the `<release>-api` Service
+(`kubebolt-api` for a release named `kubebolt`) on the port named
+`api`. With kube-prometheus-stack, via `additionalScrapeConfigs`:
 
 ```yaml
-# Secret embedded in kube-prometheus-stack values.yaml (or any
-# Prometheus chart that supports additionalScrapeConfigsSecret).
-additionalScrapeConfigsSecret:
-  enabled: true
-  name: kubebolt-additional-scrape
-  key: kubebolt-scrape.yaml
-
-# Then create the Secret with:
-apiVersion: v1
-kind: Secret
-metadata:
-  name: kubebolt-additional-scrape
-  namespace: monitoring  # or wherever your Prom runs
-type: Opaque
-stringData:
-  kubebolt-scrape.yaml: |
-    - job_name: kubebolt-api
-      scrape_interval: 30s
-      kubernetes_sd_configs:
-        - role: endpoints
-          namespaces:
-            names:
-              - kubebolt  # adjust to your namespace
-      relabel_configs:
-        - source_labels: [__meta_kubernetes_service_name]
-          regex: kubebolt
-          action: keep
-        - source_labels: [__meta_kubernetes_endpoint_port_name]
-          regex: api
-          action: keep
+- job_name: kubebolt-api
+  scrape_interval: 30s
+  kubernetes_sd_configs:
+    - role: endpoints
+      namespaces:
+        names:
+          - kubebolt  # adjust to your namespace
+  relabel_configs:
+    - source_labels: [__meta_kubernetes_service_name]
+      regex: kubebolt-api  # <release>-api
+      action: keep
+    - source_labels: [__meta_kubernetes_endpoint_port_name]
+      regex: api
+      action: keep
 ```
 
-The relabel chain keeps only the `api` port of the `kubebolt`
-Service. Most installs only have one Service-name + port pair, but
-the `keep` clauses defend against future co-located Services that
-expose unrelated `/metrics` endpoints.
-
-The Ingest Activity panel's "No ingest activity in the last hour"
-empty state links back to this section — if a tenant card stays
-empty when you expected activity, the most likely cause is that
-neither Path A nor Path B is running and VM has no data to query.
+Do not also `remote_write` that job back into KubeBolt: the
+`kubebolt_*` series are already there (self-written), and a second
+copy with a `job` label would double any `sum()` over them.
 
 ---
 
@@ -405,14 +434,15 @@ neither Path A nor Path B is running and VM has no data to query.
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `204` but samples don't appear in UI | Series under a `cluster_id` you're not viewing | Check `count by (cluster_id) ({tenant_id="<id>"})` in VM. Set `external_labels.cluster_id` in Prom if the agent's auto-detection isn't reaching the same value. |
-| `401 missing Bearer token` (enforced mode) | Prometheus has no `authorization:` block, or the file is empty | Confirm `authorization.credentials_file` resolves to a non-empty file. Tokens look like `kb_<base64>` and survive base64 decode. |
-| `401 invalid ingest token` | Token revoked / rotated / from a different KubeBolt instance | Re-issue from `/admin/agent-tokens` and update the Prom config. |
-| `401 tenant_id label does not match` | Client stamped a tenant other than its bearer's | Make sure `external_labels.tenant_id` matches the tenant the bearer authenticates as. Spoof attempts are intentionally rejected. |
-| `401 tenant_id label required` (enforced mode) | No `tenant_id` external label set | Add `external_labels.tenant_id: <UUID>` to the Prom config. |
+| `404 remote_write receiver disabled` | Receiver is off (the default) | Set `KUBEBOLT_REMOTE_WRITE_ENABLED=true` / Helm `metrics.remoteWrite.enabled=true`, or enable it under **Administration → Agents & Ingest → Configuration**. |
+| `204` but samples don't appear in UI | Series under a `cluster_id` you're not viewing | Check `count by (cluster_id) ({tenant_id="<id>"})` in VM. Set `external_labels.cluster_id` in Prom to the cluster's `kube-system` UID. |
+| `204` but your own app metrics are missing | Core-only name filter dropped them | Expected by default — see [Custom (non-KubeBolt) series are dropped by default](#custom-non-kubebolt-series-are-dropped-by-default). |
+| `401 missing Bearer token` (enforced mode) | Prometheus has no `authorization:` block, or the file is empty | Confirm `authorization.credentials_file` resolves to a non-empty file. Tokens look like `kb_` followed by lowercase base32 characters. |
+| `401 invalid ingest token` | Token revoked / rotated / from a different KubeBolt instance | Re-issue under **Administration → Agents & Ingest → Agent Tokens** and update the Prom config. |
+| `401 tenant_id label does not match` | Client stamped a tenant other than its bearer's | Make sure `external_labels.tenant_id` matches the tenant the bearer authenticates as, or drop the label and let the receiver stamp it. Spoof attempts are intentionally rejected. |
 | `413 Payload Too Large` (body size) | Single batch exceeds 16 MiB compressed | Lower `queue_config.max_samples_per_send` (default 2000). Most operators see this only with very long-running Prometheus catching up after a network blip. |
-| `413` with `Retry-After: 3600` | Cardinality cap exceeded | Series count is checked every 30s against VM. Bump `maxActiveSeries` via UI or scope your Prom config to fewer targets. |
-| `429 Too Many Requests` | Rate limit tripped | Bump `writeSamplesPerSec`/`writeBurstSamples` via UI, or reduce scrape frequency. |
+| `413` with `Retry-After: 3600` | Cardinality cap exceeded | Series count is checked every 30s against VM. Raise max active series in the per-tenant limits card (**Administration → Agents & Ingest → Configuration**) or scope your Prom config to fewer targets. |
+| `429 Too Many Requests` | Rate limit tripped | Raise the write rate / burst in the same per-tenant limits card, or reduce scrape frequency. |
 | `502 Bad Gateway` | VictoriaMetrics unreachable from the backend | Check `kubebolt-api` → VM connectivity. Pre-fix the underlying outage; client should retry. |
 
 ---
@@ -476,10 +506,10 @@ emission.
 
 The trade-off: if you DON'T run kubebolt-agent at all (Prom-only
 topology), Pod Monitor and Workload Monitor go blank because they
-have no `job=""` series to query. **Future Phase 4+ work will
-derive workload attribution from `kube_pod_owner` + 
-`kube_replicaset_owner`** (kube-state-metrics standard names),
-allowing those charts to function against Prom-only data.
+have no `job=""` series to query. Deriving workload attribution
+from `kube_pod_owner` + `kube_replicaset_owner` (kube-state-metrics
+standard names), so those charts work against Prom-only data, is
+planned but not shipped.
 
 ### `container=""` pod-level rows — chart-side `container!=""` filter
 
@@ -610,5 +640,5 @@ metrics the agent emits with `node` correctly stamped:
 ## See also
 
 - [`docs/agent-scraping.md`](../agent-scraping.md) — alternative path: run the bundled `vmagent` sidecar instead of standalone Prometheus
-- [`internal/agent-universal-data-plane-plan.md`](../../internal/agent-universal-data-plane-plan.md) — design rationale for the multi-source ingest model
-- KubeBolt admin UI: `/admin/agent-tokens` (issue/rotate/revoke), `/admin/ingest-limits` (per-tenant overrides)
+- Mode C recipes: [AWS AMP](./aws-amp.md) · [Azure Managed Prometheus](./azure-managed-prometheus.md) · [GCP GMP](./gcp-managed-prometheus.md) · [self-managed, read-only](./self-managed-prom-readonly.md)
+- KubeBolt admin UI (`/admin/agents`): **Administration → Agents & Ingest** — **Agent Tokens** (issue / rotate / revoke), **Activity** (ingest counters), **Integrations** (Prometheus card + setup snippet), **Configuration** (remote_write receiver, auth mode, per-tenant limits)

@@ -3,7 +3,7 @@
 # Symptom    : the first container allocates 200 MiB under a 128 MiB limit and is
 #              OOM-killed. kubelet restarts it in the SAME pod, and the second run
 #              allocates 10 MiB and lives.
-# Insight    : "Container OOMKilled"
+# Insight    : oom-killed ("Container OOMKilled")
 #
 # WHY THIS SCENARIO EXISTS — scenario 01 makes a pod OOM forever, which never
 # exercises the CLEARING path. And "fix it with kubectl set resources" does not

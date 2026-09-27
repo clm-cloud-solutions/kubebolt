@@ -248,7 +248,7 @@ func (h *handlers) handleScale(w http.ResponseWriter, r *http.Request) {
 	// it's enforced here.
 	if body.Replicas == 0 && h.copilotDestructiveBlocked(r) {
 		respondGovernanceBlocked(w, "destructive-ops",
-			"Scale-to-0 via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → Copilot.")
+			"Scale-to-0 via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → AI (Kobi) → Configuration.")
 		return
 	}
 
@@ -653,7 +653,7 @@ func (h *handlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 	// delete tool when the sub-switch is off).
 	if h.copilotDestructiveBlocked(r) {
 		respondGovernanceBlocked(w, "destructive-ops",
-			"Delete via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → Copilot.")
+			"Delete via Kobi is disabled by the destructive-ops governance setting. An admin can enable it in Administration → AI (Kobi) → Configuration.")
 		return
 	}
 

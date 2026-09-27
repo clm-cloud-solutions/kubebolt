@@ -3,7 +3,7 @@
 # Symptom    : Each replica burns ~100% of its requested CPU, so the HPA scales
 #              up until it hits maxReplicas (2) and stays there — sustained
 #              pressure with no headroom left to absorb a spike.
-# Insight    : hpaMaxedOutRule (HPA at max with sustained desired > current)
+# Insight    : hpa-maxed-out (HPA at max with sustained desired > current)
 # Kobi action: propose_patch_hpa — RAISE maxReplicas. Lowering minReplicas is
 #              the wrong direction for a max-pinned HPA.
 #

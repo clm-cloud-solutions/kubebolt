@@ -17,7 +17,7 @@
 #   3. Add it as HOMEBREW_TAP_TOKEN secret in this repo's settings
 #   4. The update-homebrew-tap job in release.yml handles the rest
 class Kubebolt < Formula
-  desc "Instant Kubernetes monitoring and management — full cluster visibility in under 2 minutes"
+  desc "Open-source Kubernetes operations platform: health, insights, operations, security and cost"
   homepage "https://github.com/clm-cloud-solutions/kubebolt"
   version "__VERSION__"
   license "Apache-2.0"

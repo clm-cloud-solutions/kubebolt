@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in KubeBolt or kubebolt-agent doesn't work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check [open issues](https://github.com/clm-cloud-solutions/kubebolt/issues) and the [troubleshooting guide](https://kubebolt.io/docs/troubleshooting) first. Security issues go to [SECURITY.md](https://github.com/clm-cloud-solutions/kubebolt/blob/main/SECURITY.md), not here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to …
+        2. Click …
+        3. See …
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: KubeBolt version
+      description: Shown in the About dialog (sidebar footer), or with `kubebolt --version`.
+      placeholder: "2.1.0"
+    validations:
+      required: true
+  - type: dropdown
+    id: install
+    attributes:
+      label: How is KubeBolt running?
+      options:
+        - Helm chart
+        - Docker Compose
+        - Docker (single container)
+        - Homebrew / krew / binary
+        - From source (make dev)
+    validations:
+      required: true
+  - type: input
+    id: agent
+    attributes:
+      label: Agent version and mode (if used)
+      placeholder: "kubebolt-agent 1.4.0, rbac.mode=reader, DaemonSet"
+  - type: input
+    id: kubernetes
+    attributes:
+      label: Kubernetes distribution and version
+      placeholder: "EKS 1.33, kind 1.32, OpenShift 4.20…"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant API or agent logs (`KUBEBOLT_LOG_LEVEL=debug` helps). Remove secrets and hostnames you don't want public.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots, browser console errors, configuration.

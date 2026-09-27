@@ -1,9 +1,17 @@
 # Trivy Operator — vulnerabilities, misconfiguration and CIS
 
+> **Applies to:** KubeBolt ≥ 2.0.0.
+
 Trivy Operator scans what is actually running: the CVEs in your images, workload
 misconfiguration, exposed secrets, RBAC posture and the CIS benchmark. Its
-findings land across **Security → CVEs**, **Misconfig**, **RBAC** and
-**Compliance**.
+findings land across four of the **Security** tabs:
+
+| Tab | Route | What Trivy puts there |
+|---|---|---|
+| **Vulnerabilities** | `/security` | image CVEs and exposed secrets |
+| **Configuration** | `/security/configuration` | workload misconfiguration (ConfigAudit) |
+| **Permissions** | `/security/permissions` | RBAC assessment (namespaced and cluster-wide) |
+| **Compliance** | `/security/compliance` | failing CIS controls, and any check that carries a CIS control id |
 
 Like Kyverno and unlike Falco, nothing is pushed: Trivy writes CRDs and KubeBolt
 lists them on its sweep. No token, no webhook, no exposed endpoint.
@@ -63,6 +71,15 @@ This is the opposite of the Kyverno rule, where an unlabelled severity still
 becomes a finding. The difference is who decided: a policy was written by someone
 on purpose, while a CVE's severity is assigned upstream and grades a risk that
 may not apply here.
+
+**Misconfiguration: CRITICAL, HIGH and MEDIUM.** Wider than the CVE gate on
+purpose — MEDIUM is where "runs as root", "can elevate its own privileges" and
+"seccomp disabled" live. LOW is dropped: it is dominated by UID/GID checks and
+"CPU/memory not limited", a capacity concern KubeBolt already raises as an
+insight.
+
+**Exposed secrets: the finding never contains the secret** — only where it was
+found.
 
 **Compliance: only failing controls.** A passing control produces nothing.
 

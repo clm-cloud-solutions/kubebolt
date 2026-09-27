@@ -11,7 +11,8 @@
 # another cluster, same cluster). Template will fail fast without it.
 # Examples:
 #   host.docker.internal:9090                            (backend on laptop via Docker Desktop)
-#   kubebolt.kubebolt.svc.cluster.local:9090             (in-cluster backend, default release)
+#   kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090  (in-cluster backend: release "kubebolt" in namespace "kubebolt";
+#                                                          the Service is <release>-agent-ingest.<ns>.svc.cluster.local:9090)
 #   10.0.0.5:9090                                        (bare IP)
 backendUrl: ""
 

@@ -1,5 +1,13 @@
 # KubeBolt — Technical Specification
 
+> **Historical design record.** This is the original technical specification
+> (March 2026) and the phase-by-phase roadmap it grew into. It is kept because
+> code comments cite its sections, but it is **not maintained** and parts of it
+> describe plans that changed, shipped differently, or belong to KubeBolt
+> Cloud. For what KubeBolt does today, read the [README](../README.md),
+> [docs/architecture.md](architecture.md) and the user documentation at
+> <https://kubebolt.io/docs>.
+
 > **Version:** 1.1
 > **Status:** Phase 1 Implemented
 > **Last Updated:** March 2026
@@ -1331,7 +1339,7 @@ Priority: high — adds an in-app AI assistant that combines deep Kubernetes exp
 
 **Key principle: BYO API key.** KubeBolt is **not a managed AI service**. The administrator configures their own API key (Anthropic, OpenAI, or any custom provider) at install time via env vars. KubeBolt has no AI billing — users pay their LLM provider directly. If no key is configured, the copilot is disabled but the rest of KubeBolt works fully.
 
-The complete skill specification, including system prompt, tool definitions, knowledge base, and integration guide, lives at `skills/kubebolt-copilot/`.
+The complete skill specification, including system prompt, tool definitions, knowledge base, and integration guide, lived at `skills/kubebolt-copilot/` (now archived in `docs/archive/kubebolt-copilot-skill/`; the prompts that ship live in `apps/api/internal/copilot/prompts/`).
 
 #### Features
 
@@ -1402,12 +1410,12 @@ The Helm chart exposes these via a `copilot:` block in `values.yaml` with suppor
 - `CLAUDE.md` — Architecture notes for the copilot
 
 **Skill (already complete):**
-- `skills/kubebolt-copilot/SKILL.md` — Role, response guidelines, error handling, safety, formatting, language matching
-- `skills/kubebolt-copilot/references/api-tools.md` — All 16 tool definitions with schemas
-- `skills/kubebolt-copilot/references/insights-rules.md` — All 12 KubeBolt insight rules
-- `skills/kubebolt-copilot/references/kubernetes-knowledge.md` — Kubernetes knowledge base for general questions
-- `skills/kubebolt-copilot/references/integration-guide.md` — Implementation guide for backend proxy, BYO key model, fallback behavior, Helm config
-- `skills/kubebolt-copilot/references/examples.md` — 12 few-shot conversation examples
+- `docs/archive/kubebolt-copilot-skill/SKILL.md` — Role, response guidelines, error handling, safety, formatting, language matching
+- `docs/archive/kubebolt-copilot-skill/references/api-tools.md` — All 16 tool definitions with schemas
+- `docs/archive/kubebolt-copilot-skill/references/insights-rules.md` — All 12 KubeBolt insight rules
+- `docs/archive/kubebolt-copilot-skill/references/kubernetes-knowledge.md` — Kubernetes knowledge base for general questions
+- `docs/archive/kubebolt-copilot-skill/references/integration-guide.md` — Implementation guide for backend proxy, BYO key model, fallback behavior, Helm config
+- `docs/archive/kubebolt-copilot-skill/references/examples.md` — 12 few-shot conversation examples
 
 #### Tool efficiency & token optimization (additional)
 
@@ -1768,7 +1776,7 @@ Priority: high — lowers the barrier to adoption by offering multiple installat
 
 **Key principle: Single binary foundation.** All distribution methods build on a single Go binary with embedded frontend assets (`embed.FS`). The binary serves both the API and the React UI from one HTTP server on one port.
 
-The full specification is in `docs/kubebolt-distribution-spec.md`.
+The full specification is in `docs/archive/kubebolt-distribution-spec.md`.
 
 | Feature | Impact | Description |
 |---------|--------|-------------|

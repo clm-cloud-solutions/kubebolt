@@ -1,7 +1,7 @@
 # KubeBolt Helm Chart Values
 #
 # ─── UI-first config model (spec #09 V1 + V2, 2026-05-24) ────────────
-# KubeBolt ships an admin Settings UI that edits the following domains
+# KubeBolt ships an Administration UI that edits the following domains
 # at runtime — no redeploy needed:
 #
 #   - AI Copilot           (provider, model, API key, fallback, budget)
@@ -13,7 +13,7 @@
 #                           auth mode + fleet defaults, SPDY tunnel idle)
 #                           Three fields restart-required (auth mode +
 #                           token audience + mTLS); rest hot-reload.
-#   - Per-tenant overrides (Settings → Agents & Ingest, bottom card)
+#   - Per-tenant overrides (Administration → Agents & Ingest → Configuration, bottom card)
 #
 # Values stored via the UI OVERRIDE the env baseline this chart sets
 # on every read. You can leave every UI-domain value in this file
@@ -29,16 +29,16 @@
 #     (first-boot seed + signing key + data dir)
 #
 # ─── What you CAN set here but BETTER via UI ─────────────────────────
-#   - copilot.*               (Settings → AI Copilot)
-#   - notifications via extraEnv  (Settings → Notifications)
-#   - access/refresh token TTLs via extraEnv  (Settings → Auth)
-#   - display name + refresh defaults via extraEnv  (Settings → General)
+#   - copilot.*               (Administration → AI (Kobi) → Configuration)
+#   - notifications via extraEnv  (Administration → System → Notifications)
+#   - access/refresh token TTLs via extraEnv  (Administration → Access → Authentication)
+#   - display name + refresh defaults via extraEnv  (Administration → System → General)
 #   - agentIngest.authMode + .autoRegisterClusters + .rateLimit.*
-#       (all in Settings → Agents & Ingest now)
-#   - metrics.remoteWrite.enabled + .authMode  (Settings → Agents & Ingest)
+#       (all in Administration → Agents & Ingest → Configuration now)
+#   - metrics.remoteWrite.enabled + .authMode  (Administration → Agents & Ingest → Configuration)
 #
 # To inspect what env vars THIS chart actually wires into the container,
-# log into the UI as admin and open Settings → "Boot snapshot" — it
+# log into the UI as admin and open Administration → System → "Boot snapshot" — it
 # now groups vars into BOOT-TIME and RUNTIME tiers with category
 # subheadings for fast scanning.
 
@@ -354,7 +354,7 @@ auth:
 
 # AI Copilot configuration
 #
-# DEPRECATED — prefer Settings → AI Copilot in the UI. The fields below
+# DEPRECATED — prefer Administration → AI (Kobi) → Configuration in the UI. The fields below
 # still work as a boot-time baseline (useful for GitOps / config-as-code
 # workflows that want to seed an install without manual UI steps), but
 # every value here is editable at runtime from the admin UI without a
@@ -365,9 +365,12 @@ auth:
 # copilot entirely. KubeBolt itself works fully without the copilot.
 copilot:
   enabled: false
-  provider: anthropic     # anthropic | openai | custom
+  provider: anthropic     # anthropic | openai — any OpenAI-compatible gateway
+                          # (xAI, DeepSeek, Groq, Ollama…) is provider=openai + baseUrl
   model: ""               # optional — uses provider default if empty
-  baseUrl: ""             # optional — for custom/self-hosted endpoints
+  baseUrl: ""             # optional — the FULL endpoint, used verbatim (no path is appended):
+                          # e.g. https://api.x.ai/v1/chat/completions (openai) or
+                          # https://my-proxy.example.com/v1/messages (anthropic)
   maxTokens: 4096
   # API key — recommended to set via existingSecret rather than apiKey
   apiKey: ""
@@ -378,9 +381,9 @@ copilot:
   # cheaper/smaller model from the same provider.
   fallback:
     enabled: false
-    provider: ""          # anthropic | openai | custom (defaults to primary)
+    provider: ""          # anthropic | openai (defaults to primary)
     model: ""             # required if fallback.enabled is true
-    baseUrl: ""
+    baseUrl: ""           # optional — full endpoint, same rule as copilot.baseUrl
     apiKey: ""
     existingSecret: ""    # name of Secret containing 'api-key' for fallback
 

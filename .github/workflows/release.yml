@@ -892,7 +892,8 @@ jobs:
 
           ### Docker (single container)
           \`\`\`bash
-          docker run -p 3000:3000 -v ~/.kube:/root/.kube:ro \\
+          docker run -p 3000:3000 \\
+            -v ~/.kube/config:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \\
             ghcr.io/${{ github.repository }}:${{ steps.image_version.outputs.tag }}
           \`\`\`
 

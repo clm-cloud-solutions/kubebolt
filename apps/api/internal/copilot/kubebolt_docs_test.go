@@ -92,6 +92,21 @@ func TestKubebolDocsGet_AllTopicsResolve(t *testing.T) {
 	}
 }
 
+// Every alias must land on a real topic in THIS edition's map — the alias
+// table is shared across editions (kubebolt_docs.go) while the map is not
+// (kubebolt_docs_default.go / kubebolt_docs_ee.go), so an alias whose target
+// one edition dropped would silently return "" there.
+func TestKubebolDocsAliases_ResolveToRealTopics(t *testing.T) {
+	for alias, target := range kubeboltDocsAliases {
+		if _, ok := kubebolt_docs[target]; !ok {
+			t.Errorf("alias %q points at %q, which is not a topic in this edition", alias, target)
+		}
+		if got := KubebolDocsGet(alias); got != kubebolt_docs[target] {
+			t.Errorf("alias %q did not resolve to %q", alias, target)
+		}
+	}
+}
+
 func snippet(s string) string {
 	if len(s) <= 60 {
 		return s

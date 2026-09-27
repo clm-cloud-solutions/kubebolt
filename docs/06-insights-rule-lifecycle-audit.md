@@ -1,5 +1,12 @@
 # Insights rule lifecycle — an insight must clear on evidence, not on a clock (Finding #6)
 
+> **Engineering record (resolved).** An internal audit of how insight rules
+> re-fire, kept because `apps/api/internal/insights/rules.go` cites it.
+> References to Autopilot describe KubeBolt Cloud; the open-source edition has
+> no Autopilot. For the current insight lifecycle see
+> [docs/releases/v2.1.0.md](releases/v2.1.0.md).
+
+
 > **Status: ✅ RESOLVED (2026-08-02).** Supersedes the 2026-07-01 pass, which was marked
 > resolved but **missed one rule and mis-fixed three others**. Read "What the first pass got
 > wrong" before trusting any classification in here.

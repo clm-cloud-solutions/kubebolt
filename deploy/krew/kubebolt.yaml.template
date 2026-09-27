@@ -18,12 +18,15 @@ metadata:
 spec:
   version: v__VERSION__
   homepage: https://github.com/clm-cloud-solutions/kubebolt
-  shortDescription: "Instant Kubernetes monitoring — full cluster visibility in under 2 minutes"
+  shortDescription: "Kubernetes operations platform in your browser"
   description: |
-    KubeBolt gives you full cluster visibility in under 2 minutes.
-    No agents, no Prometheus, no configuration. 23 resource views,
-    interactive cluster topology map, 12-rule insights engine,
-    and built-in AI copilot.
+    KubeBolt is an open-source Kubernetes operations platform: one place
+    to see, understand and operate your clusters. It starts from your
+    kubeconfig with nothing to install in the cluster: 26 resource views
+    with live metrics, an interactive cluster map, 24 insight rules with
+    history, day-2 actions (scale, restart, roll back, drain, exec, logs),
+    security findings from the scanners you already run, and Kobi, an AI
+    copilot that runs on your own API key.
 
     Run `kubectl kubebolt` to start the dashboard on http://localhost:8080.
   caveats: |

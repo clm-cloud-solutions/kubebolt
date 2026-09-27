@@ -3,7 +3,7 @@
 # Symptom    : App refuses to boot because DATABASE_URL is unset. The log line
 #              literally says "panic: DATABASE_URL not set" — a config problem,
 #              not a transient one.
-# Insight    : frequent-restarts / crash-loop
+# Insight    : crash-loop / frequent-restarts
 # Kobi action: propose_set_env — inject DATABASE_URL (literal value). Restart
 #              alone replays the same panic.
 #

@@ -88,6 +88,13 @@ export function FleetBreakdown({
 
   const rows = buildRows(clusters, byCluster, bySeverityCluster, insightsByCluster)
   const groups = groupByTeam(rows, teams)
+  // Un solo bloque (OSS siempre; EE con un equipo) en media rejilla dejaba la
+  // otra mitad vacía bajo un encabezado que sí ocupa todo el ancho. Solo, el
+  // bloque toma la fila entera y reparte sus filas en dos columnas: cada fila
+  // sigue midiendo media pantalla —el nombre junto a su señal, la razón de los
+  // bloques— y la muestra sube a un número par para cerrar las dos columnas.
+  const single = groups.length === 1
+  const perGroup = single ? ROWS_PER_GROUP + 1 : ROWS_PER_GROUP
 
   const open = (c: ClusterInfo) => {
     if (c.active) navigate('/')
@@ -117,7 +124,7 @@ export function FleetBreakdown({
       {/* items-start: sin él la rejilla estira los dos bloques a la altura del
           más alto, y un equipo con doce clusters dejaba al de al lado como una
           tarjeta de dos filas con medio metro de vacío debajo. */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-start">
+      <div className={`grid grid-cols-1 ${single ? '' : 'lg:grid-cols-2'} gap-3 items-start`}>
         {groups.map((g) => (
           <div key={g.teamId || '_unassigned'} className="bg-kb-card border border-kb-border rounded-xl overflow-hidden">
             <div className="px-3.5 py-2 border-b border-kb-border flex items-center justify-between gap-2">
@@ -151,22 +158,32 @@ export function FleetBreakdown({
                 Las filas ya vienen peor-primero, así que las que se cortan son
                 siempre las que menos piden; y el pie dice cuántas faltan en vez
                 de esconderlas, con la puerta a Fleet al lado. */}
-            <div className="divide-y divide-kb-border">
-              {g.rows.slice(0, ROWS_PER_GROUP).map((r) => (
-                <Row
-                  key={r.cluster.context}
-                  row={r}
-                  disabled={switchMutation.isPending}
-                  onOpen={() => open(r.cluster)}
-                />
-              ))}
-            </div>
-            {g.rows.length > ROWS_PER_GROUP && (
+            {single ? (
+              <div className="grid grid-cols-1 lg:grid-cols-2">
+                {g.rows.slice(0, perGroup).map((r, i, shown) => (
+                  <div key={r.cluster.context} className={twoColumnCellBorders(i, shown.length)}>
+                    <Row row={r} disabled={switchMutation.isPending} onOpen={() => open(r.cluster)} />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="divide-y divide-kb-border">
+                {g.rows.slice(0, perGroup).map((r) => (
+                  <Row
+                    key={r.cluster.context}
+                    row={r}
+                    disabled={switchMutation.isPending}
+                    onOpen={() => open(r.cluster)}
+                  />
+                ))}
+              </div>
+            )}
+            {g.rows.length > perGroup && (
               <Link
                 to="/fleet"
                 className="block px-3.5 py-2 border-t border-kb-border text-[10px] font-mono text-kb-text-tertiary hover:text-kb-accent transition-colors"
               >
-                +{g.rows.length - ROWS_PER_GROUP} more in Fleet →
+                +{g.rows.length - perGroup} more in Fleet →
               </Link>
             )}
           </div>
@@ -211,6 +228,22 @@ function signal(row: FleetRow): { text: string; className: string } {
   // línea de hechos de abajo ya lo dicen, y un «healthy» en cada fila es la
   // clase de texto tranquilizador que enseña a no leer esa columna.
   return { text: '', className: '' }
+}
+
+/**
+ * Separadores de una celda en la rejilla de dos columnas (bloque único).
+ * `divide-y` solo sabe de una columna: aquí cada celda lleva su propia línea
+ * inferior salvo las de la última fila (una columna en móvil, dos en lg), y la
+ * columna izquierda su línea vertical salvo cuando es la última y va sola.
+ */
+function twoColumnCellBorders(i: number, n: number): string {
+  const lastPairRow = Math.floor((n - 1) / 2)
+  const cls = ['border-kb-border']
+  if (i < n - 1) cls.push('border-b')
+  if (Math.floor(i / 2) === lastPairRow) cls.push('lg:border-b-0')
+  else cls.push('lg:border-b')
+  if (i % 2 === 0 && i < n - 1) cls.push('lg:border-r')
+  return cls.join(' ')
 }
 
 /** "4s" / "12m" / "3h" — compacto, para la línea de estado del agente. */
