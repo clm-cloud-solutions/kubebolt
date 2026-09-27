@@ -3,7 +3,7 @@
 # Symptom    : A busy loop wants a full core but the container is capped at
 #              50m CPU. The CFS scheduler throttles it hard; the workload is
 #              slow even though it never crashes.
-# Insight    : cpuThrottleRiskRule (sustained throttling)
+# Insight    : cpu-throttle-risk (usage at/near the CPU limit, i.e. throttled)
 # Kobi action: propose_set_resources — raise the CPU limit (and/or request).
 #              Kobi reads get_workload_metrics over 15m to ground the new value.
 #

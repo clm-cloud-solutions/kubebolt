@@ -4,12 +4,14 @@ This document maps **what the customer already has** in their cluster
 to **what they need to install for KubeBolt**, and what features stay
 available or get degraded based on each choice.
 
-> **Living document.** The agent's intake paths evolve in phases.
-> Some scenarios that require dual scrape today will collapse into
-> single-source intake once Phase 3 (Prom `remote_write` receiver,
-> customer-facing) ships. Each scenario below carries a *Phase X
-> impact* callout where it applies — keep those updated as phases
-> land.
+> **Three metric intake paths.** KubeBolt's VictoriaMetrics can be fed
+> by (A) the kubebolt-agent — kubelet/cAdvisor + Hubble over gRPC, plus
+> an optional vmagent scrape sidecar; (B) an existing Prometheus
+> pushing `remote_write` to the backend's `/api/v1/prom/write` receiver
+> ([`integrations/prometheus.md`](integrations/prometheus.md)); or
+> (C) the agent reading an existing Prometheus, including managed ones
+> (Scenario 5). The scenarios below pick the right mix for what the
+> cluster already runs.
 
 ---
 
@@ -44,7 +46,7 @@ how the customer's existing monitoring stack stays in place after.
 | **kube-state-metrics (KSM)** | optional but high-value | customer's existing prom-stack, or `prometheus-community/kube-state-metrics` standalone | Pod restart history, OOMKill Capacity panel, Service endpoint health column, Namespace quota gauge — see matrix below. |
 | **node-exporter** | optional | customer's existing prom-stack, or `prometheus-community/prometheus-node-exporter` standalone | Node load avg + PSI charts, per-mountpoint filesystem chart. The agent ships *one aggregate* `node_fs_used_bytes` — fallback exists, no full breakdown. |
 | **Cilium + Hubble** | optional (gates one whole sub-tab) | customer's CNI choice | Reliability sub-tab on the Dashboard (error rate, traffic, latency, drops, hotspots). |
-| **Prometheus server** | ❌ not consumed | — | Nothing today. Phase 3 will let it `remote_write` into KubeBolt's VM directly, eliminating dual-scrape on scenarios 1+2. |
+| **Prometheus server** | optional | customer's existing stack (self-managed, AMP, Azure Managed Prometheus, GMP) | Nothing — it's an alternative intake. It can `remote_write` into KubeBolt (no dual scrape in scenarios 1+2) or be read by the agent (Scenario 5). |
 
 ### What Grafana means for KubeBolt
 
@@ -60,26 +62,18 @@ The reference frame for every "what do I lose if I skip X" question:
 
 | Category | Feature | Source |
 |---|---|---|
-| **A. Operational core** | Cluster Overview, all 23 resource list/detail views, YAML/describe, exec, logs, files, port-forward, Cluster Map, Insights engine (15 rules including service-no-endpoints + oomKilled + NetworkPolicy coverage gaps), namespace count etc. | apiserver (informer state) |
+| **A. Operational core** | Cluster Overview, all 23 resource list/detail views, YAML/describe, exec, logs, files, port-forward, Cluster Map, Insights engine (24 rules including service-no-endpoints + oom-killed + NetworkPolicy coverage gaps), namespace count etc. | apiserver (informer state) |
 | **B. Live commitment** | Overview's "CPU 45% / Mem 65%" bars on cluster + node cards | Metrics Server (instant query) |
 | **C. Workload trends** | Capacity page CPU/Mem/Network/Filesystem charts, TopWorkloadsCpu, RightSizingPanel | agent gRPC (cAdvisor + kubelet) → bundled VM |
 | **D. L7 traffic** | Reliability sub-tab (error rate, top traffic, top latency, network drops, error hotspots) | agent gRPC (Hubble) → bundled VM |
-| **E. Cluster-state enrichments** | Pod restart history sparkline (P25-01), OOMKill Capacity panel (P25-02), Service endpoint health column (P25-05 UI), Namespace quota gauge (P25-06) | KSM → vmagent → bundled VM |
-| **F. Node OS enrichments** | Load average + PSI (P25-03), per-mountpoint filesystem chart (P25-04) | node-exporter → vmagent → bundled VM. _Note:_ basic node CPU/Memory/Network/Filesystem (single aggregate per node) is **always available** via the agent's kubelet+cAdvisor path — node-exporter only adds Load+PSI and the per-mountpoint breakdown. The F category is "the extras," not "all node OS data." |
+| **E. Cluster-state enrichments** | Pod restart history sparkline, OOMKill Capacity panel, Service endpoint health column, Namespace quota gauge | KSM → vmagent → bundled VM |
+| **F. Node OS enrichments** | Load average + PSI, per-mountpoint filesystem chart | node-exporter → vmagent → bundled VM. _Note:_ basic node CPU/Memory/Network/Filesystem (single aggregate per node) is **always available** via the agent's kubelet+cAdvisor path — node-exporter only adds Load+PSI and the per-mountpoint breakdown. The F category is "the extras," not "all node OS data." |
 | **G. Recent deploys overlay** | Capacity charts deploy markers, Recent Deploys table | apiserver (informer ReplicaSet creation timestamps). _Note:_ **always populated** when any Deployment exists — even greenfield clusters. Empty only when the cluster has no Deployments at all. |
 | **H. Resource actions** | Restart, scale, delete, edit YAML, set image, set resources, set env | apiserver (mutating verbs through agent or direct kubeconfig) |
 
 A, B, G, H depend on KubeBolt's own install. C and D depend on the
 agent (which is part of the KubeBolt install). E and F are what
 this document is really about — the difference between scenarios.
-
-> **Hypothesis corrections from the 1.10 cluster-validation campaign.**
-> The F and G categories above had stricter pre-validation framings
-> ("F requires node-exporter," "G is empty in greenfield"). Empirical
-> testing across GKE-DPv2 / EKS / AKS / GKE-Calico showed both were
-> wrong: F's baseline is available without node-exporter, and G is
-> never empty in any cluster running workloads. The notes above
-> reflect post-validation behavior.
 
 ---
 
@@ -146,10 +140,9 @@ kubectl get pod -n $NS $POD -o jsonpath='{.metadata.annotations.prometheus\.io/s
 # How many containerPorts does it expose (port-fanout risk):
 kubectl get pod -n $NS $POD -o jsonpath='{range .spec.containers[*].ports[*]}{.name}={.containerPort} {end}'
 # Default KSM 2.x: http=8080 metrics=8081 (two ports).
-# The agent chart now ships a containerPort filter (Phase 2.5
-# follow-up `7da7097`) so this won't produce duplicate-target
-# warnings — but worth knowing the port for the dedicated job
-# values (scrape.discovery.kubeStateMetrics.port).
+# The agent chart ships a containerPort filter so this won't produce
+# duplicate-target warnings — but worth knowing the port for the
+# dedicated job values (scrape.discovery.kubeStateMetrics.port).
 ```
 
 ### 4. node-exporter presence + label convention
@@ -257,6 +250,13 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
   --set rbac.mode=operator   # or reader / metrics per step 7
 ```
 
+`rbac.mode=operator` makes the agent's ServiceAccount effectively
+cluster-admin. Pair it with channel auth — for example
+`auth.mode=tokenreview` on the agent and `agentIngest.authMode=enforced`
+on the backend — see the agent chart README's
+[Auth section](../deploy/helm/kubebolt-agent/README.md#auth-authmode).
+The same applies to the other recipes below.
+
 ### What's enabled
 **100%** of KubeBolt features (categories A through H assuming
 operator RBAC mode and Cilium present for D).
@@ -271,15 +271,20 @@ node-exporter per-node (each agent scrapes its own node's copy). The
 bundled VM dedups the agent-vs-customer-Prom overlap at write time via
 `--dedup.minScrapeInterval=30s`.
 
-### Phase X impact
-- **Phase 3** (Prom `remote_write` receiver, customer-facing): customer
-  can configure their own Prom to remote_write into KubeBolt's VM
-  and disable `scrape.enabled` in the agent. Single-source intake,
-  zero scrape duplication, customer's Prom retention preserved.
-- Cosmetic side-effect today: the agent's extra scrape adds one
-  `/metrics` request per target per cycle (KSM once, from its node;
-  node-exporter once per node). Negligible; worth flagging only if the
-  customer asks.
+### Alternative: let the customer's Prometheus push
+Instead of the agent's scrape sidecar, the customer can add a
+`remote_write` block to their Prometheus pointing at KubeBolt's
+receiver (`/api/v1/prom/write`, with `metrics.remoteWrite.enabled=true`
+on the backend) and keep `scrape.enabled=false` on the agent.
+Single-source intake, zero scrape duplication, customer's Prom
+retention preserved. Use `metrics.remoteWrite.authMode=enforced` with
+an ingest token in production. Full recipe:
+[`integrations/prometheus.md`](integrations/prometheus.md). If the
+customer can't edit their Prometheus config, use Scenario 5 instead.
+
+With the sidecar path, the extra scrape adds one `/metrics` request per
+target per cycle (KSM once, from its node; node-exporter once per node).
+Negligible; worth flagging only if the customer asks.
 
 ---
 
@@ -350,14 +355,14 @@ non-scrape features still work.
 
 #### What's enabled / lost
 - Categories A, B, C, D (if Cilium), G, H — all unaffected.
-- Without KSM: lose category **E** entirely
-  (P25-01, P25-02 panel, P25-05 column, P25-06).
-  → Note: P25-02 *badge* on Pod overview still works (uses informer
+- Without KSM: lose category **E** entirely (restart history, OOMKill
+  Capacity panel, Service endpoint column, Namespace quota gauge).
+  → Note: the OOMKill *badge* on Pod overview still works (uses informer
   state), only the Capacity-page panel needs KSM.
-  → P25-05 *insight rule* still works (uses informer's EndpointSlices),
-  only the UI column needs KSM.
-- Without node-exporter: lose category **F**
-  (P25-03 load + PSI, P25-04 per-mountpoint).
+  → The service-no-endpoints *insight rule* still works (uses the
+  informer's EndpointSlices), only the UI column needs KSM.
+- Without node-exporter: lose category **F** (load + PSI,
+  per-mountpoint filesystem).
   → The agent's basic `node_fs_used_bytes` (one aggregate) keeps a
   fallback panel on the Node detail Monitor tab.
 
@@ -405,24 +410,17 @@ helm install node-exporter prometheus-community/prometheus-node-exporter \
 ```
 
 ### What's enabled / lost — minimal install
-- ✅ A: Operational core complete (lists, details, Map, Insights with all 15 rules, exec, logs, files, port-forward).
+- ✅ A: Operational core complete (lists, details, Map, Insights with all 24 rules, exec, logs, files, port-forward).
 - ⚠️ B: Live bars depend on Metrics Server existing.
 - ✅ C: Capacity workload trends (CPU/Mem/Network/Filesystem) — the agent ships kubelet/cAdvisor pull built-in, no Prom needed.
 - ✅ D: Reliability if Cilium+Hubble is installed.
-- ❌ E: No KSM → lose all 4 P25-XX enrichments listed in scenario 2b above.
+- ❌ E: No KSM → lose all 4 cluster-state enrichments listed in scenario 2b above.
 - ⚠️ F: No node-exporter → keep **F.0** (single-aggregate node CPU/Mem/Net/Filesystem from the agent's kubelet path), lose **F.1** (load + PSI) and **F.2** (per-mountpoint breakdown).
 - ✅ G: Recent deploys overlay — populated as soon as the cluster runs any Deployment (apiserver ReplicaSet history, no Prom).
 - ✅ H: Resource actions (operator RBAC).
 
 ### What's enabled / lost — full install
 **100%** of features. Same as scenarios 1 / 2a.
-
-### Phase X impact
-- **Phase 3+** (KubeBolt OTLP receiver, Phase 4 plan item): customers
-  starting in scenario 3 may eventually consolidate metrics intake on
-  KubeBolt's VM via OTLP push from their apps, removing the need for
-  KSM as the primary state source. KSM stays best-of-breed for
-  cluster-state today.
 
 ---
 
@@ -472,24 +470,63 @@ beats "stand up the full stack."
 
 ```bash
 # Pulls the published OCI single-container image (api + web + embedded
-# frontend, served on :3000). Each release tag (e.g. v1.10.0) has a
-# matching single-container image; `:latest` tracks the most recent
-# stable.
+# frontend, served on :3000). Each release has a matching
+# single-container image tagged with its version (e.g. 2.1.0);
+# `:latest` tracks the most recent stable.
 docker run --rm -p 3000:3000 \
-  -v ~/.kube:/root/.kube:ro \
+  -v ~/.kube/config:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
   -e KUBEBOLT_AUTH_ENABLED=false \
   ghcr.io/clm-cloud-solutions/kubebolt:latest
 
 # Open http://localhost:3000
 ```
 
-The container reads `/root/.kube/config` at boot, switches between
+The container runs as a non-root user and reads the kubeconfig named by
+`KUBECONFIG` at boot (on Linux, the mounted file must be readable by that
+user), switches between
 contexts via the UI (every kubeconfig context shows up in the cluster
 selector), and uses your local kubeconfig credentials for all
 apiserver calls.
 
+### Reaching your clusters from the container
+
+The kubeconfig is read inside the container, so two things that work on
+your laptop may not work there:
+
+- **Local clusters.** An apiserver at `https://127.0.0.1:<port>` points at
+  the container itself (connection refused).
+  - **kind** — use the internal kubeconfig and join the `kind` Docker
+    network; the apiserver is then reached by its container name, which
+    the kind certificate covers:
+
+    ```bash
+    kind get kubeconfig --internal --name <cluster> > /tmp/kind-kubeconfig
+    docker run --rm -p 3000:3000 --network kind \
+      -v /tmp/kind-kubeconfig:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
+      ghcr.io/clm-cloud-solutions/kubebolt:latest
+    ```
+
+  - **Docker Desktop Kubernetes** — `./deploy/docker-kubeconfig.sh`
+    writes `/tmp/docker-kubeconfig` with the apiserver rewritten to
+    `kubernetes.docker.internal`; mount that file instead of
+    `~/.kube/config`.
+  - Anything else listening on `127.0.0.1` (minikube, k3d…) needs an
+    address the container can reach and that the apiserver certificate
+    covers. The Homebrew / krew / binary install avoids the problem
+    entirely.
+- **Exec credential plugins.** Contexts whose `user` runs a command to get
+  a token only work if that command and its credentials exist in the
+  container.
+  - **EKS** (`aws eks get-token`) — the image includes the AWS CLI; also
+    mount your AWS config and pass the profile if it isn't `default`:
+    `-v ~/.aws:/home/kubebolt/.aws:ro -e AWS_PROFILE=<profile>`.
+  - **GKE** (`gke-gcloud-auth-plugin`) and **AKS with Entra ID**
+    (`kubelogin`) — those plugins are not in the image. Use the binary,
+    Homebrew or krew install on your machine, or deploy KubeBolt into the
+    cluster with Helm.
+
 ### What's enabled
-- ✅ **A** Operational core — lists, details, Map, Insights (15 rules),
+- ✅ **A** Operational core — lists, details, Map, Insights (24 rules),
   exec / logs / port-forward / files (all run through your local
   kubeconfig).
 - ⚠️ **B** Live commitment bars — depend on Metrics Server in the
@@ -497,7 +534,7 @@ apiserver calls.
 - ❌ **C** Capacity workload trends (CPU/Mem/Network/Filesystem
   history) — no TSDB bundled, no agent shipping samples.
 - ❌ **D** Reliability sub-tab — no agent, no Hubble flow ingest.
-- ❌ **E** Cluster-state enrichments (P25-XX) — no KSM scrape, no VM
+- ❌ **E** Cluster-state enrichments — no KSM scrape, no VM
   to store the time series.
 - ❌ **F** Node OS enrichments — no node-exporter scrape, no VM.
 - ✅ **G** Recent deploys overlay — apiserver-only, no TSDB needed.
@@ -517,11 +554,73 @@ designed as the "before" of a longer journey, not the destination.
 - **No multi-user auth** (the recipe sets `KUBEBOLT_AUTH_ENABLED=false`
   for zero-config UX — anyone with access to `localhost:3000` is
   effectively cluster-admin against your kubeconfig).
-- **No persistence** — restart the container and you lose your
-  Copilot session history (kept in-memory only).
+- **No persistence** unless you mount a volume at `/data` — that's
+  where the embedded BoltDB (users, Copilot conversations, insight
+  history) lives, and the `--rm` recipe above discards it.
 - **Performance ceiling** — single binary, single-process, embedded
   frontend; fine for evaluating against clusters with hundreds of pods
   but not the right shape for fleet-scale production use.
+
+---
+
+## Scenario 5 — Customer has a Prometheus KubeBolt can only read (Mode C)
+
+**Profile:** the cluster's metrics already live in a Prometheus that
+can't push to KubeBolt, or whose config the customer can't change:
+
+- a **managed, query-only Prometheus** — Amazon Managed Service for
+  Prometheus (AMP), Azure Monitor managed Prometheus, Google Managed
+  Prometheus (GMP);
+- a **self-managed Prometheus** whose change management blocks adding a
+  `remote_write` block.
+
+### Pre-flight confirmation
+- [ ] You have the Prometheus query URL and a credential the agent can
+      use (none / basic / bearer, or the cloud identity: AWS SigV4,
+      Azure Workload Identity, GCP IAM).
+- [ ] That Prometheus actually holds kube-state-metrics and
+      node-exporter series (step 3 and step 4, or query it directly).
+
+### Install recipe
+The backend install is the same as Scenario 3 (remote_write can stay
+off). The agent gets `agent.promRead.enabled=true`, which renders a
+**separate single-replica Deployment** that polls the Prometheus
+(`/api/v1/query_range`) and forwards samples over the agent's gRPC
+channel. The agent DaemonSet (kubelet/cAdvisor + Hubble) keeps running
+next to it.
+
+```bash
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  -n kubebolt-agent --create-namespace \
+  --set backendUrl=kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090 \
+  --set scrape.enabled=false \
+  --set agent.promRead.enabled=true \
+  --set agent.promRead.url=<prometheus-query-url> \
+  --set agent.promRead.auth.mode=none   # basicAuth | bearer | awsSigV4 | azureWorkloadIdentity | gcpIam
+```
+
+`scrape.enabled` and `agent.promRead.enabled` are mutually exclusive —
+the chart refuses to render with both on. Per-source setup, including
+the cloud identity wiring:
+
+- AWS AMP: [`integrations/aws-amp.md`](integrations/aws-amp.md)
+- Azure Monitor managed Prometheus: [`integrations/azure-managed-prometheus.md`](integrations/azure-managed-prometheus.md)
+- Google Managed Prometheus: [`integrations/gcp-managed-prometheus.md`](integrations/gcp-managed-prometheus.md)
+- Self-managed Prometheus, read-only: [`integrations/self-managed-prom-readonly.md`](integrations/self-managed-prom-readonly.md)
+
+### What's enabled / lost
+- A, B, C, D (if Cilium), G, H — same as Scenario 3; they don't depend
+  on the Prometheus.
+- The default `agent.promRead.matchers` list is deliberately narrow: KSM
+  core state (pods, deployments, statefulsets, daemonsets, nodes),
+  node load + PSI, disk I/O, network errors, `up` / `process_*`. That
+  covers **F.1** (load + PSI).
+- **E** panels and **F.2** (per-mountpoint filesystem) query series
+  that are not in the default list — `kube_pod_container_status_restarts_total`,
+  `kube_endpoint*` / `kube_endpointslice*`, `kube_resourcequota`,
+  `node_filesystem_*`. If the source Prometheus has them, add them to
+  `agent.promRead.matchers` — overriding the value replaces the list,
+  so copy the defaults from the chart's `values.yaml` and append.
 
 ---
 
@@ -535,6 +634,8 @@ Committing to a deploy:
 
   Does the customer's cluster already have Prometheus running?
   ├── YES
+  │   ├── Managed/query-only (AMP, Azure, GMP) or config can't change?
+  │   │   └── YES → Scenario 5 (agent reads it)
   │   ├── Is it kube-prometheus-stack / Operator-driven?  (CRDs present)
   │   │   └── YES → Scenario 1
   │   └── NO (hand-rolled or annotation-driven Prom)
@@ -563,8 +664,9 @@ KSM/node-exporter. Two scrapers per target.
 - Customer's Prom retention is untouched — they keep their own
   history independent of KubeBolt's VM.
 
-**Removed by Phase 3** when the customer's Prom can `remote_write` to
-KubeBolt directly and the agent's scrape sidecar gets disabled.
+**Avoidable** by having the customer's Prom `remote_write` to KubeBolt
+and disabling the agent's scrape sidecar (see Scenario 1's alternative),
+or by reading their Prom instead (Scenario 5).
 
 ### Series cardinality on bundled VM
 
@@ -611,47 +713,20 @@ something. This is the gated-empty-state pattern from
 
 ---
 
-## Maintenance log — open items
+## Not available today
 
-Tracked as the agent plan progresses. Update on each phase landing.
-
-| Phase | Item | Scenarios affected | Status |
-|---|---|---|---|
-| Phase 3 | Customer-facing Prom `remote_write` receiver — agent's vmagent becomes optional | 1, 2a, 2b | 📋 not started |
-| Phase 4 | OTLP receiver — apps can push directly without going through Prom | All | 📋 not started |
-| Phase 5 | Helm chart split — agent published as standalone | All | 📋 not started |
-| P25-06b | Quota >85% Insight rule (informer plumbing for ResourceQuota) | All with KSM | 📋 planned for Phase 2.6 |
-| P26-05 | 7 additional Insight rules (rollout stuck, PVC fill, PSI, HPA, PDB) | All | 📋 planned for Phase 2.6 |
-
-When a phase lands and changes scenario semantics, edit:
-1. The relevant scenario's *What's enabled / lost*
-2. The feature availability matrix row(s) affected
-3. The maintenance log row's Status
-4. The Phase X impact callout on each scenario
+- **OTLP ingestion** — apps can't push OpenTelemetry metrics directly;
+  use Prometheus `remote_write` or the agent.
+- **Namespace quota insight rule** — the quota gauge (category E) shows
+  usage, but no insight fires when a quota runs close to full.
 
 ---
 
 ## Reference
 
-### Public docs (linkable from this file)
 - Agent scrape config operator guide: [`docs/agent-scraping.md`](agent-scraping.md) — vmagent sidecar config, troubleshooting
 - Bundled chart README: [`deploy/helm/kubebolt/README.md`](../deploy/helm/kubebolt/README.md) — Metrics Storage, BYO TSDB caveat
 - Agent chart README: [`deploy/helm/kubebolt-agent/README.md`](../deploy/helm/kubebolt-agent/README.md) — RBAC tiers, auth modes, scrape sidecar
-- KubeBolt spec: [`docs/SPEC.md`](SPEC.md) — feature catalog and API contract
-
-### Internal docs (private repo / team-only)
-The repository's `internal/` directory is `.gitignore`d — these
-documents live in the working copy and on team systems, not in
-the published repo. Update them when the corresponding public
-sections of this doc change:
-
-- `internal/agent-universal-data-plane-plan.md` — phase-by-phase
-  architecture for the agent's data intake (Phase 2 shipped,
-  Phase 3-5 planned). Source of truth for the *Phase X impact*
-  callouts above.
-- `internal/kubebolt-agent-technical-spec.md` — authoritative catalog
-  of metrics the agent emits (one entry per metric: source label,
-  cardinality estimate, query examples).
-- `internal/dashboard-enrichment-roadmap.md` — the P25/P26 feature
-  backlog and tracking table. The matrix above maps to roadmap IDs
-  in column-style references (e.g. *E.1. P25-01*).
+- Remote_write receiver: [`docs/integrations/prometheus.md`](integrations/prometheus.md)
+- Compatibility and supported platforms: [`docs/COMPATIBILITY.md`](COMPATIBILITY.md)
+- Product overview and feature list: [`README.md`](../README.md) and https://kubebolt.io/docs

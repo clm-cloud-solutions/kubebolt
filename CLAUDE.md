@@ -35,8 +35,10 @@ cd apps/web && npm run build  # Production build (TypeScript check + Vite)
 
 ### Docker Compose (full stack)
 ```bash
-# Remote clusters (EKS, GKE, AKS) — works directly:
+# Remote clusters (EKS, GKE, AKS) — the compose file always mounts
+# /tmp/docker-kubeconfig, so generate it first:
 kubectl config use-context my-cluster
+./deploy/docker-kubeconfig.sh
 cd deploy && docker compose up -d
 
 # Docker Desktop K8s — needs kubeconfig rewrite (127.0.0.1 → kubernetes.docker.internal):
@@ -48,7 +50,7 @@ cd deploy && docker compose up -d
 docker compose -f deploy/docker-compose.yml up -d --build
 ```
 Frontend on http://localhost:3000 (nginx proxies /api and /ws to backend).
-EKS clusters require `~/.aws` mounted (already in compose) with an active AWS session.
+EKS kubeconfigs that use `aws eks get-token` don't work from Compose today: `apps/api/Dockerfile` no longer installs the AWS CLI (only `deploy/Dockerfile.single` does), even though the compose file still mounts `~/.aws`.
 
 ### Helm Chart
 ```bash
@@ -189,7 +191,7 @@ React 18 + TypeScript + Vite + Tailwind CSS
 
 Key libraries: TanStack Query (server state), TanStack Table, ReactFlow (cluster topology map), Lucide React (icons), React Router, xterm.js (pod terminal), CodeMirror 6 (YAML editor)
 
-23 resource list views + Cluster Map + resource detail views with tabbed interface.
+26 resource list routes (25 generic `ResourceListPage` + `NodesPage`) plus Namespaces, Events, RBAC, Applications (Helm releases) + Cluster Map + resource detail views with tabbed interface.
 
 Component organization: `src/components/{dashboard,map,resources,layout,shared,insights}/`
 API client: `src/services/api.ts`
@@ -205,14 +207,15 @@ Tabbed detail page at `/:type/:namespace/:name`. Uses `_` as namespace placehold
 | Resource | Overview | YAML | Pods | Logs | Terminal | Files | Containers | Volumes | Related | History | Events | Monitor |
 |----------|----------|------|------|------|----------|-------|------------|---------|---------|---------|--------|---------|
 | Pods | ✅ | ✅ | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
-| Deployments | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
-| StatefulSets | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
-| DaemonSets | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | ✅ | ✅ | ✅ | ✅ |
+| Deployments | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| StatefulSets | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| DaemonSets | ✅ | ✅ | ✅ | ✅ | ✅ | — | — | — | ✅ | ✅ | ✅ | ✅ |
 | Jobs | ✅ | ✅ | ✅ | ✅ | — | — | — | — | ✅ | — | ✅ | — |
 | CronJobs | ✅ | ✅ | — | — | — | — | — | — | ✅ | — | ✅ | — |
 | Services | ✅ | ✅ | — | — | — | — | — | — | ✅ | — | ✅ | — |
-| Nodes | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| Nodes | ✅ | ✅ | ✅ | — | — | — | — | — | — | — | ✅ | ✅ |
 | PVCs | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | ✅ |
+| NetworkPolicies / Cilium policies / PDBs | ✅ | ✅ | Matched | — | — | — | — | — | ✅ | — | ✅ | — |
 | Others | ✅ | ✅ | — | — | — | — | — | — | — | — | ✅ | — |
 
 **Key features:**
@@ -299,24 +302,27 @@ When adding a new route that doesn't depend on a cluster, declare it under `GLOB
 4. Shared informers start **only for permitted resources**; namespace-scoped SAs get per-namespace factories with multi-lister aggregation
 5. Dynamic client discovers Gateway API resources (with 5s timeout)
 6. Metrics Collector polls Metrics Server → in-memory metrics cache (per-namespace polling for namespace-scoped SAs)
-7. Insights Engine evaluates 15 rules against cluster state → recommendations
+7. Insights Engine evaluates 24 rules against cluster state → episodes (opened / flapped / resolved / expired) + recommendations
 8. REST API serves enriched resource lists (with CPU/MEM metrics injected), paginated (default 50/page). Returns 403 for restricted resources.
 9. WebSocket hub broadcasts resource changes (debounced topology rebuilds)
 10. Frontend uses TanStack Query with 30s refetch intervals; 503s shown as "Cluster unreachable", 403s shown as "Access Restricted"
 
 ### Cluster Map
 
-Two layout modes:
+Three layout modes (`LayoutMode` in `components/map/ClusterMap.tsx`, default `flow`):
 - **Grid**: compact grid of resources within namespace regions
 - **Flow**: horizontal dependency chain (Ingress/Gateway → HTTPRoute → Service → Deployment → ReplicaSet → Pod)
+- **Traffic**: caller → Service → Pod edges from observed Hubble flows (locked until the agent ships flow data)
 
 In both modes, namespace regions are arranged in a grid of up to 3 columns (`NS_COLS`). Namespace regions are ReactFlow group nodes with child resource nodes. Supports filtering by resource type and namespace.
 
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
-- Backend: `go build ./...` (Go 1.22, ubuntu-latest)
-- Frontend: `npm ci && npm run build` (Node 20, ubuntu-latest)
+- Backend: `go build ./...`, `go vet ./...`, `go test ./... -race -count=1` (Go 1.26.6, ubuntu-latest)
+- Frontend: `npm ci`, `npm test` (Vitest), `npm run build` (tsc + Vite) (Node 22, ubuntu-latest)
+
+`make ci-local` reproduces both jobs locally.
 
 ## Release security gates
 
@@ -353,4 +359,4 @@ When adding a new third-party image, add it to this table, add a Trivy scan step
 
 ## Key Reference
 
-`docs/SPEC.md` contains the detailed technical specification including API endpoints, insights rules, data models, and Phase 2 roadmap. Consult it for feature work.
+`docs/architecture.md` is the current, maintained overview; `docs/README.md` indexes the operator guides and integrations. `docs/SPEC.md` is the original specification and phase roadmap — a historical design record that code comments still cite by section, not a description of current behaviour. User documentation lives at https://kubebolt.io/docs.

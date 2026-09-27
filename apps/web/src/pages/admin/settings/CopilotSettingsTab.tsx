@@ -378,11 +378,11 @@ function CopilotSettingsForm({
         <Field
           label="Base URL"
           dirty={dirtyMap.baseURL}
-          helper="Optional. Override the provider's endpoint for self-hosted gateways or proxies."
+          helper="Optional. The FULL endpoint URL, used as-is (no path is appended) — e.g. https://api.x.ai/v1/chat/completions for xAI Grok, or your own gateway/proxy."
         >
           <input
             type="text"
-            placeholder="https://api.anthropic.com (default)"
+            placeholder={form.provider === 'anthropic' ? 'https://api.anthropic.com/v1/messages (default)' : 'https://api.openai.com/v1/chat/completions (default)'}
             className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
             value={form.baseURL}
             onChange={(e) => setForm({ ...form, baseURL: e.target.value })}
@@ -464,11 +464,11 @@ function CopilotSettingsForm({
             <Field
               label="Fallback base URL"
               dirty={dirtyMap.fallbackBaseURL}
-              helper="Optional. Override the fallback provider's endpoint — needed for OpenAI-compatible gateways like xAI Grok (api.x.ai/v1), DeepSeek, Groq, Together, etc."
+              helper="Optional. The FULL endpoint URL, used as-is (no path is appended) — needed for OpenAI-compatible gateways, e.g. https://api.x.ai/v1/chat/completions for xAI Grok; same shape for DeepSeek, Groq, Together, etc."
             >
               <input
                 type="text"
-                placeholder="https://api.openai.com/v1 (default)"
+                placeholder={form.fallbackProvider === 'anthropic' ? 'https://api.anthropic.com/v1/messages (default)' : 'https://api.openai.com/v1/chat/completions (default)'}
                 className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
                 value={form.fallbackBaseURL}
                 onChange={(e) => setForm({ ...form, fallbackBaseURL: e.target.value })}

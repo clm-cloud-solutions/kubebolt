@@ -5,7 +5,9 @@
 // OpenAI's own models plus everyone who speaks the OpenAI Chat
 // Completions wire format (xAI Grok, Alibaba Qwen, Meta Llama via
 // hosted providers, DeepSeek, Mistral on Together/Fireworks, and any
-// custom deployment that exposes /v1/chat/completions). The user
+// custom deployment that exposes /v1/chat/completions). The base URL
+// is used verbatim — always enter the FULL endpoint including
+// /chat/completions (e.g. https://api.x.ai/v1/chat/completions). The user
 // chooses the model from the list; the chosen value is the EXACT
 // model ID the provider's API expects.
 //
@@ -284,7 +286,7 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
   },
 
   // ─── xAI Grok ─────────────────────────────────────────────────────
-  // Set base URL to https://api.x.ai/v1 and pass an xAI API key.
+  // Set base URL to https://api.x.ai/v1/chat/completions and pass an xAI API key.
   // Catalog verified against /v1/models on a current xAI account
   // (May 2026). xAI ships the 4.20 line as three distinct date-pinned
   // variants (non-reasoning, reasoning, multi-agent); each is its own
@@ -316,11 +318,11 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
   },
 
   // ─── DeepSeek ─────────────────────────────────────────────────────
-  // Base URL: https://api.deepseek.com/v1
+  // Base URL: https://api.deepseek.com/v1/chat/completions
   {
     id: 'deepseek-chat',
     label: 'DeepSeek Chat',
-    description: "DeepSeek's general chat model. Set base URL to https://api.deepseek.com/v1.",
+    description: "DeepSeek's general chat model. Set base URL to https://api.deepseek.com/v1/chat/completions.",
     group: 'DeepSeek',
   },
   {
@@ -331,11 +333,11 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
   },
 
   // ─── Alibaba Qwen ─────────────────────────────────────────────────
-  // Base URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
+  // Base URL: https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions
   {
     id: 'qwen-max',
     label: 'Qwen Max',
-    description: "Alibaba's flagship. Set base URL to DashScope's OpenAI-compatible mode.",
+    description: "Alibaba's flagship. Set base URL to DashScope's OpenAI-compatible endpoint (https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions).",
     group: 'Alibaba Qwen',
   },
   {
@@ -352,11 +354,11 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
   },
 
   // ─── Meta Llama (via Groq for fast inference) ─────────────────────
-  // Base URL: https://api.groq.com/openai/v1
+  // Base URL: https://api.groq.com/openai/v1/chat/completions
   {
     id: 'llama-3.3-70b-versatile',
     label: 'Llama 3.3 70B (Groq)',
-    description: "Meta's Llama 3.3 70B served by Groq's fast inference. Set base URL to https://api.groq.com/openai/v1.",
+    description: "Meta's Llama 3.3 70B served by Groq's fast inference. Set base URL to https://api.groq.com/openai/v1/chat/completions.",
     group: 'Meta Llama (via Groq)',
   },
   {
@@ -378,7 +380,7 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
   {
     id: 'mistral-large-latest',
     label: 'Mistral Large',
-    description: 'Mistral flagship. Many providers host it; set base URL to the one you have an API key for (La Plateforme, Together, Fireworks).',
+    description: 'Mistral flagship. Many providers host it; set base URL to the full /chat/completions endpoint of the one you have an API key for (La Plateforme, Together, Fireworks).',
     group: 'Mistral',
   },
   {

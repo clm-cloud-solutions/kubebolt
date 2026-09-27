@@ -1,0 +1,14 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://kubebolt.io/docs
+    about: Installation, configuration, troubleshooting and the API reference.
+  - name: Questions and ideas
+    url: https://github.com/clm-cloud-solutions/kubebolt/discussions
+    about: Ask a question or start a conversation before opening a feature request.
+  - name: Report a security vulnerability
+    url: https://github.com/clm-cloud-solutions/kubebolt/blob/main/SECURITY.md
+    about: Please don't open a public issue — follow the security policy instead.
+  - name: KubeBolt Cloud support
+    url: https://kubebolt.io/en/feedback
+    about: Issues with app.kubebolt.io (the hosted edition) rather than the open-source code.

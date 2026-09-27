@@ -1,6 +1,6 @@
 apiVersion: v2
 name: kubebolt
-description: Instant Kubernetes Monitoring & Management — full cluster visibility in under 2 minutes
+description: KubeBolt — open-source Kubernetes operations platform. Health, insights, topology, operations, security and cost in one place, with Kobi, a BYO-key AI copilot
 type: application
 version: 2.1.0
 appVersion: "2.1.0"
@@ -13,17 +13,36 @@ maintainers:
     url: https://github.com/clm-cloud-solutions
 keywords:
   - kubernetes
+  - operations
   - monitoring
   - observability
+  - insights
   - dashboard
-  - kubectl
-  - management
-  - rbac
   - multi-cluster
+  - security
+  - cost
+  - finops
+  - ai
+  - copilot
+  - mcp
+  - rbac
   - gateway-api
 annotations:
   artifacthub.io/license: Apache-2.0
   artifacthub.io/links: |
     - name: GitHub
       url: https://github.com/clm-cloud-solutions/kubebolt
+  artifacthub.io/screenshots: |
+    - title: Cluster Overview
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-overview.webp
+    - title: Home — what needs you across every cluster
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-home.webp
+    - title: Insight episode with timeline and recurrence
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-insight-episode.webp
+    - title: Security & Compliance, grouped per workload
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-security.webp
+    - title: Kobi Copilot proposing a fix you approve
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-kobi.webp
+    - title: Cluster Map
+      url: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-cluster-map.webp
   artifacthub.io/containsSecurityUpdates: "false"

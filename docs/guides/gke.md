@@ -14,7 +14,11 @@ This works out of the box — the Helm chart creates a ServiceAccount with a Clu
 kubectl port-forward svc/kubebolt 3000:80
 ```
 
-Open http://localhost:3000
+Open http://localhost:3000 and sign in as `admin`. Unless you set `auth.adminPassword`, the password is generated on first boot and stored in a Secret:
+
+```bash
+kubectl get secret kubebolt-admin-password -o jsonpath='{.data.password}' | base64 -d; echo
+```
 
 ## Workload Identity Federation
 
@@ -48,10 +52,15 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set ingress.hosts[0].paths[0].pathType=Prefix
 ```
 
-For internal load balancer:
+For an internal load balancer, use the `gce-internal` class annotation instead of `ingress.className` (the API server rejects an Ingress that sets both):
 
 ```bash
-  --set ingress.annotations."kubernetes\.io/ingress\.class"=gce-internal
+helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --set ingress.enabled=true \
+  --set ingress.annotations."kubernetes\.io/ingress\.class"=gce-internal \
+  --set ingress.hosts[0].host=kubebolt.internal.example.com \
+  --set ingress.hosts[0].paths[0].path=/ \
+  --set ingress.hosts[0].paths[0].pathType=Prefix
 ```
 
 ## GKE Autopilot
@@ -71,15 +80,19 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
 Check logs with `kubectl logs -l app.kubernetes.io/component=api`. Common causes:
 - RBAC: verify the ClusterRoleBinding exists: `kubectl get clusterrolebinding | grep kubebolt`
 
-**No metrics data:**
-GKE has Metrics Server enabled by default. If you disabled it, re-enable via:
+**No live CPU/Memory data:**
+GKE runs Metrics Server as a managed component in `kube-system`. Verify the metrics API is available:
 ```bash
-gcloud container clusters update my-cluster --enable-managed-prometheus
+kubectl get apiservice v1beta1.metrics.k8s.io
 ```
-Or install Metrics Server manually.
 
 **Binary Authorization blocking images:**
 If your cluster enforces Binary Authorization, add an exemption for `ghcr.io/clm-cloud-solutions/kubebolt/*` or use a custom attestation policy.
 
 **403 errors for some resources:**
 KubeBolt degrades gracefully. Restricted resources appear dimmed in the sidebar with a "Limited access" banner.
+
+## Next steps
+
+- **Historical metrics and remote clusters** — install the [kubebolt-agent](../../deploy/helm/kubebolt-agent/README.md) chart. It ships kubelet/cAdvisor (and Hubble, if present) metrics for the Capacity and Monitor views, and connects clusters whose API server the backend can't reach directly.
+- **Already on Google Cloud Managed Service for Prometheus (GMP)?** The agent can read it instead of scraping: see [gcp-managed-prometheus.md](../integrations/gcp-managed-prometheus.md). Other options: [`deployment-scenarios.md`](../deployment-scenarios.md).

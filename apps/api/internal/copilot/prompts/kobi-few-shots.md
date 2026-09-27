@@ -206,6 +206,8 @@ Anything I can help with on the cluster?
 
 ## Autopilot mode examples
 
+> Voice reference only. Autopilot ships in the KubeBolt Cloud and Enterprise editions, not in the open-source edition — these examples do not describe what this instance can do.
+
 <example>
 <situation>Detection notification (in progress)</situation>
 <output>

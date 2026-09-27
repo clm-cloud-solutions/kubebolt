@@ -185,7 +185,7 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
         {isService ? (
           <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-kb-elevated text-kb-text-secondary text-xs">
             <ShieldCheck className="w-4 h-4 mt-0.5 shrink-0" />
-            <span>Internal use only (e.g. Autopilot). Rejected when presented from outside your network. Preset to <strong>editor</strong> with the Autopilot scopes.</span>
+            <span>Internal use only (services running inside your network). Rejected when presented from outside your network. Preset to <strong>editor</strong> with the default service scopes.</span>
           </div>
         ) : (
           <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-kb-elevated text-kb-text-secondary text-xs">
@@ -197,7 +197,7 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
         <div className="space-y-1">
           <label className="text-[11px] font-medium text-kb-text-secondary">Label</label>
           <input value={label} onChange={e => setLabel(e.target.value)} required autoFocus
-            placeholder={isService ? 'autopilot' : 'github-actions, deploy-bot, ...'}
+            placeholder={isService ? 'internal-service' : 'github-actions, deploy-bot, ...'}
             className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary placeholder-kb-text-tertiary focus:outline-none focus:border-kb-accent transition-colors" />
         </div>
 
@@ -389,7 +389,7 @@ export function APITokensPage() {
               <span className="px-1.5 py-0.5 rounded text-[10px] font-mono uppercase tracking-wider bg-kb-elevated text-kb-text-secondary">internal</span>
             </h2>
             <p className="text-xs text-kb-text-tertiary mt-0.5">
-              For internal services like Autopilot. <strong>Rejected over the public edge</strong> — usable only from inside your network. Prefix <code className="font-mono">kbs_</code>.
+              For internal services inside your network. <strong>Rejected over the public edge</strong> — usable only from inside your network. Prefix <code className="font-mono">kbs_</code>.
             </p>
           </div>
           <button onClick={() => setCreating('service')} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 transition-colors shrink-0">
@@ -398,7 +398,7 @@ export function APITokensPage() {
           </button>
         </div>
         <TokenTable tokens={serviceTokens} onRevoke={setRevoking}
-          emptyHint='No service tokens yet. Create one for Autopilot or another internal service.' />
+          emptyHint='No service tokens yet. Create one for an internal service.' />
       </section>
 
       {/* ── API tokens ── */}

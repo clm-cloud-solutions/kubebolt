@@ -49,8 +49,8 @@ Self-managed Prometheus (anywhere reachable from the K8s cluster)
 ```
 
 The agent runs as a **Deployment with replicas=1** (separate from the
-Mode A DaemonSet — see [topology rationale in the agent's CLAUDE.md
-section](../../CLAUDE.md#packagesagent)). One leader polls Prom; if
+Mode A DaemonSet — see [agent topologies in the architecture
+overview](../architecture.md#components)). One leader polls Prom; if
 the pod dies the next scheduled pod takes over via Kubernetes Lease.
 
 ---
@@ -238,8 +238,11 @@ kubectl -n kubebolt logs -l kubebolt.dev/role=promread --tail=20
 ```
 
 In the KubeBolt UI, the **Prometheus (read)** card under
-`/admin/integrations` should flip from `Not installed` to `Installed`
+**Administration → Agents & Ingest → Integrations** should flip from `Not installed` to `Installed`
 within ~1 minute. The wait is the lease handover + first poll cycle.
+(The card is only listed when app auth is enabled —
+`KUBEBOLT_AUTH_ENABLED=true`, the chart default. With auth off,
+confirm through the agent logs and the metrics instead.)
 
 ---
 
@@ -281,7 +284,7 @@ For Mode C (where Mode A is off), the defaults pull:
 You can override `agent.promRead.matchers` in the helm install if
 you have additional series the UI panels need. Keep matchers
 **surgical** — broad matchers cause ~65% sample bloat in our
-benchmarks (S1 multi-node smoke 2026-05-26) and can pressure your
+benchmarks (a multi-node test cluster) and can pressure your
 Prom's query path (since it's the agent's source, not a managed
 service).
 

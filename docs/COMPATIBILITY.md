@@ -31,12 +31,12 @@ empty for the cluster that's mismatched.
 
 ---
 
-## What changed in v1.10.0 / agent v1.0.0 (Phase 1)
+## What changed in v1.10.0 / agent v1.0.0
 
 The agent v1.0.0 release renames every metric and label to follow
 **Prometheus convention K8s** — the de-facto schema of cAdvisor +
-kube-state-metrics + node-exporter + Hubble. Same shape that future
-Prom remote_write and OTLP receivers will normalize toward. There is
+kube-state-metrics + node-exporter + Hubble, and the same shape the
+Prometheus `remote_write` receiver ingests. There is
 no dual emission — the agent ships only the canonical names.
 
 Highlights of the rename (full table in
@@ -62,67 +62,38 @@ Insights backend's metric paths) all consult these canonical names.
 
 ---
 
-## Validation campaign fixes (rc.1 → 1.10.0 GA)
+## Upgrade notes for 1.10.0
 
-The 1.10 release went through 4 RCs in a cluster-validation campaign
-across GKE Dataplane V2, EKS, AKS, and GKE+Calico OSS. Full closure
-and per-session detail live in
-`internal/cluster-validation/CAMPAIGN-CLOSURE.md` (gitignored). Three
-operator-visible cluster-registry bugs were caught and fixed:
+- 1.10.0 fixed multi-cluster agent registration: agents now honour the
+  cluster hint they send instead of collapsing to `cluster_id="local"`.
+  If you upgraded from a pre-1.10 backend, old `local/`-keyed agent
+  records linger until the 24h auto-prune horizon, then disappear.
+- A backend running in-cluster no longer lists its own cluster twice
+  when an agent connects from that same cluster.
 
-- **BUG-1 (rc.2): multi-cluster registry collapse (CRITICAL).**
-  `fix(api)!: honor Hello.cluster_hint in resolveAgentID`. Backend
-  no longer collapses every multi-cluster agent to
-  `cluster_id="local"`. Precedence is now
-  `id.ClusterID > clusterHint > "local"` in both auth-disabled
-  (OSS multi-cluster) and auth-enabled (SaaS ingest-token) branches.
-  **Operators upgrading from pre-1.10 with `local/`-keyed
-  AgentRecords in BoltDB**: the records persist as zombies until the
-  24h auto-prune horizon — see the commit message for the one-shot
-  cleanup script.
-- **BUG-2 (rc.3): single-cluster duplicate row in selector.**
-  `fix(api): skip agent-proxy auto-register when cluster_id matches
-  backend's own`. When the backend runs in-cluster and an agent
-  connects from the SAME cluster, the cluster no longer appears
-  twice in `/api/v1/clusters` and the UI selector. Out-of-cluster
-  dev runs (`make dev-clean`) are unaffected.
-- **BUG-3 (rc.4): duplicate row resurrects after backend restart.**
-  `fix(api): boot-time restore also honors selfClusterID — extract
-  IsSelfCluster helper`. The BUG-2 fix covered the live-connect path
-  but missed the boot-time restore path that replays persisted
-  `AgentRecord` entries on every backend restart. The self-skip rule
-  is now shared (`agent.IsSelfCluster`) between both call sites.
-  Backend boots log `processed persisted agent-proxy records on
-  boot restored=N skipped_self_cluster=M` for auditability.
+---
 
-No schema movement across the RC sequence — the matrix row
-`1.10.x ↔ 1.0.x ✅` is the only schema contract that matters.
+## Kubernetes & platforms
 
-Other notable fixes from the campaign:
-- **Log spam** — `WARN msg="prom remote_write permissive-fallback"`
-  now fires once per process; ongoing rate observable via
-  `kubebolt_prom_write_requests_total{tenant_id="anonymous"}` on
-  `/metrics`.
-- **Helm upgrade nil-guard** — `helm upgrade --reuse-values` from
-  pre-Phase-3 releases (no `tenant` section in user values) no
-  longer template-panics on `.Values.tenant.id`.
-- **Filesystem panel fallback** — P25-04 falls back to the agent's
-  `node_fs_used_bytes` when node-exporter isn't emitting
-  per-mountpoint detail.
-- **kube-prometheus-stack coexistence** — `job=""` filter in
-  Pod/Workload Monitor + pseudo-interface drop + new
-  `agent.deferNodeNetwork: true` helm value for silencing the
-  agent's `node_network_*` emission.
+- **Kubernetes version:** 1.24+ for full support (EndpointSlice v1,
+  CronJob v1). 1.20–1.23 work with degraded features — for example the
+  `service-no-endpoints` insight needs `discovery.k8s.io/v1`
+  EndpointSlices.
+- **Distributions:** any conformant cluster, including
+  Amazon EKS ([guide](guides/eks.md)), Google GKE ([guide](guides/gke.md)),
+  Azure AKS ([guide](guides/aks.md)), Red Hat OpenShift
+  ([guide](guides/openshift.md) — read it first, the default install needs
+  workarounds there), k3s / k0s, kubeadm, Docker Desktop, Minikube and
+  kind / k3d.
+- **Metrics Server:** recommended, not required. Without it the live
+  CPU/Memory bars show "no data"; everything else works, and historical
+  CPU/Memory comes from the agent.
+- **Upgrade order:** upgrade the backend (`kubebolt` chart) first, then
+  the agents (`kubebolt-agent` chart) in every connected cluster.
 
-### Build / toolchain hardening
-
-The release pipeline's `preflight-third-party-scan` now also
-Trivy-scans `victoriametrics/vmagent` (previously only
-`victoriametrics/victoria-metrics`), enforces drift between the
-two pins, and the Go toolchain pin moved from `'1.25'` (floating
-patch — picked stale 1.25.9 with 5 HIGH stdlib CVEs from the
-runner cache) to explicit `'1.25.10'`. All Dockerfiles + go.mod
-toolchain directives lockstep.
+See [`deployment-scenarios.md`](deployment-scenarios.md) for which
+optional components (kube-state-metrics, node-exporter, Cilium/Hubble,
+an existing Prometheus) unlock which features.
 
 ---
 
@@ -134,16 +105,16 @@ Just install both at the latest matching version:
 
 ```bash
 helm upgrade --install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0 \
+    --version 2.1.0 \
     -n kubebolt --create-namespace
 
 helm upgrade --install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0 \
+    --version 1.4.0 \
     -n kubebolt-agent --create-namespace \
     --set backendUrl=<your-backend-grpc-host:9090>
 ```
 
-### Existing install at v1.9.x + agent 0.2.x
+### Existing install at v1.9.x or earlier + agent 0.2.x
 
 Upgrade both in the same maintenance window. Order is operationally
 forgiving (the WARN is logged, dashboards render empty, samples still
@@ -151,18 +122,22 @@ flow) but the canonical pattern is to roll the backend first since
 the agent reconnects at registration:
 
 ```bash
+# --reset-then-reuse-values (Helm 3.13+) merges the new chart defaults
+# under your existing overrides; plain --reuse-values can fail to render
+# when the chart gained value blocks since your last install.
+
 # 1. Backend first
 helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-    --version 1.10.0 \
-    -n kubebolt --reuse-values
+    --version 2.1.0 \
+    -n kubebolt --reset-then-reuse-values
 
 # 2. Agent next, in any cluster connected to it
 helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-    --version 1.0.0 \
-    -n kubebolt-agent --reuse-values
+    --version 1.4.0 \
+    -n kubebolt-agent --reset-then-reuse-values
 
 # 3. Verify the WARN is gone
-kubectl logs -n kubebolt deployment/kubebolt --tail=20 | grep "agent below minimum"
+kubectl logs -n kubebolt deployment/kubebolt-api --tail=200 | grep "agent below minimum"
 # (no output expected; the WARN means the agent is still v0.x)
 ```
 
@@ -170,7 +145,7 @@ kubectl logs -n kubebolt deployment/kubebolt --tail=20 | grep "agent below minim
 
 If the kubebolt backend serves multiple clusters via per-cluster
 agents, **upgrade all the agents** before declaring the rollout
-complete. A backend at v1.10 with a mix of v1.0 and v0.2 agents will
+complete. A backend at 1.10 or later with a mix of v1.0 and v0.2 agents will
 show empty dashboards for whichever clusters lag behind, and the
 backend's log will carry one `WARN` per legacy agent on every
 reconnect.
@@ -184,20 +159,18 @@ the dashboards.
 
 ## Why the schema rename
 
-Strategic context lives in
-[`internal/agent-universal-data-plane-plan.md`](../internal/agent-universal-data-plane-plan.md)
-(the doc is gitignored — read it locally). Short version: future
-ingestion paths (Prom remote_write receiver, OTLP receiver, vmagent
-sidecar scraping kube-state-metrics + node-exporter directly)
-naturally land at the Prom convention. Pre-aligning the agent now
-means a single canonical schema feeds every dashboard regardless of
-ingest path, instead of three translation layers.
+Every other ingestion path — the Prometheus `remote_write` receiver,
+the agent's vmagent scrape sidecar (kube-state-metrics, node-exporter)
+and the agent's read-from-Prometheus mode — naturally lands on the
+Prometheus convention. Aligning the agent with it means a single
+canonical schema feeds every dashboard regardless of ingest path,
+instead of one translation layer per source.
 
 ---
 
 ## Reading the WARN log
 
-When a legacy agent connects to a v1.10 backend you'll see this exact
+When a legacy agent connects to a 1.10+ backend you'll see this exact
 shape in the API logs:
 
 ```json
@@ -237,5 +210,6 @@ additions only, never renames.
 
 - [`packages/agent/CHANGELOG.md`](../packages/agent/CHANGELOG.md) — agent release history with full schema migration table
 - [`docs/releases/v1.10.0.md`](releases/v1.10.0.md) — kubebolt 1.10.0 release notes
-- [`docs/agent-scraping.md`](agent-scraping.md) — operator guide for the vmagent sidecar (Phase 2): quickstart, config reference, troubleshooting
-- [`internal/kubebolt-agent-technical-spec.md`](../internal/kubebolt-agent-technical-spec.md) — authoritative metric / label catalog (v0.2 reflects v1.0 schema)
+- [`docs/releases/v2.1.0.md`](releases/v2.1.0.md) — kubebolt 2.1.0 release notes
+- [`docs/agent-scraping.md`](agent-scraping.md) — operator guide for the vmagent sidecar: quickstart, config reference, troubleshooting
+- [`deploy/helm/kubebolt-agent/README.md`](../deploy/helm/kubebolt-agent/README.md) — agent chart: RBAC tiers, auth modes, metric footprint

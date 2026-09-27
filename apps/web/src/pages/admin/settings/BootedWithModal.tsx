@@ -53,7 +53,6 @@ const EXACT_MATCHES: Record<string, Categorization> = {
   KUBEBOLT_AUTH_ENABLED: { bucket: 'auth-boot', configuredVia: null },
   KUBEBOLT_JWT_SECRET: { bucket: 'auth-boot', configuredVia: null },
   KUBEBOLT_ADMIN_PASSWORD: { bucket: 'auth-boot', configuredVia: null },
-  KUBEBOLT_AUTH_INITIAL_ADMIN_PASSWORD: { bucket: 'auth-boot', configuredVia: null },
   KUBEBOLT_RESET_ADMIN_PASSWORD: { bucket: 'auth-boot', configuredVia: null },
 
   // ─── A3 Filesystem paths ─────────────────────────────────────────
@@ -65,41 +64,41 @@ const EXACT_MATCHES: Record<string, Categorization> = {
   KUBEBOLT_METRICS_STORAGE_URL: { bucket: 'infra', configuredVia: null },
   KUBEBOLT_METRICS_RETENTION: { bucket: 'infra', configuredVia: null },
 
-  // ─── Runtime — Settings → Auth (V1) ──────────────────────────────
-  KUBEBOLT_JWT_EXPIRY: { bucket: 'runtime', configuredVia: { tab: 'auth', label: 'Settings → Auth' } },
-  KUBEBOLT_JWT_REFRESH_EXPIRY: { bucket: 'runtime', configuredVia: { tab: 'auth', label: 'Settings → Auth' } },
+  // ─── Runtime — Administration → Access → Authentication (V1) ─────
+  KUBEBOLT_JWT_EXPIRY: { bucket: 'runtime', configuredVia: { tab: 'auth', label: 'Administration → Access → Authentication' } },
+  KUBEBOLT_JWT_REFRESH_EXPIRY: { bucket: 'runtime', configuredVia: { tab: 'auth', label: 'Administration → Access → Authentication' } },
 
-  // ─── Runtime — Settings → General (V1 + V2) ──────────────────────
-  KUBEBOLT_DISPLAY_NAME: { bucket: 'runtime', configuredVia: { tab: 'general', label: 'Settings → General' } },
-  KUBEBOLT_DEFAULT_REFRESH_INTERVAL_SECONDS: { bucket: 'runtime', configuredVia: { tab: 'general', label: 'Settings → General' } },
-  KUBEBOLT_PROD_NAMESPACE_PATTERN: { bucket: 'runtime', configuredVia: { tab: 'general', label: 'Settings → General' } },
+  // ─── Runtime — Administration → System → General (V1 + V2) ───────
+  KUBEBOLT_DISPLAY_NAME: { bucket: 'runtime', configuredVia: { tab: 'general', label: 'Administration → System → General' } },
+  KUBEBOLT_DEFAULT_REFRESH_INTERVAL_SECONDS: { bucket: 'runtime', configuredVia: { tab: 'general', label: 'Administration → System → General' } },
+  KUBEBOLT_PROD_NAMESPACE_PATTERN: { bucket: 'runtime', configuredVia: { tab: 'general', label: 'Administration → System → General' } },
 
-  // ─── Runtime — Settings → Agents & Ingest (V2) ──────────────────
-  KUBEBOLT_AGENT_AUTH_MODE: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_TOKEN_AUDIENCE: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_REQUIRE_MTLS: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_RATE_LIMIT_ENABLED: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_RATE_LIMIT_RPS: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_RATE_LIMIT_BURST: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_REMOTE_WRITE_ENABLED: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_REMOTE_WRITE_AUTH_MODE: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
-  KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES_GLOBAL: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Settings → Agents & Ingest' } },
+  // ─── Runtime — Administration → Agents & Ingest → Configuration (V2)
+  KUBEBOLT_AGENT_AUTH_MODE: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_TOKEN_AUDIENCE: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_REQUIRE_MTLS: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_RATE_LIMIT_ENABLED: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_RATE_LIMIT_RPS: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_RATE_LIMIT_BURST: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_REGISTRY_PRUNE_HORIZON: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_AGENT_TUNNEL_IDLE_TIMEOUT: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_REMOTE_WRITE_ENABLED: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_REMOTE_WRITE_AUTH_MODE: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_PROM_WRITE_DEFAULT_SAMPLES_PER_SEC: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_PROM_WRITE_DEFAULT_BURST_SAMPLES: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
+  KUBEBOLT_PROM_WRITE_DEFAULT_MAX_ACTIVE_SERIES_GLOBAL: { bucket: 'runtime', configuredVia: { tab: 'ingest', label: 'Administration → Agents & Ingest → Configuration' } },
 }
 
 function categorize(name: string): Categorization {
   if (name in EXACT_MATCHES) return EXACT_MATCHES[name]
   // Family prefixes — covers expanding sets without map churn.
   if (name.startsWith('KUBEBOLT_AI_')) {
-    return { bucket: 'runtime', configuredVia: { tab: 'copilot', label: 'Settings → AI Copilot' } }
+    return { bucket: 'runtime', configuredVia: { tab: 'copilot', label: 'Administration → AI (Kobi) → Configuration' } }
   }
   if (name.startsWith('KUBEBOLT_SLACK_') || name.startsWith('KUBEBOLT_DISCORD_') || name.startsWith('KUBEBOLT_SMTP_') || name.startsWith('KUBEBOLT_NOTIFICATIONS_')) {
-    return { bucket: 'runtime', configuredVia: { tab: 'notifications', label: 'Settings → Notifications' } }
+    return { bucket: 'runtime', configuredVia: { tab: 'notifications', label: 'Administration → System → Notifications' } }
   }
   // Unknown KUBEBOLT_* — treat as boot-time uncategorized so it
   // surfaces under "Process bootstrap" with an Info icon. Operators
@@ -131,7 +130,7 @@ const BUCKET_INFO: Record<Bucket, { title: string; subtitle: string; tag: 'BOOT-
   },
   runtime: {
     title: 'Runtime-configurable',
-    subtitle: 'Editable from a Settings tab without redeploy. The env value is the boot fallback; UI overrides win.',
+    subtitle: 'Editable from an Administration tab without redeploy. The env value is the boot fallback; UI overrides win.',
     tag: 'RUNTIME',
   },
 }
@@ -185,8 +184,8 @@ export function BootedWithModal({ onClose }: { onClose: () => void }) {
       <div className="flex-1 overflow-y-auto p-5 space-y-3">
         <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
           Every <code className="font-mono text-kb-accent">KUBEBOLT_*</code> environment variable
-          the process saw at start, grouped by whether it can be changed at runtime via Settings
-          (lower section) or stays pinned to its boot value (upper sections). Settings overrides
+          the process saw at start, grouped by whether it can be changed at runtime from
+          Administration (lower section) or stays pinned to its boot value (upper sections). UI overrides
           take precedence over env on every read; the env value here is the boot fallback.
         </p>
 
@@ -206,7 +205,7 @@ export function BootedWithModal({ onClose }: { onClose: () => void }) {
         {data && data.env.length === 0 && (
           <div className="text-xs text-kb-text-tertiary italic">
             No KUBEBOLT_* env vars were set at boot. The process is running with full
-            defaults — every Settings tab shows the baseline as if no Helm chart was
+            defaults — every Administration settings tab shows the baseline as if no Helm chart was
             applied.
           </div>
         )}

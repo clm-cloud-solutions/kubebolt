@@ -1,21 +1,46 @@
 # kubebolt-agent
 
-Node agent for [KubeBolt](https://github.com/clm-cloud-solutions/kubebolt).
-Ships as a DaemonSet and collects three streams of data from each
-Kubernetes node, then forwards them to the KubeBolt backend:
+The agent that connects a Kubernetes cluster to
+[KubeBolt](https://kubebolt.io), the open-source Kubernetes operations
+platform. It only dials **out** to the KubeBolt backend over one gRPC
+channel, so it works for clusters whose API server the backend cannot
+reach (private networks, on-prem behind NAT, or a remote backend such as
+KubeBolt Cloud).
 
-- **kubelet `/stats/summary`** — per-pod / per-container CPU, memory,
-  and network counters sampled every 15 s.
-- **cAdvisor fallback** — covers kubelets that don't populate the
-  pod-level network block (e.g. docker-desktop).
-- **Cilium Hubble flow events** — L4 counters, L7 HTTP status +
-  latency, and DNS resolutions. Collected by a single leader-elected
-  pod so the relay isn't N-times-counted.
+The chart deploys:
 
-The agent is optional. Without it KubeBolt still works — you lose
-historical metrics, network / disk observability, and live traffic
-flows, but everything else (inventory, insights, YAML edit, exec,
-port-forward, logs) is unchanged.
+- **A DaemonSet (Mode A)** — one pod per node that collects:
+  - **kubelet `/stats/summary`** — per-pod / per-container CPU, memory,
+    network and filesystem counters, polled every 30 s.
+  - **cAdvisor fallback** — covers kubelets that don't populate the
+    pod-level network block (e.g. docker-desktop).
+  - **Cilium Hubble flow events** *(opt-in, `hubble.enabled=true`)* — L4
+    counters, L7 HTTP status + latency, and DNS resolutions. Collected by
+    a single leader-elected pod so the relay isn't counted N times.
+  - **Kubernetes API proxy** *(`rbac.mode=reader` or `operator`)* — lets
+    the backend read (and, in `operator` mode, change) the cluster through
+    the agent's tunnel.
+- **A `promread` Deployment (Mode C, opt-in)** — a single pod that reads
+  from a Prometheus you already run (self-managed, AWS AMP, Azure Monitor
+  managed Prometheus, Google Managed Prometheus). Enabled with
+  `agent.promRead.enabled=true`. See
+  [Topology — Mode A vs Mode C](#topology--mode-a-vs-mode-c).
+
+User documentation: [kubebolt.io/docs/agent](https://kubebolt.io/docs/agent)
+· [connect clusters](https://kubebolt.io/docs/connect-clusters) ·
+[remote clusters](https://kubebolt.io/docs/remote-clusters) ·
+[compatibility](https://kubebolt.io/docs/compatibility).
+
+When the backend already reaches the cluster directly (in-cluster install or
+kubeconfig), the agent is optional. Without it KubeBolt still works — you lose
+historical metrics, network / disk observability, and live traffic flows, but
+everything else (inventory, insights, YAML edit, exec, port-forward, logs) is
+unchanged. Clusters the backend can't reach directly need the agent in
+`reader` or `operator` mode.
+
+This chart version (1.4.x) emits the Prometheus-canonical metric schema and
+pairs with KubeBolt ≥ 1.10 (including 2.x); see the
+[compatibility matrix](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/COMPATIBILITY.md).
 
 For clusters that also run Prometheus-compatible exporters
 (node-exporter, kube-state-metrics, or app pods carrying
@@ -31,7 +56,7 @@ reuse, point it at KubeBolt instead of scraping twice — see
 
 ## Installation methods
 
-There are three ways to install the agent. All produce the same
+There are three ways to install the agent. All produce the agent
 DaemonSet; they differ in who owns it and which tool can later
 modify or remove it. The ownership signal is the
 `app.kubernetes.io/managed-by` label on the DaemonSet, which
@@ -40,8 +65,8 @@ KubeBolt reads on every poll.
 | Method | `managed-by` label | Install command | When to use | Who can modify |
 |---|---|---|---|---|
 | **This chart** | `Helm` | `helm install kubebolt-agent oci://...` | Production. Full value surface including `affinity`, custom `tolerations`, `podAnnotations`, etc. | Helm (`helm upgrade`), KubeBolt UI with force |
-| **KubeBolt UI** | `kubebolt` | Administration → Integrations → Install | Quickest path when you already have KubeBolt running. Opinionated value set covering 90% of installs. | KubeBolt UI (Configure / Uninstall) |
-| **Raw manifest** | _(unset)_ | `kubectl apply -f deploy/agent/kubebolt-agent-<tier>.yaml` (where `<tier>` is `metrics`, `reader`, or `operator` — see [`deploy/agent/README.md`](../../deploy/agent/README.md) for the tier picker) | Air-gapped clusters, GitOps flows that manage their own manifests, RBAC-conscious shops that want the SA's permission tier explicit in the manifest | The tool that applied it; KubeBolt UI with force |
+| **KubeBolt UI** | `kubebolt` | Administration → Agents & Ingest → Integrations → KubeBolt Agent → Install | Quickest path when you already have KubeBolt running. Opinionated value set covering 90% of installs. | KubeBolt UI (Configure / Uninstall) |
+| **Raw manifest** | _(unset)_ | `helm template` output from this chart, applied with `kubectl apply -f` (see [`deploy/agent/README.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/agent/README.md) — the checked-in `deploy/agent/*.yaml` files are legacy 0.2.x manifests) | Air-gapped clusters, GitOps flows that manage their own manifests, RBAC-conscious shops that want the SA's permission tier explicit in the manifest | The tool that applied it; KubeBolt UI with force |
 
 **Mixing paths:** KubeBolt's UI refuses to modify DaemonSets without
 the `managed-by=kubebolt` label by default. Uninstall has a
@@ -57,22 +82,27 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 ```
 
 Replace `backendUrl` with wherever your KubeBolt backend's gRPC port
-(`:9090`) is reachable from inside the cluster. See the "Connecting
-to the backend" section below for concrete examples.
+(`:9090`) is reachable from inside the cluster. The example above is the
+in-cluster Service of the `kubebolt` chart (`<release>-agent-ingest.<ns>`,
+here release `kubebolt` in namespace `kubebolt`). See
+[Connecting to the backend](#connecting-to-the-backend) for other
+topologies, including a remote backend such as KubeBolt Cloud.
 
 ### Choosing your coverage — simplest to fullest
 
 The command above is all most clusters need to start. It lights up **Mode A**
-(kubelet CPU/memory, container metrics, and Hubble flows if you run Cilium) —
+(kubelet CPU/memory and container metrics; add `hubble.enabled=true` for
+Hubble flows if you run Cilium) —
 already with **cardinality controls on by default** (see
 [Metric footprint](#metric-footprint--cardinality-is-controlled-by-default)).
 Scale up only when you want more:
 
 | You want… | Add to the install | Notes |
 |---|---|---|
-| **Just the essentials** (greenfield, no Prometheus) | nothing — the command above | Mode A only. CPU/mem/container/flows. |
+| **Just the essentials** (greenfield, no Prometheus) | nothing — the command above | Mode A only. CPU/mem/container metrics. Add `--set hubble.enabled=true` on Cilium for flows. |
 | **Full node + cluster coverage** (node-exporter + kube-state-metrics) | `--set scrape.enabled=true --set scrape.discovery.nodeExporter.enabled=true --set scrape.discovery.kubeStateMetrics.enabled=true` | Bundled vmagent sidecar scrapes them. **Duplication is prevented automatically** (see [Scrape sidecar](#scrape-sidecar-scrapeenabled)). `kube-prometheus-stack` needs a label override — see [`docs/agent-scraping.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/agent-scraping.md). |
 | **You already run Prometheus** | Point it at KubeBolt instead of scraping twice — see the integration guides below | Mode C (promread) or `remote_write`. No double collection. |
+| **Cost data** (OpenCost) | `--set opencost.enabled=true`, or list your own OpenCost under `collectors.exporters` | The agent scrapes OpenCost's `/metrics`. See [`docs/integrations/opencost.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/opencost.md). |
 
 **Integration guides** — when the cluster already has a Prometheus you want to
 reuse (pick the one that matches your setup):
@@ -95,22 +125,20 @@ cluster:
 | `reader` (default) | Cluster-wide `get`/`list`/`watch` on `*/*` | ON (mandatory) | optional but recommended | "I want to see everything but not change it." Backend renders inventory + YAML + describe + logs through the agent's tunnel. Write attempts come back 403. |
 | `operator` | Wildcard `get/list/watch/create/update/patch/delete` on `*/*` | ON (mandatory) | **REQUIRED** | Full UI parity through the agent — exec, scale, restart, delete, YAML edit. Effectively cluster-admin scoped to the SA; auth on the gRPC channel is the only thing keeping random network probers from pivoting to admin. |
 
-**Pre-0.2.0 readers**: this replaces the binary
-`proxy.enabled` + (apply-out-of-band) operator-tier ClusterRole
-overlay. Wire-compat is preserved on the backend's install
-endpoint, but the chart only speaks `rbac.mode` — pick one of the
-three values.
+The chart derives `proxy.enabled` from `rbac.mode`; setting
+`proxy.enabled=false` with `reader` or `operator` fails the render.
 
 ## Auth (`auth.mode`)
 
 Independent toggle from `rbac.mode`. Three values:
 
 - `disabled` (default for self-hosted lab): no credentials. The
-  agent dials in plaintext + no token. Only valid against a backend
-  that runs in `KUBEBOLT_AGENT_AUTH_MODE=disabled`.
+  agent sends no token. Only accepted by a backend whose agent auth
+  mode is `disabled` or `permissive`.
 - `ingest-token`: long-lived bearer token. The operator generates
-  it via the KubeBolt backend's admin UI ("Agent Tokens") or
-  REST (`POST /admin/tenants/{id}/tokens`), then either:
+  it in the KubeBolt UI (**Administration → Agents & Ingest → Agent
+  Tokens**) or via REST (`POST /api/v1/admin/tenants/{id}/tokens`),
+  then either:
    - creates the Secret manually
      (`kubectl create secret generic kubebolt-agent-token -n
      kubebolt-system --from-literal=token=<paste>`), OR
@@ -121,8 +149,13 @@ Independent toggle from `rbac.mode`. Three values:
 - `tokenreview`: projected ServiceAccount token validated by the
   backend via `apiserver TokenReview`. Requires the backend in
   the same cluster as the agent. Set
-  `auth.tokenReview.audience=kubebolt-backend` (matches the
-  backend's expected audience).
+  `auth.tokenReview.audience=kubebolt-backend` (the default; must match
+  the backend chart's `agentIngest.tokenAudience`).
+
+The backend decides whether credentials are required through its agent
+auth mode (`agentIngest.authMode` in the `kubebolt` chart, or
+Administration → Agents & Ingest → Configuration): `disabled`,
+`permissive` or `enforced`.
 
 ## Topology — Mode A vs Mode C
 
@@ -130,7 +163,7 @@ The chart can run the agent in two complementary topologies:
 
 | Topology | What it does | When it renders |
 |---|---|---|
-| **Mode A — DaemonSet** *(always)* | One pod per node. Scrapes the local kubelet (`/stats/summary` + `/metrics/cadvisor`) for the KubeBolt-named metrics the UI's curated panels consume (`node_fs_used_bytes`, `container_cpu_usage_seconds_total`, `pod_*`). Optionally runs the leader-elected Hubble flow collector. | Always. |
+| **Mode A — DaemonSet** *(always)* | One pod per node. Scrapes the local kubelet (`/stats/summary` + `/metrics/cadvisor`) for the metrics the UI's curated panels consume (`node_fs_used_bytes`, `container_cpu_usage_seconds_total`, `pod_*`), plus load average / PSI from `/proc`. Optionally runs the leader-elected Hubble flow collector, the exporter scraper (`collectors.exporters`, OpenCost) and the vmagent scrape sidecar. | Always. |
 | **Mode C — Deployment (replicas=1)** *(opt-in)* | Single cluster-wide pod that polls the customer's existing Prometheus via `/api/v1/query_range` and forwards the converted samples through the same AgentChannel as Mode A. Adds metrics Mode A doesn't synthesize: full kube-state-metrics, `node_load*`, PSI pressure, disk I/O detail, network errors. | When `agent.promRead.enabled=true`. |
 
 The two run **in separate pods** — Mode C does NOT piggy-back on the DaemonSet. The split was introduced in 1.13 after a multi-node validation showed that running both pipelines on the same leader pod overflowed its shared buffer and silently dropped its own kubelet samples. Each pod has dedicated buffer + shipper; no contention.
@@ -141,25 +174,23 @@ The two run **in separate pods** — Mode C does NOT piggy-back on the DaemonSet
 |---|---|
 | Greenfield / no existing Prom | `agent.promRead.enabled=false` (default) — Mode A only. Optionally `scrape.enabled=true` for the bundled vmagent sidecar. |
 | Has Prom that supports `remote_write` outbound (self-managed Prom, GCP GMP customer-deployed) | Mode A + customer's Prom `remote_write` into the KubeBolt backend's `/prom/write` endpoint. `agent.promRead.enabled=false`. |
-| Has managed Prom that's query-only (AWS AMP, Azure Monitor managed Prom, GCP GMP managed) OR change-management blocks editing the customer's Prom config | `agent.promRead.enabled=true` + `agent.promRead.url=<customer-prom-svc>` + appropriate `agent.promRead.auth.mode` (`none` / `basicAuth` / `bearer` in 1.13; AWS SigV4 / Azure Workload Identity / GCP IAM in 1.13.x). Mode A keeps running in parallel for the KubeBolt-named metrics. |
+| Has managed Prom that's query-only (AWS AMP, Azure Monitor managed Prom, GCP GMP managed) OR change-management blocks editing the customer's Prom config | `agent.promRead.enabled=true` + `agent.promRead.url=<prom-url>` + the matching `agent.promRead.auth.mode`: `none`, `basicAuth`, `bearer`, `awsSigV4` (AMP via IRSA, needs `awsRegion`), `azureWorkloadIdentity` (Azure Monitor via Workload Identity) or `gcpIam` (GMP via Workload Identity). Mode A keeps running in parallel for the KubeBolt-named metrics. |
 
 **Mutual exclusion enforced at render time:** if `scrape.enabled=true` AND `agent.promRead.enabled=true`, the chart hard-fails with a clear message — pick one (the scrape sidecar and the customer-Prom reader would duplicate work for no UI gain).
 
 **Setting up Mode C or `remote_write`?** The [integration guides](#choosing-your-coverage--simplest-to-fullest) (AWS AMP, Azure Monitor, GMP, self-managed Prometheus) walk through the cloud identity + auth wiring end-to-end.
 
-**Default Mode C matchers are surgical.** They pull ONLY metrics Mode A doesn't already synthesize, to avoid 2× storage on overlapping data:
+**Default Mode C matchers are surgical.** They pull ONLY metrics Mode A doesn't already produce, to avoid 2× storage on overlapping data. They are **explicit metric names**, not `__name__=~` regexes, because Google Managed Prometheus rejects regex matching on `__name__`:
 
-```yaml
-agent:
-  promRead:
-    matchers:
-      - '{__name__=~"kube_.*"}'                            # full KSM
-      - '{__name__=~"node_load.*|node_pressure_.*"}'        # uptime + PSI
-      - '{__name__=~"node_disk_.*|node_network_.*_errs_.*"}'  # I/O detail
-      - '{__name__=~"up|process_.*"}'                       # target health
-```
+| Group | Default metric names |
+|---|---|
+| kube-state-metrics core | `kube_pod_info`, `kube_pod_status_phase`, `kube_pod_status_ready`, `kube_pod_container_status_{waiting,terminated}_reason`, `kube_pod_container_resource_{requests,limits}`, `kube_deployment_status_replicas{,_available,_unavailable}`, `kube_statefulset_status_replicas{,_ready}`, `kube_daemonset_status_number_ready`, `kube_daemonset_status_desired_number_scheduled`, `kube_node_info`, `kube_node_status_{capacity,allocatable,condition}` |
+| node-exporter | `node_load{1,5,15}`, `node_pressure_{cpu,io,memory}_waiting_seconds_total`, `node_disk_{read_bytes,written_bytes,io_time_seconds}_total`, `node_network_{receive,transmit}_errs_total` |
+| target health | `up`, `process_resident_memory_bytes`, `process_cpu_seconds_total` |
 
-Operators add app-custom metrics or wider node-exporter surface by appending to this list in their values override. Empty list falls back to the same defaults in code.
+The full list is in [`values.yaml`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/values.yaml) (`agent.promRead.matchers`). Append app-custom metrics or a wider node-exporter surface in your values override; an empty list falls back to the same defaults in code. `agent.promRead.cost.enabled=true` appends the OpenCost metric families (requires an OpenCost scraped by that Prometheus).
+
+With `agent.promRead.auth.mode=azureWorkloadIdentity`, the DaemonSet automatically stops emitting node network and load/PSI metrics, because Azure Monitor's own node-exporter scrape already provides them.
 
 ## Achieving full node coverage
 
@@ -202,8 +233,8 @@ trade off coverage vs cluster policy strictness:
 >     effect: NoSchedule
 > ```
 
-> 💡 **Resource requests.** Default requests are intentionally tiny
-> (`10m` CPU / `30Mi` memory) so the agent fits even on busy nodes.
+> 💡 **Resource requests.** Default requests are intentionally small
+> (`10m` CPU / `64Mi` memory) so the agent fits even on busy nodes.
 > Don't raise these unless you have a specific reason; raising them
 > makes Pending pods more likely.
 
@@ -214,6 +245,9 @@ helm upgrade kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
   --namespace kubebolt-system \
   --reuse-values
 ```
+
+Cilium users upgrading from a 1.12.x chart: `hubble.enabled` now defaults to
+`false`, so add `--set hubble.enabled=true` to keep collecting flows.
 
 ## Uninstall
 
@@ -227,7 +261,8 @@ The release namespace itself is preserved.
 
 If the agent was installed through the KubeBolt UI instead of this
 chart, `helm uninstall` won't find anything — remove it from the
-UI (Administration → Integrations → Agent → Uninstall) or delete
+UI (Administration → Agents & Ingest → Integrations → KubeBolt Agent →
+Uninstall) or delete
 the resources by name. The other direction works too: KubeBolt's
 UI can force-uninstall a chart-installed agent, though the Helm
 release metadata will linger until you also run `helm uninstall`
@@ -235,22 +270,22 @@ with `--keep-history=false` or delete the release Secret directly.
 
 ## Key values
 
-The values below are the ones most commonly set in production.
-Full reference with every knob the chart exposes is in
-[`values.yaml`](./values.yaml).
+The values below are the ones most commonly set. The full reference, with
+comments for every knob, is [`values.yaml`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/deploy/helm/kubebolt-agent/values.yaml).
 
 ### Required
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `backendUrl` | _(required)_ | Host:port of the KubeBolt API gRPC. See "Connecting to the backend" below. |
+| `backendUrl` | _(required)_ | `host:port` of the KubeBolt backend's agent gRPC channel. Rendering fails without it. See [Connecting to the backend](#connecting-to-the-backend). |
 
-### Cluster identity
+### Identity
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `cluster.name` | `""` | Human-readable cluster label emitted alongside `cluster_id`. Empty is fine — only surfaces when querying VictoriaMetrics directly. |
+| `cluster.name` | `""` | Display name for the cluster, sent with the agent's registration (used when the cluster is auto-registered in the cluster switcher). |
 | `cluster.id` | `""` | Override the auto-discovered `cluster_id` (kube-system namespace UID). Leave empty unless migrating legacy data. |
+| `tenant.id` | `""` | Tenant UUID stamped on every sample (returned when an ingest token is issued). Empty is allowed: the backend stamps the tenant from the ingest token. |
 
 ### Image
 
@@ -259,34 +294,116 @@ Full reference with every knob the chart exposes is in
 | `image.repository` | `ghcr.io/clm-cloud-solutions/kubebolt/agent` | Registry path. Override for mirrors or private registries. |
 | `image.tag` | `""` | Falls back to `Chart.appVersion`. Pin explicitly in prod. |
 | `image.pullPolicy` | `IfNotPresent` | `Always` / `IfNotPresent` / `Never`. Use `Never` for kind/dev where the image is pre-loaded with `kind load`. |
-| `imagePullSecrets` | `[]` | For private registries. |
+| `imagePullSecrets` | _(unset)_ | For private registries (applied to the DaemonSet). |
+
+### Backend connection: auth and TLS
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `auth.mode` | `disabled` | `disabled`, `tokenreview` (projected ServiceAccount token; backend in the same cluster) or `ingest-token` (bearer token; required for a remote backend). See [Auth](#auth-authmode). |
+| `auth.tokenReview.audience` | `kubebolt-backend` | Audience of the projected token; must match the backend's `agentIngest.tokenAudience`. |
+| `auth.tokenReview.expirationSeconds` | `3600` | Projected token lifetime (the kubelet renews it). |
+| `auth.ingestToken.existingSecret` | `""` | Secret holding the ingest token (required when `auth.mode=ingest-token`). |
+| `auth.ingestToken.key` | `token` | Key inside that Secret. |
+| `tls.enabled` | `false` | Use TLS on the gRPC dial. Required for a remote backend such as KubeBolt Cloud. |
+| `tls.caSecret` / `tls.caKey` | `""` / `ca.crt` | CA bundle to verify the backend certificate. Empty = system trust store (right for public CAs). |
+| `tls.clientCertSecret` / `tls.clientCertKey` / `tls.clientKeyKey` | `""` / `tls.crt` / `tls.key` | Client certificate for mTLS. |
+| `tls.serverName` | `""` | SNI / verification name override. Empty = host part of `backendUrl`. |
+
+### Permissions and API proxy
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `rbac.mode` | `reader` | `metrics`, `reader` or `operator` — see [Permission tier](#permission-tier--rbacmode). |
+| `rbac.create` | `true` | Creates the ClusterRole / Role tiers + bindings and the leader-election Role. Set `false` when RBAC is provisioned externally. |
+| `proxy.enabled` | _(derived)_ | Kubernetes API proxy through the agent tunnel. Derived from `rbac.mode` (off for `metrics`, on otherwise); only set it to force it on in `metrics` mode. |
+| `serviceAccount.create` | `true` | |
+| `serviceAccount.name` | `""` | Empty = derive from release name. Set explicitly when `serviceAccount.create=false`. |
+| `serviceAccount.annotations` | `{}` | Cloud identity for Mode C: IRSA (`eks.amazonaws.com/role-arn`), GKE Workload Identity (`iam.gke.io/gcp-service-account`), Azure Workload Identity (`azure.workload.identity/client-id`). |
 
 ### Hubble flow collector
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `hubble.enabled` | `true` | Toggle the flow collector. Silent no-op when Cilium isn't installed — safe to leave on. |
+| `hubble.enabled` | `false` | Opt-in flow collector for clusters running Cilium with Hubble Relay. When off, the Reliability panels that need flows stay hidden. Check for Cilium with `kubectl -n kube-system get pods -l k8s-app=cilium`. |
 | `hubble.relay.address` | `""` | Override the relay target. Default: `hubble-relay.kube-system.svc.cluster.local:80`. |
 | `hubble.relay.tls.existingSecret` | `""` | Pre-existing Secret in the release namespace with `ca.crt` (TLS) + optional `tls.crt`/`tls.key` (mTLS). |
 | `hubble.relay.tls.serverName` | `""` | SNI / verification hostname. Override when the relay's cert uses a CN/SAN distinct from the dial target. |
+
+### In-agent collectors, exporters and OpenCost
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `collectors.dropNetworkInterfaces` | kernel tunnel devices, `azv*`, `veth*`, `eni*`, `cali*`, `lo` | Interfaces excluded from `container_network_*`. Entries ending in `*` are prefix matches. `[]` keeps every interface. See [Metric footprint](#metric-footprint--cardinality-is-controlled-by-default). |
+| `collectors.exporters` | `{}` | Extra Prometheus exporters to scrape, as `name: /metrics URL` (one leader-elected pod scrapes each). Use it for an OpenCost you installed yourself. |
+| `agent.deferNodeNetwork` | `false` | Stop emitting `node_network_{receive,transmit}_bytes_total` when an external Prometheus already scrapes node-exporter (avoids 2× counts). Set automatically when the bundled sidecar scrapes node-exporter. |
+| `agent.deferNodeStress` | `false` | Stop emitting load average and PSI (`node_load*`, `node_pressure_*`) when node-exporter already ships them — typical with kube-prometheus-stack. Set automatically when the bundled sidecar scrapes node-exporter. |
+| `opencost.enabled` | `false` | Install the bundled [OpenCost](https://www.opencost.io/) sub-chart (exporter only, UI off) and point the agent's exporter scraper at it. Run `helm dependency update` first when installing from a source checkout. |
+| `opencost.exporterUrl` | `""` | Override the auto-derived scrape URL (`http://<release>-opencost.<ns>.svc:9003/metrics`). |
+| `opencost.opencost.*` | `ui.enabled: false` | Pass-through to the upstream OpenCost chart — e.g. `opencost.opencost.prometheus.*` to point it at your Prometheus (needed for complete allocation data). See [`docs/integrations/opencost.md`](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/opencost.md). |
+
+### Mode C — read an existing Prometheus (`agent.promRead`)
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `agent.promRead.enabled` | `false` | Deploy the single-replica `promread` Deployment. Mutually exclusive with `scrape.enabled`. |
+| `agent.promRead.url` | `""` | Prometheus base URL, e.g. `http://prometheus.monitoring:9090` (required when enabled). |
+| `agent.promRead.auth.mode` | `none` | `none`, `basicAuth`, `bearer`, `awsSigV4`, `azureWorkloadIdentity`, `gcpIam`. |
+| `agent.promRead.auth.basicAuthUsername` / `basicAuthPassword` | `""` | For `basicAuth`. For production, inject credentials from a Secret via `extraEnv`. |
+| `agent.promRead.auth.bearerToken` | `""` | For `bearer`. |
+| `agent.promRead.auth.awsRegion` | `""` | AMP workspace region (required for `awsSigV4`). |
+| `agent.promRead.pollInterval` / `step` / `lookback` | `30s` / `30s` / `60s` | Query cadence, `query_range` resolution and window. |
+| `agent.promRead.matchers` | KSM, load/PSI, disk, network errors, `up`, `process_*` | Metric names to read. See [Topology](#topology--mode-a-vs-mode-c). |
+| `agent.promRead.cost.enabled` | `false` | Also read OpenCost metric families from that Prometheus. |
+| `agent.promRead.deployment.resources` | `50m`/`64Mi` – `1000m`/`256Mi` | Requests / limits of the `promread` pod. |
+| `agent.promRead.deployment.nodeSelector` / `tolerations` / `affinity` | `{}` / `[]` / `{}` | Scheduling of the `promread` pod. |
+
+Setup guides: [self-managed read-only](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/self-managed-prom-readonly.md),
+[AWS AMP](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/aws-amp.md),
+[Azure Monitor](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/azure-managed-prometheus.md),
+[Google Managed Prometheus](https://github.com/clm-cloud-solutions/kubebolt/blob/main/docs/integrations/gcp-managed-prometheus.md).
+
+### Scrape sidecar (`scrape.*`)
+
+| Value | Default | Purpose |
+|-------|---------|---------|
+| `scrape.enabled` | `false` | Add a vmagent sidecar to each DaemonSet pod. See [Scrape sidecar](#scrape-sidecar-scrapeenabled). |
+| `scrape.remoteWriteUrl` | `""` | Where vmagent sends samples — the backend's receiver, e.g. `http://kubebolt-api.kubebolt.svc.cluster.local:8080/api/v1/prom/write` (the backend needs `metrics.remoteWrite.enabled=true`). Required in practice: vmagent crash-loops without a remote_write URL. |
+| `scrape.image.repository` / `tag` / `pullPolicy` | `victoriametrics/vmagent` / `v1.148.0-scratch` / `IfNotPresent` | vmagent image (kept on the same VictoriaMetrics release as the backend chart). |
+| `scrape.resources` | `10m`/`64Mi` – `200m`/`256Mi` | Sidecar requests / limits. |
+| `scrape.extraArgs` | `{}` | Extra vmagent flags, rendered as `-key=value`. |
+| `scrape.limits.maxScrapeSize` | `16777216` (16 MiB) | Max scrape body size. |
+| `scrape.limits.maxSeriesPerTarget` | `30000` | Max unique series per target per scrape. |
+| `scrape.limits.maxSeriesGlobal` | `1000000` | Cap on total active series; `0` disables it. |
+| `scrape.metricRelabelConfigs` | keep-list of KubeBolt families + drop `endpoint_id`, `container_id` | Cardinality guardrail; `[]` keeps everything. |
+| `scrape.discovery.pods.enabled` | `true` | Scrape pods annotated `prometheus.io/scrape: "true"` on the local node. |
+| `scrape.discovery.nodeExporter.enabled` / `labelSelector` / `port` / `path` | `false` / `app.kubernetes.io/name=node-exporter` / `9100` / `/metrics` | Dedicated node-exporter job. kube-prometheus-stack needs `labelSelector=app.kubernetes.io/name=prometheus-node-exporter`. |
+| `scrape.discovery.kubeStateMetrics.enabled` / `labelSelector` / `port` / `path` | `false` / `app.kubernetes.io/name=kube-state-metrics` / `8080` / `/metrics` | Dedicated kube-state-metrics job (scraped once, by the agent on KSM's node). |
 
 ### Scheduling
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `tolerations` | `[{operator: Exists}]` | Tolerates every taint so the agent lands on control-plane nodes. Trim if you want to exclude some. |
+| `tolerations` | `[{operator: Exists}]` | Tolerates every taint so the agent lands on every node, including control-plane. Trim if you want to exclude some. |
 | `nodeSelector` | `{}` | Pin the agent to specific nodes, e.g. `{kubernetes.io/os: linux}`. |
 | `affinity` | `{}` | Full affinity object. Most installs don't need this. |
-| `priorityClassName` | `""` | Set to `system-cluster-critical` (or your own PriorityClass) in prod to avoid preemption. |
+| `priority.enabled` | `false` | Give the agent a PriorityClass so it can preempt lower-priority pods on full nodes. See [Achieving full node coverage](#achieving-full-node-coverage). |
+| `priority.className` | `""` | Existing PriorityClass to use. Empty (with `priority.enabled=true`) = the chart creates `<release>-priority`. |
+| `priority.value` | `999999000` | Value of the chart-managed PriorityClass. |
+| `priorityClassName` | `""` | Legacy single-string knob; when set it wins over `priority.*`. |
 
 ### Resources
 
 | Value | Default | Purpose |
 |-------|---------|---------|
-| `resources.requests.cpu` | `10m` | Agent is a light Go binary; defaults are sized for small clusters. |
-| `resources.requests.memory` | `64Mi` | Bumped from `30Mi` in 1.10.0 to match realistic steady-state with Hubble + agent-proxy + scrape sidecar active. Original sizing was for a kubelet-only Phase 1 agent. |
+| `resources.requests.cpu` | `10m` | DaemonSet agent container. |
+| `resources.requests.memory` | `64Mi` | Sized for steady state with Hubble + API proxy + scrape sidecar active. |
 | `resources.limits.cpu` | `100m` | |
-| `resources.limits.memory` | `128Mi` | Bumped from `80Mi` in 1.10.0 to give headroom against Hubble flow parsing burst allocation patterns. See "Memory and observability" below for the rationale and tuning knobs. |
+| `resources.limits.memory` | `128Mi` | Headroom for Hubble flow-parsing bursts. See "Memory and observability" below. |
+| `gomemlimit` | `""` _(derived)_ | Overrides the auto-derived `GOMEMLIMIT` (90% of each Go container's `limits.memory`). Set e.g. `"200MiB"` to pin it across all containers. |
+
+The `promread` pod and the vmagent sidecar have their own resources
+(`agent.promRead.deployment.resources`, `scrape.resources`).
 
 ### Memory and observability
 
@@ -331,25 +448,18 @@ kubectl port-forward -n <ns> <agent-pod> 6060:6060
 go tool pprof http://localhost:6060/debug/pprof/heap
 ```
 
-### RBAC + ServiceAccount
-
-| Value | Default | Purpose |
-|-------|---------|---------|
-| `rbac.create` | `true` | Creates ClusterRole/Role + bindings. Set `false` when RBAC is provisioned externally (e.g. Rancher, platform operators). |
-| `serviceAccount.create` | `true` | |
-| `serviceAccount.name` | `""` | Empty = derive from release name. Set explicitly when `serviceAccount.create=false`. |
-| `serviceAccount.annotations` | `{}` | Useful for IRSA (EKS) / Workload Identity (GKE). |
-
-### Extras
+### Pod settings and extras
 
 | Value | Default | Purpose |
 |-------|---------|---------|
 | `logLevel` | `info` | `debug` / `info` / `warn` / `error`. |
-| `agent.deferNodeNetwork` | `false` | Suppress agent's `node_network_*` emission when an external Prometheus is the canonical scraper of node-exporter. Avoids 2× counts on `sum(rate(node_network_*[1m]))` queries (kubelet `/stats/summary` and node-exporter emit the same metric names from the same `/proc/net/dev` counters). The bundled `scrape.discovery.nodeExporter.enabled=true` path auto-sets this when the chart's vmagent sidecar scrapes node-exporter; flip it explicitly to `true` when a SEPARATE external Prom does the scraping. |
-| `gomemlimit` | `""` _(derived)_ | Overrides the auto-derived `GOMEMLIMIT` (90% of each Go container's `limits.memory`). Empty = derive — see "Memory and observability" above. Set e.g. `"200MiB"` to pin it across all containers. |
-| `extraEnv` | `[]` | List of additional env vars appended to the agent container. `GOMEMLIMIT` is no longer set here — override it via `gomemlimit` above. |
-| `podAnnotations` | `{}` | Useful for external scrapers or policy engines. |
-| `podLabels` | `{}` | |
+| `extraEnv` | `[]` | Additional env vars for the agent containers (DaemonSet and `promread`). `GOMEMLIMIT` is set via `gomemlimit`, not here. |
+| `podAnnotations` | `{}` | Extra pod annotations. |
+| `podLabels` | `{}` | Extra pod labels. |
+| `podAnnotationChecksum` | `true` | Add a checksum of the values to the DaemonSet pod template so `helm upgrade` rolls the pods whenever values change. |
+| `podSecurityContext` | `runAsNonRoot: true`, `runAsUser: 65532` | Pod security context. |
+| `containerSecurityContext` | read-only root FS, no privilege escalation, all capabilities dropped | Container security context. |
+| `nameOverride` / `fullnameOverride` | `""` | Override chart-derived resource names. |
 
 ## Connecting to the backend
 
@@ -359,6 +469,29 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 | Backend in-cluster via the main chart (release `kubebolt` in namespace `kubebolt`) | `kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090` |
 | Backend behind an internal LoadBalancer | that LB's IP:9090 |
 | Backend on a VM reachable from the cluster | that host:9090 |
+| Backend exposed through the `kubebolt` chart's Gateway API agent listener | `agent.<your-domain>:443` with `tls.enabled=true` |
+| Remote backend, for example [KubeBolt Cloud](https://kubebolt.io) | `agent.kubebolt.io:443` with `tls.enabled=true` and `auth.mode=ingest-token` |
+
+For a remote backend, create the ingest-token Secret first (the token comes
+from the backend's **Administration → Agents & Ingest → Agent Tokens**, or from
+the Add cluster wizard), then install:
+
+```bash
+kubectl create namespace kubebolt-system
+kubectl -n kubebolt-system create secret generic kubebolt-agent-token \
+  --from-literal=token=<paste-token>
+
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt-system \
+  --set backendUrl=agent.kubebolt.io:443 \
+  --set tls.enabled=true \
+  --set auth.mode=ingest-token \
+  --set auth.ingestToken.existingSecret=kubebolt-agent-token \
+  --set cluster.name=my-cluster
+```
+
+The backend's Add cluster wizard (**Clusters → Add cluster**) builds an
+equivalent `helm install` command from your choices.
 
 **Resilience:** the agent reconnects automatically if the backend closes the
 stream — a backend restart, a rolling upgrade, a network blip, or the backend's
@@ -565,7 +698,14 @@ The agent ships an opt-in vmagent sidecar that scrapes
 Prom-compatible `/metrics` endpoints in the cluster
 (kube-state-metrics, node-exporter, any pod with
 `prometheus.io/scrape: "true"`) and remote_writes the samples to the
-KubeBolt backend. Default off.
+KubeBolt backend. Default off. It needs two settings besides
+`scrape.enabled=true`: `scrape.remoteWriteUrl` pointing at the backend's
+receiver (for example
+`http://kubebolt-api.kubebolt.svc.cluster.local:8080/api/v1/prom/write`), and
+`metrics.remoteWrite.enabled=true` on the `kubebolt` chart (or the
+remote_write toggle in Administration → Agents & Ingest → Configuration). With
+`auth.mode=ingest-token`, vmagent reuses the same token. It cannot be combined
+with `agent.promRead.enabled=true`.
 
 **For clusters running `kube-prometheus-stack`** (or any Prom install
 driven by `ServiceMonitor` / `PodMonitor` CRDs rather than annotations),

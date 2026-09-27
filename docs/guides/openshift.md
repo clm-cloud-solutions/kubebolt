@@ -1,7 +1,10 @@
 # KubeBolt on OpenShift
 
-> **Status — 2026-08-16.** TWO independent problems, both reproduced on
-> **1.23.1 / OpenShift 4.20 / Kubernetes 1.33.6**:
+> **Status — last verified 2026-08-16** on KubeBolt 1.23.1 / OpenShift 4.20 /
+> Kubernetes 1.33.6. Not re-tested on OpenShift since; the 2.1.0 source still
+> lacks the `web` image fix and still has the 25s / 45s connect-deadline
+> mismatch (see [Pending fixes](#pending-fixes)), so expect both problems and
+> use the workarounds. TWO independent problems:
 >
 > 1. The **`web` image** does not start under the default `restricted-v2` SCC.
 >    `api`, `victoriametrics` and the agent are fine. Two workarounds below.
