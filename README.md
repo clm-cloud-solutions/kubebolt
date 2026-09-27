@@ -234,7 +234,11 @@ docker run -p 3000:3000 \
 ```
 
 On Linux, the mounted kubeconfig must be readable by the container's
-non-root user.
+non-root user. Inside the container `127.0.0.1` is the container itself, so
+local clusters (kind, Docker Desktop) and kubeconfigs that authenticate
+through `aws`, `gke-gcloud-auth-plugin` or `kubelogin` need a small
+adjustment — see
+[Reaching your clusters from the container](docs/deployment-scenarios.md#reaching-your-clusters-from-the-container).
 
 Binaries for Linux and macOS (amd64, arm64) and Windows (amd64) — plus the
 `kubebolt-mcp` stdio server — are attached to every

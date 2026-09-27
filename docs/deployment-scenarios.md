@@ -488,6 +488,43 @@ contexts via the UI (every kubeconfig context shows up in the cluster
 selector), and uses your local kubeconfig credentials for all
 apiserver calls.
 
+### Reaching your clusters from the container
+
+The kubeconfig is read inside the container, so two things that work on
+your laptop may not work there:
+
+- **Local clusters.** An apiserver at `https://127.0.0.1:<port>` points at
+  the container itself (connection refused).
+  - **kind** — use the internal kubeconfig and join the `kind` Docker
+    network; the apiserver is then reached by its container name, which
+    the kind certificate covers:
+
+    ```bash
+    kind get kubeconfig --internal --name <cluster> > /tmp/kind-kubeconfig
+    docker run --rm -p 3000:3000 --network kind \
+      -v /tmp/kind-kubeconfig:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
+      ghcr.io/clm-cloud-solutions/kubebolt:latest
+    ```
+
+  - **Docker Desktop Kubernetes** — `./deploy/docker-kubeconfig.sh`
+    writes `/tmp/docker-kubeconfig` with the apiserver rewritten to
+    `kubernetes.docker.internal`; mount that file instead of
+    `~/.kube/config`.
+  - Anything else listening on `127.0.0.1` (minikube, k3d…) needs an
+    address the container can reach and that the apiserver certificate
+    covers. The Homebrew / krew / binary install avoids the problem
+    entirely.
+- **Exec credential plugins.** Contexts whose `user` runs a command to get
+  a token only work if that command and its credentials exist in the
+  container.
+  - **EKS** (`aws eks get-token`) — the image includes the AWS CLI; also
+    mount your AWS config and pass the profile if it isn't `default`:
+    `-v ~/.aws:/home/kubebolt/.aws:ro -e AWS_PROFILE=<profile>`.
+  - **GKE** (`gke-gcloud-auth-plugin`) and **AKS with Entra ID**
+    (`kubelogin`) — those plugins are not in the image. Use the binary,
+    Homebrew or krew install on your machine, or deploy KubeBolt into the
+    cluster with Helm.
+
 ### What's enabled
 - ✅ **A** Operational core — lists, details, Map, Insights (24 rules),
   exec / logs / port-forward / files (all run through your local
