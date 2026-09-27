@@ -10,6 +10,8 @@ import (
 	"time"
 
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 )
 
 // maxOccurrences bounds the per-fingerprint occurrence ring so a flapping
@@ -56,6 +58,13 @@ type InsightRecord struct {
 	Title      string `json:"title"`
 	Message    string `json:"message,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
+	// Evidence carries the evaluation's typed facts from the rule to the
+	// EpisodeSink, which writes them onto the episode row. Transport only —
+	// `json:"-"` keeps it out of the persisted record, because the record is
+	// one identity and evidence belongs to one OCCURRENCE: the same pod
+	// OOMing twice with different limits is two different proofs, and hanging
+	// them off the identity would keep only the last.
+	Evidence []models.Evidence `json:"-"`
 
 	// Lifecycle. Status is "active" while the condition holds, "resolved"
 	// once it clears. FirstSeen is fixed at first-ever detection; LastSeen

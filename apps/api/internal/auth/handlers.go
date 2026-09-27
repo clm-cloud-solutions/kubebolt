@@ -24,6 +24,10 @@ type Handlers struct {
 	// the user-session JWT. nil → only JWT auth. Interface-typed (W1 seam):
 	// OSS wires the BoltDB *APITokenStore, EE a Postgres impl.
 	apiTokens APITokenStorer
+	// tokenClusterCheck validates an API key's cluster allow-list against the
+	// caller's org. Lives in package api (it needs the cluster manager); wired
+	// with SetAPITokenClusterCheck.
+	tokenClusterCheck func(r *http.Request, clusters []string) error
 
 	// Org/team context for the OSS single-org+single-team hierarchy. Wired
 	// via SetOrgTeamContext at boot (auth-enabled path only). When teams is
@@ -51,6 +55,11 @@ func (h *Handlers) SetOrgTeamContext(teams TeamStore, tenants TenantStore, defau
 // kbs_/kbk_ bearer tokens. Optional; call once at boot from main.go.
 func (h *Handlers) SetAPITokenStore(s APITokenStorer) {
 	h.apiTokens = s
+}
+
+// SetAPITokenClusterCheck wires the validation of an API key's cluster list.
+func (h *Handlers) SetAPITokenClusterCheck(fn func(r *http.Request, clusters []string) error) {
+	h.tokenClusterCheck = fn
 }
 
 // APITokens exposes the wired store (nil if unset) for the admin handlers.

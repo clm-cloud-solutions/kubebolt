@@ -25,11 +25,24 @@ import (
 type MetricKind string
 
 const (
-	MetricCPU        MetricKind = "cpu"
-	MetricMemory     MetricKind = "memory"
-	MetricNetworkRX  MetricKind = "network_rx"
-	MetricNetworkTX  MetricKind = "network_tx"
+	MetricCPU       MetricKind = "cpu"
+	MetricMemory    MetricKind = "memory"
+	MetricNetworkRX MetricKind = "network_rx"
+	MetricNetworkTX MetricKind = "network_tx"
+	// MetricFilesystem is Node-only. Pod-level disk IO is unreliable on EKS
+	// with VPC CNI, and PVC fill has its own path — so this lane answers the
+	// one question that had no answer: how full is the NODE's disk.
+	MetricFilesystem MetricKind = "filesystem"
 )
+
+// fsPseudoTypes are filesystems that are memory or kernel artifacts, not disk.
+// Counting them as "disk usage" is how a node with plenty of room reports
+// pressure.
+const fsPseudoTypes = `tmpfs|overlay|ramfs|squashfs|devtmpfs|cgroup|cgroup2|proc|sysfs|nsfs|mqueue|securityfs|tracefs|configfs|debugfs|fuse|fusectl|hugetlbfs|pstore|bpf|autofs|binfmt_misc|rpc_pipefs|none`
+
+// fsEphemeralMounts are high-cardinality mounts with no operator signal: the
+// kubelet's per-pod volume mounts and the bind-mounts under /etc and /run.
+const fsEphemeralMounts = `^/etc/.*|^/run/.*|^/var/lib/kubelet/.*|^/dev/.*|^/sys/.*|^/proc/.*`
 
 // metricsRangeSpec ties a UI-friendly range string to the VM query parameters.
 // 12 trend points per response keeps the token cost ~constant across windows.
@@ -172,11 +185,21 @@ type promBuilder struct {
 // read, always first in the selector so it is impossible to write one of these
 // builders without it being visible in the golden test output.
 func (b *promBuilder) scope() string {
-	if b.tenantID == "" {
-		return fmt.Sprintf(`cluster_id=%q`, b.clusterUID)
+	uid := b.clusterUID
+	if uid == "" {
+		// A connector that has not read its UID yet must not become
+		// `cluster_id=""`, which matches every series WITHOUT the label.
+		// Same fail-closed sentinel the API's scopeQueryByCluster uses.
+		uid = noClusterUIDSentinel
 	}
-	return fmt.Sprintf(`tenant_id=%q,cluster_id=%q`, b.tenantID, b.clusterUID)
+	if b.tenantID == "" {
+		return fmt.Sprintf(`cluster_id=%q`, uid)
+	}
+	return fmt.Sprintf(`tenant_id=%q,cluster_id=%q`, b.tenantID, uid)
 }
+
+// noClusterUIDSentinel mirrors api.noClusterUIDSentinel: never a real UID.
+const noClusterUIDSentinel = "__kubebolt_no_uid__"
 
 // peakOverBucket makes a point the maximum its step saw, rather than the value
 // at the step's timestamp.
@@ -258,6 +281,39 @@ func (b *promBuilder) buildMemory() string {
 	return b.peakOverBucket(b.wrapAggregation(inner), false)
 }
 
+// buildFilesystem returns the PromQL for node disk usage as a percentage,
+// with the same two-branch shape the Node Monitor tab uses. Mirrors
+// ResourceDetailPage's Filesystem chart — keep them in step.
+//
+// Primary: node-exporter naming (node_filesystem_avail_bytes /
+// node_filesystem_size_bytes), one series per real mountpoint.
+//
+// Fallback: the agent's own kubelet-stats naming (node_fs_used_bytes /
+// node_fs_capacity_bytes), a single coarse series per node, emitted
+// unconditionally by the StatsCollector. Guarded with
+// `unless on(node) node_filesystem_avail_bytes` so it fires ONLY where no
+// node-exporter series exist — otherwise both branches return and the node
+// reports a phantom extra series. An OSS-minimal install (agent, no vmagent)
+// has only the fallback, and without it this lane would be silently empty
+// exactly where the operator has the least other visibility.
+func (b *promBuilder) buildFilesystem() string {
+	sel := b.scope()
+	nodeSel := fmt.Sprintf(`%s,node=%q`, sel, b.name)
+	exporter := fmt.Sprintf(`%s,fstype!~%q,mountpoint!~%q`, nodeSel, fsPseudoTypes, fsEphemeralMounts)
+	primary := fmt.Sprintf(
+		`(100 * (1 - node_filesystem_avail_bytes{%s} / node_filesystem_size_bytes{%s}))`,
+		exporter, exporter,
+	)
+	fallback := fmt.Sprintf(
+		`((100 * node_fs_used_bytes{%s} / node_fs_capacity_bytes{%s}) unless on(node) node_filesystem_avail_bytes{%s})`,
+		nodeSel, nodeSel, nodeSel,
+	)
+	// No peakOverBucket: this is already a percentage of a slow-moving gauge,
+	// and a max-over-bucket on a near-flat series only makes the sparkline
+	// lie about volatility.
+	return primary + " or " + fallback
+}
+
 // isNode is a small helper to keep the kind check terse where it appears
 // (every metric builder). The input enum value is "Node" — case-sensitive
 // match against the workload_kind label convention and the schema enum.
@@ -337,7 +393,6 @@ func (b *promBuilder) podNamePattern() string {
 	// to zero before the validator catches it.
 	return name + ".*"
 }
-
 
 // buildNetwork returns the PromQL for network_rx or network_tx.
 //
@@ -551,7 +606,7 @@ type vmInstantResponse struct {
 		ResultType string `json:"resultType"`
 		Result     []struct {
 			Metric map[string]string `json:"metric"`
-			Value  []any              `json:"value"` // [unix_ts (float), value (string)]
+			Value  []any             `json:"value"` // [unix_ts (float), value (string)]
 		} `json:"result"`
 	} `json:"data"`
 	Error string `json:"error,omitempty"`

@@ -626,6 +626,14 @@ func (m *Manager) SetStorage(s ClusterStore) error {
 	return m.reloadUploadedContextsLocked()
 }
 
+// ClusterIDForContext returns the cluster_id an agent-proxy context maps to,
+// or "" when contextName is not a registered agent-proxy context.
+func (m *Manager) ClusterIDForContext(contextName string) string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.agentProxyContexts[contextName]
+}
+
 // Storage returns the attached storage, or nil if none was set.
 // CanonicalClusterID maps a UI-supplied context name to the kube-system UID that
 // keys per-cluster state. This reconciles the two identities of a cluster: an
@@ -940,10 +948,13 @@ func (m *Manager) MetricsOnlyClusterID(ctx context.Context) string {
 	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.metricsOnlyContexts[m.activeContextForLocked(key.Cluster)]
+	return m.metricsOnlyContexts[m.contextForKeyLocked(key)]
 }
 
-func (m *Manager) ListClusters() []ClusterInfo {
+// ListClusters lists every cluster context. ctx is unused in this build and
+// kept for signature parity with the Enterprise one, which resolves each
+// row's runtime per organization.
+func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -1474,6 +1485,17 @@ func (m *Manager) activeContextForLocked(explicitCluster string) string {
 	return m.activeContext
 }
 
+// contextForKeyLocked is activeContextForLocked for a request's RuntimeKey:
+// a key marked NoCluster resolves to no cluster, never to the active one.
+// Every per-request resolution goes through here, so a request refused the
+// active cluster cannot reach it through another accessor. Caller holds m.mu.
+func (m *Manager) contextForKeyLocked(key RuntimeKey) string {
+	if key.NoCluster {
+		return ""
+	}
+	return m.activeContextForLocked(key.Cluster)
+}
+
 // ActiveContextFor is the per-request replacement for ActiveContext(). Handlers
 // must use this: ActiveContext returns the single global slot, which in a
 // multi-organization install is owned by whichever org switched cluster most
@@ -1484,7 +1506,7 @@ func (m *Manager) ActiveContextFor(ctx context.Context) string {
 	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.activeContextForLocked(key.Cluster)
+	return m.contextForKeyLocked(key)
 }
 
 // ConnErrorFor is the per-request replacement for ConnError(). m.connErr
@@ -1498,7 +1520,7 @@ func (m *Manager) ConnErrorFor(ctx context.Context) error {
 	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	contextName := m.activeContextForLocked(key.Cluster)
+	contextName := m.contextForKeyLocked(key)
 	if contextName == "" {
 		return nil
 	}
@@ -1522,7 +1544,7 @@ func (m *Manager) ActiveAgentProxyClusterIDFor(ctx context.Context) string {
 	key := RuntimeKeyFromContext(ctx)
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	contextName := m.activeContextForLocked(key.Cluster)
+	contextName := m.contextForKeyLocked(key)
 	if contextName == "" {
 		return ""
 	}
@@ -1542,6 +1564,11 @@ func (m *Manager) ActiveAgentProxyClusterIDFor(ctx context.Context) string {
 // unknown context, or a failed spin). Callers use the snapshot lock-free.
 func (m *Manager) resolveRuntime(ctx context.Context) *clusterRuntime {
 	key := RuntimeKeyFromContext(ctx)
+	// No cluster at all — checked before the active-runtime shortcut below,
+	// which would otherwise hand the request the active cluster.
+	if key.NoCluster {
+		return nil
+	}
 	m.mu.RLock()
 	// Shares activeContextForLocked with MetricsOnlyClusterID and the ctx-aware
 	// accessors, so the four cannot drift.

@@ -213,3 +213,41 @@ func (h *handlers) handleDeleteConversation(w http.ResponseWriter, r *http.Reque
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
+
+// conversationForCluster decides which conversation this chat turn belongs to.
+//
+// A conversation belongs to ONE cluster. Its transcript is full of tool results
+// read from that cluster, and a second cluster's results mixed in mislead the
+// model and the operator alike — the operator asks "which of these two is the
+// one that's down?" and the answer is "depends which half of the transcript you
+// read". The persist step stamps the CURRENT cluster on the record, so honouring
+// an id that arrived from a different one would not merely relabel the row: it
+// would append foreign findings to it, and the history list would show a
+// conversation that had silently moved cluster.
+//
+// So: an id from another cluster is not continued, it is displaced. A brand-new
+// conversation starts and the old one keeps exactly what it had.
+//
+// The client is supposed to make this unreachable — Kobi's cluster-switch
+// handoff asks in a fresh conversation. It shipped not doing that, and the guard
+// lives here as well because the store is the only place that can see both
+// clusters at once. Returns the id to use, whether it is new, and the id that
+// was displaced (empty when nothing was).
+func conversationForCluster(
+	store copilot.ConversationStore,
+	tenant, userID, requested, activeCluster string,
+) (id string, isNew bool, displaced string) {
+	if requested == "" {
+		return copilot.NewConversationID(), true, ""
+	}
+	// Without a store there is nothing to compare against; and with no active
+	// cluster (metrics-only, or mid-reconnect) there is no claim to make.
+	if store == nil || activeCluster == "" {
+		return requested, false, ""
+	}
+	prior, found, err := store.Get(tenant, userID, requested)
+	if err != nil || !found || prior == nil || prior.ClusterID == "" || prior.ClusterID == activeCluster {
+		return requested, false, ""
+	}
+	return copilot.NewConversationID(), true, requested
+}

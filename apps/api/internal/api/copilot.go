@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"sort"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -13,7 +14,10 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
+	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 )
 
 // friendlyCopilotError translates raw provider errors into user-friendly messages.
@@ -241,7 +245,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	clusterName := h.manager.ActiveContextFor(r.Context())
 	systemPrompt := copilot.BuildSystemPrompt()
 
-	executor := copilot.NewExecutor(h.manager).WithMetricsRetention(h.metricsRetentionFor)
+	executor := h.readToolExecutor()
 	// Action governance (Sprint 1): withhold propose_* tools when actions
 	// are disabled, and the destructive verbs when the sub-switch is off —
 	// the LLM can't propose what it can't see. Defaults are ON (the action
@@ -267,10 +271,17 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	if convUserID == "" {
 		convUserID = copilot.FallbackConversationUser
 	}
-	conversationID := strings.TrimSpace(req.ConversationID)
-	newConversation := conversationID == ""
-	if newConversation {
-		conversationID = copilot.NewConversationID()
+	conversationID, newConversation, displaced := conversationForCluster(
+		h.copilotConversations, auth.ContextTenantID(r), convUserID,
+		strings.TrimSpace(req.ConversationID), clusterName,
+	)
+	if displaced != "" {
+		slog.Default().Warn("copilot conversation addressed from a different cluster; started a new one",
+			slog.String("component", "copilot"),
+			slog.String("displacedConversationId", displaced),
+			slog.String("conversationId", conversationID),
+			slog.String("activeCluster", clusterName),
+		)
 	}
 	sse.event("meta", map[string]any{"conversationId": conversationID})
 
@@ -799,7 +810,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			sse.event("tool_call", map[string]string{"toolName": call.Name})
 
 			toolStart := time.Now()
-			result := executor.Execute(call)
+			// Scope tool execution to THIS request: its cluster, its caller and
+			// its entitlement (ClusterScope, an API key's cluster list).
+			// Execute() runs on context.Background(), which carries none of
+			// them — a key limited to one cluster read every cluster through
+			// the chat while /mcp, on the request context, held.
+			result := executor.ExecuteCtx(r.Context(), call)
 			toolDur := time.Since(toolStart)
 
 			outBytes := len(result.Content)
@@ -1165,3 +1181,307 @@ func (h *handlers) metricsRetentionFor(ctx context.Context) time.Duration {
 	_ = ctx
 	return 0
 }
+
+// fleetSource adapts the persisted insight store to copilot.FleetSource.
+// Mirrors handleInsightsSummary: active only, org from the context, and every
+// row passed through the entitlement before it is counted.
+type fleetSource struct {
+	manager *cluster.Manager
+}
+
+func (f fleetSource) ActiveInsights(ctx context.Context) ([]insights.InsightRecord, error) {
+	store := f.manager.InsightStore()
+	if store == nil {
+		return nil, nil
+	}
+	scope := ClusterScopeFrom(ctx)
+	if scope.EntitledToNothing() {
+		return nil, nil
+	}
+	recs, err := store.List(insights.InsightQuery{
+		TenantID: auth.TenantIDFromContext(ctx),
+		// Active only, for the reason handleInsightsSummary gives: a resolved
+		// insight is history, and counting it paints a cluster amber after it
+		// was fixed.
+		Status: "active",
+		// No ClusterID: the whole point is to span them.
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := recs[:0]
+	for _, rec := range recs {
+		if scope.May(rec.ClusterID) {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+func (f fleetSource) ClusterName(ctx context.Context, clusterID string) string {
+	if f.manager == nil {
+		return ""
+	}
+	return f.manager.DisplayNameForCluster(ctx, clusterID)
+}
+
+// fleetSourceFor returns nil when there is no manager to read through, so the
+// tool says "I cannot see across clusters" instead of reporting a healthy fleet.
+func (h *handlers) fleetSourceFor() copilot.FleetSource {
+	if h.manager == nil {
+		return nil
+	}
+	return fleetSource{manager: h.manager}
+}
+
+// findingSource adapts the findings store to copilot.FindingSource, applying
+// the org, the cluster and the ENTITLEMENT on every call.
+//
+// The entitlement is the point. cluster_scope.go records that forgetting to
+// narrow per-cluster rows shipped three times, and all three passed review
+// because the tester was an admin, whom nothing narrows. /copilot/chat and
+// /mcp now carry WithClusterScope precisely so this adapter can read it.
+type findingSource struct {
+	store findings.Store
+	// manager resolves the finding's own cluster for the live re-read in
+	// Detail. nil degrades Detail to the stored record.
+	manager *cluster.Manager
+}
+
+// errNoReadableCluster: the caller may read no cluster of its org. Not an
+// empty result — the tool must say it could not look.
+var errNoReadableCluster = errors.New("this caller may read no cluster in its organization, so findings could not be checked — this is NOT a clean result")
+
+// findingsTenant is the org as the findings store keys it — the same mapping
+// activeTenantID applies on the REST side, where the default tenant is "".
+// Reading the raw context value instead would look the rows up under a key the
+// sweep never wrote.
+func findingsTenant(ctx context.Context) string {
+	if t := auth.TenantIDFromContext(ctx); t != auth.DefaultTenantName {
+		return t
+	}
+	return ""
+}
+
+func (s findingSource) List(ctx context.Context, q findings.Query, allClusters bool) ([]findings.Record, error) {
+	scope := ClusterScopeFrom(ctx)
+	// A caller entitled to no cluster gets an error, not an empty list. Zero
+	// findings because we could not look reads, downstream, as "clean": that is
+	// how a rollback plan told its approver an image with a critical CVE had
+	// none. Only a scope that was decided and came out empty lands here.
+	if ids, narrowed := scope.AllowedIDs(); narrowed && len(ids) == 0 {
+		return nil, errNoReadableCluster
+	}
+	q.TenantID = findingsTenant(ctx)
+	switch {
+	case allClusters:
+		q.ClusterID = ""
+	case q.ClusterID == "":
+		// The executor names the request's cluster; ?cluster= is the fallback
+		// for a caller that did not. Neither the chat nor /mcp carries one, so
+		// relying on it alone answered "this cluster" with the whole org.
+		q.ClusterID = scope.Requested()
+	}
+	if ids, narrowed := scope.AllowedIDs(); narrowed && q.ClusterID == "" {
+		// The store caps the ORG's rows newest first; a narrowed caller must
+		// get its own clusters' rows, not what survives of an org page.
+		var recs []findings.Record
+		for _, id := range ids {
+			per := q
+			per.ClusterID = id
+			rows, err := s.store.List(per)
+			if err != nil {
+				return nil, err
+			}
+			for _, rec := range rows {
+				if rec.ClusterID == id { // never trust the store with the boundary
+					recs = append(recs, rec)
+				}
+			}
+		}
+		sort.SliceStable(recs, func(i, j int) bool { return recs[i].LastSeen.After(recs[j].LastSeen) })
+		if q.Limit > 0 && len(recs) > q.Limit {
+			recs = recs[:q.Limit]
+		}
+		return recs, nil
+	}
+	recs, err := s.store.List(q)
+	if err != nil {
+		return nil, err
+	}
+	// Narrowed installs: drop anything the caller's teams do not own. May
+	// fails OPEN when nothing narrows (OSS), which is the documented zero.
+	out := recs[:0]
+	for _, rec := range recs {
+		if scope.May(rec.ClusterID) {
+			out = append(out, rec)
+		}
+	}
+	return out, nil
+}
+
+// Detail is readFindingDetail — the same function behind GET
+// /findings/{fingerprint} — with the entitlement read off the call's context.
+func (s findingSource) Detail(ctx context.Context, clusterID, fingerprint string) (*findings.Detail, bool, error) {
+	d, err := readFindingDetail(ctx, s.store, s.manager, findingsTenant(ctx), clusterID, fingerprint,
+		ClusterScopeFrom(ctx).May)
+	if errors.Is(err, errFindingNotFound) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return d, true, nil
+}
+
+// runtimeEventSource adapts the Falco event store to copilot.RuntimeEventSource
+// with the same org, cluster and entitlement rules as findingSource. A runtime
+// event carries the command line that ran — the most revealing payload in the
+// pillar — so the team narrowing matters here more than anywhere.
+type runtimeEventSource struct {
+	store findings.EventStore
+}
+
+func (s runtimeEventSource) List(ctx context.Context, q findings.EventQuery, allClusters bool) ([]findings.EventRecord, error) {
+	scope := ClusterScopeFrom(ctx)
+	if ids, narrowed := scope.AllowedIDs(); narrowed && len(ids) == 0 {
+		return nil, errNoReadableCluster
+	}
+	q.TenantID = findingsTenant(ctx)
+	switch {
+	case allClusters:
+		q.ClusterID = ""
+	case q.ClusterID == "":
+		q.ClusterID = scope.Requested()
+	}
+	if ids, narrowed := scope.AllowedIDs(); narrowed && q.ClusterID == "" {
+		// Same as findings: per readable cluster, not a filtered org page.
+		var evs []findings.EventRecord
+		for _, id := range ids {
+			per := q
+			per.ClusterID = id
+			rows, err := s.store.ListEvents(per)
+			if err != nil {
+				return nil, err
+			}
+			for _, ev := range rows {
+				if ev.ClusterID == id {
+					evs = append(evs, ev)
+				}
+			}
+		}
+		sort.SliceStable(evs, func(i, j int) bool { return evs[i].At.After(evs[j].At) })
+		if q.Limit > 0 && len(evs) > q.Limit {
+			evs = evs[:q.Limit]
+		}
+		return evs, nil
+	}
+	evs, err := s.store.ListEvents(q)
+	if err != nil {
+		return nil, err
+	}
+	out := evs[:0]
+	for _, ev := range evs {
+		if scope.May(ev.ClusterID) {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+// runtimeEventSourceFor returns nil when there is no event store, so the tool
+// says "I cannot see runtime events" instead of reporting a quiet cluster.
+func (h *handlers) runtimeEventSourceFor() copilot.RuntimeEventSource {
+	if h.eventStore == nil {
+		return nil
+	}
+	return runtimeEventSource{store: h.eventStore}
+}
+
+// findingSourceFor returns nil — not a zero struct — when persistence is off,
+// so the tool says "I cannot see findings" instead of reporting a clean cluster.
+func (h *handlers) findingSourceFor() copilot.FindingSource {
+	if h.findingsStore == nil {
+		return nil
+	}
+	return findingSource{store: h.findingsStore, manager: h.manager}
+}
+
+// episodeSource adapts the episode reader to copilot.EpisodeSource, resolving
+// the org from the CALL's context rather than holding one.
+//
+// That distinction is the whole design. The MCP executor is built once at
+// startup, where there is no request and therefore no org; binding a tenant at
+// construction would serve every MCP caller the org that happened to be
+// resolvable at boot. Reading it per call is also what makes the chat executor
+// and the MCP one able to share a single instance.
+type episodeSource struct {
+	reader insights.EpisodeReader
+}
+
+// Window, Episode and Recurrence answer only for clusters the caller may read
+// (ClusterScope: team, API key cluster list). The store is org-level; this is
+// where the cluster refinement happens, as it does for findings.
+func (s episodeSource) Window(ctx context.Context, q insights.EpisodeQuery) ([]insights.Episode, error) {
+	may := ClusterScopeFrom(ctx).May
+	if q.ClusterID != "" && !may(q.ClusterID) {
+		return []insights.Episode{}, nil
+	}
+	if ids, narrowed := ClusterScopeFrom(ctx).AllowedIDs(); narrowed && q.ClusterID == "" {
+		return windowForClusters(ctx, s.reader, auth.TenantIDFromContext(ctx), q, ids)
+	}
+	eps, err := s.reader.Window(ctx, auth.TenantIDFromContext(ctx), q)
+	if err != nil {
+		return nil, err
+	}
+	return filterEpisodes(eps, may), nil
+}
+
+func (s episodeSource) Episode(ctx context.Context, id string) (insights.Episode, []insights.Transition, error) {
+	ep, tr, err := s.reader.Episode(ctx, auth.TenantIDFromContext(ctx), id)
+	if err == nil && !ClusterScopeFrom(ctx).May(ep.ClusterID) {
+		return insights.Episode{}, nil, errEpisodeNotReadable
+	}
+	return ep, tr, err
+}
+
+func (s episodeSource) Recurrence(ctx context.Context, fingerprint string, limit int32) ([]insights.Episode, error) {
+	eps, err := s.reader.ByFingerprint(ctx, auth.TenantIDFromContext(ctx), fingerprint, limit)
+	if err != nil {
+		return nil, err
+	}
+	return filterEpisodes(eps, ClusterScopeFrom(ctx).May), nil
+}
+
+// errEpisodeNotReadable is what an episode of a cluster the caller may not
+// read looks like to Kobi: not found, the same as the REST detail.
+var errEpisodeNotReadable = errors.New("episode not found")
+
+// episodeSourceFor returns nil — not a zero struct — when the install has no
+// episode store, so the executor's nil check fires and the tool says "I cannot
+// see history here" instead of reporting an empty one.
+func (h *handlers) episodeSourceFor() copilot.EpisodeSource {
+	if h.episodes == nil {
+		return nil
+	}
+	return episodeSource{reader: h.episodes}
+}
+
+// operationalEpisodesFor binds the request's org to the burst reader for
+// get_operational_episodes. It calls ClusterAndStore — the same entry point
+// GET /insights/operational-episodes uses — on purpose: the call recomputes
+// the window and persists it under deterministic ids, so Kobi and the UI
+// converge on the same bursts with the same ids instead of describing the
+// same morning differently. Returns nil when the install has no operational
+// reader; the executor turns that into an explicit "cannot see" answer.
+func (h *handlers) operationalEpisodesFor(ctx context.Context, from, to time.Time) ([]insights.OperationalEpisode, error) {
+	if h.operational == nil {
+		return nil, nil
+	}
+	ops, err := h.operational.ClusterAndStore(ctx, auth.TenantIDFromContext(ctx), from, to)
+	if err != nil {
+		return nil, err
+	}
+	return filterBursts(ops, ClusterScopeFrom(ctx).May), nil
+}
+

@@ -79,15 +79,31 @@ func TestClusterEpisodes_SeedPrecedence(t *testing.T) {
 		t.Fatalf("kind = %s, want mass_rollout", ops[0].Kind)
 	}
 
-	// A burst of pure expectation noise admits it doesn't know.
+	// unknown_burst sigue existiendo, pero ahora significa «malfuncionamientos
+	// reales que no sé atribuir», no «ruido de configuración». oom-killed es
+	// malfunction y no es semilla de ningún kind.
+	var unattributed []Episode
+	for i := 0; i < 6; i++ {
+		unattributed = append(unattributed, opEp("u"+strconv.Itoa(i), "cl-1", "oom-killed", "Pod/ns/p"+strconv.Itoa(i),
+			t0.Add(time.Duration(i)*time.Minute), EpisodeFiring, "", time.Hour))
+	}
+	ops = ClusterEpisodes("org-1", unattributed)
+	if len(ops) != 1 || ops[0].Kind != OpKindUnknownBurst {
+		t.Fatalf("kind = %+v, want unknown_burst", ops)
+	}
+
+	// Y una ráfaga de expectativas puras ya NO es una ráfaga. Cambio de
+	// comportamiento deliberado: el tick de evaluación sella todas las
+	// expectativas con el mismo first_seen, así que agruparlas producía un
+	// «evento» donde sólo había estado de configuración permanente. Medido en
+	// vivo el 20-sep: 56 de 70 ráfagas no tenían ni un malfuncionamiento.
 	var noise []Episode
 	for i := 0; i < 6; i++ {
 		noise = append(noise, opEp("n"+strconv.Itoa(i), "cl-1", "policy-orphan", "Namespace/ns"+strconv.Itoa(i)+"/ns"+strconv.Itoa(i),
 			t0.Add(time.Duration(i)*time.Minute), EpisodeFiring, "", time.Hour))
 	}
-	ops = ClusterEpisodes("org-1", noise)
-	if ops[0].Kind != OpKindUnknownBurst {
-		t.Fatalf("kind = %s, want unknown_burst", ops[0].Kind)
+	if ops = ClusterEpisodes("org-1", noise); len(ops) != 0 {
+		t.Fatalf("las expectativas puras formaron %d ráfaga(s); no son un suceso", len(ops))
 	}
 }
 

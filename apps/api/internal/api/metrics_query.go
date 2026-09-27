@@ -69,6 +69,18 @@ func (h *handlers) activeTenantID(r *http.Request) string {
 	return tid
 }
 
+// metricsTenantPin is the tenant_id a VM read is pinned to where the tenant is
+// the ONLY pin (the kubebolt_* admin queries, the coverage probes).
+// activeTenantID's "" means "no tenant filter": right for OSS, where nothing
+// stamps tenant_id; in multi-tenant a caller with no org (see orgScoped) gets
+// the sentinel that matches nothing — with "" it read every org's series.
+func (h *handlers) metricsTenantPin(r *http.Request) string {
+	if t := h.activeTenantID(r); t != "" || !auth.MultiTenantEnabled {
+		return t
+	}
+	return noTenantSentinel
+}
+
 // noClusterUIDSentinel is used in place of a real kube-system UID
 // when the backend couldn't read one (RBAC, slow EKS auth, partial
 // connection). Real UIDs are 36-char lowercase hex with dashes; this
@@ -187,17 +199,27 @@ func scopeQueryByAllowedClusters(promQL string, ids []string) string {
 
 // allowedClusterIDs returns the cluster_ids this caller may read, or nil when
 // no narrowing applies. OSS is single-org and has no team ownership of
-// clusters, so nothing ever narrows; the EE build layers team scoping on top
+// clusters, so nothing narrows by team; the EE build layers team scoping on top
 // (a non-admin sees only agent-proxy clusters owned by a team they belong to).
 // Kept as the single seam cluster_scope.go consults so the middleware and
-// every handler behind it stay byte-identical across editions.
+// every handler behind it stay byte-identical across editions. An API key's
+// own cluster list (token_clusters.go) narrows it in both editions.
 func (h *handlers) allowedClusterIDs(r *http.Request) ([]string, bool) {
-	if !auth.MultiTenantEnabled {
+	ids, narrowed := h.allowedClusterIDsByOrgAndTeam(r)
+	// An API key's own cluster list narrows whatever the org and team rules
+	// allowed — including "everything" (single-tenant, an admin-role key).
+	return narrowIDsByToken(r, ids, narrowed)
+}
+
+// allowedClusterIDsByOrgAndTeam is allowedClusterIDs before the API key's
+// cluster list is applied.
+func (h *handlers) allowedClusterIDsByOrgAndTeam(r *http.Request) ([]string, bool) {
+	org, narrow := orgScoped(r)
+	if !narrow {
 		return nil, false
 	}
-	org := auth.ContextTenantID(r)
-	if org == "" || org == auth.DefaultTenantName {
-		return nil, false
+	if org == "" {
+		return []string{}, true // multi-tenant, no org: no cluster (see orgScoped)
 	}
 	return nil, false
 }
@@ -214,8 +236,12 @@ func (h *handlers) allowedClusterIDs(r *http.Request) ([]string, bool) {
 // This deliberately mirrors handleAdminMetricsQuery, which has shipped with the
 // same tenant-only shape since Spec #09 V2 — the fleet path reuses an existing
 // trust model rather than introducing a new one.
-func (h *handlers) scopeQueryForRequest(r *http.Request, q string) string {
+func (h *handlers) scopeQueryForRequest(r *http.Request, q string) (string, vmReadFilter) {
 	tenant := h.activeTenantID(r)
+	// The filter VM enforces itself (vm_read_filter.go). Tenant through
+	// metricsTenantPin: in multi-tenant a caller without an org pins to the
+	// sentinel, never to "no tenant".
+	filter := vmReadFilter{tenant: h.metricsTenantPin(r)}
 
 	if r.URL.Query().Get("scope") == fleetScope {
 		// Widening removes the cluster selector, which makes tenant_id the ONLY
@@ -237,12 +263,18 @@ func (h *handlers) scopeQueryForRequest(r *http.Request, q string) string {
 		// counts of clusters their own cluster list deliberately omits.
 		if ids, narrow := h.allowedClusterIDs(r); narrow {
 			q = scopeQueryByAllowedClusters(q, ids)
+			filter.clusters, filter.setOn = ids, true
 		}
-		return scopeQueryByTenant(q, tenant)
+		return scopeQueryByTenant(q, tenant), filter
 	}
 
-	q = scopeQueryByCluster(q, h.activeClusterUID(r.Context()))
-	return scopeQueryByTenant(q, tenant)
+	uid := h.activeClusterUID(r.Context())
+	q = scopeQueryByCluster(q, uid)
+	if uid == "" {
+		uid = noClusterUIDSentinel // same fail-closed rule as scopeQueryByCluster
+	}
+	filter.cluster = uid
+	return scopeQueryByTenant(q, tenant), filter
 }
 
 // metricSelectorRE matches PromQL label selectors — the `{...}` chunk
@@ -611,7 +643,7 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 	// injection below is authoritative (see stripReservedScopeLabels).
 	q = stripReservedScopeLabels(q)
 
-	q = h.scopeQueryForRequest(r, q)
+	q, filter := h.scopeQueryForRequest(r, q)
 
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
@@ -623,6 +655,7 @@ func (h *handlers) handleMetricsQueryRange(w http.ResponseWriter, r *http.Reques
 	params.Set("start", start)
 	params.Set("end", end)
 	params.Set("step", step)
+	filter.apply(params)
 	target.RawQuery = params.Encode()
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
@@ -664,12 +697,13 @@ func (h *handlers) handleMetricsQuery(w http.ResponseWriter, r *http.Request) {
 	// Strip any client-supplied tenant_id/cluster_id so the server's own
 	// injection below is authoritative (see stripReservedScopeLabels).
 	q = stripReservedScopeLabels(q)
-	q = h.scopeQueryForRequest(r, q)
+	q, filter := h.scopeQueryForRequest(r, q)
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {
 		params.Set("time", t)
 	}
+	filter.apply(params)
 	target.RawQuery = params.Encode()
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
@@ -715,12 +749,13 @@ func (h *handlers) handleAdminMetricsQuery(w http.ResponseWriter, r *http.Reques
 	q = stripReservedScopeLabels(q)
 	// kubebolt_* are tenant-scoped: skip cluster scoping but still filter by
 	// org so an admin sees only their own ingest activity. No-op in OSS.
-	q = scopeQueryByTenant(q, h.activeTenantID(r))
+	q = scopeQueryByTenant(q, h.metricsTenantPin(r))
 	target, _ := url.Parse(metricsStorageURL() + "/api/v1/query")
 	params := url.Values{"query": {q}}
 	if t := r.URL.Query().Get("time"); t != "" {
 		params.Set("time", t)
 	}
+	h.adminReadFilter(r).apply(params)
 	target.RawQuery = params.Encode()
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
@@ -763,7 +798,7 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 	q = stripReservedScopeLabels(q)
 	// Tenant-scope the kubebolt_* range query (cluster scoping skipped — see
 	// handleAdminMetricsQuery). No-op in OSS.
-	q = scopeQueryByTenant(q, h.activeTenantID(r))
+	q = scopeQueryByTenant(q, h.metricsTenantPin(r))
 	target, err := url.Parse(metricsStorageURL() + "/api/v1/query_range")
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "invalid storage URL")
@@ -774,6 +809,7 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 	params.Set("start", start)
 	params.Set("end", end)
 	params.Set("step", step)
+	h.adminReadFilter(r).apply(params)
 	target.RawQuery = params.Encode()
 
 	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, target.String(), nil)
@@ -799,4 +835,19 @@ func (h *handlers) handleAdminMetricsQueryRange(w http.ResponseWriter, r *http.R
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(body)
+}
+
+// adminReadFilter is the VM-enforced filter for the admin kubebolt_* reads:
+// the org only — those counters are tenant-scoped and carry no cluster_id —
+// plus, for an API key narrowed to some clusters, those clusters. A narrowed
+// key reads nothing tenant-wide it could not read cluster by cluster.
+func (h *handlers) adminReadFilter(r *http.Request) vmReadFilter {
+	f := vmReadFilter{tenant: h.metricsTenantPin(r)}
+	if set, narrowed := tokenClusterSet(r); narrowed {
+		for id := range set {
+			f.clusters = append(f.clusters, id)
+		}
+		f.setOn = true
+	}
+	return f
 }

@@ -72,6 +72,7 @@ services:
       # Max tool-call rounds per Kobi turn; on exhaustion Kobi summarizes instead
       # of erroring. Raise for small sequential models (Haiku). Clamped [2,40].
       - KUBEBOLT_AI_MAX_ROUNDS=${KUBEBOLT_AI_MAX_ROUNDS:-20}
+      - KUBEBOLT_AI_CACHE_TTL=${KUBEBOLT_AI_CACHE_TTL:-1h}
       # Kobi conversation history — persisted per user (refresh / re-login resume).
       - KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON=${KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON:-2160h}
       # History retention (one hourly pass): resolved insights, security findings /

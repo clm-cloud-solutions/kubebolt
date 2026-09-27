@@ -2,6 +2,7 @@ package insights
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -245,7 +246,12 @@ func pdbNoMatchRule() Rule {
 	}
 }
 
-func newInsight(severity, resource, title, message, suggestion string) models.Insight {
+// newInsight builds one insight. `ev` is variadic so the 24 rules migrate to
+// typed evidence ONE AT A TIME: every existing call compiles untouched, and a
+// rule that has not been instrumented yet simply reports none. A big-bang
+// rewrite of 27 call sites is how this work turns into a week instead of an
+// afternoon.
+func newInsight(severity, resource, title, message, suggestion string, ev ...models.Evidence) models.Insight {
 	now := time.Now()
 	// Extract namespace from resource string like "Pod/namespace/name"
 	namespace := ""
@@ -280,8 +286,11 @@ func newInsight(severity, resource, title, message, suggestion string) models.In
 		Title:      title,
 		Message:    message,
 		Suggestion: suggestion,
-		FirstSeen:  now,
-		LastSeen:   now,
+		// Evidence rides along; EvidenceCount is what survives to the list.
+		Evidence:      ev,
+		EvidenceCount: len(ev),
+		FirstSeen:     now,
+		LastSeen:      now,
 	}
 }
 
@@ -1235,11 +1244,167 @@ func serviceNoEndpointsRule() Rule {
 					"Service Has Zero Ready Endpoints",
 					message,
 					suggestion,
+					serviceEndpointEvidence(svc, totalCount)...,
 				))
 			}
 			return insights
 		},
 	}
+}
+
+// serviceEndpointEvidence types what the rule saw. Every fact is already in
+// scope when the rule fires — this adds no lookup, only stops discarding.
+//
+// It answers a question the prose cannot. On one production cluster 362 of 383
+// active insights are this rule, 352 of them on the "selector matches nothing"
+// branch, all named <something>-job-<hash>-ui-svc: batch-driver UI Services
+// whose driver finished and whose Service nobody collected. They are not 352
+// broken Services, they are one uncollected leak — and the only way to tell
+// the two apart is the owner, the selector and the age, none of which survive
+// fmt.Sprintf.
+//
+// The owner is the decisive one and its ABSENCE is the finding: Kubernetes
+// garbage-collects a dependent whose owner is gone, so a Service that outlives
+// its workload by a month almost certainly never had an ownerReference at all.
+// "none" is therefore recorded explicitly, not omitted.
+func serviceEndpointEvidence(svc *corev1.Service, readyTotal int) []models.Evidence {
+	created := svc.CreationTimestamp.Time
+	ev := []models.Evidence{
+		{
+			Kind: models.EvidenceConfig, Label: "Owner",
+			Detail: ownerRefSummary(svc.OwnerReferences),
+			Source: "metadata.ownerReferences",
+		},
+		{
+			Kind: models.EvidenceConfig, Label: "Selector",
+			Detail: labelSelectorSummary(svc.Spec.Selector),
+			Source: "spec.selector",
+		},
+		{
+			Kind: models.EvidenceConfig, Label: "Endpoints",
+			Detail: endpointSummary(readyTotal),
+			Source: "discovery.k8s.io/v1 EndpointSlice",
+		},
+	}
+	// The Service's birth is a real moment, so it carries a clock — and it is
+	// the age dimension the rule otherwise lacks: no endpoints for five
+	// minutes during a rollout and no endpoints for a month are the same
+	// finding today.
+	if !created.IsZero() {
+		// Detail is the AGE, not the timestamp — At already carries the exact
+		// moment, and repeating it twice says nothing twice. The age is the
+		// fact that decides: no endpoints for five minutes during a rollout
+		// and no endpoints for a month are the same finding today. It is the
+		// age AT THE MOMENT THE EPISODE OPENED, since that is when evidence
+		// is written, which is more useful than a number that moves.
+		ev = append(ev, models.Evidence{
+			Kind: models.EvidenceEvent, Label: "Service created",
+			Detail: humanAge(time.Since(created)) + " before this was flagged",
+			Source: "metadata.creationTimestamp", At: &created,
+		})
+	}
+	if s := workloadLabelSummary(svc.Labels); s != "" {
+		// Operator-set labels outlive the Job and the driver pod, so they are
+		// the one durable clue to what created this Service.
+		ev = append(ev, models.Evidence{
+			Kind: models.EvidenceConfig, Label: "Service labels",
+			Detail: s, Source: "metadata.labels",
+		})
+	}
+	return ev
+}
+
+// humanAge renders a duration the way an operator says it. Coarse on purpose:
+// the difference that matters is minutes vs days, not seconds.
+func humanAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "moments"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(d.Hours()/24))
+	}
+}
+
+// ownerRefSummary — "none" when empty, because an absent owner is the signal.
+func ownerRefSummary(refs []metav1.OwnerReference) string {
+	if len(refs) == 0 {
+		return "none"
+	}
+	parts := make([]string, 0, len(refs))
+	for _, r := range refs {
+		parts = append(parts, r.Kind+"/"+r.Name)
+	}
+	sort.Strings(parts)
+	return strings.Join(parts, ", ")
+}
+
+// labelSelectorSummary renders a selector deterministically. Map iteration
+// order is random in Go, and evidence that changes text between evaluations of
+// an unchanged Service is noise that looks like a change.
+func labelSelectorSummary(sel map[string]string) string {
+	return joinSortedPairs(sel, evidenceMaxPairs)
+}
+
+// workloadLabelSummary keeps only the labels that identify what made the
+// Service, and drops Kubernetes' own bookkeeping — which is on everything and
+// therefore distinguishes nothing.
+func workloadLabelSummary(labels map[string]string) string {
+	if len(labels) == 0 {
+		return ""
+	}
+	keep := make(map[string]string, len(labels))
+	for k, v := range labels {
+		if strings.HasPrefix(k, "app.kubernetes.io/managed-by") ||
+			strings.HasPrefix(k, "kubernetes.io/") ||
+			strings.HasPrefix(k, "helm.sh/") {
+			continue
+		}
+		keep[k] = v
+	}
+	return joinSortedPairs(keep, evidenceMaxPairs)
+}
+
+// evidenceMaxPairs bounds a rendered map. A Service with forty labels would
+// otherwise put a paragraph in a field meant to be read at a glance, and the
+// episode row carries this for every occurrence.
+const evidenceMaxPairs = 6
+
+func joinSortedPairs(m map[string]string, max int) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	extra := 0
+	if len(keys) > max {
+		extra = len(keys) - max
+		keys = keys[:max]
+	}
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+m[k])
+	}
+	out := strings.Join(parts, ", ")
+	if extra > 0 {
+		out += fmt.Sprintf(" (+%d more)", extra)
+	}
+	return out
+}
+
+// endpointSummary distinguishes the two branches the rule already splits on,
+// in a form something other than a human can read.
+func endpointSummary(total int) string {
+	if total == 0 {
+		return "0 — the selector matches nothing"
+	}
+	return fmt.Sprintf("%d, none ready", total)
 }
 
 // 12. Evicted pods

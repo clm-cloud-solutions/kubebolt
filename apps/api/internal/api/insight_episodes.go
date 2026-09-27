@@ -81,11 +81,29 @@ func (h *handlers) handleListEpisodes(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	eps, err := h.episodes.Window(r.Context(), org, q)
-	if err != nil {
+	// History is org-level in the store; which of its clusters this caller
+	// may read (team, API key cluster list) is decided here. A named cluster
+	// the caller may not read answers empty, as /clusters hides it.
+	may := h.readableCluster(r)
+	if q.ClusterID != "" && !may(q.ClusterID) {
+		respondJSON(w, http.StatusOK, map[string]any{
+			"episodes": []insights.Episode{},
+			"window":   map[string]string{"since": q.Since.Format(time.RFC3339), "until": q.Until.Format(time.RFC3339)},
+		})
+		return
+	}
+	var eps []insights.Episode
+	var err2 error
+	if ids, narrowed := h.allowedClusterIDs(r); narrowed && q.ClusterID == "" {
+		eps, err2 = windowForClusters(r.Context(), h.episodes, org, q, ids)
+	} else {
+		eps, err2 = h.episodes.Window(r.Context(), org, q)
+	}
+	if err2 != nil {
 		respondError(w, http.StatusInternalServerError, "failed to read episode history")
 		return
 	}
+	eps = filterEpisodes(eps, may)
 	h.enrichEpisodeClusterNames(r, eps)
 	respondJSON(w, http.StatusOK, map[string]any{
 		"episodes": eps,
@@ -103,8 +121,9 @@ func (h *handlers) handleGetEpisode(w http.ResponseWriter, r *http.Request) {
 	org := auth.ContextTenantID(r)
 	id := chi.URLParam(r, "id")
 
+	may := h.readableCluster(r)
 	ep, transitions, err := h.episodes.Episode(r.Context(), org, id)
-	if err != nil {
+	if err != nil || !may(ep.ClusterID) {
 		respondError(w, http.StatusNotFound, "episode not found")
 		return
 	}
@@ -112,6 +131,7 @@ func (h *handlers) handleGetEpisode(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		recurrence = nil // best-effort side card
 	}
+	recurrence = filterEpisodes(recurrence, may)
 	one := []insights.Episode{ep}
 	h.enrichEpisodeClusterNames(r, one)
 	ep = one[0]
