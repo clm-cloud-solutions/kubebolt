@@ -10,6 +10,7 @@ import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import { api, API_ORIGIN } from '@/services/api'
 import { useTheme } from '@/contexts/ThemeContext'
 import { useAdminLanding } from '@/hooks/useAdminLanding'
+import { useElementWidth } from '@/hooks/useElementWidth'
 import { useAuth } from '@/contexts/AuthContext'
 import { useCopilot } from '@/contexts/CopilotContext'
 import { parseClusterDisplayName } from '@/utils/cluster'
@@ -26,7 +27,24 @@ interface TopbarProps {
   onToggleSidebar: () => void
 }
 
+// Header widths (px) at which the bar can afford its labels — measured with
+// every label shown and the cluster name at its full cap.
+const TOPBAR_WIDE = 1400
+const TOPBAR_ROOMY = 1040
+
 export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarProps) {
+  // The bar decides what to label by ITS OWN width, not the window's. With
+  // Kobi docked the window is still past `xl`, so the bar spelled out every
+  // label in ~1000px: "Cluster Map" and "2 nodes" broke onto two lines and the
+  // cluster name was cut to a few letters. Two tiers, read by the children
+  // through the named group `tb`:
+  //   wide  — room for every label (Dashboard, Cluster Map, nodes, Search, New)
+  //   roomy — room for the Fleet label and the node chip
+  // Unmeasured (0: before layout, or no ResizeObserver in tests) counts as
+  // both, which is what the breakpoints used to give a wide window.
+  const [headerRef, headerWidth] = useElementWidth<HTMLElement>()
+  const wide = headerWidth === 0 || headerWidth >= TOPBAR_WIDE
+  const roomy = headerWidth === 0 || headerWidth >= TOPBAR_ROOMY
   const [open, setOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
   const [newResourceOpen, setNewResourceOpen] = useState(false)
@@ -173,9 +191,14 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
   const dropdownInteractive = hasMultipleClusters || isAdmin || !inCluster
 
   return (
-    <header className="h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]">
+    <header
+      ref={headerRef}
+      data-wide={wide}
+      data-roomy={roomy}
+      className="group/tb h-[52px] bg-kb-surface/80 backdrop-blur-md border-b border-kb-border flex items-center justify-between px-4 shrink-0 relative z-[400]"
+    >
       {/* Left side */}
-      <div className="flex items-center gap-3 xl:gap-4 min-w-0">
+      <div className="flex items-center gap-3 group-data-[wide=true]/tb:gap-4 min-w-0">
         {/* Sidebar toggle — anchors visually to the sidebar's right edge
             since it sits at the topbar's leftmost position. */}
         <button
@@ -213,7 +236,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
               className="flex items-center gap-1.5 text-xs font-mono text-kb-text-tertiary hover:text-kb-text-primary transition-colors shrink-0"
             >
               <Boxes className="w-3.5 h-3.5" />
-              <span className="hidden lg:inline">Fleet</span>
+              <span className="hidden group-data-[roomy=true]/tb:inline">Fleet</span>
             </NavLink>
             <span className="text-kb-text-tertiary text-xs shrink-0" aria-hidden>/</span>
           </>
@@ -233,7 +256,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
             }`}
           >
             <span className={`w-2 h-2 rounded-full ${dotColor} ${noClusters ? '' : 'animate-pulse-live'}`} />
-            <span className="text-xs font-mono text-kb-text-primary truncate max-w-[110px] xl:max-w-[200px]">{clusterName}</span>
+            <span className="text-xs font-mono text-kb-text-primary truncate max-w-[110px] group-data-[wide=true]/tb:max-w-[200px]">{clusterName}</span>
             {dropdownInteractive && (
               <ChevronDown className={`w-3 h-3 text-kb-text-tertiary transition-transform ${open ? 'rotate-180' : ''}`} />
             )}
@@ -346,27 +369,27 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
           <NavLink
             to="/"
             title="Dashboard"
-            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-colors ${
               dashboardActive
                 ? 'bg-kb-elevated text-kb-text-primary'
                 : 'bg-kb-card text-kb-text-secondary hover:text-kb-text-primary'
             }`}
           >
             <LayoutDashboard className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden xl:inline">Dashboard</span>
+            <span className="hidden group-data-[wide=true]/tb:inline">Dashboard</span>
           </NavLink>
           {!isMetricsOnly && (
             <NavLink
               to="/map"
               title="Cluster Map"
               className={({ isActive }) =>
-                `flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold transition-colors border-l border-kb-border ${
+                `flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold whitespace-nowrap transition-colors border-l border-kb-border ${
                   isActive ? 'bg-kb-elevated text-kb-text-primary' : 'bg-kb-card text-kb-text-secondary hover:text-kb-text-primary'
                 }`
               }
             >
               <Network className="w-3.5 h-3.5 shrink-0" />
-              <span className="hidden xl:inline">Cluster Map</span>
+              <span className="hidden group-data-[wide=true]/tb:inline">Cluster Map</span>
             </NavLink>
           )}
         </div>
@@ -409,9 +432,9 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
           {/* Node count — matched to the LIVE / FWD chip shell so the
               three read as one row instead of "two pills + raw text". */}
           {inCluster && (
-            <div className="hidden lg:flex items-center gap-1.5 px-2 py-1 rounded-md bg-kb-card border border-kb-border text-kb-text-secondary">
+            <div className="hidden group-data-[roomy=true]/tb:flex items-center gap-1.5 px-2 py-1 rounded-md whitespace-nowrap bg-kb-card border border-kb-border text-kb-text-secondary">
               <Server className="w-3.5 h-3.5" />
-              <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount}<span className="hidden xl:inline"> nodes</span></span>
+              <span className="text-[10px] font-mono font-medium uppercase tracking-[0.08em]">{nodeCount}<span className="hidden group-data-[wide=true]/tb:inline"> nodes</span></span>
             </div>
           )}
         </div>
@@ -424,11 +447,11 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
           <button
             onClick={() => setSearchOpen(true)}
             title="Search (⌘K)"
-            className="flex items-center justify-center xl:justify-start gap-2 px-2.5 xl:w-52 xl:pl-3 xl:pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
+            className="flex items-center justify-center group-data-[wide=true]/tb:justify-start gap-2 px-2.5 group-data-[wide=true]/tb:w-52 group-data-[wide=true]/tb:pl-3 group-data-[wide=true]/tb:pr-2 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-tertiary hover:border-kb-border-active transition-colors"
           >
             <Search className="w-3.5 h-3.5 shrink-0" />
-            <span className="hidden xl:block flex-1 text-left">Search...</span>
-            <kbd className="hidden xl:inline-block px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
+            <span className="hidden group-data-[wide=true]/tb:block flex-1 text-left">Search...</span>
+            <kbd className="hidden group-data-[wide=true]/tb:inline-block px-1.5 py-0.5 rounded text-[9px] font-mono bg-kb-bg border border-kb-border">⌘K</kbd>
           </button>
           {/* On /fleet the palette opens already fanned out across the org —
               the page's whole premise is cross-cluster, so defaulting to the
@@ -471,7 +494,7 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-kb-card border border-kb-border rounded-md text-xs text-kb-text-secondary hover:border-kb-border-active hover:text-kb-text-primary transition-colors"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span className="hidden xl:inline">New</span>
+                <span className="hidden group-data-[wide=true]/tb:inline">New</span>
               </button>
               {newResourceOpen && <NewResourceModal onClose={() => setNewResourceOpen(false)} />}
             </>

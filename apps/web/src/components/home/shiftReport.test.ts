@@ -12,6 +12,7 @@ function burst(over: Partial<OperationalBurst>): OperationalBurst {
     kind: 'unknown_burst',
     clusters: ['cl-a'],
     windowFrom: '2026-08-25T05:51:00Z',
+    onsetTo: '2026-08-25T05:55:00Z',
     windowTo: '2026-08-25T06:40:00Z',
     seedIds: [],
     memberIds: ['a', 'b', 'c', 'd', 'e'],

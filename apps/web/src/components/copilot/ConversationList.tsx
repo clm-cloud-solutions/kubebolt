@@ -13,6 +13,8 @@ import {
 } from 'lucide-react'
 import { api } from '@/services/api'
 import { useCopilot, CONVERSATIONS_QUERY_KEY } from '@/contexts/CopilotContext'
+import { useClusterLabel } from '@/hooks/useClusterLabel'
+import { isOpaqueClusterLabel } from '@/utils/cluster'
 import type { ConversationSummary } from '@/services/copilot/types'
 
 // Relative "x ago" with a single coarse unit — enough for a history list.
@@ -51,6 +53,18 @@ export function ConversationList({ onClose }: ConversationListProps) {
   // cluster). Default to the active cluster so the list isn't a confusing mix
   // across clusters; "All" is an escape hatch to find an older conversation.
   const [scope, setScope] = useState<'cluster' | 'all'>('cluster')
+  // A conversation stores the CONTEXT NAME of the cluster it belongs to, and for
+  // an agent-proxy cluster that name is `agent:<uid>` — an identifier, not a
+  // name. Printed raw it tells the operator nothing and reads like a bug.
+  const resolveClusterLabel = useClusterLabel()
+  // The resolver returns '' for a cluster it cannot name (de-registered,
+  // renamed) and can still hand back the bare context for an agent cluster that
+  // registered without a display name. Either way there is nothing worth
+  // showing, so the chip is dropped and the row reads (time · N msg).
+  const clusterChip = (id: string | null | undefined): string => {
+    const label = resolveClusterLabel(id ?? '')
+    return label && !isOpaqueClusterLabel(label) ? label : ''
+  }
   const clusterFilter = scope === 'cluster' ? activeClusterContext ?? undefined : undefined
 
   const { data: conversations = [], isLoading } = useQuery({
@@ -202,10 +216,10 @@ export function ConversationList({ onClose }: ConversationListProps) {
                     )}
                     <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-wide">
                       <span>{timeAgo(c.updatedAt)}</span>
-                      {c.clusterId && (
+                      {clusterChip(c.clusterId) && (
                         <>
                           <span>·</span>
-                          <span className="truncate max-w-[120px]">{c.clusterId}</span>
+                          <span className="truncate max-w-[120px]">{clusterChip(c.clusterId)}</span>
                         </>
                       )}
                       {c.messageCount > 0 && (

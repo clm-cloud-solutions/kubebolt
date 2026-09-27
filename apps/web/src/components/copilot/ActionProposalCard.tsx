@@ -14,6 +14,7 @@ import {
 } from 'lucide-react'
 import { api, ApiError, type ActionAudit, type DryRunResult } from '@/services/api'
 import { useCopilot } from '@/contexts/CopilotContext'
+import { useSwitchCluster } from '@/hooks/useSwitchCluster'
 import { useAuth } from '@/contexts/AuthContext'
 import { canonicalListRoute } from '@/utils/routes'
 import type { ActionProposal, ActionProposalAction } from '@/services/copilot/types'
@@ -45,7 +46,12 @@ interface Props {
 export function ActionProposalCard({ proposal, toolCallId }: Props) {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
-  const { recordProposalOutcome, conversationId } = useCopilot()
+  const { recordProposalOutcome, conversationId, openPanel, sendMessage, askInCluster } =
+    useCopilot()
+  // The switch is the one proposal that does not mutate the cluster — it moves
+  // the operator to another one. goHome:false because the conversation is the
+  // destination, not the dashboard.
+  const switchCluster = useSwitchCluster({ goHome: false })
   const auth = useAuth()
   // Seed the local status from any persisted execution metadata. If the
   // chat re-renders this card after the user already acted (or after a
@@ -126,10 +132,56 @@ export function ActionProposalCard({ proposal, toolCallId }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, toolCallId])
 
+  // executeClusterSwitch switches and re-asks in one gesture.
+  //
+  // The question cannot be "carried": one conversation belongs to one cluster,
+  // and a transcript holding two clusters' tool results is unreadable for the
+  // model and the operator alike. So it is RE-ASKED on the other side, which is
+  // what makes the new conversation start already answering instead of cold.
+  //
+  // The re-ask is HANDED OFF to the context rather than sent from here. A
+  // `sendMessage` on this tick would still hold the old cluster's conversation
+  // id — the copilot's scope only moves when the `['clusters']` query refetches
+  // — and would post the question into the conversation we just left, which the
+  // server then re-stamps with the new cluster. `askInCluster` parks it until
+  // the scope actually reports the target.
+  async function executeClusterSwitch(): Promise<string> {
+    const context = typeof proposal.params.cluster === 'string' ? proposal.params.cluster : ''
+    const question = typeof proposal.params.question === 'string' ? proposal.params.question : ''
+    const label =
+      typeof proposal.params.clusterLabel === 'string' && proposal.params.clusterLabel
+        ? proposal.params.clusterLabel
+        : context
+    if (!context || !question) throw new Error('the proposal is missing the cluster or the question')
+
+    await switchCluster.mutateAsync(context)
+    openPanel()
+
+    // What was learned on the other side travels attributed, so the fresh
+    // conversation does not restate it as its own finding.
+    const established =
+      typeof proposal.params.established === 'string' && proposal.params.established
+        ? `(From the fleet view: ${proposal.params.established})\n\n`
+        : ''
+    askInCluster(context, `${established}${question}`, { trigger: 'cluster_switch' })
+    return `Switched to ${label} and asked there`
+  }
+
   async function execute() {
     setStatus('executing')
     setError(null)
     try {
+      // switch_cluster is handled here, not in runProposal: it needs hooks
+      // (the switch mutation, and the Kobi panel) that a plain function cannot
+      // reach. One click, as asked — switching and re-asking in the same
+      // gesture, because an operator who accepted the switch already decided.
+      if (proposal.action === 'switch_cluster') {
+        const result = await executeClusterSwitch()
+        setResultMsg(result)
+        setStatus('success')
+        recordProposalOutcome(toolCallId, 'executed', result)
+        return
+      }
       const result = await runProposal(proposal, conversationId)
       setResultMsg(result)
       setStatus('success')

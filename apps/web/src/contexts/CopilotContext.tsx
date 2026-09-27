@@ -106,6 +106,22 @@ interface CopilotContextValue {
   renameActiveConversation: (title: string) => Promise<void>
   /** Dismiss the stale-context banner without sending a message. */
   dismissStaleResume: () => void
+  /** Ask a question in a BRAND-NEW conversation, on another cluster, once the
+   * switch has actually landed.
+   *
+   * Why this exists instead of "switch, then sendMessage": `scopeKey` is
+   * derived from the ACTIVE cluster in the `['clusters']` query, so it only
+   * moves when that query refetches — a network round-trip after the switch
+   * mutation resolves. A `sendMessage` fired in between still holds the old
+   * scope in its closure: the old conversation id and the old transcript. It
+   * posts the new question into the OLD conversation, which the server then
+   * re-stamps with the new cluster — one conversation holding two clusters'
+   * tool results, which is exactly what conversations being cluster-bound is
+   * meant to prevent.
+   *
+   * So the question waits here until the copilot's own scope reports the
+   * target cluster, and only then is asked — in a fresh conversation. */
+  askInCluster: (clusterContext: string, text: string, options?: SendMessageOptions) => void
   /** Context name of the active cluster (matches a conversation's clusterId).
    * The history list filters to this by default — conversations are
    * cluster-bound. null while clusters are loading or none is active. */
@@ -118,7 +134,28 @@ export interface SendMessageOptions {
   /** When the message originates from an insight, its stable fingerprint —
    * stored on the conversation so the insight detail can deep-link back. */
   originatingInsightId?: string
+  /** Ask in a brand-new conversation: ignore whatever transcript and
+   * conversation id this callback closed over, and mint a new one.
+   *
+   * Not the same as calling `newConversation()` first. That sets state, and
+   * state does not land until the next render — the `sendMessage` you call on
+   * the same tick is still the instance built from the PREVIOUS id and
+   * transcript, so the "new" conversation is silently appended to the old one.
+   * This flag is read inside the send, where it cannot be raced. */
+  startFresh?: boolean
 }
+
+/** A question waiting for the cluster switch behind it to land. */
+interface PendingAsk {
+  clusterContext: string
+  text: string
+  options?: SendMessageOptions
+}
+
+/** How long a parked question waits for the switch before giving up. Generous:
+ * it only has to outlast a `['clusters']` refetch, and giving up early would
+ * throw away a question the operator already asked. */
+const PENDING_ASK_TIMEOUT_MS = 20_000
 
 const CopilotContext = createContext<CopilotContextValue | null>(null)
 
@@ -316,11 +353,40 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   // disabled). Drop the explicit `retry: false` so we inherit the
   // queryClient default (2 retries on transient network errors; auth
   // and cluster errors are still not retried).
+  //
+  // The key carries WHO is asking. `/copilot/config` is public but
+  // org-resolving: anonymously it answers with the env baseline, and with a
+  // token it answers with the org's real provider + model (the platform-managed
+  // one under Cloud). The panel title and the fallback banner read from here.
+  //
+  // Being public is what makes it dangerous. A token-less call does not fail —
+  // it returns 200 with the anonymous answer, which resolves to the Free plan
+  // band. So it cached a perfectly valid-looking wrong answer, and the 401
+  // refresh-and-retry that protects every other endpoint never fired.
+  //
+  // Two things had to be true for the answer to be right, and neither was:
+  //
+  //  - `sessionReady`, not `!isLoading`. `isLoading` starts FALSE whenever a
+  //    cached user exists, so on every page reload this query fired before the
+  //    silent refresh had produced a token. The key was already the real user's
+  //    id, so nothing ever re-asked. That is the reload case, and keying alone
+  //    does not fix it.
+  //  - the identity in the key, so signing in and out re-asks. That is the SPA
+  //    login case: the login page mounts this provider with no user at all.
+  //
+  // Everything else that could have corrected it is switched off by design:
+  // `refetchOnWindowFocus` is off install-wide, the provider never unmounts,
+  // and the eight `['copilot-config']` invalidations all hang off an admin
+  // SAVING settings. They still match this key by prefix.
+  //
+  // Symptom: the header said ANTHROPIC · CLAUDE-HAIKU-4-5 for a whole session
+  // while every turn actually ran on claude-sonnet-5, because the org is on a
+  // paid plan and only the anonymous answer gets the Free band.
   const { data: config } = useQuery({
-    queryKey: ['copilot-config'],
+    queryKey: ['copilot-config', auth.user?.id ?? 'anon'],
     queryFn: api.getCopilotConfig,
     staleTime: 60_000,
-    enabled: !auth.isLoading,
+    enabled: auth.sessionReady,
   })
 
   // Rehydrate the last-open conversation once, after auth + config settle, so
@@ -377,6 +443,19 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       const trimmed = text.trim()
       if (!trimmed || isLoading) return
 
+      // Resolve the conversation this turn belongs to HERE, not from state.
+      // With `startFresh` the caller is telling us the closed-over id and
+      // transcript are stale by construction (see SendMessageOptions), so we
+      // start from nothing rather than trusting them.
+      const fresh = options?.startFresh === true
+      const baseMessages = fresh ? [] : messages
+      const turnConversationId = fresh ? null : conversationId
+      if (fresh) {
+        persistActivePointer(null)
+        setConversationTitle(null)
+        setStaleResume(null)
+      }
+
       const userMsg: CopilotMessage = {
         id: generateId(),
         role: 'user',
@@ -389,7 +468,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       abortRef.current = ac
 
       // Append the user message to history
-      const newMessages = [...messages, userMsg]
+      const newMessages = [...baseMessages, userMsg]
       setMessages(newMessages)
       setIsLoading(true)
       setLastActivityAt(Date.now())
@@ -403,7 +482,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       // Provisional header title for a brand-new conversation so the panel
       // isn't blank until the server's auto-title lands (refined on the next
       // history-list refetch).
-      if (!conversationId) {
+      if (!turnConversationId) {
         setConversationTitle(trimmed.length > 60 ? `${trimmed.slice(0, 60).trim()}…` : trimmed)
       }
 
@@ -423,7 +502,9 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       // it below. The backend uses it to seed its auto-compact check so
       // the trigger fires on round 0 of a follow-up question, matching
       // what the UI already shows.
-      const carriedLastRoundUsage = lastRoundUsage
+      // A fresh conversation carries no prior round, so there is nothing to
+      // seed the auto-compact check with.
+      const carriedLastRoundUsage = fresh ? null : lastRoundUsage
 
       try {
         for await (const event of sendCopilotChat(
@@ -432,7 +513,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           ac.signal,
           options?.trigger,
           carriedLastRoundUsage,
-          conversationId,
+          turnConversationId,
           options?.originatingInsightId,
         )) {
           // Every event is a sign of life — bump so the UI can distinguish an
@@ -598,6 +679,41 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   // clearHistory is the legacy "start over" action; same semantics as starting
   // a new conversation now that transcripts persist.
   const clearHistory = newConversation
+
+  // A question parked until the copilot's scope reaches the cluster it is meant
+  // for. See `askInCluster` on the context interface for why parking is the
+  // only way to get this right.
+  const [pendingAsk, setPendingAsk] = useState<PendingAsk | null>(null)
+
+  const askInCluster = useCallback(
+    (clusterContext: string, text: string, options?: SendMessageOptions) => {
+      if (!clusterContext || !text.trim()) return
+      setPendingAsk({ clusterContext, text, options })
+    },
+    [],
+  )
+
+  useEffect(() => {
+    if (!pendingAsk) return
+    // `hydrated` matters as much as the cluster: the scope change flips it back
+    // to false and the rehydrate effect may pull up the new cluster's LAST
+    // conversation. Asking before that settles would let the hydrate land on
+    // top of our fresh turn.
+    if (activeClusterContext !== pendingAsk.clusterContext || !hydrated) {
+      // If the switch never lands, drop the question instead of asking it
+      // against the wrong cluster — and say so, because a click that produces
+      // nothing at all reads as a dead button.
+      const timer = setTimeout(() => {
+        setPendingAsk(null)
+        setError(
+          'The cluster switch did not finish, so the question was not asked. Try asking it again.',
+        )
+      }, PENDING_ASK_TIMEOUT_MS)
+      return () => clearTimeout(timer)
+    }
+    setPendingAsk(null)
+    void sendMessage(pendingAsk.text, { ...pendingAsk.options, startFresh: true })
+  }, [pendingAsk, activeClusterContext, hydrated, sendMessage])
 
   // resumeConversation loads a past conversation by id and opens the panel.
   const resumeConversation = useCallback(
@@ -868,6 +984,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         sendMessage,
         cancelMessage,
         clearHistory,
+        askInCluster,
         compactSession,
         recordProposalOutcome,
         recordProposalProgressSettled,

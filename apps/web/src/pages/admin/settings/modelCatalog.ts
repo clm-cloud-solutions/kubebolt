@@ -28,7 +28,20 @@ export interface ModelOption {
    *  operator what trade-off they're picking (capability/cost/speed). */
   description: string
   /** Optional category for visual grouping in the dropdown. When
-   *  multiple options share a group, render them as an <optgroup>. */
+   *  multiple options share a group, render them as an <optgroup>.
+   *
+   *  ONE RULE, and it is worth keeping: a group is a VERSION FAMILY, and
+   *  only the newest family of each vendor carries "(current)". Older
+   *  families are named by their number alone — the numbers already sort
+   *  themselves. Date-pinned ids live in a separate "(earlier revisions)"
+   *  bucket because they are frozen builds, not another generation.
+   *
+   *  What this replaced: adjectives at every rung — "current", "previous",
+   *  "recent", "legacy" — which stopped being rankable the moment two rungs
+   *  wore the same one ("GPT-5 (previous)" above "GPT-4o (previous)", with
+   *  an unqualified "GPT-4.1" in between). It also forced Haiku 4.5 into
+   *  the "Claude 5" group: it is the newest Haiku Anthropic ships, but it
+   *  is a 4.x, and a recency label made those two facts contradict. */
   group?: string
 }
 
@@ -37,6 +50,12 @@ export interface ModelOption {
 export const ANTHROPIC_MODELS: ModelOption[] = [
   // ─── Claude 5 (current top-of-line) ──────────────────────────────
   // Listed first so the picker surfaces the newest generation by default.
+  {
+    id: 'claude-opus-5-5',
+    label: 'Claude Opus 5.5',
+    description: 'Opus-tier reasoning that costs less than Opus 5 on every bucket — and 60% less on cache reads, which is where a long tool-using conversation actually spends. The default choice for deep investigations.',
+    group: 'Claude 5 (current)',
+  },
   {
     id: 'claude-opus-5',
     label: 'Claude Opus 5',
@@ -50,49 +69,49 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
     group: 'Claude 5 (current)',
   },
   {
-    id: 'claude-haiku-4-5',
-    label: 'Claude Haiku 4.5',
-    description: 'Fast and cheap. Good for high-volume diagnostics and short turns. Less depth than Sonnet on tricky tool chains.',
-    group: 'Claude 5 (current)',
-  },
-  {
     id: 'claude-fable-5',
     label: 'Claude Fable 5',
     description: "Anthropic's most capable model, for the hardest reasoning and long-horizon work. Highest cost and latency — reserve for the deepest investigations.",
     group: 'Claude 5 (current)',
   },
-  // ─── Claude 4 (previous generation) ──────────────────────────────
+  // ─── Claude 4 ────────────────────────────────────────────────────
   // Still served by Anthropic; useful for accounts pinned to a version,
   // or for cost/behaviour comparisons against the Claude 5 line.
+  {
+    id: 'claude-haiku-4-5',
+    label: 'Claude Haiku 4.5',
+    description: 'Fast and cheap — the newest Haiku there is (Anthropic has not shipped a Haiku 5), so it sits here by version number, not because it was superseded. Good for high-volume diagnostics and short turns. Less depth than Sonnet on tricky tool chains.',
+    group: 'Claude 4',
+  },
   {
     id: 'claude-opus-4-8',
     label: 'Claude Opus 4.8',
     description: 'Last Opus 4 revision — highly capable and autonomous. Superseded by Opus 5; kept for accounts that prefer its behaviour.',
-    group: 'Claude 4 (previous)',
+    group: 'Claude 4',
   },
   {
     id: 'claude-opus-4-7',
     label: 'Claude Opus 4.7',
     description: 'Earlier Opus 4 revision. Still served by Anthropic; useful when an account is pinned to it or for A/B comparisons.',
-    group: 'Claude 4 (previous)',
+    group: 'Claude 4',
   },
   {
     id: 'claude-sonnet-4-6',
     label: 'Claude Sonnet 4.6',
     description: 'Previous Sonnet revision. Comparable depth to Sonnet 5 at a slightly different price/latency profile.',
-    group: 'Claude 4 (previous)',
+    group: 'Claude 4',
   },
   {
     id: 'claude-opus-4-6',
     label: 'Claude Opus 4.6',
     description: 'Earlier Opus 4 revision. Still served by Anthropic; kept for pinned accounts and A/B comparisons.',
-    group: 'Claude 4 (previous)',
+    group: 'Claude 4',
   },
   {
     id: 'claude-sonnet-4-5',
     label: 'Claude Sonnet 4.5',
     description: 'Earlier Sonnet revision. Still supported; comparable depth at a slightly different price/latency profile.',
-    group: 'Claude 4 (previous)',
+    group: 'Claude 4',
   },
   // Legacy. Kept for accounts that haven't been enabled for Claude 4
   // yet, and as a fallback when newer models hit availability issues.
@@ -128,62 +147,93 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
 // ─── OpenAI + OpenAI-compatible ──────────────────────────────────────
 
 export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
-  // ─── OpenAI proper — GPT-5 family (current flagship line) ─────────
+  // ─── OpenAI proper — the GPT-5 family ────────────────────────────
   // OpenAI ships a fast cadence on the 5.x line: 5.0 in Aug 2025,
   // 5.1 in Nov 2025, 5.2 in Dec 2025, 5.3-Codex in Feb 2026, then 5.4
   // and 5.5 in quick succession. The catalog lists what is most useful
   // for API-key workflows (some IDs like raw gpt-5.5 require ChatGPT
   // sign-in and aren't available via /v1/chat/completions yet — when
   // ambiguous we err toward the IDs documented in developers.openai.com).
-  // ─── GPT-5.6 (current flagship line, Aug 2026) ────────────────────
+  // ─── GPT-5.6 (Aug 2026) ───────────────────────────────────────────
   // Three named variants on the same 1.05M-token window: sol (largest),
-  // terra (standard), luna (compact). sol is the new recommended primary.
+  // terra (standard), luna (compact). Superseded by the GPT-6 line below,
+  // which is both newer and cheaper — 5.6-sol is no longer the recommended
+  // primary and its description no longer claims to be.
+  //
+  // The whole 5.6 line rejects function tools unless reasoning_effort is
+  // explicitly "none" (400 in /v1/chat/completions), and every Kobi turn
+  // carries tools — so Kobi sends "none" and these run WITHOUT reasoning. Said
+  // in each description rather than left as a surprise: picking the flagship
+  // for its reasoning and silently not getting it is worse than not offering
+  // it. Lifting this needs the /v1/responses path or the per-model effort
+  // control in doc #47 §6.
+  // ─── GPT-6 (current) ─────────────────────────────────────────────
+  // Same tools-vs-reasoning rule as the 5.6 line on /v1/chat/completions,
+  // so Kobi sends reasoning_effort="none" for both (toolsForceReasoningOff
+  // in the Go adapter covers the gpt-6 prefix).
+  //
+  // gpt-6-astra is deliberately ABSENT: it reportedly refuses "none" too,
+  // leaving no working request shape for a tool-carrying turn here. It stays
+  // priced in copilot/pricing.go so a Custom-branch operator is still metered
+  // correctly — but recommending it would recommend a guaranteed 400.
+  {
+    id: 'gpt-6-sol',
+    label: 'GPT-6 Sol',
+    description: "OpenAI's GPT-6 workhorse — the reasoning tier for repeated engineering work, at half the price of GPT-5.6 Sol. Recommended primary for OpenAI installs. Kobi runs it with reasoning off: OpenAI refuses function tools and reasoning together on this endpoint, and every Kobi turn carries tools.",
+    group: 'OpenAI · GPT-6 (current)',
+  },
+  {
+    id: 'gpt-6-luna',
+    label: 'GPT-6 Luna',
+    description: 'Compact GPT-6 — the cheapest model in the catalog by a wide margin. Good for high-volume diagnostics and short turns. Kobi runs it with reasoning off: OpenAI refuses function tools and reasoning together on this endpoint, and every Kobi turn carries tools.',
+    group: 'OpenAI · GPT-6 (current)',
+  },
   {
     id: 'gpt-5.6-sol',
     label: 'GPT-5.6 Sol',
-    description: "OpenAI's GPT-5.6 flagship — deepest reasoning and coding on a 1.05M-token window. Recommended primary for OpenAI installs.",
-    group: 'OpenAI · GPT-5 (current)',
+    description: "Flagship of the previous generation — deepest reasoning and coding on a 1.05M-token window, now superseded by GPT-6 Sol at half the price. Kobi runs it with reasoning off: OpenAI refuses function tools and reasoning together on this line, and every Kobi turn carries tools.",
+    group: 'OpenAI · GPT-5',
   },
   {
     id: 'gpt-5.6-terra',
     label: 'GPT-5.6 Terra',
-    description: "Standard GPT-5.6 — strong general-purpose default at a fraction of Sol's cost. Best balance for most operator work.",
-    group: 'OpenAI · GPT-5 (current)',
+    description: "Standard GPT-5.6 — strong general-purpose default at a fraction of Sol's cost. Best balance for most operator work. Kobi runs it with reasoning off: OpenAI refuses function tools and reasoning together on this line, and every Kobi turn carries tools.",
+    group: 'OpenAI · GPT-5',
   },
   {
     id: 'gpt-5.6-luna',
     label: 'GPT-5.6 Luna',
-    description: 'Compact GPT-5.6 — fastest and cheapest of the line. Good for high-volume diagnostics and short turns.',
-    group: 'OpenAI · GPT-5 (current)',
+    description: 'Compact GPT-5.6 — fastest and cheapest of the line. Good for high-volume diagnostics and short turns. Kobi runs it with reasoning off: OpenAI refuses function tools and reasoning together on this line, and every Kobi turn carries tools.',
+    group: 'OpenAI · GPT-5',
   },
   {
     id: 'gpt-5.5',
     label: 'GPT-5.5',
     description: 'Previous flagship (superseded by GPT-5.6). Still strong for complex reasoning and coding.',
-    group: 'OpenAI · GPT-5 (current)',
+    group: 'OpenAI · GPT-5',
   },
   {
     id: 'gpt-5.4',
     label: 'GPT-5.4',
     description: 'Previous frontier model. Strong general-purpose default. Slightly cheaper than 5.5.',
-    group: 'OpenAI · GPT-5 (current)',
+    group: 'OpenAI · GPT-5',
   },
   {
     id: 'gpt-5.4-mini',
     label: 'GPT-5.4 mini',
     description: 'Smaller 5.4 variant. Good balance for high-volume diagnostics that still need 5.x-class reasoning.',
-    group: 'OpenAI · GPT-5 (current)',
+    group: 'OpenAI · GPT-5',
   },
   {
     id: 'gpt-5.4-nano',
     label: 'GPT-5.4 nano',
     description: 'Smallest 5.4 variant. Sub-second latency for short turns; lighter on multi-step plans.',
-    group: 'OpenAI · GPT-5 (current)',
+    group: 'OpenAI · GPT-5',
   },
   // Pro variants are intentionally excluded — OpenAI only serves them
   // via /v1/responses, not /v1/chat/completions which is KubeBolt's
   // adapter. Verified May 2026 by direct API probe.
-  // ─── OpenAI · GPT-5 (recent) ──────────────────────────────────────
+  // ─── OpenAI · GPT-5 (earlier revisions) ──────────────────────────────────────
   // Coding-specialised (Codex), audio, image, realtime, transcribe and
   // search-preview variants are excluded from the catalog — they are
   // not suitable as Kobi's general-purpose chat model. The "chat-
@@ -192,38 +242,38 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
     id: 'gpt-5.2',
     label: 'GPT-5.2',
     description: 'Stable choice for accounts pinned to it. Use 5.4+ for new work.',
-    group: 'OpenAI · GPT-5 (recent)',
+    group: 'OpenAI · GPT-5 (earlier revisions)',
   },
   {
     id: 'gpt-5.2-chat-latest',
     label: 'GPT-5.2 (chat-latest)',
     description: 'Always-latest 5.2 chat alias.',
-    group: 'OpenAI · GPT-5 (recent)',
+    group: 'OpenAI · GPT-5 (earlier revisions)',
   },
-  // ─── OpenAI · GPT-5 (legacy) ──────────────────────────────────────
+  // ─── OpenAI · GPT-5 (earlier revisions) ──────────────────────────────────────
   {
     id: 'gpt-5.1',
     label: 'GPT-5.1',
     description: 'Older 5.1 build. Mostly kept for accounts pinned here. Prefer 5.4+ for new work.',
-    group: 'OpenAI · GPT-5 (legacy)',
+    group: 'OpenAI · GPT-5 (earlier revisions)',
   },
   {
     id: 'gpt-5.1-chat-latest',
     label: 'GPT-5.1 (chat-latest)',
     description: 'Always-latest 5.1 chat alias.',
-    group: 'OpenAI · GPT-5 (legacy)',
+    group: 'OpenAI · GPT-5 (earlier revisions)',
   },
   {
     id: 'gpt-5',
     label: 'GPT-5',
     description: 'Original GPT-5 (5.0) released Aug 2025. Legacy; new work should target 5.4 or later.',
-    group: 'OpenAI · GPT-5 (legacy)',
+    group: 'OpenAI · GPT-5 (earlier revisions)',
   },
   {
     id: 'gpt-5-chat-latest',
     label: 'GPT-5 (chat-latest)',
     description: 'Always-latest 5.0 chat alias.',
-    group: 'OpenAI · GPT-5 (legacy)',
+    group: 'OpenAI · GPT-5 (earlier revisions)',
   },
 
   // ─── OpenAI · GPT-4.1 family ──────────────────────────────────────
@@ -248,18 +298,18 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
     group: 'OpenAI · GPT-4.1',
   },
 
-  // ─── OpenAI · GPT-4o (previous-generation flagship line) ──────────
+  // ─── OpenAI · GPT-4o ──────────────────────────────────────────────
   {
     id: 'gpt-4o',
     label: 'GPT-4o',
     description: "Previous-generation OpenAI flagship. Strong general performance, good tool-use latency. Still callable.",
-    group: 'OpenAI · GPT-4o (previous)',
+    group: 'OpenAI · GPT-4o',
   },
   {
     id: 'gpt-4o-mini',
     label: 'GPT-4o mini',
     description: 'Cheaper, faster GPT-4o variant. Good for high-volume diagnostics where depth is secondary.',
-    group: 'OpenAI · GPT-4o (previous)',
+    group: 'OpenAI · GPT-4o',
   },
 
   // ─── OpenAI · o-series reasoning models ───────────────────────────

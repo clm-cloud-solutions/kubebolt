@@ -242,7 +242,13 @@ const components: Components = {
   // Tables — proper rendering with borders
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto rounded-lg border border-kobi-border">
-      <table className="w-full text-xs border-collapse">{children}</table>
+      {/* min-w-full, not w-full: w-full PINNED the table to the panel width, so
+          it could never overflow and the wrapper's overflow-x-auto never had
+          anything to scroll — the columns just squeezed instead, down to one
+          character per line. min-w-full fills the panel when the content fits
+          and grows past it when it does not, which is when scrolling is what
+          you actually want. */}
+      <table className="min-w-full text-xs border-collapse">{children}</table>
     </div>
   ),
   thead: ({ children }) => <thead className="bg-kobi-elevated/50">{children}</thead>,
@@ -252,11 +258,21 @@ const components: Components = {
   // body rows by being DIMMER (plus the thead tint), not louder. It was
   // primary text before, identical to the cells at a glance.
   th: ({ children }) => (
-    <th className="px-2 py-1.5 text-left font-semibold text-kobi-text-secondary text-[11px]">
+    // The renderer sets overflow-wrap:anywhere on the whole message so a pod
+    // name or a UID cannot blow the panel open. It INHERITS into cells, where
+    // it breaks ordinary words mid-character — a "Severidad" header rendered
+    // as three lines reading "Seve / rida / d". Headers are short by nature,
+    // so they never wrap at all.
+    <th className="px-2 py-1.5 text-left font-semibold text-kobi-text-secondary text-[11px] whitespace-nowrap [overflow-wrap:normal]">
       {children}
     </th>
   ),
-  td: ({ children }) => <td className="px-2 py-1.5 text-kobi-text align-top">{children}</td>,
+  // break-word rather than the inherited anywhere: a long unbreakable token (a
+  // pod name) still breaks so the column cannot run away, but "crítico" stays
+  // one word.
+  td: ({ children }) => (
+    <td className="px-2 py-1.5 text-kobi-text align-top [overflow-wrap:break-word]">{children}</td>
+  ),
 
   // Blockquote — subtle left border
   blockquote: ({ children }) => (

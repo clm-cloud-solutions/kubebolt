@@ -29,6 +29,12 @@ interface AuthContextValue {
   isSignupEnabled: boolean
   isAuthenticated: boolean
   isLoading: boolean
+  /** True once the silent refresh has settled — the access token is in hand,
+   * or the session is confirmed gone. Gate PUBLIC endpoints that answer for an
+   * anonymous caller on this, or the anonymous answer gets cached as the
+   * user's. This build does not render optimistically from a cached user, so
+   * it is simply `!isLoading`; the Enterprise build keeps them apart. */
+  sessionReady: boolean
   user: AuthUser | null
   login: (username: string, password: string) => Promise<void>
   signup: (data: { orgName: string; name: string; email: string; password: string }) => Promise<void>
@@ -159,6 +165,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     isSignupEnabled,
     isAuthenticated: !!user,
     isLoading,
+    sessionReady: !isLoading,
     user,
     login,
     signup,

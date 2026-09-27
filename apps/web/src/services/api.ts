@@ -331,6 +331,21 @@ export interface InsightEpisode {
   resolutionKind?: string
   flapCount: number
   prevEpisodeId?: string
+  // What the rule SAW when this episode opened. Only the detail endpoint
+  // carries it — the list would pay for it on every row and already returns
+  // hundreds unpaginated.
+  evidence?: Evidence[]
+}
+
+// One typed fact a rule recorded. `at` is present only when the fact has a
+// moment: a config value does not, an event does. Absent is meaningful — it
+// says "this is state", not "unknown".
+export interface Evidence {
+  kind: 'config' | 'event' | 'metric' | 'log'
+  label: string
+  detail: string
+  source?: string
+  at?: string
 }
 
 export interface EpisodeTransition {
@@ -410,7 +425,11 @@ export interface OperationalBurst {
   id: string
   kind: 'node_rotation' | 'mass_rollout' | 'node_pressure' | 'unknown_burst'
   clusters: string[]
+  // windowFrom..onsetTo is when the burst HAPPENED — usually minutes. windowTo
+  // is the last time any member was seen, which a chronic member stretches to
+  // weeks; the two are different questions and the UI must not collapse them.
   windowFrom: string
+  onsetTo: string
   windowTo: string
   seedIds: string[]
   memberIds: string[]
@@ -506,6 +525,20 @@ export const api = {
       `${API_BASE}/insights/episodes?${q.toString()}`,
     )
   },
+  // Bursts over an explicit window. Both bounds are RFC3339 so a link can
+  // address a MOMENT ("what happened on the 16th at 03:00"), which is the one
+  // question the shift report cannot answer — it is anchored to the reader's
+  // own last visit, not to a date.
+  getOperationalBursts: (params: { since: string; until: string }) => {
+    const q = new URLSearchParams({ since: params.since, until: params.until })
+    return fetchJSON<{
+      episodes: OperationalBurst[] | null
+      clusterNames?: Record<string, string>
+      windowFrom: string
+      windowTo: string
+    }>(`${API_BASE}/insights/operational-episodes?${q.toString()}`)
+  },
+
   getInsightEpisode: (id: string) => fetchJSON<EpisodeDetail>(`${API_BASE}/insights/episodes/${id}`),
 
   // Fase 3 presence beacon: Home rendered for this user — the anchor the
@@ -627,6 +660,10 @@ export const api = {
 
   revokeAPIToken: (id: string) =>
     deleteRequest<{ status: string }>(`${API_BASE}/admin/api-tokens/${id}`),
+
+  // The clusters an API key may read ([] = every cluster of the org).
+  updateAPITokenClusters: (id: string, clusters: string[]) =>
+    patchJSON<APIToken>(`${API_BASE}/admin/api-tokens/${id}/clusters`, { clusters }),
 
   // --- Per-tenant Prom remote_write limits (Phase 3) ---
   //
@@ -1605,6 +1642,11 @@ export const api = {
     fetchJSON<DeployEvent[]>(
       `${API_BASE}/deploys${buildQuery({ windowMinutes: params.windowMinutes })}`,
     ),
+
+  // Right-sizing recommendations for the active cluster — the backend engine
+  // (internal/rightsizing) the Capacity / Cost screens and Kobi's
+  // get_right_sizing share. Types live with the hook that consumes them.
+  getRightSizing: <T>() => fetchJSON<T>(`${API_BASE}/right-sizing`),
 
   // Flow edges (Phase 2.1, from pod_flow_events_total)
   getFlowEdges: (params?: { namespace?: string; windowMinutes?: number }) =>
@@ -2735,6 +2777,9 @@ export interface APIToken {
   scopes?: string[]
   tenantId?: string
   clusterId?: string
+  // Read allow-list for an API key: cluster ids it may see. Absent/empty =
+  // every cluster of the org. Service tokens never carry one.
+  clusters?: string[]
   createdAt: string
   createdBy: string
   lastUsedAt?: string
@@ -2753,6 +2798,7 @@ export interface CreateAPITokenRequest {
   role?: string
   scopes?: string[]
   ttlHours?: number
+  clusters?: string[]
 }
 
 // --- Per-tenant Prom remote_write limits ---
