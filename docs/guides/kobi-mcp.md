@@ -45,19 +45,22 @@ an API token for MCP hosts.
 >
 > **Scopes for `kbk_` tokens.** An API key is issued with the scopes you pick
 > and has **no default scopes**; without `/api/v1/mcp` (or `*`) it returns
-> `403 token scope does not permit this path`. The scope checkboxes in the UI
-> don't list `/api/v1/mcp`, so either tick **Everything (all authenticated
-> paths)**, or create the token through the API with an explicit scope:
+> `403 token scope does not permit this path`. In **Create API token**, tick
+> **MCP only (read-only tools)**: the key gets `/api/v1/mcp` and nothing else,
+> its role is fixed to `viewer` (every MCP tool reads) and it expires in 90
+> days unless you change it. Avoid **Everything**: it hands the whole API to a
+> key that only needs the read-only tools.
 >
-> ```bash
-> curl -sS -X POST https://kubebolt.example.com/api/v1/admin/api-tokens \
->   -H "Authorization: Bearer <admin-access-token>" -H 'Content-Type: application/json' \
->   -d '{"label":"claude-code-mcp","type":"apikey","role":"viewer","scopes":["/api/v1/mcp"]}'
-> ```
+> **Clusters.** Under **Clusters**, a key reads every cluster by default, or
+> only the ones you tick. The list is enforced on every read — resources,
+> logs, metrics (including the PromQL of `query_metrics`), findings, insight
+> history — and can be changed later from the pencil on the token's row. A key
+> limited to some clusters cannot switch the active cluster or reach
+> administration.
 
 **Setup:**
 
-1. Create the token as described above. The value is shown once.
+1. Create the token as described above (**MCP only**, and the clusters it may read). The value is shown once.
 2. Point your MCP host at the endpoint with the token as a bearer header.
 
 Example MCP host config (Claude Code / Cursor `mcpServers`):

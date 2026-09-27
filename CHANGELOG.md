@@ -4,6 +4,39 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — unreleased
+
+Kobi reads the whole product, and API tokens say which clusters they may
+read. No migration. Full note: [docs/releases/v2.2.0.md](docs/releases/v2.2.0.md).
+
+### Added
+
+- Kobi tools (chat and `/api/v1/mcp`): findings (posture, workloads, detail),
+  runtime events, insight history and bursts, fleet summary, recent deploys,
+  coverage, `query_metrics`, right-sizing, node filesystem metrics;
+  `offer_cluster_switch` in the chat.
+- `GET /right-sizing`: the Capacity panel's engine moves to the backend.
+- API tokens: **MCP only** preset (viewer, 90 days) and a per-token cluster
+  list, editable with `PATCH /admin/api-tokens/{id}/clusters`.
+- Insight evidence seam; *Service has no ready endpoints* records what it saw.
+- `KUBEBOLT_AI_CACHE_TTL` (Helm `copilot.cacheTtl`), default `1h`.
+
+### Changed
+
+- Sign-in pages rebuilt; they scroll on phones. Top bar and Overview KPI cards
+  size to their own width.
+- `list_clusters` answers without a connected cluster; `/mcp` no longer lists
+  `offer_cluster_switch`.
+
+### Security
+
+- Caller-written PromQL is confined by a VictoriaMetrics `extra_filters[]` the
+  store enforces; the text rewriter left `up`, decoy labels and or-filters
+  unscoped.
+- Tool results redact secrets (logs, env, args, describe, events).
+- API tokens cannot manage API tokens; a cluster-limited token cannot reach
+  administration or switch clusters. A request with no cluster header is pinned
+  to the cluster it was checked against.
 ## [2.1.1] — 2026-09-28
 
 Security data follows the cluster out of KubeBolt. Drop-in, no migration. Full
