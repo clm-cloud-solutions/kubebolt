@@ -86,12 +86,28 @@ reachable from where KubeBolt runs.
     <td align="center"><sub>Fleet</sub></td>
   </tr>
   <tr>
-    <td width="50%"><img src="docs/images/kubebolt-capacity.webp" alt="Capacity — trends with deploy markers and right-sizing"></td>
-    <td width="50%"><img src="docs/images/kubebolt-cluster-map.webp" alt="Cluster Map — the topology of a namespace"></td>
+    <td width="50%"><img src="docs/images/kubebolt-capacity.webp" alt="Capacity — CPU, memory, network and filesystem trends with deploy markers"></td>
+    <td width="50%"><img src="docs/images/kubebolt-rightsizing.webp" alt="Right-sizing — top consumers and recommendations from p95 usage"></td>
   </tr>
   <tr>
     <td align="center"><sub>Capacity</sub></td>
-    <td align="center"><sub>Cluster Map</sub></td>
+    <td align="center"><sub>Right-sizing</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/kubebolt-reliability.webp" alt="Reliability — error rate, traffic per workload and error hot-spots from Hubble"></td>
+    <td width="50%"><img src="docs/images/kubebolt-cost.webp" alt="Cost — run-rate, idle spend, breakdown by namespace and right-sizing savings from OpenCost"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Reliability</sub></td>
+    <td align="center"><sub>Cost (beta)</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/images/kubebolt-cluster-map.webp" alt="Cluster Map — the topology of a namespace, Flow layout"></td>
+    <td width="50%"><img src="docs/images/kubebolt-cluster-map-traffic.webp" alt="Cluster Map, Traffic layout — who calls whom and what leaves the cluster, from Hubble flows"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Cluster Map · Flow</sub></td>
+    <td align="center"><sub>Cluster Map · Traffic</sub></td>
   </tr>
 </table>
 
