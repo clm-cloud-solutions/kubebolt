@@ -5,6 +5,7 @@ import { Server, Check, ArrowRightLeft, Shield, Activity, Box, Layers, HardDrive
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
+import { useSwitchCluster } from '@/hooks/useSwitchCluster'
 import { Modal } from '@/components/shared/Modal'
 import { AddClusterButton } from '@/components/admin/AddClusterButton'
 import { parseClusterDisplayName } from '@/utils/cluster'
@@ -379,6 +380,8 @@ function RenameClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
 
 function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClose: () => void }) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  const switchCluster = useSwitchCluster()
   const [confirmText, setConfirmText] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -400,6 +403,30 @@ function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
       } else {
         await api.deleteCluster(cluster.context)
       }
+
+      // Deleting the cluster you were VIEWING leaves the active context gone,
+      // and the page froze on a 503-ing Overview until something re-selected.
+      // Re-land the way sign-in does: move to a live cluster, or drop to
+      // no-cluster scope (Home) when none remain. Non-active deletes keep the
+      // current view.
+      if (cluster.active) {
+        const remaining = (queryClient.getQueryData<ClusterInfo[]>(['clusters']) ?? []).filter(
+          (c) => c.context !== cluster.context,
+        )
+        if (remaining.length > 0) {
+          // The canonical switch flow: paints the full-screen "Connecting"
+          // overlay (which covers this modal), clears the Copilot transcript
+          // and navigates to the new cluster's Overview. Awaited BEFORE onClose
+          // so the observer + navigate stay on a mounted component.
+          await switchCluster.mutateAsync(remaining[0].context)
+        } else {
+          await queryClient.invalidateQueries({ queryKey: ['clusters'] })
+          navigate('/home')
+        }
+        onClose()
+        return
+      }
+
       queryClient.invalidateQueries({ queryKey: ['clusters'] })
       onClose()
     } catch (err) {
@@ -417,9 +444,9 @@ function DeleteClusterModal({ cluster, onClose }: { cluster: ClusterInfo; onClos
               <AlertTriangle className="w-3.5 h-3.5 text-status-error shrink-0 mt-0.5" />
               <p className="text-[11px] text-kb-text-primary">
                 {isAgentProxy ? (
-                  <>This removes <code className="text-status-error font-mono">{confirmTarget}</code> from KubeBolt. The cluster itself is not affected. If its agent is still running, the cluster may reappear when it next reconnects.</>
+                  <>This removes <code className="text-status-error font-mono">{confirmTarget}</code> from KubeBolt, <b>including its stored security findings and runtime events</b>. The cluster itself is not affected. If its agent is still running, the cluster may reappear when it next reconnects.</>
                 ) : (
-                  <>This will remove the context <code className="text-status-error font-mono">{cluster.context}</code> from KubeBolt. The cluster itself is not affected.</>
+                  <>This will remove the context <code className="text-status-error font-mono">{cluster.context}</code> from KubeBolt, <b>including its stored security findings and runtime events</b>. The cluster itself is not affected.</>
                 )}
               </p>
             </div>

@@ -120,7 +120,7 @@ export function WorkloadFindingsModal({
             <div className="divide-y divide-kb-border">
               {rows.map((f) => (
                 <button
-                  key={f.fingerprint}
+                  key={`${f.clusterId}/${f.fingerprint}`}
                   type="button"
                   onClick={() => setSelected(f as Selected)}
                   className="w-full flex items-center gap-3 px-5 py-2.5 text-left hover:bg-kb-card-hover transition-colors"

@@ -671,6 +671,61 @@ func (m *Manager) storeCtx() context.Context {
 	return auth.WithTenantID(context.Background(), m.tenantID)
 }
 
+// orgStoreCtx returns a store context pinned to a SPECIFIC org — used when the
+// org isn't the manager's default tenant (e.g. an agent-proxy cluster whose
+// agent belongs to another org). Empty orgID (OSS single-tenant) falls back to
+// the default store context.
+// RegisteredClusterIdentifiers returns every identifier under which the org's
+// REGISTERED clusters may hold stored data — cluster UIDs, their context
+// names, every stored kubeconfig context (an uploaded context that never
+// resolved a UID keys its findings by name), the live kubeconfig contexts,
+// and the in-cluster identity. The retention pass subtracts this set from
+// what the findings store holds to sweep ORPHANS (clusters removed from the
+// tenant), so the contract is asymmetric on purpose: over-keeping is safe,
+// over-deleting is not. ok=false when the durable registry is unavailable or
+// unreadable — the caller must SKIP its cleanup, never guess.
+func (m *Manager) RegisteredClusterIdentifiers(orgID string) (map[string]struct{}, bool) {
+	m.mu.RLock()
+	st := m.storage
+	keep := make(map[string]struct{}, len(m.kubeConfig.Contexts)+8)
+	for name := range m.kubeConfig.Contexts {
+		keep[name] = struct{}{}
+	}
+	m.mu.RUnlock()
+	if st == nil {
+		return nil, false
+	}
+	octx := m.orgStoreCtx(orgID)
+	uids, err := st.AllClusterUIDs(octx)
+	if err != nil {
+		return nil, false
+	}
+	for ctxName, uid := range uids {
+		keep[ctxName] = struct{}{}
+		if uid != "" {
+			keep[uid] = struct{}{}
+		}
+	}
+	cfgs, err := st.ListKubeconfigs(octx)
+	if err != nil {
+		return nil, false
+	}
+	for _, c := range cfgs {
+		keep[c.Context] = struct{}{}
+	}
+	// The self-monitored cluster (the finding #30/#32 family): its registry
+	// row can lag behind reality, and its data must never be orphan-swept.
+	keep["in-cluster"] = struct{}{}
+	return keep, true
+}
+
+func (m *Manager) orgStoreCtx(orgID string) context.Context {
+	if orgID == "" {
+		return m.storeCtx()
+	}
+	return auth.WithTenantID(context.Background(), orgID)
+}
+
 // reloadUploadedContextsLocked merges kubeconfigs from BoltDB into the in-memory
 // config. Called on startup and after CRUD operations. Assumes m.mu is held.
 func (m *Manager) reloadUploadedContextsLocked() error {
@@ -951,7 +1006,16 @@ func (m *Manager) ListClusters() []ClusterInfo {
 				status = "connected"
 			} else if m.connErr != nil {
 				status = "error"
-				connErrMsg = m.connErr.Error()
+				// Name the cluster the way the operator does, never the internal
+				// context ("agent:<uid>") the raw error embeds (in-vivo
+				// 2026-09-16: the offline card showed
+				// `could not connect to cluster "agent:b07…" — …`, a UUID nobody
+				// recognizes). The diagnosis is kept; only the identifier changes.
+				label := displayNames[ctxName]
+				if label == "" {
+					label = "this cluster"
+				}
+				connErrMsg = label + " is not reachable — the agent is not connected yet, or the initial cache sync did not complete"
 			}
 		} else if rt, ok := m.runtimes[poolKey{tenant: m.tenantID, cluster: ctxName}]; ok && rt.connector != nil {
 			// A PARKED runtime with a live connector is connected, and saying so

@@ -54,6 +54,19 @@ type orgEventPruner interface {
 	PruneEventsOrg(orgID string, before time.Time) (int, error)
 }
 
+// clusterScopedFindings / clusterScopedEvents are the two verbs the ORPHAN
+// sweep needs: list the distinct clusters a store holds for an org, delete one
+// cluster's rows wholesale. Satisfied by both findings store engines.
+type clusterScopedFindings interface {
+	ClusterIDs(tenantID string) ([]string, error)
+	DeleteCluster(tenantID, clusterID string) (int, error)
+}
+
+type clusterScopedEvents interface {
+	EventClusterIDs(tenantID string) ([]string, error)
+	DeleteEventsCluster(tenantID, clusterID string) (int, error)
+}
+
 type retentionDeps struct {
 	tenants       orgLister
 	insights      orgPruner
@@ -61,6 +74,17 @@ type retentionDeps struct {
 	events        orgEventPruner
 	audit         orgPruner
 	conversations orgPruner
+	// Orphan sweep (in-vivo 2026-09-15): security data whose cluster is no
+	// longer REGISTERED in the org. The sweeper can never resolve it (no
+	// connector) and PruneOrg never touches actives, so without this a
+	// cluster deleted from the tenant leaves immortal findings. registered
+	// answers the org's KEEP set (uids + context names); ok=false means the
+	// registry is unreadable and the sweep must skip — over-keeping is safe,
+	// over-deleting is not. Independent of the plan window on purpose:
+	// membership, not age.
+	findingsClusters clusterScopedFindings
+	eventClusters    clusterScopedEvents
+	registered       func(orgID string) (map[string]struct{}, bool)
 	// episodes prunes insight episodes + transitions (2.1.0). The store only
 	// ever deletes NON-firing episodes — an old active episode is a live
 	// problem, not garbage — so the cutoff here bounds history, never
@@ -148,7 +172,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Warn("retention: cannot list orgs", slog.String("error", err.Error()))
 		return
 	}
-	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalEpisodes int
+	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalEpisodes, totalOrphans int
 	auditCutoff := now.Add(-auditRetentionHorizon())
 	insightsCutoff := now.Add(-insightsRetentionHorizon())
 	findingsCutoff := now.Add(-findingsRetentionHorizon())
@@ -162,6 +186,8 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 				totalAudit += n
 			}
 		}
+
+		totalOrphans += sweepSecurityOrphans(d, org.ID)
 		if d.insights != nil {
 			if n, err := d.insights.PruneOrg(org.ID, insightsCutoff); err != nil {
 				slog.Warn("retention: insights prune failed",
@@ -211,8 +237,73 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Int("insights_pruned", totalInsights),
 		slog.Int("episodes_pruned", totalEpisodes),
 		slog.Int("findings_pruned", totalFindings),
+		slog.Int("security_orphans_removed", totalOrphans),
 		slog.Int("runtime_events_pruned", totalEvents),
 		slog.Int("audit_records_pruned", totalAudit),
 		slog.Int("conversations_pruned", totalConversations),
 	)
+}
+
+// sweepSecurityOrphans deletes one org's findings + runtime events stored
+// under clusters that are registered NOWHERE in the org — removed from the
+// tenant before the delete cascade existed, or misattributed by the pre-2.0.3
+// silent drop (finding #32). Registered-but-disconnected clusters keep their
+// registry rows, so their history is untouched: the rule is membership, never
+// liveness. Returns rows removed.
+func sweepSecurityOrphans(d retentionDeps, orgID string) int {
+	if d.registered == nil || (d.findingsClusters == nil && d.eventClusters == nil) {
+		return 0
+	}
+	keep, ok := d.registered(orgID)
+	if !ok {
+		slog.Warn("retention: orphan sweep skipped — cluster registry unreadable",
+			slog.String("org", orgID))
+		return 0
+	}
+	removed := 0
+	if d.findingsClusters != nil {
+		ids, err := d.findingsClusters.ClusterIDs(orgID)
+		if err != nil {
+			slog.Warn("retention: orphan sweep cannot list finding clusters",
+				slog.String("org", orgID), slog.String("error", err.Error()))
+		} else {
+			for _, id := range ids {
+				if _, registered := keep[id]; registered || id == "" {
+					continue
+				}
+				n, err := d.findingsClusters.DeleteCluster(orgID, id)
+				if err != nil {
+					slog.Warn("retention: orphan findings delete failed",
+						slog.String("org", orgID), slog.String("cluster", id), slog.String("error", err.Error()))
+					continue
+				}
+				removed += n
+				slog.Info("retention: orphan cluster findings removed",
+					slog.String("org", orgID), slog.String("cluster", id), slog.Int("count", n))
+			}
+		}
+	}
+	if d.eventClusters != nil {
+		ids, err := d.eventClusters.EventClusterIDs(orgID)
+		if err != nil {
+			slog.Warn("retention: orphan sweep cannot list event clusters",
+				slog.String("org", orgID), slog.String("error", err.Error()))
+		} else {
+			for _, id := range ids {
+				if _, registered := keep[id]; registered || id == "" {
+					continue
+				}
+				n, err := d.eventClusters.DeleteEventsCluster(orgID, id)
+				if err != nil {
+					slog.Warn("retention: orphan runtime-events delete failed",
+						slog.String("org", orgID), slog.String("cluster", id), slog.String("error", err.Error()))
+					continue
+				}
+				removed += n
+				slog.Info("retention: orphan cluster runtime events removed",
+					slog.String("org", orgID), slog.String("cluster", id), slog.Int("count", n))
+			}
+		}
+	}
+	return removed
 }

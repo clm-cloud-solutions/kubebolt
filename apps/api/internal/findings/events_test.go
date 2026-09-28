@@ -84,6 +84,32 @@ func runEventStoreContract(t *testing.T, s EventStore) {
 	if out, _ := s.ListEvents(EventQuery{TenantID: "org-a"}); len(out) != 1 {
 		t.Fatalf("post-prune org-a: %d, want 1", len(out))
 	}
+
+	// ── Cluster departure (in-vivo 2026-09-15): the events cascade mirrors
+	// the findings one — whole (tenant, cluster), nothing else.
+	for _, spec := range []struct{ tenant, cluster string }{
+		{"org-del", "gone-1"}, {"org-del", "gone-1"}, {"org-del", "stays"}, {"org-other", "gone-1"},
+	} {
+		if err := s.Append(&EventRecord{
+			TenantID: spec.tenant, ClusterID: spec.cluster,
+			RuntimeEvent: falcoEvent("Terminal shell in container", base.Add(2*time.Minute), "Critical"),
+		}); err != nil {
+			t.Fatalf("Append seed: %v", err)
+		}
+	}
+	ids, err := s.EventClusterIDs("org-del")
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("EventClusterIDs = %v, %v — want the org's two clusters", ids, err)
+	}
+	if n, err := s.DeleteEventsCluster("org-del", "gone-1"); err != nil || n != 2 {
+		t.Fatalf("DeleteEventsCluster = %d, %v — want 2 removed", n, err)
+	}
+	if out, _ := s.ListEvents(EventQuery{TenantID: "org-del"}); len(out) != 1 || out[0].ClusterID != "stays" {
+		t.Fatalf("DeleteEventsCluster must spare the org's other cluster: %+v", out)
+	}
+	if out, _ := s.ListEvents(EventQuery{TenantID: "org-other", ClusterID: "gone-1"}); len(out) != 1 {
+		t.Fatalf("DeleteEventsCluster must never cross tenants: %+v", out)
+	}
 }
 
 func TestBoltEventStore_Contract(t *testing.T) {

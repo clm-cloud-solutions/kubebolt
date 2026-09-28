@@ -1287,7 +1287,7 @@ func main() {
 	// Episodes join the pass through a type assertion: the lifecycle wiring
 	// returns the read interface, but the store also prunes.
 	episodePruner, _ := episodeReader.(orgPruner)
-	startRetention(agentCtx, retentionDeps{
+	deps := retentionDeps{
 		tenants:       tenantsStore,
 		insights:      insightStore,
 		findings:      findingsStore,
@@ -1295,7 +1295,33 @@ func main() {
 		audit:         actionAuditStore,
 		conversations: copilotConversations,
 		episodes:      episodePruner,
-	})
+	}
+	// Orphan sweep wiring (in-vivo 2026-09-15): the KEEP set is the manager's
+	// registered identifiers plus every cluster the durable agent registry
+	// still names — the agent-record union covers the window before a fresh
+	// cluster's UID row is persisted. Any listing error fails CLOSED (skip).
+	if findingsStore != nil {
+		deps.findingsClusters = findingsStore
+		deps.eventClusters = eventStore
+		deps.registered = func(orgID string) (map[string]struct{}, bool) {
+			keep, ok := manager.RegisteredClusterIdentifiers(orgID)
+			if !ok {
+				return nil, false
+			}
+			if agentStore != nil {
+				recs, err := agentStore.List()
+				if err != nil {
+					return nil, false
+				}
+				for i := range recs {
+					keep[recs[i].ClusterID] = struct{}{}
+					keep[cluster.AgentProxyContextName(recs[i].ClusterID)] = struct{}{}
+				}
+			}
+			return keep, true
+		}
+	}
+	startRetention(agentCtx, deps)
 
 	// Auto-register agent-proxy clusters: when an agent advertises the
 	// kube-proxy capability AND this flag is on, its cluster shows up
