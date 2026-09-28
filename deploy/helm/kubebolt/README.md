@@ -149,7 +149,7 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 |-----------|-------------|---------|
 | `metrics.storage.embedded.enabled` | Deploy the bundled single-node VictoriaMetrics StatefulSet | `true` |
 | `metrics.storage.embedded.image.repository` | VictoriaMetrics image | `victoriametrics/victoria-metrics` |
-| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.148.0-scratch` |
+| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.153.0-scratch` |
 | `metrics.storage.embedded.image.pullPolicy` | Pull policy | `IfNotPresent` |
 | `metrics.storage.embedded.retention` | Retention window | `30d` |
 | `metrics.storage.embedded.persistence.enabled` | Use a PVC (otherwise `emptyDir`) | `true` |

@@ -2,8 +2,8 @@ apiVersion: v2
 name: kubebolt
 description: KubeBolt — open-source Kubernetes operations platform. Health, insights, topology, operations, security and cost in one place, with Kobi, a BYO-key AI copilot
 type: application
-version: 2.1.0
-appVersion: "2.1.0"
+version: 2.1.1
+appVersion: "2.1.1"
 home: https://github.com/clm-cloud-solutions/kubebolt
 icon: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png
 sources:

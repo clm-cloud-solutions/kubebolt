@@ -986,7 +986,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
                 <tbody>
                   {(data?.findings ?? []).map((f) => (
                     <tr
-                      key={f.fingerprint}
+                      key={`${f.clusterId}/${f.fingerprint}`}
                       onClick={() => setSelected(f)}
                       className="border-b border-kb-border last:border-0 hover:bg-kb-card-hover transition-colors cursor-pointer"
                     >
@@ -1048,7 +1048,14 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
                 <tbody>
                   {workloads.map((w) => (
                     <tr
-                      key={`${w.namespace}/${w.kind}/${w.name}`}
+                      // clusterId is part of the key: the SAME workload name
+                      // (a ClusterRole, an unnamespaced check) legitimately
+                      // exists in two clusters, so keying on name alone made
+                      // duplicate React keys in the All-clusters view — which
+                      // corrupts <tbody> reconciliation and leaves stale rows
+                      // from the previous scope after a cluster switch (in-vivo
+                      // 2026-09-15).
+                      key={`${w.clusterId}/${w.namespace}/${w.kind}/${w.name}`}
                       onClick={() => setSelectedWorkload(w)}
                       className="border-b border-kb-border last:border-0 hover:bg-kb-card-hover transition-colors cursor-pointer"
                     >
@@ -1209,7 +1216,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
                   .filter((f) => f.cisControl)
                   .slice(0, 12)
                   .map((f) => (
-                    <div key={f.fingerprint} className="px-4 py-2 flex items-start gap-2">
+                    <div key={`${f.clusterId}/${f.fingerprint}`} className="px-4 py-2 flex items-start gap-2">
                       <span className="font-mono text-[10px] text-kb-accent shrink-0">{f.cisControl}</span>
                       <span className="text-[11px] text-kb-text-secondary truncate" title={f.title}>
                         {f.title}

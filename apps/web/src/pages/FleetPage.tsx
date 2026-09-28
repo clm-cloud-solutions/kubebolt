@@ -318,7 +318,14 @@ function ClusterCard({
         <span className="truncate">
           {cluster.agentConnected
             ? `Agent live · ${timeAgo(cluster.lastSeen)}`
-            : LINK_LABEL[health]}
+            : cluster.source === 'agent-proxy'
+              ? // An agent-proxy cluster with no live agent is OFFLINE, not
+                // "Reporting" (in-vivo 2026-09-15): it stays registered in the
+                // tenant and keeps its stored data, but the link is down — say
+                // so, matching the Clusters page's OFFLINE badge, and keep the
+                // last contact so the gap is legible.
+                `Agent offline · ${timeAgo(cluster.lastSeen)}`
+              : LINK_LABEL[health]}
         </span>
         {/* El equipo dueño. Es la pregunta «¿a quién le toca esto?», que en una
             flota con varios equipos precede a cualquier otra — y el dato ya

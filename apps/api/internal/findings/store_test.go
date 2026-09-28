@@ -90,6 +90,34 @@ func runStoreContract(t *testing.T, s Store) {
 	if out, _ := s.List(Query{TenantID: "org-b"}); len(out) != 1 {
 		t.Fatalf("prune must never touch active records: %+v", out)
 	}
+
+	// ── Cluster departure (in-vivo 2026-09-15): DeleteCluster removes the
+	// whole (tenant, cluster) — ACTIVE included — and nothing else.
+	fA := trivyCVE("CVE-A", "ns", "wl-a", integrations.SeverityHigh)
+	fB := trivyCVE("CVE-B", "ns", "wl-b", integrations.SeverityHigh)
+	for _, rec := range []*Record{
+		{TenantID: "org-del", ClusterID: "gone-1", Fingerprint: Fingerprint(fA), Finding: fA, Status: StatusActive, FirstSeen: now, LastSeen: now},
+		{TenantID: "org-del", ClusterID: "gone-1", Fingerprint: Fingerprint(fB), Finding: fB, Status: StatusActive, FirstSeen: now, LastSeen: now},
+		{TenantID: "org-del", ClusterID: "stays", Fingerprint: Fingerprint(fA), Finding: fA, Status: StatusActive, FirstSeen: now, LastSeen: now},
+		{TenantID: "org-other", ClusterID: "gone-1", Fingerprint: Fingerprint(fA), Finding: fA, Status: StatusActive, FirstSeen: now, LastSeen: now},
+	} {
+		if err := s.Upsert(rec); err != nil {
+			t.Fatalf("Upsert seed: %v", err)
+		}
+	}
+	ids, err := s.ClusterIDs("org-del")
+	if err != nil || len(ids) != 2 {
+		t.Fatalf("ClusterIDs = %v, %v — want the org's two clusters", ids, err)
+	}
+	if n, err := s.DeleteCluster("org-del", "gone-1"); err != nil || n != 2 {
+		t.Fatalf("DeleteCluster = %d, %v — want 2 active rows removed", n, err)
+	}
+	if out, _ := s.List(Query{TenantID: "org-del"}); len(out) != 1 || out[0].ClusterID != "stays" {
+		t.Fatalf("DeleteCluster must spare the org's other cluster: %+v", out)
+	}
+	if out, _ := s.List(Query{TenantID: "org-other", ClusterID: "gone-1"}); len(out) != 1 {
+		t.Fatalf("DeleteCluster must never cross tenants: %+v", out)
+	}
 }
 
 func TestFingerprintStability(t *testing.T) {

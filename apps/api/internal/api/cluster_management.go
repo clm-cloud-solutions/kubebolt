@@ -3,12 +3,14 @@ package api
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 )
 
 // --- POST /clusters — upload a kubeconfig ---
@@ -96,10 +98,49 @@ func (h *handlers) handleDeleteAgentProxyCluster(w http.ResponseWriter, r *http.
 		return
 	}
 	h.manager.RemoveAgentProxyCluster(clusterID)
+	// Cascade (in-vivo 2026-09-15): the org's stored security data follows the
+	// cluster out of the tenant. Without this the sweeper (live connectors
+	// only) and retention (resolved only) leave its active findings immortal —
+	// the operator typed the cluster's name to delete it, and Security &
+	// Compliance kept showing its ghosts to every admin. Both identifiers:
+	// rows are keyed by the UID normally, by the context name when the UID
+	// hadn't resolved yet.
+	h.purgeClusterSecurityData(r, clusterID, cluster.AgentProxyContextName(clusterID))
 	if h.wsHub != nil {
 		h.wsHub.Broadcast("clusters.changed", nil)
 	}
 	respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+// purgeClusterSecurityData removes the org's findings + runtime events stored
+// under any of the given cluster identifiers. Best-effort: a failed purge must
+// not fail the delete (the retention pass's orphan sweep is the janitor that
+// catches whatever this misses), but it is never silent.
+func (h *handlers) purgeClusterSecurityData(r *http.Request, ids ...string) {
+	org := h.activeTenantID(r)
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		if h.findingsStore != nil {
+			if n, err := h.findingsStore.DeleteCluster(org, id); err != nil {
+				slog.Warn("cluster delete: findings purge failed",
+					slog.String("cluster", id), slog.String("error", err.Error()))
+			} else if n > 0 {
+				slog.Info("cluster delete: findings purged",
+					slog.String("cluster", id), slog.Int("count", n))
+			}
+		}
+		if h.eventStore != nil {
+			if n, err := h.eventStore.DeleteEventsCluster(org, id); err != nil {
+				slog.Warn("cluster delete: runtime-events purge failed",
+					slog.String("cluster", id), slog.String("error", err.Error()))
+			} else if n > 0 {
+				slog.Info("cluster delete: runtime events purged",
+					slog.String("cluster", id), slog.Int("count", n))
+			}
+		}
+	}
 }
 
 func (h *handlers) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
@@ -109,6 +150,10 @@ func (h *handlers) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Resolve the UID BEFORE the removal deletes the mapping — findings for an
+	// uploaded context are keyed by its kube-system UID once known, by the
+	// context name until then. Purge runs under both after the remove succeeds.
+	uploadedUID := h.manager.CanonicalClusterID(r.Context(), contextName)
 	if err := h.manager.RemoveUploadedContext(contextName); err != nil {
 		// Distinguish "not found / not uploaded" (400) from actual server errors (500)
 		if strings.Contains(err.Error(), "not") {
@@ -118,6 +163,12 @@ func (h *handlers) handleDeleteCluster(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+
+	ids := []string{contextName}
+	if uploadedUID != "" && uploadedUID != contextName {
+		ids = append(ids, uploadedUID)
+	}
+	h.purgeClusterSecurityData(r, ids...)
 
 	if h.wsHub != nil {
 		h.wsHub.Broadcast("clusters.changed", nil)
