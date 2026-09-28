@@ -1657,24 +1657,29 @@ func (m *Manager) getOrSpinPooled(tenant, contextName string) *clusterRuntime {
 		close(placeholder.ready)
 		return nil
 	}
-	placeholder.connector = built.connector
-	placeholder.collector = built.collector
-	placeholder.engine = built.engine
-	placeholder.cancelFn = built.cancelFn
-	placeholder.gate = built.gate
 	// A pooled (non-active) runtime doesn't broadcast in the OSS-degenerate
 	// world — only the active cluster's events reach the shared hub. Full
 	// per-(tenant,cluster) WS delivery for pooled runtimes is A.4.
 	if built.gate != nil {
 		built.gate.Store(false)
 	}
+	// The placeholder is already in m.runtimes, and ListClusters reads its
+	// connector under m.mu without waiting on ready — so its fields are
+	// published under the same lock (the race detector caught the unlocked
+	// writes once a test listed clusters while one was spinning up).
+	//
 	// Always-on (W2 §10): wire the notification hook onto this pooled (parked)
 	// runtime's engine so an insight on this cluster notifies even though it's not
 	// the active one. Re-read the manager hooks under the lock.
 	m.mu.Lock()
+	placeholder.connector = built.connector
+	placeholder.collector = built.collector
+	placeholder.engine = built.engine
+	placeholder.cancelFn = built.cancelFn
+	placeholder.gate = built.gate
+	placeholder.lastUsed = time.Now()
 	m.bindInsightHooks(placeholder.engine, contextName)
 	m.mu.Unlock()
-	placeholder.lastUsed = time.Now()
 	close(placeholder.ready)
 	return placeholder
 }

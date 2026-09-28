@@ -45,6 +45,8 @@ read. No migration. Full note: [docs/releases/v2.2.0.md](docs/releases/v2.2.0.md
 - GPT-5.6 tool turns no longer fail with HTTP 400 (reasoning off when tools are
   sent).
 - Right-sizing rounded a CPU suggestion above one core as bytes.
+- A data race between a parked cluster's runtime starting up and the cluster
+  list reading its status (fields are now published under the manager lock).
 
 ### Security
 
