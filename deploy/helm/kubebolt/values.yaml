@@ -372,6 +372,13 @@ copilot:
                           # e.g. https://api.x.ai/v1/chat/completions (openai) or
                           # https://my-proxy.example.com/v1/messages (anthropic)
   maxTokens: 4096
+  # Prompt-cache TTL for the STATIC prefix (system prompt + tool definitions).
+  # Anthropic only. "" uses the built-in default of 1h; set "5m" to return to
+  # the API default. Measured: 68-89% of a session's cost was cache WRITE, and
+  # the 5-minute entry expires between questions asked at a human pace, so each
+  # one re-bought the same ~27k prefix at 12.5x the read price. 1h pays off from
+  # the second question in the hour; a truly one-shot install is ~60% worse.
+  cacheTtl: ""
   # API key — recommended to set via existingSecret rather than apiKey
   apiKey: ""
   existingSecret: ""      # name of an existing Secret containing 'api-key'

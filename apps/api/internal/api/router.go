@@ -130,6 +130,11 @@ func NewRouter(
 	h.presence, _ = episodeReader.(insights.PresenceStore)
 	h.mutes, _ = episodeReader.(insights.MuteStore)
 	h.operational, _ = episodeReader.(insights.OperationalReader)
+	// An API key's cluster list is validated against the org's clusters,
+	// which only this package can read.
+	if authHandlers != nil {
+		authHandlers.SetAPITokenClusterCheck(h.checkTokenClusters)
+	}
 	h.shiftStats, _ = episodeReader.(insights.ShiftStatsReader)
 
 	// Kobi MCP server (read-only). Built once — the executor is stateless
@@ -141,7 +146,7 @@ func NewRouter(
 		// serves the identical get_workload_metrics tool to an external MCP host,
 		// so wiring the entitlement on only one of them would mean a plan limit
 		// that holds in the product and not through the integration.
-		mcp.NewExecutorToolProvider(copilot.NewExecutor(manager).WithMetricsRetention(h.metricsRetentionFor)),
+		mcp.NewExecutorToolProvider(h.readToolExecutor()),
 		mcp.NewKobiPromptProvider(),
 	)
 
@@ -227,6 +232,9 @@ func NewRouter(
 			// connector pool (W2). Behavior-neutral until the pool reads
 			// it; threading it now keeps the pool additive to handlers.
 			r.Use(h.resolveCluster)
+			// The cluster the request names must be one the caller may read
+			// (an API key limited to some clusters). No-op otherwise.
+			r.Use(h.requireClusterAccess)
 
 			// Auth-protected user routes
 			r.Post("/auth/logout", authHandlers.Logout)
@@ -303,7 +311,10 @@ func NewRouter(
 			// so this one endpoint serves every tenant/cluster the API token is
 			// authorized for — single "default" tenant in OSS, many in EE/SaaS.
 			// Auth reuses the standard API tokens (kb_...).
-			r.Handle("/mcp", mcp.Handler(mcpServer))
+			// Same reason as /copilot/chat: the MCP server exposes the same
+			// read tools to external hosts, so it needs the same entitlement in
+			// context.
+			r.With(h.WithClusterScope).Handle("/mcp", mcp.Handler(mcpServer))
 
 			// Metrics storage (VictoriaMetrics) PromQL pass-through — no cluster
 			// connection required. Data is queried from the TSDB directly.
@@ -372,6 +383,8 @@ func NewRouter(
 				r.Get("/admin/api-tokens", authHandlers.ListAPITokens)
 				r.Post("/admin/api-tokens", authHandlers.CreateAPIToken)
 				r.Delete("/admin/api-tokens/{id}", authHandlers.DeleteAPIToken)
+				// The clusters an API key may read, editable after issue.
+				r.Patch("/admin/api-tokens/{id}/clusters", authHandlers.UpdateAPITokenClusters)
 			})
 
 			// Tenant + ingest token administration — global admin only.
@@ -569,7 +582,11 @@ func NewRouter(
 			// The middleware here was why "Hola" got a bare 503 before the model
 			// ever saw it. Kobi/AI stays gated until the org's email is verified
 			// (cost control).
-			r.Post("/copilot/chat", h.HandleCopilotChat)
+			// WithClusterScope rides along because Kobi's TOOLS read per-cluster
+			// data (findings, insight history, metrics) and the executor has no
+			// other way to learn the caller's entitlement. Without it
+			// ClusterScopeFrom returns the zero scope, which does not narrow.
+			r.With(h.WithClusterScope).Post("/copilot/chat", h.HandleCopilotChat)
 			// Sec #9: compact is part of the same Kobi surface — gate it too,
 			// else an unverified org can drive AI spend via /compact. It never
 			// touches the connector (it summarizes the transcript), so it needs
@@ -606,6 +623,7 @@ func NewRouter(
 				r.Get("/helm/releases", h.handleListHelmReleases)
 				r.Get("/helm/releases/{namespace}/{name}", h.handleGetHelmRelease)
 				r.Get("/deploys", h.handleDeploys)
+				r.Get("/right-sizing", h.handleRightSizing)
 				r.Get("/metrics/{type}/{namespace}/{name}", h.getMetrics)
 
 				// Integrations — install / configure / uninstall mutate
@@ -736,4 +754,22 @@ func NewRouter(
 	r.HandleFunc("/pf/{id}/*", h.handlePortForwardProxy)
 
 	return r
+}
+
+// readToolExecutor is the executor behind every door that serves Kobi's
+// tools: the public /mcp server and Kobi's chat. One constructor so the doors
+// cannot drift apart on which sources they wire: a source forgotten on one
+// door surfaces as a tool that answers "cannot see" there and nowhere else.
+func (h *handlers) readToolExecutor() *copilot.Executor {
+	return copilot.NewExecutor(h.manager).
+		WithMetricsRetention(h.metricsRetentionFor).
+		WithOperationalEpisodes(h.operationalEpisodesFor).
+		WithEpisodes(h.episodeSourceFor()).
+		WithFindings(h.findingSourceFor()).
+		WithRuntimeEvents(h.runtimeEventSourceFor()).
+		WithCoverage(h.coverageSourceFor()).
+		WithMetricsQuery(h.metricsQuerySourceFor()).
+		WithRightSizing(h.rightSizingSourceFor()).
+		WithFleet(h.fleetSourceFor()).
+		WithClusterList(h)
 }

@@ -4,6 +4,11 @@ import type { ClusterOverview, HealthCheck } from '@/types/kubernetes'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { DonutGauge } from '@/components/shared/DonutGauge'
 import { LegendRow } from '@/components/shared/LegendRow'
+import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
+
+// A KPI card needs ~280px for its ring AND its legend side by side; below
+// that the legend clips.
+const KPI_MIN_WIDTH = 280
 
 type Accent = 'ok' | 'warn' | 'err' | 'restricted'
 
@@ -67,11 +72,21 @@ export function KpiCards({ overview }: KpiCardsProps) {
   const podsActive = podsTotal - podsSucceeded
   const podsDenom = podsActive > 0 ? podsActive : podsTotal
 
+  const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
+
   const healthAccent: Accent =
     health?.status === 'healthy' ? 'ok' : health?.status === 'warning' ? 'warn' : 'err'
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
+    <div
+      ref={gridRef}
+      // Columns follow the row's own width, not the window's: with Kobi's
+      // panel docked the window stays wide while this row gets ~1000px, and
+      // four cards there clip their legends. Until measured, the breakpoint
+      // classes decide as before.
+      className={`grid gap-3 ${gridWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
+      style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, KPI_MIN_WIDTH, 12, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
+    >
       {/* Cluster Health — pill IS the headline state. The ring gauge
           renders the score as a proportion of 100 in the accent
           color. The sub-line shows the single most actionable

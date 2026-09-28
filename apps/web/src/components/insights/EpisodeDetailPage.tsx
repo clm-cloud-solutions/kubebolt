@@ -39,6 +39,17 @@ function muteTerms(m: { untilResolved: boolean; expiresAt?: string }): string {
   return 'permanently'
 }
 
+// evidenceTone — config is standing state and reads calm; an event happened
+// and carries a clock, so it leads the eye.
+function evidenceTone(kind: string): string {
+  switch (kind) {
+    case 'event':  return 'bg-status-warn-dim text-status-warn'
+    case 'metric': return 'bg-status-info-dim text-status-info'
+    case 'log':    return 'bg-kb-elevated text-kb-text-secondary'
+    default:       return 'bg-kb-elevated text-kb-text-tertiary'
+  }
+}
+
 export function EpisodeDetailPage() {
   const { id = '' } = useParams()
   // Volver AL ORIGEN: quien llegó desde el Historial regresa al Historial;
@@ -209,6 +220,44 @@ export function EpisodeDetailPage() {
                   Unsilence
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Evidence — what the rule SAW, not what it wrote about it.
+              Rules emit this one at a time, so an episode from a rule that has
+              not been instrumented yet simply has none and the panel stays
+              out of the way rather than showing an empty box. */}
+          {ep.evidence && ep.evidence.length > 0 && (
+            <div className="bg-kb-card border border-kb-border rounded-xl p-4">
+              <h3 className="text-[10px] font-mono uppercase tracking-wider text-kb-text-tertiary mb-2">
+                Evidence · what the rule saw
+              </h3>
+              <div className="space-y-2">
+                {ep.evidence.map((e, i) => (
+                  <div key={`${e.label}-${i}`}>
+                    <div className="flex items-baseline gap-2">
+                      <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold uppercase ${evidenceTone(e.kind)}`}>
+                        {e.kind}
+                      </span>
+                      <span className="text-[11px] text-kb-text-secondary">{e.label}</span>
+                    </div>
+                    <div className="mt-0.5 text-[11px] font-mono text-kb-text-primary break-words">{e.detail}</div>
+                    {/* The clock belongs to the FACT, not to when we noticed
+                        it — firstSeen is the evaluation's, this one is the
+                        event's. Absent on config facts, which have no moment. */}
+                    {e.at && (
+                      <div className="text-[10px] font-mono text-kb-text-tertiary">
+                        {new Date(e.at).toLocaleString()}
+                      </div>
+                    )}
+                    {e.source && (
+                      <div className="text-[10px] font-mono text-kb-text-tertiary break-all" title="Where this was read from — go verify it rather than trust the summary">
+                        {e.source}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 

@@ -152,6 +152,10 @@ spec:
             {{- end }}
             - name: KUBEBOLT_AI_MAX_TOKENS
               value: {{ .Values.copilot.maxTokens | quote }}
+            {{- if .Values.copilot.cacheTtl }}
+            - name: KUBEBOLT_AI_CACHE_TTL
+              value: {{ .Values.copilot.cacheTtl | quote }}
+            {{- end }}
             {{- if .Values.copilot.existingSecret }}
             - name: KUBEBOLT_AI_API_KEY
               valueFrom:

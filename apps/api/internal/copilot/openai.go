@@ -73,6 +73,49 @@ type openaiRequest struct {
 	// request — see needsMaxCompletionTokens below.
 	MaxTokens           int `json:"max_tokens,omitempty"`
 	MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
+	// ReasoningEffort is sent ONLY where omitting it breaks the call. See
+	// toolsForceReasoningOff.
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+// toolsForceReasoningOff reports whether this model rejects function tools
+// unless reasoning is explicitly disabled.
+//
+// The GPT-5.6 line (sol / terra / luna) defaults to reasoning_effort=medium
+// server-side and then refuses the combination:
+//
+//	Function tools with reasoning_effort are not supported for gpt-5.6-terra
+//	in /v1/chat/completions. To use function tools, use /v1/responses or set
+//	reasoning_effort to 'none'.
+//
+// KubeBolt never sent the parameter — the default is OpenAI's — so every
+// tool-carrying turn was a hard 400 on the first round. Field-reported
+// 2026-09-21 on a FALLBACK, which is the worst place for it: the model only
+// runs when the primary is already failing, so the 400 lands in the middle of
+// an outage and there is nothing behind it.
+//
+// doc #47 §5 argues against this patch, and is right about the case it
+// considers: turning reasoning fully off on a model the UI recommends as
+// PRIMARY makes the under-calling symptom worse. That reasoning does not carry
+// to a model that otherwise cannot run at all. "Answers without reasoning"
+// beats "400" every time; "answers with reasoning" needs the /v1/responses
+// path or the per-model effort control #47 §6 specifies, and neither is this.
+//
+// Scoped to the tool case on purpose: turns with no tools — title generation,
+// compaction — keep the server's default and keep reasoning.
+//
+// The GPT-6 line (astra / sol / luna, 2026-09) inherits the same rule on
+// /v1/chat/completions, so the prefix covers it too. One asymmetry matters:
+// gpt-6-astra reportedly rejects reasoning_effort="none" as well, which
+// leaves it with NO working shape for a tool-carrying turn on this endpoint
+// — tools+reasoning is refused and the escape hatch is refused. That is why
+// Astra is priced (an operator can still type it into the Custom branch, and
+// it must never meter at $0) but is deliberately NOT offered in the model
+// dropdown. Offering it would recommend a model that 400s on every Kobi turn.
+// Lifting that needs the /v1/responses path, same as doc #47 §6.
+func toolsForceReasoningOff(model string) bool {
+	m := strings.ToLower(model)
+	return strings.HasPrefix(m, "gpt-5.6") || strings.HasPrefix(m, "gpt-6")
 }
 
 // needsMaxCompletionTokens returns true when the model requires the newer
@@ -137,6 +180,9 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 		body.MaxCompletionTokens = req.MaxTokens
 	} else {
 		body.MaxTokens = req.MaxTokens
+	}
+	if len(body.Tools) > 0 && toolsForceReasoningOff(model) {
+		body.ReasoningEffort = "none"
 	}
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {

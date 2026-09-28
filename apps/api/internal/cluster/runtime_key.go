@@ -16,6 +16,12 @@ import "context"
 type RuntimeKey struct {
 	Tenant  string
 	Cluster string // cluster_id / context name; "" → active context (OSS)
+	// NoCluster resolves the request to no cluster at all instead of falling
+	// back to the org's selected one. resolveCluster sets it when the caller
+	// may not read that selection (another team's cluster, or no org of their
+	// own), so a request without a cluster header cannot ride someone else's
+	// choice into a cluster the caller could not have selected.
+	NoCluster bool
 }
 
 type runtimeKeyCtx struct{}

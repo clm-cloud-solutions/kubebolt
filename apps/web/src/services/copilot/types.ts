@@ -137,6 +137,12 @@ export interface ActionProposalTarget {
 // switch fails the typecheck. New propose_* tools added on the backend
 // must extend this union AND add a runProposal case in
 // ActionProposalCard.tsx.
+//
+// 'switch_cluster' is the exception on both counts: it comes from
+// offer_cluster_switch (not a propose_*, because it mutates nothing and must
+// stay available when actions are disabled), and it is handled in the CARD
+// rather than in runProposal — switching needs React hooks that a plain
+// function cannot reach.
 export type ActionProposalAction =
   | 'restart_workload'
   | 'debug_pod'
@@ -147,6 +153,7 @@ export type ActionProposalAction =
   | 'set_image'
   | 'set_env'
   | 'patch_hpa'
+  | 'switch_cluster'
 
 export interface ActionProposal {
   kind: 'action_proposal'

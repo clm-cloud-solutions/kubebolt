@@ -3323,7 +3323,24 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		// badge + decide which action menu items to show without an
 		// extra round-trip per card.
 		"unschedulable": node.Spec.Unschedulable,
+		// The node's own address and pod range, in the LIST row: Kobi's
+		// prompt tells it to classify a dependency IP as in-cluster only when
+		// it matches a listed node's InternalIP exactly or falls inside its
+		// pod CIDR — which the list could not answer without a detail read
+		// per node.
+		"internalIP": nodeInternalIP(node),
+		"podCIDR":    node.Spec.PodCIDR,
 	}
+}
+
+// nodeInternalIP is the node's InternalIP address, or "".
+func nodeInternalIP(node *corev1.Node) string {
+	for _, a := range node.Status.Addresses {
+		if a.Type == corev1.NodeInternalIP {
+			return a.Address
+		}
+	}
+	return ""
 }
 
 func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
@@ -3800,12 +3817,21 @@ func podConditionsToSlice(conditions []corev1.PodCondition) []map[string]interfa
 	return result
 }
 
+// deploymentConditionsToSlice keeps BOTH times a DeploymentCondition carries.
+// lastTransitionTime is when the condition's STATUS last flipped; lastUpdateTime
+// is when its reason/message were last written. They routinely differ by hours:
+// Progressing stays True across rollout after rollout, so its transition time
+// dates an old rollout while its message names the current ReplicaSet. Shipping
+// only the transition time paired an old timestamp with a new message, and the
+// postmortem dated revision 207's rollout 47 minutes before revision 207 existed
+// (inc_cZsEoXd53I). Only Deployment conditions have lastUpdateTime.
 func deploymentConditionsToSlice(conditions []appsv1.DeploymentCondition) []map[string]interface{} {
 	result := make([]map[string]interface{}, 0, len(conditions))
 	for _, c := range conditions {
 		result = append(result, map[string]interface{}{
 			"type":               string(c.Type),
 			"status":             string(c.Status),
+			"lastUpdateTime":     c.LastUpdateTime.Time.Format(time.RFC3339),
 			"lastTransitionTime": c.LastTransitionTime.Time.Format(time.RFC3339),
 			"reason":             c.Reason,
 			"message":            c.Message,

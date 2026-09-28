@@ -11,6 +11,23 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.1] — 2026-09-28
+
+Security patch. Same v1.0 metric/label schema — drop-in within 1.x.
+
+### Security
+
+- **gRPC-Go 1.83.1 → 1.83.2** (CVE-2026-84304, CVE-2026-84445), with
+  `golang.org/x/net` 0.58.0, in the agent and the shared proto module.
+- **vmagent v1.148.0 → v1.153.0** in the chart's `scrape.image` (Mode A
+  scraping). v1.148.0 was built on Go 1.26.5 and carried eight Go standard
+  library CVEs held under dated waivers; v1.153.0 is built on Go 1.27.1 and
+  scans clean.
+
+### Compatibility
+
+- Backend: any 1.13+ / 2.x. No flag, value or protocol change.
+
 ## [1.4.0] — 2026-09-01
 
 Cardinality: per-pod veth peers stop minting series. Same v1.0 metric/label

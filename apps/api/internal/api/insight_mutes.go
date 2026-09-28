@@ -54,11 +54,26 @@ func (h *handlers) handleListMutes(w http.ResponseWriter, r *http.Request) {
 	} else if clusterID != "" {
 		clusterID = h.manager.CanonicalClusterID(r.Context(), clusterID)
 	}
+	// Mutes are org-level rows; list only those of clusters this caller may
+	// read (team, API key cluster list). A named cluster outside that set
+	// answers empty, as /clusters hides it.
+	may := h.readableCluster(r)
+	if clusterID != "" && !may(clusterID) {
+		respondJSON(w, http.StatusOK, map[string]any{"mutes": []insights.Mute{}})
+		return
+	}
 	mutes, err := h.mutes.ListMutes(r.Context(), org, clusterID)
 	if err != nil {
 		respondError(w, http.StatusInternalServerError, "could not list mutes")
 		return
 	}
+	kept := mutes[:0]
+	for _, m := range mutes {
+		if may(m.ClusterID) {
+			kept = append(kept, m)
+		}
+	}
+	mutes = kept
 	// Names, not UUIDs (in-vivo 01-sep): resolve each unique cluster once —
 	// same source the episode history uses, dead clusters included.
 	if h.manager != nil {
@@ -92,6 +107,12 @@ func (h *handlers) handleCreateMute(w http.ResponseWriter, r *http.Request) {
 		m.ClusterID = h.manager.CanonicalClusterID(r.Context(), cluster.RuntimeKeyFromContext(r.Context()).Cluster)
 	} else {
 		m.ClusterID = h.manager.CanonicalClusterID(r.Context(), m.ClusterID)
+	}
+	if !h.readableCluster(r)(m.ClusterID) {
+		// Silencing a cluster is acting on it; a caller who may not read it
+		// may not silence it either. Same answer as a cluster that is not there.
+		respondError(w, http.StatusNotFound, "cluster not found")
+		return
 	}
 	m.CreatedBy = muteActor(r)
 	if err := insights.ValidateMute(m); err != nil {
@@ -201,7 +222,15 @@ func (h *handlers) handleOperationalEpisodes(w http.ResponseWriter, r *http.Requ
 		respondError(w, http.StatusInternalServerError, "could not compute operational episodes")
 		return
 	}
-	respondJSON(w, http.StatusOK, map[string]any{"episodes": ops})
+	ops = filterBursts(ops, h.readableCluster(r))
+	respondJSON(w, http.StatusOK, map[string]any{
+		"episodes":     ops,
+		"clusterNames": h.burstClusterNames(r, ops),
+		// Echo the resolved window so a deep link renders the same range it
+		// asked for even when the caller omitted a bound.
+		"windowFrom": since.UTC().Format(time.RFC3339),
+		"windowTo":   until.UTC().Format(time.RFC3339),
+	})
 }
 
 // handleDeleteMute — DELETE /insights/mutes/{id}
@@ -211,6 +240,10 @@ func (h *handlers) handleDeleteMute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := chi.URLParam(r, "id")
+	if _, narrowed := h.allowedClusterIDs(r); narrowed && !h.muteReadable(r, id) {
+		respondError(w, http.StatusNotFound, "mute not found")
+		return
+	}
 	err := h.mutes.DeleteMute(r.Context(), auth.ContextTenantID(r), id, muteActor(r))
 	auditMutation(r, "unmute", "insight-mute", "", id, nil, err)
 	if errors.Is(err, insights.ErrMuteNotFound) {
@@ -222,4 +255,20 @@ func (h *handlers) handleDeleteMute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// muteReadable reports whether the mute belongs to a cluster the caller may
+// read. The store deletes by id within the org; this is the cluster check.
+func (h *handlers) muteReadable(r *http.Request, id string) bool {
+	all, err := h.mutes.ListMutes(r.Context(), auth.ContextTenantID(r), "")
+	if err != nil {
+		return false
+	}
+	may := h.readableCluster(r)
+	for _, m := range all {
+		if m.ID == id {
+			return may(m.ClusterID)
+		}
+	}
+	return false
 }

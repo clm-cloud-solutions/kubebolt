@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { api, type InsightEpisode } from '@/services/api'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
@@ -16,6 +16,28 @@ const RANGES: { label: string; hours: number }[] = [
   { label: '7d', hours: 24 * 7 },
   { label: '30d', hours: 24 * 30 },
 ]
+
+// parsePinnedWindow — the ?from=&to= a burst (or any deep link) hands over.
+// Both bounds required, RFC3339, ordered; anything else is no pin at all.
+export function parsePinnedWindow(params: URLSearchParams): { from: Date; to: Date } | null {
+  const rawFrom = params.get('from')
+  const rawTo = params.get('to')
+  if (!rawFrom || !rawTo) return null
+  const from = new Date(rawFrom)
+  const to = new Date(rawTo)
+  if (isNaN(from.getTime()) || isNaN(to.getTime()) || from >= to) return null
+  return { from, to }
+}
+
+// episodeWindowKey — the query key's window component, and it must be STABLE
+// across renders. A relative range's `since` is derived from Date.now(), so
+// keying on that timestamp mints a fresh key every render: TanStack refetches,
+// the refetch re-renders, the re-render mints another key, and the spinner
+// never stops. Key on the INPUTS (the pin, or the number of hours) and let the
+// query function do the arithmetic at fetch time.
+export function episodeWindowKey(pinned: { from: Date; to: Date } | null, hours: number): string {
+  return pinned ? `${pinned.from.toISOString()}|${pinned.to.toISOString()}` : `last:${hours}h`
+}
 
 export function statusBadge(ep: InsightEpisode) {
   switch (ep.status) {
@@ -116,6 +138,14 @@ interface EpisodeHistoryProps {
 }
 
 export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }: EpisodeHistoryProps) {
+  // A pinned window arrives in the URL: ?from=&to=, RFC3339. It is how a burst
+  // hands off ("see the 48 episodes of THIS rotation") and how anyone links to
+  // a moment — «what happened on the 16th at 3am» was impossible while the
+  // range lived only in local state. Clearing it returns to the relative
+  // ranges; the relative ranges themselves stay local, since they mean
+  // "recently" and do not need to survive a link.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const pinned = useMemo(() => parsePinnedWindow(searchParams), [searchParams])
   const [hours, setHours] = useState(24)
   // Scope: los episodios expired viven casi siempre en clusters MUERTOS que
   // ya no puedes seleccionar en el topbar (hallazgo in-vivo 31-ago: 131
@@ -128,19 +158,22 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
   // a short page arrives; until then the floor reads «100+». Mirrors the
   // Active view's «1–10 of 43» shape without paying for the count upfront.
   const [knownTotal, setKnownTotal] = useState<number | null>(null)
+  const windowKey = episodeWindowKey(pinned, hours)
   useEffect(() => {
     setPage(1)
     setKnownTotal(null)
-  }, [severity, hours, pageSize, scope, status])
-  const since = new Date(Date.now() - hours * 3600_000).toISOString()
+  }, [severity, windowKey, pageSize, scope, status])
   // Todo server-side (hallazgo in-vivo: con fetch de 200 ordenado por
   // last_seen, los expired viejos quedaban ESTRUCTURALMENTE enterrados bajo
   // cientos de resolved recientes — «Any state» nunca los enseñaba).
   const { data, isLoading, error } = useQuery({
-    queryKey: ['insight-episodes', hours, scope, status, severity, pageSize, page],
+    queryKey: ['insight-episodes', windowKey, scope, status, severity, pageSize, page],
     queryFn: () =>
       api.getInsightEpisodes({
-        since,
+        // Computed HERE, not in render: a relative range slides with the
+        // clock, and the key above deliberately does not.
+        since: (pinned ? pinned.from : new Date(Date.now() - hours * 3600_000)).toISOString(),
+        until: pinned ? pinned.to.toISOString() : undefined,
         status: status || undefined,
         severity: severity || undefined,
         cluster: scope === 'all' ? 'all' : undefined,
@@ -198,11 +231,34 @@ export function EpisodeHistory({ severity, pageSize, defaultScope = 'cluster' }:
 
   return (
     <div>
-      <div className="flex items-center gap-2 mb-3">
-        <div className="flex gap-1">
+      <div className="flex items-center gap-2 mb-3 flex-wrap">
+        {pinned && (
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-status-info-dim text-status-info text-[10px] font-mono">
+            <span>
+              {pinned.from.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+              {' → '}
+              {pinned.to.toLocaleString(undefined, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })}
+            </span>
+            <button
+              onClick={() =>
+                setSearchParams((prev) => {
+                  const next = new URLSearchParams(prev)
+                  next.delete('from')
+                  next.delete('to')
+                  return next
+                }, { replace: true })
+              }
+              className="underline hover:no-underline"
+            >
+              clear
+            </button>
+          </div>
+        )}
+        <div className={`flex gap-1 ${pinned ? 'opacity-50' : ''}`}>
           {RANGES.map((r) => (
             <button
               key={r.hours}
+              disabled={!!pinned}
               onClick={() => setHours(r.hours)}
               className={`px-2.5 py-1 rounded-md text-[10px] font-mono border transition-colors ${
                 hours === r.hours

@@ -2,6 +2,7 @@ package copilot
 
 import (
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -68,6 +69,52 @@ var ResourceTypeToGroupKind = map[string]schema.GroupKind{
 	// Cilium policy CRDs — generic fallback; CCNP is cluster-scoped.
 	"ciliumnetworkpolicies":            {Group: "cilium.io", Kind: "CiliumNetworkPolicy"},
 	"ciliumclusterwidenetworkpolicies": {Group: "cilium.io", Kind: "CiliumClusterwideNetworkPolicy"},
+}
+
+// canonicalTypeIndex maps every spelling a model reaches for onto the type
+// key KubeBolt expects: the key itself (any case), and the lowercase Kind.
+//
+// Models name resources the way Kubernetes does — `pod`, `Pod`,
+// `deployment` — and until this existed, 468 of 706 get_resource_describe
+// calls recorded by Autopilot (66%) used one of those forms and got
+// "unsupported resource type for describe: pod". Triage has only two tools,
+// so on 226 of its 353 describe attempts it classified the incident blind.
+// Its prompt even hands it the resource as `Pod/<ns>/<name>`, so the
+// "wrong" spelling was the obvious one.
+//
+// Derived from ResourceTypeToGroupKind rather than kept as a second list, so
+// a type added there is reachable by its Kind with no further edit. When
+// several keys share a Kind (pvcs / persistentvolumeclaims, hpas /
+// horizontalpodautoscalers, endpoints / endpointslices, pdbs /
+// poddisruptionbudgets) the Kind resolves to the SHORTEST key — KubeBolt's
+// own alias, the one every other tool accepts too — ties broken
+// alphabetically so the choice never depends on map iteration order.
+var canonicalTypeIndex = func() map[string]string {
+	idx := make(map[string]string, 2*len(ResourceTypeToGroupKind))
+	for key := range ResourceTypeToGroupKind {
+		idx[strings.ToLower(key)] = key
+	}
+	for key, gk := range ResourceTypeToGroupKind {
+		kind := strings.ToLower(gk.Kind)
+		if _, isKey := ResourceTypeToGroupKind[kind]; isKey {
+			continue // a real key already owns this spelling
+		}
+		cur, seen := idx[kind]
+		if !seen || len(key) < len(cur) || (len(key) == len(cur) && key < cur) {
+			idx[kind] = key
+		}
+	}
+	return idx
+}()
+
+// CanonicalResourceType returns the KubeBolt type for a model-supplied name,
+// or the input unchanged when it is not recognised — so an unknown type still
+// fails downstream with an error that names what was asked for.
+func CanonicalResourceType(t string) string {
+	if c, ok := canonicalTypeIndex[strings.ToLower(strings.TrimSpace(t))]; ok {
+		return c
+	}
+	return t
 }
 
 // describeResource runs `kubectl describe` for the given resource and returns

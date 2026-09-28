@@ -48,7 +48,7 @@ func TestManager_AddAgentProxyCluster_RegistersAndLists(t *testing.T) {
 		t.Errorf("contextName = %q, want agent:c-prod", got)
 	}
 
-	clusters := m.ListClusters()
+	clusters := m.ListClusters(context.Background())
 	if len(clusters) != 1 {
 		t.Fatalf("len(ListClusters) = %d, want 1", len(clusters))
 	}
@@ -82,7 +82,7 @@ func TestManager_AddAgentProxyCluster_Idempotent(t *testing.T) {
 	if _, err := m.AddAgentProxyCluster("c1", "second"); err != nil {
 		t.Fatal("re-adding the same clusterID must succeed")
 	}
-	if got := len(m.ListClusters()); got != 1 {
+	if got := len(m.ListClusters(context.Background())); got != 1 {
 		t.Errorf("ListClusters count = %d, want 1 (no duplicates)", got)
 	}
 }
@@ -130,7 +130,7 @@ func TestManager_RemoveAgentProxyCluster(t *testing.T) {
 	}
 
 	m.RemoveAgentProxyCluster("c1")
-	clusters := m.ListClusters()
+	clusters := m.ListClusters(context.Background())
 	if len(clusters) != 1 || clusters[0].Context != "agent:c2" {
 		t.Errorf("after remove c1, clusters = %+v", clusters)
 	}
@@ -140,7 +140,7 @@ func TestManager_RemoveAgentProxyCluster_UnknownIsNoop(t *testing.T) {
 	m := newBareManager()
 	m.SetAgentRegistry(channel.NewAgentRegistry())
 	m.RemoveAgentProxyCluster("nope") // must not panic
-	if got := len(m.ListClusters()); got != 0 {
+	if got := len(m.ListClusters(context.Background())); got != 0 {
 		t.Errorf("Count = %d, want 0", got)
 	}
 }

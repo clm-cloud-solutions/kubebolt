@@ -10,6 +10,7 @@ import { ErrorState } from '@/components/shared/ErrorState'
 import { EmptyState } from '@/components/shared/EmptyState'
 import { Lightbulb, BellOff, ChevronLeft, ChevronRight } from 'lucide-react'
 import { EpisodeHistory } from './EpisodeHistory'
+import { BurstHistory } from './BurstHistory'
 import { ResourceTypeIcon, resourceTypeDescription } from '@/utils/resourceIcons'
 
 type SeverityFilter = '' | 'critical' | 'warning' | 'info'
@@ -36,7 +37,9 @@ export function InsightsList() {
       : ''
   // Fase 2: the same page serves Active and History — a segment, not a new
   // menu item (v2.1 §6). History lives in the URL for deep links.
-  const view = searchParams.get('view') === 'history' ? 'history' : 'active'
+  const rawView = searchParams.get('view')
+  const view: 'active' | 'history' | 'bursts' =
+    rawView === 'history' ? 'history' : rawView === 'bursts' ? 'bursts' : 'active'
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState<number>(() => {
     const stored = Number(localStorage.getItem(PAGE_SIZE_KEY))
@@ -143,20 +146,28 @@ export function InsightsList() {
             <ResourceTypeIcon type="insights" />
             <h1 className="text-lg font-semibold text-kb-text-primary">Insights</h1>
             <div className="ml-2 flex rounded-lg border border-kb-border overflow-hidden text-[11px] font-mono">
-              {(['active', 'history'] as const).map((v) => (
+              {(['active', 'history', 'bursts'] as const).map((v) => (
                 <button
                   key={v}
                   onClick={() =>
                     setSearchParams((prev) => {
                       const next = new URLSearchParams(prev)
-                      if (v === 'history') next.set('view', 'history')
-                      else next.delete('view')
+                      if (v === 'active') next.delete('view')
+                      else next.set('view', v)
+                      // day/range only mean something on Bursts. from/to mean
+                      // the same thing on both dated views, so a pinned window
+                      // survives the switch — that is the point of pinning it.
+                      if (v !== 'bursts') {
+                        next.delete('day')
+                        next.delete('range')
+                      }
                       return next
                     }, { replace: true })
                   }
                   className={`px-3 py-1 ${view === v ? 'bg-kb-elevated text-kb-text-primary font-semibold' : 'text-kb-text-secondary hover:text-kb-text-primary'}`}
+                  title={v === 'bursts' ? 'What broke together — grouped by shared cause, addressable by date' : undefined}
                 >
-                  {v === 'active' ? 'Active' : 'History'}
+                  {v === 'active' ? 'Active' : v === 'history' ? 'History' : 'Bursts'}
                 </button>
               ))}
             </div>
@@ -232,7 +243,9 @@ export function InsightsList() {
         )}
       </div>
 
-      {view === 'history' ? (
+      {view === 'bursts' ? (
+        <BurstHistory />
+      ) : view === 'history' ? (
         <EpisodeHistory severity={severity} pageSize={pageSize} />
       ) : rows.length === 0 ? (
         <>

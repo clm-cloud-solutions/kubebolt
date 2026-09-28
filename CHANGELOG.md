@@ -4,6 +4,67 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] — 2026-09-28
+
+Kobi reads the whole product, and API tokens say which clusters they may
+read. No migration. Full note: [docs/releases/v2.2.0.md](docs/releases/v2.2.0.md).
+
+### Added
+
+- Kobi tools (chat and `/api/v1/mcp`): findings (posture, workloads, detail),
+  runtime events, insight history and bursts, fleet summary, recent deploys,
+  coverage, `query_metrics`, right-sizing, node filesystem metrics;
+  `offer_cluster_switch` in the chat.
+- `GET /right-sizing`: the Capacity panel's engine moves to the backend.
+- API tokens: **MCP only** preset (viewer, 90 days) and a per-token cluster
+  list, editable with `PATCH /admin/api-tokens/{id}/clusters`.
+- Insight evidence seam; *Service has no ready endpoints* records what it saw.
+- `KUBEBOLT_AI_CACHE_TTL` (Helm `copilot.cacheTtl`), default `1h`.
+
+### Changed
+
+- Sign-in pages rebuilt; they scroll on phones. Top bar and Overview KPI cards
+  size to their own width.
+- `list_clusters` answers without a connected cluster; `/mcp` no longer lists
+  `offer_cluster_switch`.
+- `list_resources` and `get_cluster_overview` return summaries to Kobi and MCP
+  clients (41 KB → 15 KB, 38 KB → 10 KB); node rows carry `internalIP` and
+  `podCIDR`. The REST API is unchanged.
+- Only malfunctions form bursts; bursts report `onsetFrom` / `onsetTo`; new
+  `/insights?view=bursts` view addressable by window.
+- Per-resource tools accept Kubernetes type names (`pod`, `Pod`); the findings
+  image filter accepts short references; `list_resources` answers "not
+  installed" for absent CRDs; Deployment conditions carry `lastUpdateTime`.
+- Kobi: Claude Opus 5.5 and GPT-6 Sol / Luna in the catalogue and pricing;
+  conversation cache between tool rounds; the panel shows the model that
+  actually runs; a conversation belongs to its cluster; chat tables keep their
+  headers readable. Home's fleet breakdown spans the row with a single group.
+
+### Fixed
+
+- GPT-5.6 tool turns no longer fail with HTTP 400 (reasoning off when tools are
+  sent).
+- Right-sizing rounded a CPU suggestion above one core as bytes.
+- A data race between a parked cluster's runtime starting up and the cluster
+  list reading its status (fields are now published under the manager lock).
+
+### Security
+
+- Caller-written PromQL is confined by a VictoriaMetrics `extra_filters[]` the
+  store enforces; the text rewriter left `up`, decoy labels and or-filters
+  unscoped.
+- Tool results redact secrets (logs, env, args, describe, events).
+- API tokens cannot manage API tokens; a cluster-limited token cannot reach
+  administration or switch clusters. A request with no cluster header is pinned
+  to the cluster it was checked against.
+- Kobi's chat runs its tools on the request context, so a token's cluster list
+  and per-cluster scope hold there as on `/mcp`. Insight episodes, bursts,
+  mutes and the shift report follow the caller's clusters.
+
+### Agent 1.4.1
+
+- gRPC-Go 1.83.2 (CVE-2026-84304, CVE-2026-84445) and vmagent v1.153.0.
+
 ## [2.1.1] — 2026-09-28
 
 Security data follows the cluster out of KubeBolt. Drop-in, no migration. Full

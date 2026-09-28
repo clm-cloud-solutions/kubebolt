@@ -85,6 +85,12 @@ func (h *handlers) handleShiftReport(w http.ResponseWriter, r *http.Request) {
 		Bursts: []insights.OperationalEpisode{},
 	}
 
+	// The report is org-level; which clusters this caller may read (team, API
+	// key cluster list) decides which bursts and which worst episode it names.
+	// The episode and mute COUNTS stay org-wide: they name nothing.
+	may := h.readableCluster(r)
+	_, narrowed := h.allowedClusterIDs(r)
+
 	if h.operational != nil {
 		if bursts, err := h.operational.ClusterAndStore(r.Context(), org, from, now); err != nil {
 			slog.Error("shift report: burst clustering failed", slog.String("org", org), slog.String("error", err.Error()))
@@ -93,7 +99,7 @@ func (h *handlers) handleShiftReport(w http.ResponseWriter, r *http.Request) {
 			// overlap fetch also returns ongoing bursts born before the
 			// window, and re-narrating those every visit is exactly the
 			// standing-state noise this report must not be (in-vivo 31-ago).
-			for _, b := range bursts {
+			for _, b := range filterBursts(bursts, may) {
 				if !b.WindowFrom.Before(from) {
 					resp.Bursts = append(resp.Bursts, b)
 				}
@@ -108,6 +114,15 @@ func (h *handlers) handleShiftReport(w http.ResponseWriter, r *http.Request) {
 	if resp.Worst, err = h.shiftStats.WorstEpisode(r.Context(), org, from, now); err != nil {
 		slog.Error("shift report: worst episode failed", slog.String("org", org), slog.String("error", err.Error()))
 	}
+	if resp.Worst != nil && narrowed {
+		// The worst episode carries a resource name, not its cluster: look the
+		// cluster up, and leave the line out when it is not this caller's.
+		if h.episodes == nil {
+			resp.Worst = nil
+		} else if ep, _, err := h.episodes.Episode(r.Context(), org, resp.Worst.ID); err != nil || !may(ep.ClusterID) {
+			resp.Worst = nil
+		}
+	}
 	if resp.Mutes, err = h.shiftStats.MuteStats(r.Context(), org, from); err != nil {
 		slog.Error("shift report: mute stats failed", slog.String("org", org), slog.String("error", err.Error()))
 	}
@@ -116,21 +131,7 @@ func (h *handlers) handleShiftReport(w http.ResponseWriter, r *http.Request) {
 
 	// Names for the narrative. Best-effort per unique UID across bursts +
 	// the worst episode's cluster (already inside a burst's set or absent).
-	if h.manager != nil {
-		names := map[string]string{}
-		for _, b := range resp.Bursts {
-			for _, uid := range b.Clusters {
-				if _, done := names[uid]; !done {
-					if n := h.manager.DisplayNameForCluster(r.Context(), uid); n != "" {
-						names[uid] = n
-					}
-				}
-			}
-		}
-		if len(names) > 0 {
-			resp.ClusterNames = names
-		}
-	}
+	resp.ClusterNames = h.burstClusterNames(r, resp.Bursts)
 
 	respondJSON(w, http.StatusOK, resp)
 }
@@ -164,4 +165,32 @@ type capabilityState struct {
 	Detail   map[string]any `json:"detail,omitempty"`
 	Since    time.Time      `json:"since"`
 	Audience string         `json:"audience"`
+}
+
+// burstClusterNames resolves every UID a burst set touches to its display
+// name. Bursts carry cluster UIDs because they are org-level and cross-cluster,
+// and a UID is unreadable — the narrative has to say «gke-orquestador». Shared
+// by the shift report and the burst list so the two never disagree about what
+// a cluster is called. Best-effort: a name that cannot be resolved is simply
+// absent and the caller falls back to the UID; survives dead clusters, since
+// the source is the durable registration, not a live connector.
+func (h *handlers) burstClusterNames(r *http.Request, bursts []insights.OperationalEpisode) map[string]string {
+	if h.manager == nil || len(bursts) == 0 {
+		return nil
+	}
+	names := map[string]string{}
+	for _, b := range bursts {
+		for _, uid := range b.Clusters {
+			if _, done := names[uid]; done {
+				continue
+			}
+			if n := h.manager.DisplayNameForCluster(r.Context(), uid); n != "" {
+				names[uid] = n
+			}
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
 }

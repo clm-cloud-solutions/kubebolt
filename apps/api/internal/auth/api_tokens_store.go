@@ -80,6 +80,12 @@ type APIToken struct {
 	// EE code can read it via the tenant-context seam.
 	TenantID  string `json:"tenantId,omitempty"`
 	ClusterID string `json:"clusterId,omitempty"`
+	// Clusters is the token's READ allow-list: cluster ids (kube-system UIDs)
+	// it may see. Empty means every cluster of its org. Unlike ClusterID
+	// (which binds an ingest-style token to the one cluster it speaks for),
+	// this narrows what the token may read, and it can be edited after issue
+	// with SetClusters. Enforced in package api (tokenClusters).
+	Clusters []string `json:"clusters,omitempty"`
 
 	CreatedAt  time.Time  `json:"createdAt"`
 	CreatedBy  string     `json:"createdBy"`
@@ -112,6 +118,9 @@ type APITokenStorer interface {
 	List(ctx context.Context) ([]APIToken, error)
 	Revoke(ctx context.Context, id string) error
 	MarkUsed(ctx context.Context, id string, when time.Time) error
+	// SetClusters replaces the token's read allow-list (nil/empty = every
+	// cluster of its org). Used at creation and by the edit action.
+	SetClusters(ctx context.Context, id string, clusters []string) error
 }
 
 // Compile-time guarantee the Bolt impl satisfies the seam.
@@ -280,6 +289,45 @@ func (s *APITokenStore) Revoke(_ context.Context, id string) error {
 		}
 		return bucket.Put([]byte(id), newData)
 	})
+}
+
+// SetClusters replaces the token's read allow-list.
+func (s *APITokenStore) SetClusters(_ context.Context, id string, clusters []string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		bucket := tx.Bucket(apiTokensBucket)
+		data := bucket.Get([]byte(id))
+		if data == nil {
+			return ErrTokenNotFound
+		}
+		var t APIToken
+		if err := json.Unmarshal(data, &t); err != nil {
+			return err
+		}
+		t.Clusters = normalizeClusterList(clusters)
+		newData, err := json.Marshal(&t)
+		if err != nil {
+			return err
+		}
+		return bucket.Put([]byte(id), newData)
+	})
+}
+
+// normalizeClusterList drops blanks and duplicates and returns nil for "every
+// cluster", so the two stores persist the same shape.
+func normalizeClusterList(in []string) []string {
+	var out []string
+	seen := make(map[string]struct{}, len(in))
+	for _, c := range in {
+		if c == "" {
+			continue
+		}
+		if _, dup := seen[c]; dup {
+			continue
+		}
+		seen[c] = struct{}{}
+		out = append(out, c)
+	}
+	return out
 }
 
 // MarkUsed updates LastUsedAt, debounced to one persistence per (token, minute).

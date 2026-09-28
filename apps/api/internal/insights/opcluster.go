@@ -17,6 +17,13 @@ import (
 // min, este fue el único que no» con aritmética reproducible, no con una
 // inferencia que mañana cambia. Tres pasos deterministas:
 //
+//  0. Solo MALFUNCTIONS. Una expectativa (policy-orphan, pdb-no-match,
+//     resource-underrequest…) es estado permanente, no un suceso: el tick de
+//     evaluación las sella a todas con el mismo first_seen y el agrupador las
+//     leía como «140 cosas rompieron en el mismo minuto». Medido en vivo
+//     (20-sep): 56 de 70 ráfagas no contenían ni un malfuncionamiento, y su
+//     dispersión de inicio era de 0,0 min — no era una ráfaga, era la cadencia
+//     del motor. Filtrar por PolicyCatalog las deja en 11.
 //  1. Ventana de sesión: episodios cuyo first_seen cae a menos de SeedGap
 //     del último del grupo pertenecen a la misma ráfaga. Una ráfaga con
 //     menos de MinBurst episodios no es un evento operacional — se queda
@@ -83,15 +90,24 @@ type BlastStats struct {
 // (uuid5 de org+kind+primer episodio semilla), así recomputar la misma
 // ventana converge al mismo id en vez de acuñar uno nuevo por pasada.
 type OperationalEpisode struct {
-	ID         string     `json:"id"`
-	TenantID   string     `json:"-"`
-	Kind       string     `json:"kind"`
-	Clusters   []string   `json:"clusters"`
-	WindowFrom time.Time  `json:"windowFrom"`
-	WindowTo   time.Time  `json:"windowTo"`
-	SeedIDs    []string   `json:"seedIds"` // episodios que dispararon la clasificación
-	MemberIDs  []string   `json:"memberIds"`
-	Blast      BlastStats `json:"blast"`
+	ID         string    `json:"id"`
+	TenantID   string    `json:"-"`
+	Kind       string    `json:"kind"`
+	Clusters   []string  `json:"clusters"`
+	WindowFrom time.Time `json:"windowFrom"`
+	// OnsetTo: cuándo dejó de romperse (el first_seen más tardío). La ráfaga
+	// SUCEDIÓ entre WindowFrom y OnsetTo; eso es su inicio, y suele durar
+	// minutos. WindowTo es otra cosa — el last_seen más tardío, es decir hasta
+	// cuándo se la siguió viendo, que con un miembro crónico se estira a
+	// semanas. Mezclarlas era lo que hacía que una rotación de nodos de 4 min
+	// se mostrara como «ventana de 69 días». Derivado, no persistido: nadie
+	// lee las filas almacenadas (ListOperationalEpisodes no tiene llamantes),
+	// toda lectura pasa por ClusterAndStore y recomputa.
+	OnsetTo   time.Time  `json:"onsetTo"`
+	WindowTo  time.Time  `json:"windowTo"`
+	SeedIDs   []string   `json:"seedIds"` // episodios que dispararon la clasificación
+	MemberIDs []string   `json:"memberIds"`
+	Blast     BlastStats `json:"blast"`
 }
 
 // OperationalReader is what the API (and later the shift report) consumes.
@@ -112,14 +128,37 @@ func opEpisodeID(org, kind, firstMemberID string) string {
 	return uuid.NewSHA1(opEpisodeNS, []byte(org+"|"+kind+"|"+firstMemberID)).String()
 }
 
+// IsOperationalSignal dice si un episodio de esta regla puede formar parte de
+// una ráfaga. Solo los malfuncionamientos: una expectativa describe cómo está
+// configurado el cluster, no algo que haya pasado a una hora.
+//
+// Una regla sin ficha en el catálogo SE INCLUYE. El catálogo es la fuente de
+// verdad del sistema de políticas entero, así que una regla que falte ya está
+// rota en otros sitios; excluirla aquí la volvería invisible en las ráfagas sin
+// que nadie se entere, y es mejor que sobre ruido a que falte una señal.
+func IsOperationalSignal(ruleID string) bool {
+	def, ok := PolicyCatalog[ruleID]
+	if !ok {
+		return true
+	}
+	return def.Class == ClassMalfunction
+}
+
 // ClusterEpisodes agrupa y clasifica los episodios de UNA org (pura, sin
 // I/O). Los episodios llegan como los da el store; se ordenan aquí.
 func ClusterEpisodes(org string, eps []Episode) []OperationalEpisode {
 	if len(eps) == 0 {
 		return nil
 	}
-	sorted := make([]Episode, len(eps))
-	copy(sorted, eps)
+	sorted := make([]Episode, 0, len(eps))
+	for _, ep := range eps {
+		if IsOperationalSignal(ep.RuleID) {
+			sorted = append(sorted, ep)
+		}
+	}
+	if len(sorted) == 0 {
+		return nil
+	}
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].FirstSeen.Before(sorted[j].FirstSeen) })
 
 	var out []OperationalEpisode
@@ -157,6 +196,7 @@ func buildOperational(org string, group []Episode) (OperationalEpisode, bool) {
 		Kind:       kind,
 		SeedIDs:    seeds,
 		WindowFrom: group[0].FirstSeen,
+		OnsetTo:    group[0].FirstSeen,
 		WindowTo:   group[0].LastSeen,
 	}
 	clusters := map[string]bool{}
@@ -165,6 +205,9 @@ func buildOperational(org string, group []Episode) (OperationalEpisode, bool) {
 		op.MemberIDs = append(op.MemberIDs, ep.ID)
 		clusters[ep.ClusterID] = true
 		resources[ep.ClusterID+"|"+ep.Resource] = true
+		if ep.FirstSeen.After(op.OnsetTo) {
+			op.OnsetTo = ep.FirstSeen
+		}
 		if ep.LastSeen.After(op.WindowTo) {
 			op.WindowTo = ep.LastSeen
 		}
