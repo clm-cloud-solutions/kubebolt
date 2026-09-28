@@ -637,3 +637,274 @@ input:-webkit-autofill:active {
   }
 }
 
+/* Auth panel — the cluster grid (AuthShell ClusterGrid). A healthy node, and one
+   that goes amber and heals: the product in one cell. Held still under
+   prefers-reduced-motion, in its amber state so the signature stays legible. */
+.auth-node {
+  border-color: #23302a;
+  background: rgba(0, 224, 122, 0.05);
+}
+.auth-node-heal {
+  border-color: rgba(255, 184, 77, 0.6);
+  background: rgba(255, 184, 77, 0.14);
+  box-shadow: 0 0 22px rgba(255, 184, 77, 0.3);
+  animation: auth-node-heal 10s ease-in-out infinite;
+}
+@keyframes auth-node-heal {
+  0%, 40% {
+    border-color: rgba(255, 184, 77, 0.6);
+    background: rgba(255, 184, 77, 0.14);
+    box-shadow: 0 0 22px rgba(255, 184, 77, 0.3);
+  }
+  55%, 85% {
+    border-color: rgba(0, 224, 122, 0.55);
+    background: rgba(0, 224, 122, 0.12);
+    box-shadow: 0 0 18px rgba(0, 224, 122, 0.28);
+  }
+  100% {
+    border-color: rgba(255, 184, 77, 0.6);
+    background: rgba(255, 184, 77, 0.14);
+    box-shadow: 0 0 22px rgba(255, 184, 77, 0.3);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-node-heal {
+    animation: none;
+  }
+}
+
+/* Auth pages on wide monitors (AuthShell adds .auth-scale to <html> while
+   mounted). Everything there is sized in rem, so the root size scales the
+   whole page with the screen — the site bands at the same widths. */
+@media (min-width: 1920px) {
+  html.auth-scale { font-size: 18px; }
+}
+@media (min-width: 2560px) {
+  html.auth-scale { font-size: 22px; }
+}
+
+/* The charco (from the site, HomePlatform / HomeStory): warm light in the
+   house paper tone, with sand grain living only where the light does.
+   It must have NO shape. As one ellipse fading to zero at a fixed radius, its
+   rim read as an object — an egg behind the card, then a rug under it. So:
+   three sources of different size, offset from each other and from the card,
+   each falling off in several steps to the very end of its radius (no rim),
+   and the whole layer blurred so no contour survives. The layer overhangs
+   the column so the blur never pulls a dark edge in from the sides. The
+   grain is a sibling (a filter on this element would blur it away), masked
+   by a wider, softer footprint than the light and fainter than before. */
+.auth-charco {
+  inset: -12%;
+  filter: blur(56px);
+  background:
+    radial-gradient(34% 30% at 46% 54%, rgba(245, 242, 236, 0.05), rgba(245, 242, 236, 0.03) 30%, rgba(245, 242, 236, 0.014) 55%, rgba(245, 242, 236, 0.004) 80%, transparent 100%),
+    radial-gradient(28% 24% at 60% 38%, rgba(245, 242, 236, 0.026), rgba(245, 242, 236, 0.012) 45%, rgba(245, 242, 236, 0.003) 80%, transparent 100%),
+    radial-gradient(40% 20% at 40% 72%, rgba(245, 242, 236, 0.024), rgba(245, 242, 236, 0.01) 50%, transparent 100%);
+}
+.auth-charco-grain {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0.7 -0.2 0 0 0 0.7 -0.2 0 0 0 0.7 -0.2 0 0 0 0 1'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 160px 160px;
+  opacity: 0.1;
+  -webkit-mask-image: radial-gradient(60% 50% at 48% 54%, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.4) 35%, rgba(0, 0, 0, 0.15) 65%, rgba(0, 0, 0, 0.04) 85%, transparent 100%);
+  mask-image: radial-gradient(60% 50% at 48% 54%, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.4) 35%, rgba(0, 0, 0, 0.15) 65%, rgba(0, 0, 0, 0.04) 85%, transparent 100%);
+}
+
+/* The form half's light fades out over its first quarter, toward the seam
+   with the branding panel: lit right up to the edge, it met the panel's dark
+   edge in a hard vertical line. */
+.auth-seam-fade {
+  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28%);
+  mask-image: linear-gradient(90deg, transparent, #000 28%);
+}
+
+/* Auth console (AuthShell ClusterConsole): the site's mockup frame — 12px
+   surface, lit top edge, mono type. The node's status line runs on the node's
+   10 s clock: incident while it is amber, healed while it is green. */
+.auth-console {
+  background: linear-gradient(180deg, rgba(19, 20, 19, 0.85), rgba(12, 13, 12, 0.85));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 1px 2px rgba(0, 0, 0, 0.35);
+}
+.auth-line-incident { animation: auth-line-incident 10s ease-in-out infinite; }
+.auth-line-healed { opacity: 0; animation: auth-line-healed 10s ease-in-out infinite; }
+@keyframes auth-line-incident {
+  0%, 44% { opacity: 1; }
+  50%, 94% { opacity: 0; }
+  100% { opacity: 1; }
+}
+@keyframes auth-line-healed {
+  0%, 48% { opacity: 0; }
+  55%, 88% { opacity: 1; }
+  94%, 100% { opacity: 0; }
+}
+
+/* Auth form — the site's vocabulary on the pages' own markup (AuthShell wraps
+   every auth page in .auth-form, so the six pages keep their classes and
+   still agree with each other):
+     card    card-v3: 18px, Elevated → Dip, lit top edge, the soft separating
+             shadow, and the resting green bevel segment at left-centre — the
+             site's card signature;
+     labels  mono, uppercase, tracked — the site's small-label voice;
+     fields  pills on Elevated with a hairline; focus shifts the border green
+             and adds a faint ring;
+     primary green pill with warm-black mono text; hover fills paper, lifts
+             1px and glows (the site's .btn-primary);
+     social  secondary pills that turn green on hover without moving. */
+.auth-form {
+  --auth-ease: cubic-bezier(0.16, 1, 0.3, 1);
+}
+.auth-form .bg-kb-card {
+  position: relative;
+  border-radius: 18px;
+  border-color: var(--kobi-border);
+  background: linear-gradient(180deg, var(--kobi-card), var(--kobi-code-bg));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+  padding: 1.75rem;
+}
+.auth-form .bg-kb-card::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 1.5px;
+  height: 110px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, transparent, var(--kobi-accent), transparent);
+  box-shadow: 0 0 12px rgba(0, 224, 122, 0.45);
+  pointer-events: none;
+}
+.auth-form label.block {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--kb-text-tertiary);
+}
+.auth-form input:not([type='checkbox']):not([type='radio']),
+.auth-form select {
+  border-radius: 999px;
+  background-color: var(--kobi-card);
+  border-color: var(--kobi-border);
+  padding-top: 0.7rem;
+  padding-bottom: 0.7rem;
+  padding-left: 1.1rem;
+  transition: border-color 200ms var(--auth-ease), box-shadow 200ms var(--auth-ease);
+}
+.auth-form input:not([type='checkbox']):not([type='radio']):not(.pr-10),
+.auth-form select {
+  padding-right: 1.1rem;
+}
+.auth-form input:not([type='checkbox']):not([type='radio']):focus,
+.auth-form select:focus {
+  border-color: var(--kobi-accent);
+  box-shadow: 0 0 0 3px rgba(0, 224, 122, 0.12);
+}
+/* Autofill: the browser paints its own light fill under the field, and the
+   only thing that covers it is an inset shadow. The focus ring above is also
+   a box-shadow, so on a focused autofilled field it REPLACED the cover and
+   the pill went white. Both shadows together here, at a specificity above
+   the focus rule. */
+.auth-form input:not([type='checkbox']):not([type='radio']):-webkit-autofill,
+.auth-form input:not([type='checkbox']):not([type='radio']):-webkit-autofill:hover {
+  -webkit-box-shadow: 0 0 0 1000px var(--kobi-card) inset;
+  box-shadow: 0 0 0 1000px var(--kobi-card) inset;
+  -webkit-text-fill-color: var(--kobi-text);
+}
+.auth-form input:not([type='checkbox']):not([type='radio']):-webkit-autofill:focus {
+  -webkit-box-shadow: 0 0 0 1000px var(--kobi-card) inset, 0 0 0 3px rgba(0, 224, 122, 0.12);
+  box-shadow: 0 0 0 1000px var(--kobi-card) inset, 0 0 0 3px rgba(0, 224, 122, 0.12);
+}
+.auth-form input.pr-10 + button {
+  right: 0.9rem;
+}
+.auth-form button[type='submit'] {
+  border-radius: 999px;
+  padding-top: 0.8rem;
+  padding-bottom: 0.8rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.8125rem;
+  letter-spacing: 0.05em;
+  font-weight: 500;
+  color: var(--kobi-bg);
+  transition: background-color 200ms var(--auth-ease), transform 200ms var(--auth-ease), box-shadow 200ms var(--auth-ease);
+}
+.auth-form button[type='submit']:not(:disabled):hover {
+  background-color: var(--kobi-text);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 24px rgba(0, 224, 122, 0.25);
+}
+.auth-form .auth-social {
+  border-radius: 999px;
+  background: transparent;
+  border-color: var(--kobi-border);
+}
+.auth-form .auth-social:hover {
+  border-color: var(--kobi-accent);
+  color: var(--kobi-accent);
+}
+
+/* The change between forms. Each auth page mounts a fresh .auth-form (keyed
+   by route), and it arrives in two beats: the card rises out of a faint blur
+   while a green scan line crosses it top to bottom — the same scan Kobi runs
+   over a failing pod on the site — and then the card's own rows follow one
+   after another. Short (≈700 ms in all) so it reads as the product waking
+   up, not as a page being slow. Off under prefers-reduced-motion. */
+.auth-rise {
+  animation: auth-rise 520ms var(--auth-ease) both;
+}
+.auth-form .bg-kb-card {
+  animation: auth-card-in 560ms var(--auth-ease) 60ms both;
+}
+.auth-form .bg-kb-card::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(0, 224, 122, 0.9), transparent);
+  box-shadow: 0 0 14px 2px rgba(0, 224, 122, 0.35);
+  opacity: 0;
+  pointer-events: none;
+  animation: auth-scan 700ms var(--auth-ease) 120ms both;
+}
+.auth-form .bg-kb-card > * {
+  animation: auth-rise 460ms var(--auth-ease) both;
+}
+.auth-form .bg-kb-card > :nth-child(1) { animation-delay: 180ms; }
+.auth-form .bg-kb-card > :nth-child(2) { animation-delay: 230ms; }
+.auth-form .bg-kb-card > :nth-child(3) { animation-delay: 280ms; }
+.auth-form .bg-kb-card > :nth-child(4) { animation-delay: 330ms; }
+.auth-form .bg-kb-card > :nth-child(5) { animation-delay: 380ms; }
+.auth-form .bg-kb-card > :nth-child(n + 6) { animation-delay: 420ms; }
+.auth-copy-in {
+  animation: auth-rise 600ms var(--auth-ease) both;
+}
+@keyframes auth-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes auth-card-in {
+  from { opacity: 0; transform: translateY(14px) scale(0.985); filter: blur(6px); }
+  to { opacity: 1; transform: none; filter: none; }
+}
+@keyframes auth-scan {
+  0% { top: 0; opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { top: 100%; opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .auth-rise,
+  .auth-copy-in,
+  .auth-form .bg-kb-card,
+  .auth-form .bg-kb-card > *,
+  .auth-line-incident,
+  .auth-line-healed {
+    animation: none;
+  }
+  .auth-form .bg-kb-card::after {
+    display: none;
+  }
+}
+

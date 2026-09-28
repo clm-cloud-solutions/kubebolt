@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync/atomic"
 	"time"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 )
 
 // Fase 2 of the lifecycle plan (D-2): the episode becomes a first-class,
@@ -141,6 +143,11 @@ type Episode struct {
 	AckedBy        string     `json:"ackedBy,omitempty"`
 	AckedAt        *time.Time `json:"ackedAt,omitempty"`
 	PrevEpisodeID  string     `json:"prevEpisodeId,omitempty"`
+	// Evidence is what the rule saw when THIS episode opened. It lives here
+	// and not on the insight identity because it varies between episodes:
+	// the same pod OOMing twice with different limits is two proofs.
+	// Only the detail endpoint carries it; the list carries a count.
+	Evidence []models.Evidence `json:"evidence,omitempty"`
 }
 
 // Transition is one append-only history entry of an episode.

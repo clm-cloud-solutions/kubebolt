@@ -119,6 +119,12 @@ func TestPricingFor_LongestPrefixWins(t *testing.T) {
 		{"MiniMax-M2.5", 0.30, 1.20, "base M2.5 keeps its own price"},
 		{"gpt-5-mini-2025-08-07", 0.25, 2.00, "gpt-5-mini dated variant must not collapse to gpt-5 price"},
 		{"gpt-5", 1.25, 10, "base gpt-5 keeps its own price (1.25 input post-May-2026 reshuffle)"},
+		// Opus 5.5 is a SUBSTRING collision with Opus 5, not just a prefix one:
+		// without its own entry it resolves to $5/$25 and over-bills by 25%.
+		{"claude-opus-5-5", 4, 20, "opus 5.5 must not collapse to the opus 5 price"},
+		{"claude-opus-5", 5, 25, "base opus 5 keeps its own price"},
+		{"gpt-6-sol", 2.00, 10, "gpt-6-sol is its own tier, not gpt-5.6-sol"},
+		{"gpt-6-luna", 0.10, 0.50, "gpt-6-luna is its own tier, not gpt-5.6-luna"},
 	}
 	for _, c := range cases {
 		p, ok := PricingFor("openai", c.model)
@@ -148,6 +154,11 @@ func TestPricingFor_AdminCatalogCoverage(t *testing.T) {
 		models   []string
 	}{
 		{"anthropic", []string{
+			"claude-opus-5-5",
+			"claude-opus-5",
+			"claude-sonnet-5",
+			"claude-fable-5",
+			"claude-opus-4-8",
 			"claude-opus-4-7",
 			"claude-sonnet-4-6",
 			"claude-haiku-4-5",
@@ -159,7 +170,11 @@ func TestPricingFor_AdminCatalogCoverage(t *testing.T) {
 			"claude-sonnet-4-20250514",
 		}},
 		{"openai", []string{
-			// GPT-5 current + chat-latest aliases
+			// GPT-6 (current). astra is intentionally absent from the
+			// dropdown (see toolsForceReasoningOff) but stays priced.
+			"gpt-6-sol", "gpt-6-luna", "gpt-6-astra",
+			// GPT-5.6 + chat-latest aliases
+			"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
 			"gpt-5.5",
 			"gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
 			"gpt-5.2", "gpt-5.2-chat-latest",

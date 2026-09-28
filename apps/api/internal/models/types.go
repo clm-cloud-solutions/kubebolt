@@ -181,22 +181,32 @@ type MetricPoint struct {
 // resource). RuleID/TenantID/ClusterID are stamped by the engine at
 // evaluation time. In OSS, TenantID is always "default".
 type Insight struct {
-	ID          string     `json:"id"`
-	Fingerprint string     `json:"fingerprint,omitempty"`
-	RuleID      string     `json:"ruleId,omitempty"`
-	TenantID    string     `json:"tenantId,omitempty"`
-	ClusterID   string     `json:"clusterId,omitempty"`
-	Severity    string     `json:"severity"`
-	Category    string     `json:"category"`
-	Resource    string     `json:"resource"`
-	Namespace   string     `json:"namespace"`
-	Title       string     `json:"title"`
-	Message     string     `json:"message"`
-	Suggestion  string     `json:"suggestion"`
-	FirstSeen   time.Time  `json:"firstSeen"`
-	LastSeen    time.Time  `json:"lastSeen"`
-	Resolved    bool       `json:"resolved"`
-	ResolvedAt  *time.Time `json:"resolvedAt,omitempty"`
+	ID          string `json:"id"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	RuleID      string `json:"ruleId,omitempty"`
+	TenantID    string `json:"tenantId,omitempty"`
+	ClusterID   string `json:"clusterId,omitempty"`
+	Severity    string `json:"severity"`
+	Category    string `json:"category"`
+	Resource    string `json:"resource"`
+	Namespace   string `json:"namespace"`
+	Title       string `json:"title"`
+	Message     string `json:"message"`
+	Suggestion  string `json:"suggestion"`
+	// Evidence is what the rule SAW. It is transport only — `json:"-"` keeps
+	// it off every wire the Insight travels on, because both of those wires
+	// are already too heavy: /insights returns the whole list unpaginated
+	// (383 rows, ~230 KB on the busiest cluster) and Kobi's get_insights is
+	// capped at 32 KB and already truncating. The durable home is the
+	// EPISODE row, where it is read one at a time.
+	Evidence []Evidence `json:"-"`
+	// EvidenceCount is what the list DOES carry: enough to render "3 facts"
+	// and to know a drill-down is worth a click, at six bytes a row.
+	EvidenceCount int        `json:"evidenceCount,omitempty"`
+	FirstSeen     time.Time  `json:"firstSeen"`
+	LastSeen      time.Time  `json:"lastSeen"`
+	Resolved      bool       `json:"resolved"`
+	ResolvedAt    *time.Time `json:"resolvedAt,omitempty"`
 }
 
 // TopologyNode is a vertex in the cluster topology graph.

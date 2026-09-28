@@ -52,6 +52,18 @@ export function presentTool(name: string, input?: Record<string, unknown>): Tool
     case 'get_cronjob_jobs':     return presentCronjobJobs(i)
     case 'get_topology':         return presentTopology()
     case 'get_insights':         return presentInsights()
+    case 'get_operational_episodes': return presentOperationalEpisodes(i)
+    case 'get_findings':        return presentFindings(i)
+    case 'get_finding_workloads': return presentFindingWorkloads(i)
+    case 'get_finding_detail':  return presentFindingDetail(i)
+    case 'get_runtime_events':  return presentRuntimeEvents(i)
+    case 'get_coverage':        return presentCoverage()
+    case 'get_right_sizing':    return presentRightSizing(i)
+    case 'query_metrics':       return presentQueryMetrics(i)
+    case 'get_recent_deploys':  return presentRecentDeploys(i)
+    case 'get_fleet_summary':  return presentFleetSummary()
+    case 'get_insight_episodes': return presentInsightEpisodes(i)
+    case 'get_insight_episode':  return presentInsightEpisode(i)
     case 'search_resources':     return presentSearch(i)
     case 'get_permissions':      return presentPermissions()
     case 'list_clusters':        return presentListClusters()
@@ -298,6 +310,190 @@ function presentInsights(): ToolPresentation {
     command: '',
     inputLines: [],
     link: { href: '/insights', label: 'Open Insights' },
+  }
+}
+
+function presentFleetSummary(): ToolPresentation {
+  // The only tool that is not about the selected cluster, so the chip says so.
+  return {
+    summary: 'every cluster',
+    command: '',
+    inputLines: [],
+    link: { href: '/fleet', label: 'Open Fleet' },
+  }
+}
+
+function presentFindings(i: Record<string, unknown>): ToolPresentation {
+  // With no facet the tool returns a posture, not rows — the chip should say
+  // which of the two the operator is looking at.
+  const facets = ['severity', 'source', 'kind', 'image', 'resource']
+    .map((k) => str(i[k]))
+    .filter(Boolean)
+  const bits = facets.length > 0 ? facets : ['posture']
+  if (str(i.cluster) === 'all') bits.push('all clusters')
+  if (str(i.status) === 'resolved') bits.push('resolved')
+  return {
+    summary: bits.join(' · '),
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: '/security', label: 'Open Security' },
+  }
+}
+
+// The Security page keeps one route per lens; the link lands on the lens Kobi
+// ranked, so the operator checks the same list rather than the default tab.
+const SECURITY_LENS_ROUTES: Record<string, string> = {
+  vulnerability: '/security',
+  configuration: '/security/configuration',
+  rbac: '/security/permissions',
+  compliance: '/security/compliance',
+}
+
+function presentFindingWorkloads(i: Record<string, unknown>): ToolPresentation {
+  const group = str(i.group)
+  const bits = [group ? `${group} by workload` : 'by workload']
+  for (const k of ['severity', 'kind']) {
+    const v = str(i[k])
+    if (v) bits.push(v)
+  }
+  if (str(i.cluster) === 'all') bits.push('all clusters')
+  if (str(i.status) === 'resolved') bits.push('resolved')
+  return {
+    summary: bits.join(' · '),
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: SECURITY_LENS_ROUTES[group] ?? '/security', label: 'Open Security' },
+  }
+}
+
+function presentFindingDetail(i: Record<string, unknown>): ToolPresentation {
+  // A live re-read of the scanner, not a kubectl call the operator could
+  // repeat, so no Equivalent section.
+  const fp = str(i.fingerprint)
+  return {
+    summary: fp ? `finding ${fp.slice(0, 8)}` : 'one finding',
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: '/security', label: 'Open Security' },
+  }
+}
+
+function presentRightSizing(i: Record<string, unknown>): ToolPresentation {
+  const bits = ['7d P95']
+  for (const k of ['namespace', 'severity']) {
+    const v = str(i[k])
+    if (v) bits.push(v)
+  }
+  return {
+    summary: bits.join(' · '),
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: '/capacity', label: 'Open Capacity' },
+  }
+}
+
+function presentCoverage(): ToolPresentation {
+  return {
+    summary: 'what KubeBolt can see',
+    command: '',
+    inputLines: [],
+    link: { href: '/clusters', label: 'Open Clusters' },
+  }
+}
+
+function presentQueryMetrics(i: Record<string, unknown>): ToolPresentation {
+  // The query IS the input worth seeing; the chip carries its window.
+  const range = str(i.range)
+  const query = str(i.query)
+  return {
+    summary: range ? `PromQL · last ${range}` : 'PromQL · now',
+    command: query,
+    inputLines: makeInputLines(i),
+  }
+}
+
+function presentRuntimeEvents(i: Record<string, unknown>): ToolPresentation {
+  const hours = Number(i.sinceHours)
+  const bits = [Number.isFinite(hours) && hours > 0 ? `last ${hours}h` : 'last 24h']
+  for (const k of ['priority', 'namespace', 'pod']) {
+    const v = str(i[k])
+    if (v) bits.push(v)
+  }
+  if (str(i.cluster) === 'all') bits.push('all clusters')
+  return {
+    summary: bits.join(' · '),
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: '/security/runtime', label: 'Open Runtime' },
+  }
+}
+
+function presentRecentDeploys(i: Record<string, unknown>): ToolPresentation {
+  // The Capacity dashboard is where the same rollouts are drawn as markers
+  // on the trends and listed under Recent Deploys.
+  const hours = Number(i.sinceHours)
+  const bits = [Number.isFinite(hours) && hours > 0 ? `last ${hours}h` : 'last 24h']
+  const ns = str(i.namespace)
+  const name = str(i.name)
+  if (ns || name) bits.push([ns, name].filter(Boolean).join('/'))
+  return {
+    summary: bits.join(' · '),
+    command: ns ? `kubectl get rs -n ${ns} --sort-by=.metadata.creationTimestamp` : 'kubectl get rs -A --sort-by=.metadata.creationTimestamp',
+    inputLines: makeInputLines(i),
+    link: { href: '/capacity', label: 'Open Capacity' },
+  }
+}
+
+function presentInsightEpisodes(i: Record<string, unknown>): ToolPresentation {
+  // The chips that matter are the ones that change what came back: the window,
+  // the scope, and any filter. "all clusters" especially — it is the only way
+  // to reach a cluster that is gone, and worth seeing without expanding.
+  const hours = Number(i.sinceHours)
+  const bits = [Number.isFinite(hours) && hours > 0 ? `last ${hours}h` : 'last 24h']
+  if (str(i.cluster) === 'all') bits.push('all clusters')
+  else if (str(i.cluster)) bits.push(str(i.cluster))
+  if (str(i.status)) bits.push(str(i.status))
+  if (str(i.severity)) bits.push(str(i.severity))
+  if (str(i.rule)) bits.push(str(i.rule))
+  return {
+    summary: bits.join(' · '),
+    command: '',
+    inputLines: makeInputLines(i),
+    link: { href: '/insights?view=history', label: 'Open Insight History' },
+  }
+}
+
+function presentInsightEpisode(i: Record<string, unknown>): ToolPresentation {
+  // Deep-links to the very episode Kobi read, so the operator can check the
+  // timeline it is describing rather than take its word for it.
+  const id = str(i.id)
+  return {
+    summary: id ? `episode ${id.slice(0, 8)}` : 'one episode',
+    command: '',
+    inputLines: makeInputLines(i),
+    link: id ? { href: `/insights/episodes/${encodeURIComponent(id)}`, label: 'Open episode' } : undefined,
+  }
+}
+
+function presentOperationalEpisodes(i: Record<string, unknown>): ToolPresentation {
+  // Bursts are a KubeBolt aggregation over the episode store — no kubectl
+  // equivalent. The link lands on the Bursts view with the SAME window Kobi
+  // asked for, so the operator checks the answer against the data rather than
+  // against a default range. Only the windows the view offers as presets can
+  // be carried; anything else opens on the default rather than inventing a
+  // range the page would silently ignore.
+  const hours = Number(i.sinceHours)
+  const valid = Number.isFinite(hours) && hours > 0
+  const window = valid ? `last ${hours}h` : 'last 24h'
+  const range = !valid || hours === 24 ? '' : hours === 168 ? '7d' : hours === 720 ? '30d' : ''
+  return {
+    summary: `${window} · operational bursts`,
+    command: '',
+    inputLines: makeInputLines(i),
+    link: {
+      href: range ? `/insights?view=bursts&range=${range}` : '/insights?view=bursts',
+      label: 'Open Bursts',
+    },
   }
 }
 

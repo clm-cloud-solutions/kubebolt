@@ -11,7 +11,7 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
-  KeyRound, Bot, Plus, Trash2, Copy, Check, AlertTriangle, ShieldCheck, Globe,
+  KeyRound, Bot, Plus, Trash2, Copy, Check, AlertTriangle, ShieldCheck, Globe, Pencil,
 } from 'lucide-react'
 import {
   api,
@@ -23,6 +23,7 @@ import {
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ErrorState } from '@/components/shared/ErrorState'
 import { Modal } from '@/components/shared/Modal'
+import { TokenClusterPicker, useOrgClusters, clusterNameMap } from './tokens/TokenClusterPicker'
 
 // Scope presets offered when creating a customer API token. The operator
 // can pick any combination; "Everything" collapses to the wildcard.
@@ -33,6 +34,14 @@ const SCOPE_OPTIONS: { value: string; label: string }[] = [
   { value: '/api/v1/events', label: 'Events' },
   { value: '/api/v1/metrics', label: 'Metrics' },
 ]
+
+// The Kobi MCP endpoint, for an LLM client of the customer's own (Claude Code,
+// Cursor…). Offered as its own choice, not a sixth checkbox: without it the
+// only way to reach /mcp from this form was "Everything", which hands the whole
+// API to a token that only needs read-only tools. The prefix also matches
+// /mcp/autopilot/*, which stays closed to kbk_ tokens behind
+// RequireServiceToken.
+const SCOPE_MCP = '/api/v1/mcp'
 const SCOPE_ALL = '*'
 const ROLES = ['viewer', 'editor', 'admin']
 
@@ -142,8 +151,27 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
   const [role, setRole] = useState('viewer')
   const [scopeSet, setScopeSet] = useState<Set<string>>(new Set(['/api/v1/resources', '/api/v1/insights']))
   const [allScopes, setAllScopes] = useState(false)
+  // null = every cluster of the org; an array = only those.
+  const [clusters, setClusters] = useState<string[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+
+  // "MCP only" is a preset, not an addition: ticking it replaces whatever is
+  // selected (Resources + Insights by default) with the MCP scope alone, and
+  // sets the role to viewer — every MCP tool reads. Ticking any REST scope
+  // afterwards simply adds to it.
+  const mcpOnly = !allScopes && scopeSet.size === 1 && scopeSet.has(SCOPE_MCP)
+  function chooseMcpOnly(on: boolean) {
+    if (on) {
+      setScopeSet(new Set([SCOPE_MCP]))
+      setRole('viewer')
+      // A key handed to an LLM client should not live forever by default;
+      // 90 days, editable, and only when nobody has set an expiry yet.
+      if (ttlDays === '') setTtlDays(90)
+    } else {
+      setScopeSet(new Set(['/api/v1/resources', '/api/v1/insights']))
+    }
+  }
 
   function toggleScope(v: string) {
     setScopeSet(prev => {
@@ -163,6 +191,7 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
       if (!isService) {
         body.role = role
         body.scopes = allScopes ? [SCOPE_ALL] : Array.from(scopeSet)
+        body.clusters = clusters ?? []
       }
       // Service tokens omit role/scopes → backend applies editor + Autopilot defaults.
       const issued = await api.createAPIToken(body)
@@ -174,7 +203,10 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
     }
   }
 
-  const submitDisabled = submitting || !label || (!isService && !allScopes && scopeSet.size === 0)
+  const submitDisabled =
+    submitting || !label ||
+    (!isService && !allScopes && scopeSet.size === 0) ||
+    (!isService && clusters !== null && clusters.length === 0)
 
   return (
     <Modal badge={isService ? 'New service token' : 'New API token'} title={isService ? 'Create service token' : 'Create API token'} onClose={onClose} size="sm">
@@ -205,13 +237,31 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
           <>
             <div className="space-y-1">
               <label className="text-[11px] font-medium text-kb-text-secondary">Role</label>
-              <select value={role} onChange={e => setRole(e.target.value)}
-                className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors">
+              {/* Locked to viewer under "MCP only": every MCP tool reads, so a
+                  higher role would grant nothing the token can use. */}
+              <select value={role} onChange={e => setRole(e.target.value)} disabled={mcpOnly}
+                className="w-full px-3 py-1.5 text-sm bg-kb-bg border border-kb-border rounded-lg text-kb-text-primary focus:outline-none focus:border-kb-accent transition-colors disabled:opacity-60 disabled:cursor-not-allowed">
                 {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
               </select>
+              {mcpOnly && (
+                <p className="text-[11px] text-kb-text-secondary">Fixed to viewer: the MCP tools only read.</p>
+              )}
             </div>
             <div className="space-y-1.5">
               <label className="text-[11px] font-medium text-kb-text-secondary">Scopes</label>
+              <label
+                className={`flex items-start gap-2 px-2.5 py-2 rounded-lg border text-xs cursor-pointer transition-colors ${
+                  mcpOnly ? 'border-kb-accent bg-kb-accent-light text-kb-text-primary' : 'border-kb-border text-kb-text-secondary'
+                }`}
+              >
+                <input type="checkbox" className="mt-0.5" checked={mcpOnly} disabled={allScopes} onChange={e => chooseMcpOnly(e.target.checked)} />
+                <span>
+                  <span className="font-medium">MCP only (read-only tools)</span>
+                  <span className="block text-[11px] leading-relaxed text-kb-text-secondary mt-0.5">
+                    For Claude Code, Cursor or your own LLM client. The token reaches only <code className="font-mono">/api/v1/mcp</code>, as viewer.
+                  </span>
+                </span>
+              </label>
               <label className="flex items-center gap-2 text-xs text-kb-text-secondary cursor-pointer">
                 <input type="checkbox" checked={allScopes} onChange={e => setAllScopes(e.target.checked)} />
                 Everything (all authenticated paths)
@@ -227,6 +277,7 @@ function CreateAPITokenModal({ tokenType, onClose, onIssued }: { tokenType: APIT
                 </div>
               )}
             </div>
+            <TokenClusterPicker value={clusters} onChange={setClusters} />
           </>
         )}
 
@@ -293,7 +344,69 @@ function ConfirmRevokeAPIModal({ token, onClose, onRevoked }: { token: APIToken;
 }
 
 // ─── Token table (shared by both sections) ────────────────────────────
-function TokenTable({ tokens, emptyHint, onRevoke }: { tokens: APIToken[]; emptyHint: string; onRevoke: (t: APIToken) => void }) {
+function ClusterChips({ ids, names }: { ids?: string[]; names: Map<string, string> }) {
+  const chip = 'px-1.5 py-0.5 rounded text-[10px] font-mono bg-kb-elevated text-kb-text-secondary'
+  if (!ids || ids.length === 0) return <span className={chip}>all clusters</span>
+  const label = (id: string) => names.get(id) ?? `${id.slice(0, 8)}…`
+  const shown = ids.slice(0, 2)
+  return (
+    <div className="flex flex-wrap items-center gap-1" title={ids.map(label).join('\n')}>
+      {shown.map(id => <span key={id} className={chip}>{label(id)}</span>)}
+      {ids.length > shown.length && (
+        <span className="text-[10px] text-kb-text-tertiary">+{ids.length - shown.length}</span>
+      )}
+    </div>
+  )
+}
+
+// ─── Edit clusters ────────────────────────────────────────────────────
+function EditClustersModal({ token, onClose, onSaved }: { token: APIToken; onClose: () => void; onSaved: () => void }) {
+  const [clusters, setClusters] = useState<string[] | null>(token.clusters && token.clusters.length > 0 ? token.clusters : null)
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  async function save() {
+    setError(null)
+    setSaving(true)
+    try {
+      await api.updateAPITokenClusters(token.id, clusters ?? [])
+      onSaved()
+      onClose()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to update the token')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal badge="Token clusters" title={token.label} onClose={onClose} size="sm">
+      <div className="p-5 space-y-3">
+        {error && <div className="px-3 py-2 rounded-lg bg-status-error-dim text-status-error text-xs">{error}</div>}
+        <TokenClusterPicker value={clusters} onChange={setClusters} />
+        <p className="text-[11px] text-kb-text-secondary">Takes effect on the token's next request. The token itself does not change.</p>
+        <div className="flex justify-end gap-2 pt-1">
+          <button type="button" onClick={onClose} className="px-3 py-1.5 text-xs text-kb-text-secondary border border-kb-border rounded-lg hover:bg-kb-card-hover transition-colors">Cancel</button>
+          <button onClick={save} disabled={saving || (clusters !== null && clusters.length === 0)}
+            className="px-3 py-1.5 text-xs font-medium text-white bg-kb-accent rounded-lg hover:bg-kb-accent/90 disabled:opacity-50 transition-colors">
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function TokenTable({ tokens, emptyHint, onRevoke, onEditClusters }: {
+  tokens: APIToken[]
+  emptyHint: string
+  onRevoke: (t: APIToken) => void
+  // Only API keys carry a cluster list; service tokens are internal by design.
+  onEditClusters?: (t: APIToken) => void
+}) {
+  const withClusters = !!onEditClusters
+  const { data: orgClusters } = useOrgClusters()
+  const names = clusterNameMap(orgClusters)
   const th = 'px-4 py-2.5 text-left text-[10px] font-mono font-medium uppercase tracking-wider text-kb-text-tertiary'
   return (
     <div className="bg-kb-card border border-kb-border rounded-xl overflow-hidden">
@@ -304,6 +417,7 @@ function TokenTable({ tokens, emptyHint, onRevoke }: { tokens: APIToken[]; empty
             <th className={th}>Prefix</th>
             <th className={th}>Role</th>
             <th className={th}>Scopes</th>
+            {withClusters && <th className={th}>Clusters</th>}
             <th className={th}>Status</th>
             <th className={th}>Last used</th>
             <th className={th}>Expires</th>
@@ -319,11 +433,21 @@ function TokenTable({ tokens, emptyHint, onRevoke }: { tokens: APIToken[]; empty
                 <td className="px-4 py-2.5 text-xs font-mono text-kb-text-secondary">{tok.prefix}…</td>
                 <td className="px-4 py-2.5 text-xs text-kb-text-secondary">{tok.role}</td>
                 <td className="px-4 py-2.5"><ScopeChips scopes={tok.scopes} /></td>
+                {withClusters && (
+                  <td className="px-4 py-2.5"><ClusterChips ids={tok.clusters} names={names} /></td>
+                )}
                 <td className="px-4 py-2.5"><StatusBadge token={tok} /></td>
                 <td className="px-4 py-2.5 text-xs text-kb-text-tertiary font-mono" title={formatAbsolute(tok.lastUsedAt)}>{formatRelative(tok.lastUsedAt)}</td>
                 <td className="px-4 py-2.5 text-xs text-kb-text-tertiary font-mono" title={tok.expiresAt ? formatAbsolute(tok.expiresAt) : ''}>{tok.expiresAt ? formatRelative(tok.expiresAt) : 'never'}</td>
                 <td className="px-4 py-2.5">
-                  <div className="flex items-center justify-end">
+                  <div className="flex items-center justify-end gap-1">
+                    {onEditClusters && (
+                      <button onClick={() => onEditClusters(tok)} disabled={revoked}
+                        className="p-1.5 rounded-md text-kb-text-tertiary hover:text-kb-text-primary hover:bg-kb-elevated disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                        title="Change which clusters this token reads">
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                     <button onClick={() => onRevoke(tok)} disabled={revoked}
                       className="p-1.5 rounded-md text-kb-text-tertiary hover:text-status-error hover:bg-status-error-dim disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                       title="Revoke token">
@@ -335,7 +459,7 @@ function TokenTable({ tokens, emptyHint, onRevoke }: { tokens: APIToken[]; empty
             )
           })}
           {tokens.length === 0 && (
-            <tr><td colSpan={8} className="px-4 py-8 text-center text-xs text-kb-text-tertiary">{emptyHint}</td></tr>
+            <tr><td colSpan={withClusters ? 9 : 8} className="px-4 py-8 text-center text-xs text-kb-text-tertiary">{emptyHint}</td></tr>
           )}
         </tbody>
       </table>
@@ -348,6 +472,7 @@ export function APITokensPage() {
   const queryClient = useQueryClient()
   const [creating, setCreating] = useState<APITokenType | null>(null)
   const [revoking, setRevoking] = useState<APIToken | null>(null)
+  const [editing, setEditing] = useState<APIToken | null>(null)
   const [revealed, setRevealed] = useState<{ issued: IssuedAPIToken; title: string } | null>(null)
 
   const { data: tokens, isLoading, error } = useQuery({
@@ -419,7 +544,7 @@ export function APITokensPage() {
             New API token
           </button>
         </div>
-        <TokenTable tokens={apiTokens} onRevoke={setRevoking}
+        <TokenTable tokens={apiTokens} onRevoke={setRevoking} onEditClusters={setEditing}
           emptyHint='No API tokens yet. Create one for CI/CD or an external integration.' />
       </section>
 
@@ -436,6 +561,12 @@ export function APITokensPage() {
       )}
       {revoking && (
         <ConfirmRevokeAPIModal token={revoking} onClose={() => setRevoking(null)} onRevoked={invalidate} />
+      )}
+      {editing && (
+        <EditClustersModal token={editing} onClose={() => setEditing(null)} onSaved={invalidate} />
+      )}
+      {editing && (
+        <EditClustersModal token={editing} onClose={() => setEditing(null)} onSaved={invalidate} />
       )}
       {revealed && (
         <RevealAPITokenModal issued={revealed.issued} title={revealed.title} onClose={() => setRevealed(null)} />

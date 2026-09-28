@@ -69,3 +69,45 @@ describe('MarkdownRenderer code highlighting', () => {
     expect(container.textContent).toContain('{ "a": 1 }')
   })
 })
+
+// Field report: Kobi's insight table rendered its headers one character per
+// line — "Severidad" as "Seve / rida / d", "crítico" as "críti / co". Two
+// causes compounding: the renderer sets overflow-wrap:anywhere on the whole
+// message (so a pod name cannot blow the panel open) and it INHERITS into
+// cells; and the table was w-full, pinned to the panel, so it could never
+// overflow and the wrapper's overflow-x-auto had nothing to scroll.
+describe('MarkdownRenderer tables', () => {
+  const table = [
+    '| Insight | Severidad | Desde | Detalle |',
+    '| --- | --- | --- | --- |',
+    '| Zero Available Replicas | crítico | 10:04 | 0 de 2 réplicas disponibles |',
+  ].join('\n')
+
+  it('lets the table outgrow the panel so the wrapper can scroll it', () => {
+    const { container } = render(<MarkdownRenderer content={table} />)
+    const el = container.querySelector('table')!
+    expect(el.className).toContain('min-w-full')
+    // w-full pins it to the panel width: it can never overflow, so the columns
+    // squeeze instead of scrolling. That is the bug.
+    expect(el.className.split(/\s+/)).not.toContain('w-full')
+    expect(container.querySelector('div.overflow-x-auto')).not.toBeNull()
+  })
+
+  it('never breaks a header mid-word', () => {
+    const { container } = render(<MarkdownRenderer content={table} />)
+    for (const th of Array.from(container.querySelectorAll('th'))) {
+      expect(th.className).toContain('whitespace-nowrap')
+      expect(th.className).toContain('[overflow-wrap:normal]')
+    }
+  })
+
+  it('breaks a cell only when a single token truly does not fit', () => {
+    const { container } = render(<MarkdownRenderer content={table} />)
+    for (const td of Array.from(container.querySelectorAll('td'))) {
+      // break-word, not anywhere: a long pod name still breaks so the column
+      // cannot run away, but "crítico" stays one word.
+      expect(td.className).toContain('[overflow-wrap:break-word]')
+      expect(td.className).not.toContain('anywhere')
+    }
+  })
+})

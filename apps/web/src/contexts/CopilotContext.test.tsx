@@ -13,11 +13,15 @@ import React from 'react'
 // changes; the new scope rehydrates its own pointer.
 
 let authUser: { id: string } | null = { id: 'userA' }
+// `isLoading` starts FALSE whenever a cached user exists, so it cannot stand in
+// for "the token is in hand". sessionReady is the one that can.
+let authSessionReady = true
 
 vi.mock('@/contexts/AuthContext', () => ({
   useAuth: () => ({
     user: authUser,
     isLoading: false,
+    sessionReady: authSessionReady,
     isAuthEnabled: true,
     isAuthenticated: !!authUser,
   }),
@@ -79,10 +83,78 @@ beforeEach(async () => {
   vi.clearAllMocks()
   localStorage.clear()
   authUser = { id: 'userA' }
+  authSessionReady = true
   getCopilotConfig.mockResolvedValue({ enabled: true, provider: 'anthropic', model: 'claude' })
   const mod = await import('./CopilotContext')
   useCopilot = mod.useCopilot
   CopilotProvider = mod.CopilotProvider
+})
+
+describe('CopilotContext copilot-config identity', () => {
+  // `/copilot/config` is public but org-resolving: anonymously it answers with
+  // the env baseline, with a token it answers with the org's real model. The
+  // panel title and the fallback banner read from it. Asked once per session —
+  // and on an SPA login that once is ANONYMOUS — the header claimed one model
+  // for the whole session while every chat turn ran on another.
+  it('re-asks when the user signs in', async () => {
+    authUser = null
+    getCopilotConfig.mockResolvedValue({ enabled: true, provider: 'anthropic', model: 'claude-haiku-4-5' })
+
+    const { wrapper } = makeHarness('cluster-a')
+    const { result, rerender } = renderHook(() => useCopilot(), { wrapper })
+    await waitFor(() => expect(result.current.config?.model).toBe('claude-haiku-4-5'))
+
+    // Signing in: the same endpoint now answers for the org.
+    getCopilotConfig.mockResolvedValue({ enabled: true, provider: 'anthropic', model: 'claude-sonnet-5' })
+    act(() => {
+      authUser = { id: 'userA' }
+    })
+    rerender()
+
+    await waitFor(() => expect(result.current.config?.model).toBe('claude-sonnet-5'))
+  })
+
+  // The reload case, and the one that keying by identity alone does NOT fix.
+  // On a page reload a cached user exists, so `isLoading` is already false while
+  // the access token is still null — and the key is ALREADY the real user's id,
+  // so nothing would ever re-ask. Asking there gets a 200 with the anonymous
+  // answer, because the endpoint is public.
+  it('does not ask before the session can be proven', async () => {
+    authSessionReady = false
+    authUser = { id: 'userA' }
+
+    const { wrapper } = makeHarness('cluster-a')
+    const { result, rerender } = renderHook(() => useCopilot(), { wrapper })
+    await new Promise((r) => setTimeout(r, 30))
+    expect(getCopilotConfig).not.toHaveBeenCalled()
+    expect(result.current.config).toBeUndefined()
+
+    // The silent refresh lands: token in hand, same user, same key.
+    getCopilotConfig.mockResolvedValue({ enabled: true, provider: 'anthropic', model: 'claude-sonnet-5' })
+    act(() => {
+      authSessionReady = true
+    })
+    rerender()
+
+    await waitFor(() => expect(result.current.config?.model).toBe('claude-sonnet-5'))
+  })
+
+  it('does not serve one user the config resolved for another', async () => {
+    authUser = { id: 'userA' }
+    getCopilotConfig.mockResolvedValue({ enabled: true, provider: 'anthropic', model: 'org-a-model' })
+
+    const { wrapper } = makeHarness('cluster-a')
+    const { result, rerender } = renderHook(() => useCopilot(), { wrapper })
+    await waitFor(() => expect(result.current.config?.model).toBe('org-a-model'))
+
+    getCopilotConfig.mockResolvedValue({ enabled: true, provider: 'openai', model: 'org-b-model' })
+    act(() => {
+      authUser = { id: 'userB' }
+    })
+    rerender()
+
+    await waitFor(() => expect(result.current.config?.model).toBe('org-b-model'))
+  })
 })
 
 describe('CopilotContext scope isolation', () => {

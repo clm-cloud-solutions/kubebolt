@@ -54,6 +54,7 @@ vi.mock('@/contexts/CopilotContext', () => ({
     sendMessage: vi.fn(),
     config: null,
     isLoading: false,
+    sessionReady: true,
     conversationId: null,
   }),
 }))

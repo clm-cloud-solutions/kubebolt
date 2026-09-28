@@ -121,10 +121,15 @@ const coverageLookbackMinutes = 5
 // poll from the UI on a 30-60s tick.
 func (h *handlers) handleCoverage(w http.ResponseWriter, r *http.Request) {
 	uid := h.activeClusterUID(r.Context())
+	// Tenant isolation: scope the coverage probes to the requesting org so a
+	// tenant with no agent doesn't read the default tenant's scrape sources as
+	// its own. "" (OSS) leaves the probes unscoped; a multi-tenant caller with
+	// no org is pinned to nothing (metricsTenantPin).
+	tid := h.metricsTenantPin(r)
 
 	sources := make([]CoverageSource, 0, len(coverageProbes))
 	for _, probe := range coverageProbes {
-		query := scopeQueryByCluster(probe.query, uid)
+		query := scopeQueryByTenant(scopeQueryByCluster(probe.query, uid), tid)
 		status := coverageStatusForQuery(r.Context(), query)
 		sources = append(sources, CoverageSource{
 			Name:   probe.name,

@@ -483,15 +483,18 @@ func (e *Engine) admitNew(ins models.Insight, now time.Time) (models.Insight, bo
 }
 
 // stampRecordContent copies the evaluation's CURRENT content onto the record.
-// It must run before any episode-sink event fires — the sink persists rec
-// verbatim, and an event carrying stale (or zero) content becomes a wrong
-// row in insight_episodes.
+//
+// On the OPEN path it must run BEFORE the sink fires — the sink persists rec
+// verbatim, and an event carrying stale (or zero) content becomes a wrong row
+// in insight_episodes. On the TOUCH path (persistActive) it runs after, because
+// EpisodeSeverityChanged needs the pre-refresh severity as its "from".
 func stampRecordContent(rec *InsightRecord, ins models.Insight) {
 	rec.Severity = ins.Severity
 	rec.Category = ins.Category
 	rec.Title = ins.Title
 	rec.Message = ins.Message
 	rec.Suggestion = ins.Suggestion
+	rec.Evidence = ins.Evidence
 }
 
 // persistActive refreshes a still-active insight's record (content +
@@ -522,11 +525,13 @@ func (e *Engine) persistActive(ins *models.Insight, now time.Time) {
 		}
 		s.EpisodeTouched(rec, rec.CurrentOccurrenceID, now)
 	}
-	rec.Severity = ins.Severity
-	rec.Category = ins.Category
-	rec.Title = ins.Title
-	rec.Message = ins.Message
-	rec.Suggestion = ins.Suggestion
+	// Stamped AFTER the sink on this path, and that order is deliberate:
+	// EpisodeSeverityChanged above reads rec.Severity as the "from" side of
+	// the transition, so refreshing it first would report a move from a
+	// severity to itself. Was an inline copy of stampRecordContent; folded
+	// back into the helper so a new content field (evidence) reaches both
+	// paths instead of only the one somebody remembered.
+	stampRecordContent(rec, *ins)
 	rec.Status = "active"
 	rec.ResolvedAt = nil
 	rec.LastSeen = now

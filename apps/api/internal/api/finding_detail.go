@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -17,106 +18,6 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 )
 
-// Finding detail — the per-row drill-down behind the Security table.
-//
-// It exists because the stored Finding is deliberately lossy. A finding's
-// identity excludes the package name, so one CVE affecting several packages of
-// the same workload collapses into a single row — CVE-2026-33814 in cilium is
-// reported by Trivy 17 times, once per affected binary. That collapse is right
-// for a list (an operator has ONE problem there, not 17), but the surviving
-// Remediation is an arbitrary one of the 17: the table can end up saying
-// "upgrade stdlib" when the reachable path is golang.org/x/net.
-//
-// Rather than persist every package on every finding of every cluster — paying
-// storage and cardinality forever for something read on a click — the detail is
-// fetched from the cluster on demand. That matches how the whole pillar works:
-// KubeBolt pulls, nothing is pushed at it.
-//
-// The trade is that the detail needs the cluster reachable. Findings survive a
-// disconnected cluster by design (they are persisted, and the read route sits
-// outside requireConnector), so the response degrades instead of failing: the
-// stored record always comes back, with `live:false` and the reason.
-type findingDetailResponse struct {
-	findings.Record
-	// Live reports whether the cluster answered. False means Packages is empty
-	// because we could not look, NOT because there is nothing to show — the UI
-	// must say which.
-	Live      bool   `json:"live"`
-	LiveError string `json:"liveError,omitempty"`
-	// Images are the container images of this workload that carry the CVE.
-	//
-	// Grouped by IMAGE, not by container. Trivy emits one report per container,
-	// so a workload whose initContainer and main container share an image
-	// produced two identical blocks — same image, same packages, same fix, twice.
-	// The vulnerability lives in the image: if two containers share one, that is
-	// ONE thing to rebuild, listed once, naming the containers that use it.
-	Images []affectedImage `json:"images,omitempty"`
-
-	// Compliance carries the CIS side of the drill-down: what the control
-	// actually requires, and WHICH resources fail it. The stored finding has
-	// only the count ("42 failing"), which tells an operator there is work
-	// without saying where — the least useful shape a number can take.
-	Compliance *complianceDetail `json:"compliance,omitempty"`
-}
-
-type complianceDetail struct {
-	Benchmark string `json:"benchmark,omitempty"`
-	Control   string `json:"control,omitempty"`
-	// Description is the control's own text, which the stored title omits.
-	Description string `json:"description,omitempty"`
-	// Severity is the BENCHMARK's rating for this control, which can disagree
-	// with the finding's — the normalizer defaults compliance findings to
-	// medium, so a control the benchmark calls LOW still reads medium in the
-	// list. Showing both is honest; silently picking one is not.
-	Severity string `json:"severity,omitempty"`
-	// FailingResources are the resources that actually fail the control,
-	// resolved by following the control's check id into the config-audit
-	// reports. Capped — a control can fail on hundreds of workloads.
-	FailingResources []failingResource `json:"failingResources,omitempty"`
-	FailingTotal     int               `json:"failingTotal"`
-}
-
-type failingResource struct {
-	Kind      string `json:"kind,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Message   string `json:"message,omitempty"`
-}
-
-// complianceResourceCap bounds the resource list. A control like "minimize root
-// containers" fails on nearly every workload in a busy cluster, and a dialog is
-// not a place to render four hundred rows.
-const complianceResourceCap = 50
-
-type affectedImage struct {
-	// Containers are the container names running this image, init and main
-	// alike — an initContainer is just as much a place the code executes.
-	Containers []string `json:"containers"`
-	// Pods is how many pods currently run this image in the finding's
-	// namespace: the live blast radius, which scaling changes and the finding
-	// does not. -1 means unknown (no Pod informer), which must not render as 0.
-	Pods int `json:"pods"`
-	// Image is the fully-qualified reference an operator can pull and rebuild:
-	// registry + repository + tag, e.g. quay.io/argoproj/argocd:v3.4.5.
-	Image  string `json:"image,omitempty"`
-	Digest string `json:"digest,omitempty"`
-	// OS is the image's base distro ("ubuntu 26.04") — often the real answer to
-	// "why do I have this CVE", since a stale base image drags in most of them.
-	OS       string        `json:"os,omitempty"`
-	Packages []vulnPackage `json:"packages"`
-}
-
-type vulnPackage struct {
-	Name             string  `json:"name"`
-	InstalledVersion string  `json:"installedVersion,omitempty"`
-	FixedVersion     string  `json:"fixedVersion,omitempty"`
-	Severity         string  `json:"severity,omitempty"`
-	Score            float64 `json:"score,omitempty"`
-	Link             string  `json:"link,omitempty"`
-	// Container is which container of the workload carries it, when Trivy says.
-	Container string `json:"container,omitempty"`
-}
-
 // findingDetailTimeout bounds the live lookup. Short on purpose: this is a
 // click, and a slow answer is worse than a degraded one the user can read.
 const findingDetailTimeout = 8 * time.Second
@@ -131,19 +32,47 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 		respondError(w, http.StatusBadRequest, "fingerprint is required")
 		return
 	}
-	clusterID := r.URL.Query().Get("cluster")
-
-	rec, ok, err := h.findingsStore.Get(h.activeTenantID(r), clusterID, fingerprint)
-	if err != nil {
-		respondError(w, http.StatusInternalServerError, "failed to read the finding")
-		return
-	}
-	if !ok || rec == nil {
+	detail, err := readFindingDetail(r.Context(), h.findingsStore, h.manager, h.activeTenantID(r),
+		r.URL.Query().Get("cluster"), fingerprint, ClusterScopeFrom(r.Context()).May)
+	switch {
+	case errors.Is(err, errFindingNotFound):
 		respondError(w, http.StatusNotFound, "finding not found")
-		return
+	case err != nil:
+		respondError(w, http.StatusInternalServerError, "failed to read the finding")
+	default:
+		respondJSON(w, http.StatusOK, detail)
+	}
+}
+
+// errFindingNotFound covers both "no such finding" and "not yours to read". A
+// caller outside the finding's cluster learns nothing from the difference, and
+// must not: telling them it exists is already telling them something.
+var errFindingNotFound = errors.New("finding not found")
+
+// readFindingDetail is the drill-down behind GET /findings/{fingerprint} and
+// Kobi's get_finding_detail: the stored finding plus a live re-read of the
+// scanner. Shared so the chat and the Security page say the same thing about
+// the same row.
+//
+// may is the caller's entitlement. The route checked the ORG and nothing else:
+// a team-narrowed user who had a fingerprint and a cluster id could open a
+// finding of a cluster their teams do not own — the list next to it was
+// narrowed (findings_scope.go), the drill-down was not.
+func readFindingDetail(ctx context.Context, store findings.Store, manager *cluster.Manager,
+	tenantID, clusterID, fingerprint string, may func(string) bool) (*findings.Detail, error) {
+	rec, ok, err := store.Get(tenantID, clusterID, fingerprint)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || rec == nil || (may != nil && !may(rec.ClusterID)) {
+		return nil, errFindingNotFound
 	}
 
-	resp := findingDetailResponse{Record: *rec}
+	resp := &findings.Detail{Record: *rec}
+	if manager == nil {
+		resp.LiveError = "the cluster is not connected — showing the stored finding only"
+		return resp, nil
+	}
 
 	// Resolve the connector for the FINDING's cluster, not the request's.
 	//
@@ -165,8 +94,8 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	//
 	// The org is not optional: the persisted UID map is RLS-scoped, so resolving
 	// with the wrong one finds nothing (finding #17).
-	detailCtx := r.Context()
-	contextName := h.manager.ContextNameForClusterID(h.activeTenantID(r), rec.ClusterID)
+	detailCtx := ctx
+	contextName := manager.ContextNameForClusterID(tenantID, rec.ClusterID)
 	if contextName != "" {
 		key := cluster.RuntimeKeyFromContext(detailCtx)
 		key.Cluster = contextName
@@ -177,37 +106,34 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	// a finding on a disconnected agent surfaced the raw
 	// `Get "https://<uid>.agent.local/..." : channel: no agent connected`
 	// string, which names the cluster by a UUID nobody recognizes).
-	clusterLabel := h.manager.DisplayNameForCluster(r.Context(), rec.ClusterID)
+	clusterLabel := manager.DisplayNameForCluster(ctx, rec.ClusterID)
 	if clusterLabel == "" {
 		clusterLabel = "the cluster"
 	}
 
-	conn := h.manager.Connector(detailCtx)
+	conn := manager.Connector(detailCtx)
 	if conn == nil || conn.Dynamic() == nil {
 		resp.LiveError = clusterLabel + " is not connected — showing the stored finding only"
-		respondJSON(w, http.StatusOK, resp)
-		return
+		return resp, nil
 	}
 
-	ctx, cancel := context.WithTimeout(detailCtx, findingDetailTimeout)
+	liveCtx, cancel := context.WithTimeout(detailCtx, findingDetailTimeout)
 	defer cancel()
 
 	switch rec.Kind {
 	case integrations.FindingCVE:
-		images, err := collectAffectedImages(ctx, conn, rec)
+		images, err := collectAffectedImages(liveCtx, conn, rec)
 		if err != nil {
 			resp.LiveError = liveReadError(clusterLabel, err)
-			respondJSON(w, http.StatusOK, resp)
-			return
+			return resp, nil
 		}
 		resp.Live = true
 		resp.Images = images
 	case integrations.FindingMisconfig:
-		detail, err := collectComplianceDetail(ctx, conn, rec)
+		detail, err := collectComplianceDetail(liveCtx, conn, rec)
 		if err != nil {
 			resp.LiveError = liveReadError(clusterLabel, err)
-			respondJSON(w, http.StatusOK, resp)
-			return
+			return resp, nil
 		}
 		resp.Live = true
 		resp.Compliance = detail
@@ -215,7 +141,7 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 		// A policy violation is already whole in the stored record.
 		resp.Live = true
 	}
-	respondJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // liveReadError turns a failed live scanner re-read into a message safe to show
@@ -257,7 +183,7 @@ type findingDetailSource interface {
 // the ReplicaSet, so each candidate's owner is resolved before comparing with
 // the stored resource. Without that, a finding stored against a Deployment
 // would never match its own reports.
-func collectAffectedImages(ctx context.Context, conn findingDetailSource, rec *findings.Record) ([]affectedImage, error) {
+func collectAffectedImages(ctx context.Context, conn findingDetailSource, rec *findings.Record) ([]findings.AffectedImage, error) {
 	cve := cveIDFromTitle(rec.Title)
 	if cve == "" {
 		return nil, nil
@@ -282,7 +208,7 @@ func collectAffectedImages(ctx context.Context, conn findingDetailSource, rec *f
 	}
 
 	// Keyed by image: two containers sharing one are a single thing to rebuild.
-	byImage := map[string]*affectedImage{}
+	byImage := map[string]*findings.AffectedImage{}
 	order := make([]string, 0, 2)
 	for i := range list.Items {
 		item := &list.Items[i]
@@ -300,14 +226,14 @@ func collectAffectedImages(ctx context.Context, conn findingDetailSource, rec *f
 		if !found {
 			continue
 		}
-		pkgs := make([]vulnPackage, 0, 4)
+		pkgs := make([]findings.VulnPackage, 0, 4)
 		seen := map[string]bool{}
 		for _, raw := range vulns {
 			v, _ := raw.(map[string]interface{})
 			if v == nil || asString(v["vulnerabilityID"]) != cve {
 				continue
 			}
-			pkg := vulnPackage{
+			pkg := findings.VulnPackage{
 				Name:             asString(v["resource"]),
 				InstalledVersion: asString(v["installedVersion"]),
 				FixedVersion:     asString(v["fixedVersion"]),
@@ -329,7 +255,7 @@ func collectAffectedImages(ctx context.Context, conn findingDetailSource, rec *f
 		ref := imageRef(item.Object)
 		img, ok := byImage[ref]
 		if !ok {
-			img = &affectedImage{
+			img = &findings.AffectedImage{
 				Image:  ref,
 				Digest: nestedString(item.Object, "report", "artifact", "digest"),
 				OS:     osLabel(item.Object),
@@ -347,7 +273,7 @@ func collectAffectedImages(ctx context.Context, conn findingDetailSource, rec *f
 		}
 	}
 
-	out := make([]affectedImage, 0, len(order))
+	out := make([]findings.AffectedImage, 0, len(order))
 	for _, ref := range order {
 		img := byImage[ref]
 		sort.Strings(img.Containers)
@@ -463,7 +389,7 @@ func unstructuredSlice(obj map[string]interface{}, path ...string) ([]interface{
 // Two LISTs, both cluster-wide because compliance IS cluster-wide and because
 // the namespaced path 404s over the agent-proxy tunnel. Runs on a click, not on
 // the sweep's timer.
-func collectComplianceDetail(ctx context.Context, conn findingDetailSource, rec *findings.Record) (*complianceDetail, error) {
+func collectComplianceDetail(ctx context.Context, conn findingDetailSource, rec *findings.Record) (*findings.ComplianceDetail, error) {
 	dyn := conn.Dynamic()
 	reports, err := dyn.Resource(integrations.TrivyComplianceReportGVR).
 		List(ctx, metav1.ListOptions{})
@@ -471,7 +397,7 @@ func collectComplianceDetail(ctx context.Context, conn findingDetailSource, rec 
 		return nil, err
 	}
 
-	out := &complianceDetail{Control: rec.CISControl}
+	out := &findings.ComplianceDetail{Control: rec.CISControl}
 	checkIDs := map[string]bool{}
 	for i := range reports.Items {
 		spec, ok, _ := unstructuredMap(reports.Items[i].Object, "spec", "compliance")
@@ -539,14 +465,14 @@ func collectComplianceDetail(ctx context.Context, conn findingDetailSource, rec 
 				continue
 			}
 			out.FailingTotal++
-			if len(out.FailingResources) >= complianceResourceCap {
+			if len(out.FailingResources) >= findings.ComplianceResourceCap {
 				continue // keep counting, stop listing
 			}
 			msg := ""
 			if msgs, _ := ch["messages"].([]interface{}); len(msgs) > 0 {
 				msg = asString(msgs[0])
 			}
-			out.FailingResources = append(out.FailingResources, failingResource{
+			out.FailingResources = append(out.FailingResources, findings.FailingResource{
 				Kind:      labels["trivy-operator.resource.kind"],
 				Namespace: labels["trivy-operator.resource.namespace"],
 				Name:      labels["trivy-operator.resource.name"],

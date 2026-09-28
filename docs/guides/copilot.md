@@ -171,6 +171,7 @@ provider and model, so a misconfigured primary is never silently masked.
 | Variable | Default | Description |
 |---|---|---|
 | `KUBEBOLT_AI_MAX_ROUNDS` | `20` | Max tool-calling rounds per turn (clamped to 2–40). A round is one model turn that calls one or more tools. When exhausted, Kobi gives a final summary of what it found instead of erroring. Raise it for small models that call tools one at a time. |
+| `KUBEBOLT_AI_CACHE_TTL` | `1h` | Anthropic only. How long the cached static prefix (system prompt + tool definitions, ~27k tokens) lives. `1h` pays for itself from the second question in the hour — most of a session's cost was re-writing that prefix after the API's 5-minute default expired between questions. `5m` restores the API default for installs that ask one isolated question at a time. Helm: `copilot.cacheTtl`. |
 | `KUBEBOLT_AI_SHOW_TOOL_CALLS` | `true` | Show a collapsible card for each tool call (name, status, result) in the chat. `false` keeps only the final answer. |
 | `KUBEBOLT_AI_ACTIONS_ENABLED` | `true` | Master switch for action proposals. `false` withholds every `propose_*` tool, so Kobi is read-only advisory. |
 | `KUBEBOLT_AI_DESTRUCTIVE_ACTIONS_ENABLED` | `true` | `false` withholds `propose_delete_resource` and rejects deletes and scale-to-0 server-side. |

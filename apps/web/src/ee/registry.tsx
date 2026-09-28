@@ -17,18 +17,6 @@ export const eePublicRoutes: ReactNode = null
 // Extra items appended to the sidebar's "Pinned" section (Sidebar.tsx).
 export const eePinnedNavItems: NavItem[] = []
 
-// Sign-in panel copy. The OSS build lists what OSS ships; the Enterprise build
-// overrides this module and names Autopilot. Keeping the strings here (not in
-// AuthShell) is what lets AuthShell.tsx stay byte-identical across editions.
-export const authFeatures: string[] = [
-  'Kobi, your AI copilot for Kubernetes',
-  'Investigate incidents & apply the fix you approve',
-  'Security & compliance from your own scanners',
-  'Every cluster on one screen',
-]
-export const authTagline =
-  'Kobi, your AI copilot, investigates incidents and proposes the fix you approve. Metrics, logs, topology, security and cost across every cluster.'
-
 // Route prefixes the edition adds to the scope table (utils/scope.ts) — the
 // altitude of every EE-only surface, declared where the surface's routes are.
 // OSS registers none: /account, /platform, /autopilot and the mail-driven

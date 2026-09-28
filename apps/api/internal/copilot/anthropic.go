@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"strings"
 	"time"
 )
 
@@ -17,6 +19,8 @@ const (
 	// KUBEBOLT_AI_MODEL with any Claude model their account has access to.
 	anthropicDefaultModel = "claude-sonnet-5"
 	anthropicAPIVersion   = "2023-06-01"
+	// extended-cache-ttl: pairs with cache_control.ttl="1h".
+	anthropicExtendedCacheBeta = "extended-cache-ttl-2025-04-11"
 )
 
 func init() {
@@ -47,13 +51,59 @@ type anthropicContent struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
+	// CacheControl, on the LAST block of the LAST message, makes the whole
+	// conversation prefix (system + tools + prior turns) a cache breakpoint — so
+	// the multi-round tool-calling loop re-reads the growing history at ~10% of
+	// the input rate instead of reprocessing it each round (E.8).
+	CacheControl *anthropicCacheControl `json:"cache_control,omitempty"`
 }
 
-// anthropicCacheControl marks a content block as cacheable. The API keeps
-// the cache entry alive for 5 minutes after the last read ("ephemeral"),
-// shared across requests that reuse the same prefix.
+// anthropicCacheControl marks a content block as cacheable. The entry lives 5
+// minutes after the last read by default; TTL "1h" extends that.
 type anthropicCacheControl struct {
-	Type string `json:"type"` // "ephemeral"
+	Type string `json:"type"`          // "ephemeral"
+	TTL  string `json:"ttl,omitempty"` // "" (=5m) | "1h"
+}
+
+// staticPrefixCache is the breakpoint for the parts that do not change between
+// questions: the system prompt and the tool definitions, ~27k tokens together.
+//
+// Measured on real sessions: 68-89% of a session's cost was cache WRITE, not
+// the conversation. A write bills 1.25x the input rate and a read 0.1x, so a
+// write is 12.5x a read — and the 5-minute default expires between questions
+// asked at a human pace. Two sessions a minute apart wrote 41,639 and 6,012
+// tokens; the second one was cheap only because it caught the first one's
+// cache still warm.
+//
+// The 1h TTL bills 2x on write and still 0.1x on read, so it pays for itself
+// from the SECOND question in the hour:
+//
+//	cold 5m write   27k x $2.50/1M = $0.068   per question
+//	cold 1h write   27k x $4.00/1M = $0.109   once
+//	warm read       27k x $0.20/1M = $0.0054  every question after
+//
+// Six spaced questions: $0.41 today, $0.14 with the hour. The trade is real
+// and stated: ONE isolated question costs ~60% more. KUBEBOLT_AI_CACHE_TTL=5m
+// restores the old behaviour for installs whose usage is genuinely one-shot.
+func staticPrefixCache() *anthropicCacheControl {
+	return &anthropicCacheControl{Type: "ephemeral", TTL: anthropicStaticCacheTTL()}
+}
+
+// conversationCache is deliberately NOT extended. The breakpoint sits on the
+// last message, so it moves every round and the entry it creates is never read
+// after the conversation ends — paying 2x to keep it for an hour buys nothing.
+// Rounds are seconds apart, which is what the 5-minute default is for.
+func conversationCache() *anthropicCacheControl {
+	return &anthropicCacheControl{Type: "ephemeral"}
+}
+
+// anthropicStaticCacheTTL reads the override once per call; "5m" (or any
+// unrecognised value) means "send no ttl", which is the API default.
+func anthropicStaticCacheTTL() string {
+	if v := strings.TrimSpace(os.Getenv("KUBEBOLT_AI_CACHE_TTL")); v != "" && v != "1h" {
+		return ""
+	}
+	return "1h"
 }
 
 type anthropicTool struct {
@@ -128,13 +178,19 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		body.System = []anthropicSystemBlock{{
 			Type:         "text",
 			Text:         req.System,
-			CacheControl: &anthropicCacheControl{Type: "ephemeral"},
+			CacheControl: staticPrefixCache(),
 		}}
 	}
 	if n := len(body.Tools); n > 0 {
 		// Marking the last tool caches all tool definitions as a single prefix.
-		body.Tools[n-1].CacheControl = &anthropicCacheControl{Type: "ephemeral"}
+		body.Tools[n-1].CacheControl = staticPrefixCache()
 	}
+	// Also cache the conversation prefix (E.8): a breakpoint on the last block of
+	// the last message means the next round reads the whole history from cache.
+	// 3 breakpoints total (system + tools + history) — under Anthropic's limit of
+	// 4. Anthropic ignores a breakpoint whose block is below the cache minimum, so
+	// short first turns are harmless.
+	markLastMessageCacheable(body.Messages)
 	bodyBytes, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -158,6 +214,13 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("x-api-key", req.Provider.APIKey)
 	httpReq.Header.Set("anthropic-version", anthropicAPIVersion)
+	if anthropicStaticCacheTTL() == "1h" {
+		// Paired with the ttl field. The extended TTL shipped behind this beta
+		// and has since graduated on the stable param, but a recognised beta
+		// value is ignored where it is no longer needed, while a MISSING
+		// required one 400s every request — so it rides along.
+		httpReq.Header.Set("anthropic-beta", anthropicExtendedCacheBeta)
+	}
 
 	resp, err := p.client.Do(httpReq)
 	if err != nil {
@@ -269,6 +332,20 @@ func toAnthropicMessages(msgs []Message) []anthropicMessage {
 		}
 	}
 	return out
+}
+
+// markLastMessageCacheable puts a cache breakpoint on the last content block of
+// the last message, so the conversation prefix is cached for the next round of
+// the tool-calling loop (E.8). No-op when there are no messages / no blocks.
+func markLastMessageCacheable(msgs []anthropicMessage) {
+	if len(msgs) == 0 {
+		return
+	}
+	last := &msgs[len(msgs)-1]
+	if len(last.Content) == 0 {
+		return
+	}
+	last.Content[len(last.Content)-1].CacheControl = conversationCache()
 }
 
 func toAnthropicTools(tools []ToolDefinition) []anthropicTool {

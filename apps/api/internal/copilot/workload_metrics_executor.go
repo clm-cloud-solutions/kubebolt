@@ -72,12 +72,12 @@ type workloadRef struct {
 }
 
 type metricResponse struct {
-	Unit               string                     `json:"unit"`
-	Summary            metricSummary              `json:"summary"`
-	Trend              []metricPoint              `json:"trend"`
-	Request            *float64                   `json:"request,omitempty"`
-	Limit              *float64                   `json:"limit,omitempty"`
-	UtilizationPercent *utilizationPercent        `json:"utilizationPercent,omitempty"`
+	Unit               string              `json:"unit"`
+	Summary            metricSummary       `json:"summary"`
+	Trend              []metricPoint       `json:"trend"`
+	Request            *float64            `json:"request,omitempty"`
+	Limit              *float64            `json:"limit,omitempty"`
+	UtilizationPercent *utilizationPercent `json:"utilizationPercent,omitempty"`
 	// PerContainer is the per-container breakdown when the caller passed
 	// perContainer=true. The top-level Summary/Trend remain the workload
 	// (or pod) aggregate so the LLM can answer "how much does the pod use
@@ -379,6 +379,16 @@ func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time
 		query = b.buildMemory()
 	case MetricNetworkRX, MetricNetworkTX:
 		query = b.buildNetwork(m)
+	case MetricFilesystem:
+		// Node-only, and refused rather than approximated: a pod's disk usage
+		// is not this metric, and silently answering with the node's would
+		// have the model attribute a node-wide fill to one workload.
+		if !b.isNode() {
+			return metricResponse{}, fmt.Errorf(
+				"filesystem is only available for kind=Node — a pod's disk usage is not the node's; " +
+					"for PVC fill use the PVC's own monitor")
+		}
+		query = b.buildFilesystem()
 	default:
 		return metricResponse{}, fmt.Errorf("unknown metric: %s", m)
 	}
@@ -548,7 +558,6 @@ func marshal(v interface{}) string {
 	return jsonString(v)
 }
 
-
 // copilotTenantScope resolves the org whose series this request may read.
 //
 // Mirrors handlers.activeTenantID in internal/api/metrics_query.go, which is the
@@ -564,7 +573,16 @@ func marshal(v interface{}) string {
 func copilotTenantScope(ctx context.Context) string {
 	tid := auth.TenantIDFromContext(ctx)
 	if tid == auth.DefaultTenantName {
-		return ""
+		tid = ""
+	}
+	// Multi-tenant with no org: a sentinel that matches no series, the same
+	// fail-closed metricsTenantPin gives the REST side since 3ed86c96. "" here
+	// would read every org's series.
+	if tid == "" && auth.MultiTenantEnabled {
+		return copilotNoTenantSentinel
 	}
 	return tid
 }
+
+// copilotNoTenantSentinel mirrors noTenantSentinel in api/metrics_query.go.
+const copilotNoTenantSentinel = "__kubebolt_no_tenant__"

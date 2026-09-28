@@ -28,9 +28,17 @@ type ExecutorToolProvider struct {
 // NewExecutorToolProvider builds the provider over an executor. The read-only
 // catalogue is snapshotted once at construction — it's static for the process.
 func NewExecutorToolProvider(exec *copilot.Executor) *ExecutorToolProvider {
-	defs := copilot.GovernedToolDefinitions(false, false) // read-only catalogue
-	allowed := make(map[string]struct{}, len(defs))
-	for _, d := range defs {
+	all := copilot.GovernedToolDefinitions(false, false) // read-only catalogue
+	defs := make([]copilot.ToolDefinition, 0, len(all))
+	allowed := make(map[string]struct{}, len(all))
+	for _, d := range all {
+		// UI-only tools (offer_cluster_switch) draw a card only Kobi's panel
+		// can render; to an external host they are a tool that does nothing.
+		// The Autopilot profiles already refuse them (profiles.go).
+		if _, uiOnly := uiOnlyTools[d.Name]; uiOnly {
+			continue
+		}
+		defs = append(defs, d)
 		allowed[d.Name] = struct{}{}
 	}
 	return &ExecutorToolProvider{exec: exec, allowed: allowed, defs: defs}

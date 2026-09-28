@@ -164,9 +164,10 @@ func (h *handlers) liveCopilotConfig() config.CopilotConfig {
 }
 
 func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
-	clusters := h.manager.ListClusters()
+	clusters := h.manager.ListClusters(r.Context())
 	clusters = h.filterClustersByOrg(r, clusters)
 	clusters = h.scopeClustersByTeam(r, clusters)
+	clusters = h.filterClustersByToken(r, clusters)
 	respondJSON(w, http.StatusOK, clusters)
 }
 
@@ -230,6 +231,46 @@ func (h *handlers) scopeClustersByTeam(_ *http.Request, clusters []cluster.Clust
 	return clusters
 }
 
+// canAccessContextByTeam is the per-request cluster gate. This build has no
+// teams, so the one thing that narrows is an API key's own cluster list
+// (token_clusters.go); the Enterprise build adds the org wall and team
+// ownership underneath. Kept under the Enterprise name so the gate's callers
+// (resolveCluster's header-less path, requireClusterAccess, switchCluster)
+// stay byte-identical across editions.
+func (h *handlers) canAccessContextByTeam(r *http.Request, contextName string) bool {
+	return h.tokenAllowsContext(r, contextName)
+}
+
+// requireClusterAccess is the per-request cluster gate. Mounted after
+// resolveCluster, it reads the selected cluster from the X-KubeBolt-Cluster
+// header and 403s when the caller may not read it. No-op without a header and
+// for any caller that is not an API key limited to some clusters.
+func (h *handlers) requireClusterAccess(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctxName := r.Header.Get(ClusterHeader)
+		// An agent-proxy context name the manager cannot resolve is a ROUTING
+		// failure, not an authorization one: 503 "waiting for agent", which the
+		// frontend renders and retries, instead of a permissions dead end.
+		if strings.HasPrefix(ctxName, cluster.AgentProxyContextPrefix) &&
+			h.manager.ClusterIDForContext(ctxName) == "" {
+			respondError(w, http.StatusServiceUnavailable,
+				"no agent connected yet for this cluster — waiting for agent to register")
+			return
+		}
+		if !h.canAccessContextByTeam(r, ctxName) {
+			respondError(w, http.StatusForbidden, "you do not have access to this cluster")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// orgScoped is the org a request's cluster visibility is narrowed to, and
+// whether it is narrowed at all. This build is single-tenant: never narrowed.
+func orgScoped(_ *http.Request) (org string, narrow bool) {
+	return "", false
+}
+
 func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Context string `json:"context"`
@@ -240,6 +281,12 @@ func (h *handlers) switchCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Context == "" {
 		respondError(w, http.StatusBadRequest, "context is required")
+		return
+	}
+
+	// An API key limited to some clusters switches only among them.
+	if !h.canAccessContextByTeam(r, body.Context) {
+		respondError(w, http.StatusForbidden, "you do not have access to this cluster")
 		return
 	}
 

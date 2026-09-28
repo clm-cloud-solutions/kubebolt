@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -110,5 +111,39 @@ func TestToolsFromDefinitionsDefaultsSchema(t *testing.T) {
 	}
 	if out[0].InputSchema == nil || out[0].InputSchema["type"] != "object" {
 		t.Errorf("nil schema should default to an object schema, got %v", out[0].InputSchema)
+	}
+}
+
+// The public /mcp catalogue does not carry UI-only tools: offer_cluster_switch
+// draws a card only Kobi's panel renders.
+func TestExecutorToolProvider_WithholdsUIOnlyTools(t *testing.T) {
+	p := NewExecutorToolProvider(nil)
+	for _, tl := range p.ListTools() {
+		if _, bad := uiOnlyTools[tl.Name]; bad {
+			t.Errorf("public catalogue serves the UI-only tool %q", tl.Name)
+		}
+	}
+	for _, want := range []string{"get_coverage", "query_metrics"} {
+		found := false
+		for _, tl := range p.ListTools() {
+			found = found || tl.Name == want
+		}
+		if !found {
+			t.Errorf("public catalogue lacks %s", want)
+		}
+	}
+}
+
+// A UI-only tool (a card only Kobi's panel can draw) is neither listed nor
+// callable through /mcp.
+func TestExecutorToolProvider_OmitsUIOnlyTools(t *testing.T) {
+	p := NewExecutorToolProvider(copilot.NewExecutor(nil))
+	for _, tool := range p.ListTools() {
+		if _, uiOnly := uiOnlyTools[tool.Name]; uiOnly {
+			t.Errorf("%s is listed on /mcp", tool.Name)
+		}
+	}
+	if _, err := p.CallTool(context.Background(), "offer_cluster_switch", nil); err == nil {
+		t.Error("offer_cluster_switch is callable on /mcp")
 	}
 }

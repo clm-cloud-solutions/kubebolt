@@ -46,7 +46,13 @@ var modelPricing = map[string]ModelPricing{
 	// tier; Sonnet 5 is $2/$10 (Anthropic made the launch rate PERMANENT —
 	// it no longer reverts to $3/$15 after the 2026-08-31 intro window);
 	// Fable 5 is the premium tier at $10/$50.
-	"claude-fable-5":  {Input: 10, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
+	"claude-fable-5": {Input: 10, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
+	// Opus 5.5 (2026-09-22) undercuts Opus 5 on every bucket, and its cache
+	// read is 0.05x base input — not the 0.1x that held for every earlier
+	// Claude. This entry MUST exist: without it "claude-opus-5-5" prefix-
+	// matches "claude-opus-5" and bills at $5/$25. pricingKeys() sorts by
+	// length descending, so the longer key wins once it is here.
+	"claude-opus-5-5": {Input: 4, CachedInput: 0.20, CacheCreation: 5.00, Output: 20},
 	"claude-opus-5":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-8": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-sonnet-5": {Input: 2, CachedInput: 0.20, CacheCreation: 2.50, Output: 10},
@@ -66,7 +72,15 @@ var modelPricing = map[string]ModelPricing{
 	// didn't charge a cache-write premium the way Anthropic does). The
 	// GPT-5.6 line DID introduce cache-write pricing (input × 1.25), so
 	// those three carry an explicit CacheCreation.
-	// GPT-5.6 (current flagship, Aug 2026) — sol/terra/luna. Standard
+	// GPT-6 (current flagship) — astra/sol/luna. Sol and Luna landed
+	// 2026-09-22 at half the GPT-5.6 rates; Astra is the top tier. Note the
+	// family is NOT a rename of GPT-5.6's sol/terra/luna: the tiers do not
+	// line up (there is no gpt-6-terra, and gpt-6-sol is priced where
+	// gpt-5.6-terra sat). Cache read 0.1x input, cache write 1.25x.
+	"gpt-6-astra": {Input: 10.00, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
+	"gpt-6-sol":   {Input: 2.00, CachedInput: 0.20, CacheCreation: 2.50, Output: 10},
+	"gpt-6-luna":  {Input: 0.10, CachedInput: 0.01, CacheCreation: 0.125, Output: 0.50},
+	// GPT-5.6 (previous flagship, Aug 2026) — sol/terra/luna. Standard
 	// (short-context, ≤272K input) rates; over 272K OpenAI bills 2× input /
 	// 1.5× output, which the single-rate struct can't model (estimate only).
 	"gpt-5.6-sol":   {Input: 5.00, CachedInput: 0.50, CacheCreation: 6.25, Output: 30},

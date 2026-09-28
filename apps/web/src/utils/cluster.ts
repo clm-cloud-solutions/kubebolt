@@ -28,3 +28,23 @@ export function parseClusterDisplayName(cluster: ClusterInfo): string {
     cluster.context.length < 50 ? cluster.context : cluster.name.length < 50 ? cluster.name : cluster.context
   return strip(base) + suffix
 }
+
+/**
+ * isOpaqueClusterLabel — ¿lo que vamos a pintar sigue siendo un identificador?
+ *
+ * El contexto de un cluster por agente es `agent:<uid>`. Como clave está bien;
+ * como etiqueta no dice nada, y en una fila parece un fallo de la aplicación.
+ * Cuando el cluster trae nombre propio (`displayName`, del label
+ * `kubebolt.io/cluster-name` del Hello) nunca llegamos aquí; esto cubre al que
+ * se registró sin él.
+ *
+ * Un contexto normal de kubeconfig —`kind-kubebolt-lab`, `docker-desktop`— SÍ
+ * es un nombre, así que no se toca: el que decide no es el origen del cluster,
+ * es si la cadena se puede leer.
+ */
+export function isOpaqueClusterLabel(label: string): boolean {
+  // parseClusterDisplayName marks a cluster reached through an agent, so the
+  // string arrives as `agent:<uid> (via agent)`. The mark is not the name.
+  const bare = label.trim().replace(/ \(via agent\)$/, '')
+  return /^agent:[0-9a-f-]{8,}$/i.test(bare)
+}

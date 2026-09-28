@@ -398,7 +398,7 @@ func TestScopeQueryForRequestFleet(t *testing.T) {
 				auth.MultiTenantEnabled = false
 				defer func() { auth.MultiTenantEnabled = prev }()
 			}
-			got := h.scopeQueryForRequest(newReq(tt.scope, tt.tenant), tt.in)
+			got, _ := h.scopeQueryForRequest(newReq(tt.scope, tt.tenant), tt.in)
 			if got != tt.want {
 				t.Errorf("scopeQueryForRequest(scope=%q, tenant=%q)\n got:  %s\n want: %s",
 					tt.scope, tt.tenant, got, tt.want)
@@ -420,7 +420,7 @@ func TestScopeQueryFleetFailsClosedWithoutOrg(t *testing.T) {
 	// No tenant in context — the pathological case.
 	r := httptest.NewRequest(http.MethodGet, "/api/v1/metrics/query?query=x&scope=fleet", nil)
 
-	got := h.scopeQueryForRequest(r, `sum by (cluster_id) (node_total_hourly_cost)`)
+	got, _ := h.scopeQueryForRequest(r, `sum by (cluster_id) (node_total_hourly_cost)`)
 	want := `sum by (cluster_id) (node_total_hourly_cost{tenant_id="` + noTenantSentinel + `"})`
 	if got != want {
 		t.Errorf("fleet scope without a resolved org must fail closed\n got:  %s\n want: %s", got, want)
@@ -429,7 +429,7 @@ func TestScopeQueryFleetFailsClosedWithoutOrg(t *testing.T) {
 	// Single-tenant (OSS) keeps the empty tenant: there, no series carries a
 	// tenant_id at all, so a sentinel would hide the user's own data.
 	auth.MultiTenantEnabled = false
-	got = h.scopeQueryForRequest(r, `sum by (cluster_id) (node_total_hourly_cost)`)
+	got, _ = h.scopeQueryForRequest(r, `sum by (cluster_id) (node_total_hourly_cost)`)
 	if want := `sum by (cluster_id) (node_total_hourly_cost)`; got != want {
 		t.Errorf("OSS fleet scope must stay unscoped\n got:  %s\n want: %s", got, want)
 	}
