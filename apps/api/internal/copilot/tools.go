@@ -35,12 +35,12 @@ func ToolDefinitions() []ToolDefinition {
 	return []ToolDefinition{
 		{
 			Name:        "get_cluster_overview",
-			Description: "Get cluster summary: resource counts, CPU/memory usage, health score, recent events, namespace workloads",
+			Description: "Get cluster summary: resource counts, CPU/memory usage, health score, the most recent Warning events, and per namespace the workloads that need attention (fewer ready replicas than desired, pods not ready) plus those scaled to zero; healthy workloads are counted, not named. Use get_events for the full event stream and list_resources to name every workload.",
 			InputSchema: emptyObject(),
 		},
 		{
 			Name:        "list_resources",
-			Description: "List Kubernetes resources by type with optional filtering. Types: pods, deployments, statefulsets, daemonsets, replicasets, jobs, cronjobs, services, ingresses, endpoints, networkpolicies, ciliumnetworkpolicies, ciliumclusterwidenetworkpolicies, pdbs, gateways, httproutes, pvcs, pvs, storageclasses, configmaps, secrets, serviceaccounts, roles, clusterroles, rolebindings, clusterrolebindings, hpas, vpas, certificates (cert-manager), argocdapps (Argo CD Applications), nodes, namespaces, events. The optional CRDs (vpas, certificates, argocdapps, Cilium policies) return an empty list when the CRD is not installed OR could not be read, so empty there is not proof that none exist. Cilium policies (cilium.io/v2) carry the L3-L7 rules a standard NetworkPolicy can't; use them to confirm whether a deny rule actually blocks a flow.",
+			Description: "List Kubernetes resources by type with optional filtering. Each row is a summary for scanning — status, readiness, restarts, node, labels, owner, container images/state/last termination/resources, and only the conditions that are unhealthy; nodes include internalIP and podCIDR. Annotations, volumes, env, ports and probes are left out: use get_resource_detail for one object in full. Types: pods, deployments, statefulsets, daemonsets, replicasets, jobs, cronjobs, services, ingresses, endpoints, networkpolicies, ciliumnetworkpolicies, ciliumclusterwidenetworkpolicies, pdbs, gateways, httproutes, pvcs, pvs, storageclasses, configmaps, secrets, serviceaccounts, roles, clusterroles, rolebindings, clusterrolebindings, hpas, vpas, certificates (cert-manager), argocdapps (Argo CD Applications), nodes, namespaces, events. The optional CRDs (vpas, certificates, argocdapps, Cilium policies) return an empty list when the CRD is not installed OR could not be read, so empty there is not proof that none exist. Cilium policies (cilium.io/v2) carry the L3-L7 rules a standard NetworkPolicy can't; use them to confirm whether a deny rule actually blocks a flow.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{

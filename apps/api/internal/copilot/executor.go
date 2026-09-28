@@ -381,7 +381,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 
 	switch call.Name {
 	case "get_cluster_overview":
-		res.Content = jsonString(conn.GetOverview())
+		res.Content = jsonString(compactOverview(conn.GetOverview()))
 
 	case "list_resources":
 		t := stringArg(args, "type")
@@ -417,7 +417,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		res.Content = jsonString(list)
+		res.Content = jsonString(compactResourceList(list))
 
 	case "get_resource_detail":
 		t, ns, name := nsResourceArgs(args)

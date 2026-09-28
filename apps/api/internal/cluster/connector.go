@@ -3323,7 +3323,24 @@ func nodeToMap(node *corev1.Node) map[string]interface{} {
 		// badge + decide which action menu items to show without an
 		// extra round-trip per card.
 		"unschedulable": node.Spec.Unschedulable,
+		// The node's own address and pod range, in the LIST row: Kobi's
+		// prompt tells it to classify a dependency IP as in-cluster only when
+		// it matches a listed node's InternalIP exactly or falls inside its
+		// pod CIDR — which the list could not answer without a detail read
+		// per node.
+		"internalIP": nodeInternalIP(node),
+		"podCIDR":    node.Spec.PodCIDR,
 	}
+}
+
+// nodeInternalIP is the node's InternalIP address, or "".
+func nodeInternalIP(node *corev1.Node) string {
+	for _, a := range node.Status.Addresses {
+		if a.Type == corev1.NodeInternalIP {
+			return a.Address
+		}
+	}
+	return ""
 }
 
 func statefulSetToMap(ss *appsv1.StatefulSet) map[string]interface{} {
