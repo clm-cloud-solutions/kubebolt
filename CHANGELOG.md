@@ -24,6 +24,8 @@ note: [docs/releases/v2.1.1.md](docs/releases/v2.1.1.md).
 
 - gRPC-Go 1.83.2 (CVE-2026-84304, CVE-2026-84445) and `golang.org/x/net`
   0.58.0 in the API, agent and proto modules.
+- VictoriaMetrics and vmagent v1.148.0 → v1.153.0 (built on Go 1.27.1): the
+  eight Go stdlib waivers in `.trivyignore-thirdparty` are removed.
 
 ## [2.1.0] — 2026-09-02
 
