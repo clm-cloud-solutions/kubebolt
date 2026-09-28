@@ -143,7 +143,7 @@ manifests from the chart instead of using the legacy files in this directory:
 ```bash
 helm template kubebolt-agent \
   oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
-  --version 1.4.0 \
+  --version 1.4.1 \
   --namespace kubebolt-system \
   --set backendUrl=YOUR_BACKEND:9090 \
   --set rbac.mode=reader \
@@ -211,7 +211,7 @@ read or patch rendered manifests):
 | TLS to backend | `--set tls.enabled=true` | `KUBEBOLT_AGENT_TLS_ENABLED` |
 | Hubble on/off (default off) | `--set hubble.enabled=true` | `KUBEBOLT_HUBBLE_ENABLED` |
 | Cluster display name | `--set cluster.name=…` | `KUBEBOLT_AGENT_CLUSTER_NAME` |
-| Image tag | `--set image.tag=1.4.0` (defaults to the chart's appVersion) | `containers[0].image` |
+| Image tag | `--set image.tag=1.4.1` (defaults to the chart's appVersion) | `containers[0].image` |
 | Resources | `--set resources.requests.cpu=…` | `resources:` block |
 
 ---
