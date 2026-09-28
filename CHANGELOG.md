@@ -4,6 +4,27 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] — 2026-09-28
+
+Security data follows the cluster out of KubeBolt. Drop-in, no migration. Full
+note: [docs/releases/v2.1.1.md](docs/releases/v2.1.1.md).
+
+### Fixed
+
+- Deleting a cluster purges its stored findings and runtime events, under the
+  cluster UID and the context name; the delete dialog says so.
+- The retention pass sweeps security data whose cluster is registered nowhere
+  (`security_orphans_removed`); it skips when the registry cannot be read.
+- Deleting the cluster you are viewing re-lands on the next live cluster, or
+  on Home.
+- Security tables key rows by cluster; Fleet shows "Agent offline"; the
+  finding drill-down names the cluster instead of the internal agent URL.
+
+### Security
+
+- gRPC-Go 1.83.2 (CVE-2026-84304, CVE-2026-84445) and `golang.org/x/net`
+  0.58.0 in the API, agent and proto modules.
+
 ## [2.1.0] — 2026-09-02
 
 Insights grow a lifecycle. Seven new BoltDB buckets, created on boot; no
