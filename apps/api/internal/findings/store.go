@@ -99,6 +99,14 @@ type Store interface {
 	// PruneOrg is Prune scoped to ONE org — the only form that deletes under
 	// RLS, and the one per-plan retention needs (each org has its own horizon).
 	PruneOrg(orgID string, before time.Time) (int, error)
+	// DeleteCluster removes EVERY finding of one (tenant, cluster) — active
+	// included. The cascade behind removing a cluster from the tenant: absence
+	// is not resolution, and without this the sweeper (live connectors only)
+	// and PruneOrg (resolved only) leave a deleted cluster's actives immortal.
+	DeleteCluster(tenantID, clusterID string) (int, error)
+	// ClusterIDs lists the distinct cluster identifiers holding findings for
+	// the tenant — the orphan sweep's inventory.
+	ClusterIDs(tenantID string) ([]string, error)
 }
 
 func recordKey(tenantID, clusterID, fingerprint string) []byte {

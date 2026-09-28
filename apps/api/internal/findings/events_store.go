@@ -57,6 +57,13 @@ type EventStore interface {
 	PruneEvents(before time.Time) (int, error)
 	// PruneEventsOrg is PruneEvents scoped to ONE org.
 	PruneEventsOrg(orgID string, before time.Time) (int, error)
+	// DeleteEventsCluster removes every runtime event of one (tenant,
+	// cluster) — the findings DeleteCluster cascade's sibling.
+	DeleteEventsCluster(tenantID, clusterID string) (int, error)
+	// EventClusterIDs lists the distinct cluster identifiers holding events
+	// for the tenant (its own inventory: a Falco-only cluster can have events
+	// and zero findings).
+	EventClusterIDs(tenantID string) ([]string, error)
 }
 
 // newEventID builds a time-prefixed unique id: RFC3339Nano keeps the

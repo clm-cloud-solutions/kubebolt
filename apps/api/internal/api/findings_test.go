@@ -25,8 +25,10 @@ func (f *fakeFindingsStore) MarkResolved(string, string, string, time.Time) erro
 func (f *fakeFindingsStore) Get(string, string, string) (*findings.Record, bool, error) {
 	return nil, false, nil
 }
-func (f *fakeFindingsStore) Prune(time.Time) (int, error)            { return 0, nil }
-func (f *fakeFindingsStore) PruneOrg(string, time.Time) (int, error) { return 0, nil }
+func (f *fakeFindingsStore) Prune(time.Time) (int, error)              { return 0, nil }
+func (f *fakeFindingsStore) PruneOrg(string, time.Time) (int, error)   { return 0, nil }
+func (f *fakeFindingsStore) DeleteCluster(string, string) (int, error) { return 0, nil }
+func (f *fakeFindingsStore) ClusterIDs(string) ([]string, error)       { return nil, nil }
 
 // List applies ONLY the scope dimensions, the way the real stores do — so a
 // handler bug that leaks a facet into the query shows up as a changed row set.

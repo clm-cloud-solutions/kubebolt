@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -222,5 +224,25 @@ func TestFindingDetail_OneImageSharedByTwoContainersIsOneEntry(t *testing.T) {
 	}
 	if len(cs[0].Packages) != 1 {
 		t.Errorf("packages = %d, want 1 — the package list was duplicated too", len(cs[0].Packages))
+	}
+}
+
+// liveReadError must never surface the internal agent-proxy URL or the cluster
+// UID (in-vivo 2026-09-15): the offline-agent family collapses to a sentence
+// that names the cluster, while a genuinely actionable error stays legible.
+func TestLiveReadError(t *testing.T) {
+	offline := errors.New(`Get "https://b07ac16f-f3fa-4d6c-bbfd-5f5673fa9cbd.agent.local/apis/aquasecurity.github.io/v1alpha1/vulnerabilityreports": channel: no agent connected for cluster: b07ac16f-f3fa-4d6c-bbfd-5f5673fa9cbd`)
+	got := liveReadError("kb-sec-lab", offline)
+	if strings.Contains(got, "agent.local") || strings.Contains(got, "b07ac16f") {
+		t.Fatalf("liveReadError leaked internals: %q", got)
+	}
+	if !strings.Contains(got, "kb-sec-lab") {
+		t.Fatalf("liveReadError must name the cluster: %q", got)
+	}
+
+	// A different, actionable failure stays as-is.
+	rbac := errors.New(`vulnerabilityreports.aquasecurity.github.io is forbidden: User cannot list resource`)
+	if got := liveReadError("kb-sec-lab", rbac); got != rbac.Error() {
+		t.Fatalf("actionable error must stay legible, got %q", got)
 	}
 }

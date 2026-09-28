@@ -40,8 +40,10 @@ func (m *memEvents) Append(rec *findings.EventRecord) error {
 func (m *memEvents) ListEvents(findings.EventQuery) ([]findings.EventRecord, error) {
 	return m.appended, nil
 }
-func (m *memEvents) PruneEvents(time.Time) (int, error)            { return 0, nil }
-func (m *memEvents) PruneEventsOrg(string, time.Time) (int, error) { return 0, nil }
+func (m *memEvents) PruneEvents(time.Time) (int, error)              { return 0, nil }
+func (m *memEvents) PruneEventsOrg(string, time.Time) (int, error)   { return 0, nil }
+func (m *memEvents) DeleteEventsCluster(string, string) (int, error) { return 0, nil }
+func (m *memEvents) EventClusterIDs(string) ([]string, error)        { return nil, nil }
 
 func falcoPost(t *testing.T, tokenCluster, body string) (*httptest.ResponseRecorder, *memEvents) {
 	t.Helper()

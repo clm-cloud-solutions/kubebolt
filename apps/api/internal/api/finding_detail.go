@@ -166,15 +166,25 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	// The org is not optional: the persisted UID map is RLS-scoped, so resolving
 	// with the wrong one finds nothing (finding #17).
 	detailCtx := r.Context()
-	if name := h.manager.ContextNameForClusterID(h.activeTenantID(r), rec.ClusterID); name != "" {
+	contextName := h.manager.ContextNameForClusterID(h.activeTenantID(r), rec.ClusterID)
+	if contextName != "" {
 		key := cluster.RuntimeKeyFromContext(detailCtx)
-		key.Cluster = name
+		key.Cluster = contextName
 		detailCtx = cluster.WithRuntimeKey(detailCtx, key)
+	}
+	// The cluster's own name, for any message shown to the operator — never the
+	// UID or the internal agent-proxy URL (in-vivo 2026-09-15: a live re-read of
+	// a finding on a disconnected agent surfaced the raw
+	// `Get "https://<uid>.agent.local/..." : channel: no agent connected`
+	// string, which names the cluster by a UUID nobody recognizes).
+	clusterLabel := h.manager.DisplayNameForCluster(r.Context(), rec.ClusterID)
+	if clusterLabel == "" {
+		clusterLabel = "the cluster"
 	}
 
 	conn := h.manager.Connector(detailCtx)
 	if conn == nil || conn.Dynamic() == nil {
-		resp.LiveError = "cluster not connected — showing the stored finding only"
+		resp.LiveError = clusterLabel + " is not connected — showing the stored finding only"
 		respondJSON(w, http.StatusOK, resp)
 		return
 	}
@@ -186,7 +196,7 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	case integrations.FindingCVE:
 		images, err := collectAffectedImages(ctx, conn, rec)
 		if err != nil {
-			resp.LiveError = err.Error()
+			resp.LiveError = liveReadError(clusterLabel, err)
 			respondJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -195,7 +205,7 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 	case integrations.FindingMisconfig:
 		detail, err := collectComplianceDetail(ctx, conn, rec)
 		if err != nil {
-			resp.LiveError = err.Error()
+			resp.LiveError = liveReadError(clusterLabel, err)
 			respondJSON(w, http.StatusOK, resp)
 			return
 		}
@@ -206,6 +216,21 @@ func (h *handlers) handleFindingDetail(w http.ResponseWriter, r *http.Request) {
 		resp.Live = true
 	}
 	respondJSON(w, http.StatusOK, resp)
+}
+
+// liveReadError turns a failed live scanner re-read into a message safe to show
+// the operator. The common failure is an agent-proxy cluster whose agent went
+// offline: client-go wraps that as `Get "https://<uid>.agent.local/…" :
+// channel: no agent connected for cluster: <uid>` — the internal routing URL
+// and a UUID nobody recognizes. Collapse that whole family to a sentence that
+// names the cluster; leave a genuinely different error (an RBAC 403 on the CRD,
+// say) legible, since that one the operator can act on.
+func liveReadError(clusterLabel string, err error) string {
+	msg := err.Error()
+	if strings.Contains(msg, "no agent connected") || strings.Contains(msg, ".agent.local") {
+		return clusterLabel + " is not reachable right now — showing the stored finding only"
+	}
+	return msg
 }
 
 // findingDetailSource is the slice of *cluster.Connector this file needs —
