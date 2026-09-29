@@ -213,23 +213,40 @@ Grafana stays where it is.
 
 ```bash
 helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
-  --namespace kubebolt --create-namespace
+  --namespace kubebolt --create-namespace --wait
+kubectl -n kubebolt get secret kubebolt-admin-password \
+  -o jsonpath='{.data.password}' | base64 -d; echo
 kubectl -n kubebolt port-forward svc/kubebolt 3000:80
 ```
 
-Open <http://localhost:3000> and sign in as `admin`. The generated password:
+Open <http://localhost:3000> and sign in as `admin` with the printed password.
+`--wait` returns once the pods are ready, and by then the generated password is
+already in its Secret; the port-forward stays in the foreground (Ctrl+C stops
+it).
 
-```bash
-kubectl -n kubebolt get secret kubebolt-admin-password \
-  -o jsonpath='{.data.password}' | base64 -d; echo
-```
+Needs a default StorageClass: the chart creates two PVCs, 10 GiB for
+VictoriaMetrics and 1 GiB for KubeBolt's own data. On EKS, install the EBS CSI
+driver add-on first.
 
 The chart deploys the API, the web UI and a single-node VictoriaMetrics
-(10 GiB PVC, 30-day retention); history panels fill once the
-[agent](#connecting-clusters) (or a Prometheus `remote_write`) ships samples
-to it. A first-run wizard walks you through
-the password, Kobi, the agent and notifications — every step can be skipped.
+(10 GiB PVC, 30-day retention). A first-run wizard walks you through the
+password, Kobi, the agent and notifications — every step can be skipped.
 Chart reference: [deploy/helm/kubebolt](deploy/helm/kubebolt/README.md).
+
+**Live metrics vs. history.** Out of the box you get **live** CPU and memory,
+read from metrics-server — the current value only. Everything **over time**
+(history charts, network flows, the Cost tab) needs something shipping samples
+into that VictoriaMetrics: the [agent](#connecting-clusters), or a Prometheus
+`remote_write` once the receiver is enabled
+(`--set metrics.remoteWrite.enabled=true`). Without one, the history panels
+stay empty. For the agent next to this install it is one more command — no
+token, it dials the in-cluster ingest Service:
+
+```bash
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt \
+  --set backendUrl=kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090
+```
 
 ### On your laptop
 
