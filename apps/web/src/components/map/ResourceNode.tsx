@@ -58,6 +58,10 @@ const kindAccent: Record<string, { bg: string; text: string; border: string }> =
 
 const defaultAccent = { bg: 'rgba(255,255,255,0.04)', text: 'var(--kb-text-tertiary)', border: 'border-kb-border' }
 
+// A replica group draws one status dot per member; past this many the row
+// would grow the card without telling the operator anything new.
+const MAX_GROUP_DOTS = 36
+
 const OK_STATUSES = new Set(['running', 'ready', 'active', 'bound', 'succeeded', 'programmed', 'accepted', 'available'])
 const ERROR_STATUSES = new Set(['failed', 'error', 'crashloopbackoff', 'imagepullbackoff', 'evicted', 'oomkilled'])
 
@@ -79,6 +83,10 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
   const isOk = OK_STATUSES.has(status)
   const isError = ERROR_STATUSES.has(status)
   const pulsing = data.animationsEnabled !== false && !data.dimmed && (isOk || isError)
+  // Set on replica groups built by the cluster map (replicaGroups.ts).
+  const groupCount = Number(data.metadata?.groupCount || 0)
+  const pods = data.pods ?? []
+  const shownPods = groupCount > 0 ? pods.slice(0, MAX_GROUP_DOTS) : pods
 
   return (
     <div
@@ -91,6 +99,11 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
     >
       {/* Pulse halo — absolute under the card, same rounded corners.
           Green for healthy resources, red for errors. Reduced motion honored. */}
+      {/* A second card edge behind the first: reads as "several of these"
+          before the count is even noticed. */}
+      {groupCount > 0 && (
+        <div className="absolute inset-0 translate-x-[4px] translate-y-[4px] rounded-[10px] border border-kb-border bg-kb-card pointer-events-none" />
+      )}
       {pulsing && (
         <div
           className="absolute inset-0 rounded-[10px] pointer-events-none motion-reduce:hidden animate-kb-node-pulse"
@@ -112,6 +125,14 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
               'hover:bg-kb-card-hover shadow-[0_2px_8px_-3px_rgba(15,23,42,0.14)] dark:shadow-none'
         }`}
       >
+      {groupCount > 0 && (
+        <span
+          className="absolute -top-2 -right-2 min-w-[20px] h-[18px] px-1.5 rounded-full bg-status-info text-white text-[10px] font-mono font-semibold leading-[18px] text-center shadow-sm"
+          title={`${groupCount} grouped — click to show each one`}
+        >
+          ×{groupCount}
+        </span>
+      )}
       <Handle type="target" position={Position.Left} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-left-1" />
       <Handle type="source" position={Position.Right} className="!bg-kb-text-tertiary !border-kb-bg !w-1.5 !h-1.5 !-right-1" />
 
@@ -150,15 +171,18 @@ function ResourceNodeComponent({ data, selected }: NodeProps<ResourceNodeData>) 
       </div>
 
       {/* Pod dots */}
-      {data.pods && data.pods.length > 0 && (
-        <div className="flex gap-[3px] mb-1.5 flex-wrap">
-          {data.pods.map((pod) => (
+      {shownPods.length > 0 && (
+        <div className="flex gap-[3px] mb-1.5 flex-wrap items-center">
+          {shownPods.map((pod) => (
             <div
               key={pod.name}
               className={`w-[7px] h-[7px] rounded-full ${getDotColor(pod.status)}`}
               title={`${pod.name}: ${pod.status}`}
             />
           ))}
+          {pods.length > shownPods.length && (
+            <span className="text-[8px] font-mono text-kb-text-tertiary ml-0.5">+{pods.length - shownPods.length}</span>
+          )}
         </div>
       )}
 

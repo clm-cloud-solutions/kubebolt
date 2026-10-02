@@ -19,6 +19,13 @@ import {
 } from 'lucide-react'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
+import { RBACModePicker } from '@/components/admin/RBACModePicker'
+import {
+  buildSetupAgentHelmCommand,
+  resolveSetupAgentTarget,
+  setupAgentBlocked,
+  type AgentRBACMode,
+} from '@/components/setup/agentHelmCommand'
 import {
   CUSTOM_MODEL_VALUE,
   findModelOption,
@@ -673,6 +680,17 @@ function StepAgent() {
     staleTime: 30_000,
   })
 
+  // Where the agent installs and what it dials. In-cluster the backend has
+  // already discovered its agent-ingest Service; without it the chart's
+  // required backendUrl would be missing and `helm install` would fail.
+  const { data: installDefaults } = useQuery({
+    queryKey: ['agent-install-defaults'],
+    queryFn: () => api.getAgentInstallDefaults(),
+    staleTime: 60_000,
+  })
+  const target = resolveSetupAgentTarget(installDefaults)
+  const [rbacMode, setRbacMode] = useState<AgentRBACMode>('reader')
+
   const channelAuthMode = channel?.effective.agentAuthMode ?? 'disabled'
   const needsToken = channelAuthMode === 'enforced' || channelAuthMode === 'permissive'
 
@@ -687,7 +705,7 @@ function StepAgent() {
       return api.issueAgentTokenAndMaterializeSecret({
         tenantId,
         materialize: true, // first-run install into a backend-reachable cluster — create the Secret in one click
-        namespace: 'kubebolt',
+        namespace: target.namespace, // the Secret must live where the agent is installed
         secretName: 'kubebolt-agent-token',
         label: `wizard ${new Date().toISOString().slice(0, 10)}`,
       })
@@ -706,20 +724,16 @@ function StepAgent() {
     },
   })
 
-  // Helm command tailored to the auth posture. Without a token: bare
-  // install. With a token (after issueToken success): add auth.mode +
-  // auth.ingestTokenSecret so the Helm chart wires the Secret into the
-  // agent DaemonSet's projected volume.
-  const helmCmd = (() => {
-    const base = `helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \\
-  --namespace kubebolt --create-namespace`
-    if (issuedSecret) {
-      return `${base} \\
-  --set auth.mode=ingest-token \\
-  --set auth.ingestTokenSecret=${issuedSecret.secretName}`
-    }
-    return base
-  })()
+  // Helm command tailored to the target, the permission tier and the auth
+  // posture (see agentHelmCommand.ts). Operator mode is withheld until a
+  // token exists — cluster-admin through an unauthenticated channel is the
+  // one combination the Add cluster wizard refuses too.
+  const blocked = setupAgentBlocked(rbacMode, !!issuedSecret)
+  const helmCmd = buildSetupAgentHelmCommand({
+    target,
+    rbacMode,
+    tokenSecretName: issuedSecret?.secretName,
+  })
 
   function copy(key: string, text: string) {
     navigator.clipboard.writeText(text)
@@ -732,27 +746,44 @@ function StepAgent() {
       <div>
         <h2 className="text-base font-semibold text-kb-text-primary mb-1">Install the agent</h2>
         <p className="text-xs text-kb-text-secondary leading-relaxed">
-          The agent is a DaemonSet that ships kubelet metrics + Cilium flow events from each node into KubeBolt. The UI works without it but you'll miss network telemetry and per-node breakdowns.
+          The agent is a DaemonSet that ships kubelet metrics + Cilium flow events from each node into KubeBolt.
+          Without it you get live CPU and memory only — no history charts, network flows or cost.
         </p>
       </div>
 
-      {/* Auth posture banner — only renders when the channel is in
-          enforced/permissive. Tells the operator they need a token
-          BEFORE they paste the helm command, and offers the one-click
+      <div className="space-y-2">
+        <span className="text-[10px] font-mono font-semibold text-kb-text-tertiary uppercase tracking-wider">
+          Permissions
+        </span>
+        <RBACModePicker mode={rbacMode} onChange={setRbacMode} />
+      </div>
+
+      {/* Auth posture banner — renders when the channel is in
+          enforced/permissive, or when operator mode is picked (which needs
+          agent auth whatever the channel says). Tells the operator they need
+          a token BEFORE they paste the helm command, and offers the one-click
           issue button so they don't have to leave the wizard. */}
-      {needsToken && !issuedSecret && (
+      {(needsToken || rbacMode === 'operator') && !issuedSecret && (
         <div className="rounded-md border border-status-info-dim bg-status-info-dim/30 p-3 text-xs space-y-2">
           <div className="flex items-start gap-2 text-status-info">
             <KeyRound className="w-4 h-4 mt-0.5 shrink-0" />
             <div>
               <div className="font-semibold">
-                Channel auth: <code className="font-mono">{channelAuthMode}</code>
+                {needsToken ? (
+                  <>
+                    Channel auth: <code className="font-mono">{channelAuthMode}</code>
+                  </>
+                ) : (
+                  'Read + write needs agent auth'
+                )}
               </div>
               <div className="text-kb-text-secondary mt-0.5 leading-relaxed">
-                The backend is configured to require credentials. Generate an ingest token now
-                — the wizard will materialize a Kubernetes Secret in the{' '}
-                <code className="font-mono">kubebolt</code> namespace and add the right flags to
-                the helm command below.
+                {needsToken
+                  ? 'The backend is configured to require credentials.'
+                  : 'The agent would be cluster-admin scoped; it must authenticate to the backend.'}{' '}
+                Generate an ingest token now — the wizard will materialize a Kubernetes Secret in the{' '}
+                <code className="font-mono">{target.namespace}</code> namespace and add the right flags
+                to the helm command below.
               </div>
             </div>
           </div>
@@ -811,7 +842,8 @@ function StepAgent() {
           <button
             type="button"
             onClick={() => copy('helm', helmCmd)}
-            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-kb-text-secondary hover:bg-kb-elevated"
+            disabled={blocked}
+            className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-40"
           >
             {copiedKey === 'helm' ? (
               <>
@@ -826,15 +858,32 @@ function StepAgent() {
             )}
           </button>
         </div>
-        <pre className="bg-kb-bg border border-kb-border rounded-md p-3 text-[11px] font-mono text-kb-text-primary overflow-x-auto whitespace-pre">
+        {blocked ? (
+          <div className="flex items-start gap-2 rounded-md border border-status-warning/30 bg-status-warning/10 p-3 text-xs text-status-warning">
+            <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+            <span>
+              Generate the ingest token above first — the command for read + write is only shown once the agent can
+              authenticate.
+            </span>
+          </div>
+        ) : (
+          <pre className="bg-kb-bg border border-kb-border rounded-md p-3 text-[11px] font-mono text-kb-text-primary overflow-x-auto whitespace-pre">
 {helmCmd}
-        </pre>
+          </pre>
+        )}
+        {!target.inferred && (
+          <p className="text-[11px] text-status-warning leading-relaxed">
+            KubeBolt is not running inside a cluster, so it cannot tell which address the agent will reach it on.
+            Replace <code className="font-mono">{target.backendUrl}</code> with the host and gRPC port (9090) the
+            agent&apos;s cluster can dial.
+          </p>
+        )}
       </div>
 
       <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
         {needsToken
           ? 'Run the command above after the Secret has been created. Need more tokens? Administration → Agents & Ingest → Agent Tokens.'
-          : 'Channel auth is on disabled — no token needed. For multi-cluster fleets, switch the channel to enforced via Administration → Agents & Ingest → Configuration and re-run this wizard for token issuance.'}
+          : 'Channel auth is disabled — no token needed for metrics or read-only. For multi-cluster fleets, switch the channel to enforced via Administration → Agents & Ingest → Configuration and re-run this wizard for token issuance.'}
       </p>
     </div>
   )

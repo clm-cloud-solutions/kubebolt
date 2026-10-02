@@ -31,8 +31,9 @@
 # 1. The line below in the DaemonSet env:
 #       value: "PLACEHOLDER:9090"
 #    Replace PLACEHOLDER with your KubeBolt backend's gRPC host,
-#    e.g. "kubebolt.kubebolt.svc.cluster.local:9090" (in-cluster
-#    backend) or "host.docker.internal:9090" (Docker Desktop laptop).
+#    e.g. "kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090"
+#    (in-cluster backend: the agent-ingest Service, not the "kubebolt"
+#    web Service) or "host.docker.internal:9090" (Docker Desktop laptop).
 #
 # 2. Image tag (default v0.2.0). Pin to a specific release; "latest"
 #    is fine for dev loops but unstable for prod.

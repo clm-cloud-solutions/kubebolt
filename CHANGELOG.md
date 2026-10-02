@@ -4,6 +4,34 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.1] — 2026-10-02
+
+A cluster map you can read at any replica count. Drop-in, no migration. Full
+note: [docs/releases/v2.2.1.md](docs/releases/v2.2.1.md).
+
+### Changed
+
+- The cluster map groups healthy replicas of the same owner into one node with
+  a ×N badge and a status dot per replica, in Grid, Flow and Traffic. Unhealthy
+  pods, StatefulSet pods and pods behind a headless Service are never grouped.
+  A click opens a group; the Workloads section toggles Grouped / One per pod.
+- Traffic routes each flow onto its pod's group and sums it per hop.
+- Retired ReplicaSets and completed Jobs (with their pods) are hidden by
+  default in Grid and Flow; "History shown" brings them back. Failed Jobs and
+  rollouts in progress always show.
+- Off-screen map nodes are not mounted.
+
+### Fixed
+
+- A pod in CrashLoopBackOff no longer shows green on the map: topology Pod
+  nodes carry `metadata.ready` / `metadata.reason`, and headless Services
+  `metadata.headless`.
+- The first-run wizard's agent command installs: `backendUrl` from the
+  discovered agent-ingest Service, the chart's token keys
+  (`auth.ingestToken.existingSecret`) and a permission tier (`rbac.mode`). The
+  Add cluster "In-cluster backend" preset points at the agent-ingest Service
+  instead of the web one.
+
 ## [2.2.0] — 2026-09-28
 
 Kobi reads the whole product, and API tokens say which clusters they may

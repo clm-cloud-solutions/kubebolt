@@ -8,7 +8,9 @@ import { OpenCostModePicker } from '@/components/admin/OpenCostModePicker'
 // These are the shapes that typically work — the user picks the one
 // matching their deployment topology. Free text is always allowed.
 const backendPresets = [
-  { label: 'In-cluster backend (Helm release "kubebolt" in namespace "kubebolt")', value: 'kubebolt.kubebolt.svc.cluster.local:9090' },
+  // The gRPC ingest is its own Service (<release>-agent-ingest, port 9090) —
+  // the bare "kubebolt" Service is the web UI on port 80.
+  { label: 'In-cluster backend (Helm release "kubebolt" in namespace "kubebolt")', value: 'kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090' },
   { label: 'Backend on host (Docker Desktop)', value: 'host.docker.internal:9090' },
 ]
 

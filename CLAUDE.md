@@ -318,6 +318,8 @@ Three layout modes (`LayoutMode` in `components/map/ClusterMap.tsx`, default `fl
 
 In both modes, namespace regions are arranged in a grid of up to 3 columns (`NS_COLS`). Namespace regions are ReactFlow group nodes with child resource nodes. Supports filtering by resource type and namespace.
 
+**Replica grouping** (`components/map/replicaGroups.ts`, 2.2.1). Every layout draws `groupReplicas(topology)`, not the raw topology: healthy pods of the same owner (ReplicaSet / DaemonSet / Job, via `owns` edges) fold into one `group:Pod:<ownerId>` node with `metadata.groupCount` and a `pods` dot row; edges are rewritten onto the group and deduplicated. Never folded: pods with `metadata.ready != "true"` (drawn with `metadata.reason` as status — phase alone shows a CrashLoopBackOff pod as Running), StatefulSet pods, and pods `selects`-ed by a Service with `metadata.headless` — both set by `buildTopologyNodes` in `connector.go` (`podTopologyHealth`). Traffic groups too: `memberToGroup` routes each flow's pod id onto its group before the hop maps aggregate, and `buildTrafficLayout` takes the same resolver. Grid / Flow additionally drop history unless *History shown*: retired ReplicaSets (`0/0`, owned by a Deployment) and `Complete` Jobs with their pods (`withoutHistory`). Clicking a `group:` id expands it (`expandedGroups`, per visit); *Grouped* and *History* are prefs (`kb-map-group-replicas`, `kb-map-show-history`). The canvas sets `onlyRenderVisibleElements`.
+
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
