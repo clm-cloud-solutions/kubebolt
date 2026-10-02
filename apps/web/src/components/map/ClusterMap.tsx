@@ -14,7 +14,7 @@ import ReactFlow, {
 } from 'reactflow'
 import 'reactflow/dist/style.css'
 import dagre from '@dagrejs/dagre'
-import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight, SlidersHorizontal, ChevronLeft, Activity, Minimize2, Maximize2 } from 'lucide-react'
+import { LayoutGrid, GitBranch, Waypoints, Zap, ZapOff, RotateCcw, Lock, ArrowRight, SlidersHorizontal, ChevronLeft, Activity, Minimize2, Maximize2, Layers, History } from 'lucide-react'
 import { useTopology } from '@/hooks/useResources'
 import { useFlowEdges } from '@/hooks/useFlowEdges'
 import { api } from '@/services/api'
@@ -28,6 +28,7 @@ import { NodeDetailPanel } from './NodeDetailPanel'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 import type { CopilotTriggerPayload } from '@/services/copilot/triggers'
 import { ExternalEndpointDetailPanel } from './ExternalEndpointDetailPanel'
+import { GROUP_ID_PREFIX, groupReplicas, withoutHistory } from './replicaGroups'
 import type { TopologyNode, TopologyEdge } from '@/types/kubernetes'
 import type { L7Summary } from '@/services/api'
 
@@ -630,6 +631,9 @@ function buildTrafficLayout(
     ratePerSec: number;
   }[],
   collapsed: Set<string>,
+  // Maps a flow's pod id onto the node that stands for it — its replica group
+  // when the pod was folded into one, else itself.
+  resolve: (podId: string) => string = (id) => id,
 ) {
   const groups = sortNamespacesByTrafficDirection(
     groupByNamespace(filtered),
@@ -692,8 +696,9 @@ function buildTrafficLayout(
     // middle rank even when they receive no direct ingress.
     for (const f of flowEdges) {
       if (f.srcNamespace !== ns || f.dstNamespace !== ns) continue
-      const srcId = `Pod/${f.srcNamespace}/${f.srcPod}`
-      const dstId = `Pod/${f.dstNamespace}/${f.dstPod}`
+      const srcId = resolve(`Pod/${f.srcNamespace}/${f.srcPod}`)
+      const dstId = resolve(`Pod/${f.dstNamespace}/${f.dstPod}`)
+      if (srcId === dstId) continue
       if (!nsIds.has(srcId) || !nsIds.has(dstId)) continue
       const svcs = servicesSelectingPod.get(dstId)
       if (svcs && svcs.length > 0 && nsIds.has(svcs[0])) {
@@ -827,6 +832,8 @@ const PREF_ANIMATIONS = 'kb-map-animations'
 const PREF_LAYOUT = 'kb-map-layout'
 const PREF_TRAFFIC_WINDOW = 'kb-map-traffic-window'
 const PREF_COLLAPSED_NS = 'kb-map-collapsed-ns'
+const PREF_GROUP_REPLICAS = 'kb-map-group-replicas'
+const PREF_SHOW_HISTORY = 'kb-map-show-history'
 
 // Collapsed-namespace persistence — a JSON array of namespace names the user
 // has collapsed to super-nodes. Bad/missing data returns an empty Set (all
@@ -940,6 +947,15 @@ function ClusterMapInner() {
   const [nsFilterOpen, setNsFilterOpen] = useState(false)
   const [layoutMode, setLayoutMode] = useState<LayoutMode>(() => (loadPref(PREF_LAYOUT, 'flow') as LayoutMode))
   const [animationsEnabled, setAnimationsEnabled] = useState(() => loadPref(PREF_ANIMATIONS, 'on') !== 'off')
+  // Replica grouping (finding #34): on by default, persisted like the other
+  // view preferences. `expandedGroups` is per visit — a group the operator
+  // opened stays open until they regroup, but a reload starts compact again.
+  const [groupReplicasOn, setGroupReplicasOn] = useState(() => loadPref(PREF_GROUP_REPLICAS, 'on') !== 'off')
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  useEffect(() => { savePref(PREF_GROUP_REPLICAS, groupReplicasOn ? 'on' : 'off') }, [groupReplicasOn])
+  // Retired ReplicaSets and completed Jobs are hidden unless asked for.
+  const [showHistory, setShowHistory] = useState(() => loadPref(PREF_SHOW_HISTORY, 'off') === 'on')
+  useEffect(() => { savePref(PREF_SHOW_HISTORY, showHistory ? 'on' : 'off') }, [showHistory])
   // Config panel collapsed state — when on, the panel shrinks to a small
   // icon-only button at top-left, giving the map canvas more room.
   // Persisted so the operator's choice survives reloads.
@@ -1122,6 +1138,34 @@ function ClusterMapInner() {
 
   const showAllNamespaces = useCallback(() => setVisibleNamespaces(null), [])
 
+  // The graph every layout draws: the topology with interchangeable replicas
+  // folded (see replicaGroups.ts). Traffic folds them too — a Service balances
+  // over its replicas, so one node per workload is the honest picture — and
+  // routes each flow's pod onto its group through memberToGroup.
+  const graph = useMemo(() => {
+    const nodes = topology?.nodes ?? []
+    const edges = topology?.edges ?? []
+    const none = new Map<string, string[]>()
+    if (layoutMode === 'traffic') {
+      // Traffic shows only pods seen in flows, never ReplicaSets or Jobs, so
+      // the history rule has nothing to hide there.
+      return groupReplicasOn
+        ? groupReplicas(nodes, edges, expandedGroups, { showHistory: true })
+        : { nodes, edges, members: none }
+    }
+    if (!groupReplicasOn) {
+      return { ...(showHistory ? { nodes, edges } : withoutHistory(nodes, edges)), members: none }
+    }
+    return groupReplicas(nodes, edges, expandedGroups, { showHistory })
+  }, [topology?.nodes, topology?.edges, groupReplicasOn, showHistory, layoutMode, expandedGroups])
+
+  // pod id → the group node it was folded into, for edges that name pods.
+  const memberToGroup = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const [groupId, ids] of graph.members) for (const id of ids) m.set(id, groupId)
+    return m
+  }, [graph])
+
   // Compute the base layout from topology + filters. This doesn't include
   // user drag overrides — those are applied downstream via useNodesState.
   const computedNodes = useMemo(() => {
@@ -1138,12 +1182,13 @@ function ClusterMapInner() {
       // (no agent / no Cilium / no traffic). Showing a partial
       // backdrop competes with the CTA visually.
       const effectiveHidden = new Set<string>([...hiddenKinds, ...TRAFFIC_HIDDEN_KINDS])
-      const kindFiltered = filterNodes(topology.nodes, effectiveHidden, visibleNamespaces)
+      const kindFiltered = filterNodes(graph.nodes, effectiveHidden, visibleNamespaces)
       const flows = flowData?.edges || []
+      const resolve = (podId: string) => memberToGroup.get(podId) ?? podId
       const flowPodIds = new Set<string>()
       for (const f of flows) {
-        flowPodIds.add(`Pod/${f.srcNamespace}/${f.srcPod}`)
-        flowPodIds.add(`Pod/${f.dstNamespace}/${f.dstPod}`)
+        flowPodIds.add(resolve(`Pod/${f.srcNamespace}/${f.srcPod}`))
+        flowPodIds.add(resolve(`Pod/${f.dstNamespace}/${f.dstPod}`))
       }
       const serviceIds = new Set<string>()
       // External entry points (Ingress / Gateway / HTTPRoute) whose
@@ -1152,12 +1197,12 @@ function ClusterMapInner() {
       // "outside → Ingress → Service → Pods" without drowning the
       // map in every Ingress in the cluster.
       const externalEntryIds = new Set<string>()
-      for (const e of topology.edges || []) {
+      for (const e of graph.edges) {
         if (e.type === 'selects' && flowPodIds.has(e.target)) {
           serviceIds.add(e.source)
         }
       }
-      for (const e of topology.edges || []) {
+      for (const e of graph.edges) {
         if (e.type === 'routes' && serviceIds.has(e.target)) {
           externalEntryIds.add(e.source)
         }
@@ -1194,7 +1239,7 @@ function ClusterMapInner() {
       const externalNodes: TopologyNode[] = []
       for (const f of flows) {
         if (f.dstPod) continue
-        if (!visibleSrcIds.has(`Pod/${f.srcNamespace}/${f.srcPod}`)) continue
+        if (!visibleSrcIds.has(resolve(`Pod/${f.srcNamespace}/${f.srcPod}`))) continue
         const label = f.dstFqdn || f.dstIp
         if (!label) continue
         const key = f.dstFqdn ? `fqdn:${f.dstFqdn}` : `ip:${f.dstIp}`
@@ -1211,14 +1256,14 @@ function ClusterMapInner() {
           metadata: f.dstFqdn && f.dstIp ? { ip: f.dstIp } : undefined,
         } as TopologyNode)
       }
-      return buildTrafficLayout([...trafficVisible, ...externalNodes], topology.edges || [], flows, collapsedNs)
+      return buildTrafficLayout([...trafficVisible, ...externalNodes], graph.edges, flows, collapsedNs, resolve)
     }
-    const filtered = filterNodes(topology.nodes, hiddenKinds, visibleNamespaces)
+    const filtered = filterNodes(graph.nodes, hiddenKinds, visibleNamespaces)
     if (layoutMode === 'flow') {
-      return buildFlowLayout(filtered, topology.edges || [], collapsedNs)
+      return buildFlowLayout(filtered, graph.edges, collapsedNs)
     }
     return buildGridLayout(filtered, collapsedNs)
-  }, [topology?.nodes, topology?.edges, hiddenKinds, visibleNamespaces, layoutMode, flowData?.edges, collapsedNs])
+  }, [topology?.nodes, graph, memberToGroup, hiddenKinds, visibleNamespaces, layoutMode, flowData?.edges, collapsedNs])
 
   // Collision resolution after an expand. `computedNodes` now carries the grown
   // region's real size; every region is pinned (see toggleNsCollapse), so we
@@ -1329,16 +1374,14 @@ function ClusterMapInner() {
     if (!topology?.edges) return []
     const visibleIds = new Set(computedNodes.map((n) => n.id))
     const nodeStatusMap = new Map<string, string>()
-    if (topology?.nodes) {
-      for (const n of topology.nodes) {
-        nodeStatusMap.set(n.id, n.status || '')
-      }
+    for (const n of graph.nodes) {
+      nodeStatusMap.set(n.id, n.status || '')
     }
     // In Traffic mode the map is about the flow itself. 'selects' and
     // 'owns' duplicate or clutter the intent edges and are hidden.
     // 'routes' (Ingress/Gateway → Service) stays, so external entry
     // points connect visually to the rest of the flow graph.
-    const structural: Edge[] = topology.edges
+    const structural: Edge[] = graph.edges
       .filter((e) => visibleIds.has(e.source) && visibleIds.has(e.target))
       .filter((e) => {
         if (layoutMode === 'traffic' && (e.type === 'selects' || e.type === 'owns')) {
@@ -1379,7 +1422,7 @@ function ClusterMapInner() {
       // side shows one fat line per (caller, Service, verdict); the
       // per-pod LB distribution appears on the second hop.
       const serviceForPod = new Map<string, string>()
-      for (const e of topology.edges) {
+      for (const e of graph.edges) {
         if (e.type !== 'selects') continue
         if (!serviceForPod.has(e.target)) serviceForPod.set(e.target, e.source)
       }
@@ -1412,8 +1455,11 @@ function ClusterMapInner() {
       const secondHop = new Map<string, Hop>()
       const directEdges = new Map<string, Hop>()
 
+      // A pod folded into a replica group is drawn as the group; the hop maps
+      // below then sum its traffic with its siblings' under one edge.
+      const resolve = (podId: string) => memberToGroup.get(podId) ?? podId
       for (const f of flowData.edges) {
-        const srcId = `Pod/${f.srcNamespace}/${f.srcPod}`
+        const srcId = resolve(`Pod/${f.srcNamespace}/${f.srcPod}`)
 
         // Pod-to-external flow: no dst pod, dst is an IP or FQDN. The
         // destination is a synthetic ExternalEndpoint node we injected
@@ -1433,7 +1479,8 @@ function ClusterMapInner() {
           continue
         }
 
-        const dstId = `Pod/${f.dstNamespace}/${f.dstPod}`
+        const dstId = resolve(`Pod/${f.dstNamespace}/${f.dstPod}`)
+        if (srcId === dstId) continue // replicas of one workload talking to each other
         if (!visibleIds.has(srcId) || !visibleIds.has(dstId)) continue
 
         const svcId = serviceForPod.get(dstId)
@@ -1490,26 +1537,39 @@ function ClusterMapInner() {
       for (const hop of secondHop.values()) pushHop(hop, 'intent')
       for (const hop of directEdges.values()) pushHop(hop, 'flow')
     } else {
-      // Grid / Flow modes: keep the original pod-to-pod shape. Each
-      // edge sources from pod_flow_events_total so the id is unique
-      // across (src, dst, verdict).
+      // Grid / Flow modes: pod-to-pod, except that a pod folded into a
+      // replica group is drawn as its group. Several pods can then map to the
+      // same (source, target) pair, so rates are aggregated per pair and
+      // verdict — two edges with one id would render as stale particles.
+      const pairs = new Map<string, { src: string; dst: string; verdict: string; rate: number; l7?: L7Aggregator }>()
       for (const f of flowData.edges) {
-        const sourceId = `Pod/${f.srcNamespace}/${f.srcPod}`
-        const targetId = `Pod/${f.dstNamespace}/${f.dstPod}`
+        const podSrc = `Pod/${f.srcNamespace}/${f.srcPod}`
+        const podDst = `Pod/${f.dstNamespace}/${f.dstPod}`
+        const sourceId = memberToGroup.get(podSrc) ?? podSrc
+        const targetId = memberToGroup.get(podDst) ?? podDst
+        if (sourceId === targetId) continue
         if (!visibleIds.has(sourceId) || !visibleIds.has(targetId)) continue
+        const key = `${sourceId}||${targetId}||${f.verdict}`
+        const pair = pairs.get(key) ?? { src: sourceId, dst: targetId, verdict: f.verdict, rate: 0 }
+        pair.rate += f.ratePerSec
+        mergeL7(pair, f.l7)
+        pairs.set(key, pair)
+      }
+      for (const pair of pairs.values()) {
+        const l7 = pair.l7 ? finalizeL7(pair.l7) : undefined
         trafficEdges.push({
-          id: `flow/${f.srcNamespace}/${f.srcPod}->${f.dstNamespace}/${f.dstPod}/${f.verdict}`,
-          source: sourceId,
-          target: targetId,
+          id: `flow/${pair.src}->${pair.dst}/${pair.verdict}`,
+          source: pair.src,
+          target: pair.dst,
           type: 'connection',
           data: {
             edgeType: 'traffic',
-            ratePerSec: f.ratePerSec,
-            verdict: f.verdict,
-            l7: f.l7,
-            tooltip: buildTrafficTooltip(f.ratePerSec, f.verdict, f.l7),
-            sourceStatus: nodeStatusMap.get(sourceId) || '',
-            targetStatus: nodeStatusMap.get(targetId) || '',
+            ratePerSec: pair.rate,
+            verdict: pair.verdict,
+            l7,
+            tooltip: buildTrafficTooltip(pair.rate, pair.verdict, l7),
+            sourceStatus: nodeStatusMap.get(pair.src) || '',
+            targetStatus: nodeStatusMap.get(pair.dst) || '',
             animationsEnabled,
           },
           animated: animationsEnabled,
@@ -1541,7 +1601,7 @@ function ClusterMapInner() {
     }
 
     return [...structural, ...trafficEdges]
-  }, [topology?.edges, topology?.nodes, computedNodes, animationsEnabled, trafficEnabled, hiddenEdgeGroups, flowData, layoutMode])
+  }, [topology?.edges, graph, memberToGroup, computedNodes, animationsEnabled, trafficEnabled, hiddenEdgeGroups, flowData, layoutMode])
 
   // Final safety net: only render edges whose endpoints are in the
   // nodes array ReactFlow is about to paint. Without this, any mismatch
@@ -1621,6 +1681,12 @@ function ClusterMapInner() {
         const fqdn = node.id.startsWith('ext:fqdn:') ? node.id.slice('ext:fqdn:'.length) : undefined
         setSelectedExternal({ id: node.id, label, fqdn })
         setSelectedNode(null)
+        return
+      }
+      // A replica group opens into its members. It is not a Kubernetes object,
+      // so there is no detail panel to show for it.
+      if (node.id.startsWith(GROUP_ID_PREFIX)) {
+        setExpandedGroups((prev) => new Set(prev).add(node.id))
         return
       }
       const topoNode = topology?.nodes.find((n) => n.id === node.id)
@@ -1764,6 +1830,9 @@ function ClusterMapInner() {
         onEdgeMouseEnter={onEdgeMouseEnter}
         onEdgeMouseLeave={onEdgeMouseLeave}
         onPaneClick={() => { setSelectedNode(null); setSelectedExternal(null) }}
+        // Off-screen nodes are not mounted. Grouping already keeps the count
+        // down; this keeps a large cluster from paying for every card at once.
+        onlyRenderVisibleElements
         fitView
         fitViewOptions={{ padding: 0.1 }}
         proOptions={{ hideAttribution: true }}
@@ -1937,6 +2006,52 @@ function ClusterMapInner() {
             )}
           </div>
         )}
+
+        {/* Replica grouping (all layouts) and history (Grid / Flow) —
+            finding #34. */}
+        <div>
+          <div className="text-[11px] font-semibold text-kb-text-secondary mb-1.5">Workloads</div>
+          <div className="flex rounded-md border border-kb-border overflow-hidden">
+            <button
+              onClick={() => { setGroupReplicasOn((v) => !v); setExpandedGroups(new Set()) }}
+              title={groupReplicasOn
+                ? 'Healthy replicas of the same workload are shown as one node with a count. Click a group to open it.'
+                : 'Group healthy replicas of the same workload into one node'}
+              className={`flex-1 flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors ${
+                groupReplicasOn ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+              }`}
+            >
+              <Layers className="w-3 h-3" />
+              {groupReplicasOn ? 'Grouped' : 'One per pod'}
+            </button>
+            {groupReplicasOn && expandedGroups.size > 0 && (
+              <button
+                onClick={() => setExpandedGroups(new Set())}
+                title={`Fold the ${expandedGroups.size} opened group(s) back`}
+                className="flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono transition-colors border-l border-kb-border bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary"
+              >
+                <Minimize2 className="w-3 h-3" />
+                Regroup
+              </button>
+            )}
+          </div>
+          {/* Traffic never shows ReplicaSets or Jobs, so history has
+              nothing to toggle there. */}
+          {layoutMode !== 'traffic' && (
+            <button
+              onClick={() => setShowHistory((v) => !v)}
+              title={showHistory
+                ? 'Hide retired ReplicaSets and completed Jobs'
+                : 'Show retired ReplicaSets (old Deployment revisions) and completed Jobs with their pods. Failed Jobs and rollouts in progress are always shown.'}
+              className={`mt-1 w-full flex items-center justify-center gap-1.5 px-2 py-1 text-[10px] font-mono rounded-md border border-kb-border transition-colors ${
+                showHistory ? 'bg-status-info-dim text-status-info' : 'bg-kb-elevated/30 text-kb-text-tertiary hover:text-kb-text-secondary'
+              }`}
+            >
+              <History className="w-3 h-3" />
+              {showHistory ? 'History shown' : 'History hidden'}
+            </button>
+          )}
+        </div>
 
         {/* Edge category filters */}
         <div>

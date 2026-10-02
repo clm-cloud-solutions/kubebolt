@@ -1005,6 +1005,7 @@ func (c *Connector) buildTopologyNodes() {
 				Name:      pod.Name,
 				Namespace: pod.Namespace,
 				Status:    string(pod.Status.Phase),
+				Metadata:  podTopologyHealth(pod),
 			})
 		}
 	}
@@ -1044,13 +1045,20 @@ func (c *Connector) buildTopologyNodes() {
 	if c.serviceLister != nil {
 		services, _ := c.serviceLister.List(everythingSelector())
 		for _, svc := range services {
-			c.graph.AddNode(models.TopologyNode{
+			node := models.TopologyNode{
 				ID:        nodeID("Service", svc.Namespace, svc.Name),
 				Type:      "Service",
 				Name:      svc.Name,
 				Namespace: svc.Namespace,
 				Status:    string(svc.Spec.Type),
-			})
+			}
+			// A headless Service does no load balancing: clients pick a pod
+			// by IP, so the pods behind it are not interchangeable and the
+			// map must not fold them into one replica group.
+			if svc.Spec.ClusterIP == corev1.ClusterIPNone {
+				node.Metadata = map[string]string{"headless": "true"}
+			}
+			c.graph.AddNode(node)
 		}
 	}
 
@@ -3035,6 +3043,31 @@ func itemFullyReady(item map[string]interface{}) bool {
 		return true
 	}
 	return ready >= total
+}
+
+// podTopologyHealth is what the cluster map needs to tell a healthy replica
+// from one worth drawing on its own. The phase alone cannot: a pod in
+// CrashLoopBackOff is still phase Running. "ready" is true for a Running pod
+// with every container ready, or a Succeeded one; "reason" is the first
+// container waiting reason, the same string the pods list shows.
+func podTopologyHealth(pod *corev1.Pod) map[string]string {
+	allReady := len(pod.Status.ContainerStatuses) > 0
+	reason := ""
+	for _, cs := range pod.Status.ContainerStatuses {
+		if !cs.Ready {
+			allReady = false
+		}
+		if reason == "" && cs.State.Waiting != nil {
+			reason = cs.State.Waiting.Reason
+		}
+	}
+	ready := pod.Status.Phase == corev1.PodSucceeded ||
+		(pod.Status.Phase == corev1.PodRunning && allReady)
+	meta := map[string]string{"ready": strconv.FormatBool(ready)}
+	if reason != "" {
+		meta["reason"] = reason
+	}
+	return meta
 }
 
 func podToMap(pod *corev1.Pod) map[string]interface{} {
