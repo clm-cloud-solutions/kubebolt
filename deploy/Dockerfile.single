@@ -14,7 +14,7 @@
 # The build context must contain dist/kubebolt-linux-amd64 and
 # dist/kubebolt-linux-arm64 (produced by `make build-all`).
 
-FROM alpine:3.21
+FROM alpine:3.22
 
 # Target platform injected by buildx (linux/amd64 or linux/arm64)
 ARG TARGETOS
