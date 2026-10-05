@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { RotateCw, X } from 'lucide-react'
-import { api, type OperationalBurst, type ShiftReport } from '@/services/api'
+import { api, type InsightEpisode, type OperationalBurst, type ShiftReport } from '@/services/api'
 import { LABELS as CAPABILITY_LABELS } from '@/ee/CapabilitiesSection'
 
 // «While you were away» — Fase 3's shift report, restyled to the Home design
@@ -193,34 +193,209 @@ function toneSpan(p: Phrase, i: number): ReactNode {
 }
 
 // ── the section (inside the greeting card) ──────────────────────────────────
+//
+// The site's «While you were away»: a timeline of the window with one dot per
+// episode that opened in it, then the few episodes worth a row — still open
+// first (they carry «Review →»), then what resolved, then what expired — and
+// the counted summary for everything else. The narrative, the capability
+// banners, the suppression counters and the coverage line stay as they were.
+
+const SEV_COLOR: Record<string, string> = { critical: '#ef4056', warning: '#f5a623', info: '#4c9aff' }
+const OK = '#22d68a'
+
+function shortResource(resource: string): string {
+  const parts = resource.split('/')
+  return parts[parts.length - 1] || resource
+}
+
+function clock(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+// A time of day alone reads as "today": anything older carries its date.
+function when(iso: string): string {
+  const d = new Date(iso)
+  if (d.toDateString() === new Date().toDateString()) return clock(iso)
+  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+}
+
+const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 }
+
+// Which episodes earn one of the three rows. The rows are a sample of the
+// window, not its top three: three resolved rows on a morning with eight
+// still open would say "all handled". So the first row goes to the worst
+// thing still open (opened in the window before carried over from before
+// it), the second to the worst thing that resolved, and the third to the
+// best of what is left — each pick worst severity first, then most recent.
+function pickRows(episodes: InsightEpisode[], from: number, n: number): InsightEpisode[] {
+  const sev = (e: InsightEpisode) => SEV_RANK[e.maxSeverity] ?? 3
+  const rank = (e: InsightEpisode) => {
+    const group =
+      e.status === 'firing' ? (Date.parse(e.firstSeen) >= from ? 0 : 2) : e.status === 'resolved' ? 1 : 3
+    return group * 10 + sev(e)
+  }
+  const sorted = [...episodes].sort(
+    (a, b) => rank(a) - rank(b) || Date.parse(b.lastSeen) - Date.parse(a.lastSeen),
+  )
+  const picked: InsightEpisode[] = []
+  for (const want of ['firing', 'resolved'] as const) {
+    const hit = sorted.find((e) => e.status === want)
+    if (hit && picked.length < n) picked.push(hit)
+  }
+  for (const e of sorted) {
+    if (picked.length >= n) break
+    if (!picked.includes(e)) picked.push(e)
+  }
+  // Shown open first — the row that asks for something leads.
+  const shown = (e: InsightEpisode) => (e.status === 'firing' ? 0 : e.status === 'resolved' ? 10 : 20) + sev(e)
+  return picked.sort((a, b) => shown(a) - shown(b))
+}
+
+function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolean }) {
+  const firing = e.status === 'firing'
+  const resolved = e.status === 'resolved'
+  const color = firing ? (SEV_COLOR[e.maxSeverity] ?? SEV_COLOR.warning) : resolved ? OK : 'var(--kb-text-tertiary)'
+  const start = Date.parse(e.firstSeen)
+  const end = resolved && e.resolvedAt ? Date.parse(e.resolvedAt) : firing ? Date.now() : Date.parse(e.lastSeen)
+  const dur = fmtDur(Math.max(0, Math.round((end - start) / 1000)))
+  const where = showCluster && e.clusterName ? ` · ${e.clusterName.replace(/ \(via agent\)$/, '')}` : ''
+  const sub = firing
+    ? `firing since ${when(e.firstSeen)} · ${dur}${where}`
+    : resolved
+      ? `resolved ${when(e.resolvedAt ?? e.lastSeen)} · after ${dur}${where}`
+      : `expired · no signal since ${when(e.lastSeen)}${where}`
+  return (
+    <div
+      className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 min-w-0"
+      style={{ background: 'var(--kb-surface)', boxShadow: firing ? `inset 0 0 0 1px color-mix(in srgb, ${color} 22%, transparent)` : undefined }}
+    >
+      <span
+        className="w-7 h-7 rounded-full flex items-center justify-center shrink-0 text-[12px] font-semibold"
+        style={{ color, background: `color-mix(in srgb, ${color} 14%, transparent)` }}
+        aria-hidden
+      >
+        {firing ? '!' : resolved ? '✓' : '↺'}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="text-[13.5px] text-kb-text-primary truncate">
+          <span className="font-semibold">{shortResource(e.resource)}</span>
+          <span className="text-kb-text-secondary"> · {e.title || e.ruleId}</span>
+        </div>
+        <div className="text-[11px] font-mono text-kb-text-tertiary truncate">{sub}</div>
+      </div>
+      {firing ? (
+        <Link
+          to={`/insights/episodes/${e.id}?from=active`}
+          className="shrink-0 px-3 py-1 rounded-full text-[11px] font-mono transition-colors hover:opacity-80"
+          style={{ color, boxShadow: `inset 0 0 0 1px color-mix(in srgb, ${color} 55%, transparent)` }}
+        >
+          Review →
+        </Link>
+      ) : (
+        <Link
+          to={`/insights/episodes/${e.id}`}
+          className="shrink-0 text-[11px] font-mono hover:opacity-80"
+          style={{ color }}
+        >
+          {resolved ? e.resolutionKind || 'resolved' : e.status}
+        </Link>
+      )}
+    </div>
+  )
+}
+
+// The window as a track, one dot per moment something opened. Episodes that
+// open together (a node rotation opens a dozen) share a dot, which grows with
+// the count and takes the worst state among them.
+function dotState(e: InsightEpisode): number {
+  if (e.status === 'firing') return e.maxSeverity === 'critical' ? 0 : 1
+  return e.status === 'resolved' ? 2 : 3
+}
+const DOT_COLOR = [SEV_COLOR.critical, SEV_COLOR.warning, OK, 'var(--kb-text-tertiary)']
+
+function Timeline({ episodes, from, to }: { episodes: InsightEpisode[]; from: string; to: string }) {
+  const t0 = Date.parse(from)
+  const t1 = Date.parse(to)
+  const span = t1 - t0
+  if (!(span > 0)) return null
+  const buckets = new Map<number, { n: number; state: number }>()
+  for (const e of episodes) {
+    const t = Date.parse(e.firstSeen)
+    if (t < t0) continue
+    const k = Math.round(((t - t0) / span) * 120)
+    const cur = buckets.get(k)
+    buckets.set(k, { n: (cur?.n ?? 0) + 1, state: Math.min(cur?.state ?? 3, dotState(e)) })
+  }
+  if (buckets.size === 0) return null
+  return (
+    <div className="mt-1 mb-3">
+      <div className="relative h-4">
+        <div className="absolute inset-x-0 top-1/2 h-[3px] -translate-y-1/2 rounded-full" style={{ background: 'var(--kb-bar-track)' }} />
+        {[...buckets.entries()].map(([k, d]) => {
+          const size = Math.min(14, 7 + Math.log2(d.n) * 2)
+          return (
+            <span
+              key={k}
+              title={`${d.n} opened`}
+              className="absolute top-1/2 rounded-full -translate-x-1/2 -translate-y-1/2"
+              style={{ left: `${(k / 120) * 100}%`, width: size, height: size, background: DOT_COLOR[d.state], opacity: d.state < 2 ? 1 : 0.8 }}
+            />
+          )
+        })}
+      </div>
+      <div className="mt-0.5 flex justify-between text-[10px] font-mono text-kb-text-tertiary">
+        <span>{fmtDur(Math.round(span / 1000)).replace(/ 0m$/, '')} ago</span>
+        <span>now</span>
+      </div>
+    </div>
+  )
+}
 
 export function ShiftReportSection({
   report,
   dismissed,
   dismiss,
+  visibleIds,
 }: {
   report: ShiftReport | null
   dismissed: boolean
   dismiss: () => void
+  // The team lens: episode rows fold over the same clusters as the page.
+  visibleIds?: string[]
 }) {
+  const quiet = report ? isQuietShift(report) : true
+  const episodesQ = useQuery({
+    queryKey: ['shift-report', 'episodes', report?.windowFrom, report?.windowTo],
+    queryFn: () => api.getInsightEpisodes({ since: report!.windowFrom, until: report!.windowTo, cluster: 'all', limit: 300 }),
+    enabled: !!report && !dismissed && !quiet,
+    staleTime: Infinity,
+    retry: false,
+  })
   if (!report || dismissed) return null
-  const quiet = isQuietShift(report)
   const e = report.episodes
   const names = report.clusterNames ?? {}
   const windowLabel = report.firstShift
     ? 'your first shift — the last 24h'
-    : `${new Date(report.windowFrom).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} → ${new Date(report.windowTo).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })} · since your last visit`
+    : `since your last visit · ${when(report.windowFrom)} → now`
 
   const ingestTrouble = report.capabilities.some(
     (c) => (c.id === 'ingest_caps' || c.id === 'active_series') && c.status === 'degraded',
   )
   const bannerCaps = report.capabilities.filter((c) => c.id in CAP_ACTIONS && c.status !== 'near')
 
+  const from = Date.parse(report.windowFrom)
+  const lens = visibleIds ? new Set(visibleIds) : null
+  const episodes = (episodesQ.data?.episodes ?? [])
+    .filter((ep) => ep.status !== 'superseded')
+    .filter((ep) => !lens || lens.has(ep.clusterId))
+  const rows = pickRows(episodes, from, 3)
+  const multiCluster = new Set(episodes.map((ep) => ep.clusterId)).size > 1
+  const more = episodes.length - rows.length
+
   return (
-    <div className="relative bg-kb-card border-t border-kb-border px-5 py-4">
-      {/* Header row */}
+    <div className="relative px-5 pt-3 pb-4">
       <div className="flex items-baseline gap-3 flex-wrap mb-2">
-        <h2 className="text-[15px] font-bold text-kb-text-primary">While you were away</h2>
+        <h2 className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-kb-text-secondary">While you were away</h2>
         <span className="text-[10.5px] font-mono text-kb-text-tertiary">{windowLabel}</span>
         <span className="flex-1" />
         <button
@@ -233,6 +408,8 @@ export function ShiftReportSection({
         </button>
       </div>
 
+      {!quiet && <Timeline episodes={episodes} from={report.windowFrom} to={report.windowTo} />}
+
       {quiet ? (
         <p className="text-[12.5px] text-kb-text-secondary">
           <span className="font-medium text-status-ok">All quiet</span> — nothing opened, resolved
@@ -242,7 +419,7 @@ export function ShiftReportSection({
         <div className="space-y-2.5">
           {/* Narrative: one sentence per burst, the straggler linked. */}
           {report.bursts.length > 0 && (
-            <p className="text-[13px] text-kb-text-secondary leading-relaxed max-w-[72ch]">
+            <p className="text-[13px] text-kb-text-secondary leading-relaxed max-w-[90ch]">
               {report.bursts.map((b, bi) => (
                 <span key={b.id}>
                   {bi > 0 && ' '}
@@ -269,25 +446,37 @@ export function ShiftReportSection({
             </p>
           )}
 
-          {/* Counted summary — the mock's «169 se resolvieron solos» line. */}
-          <p className="text-[13px] font-mono">
-            <span className="text-status-ok font-semibold">
-              {e.autoRecovered.toLocaleString()} finding{e.autoRecovered === 1 ? '' : 's'} resolved on their own.
-            </span>{' '}
+          {rows.length > 0 && (
+            <div className="space-y-1.5">
+              {rows.map((ep) => (
+                <EpisodeRow key={ep.id} e={ep} showCluster={multiCluster} />
+              ))}
+            </div>
+          )}
+
+          {/* Counted summary — everything the rows above do not show. */}
+          <p className="text-[12px] font-mono">
+            <span className="text-status-ok">
+              {e.autoRecovered.toLocaleString()} resolved on their own
+            </span>
             <span className="text-kb-text-secondary">
+              {' · '}
               {e.opened.toLocaleString()} new
               {e.stillFiring > 0 && (
                 <>
-                  , <span className="text-status-error font-semibold">{e.stillFiring} still open</span>
+                  {' · '}
+                  <span className="text-status-error">{e.stillFiring} still open</span>
                 </>
               )}
               {e.criticals > 0 && (
                 <>
-                  , <span className="text-status-error font-semibold">{e.criticals} critical</span>
+                  {' · '}
+                  <span className="text-status-error">{e.criticals} critical</span>
                 </>
               )}
-              {e.remediated > 0 && <>, {e.remediated.toLocaleString()} remediated</>}
-              {e.expired > 0 && <>, {e.expired.toLocaleString()} expired</>}.
+              {e.remediated > 0 && <> · {e.remediated.toLocaleString()} remediated</>}
+              {e.expired > 0 && <> · {e.expired.toLocaleString()} expired</>}
+              {more > 0 && <> · +{more} not shown</>}
             </span>
           </p>
 

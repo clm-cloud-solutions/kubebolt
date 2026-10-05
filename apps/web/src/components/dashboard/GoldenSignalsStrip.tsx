@@ -1,13 +1,17 @@
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
-import { StripCard, type StripAccent } from './StripCard'
 import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
 import { collapsePodToWorkload } from '@/utils/promql'
+import { KpiCard } from '@/components/shared/kpi/KpiCard'
+import { BarList, EventTrack, KPI_COLOR, Sparkline, SplitBar } from '@/components/shared/kpi/MiniCharts'
+import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 
-// GoldenSignalsStrip — the scan layer above Reliability's panels
-// (design/kubebolt-reliability-redesign.html): Error rate 5xx ·
-// Latency · Throughput · L4 drops. Same Hubble series the detail
-// panels consume; the strip only aggregates them cluster-wide.
+// GoldenSignalsStrip — the scan layer above Reliability's panels, in the
+// site's card anatomy (KpiCard), the same family as the Overview's row:
+// Error rate 5xx (the traffic split by status class) · Latency (this window
+// against the previous one) · Throughput (its curve over the range) · L4
+// drops (where they land). Same Hubble series the detail panels consume;
+// the strip only aggregates them cluster-wide.
 //
 // BASELINE SEMANTICS (decision 2026-07-16): every delta compares
 // against the PREVIOUS WINDOW OF THE SAME LENGTH immediately before
@@ -39,8 +43,14 @@ const ERR_MEANINGFUL_PCT = 0.1
 // Throughput/latency shifts flagged beyond ±10% vs previous window.
 const DELTA_NOTABLE = 0.1
 
+const KPI_MIN_WIDTH = 280
+
+// Sparkline sampling — ~24 points across the range, as CapacityStrip.
+const SPARK_POINTS = 24
+
 export function GoldenSignalsStrip({ rangeMinutes }: Props) {
   const w = `${rangeMinutes}m`
+  const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
 
   // One batched fetch: 7 instant queries (3 signals × now/previous +
   // hottest-latency attribution). Instant queries are cheap; the
@@ -67,7 +77,16 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
         `  clamp_min(sum by (workload) (${collapsePodToWorkload(`rate(${LAT_COUNT}[${w}])`)}), 1e-9)`,
         `)`,
       ].join(' ')
-      const [errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot] = await Promise.all([
+      // The traffic by status class — the error card's split bar.
+      const classExpr = `sum by (status_class) (rate(${REQS}[${w}]))`
+      // Where the drops land — the same destination collapse NetworkDrops
+      // uses, so both name the same workloads.
+      const dropDstExpr = `topk(3, sum by (destination_workload) (${collapsePodToWorkload(
+        `increase(pod_flow_events_total{source="hubble", verdict="dropped"}[${w}])`,
+        'destination_pod',
+        'destination_workload',
+      )}))`
+      const [errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot, classes, dropDst] = await Promise.all([
         scalar(errExpr('')),
         scalar(errExpr(` offset ${w}`)),
         scalar(rpsExpr('')),
@@ -76,50 +95,131 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
         scalar(latExpr(` offset ${w}`)),
         scalar(dropsExpr),
         labeled(hotExpr, 'workload'),
+        labeledAll(classExpr, 'status_class'),
+        labeledAll(dropDstExpr, 'destination_workload'),
       ])
-      return { errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot }
+      return { errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot, classes, dropDst }
     },
     refetchInterval: 30_000,
     retry: false,
   })
 
+  // Throughput over the range — the one signal whose shape matters more
+  // than its window-over-window delta.
+  const step = Math.max(15, Math.round((rangeMinutes * 60) / SPARK_POINTS))
+  const rpsQ = useQuery({
+    queryKey: ['reliability', 'golden-rps-trend', rangeMinutes],
+    queryFn: () => {
+      const end = Math.floor(Date.now() / 1000)
+      return api.queryMetricsRange({
+        query: `sum(rate(${REQS}[${Math.max(60, step)}s]))`,
+        start: end - rangeMinutes * 60,
+        end,
+        step: `${step}s`,
+      })
+    },
+    refetchInterval: 30_000,
+    retry: false,
+  })
+  const rpsSeries = (rpsQ.data?.data?.result?.[0]?.values ?? [])
+    .map((p: [number, string]) => parseFloat(p[1]))
+    .filter((v: number) => Number.isFinite(v))
+
   const d = q.data
-  const errAccent: StripAccent =
-    d?.errNow == null ? 'default' : d.errNow >= ERR_MEANINGFUL_PCT ? 'crit' : 'ok'
+  const errBad = d?.errNow != null && d.errNow >= ERR_MEANINGFUL_PCT
   const latDelta = relDelta(d?.latNow, d?.latPrev)
   const rpsDelta = relDelta(d?.rpsNow, d?.rpsPrev)
+  const errDelta = relDelta(d?.errNow, d?.errPrev)
   // Empty increase() result = no dropped-flow series in range. The
   // strip only renders when Hubble is shipping, so "no series" IS
   // zero drops, not missing data — showing "—" here read as broken.
   const drops = d ? Math.round(d.drops ?? 0) : null
   const rangeLabel = formatRange(rangeMinutes)
+  const now = Date.now() / 1000
+
+  // Status classes folded into the three the bar shows.
+  const cls = { ok: 0, client: 0, server: 0 }
+  for (const c of d?.classes ?? []) {
+    if (c.name === 'server_err') cls.server += c.value
+    else if (c.name === 'client_err') cls.client += c.value
+    else cls.ok += c.value
+  }
+  const clsTotal = cls.ok + cls.client + cls.server
+  const pct = (v: number) => (clsTotal > 0 ? (v / clsTotal) * 100 : 0)
+  // No 5xx series at all makes the ratio query come back empty; with traffic
+  // flowing that is a 0 %, not an unknown — the class split already says so.
+  const errNow = d?.errNow ?? (clsTotal > 0 ? pct(cls.server) : null)
+  const fmtShare = (v: number) => (v === 0 ? '0' : formatPct(v))
+  const dropRows = (d?.dropDst ?? []).filter((r) => r.value >= 0.5)
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-      <StripCard
-        label="Error rate · 5xx"
+    <div
+      ref={gridRef}
+      className={`grid gap-4 ${gridWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
+      style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, KPI_MIN_WIDTH, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
+    >
+      <KpiCard
+        primary
+        alert={errBad ? 'crit' : undefined}
+        value={errNow != null ? fmtShare(errNow) : '—'}
+        unit="% 5xx"
+        description={
+          errDelta != null && d?.errPrev != null
+            ? `${deltaArrow(errDelta)} vs ${formatPct(d.errPrev)}% the window before`
+            : errBad
+              ? `server errors over the last ${rangeLabel}`
+              : `no meaningful server errors · ${rangeLabel}`
+        }
+        viz={
+          clsTotal > 0 ? (
+            <SplitBar
+              parts={[
+                { value: cls.ok, color: KPI_COLOR.ok },
+                { value: cls.client, color: KPI_COLOR.warn },
+                { value: cls.server, color: KPI_COLOR.err },
+              ]}
+              left={`ok ${fmtShare(pct(cls.ok))}%`}
+              right={
+                <>
+                  <span style={{ color: cls.client > 0 ? KPI_COLOR.warn : undefined }}>4xx {fmtShare(pct(cls.client))}%</span>
+                  {' · '}
+                  <span style={{ color: errBad ? KPI_COLOR.err : undefined }}>5xx {fmtShare(pct(cls.server))}%</span>
+                </>
+              }
+            />
+          ) : undefined
+        }
+        caption="Hubble L7 · every observed request"
         info={
           <>
             <TooltipHeader>Error rate · 5xx</TooltipHeader>
             <TooltipRow color="#ef4056" label="What" value="server errors" />
             <TooltipNote>
               Share of HTTP requests returning 5xx (server-side failures) across all
-              Hubble-observed L7 traffic. 4xx (caller errors) are tracked separately in
-              the chart below. The delta compares the previous window of the same length.
+              Hubble-observed L7 traffic. The bar splits the same traffic into ok, 4xx
+              (caller errors) and 5xx. The delta compares the previous window of the same
+              length.
             </TooltipNote>
           </>
         }
-        value={d?.errNow != null ? `${formatPct(d.errNow)}%` : '—'}
-        valueAccent={errAccent}
-        sub={
-          d?.errPrev != null && relDelta(d?.errNow, d?.errPrev) != null
-            ? `${deltaArrow(relDelta(d?.errNow, d?.errPrev))} vs ${formatPct(d.errPrev)}% previous window`
-            : `over the last ${rangeLabel}`
-        }
-        subAccent={errAccent === 'default' ? 'default' : errAccent}
       />
-      <StripCard
-        label="Latency · avg"
+      <KpiCard
+        alert={latDelta != null && latDelta > DELTA_NOTABLE ? 'warn' : undefined}
+        value={d?.latNow != null ? formatMs(d.latNow) : '—'}
+        unit="ms avg"
+        description={latencySentence(latDelta)}
+        viz={
+          d?.latNow != null && d?.latPrev != null ? (
+            <BarList
+              color={latDelta != null && latDelta > DELTA_NOTABLE ? KPI_COLOR.warn : KPI_COLOR.ok}
+              rows={[
+                { label: `last ${rangeLabel}`, value: d.latNow, display: `${formatMs(d.latNow)} ms` },
+                { label: 'window before', value: d.latPrev, display: `${formatMs(d.latPrev)} ms` },
+              ]}
+            />
+          ) : undefined
+        }
+        caption={d?.hot ? `hottest · ${d.hot.name} ${Math.round(d.hot.value)} ms` : 'cluster-wide mean, not a p99'}
         info={
           <>
             <TooltipHeader right="not p99">Latency · avg</TooltipHeader>
@@ -133,27 +233,44 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
             </TooltipNote>
           </>
         }
-        value={d?.latNow != null ? Math.round(d.latNow) : '—'}
-        valueSuffix="ms"
-        valueAccent={latDelta != null && latDelta > DELTA_NOTABLE ? 'warn' : 'default'}
-        sub={latencySub(latDelta, d?.hot)}
-        subAccent={latDelta != null && latDelta > DELTA_NOTABLE ? 'warn' : 'default'}
       />
-      <StripCard
-        label="Throughput"
+      <KpiCard
         value={d?.rpsNow != null ? formatRps(d.rpsNow) : '—'}
-        valueSuffix="rps"
-        sub={
+        unit="req/s"
+        description={
           rpsDelta == null
             ? `over the last ${rangeLabel}`
             : Math.abs(rpsDelta) <= DELTA_NOTABLE
-              ? 'steady vs previous window'
-              : `${deltaArrow(rpsDelta)} ${Math.round(Math.abs(rpsDelta) * 100)}% vs previous window`
+              ? 'steady vs the window before'
+              : `${deltaArrow(rpsDelta)} ${Math.round(Math.abs(rpsDelta) * 100)}% vs the window before`
         }
-        subAccent={rpsDelta != null && Math.abs(rpsDelta) <= DELTA_NOTABLE ? 'ok' : 'default'}
+        viz={
+          rpsSeries.length >= 2 ? (
+            <Sparkline
+              fromZero
+              values={rpsSeries}
+              left={`${rangeLabel} · ${formatRps(Math.min(...rpsSeries))}–${formatRps(Math.max(...rpsSeries))} req/s`}
+            />
+          ) : undefined
+        }
+        caption="every request Hubble saw, all workloads"
       />
-      <StripCard
-        label="L4 drops"
+      <KpiCard
+        alert={drops != null && drops > 0 ? 'warn' : undefined}
+        value={drops ?? '—'}
+        unit={drops === 1 ? 'L4 drop' : 'L4 drops'}
+        description={drops != null && drops > 0 ? `in the last ${rangeLabel}` : `none in the last ${rangeLabel}`}
+        viz={
+          dropRows.length > 0 ? (
+            <BarList
+              color={KPI_COLOR.warn}
+              rows={dropRows.map((r) => ({ label: `→ ${r.name}`, value: r.value, display: Math.round(r.value) }))}
+            />
+          ) : (
+            <EventTrack events={[]} from={now - rangeMinutes * 60} to={now} left={`${rangeLabel} ago`} />
+          )
+        }
+        caption={drops != null && drops > 0 ? 'NetworkPolicy denials or connection refused' : 'Cilium verdict=dropped'}
         info={
           <>
             <TooltipHeader>L4 drops</TooltipHeader>
@@ -162,14 +279,11 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
               Count of L4 flows Cilium DROPPED in this range — most are NetworkPolicy
               denials, but connection-refused and host-firewall blocks land here too.
               This is the early-warning channel the HTTP panels miss: dropped traffic
-              never reaches the application layer to become a 4xx/5xx.
+              never reaches the application layer to become a 4xx/5xx. The bars name the
+              workloads the drops were headed for.
             </TooltipNote>
           </>
         }
-        value={drops != null ? `${drops}` : '—'}
-        valueAccent={drops != null && drops > 0 ? 'warn' : 'default'}
-        sub={drops != null && drops > 0 ? 'NetworkPolicy / refused' : 'no drops in range'}
-        subAccent={drops != null && drops > 0 ? 'warn' : 'ok'}
       />
     </div>
   )
@@ -207,6 +321,15 @@ async function labeled(
   return { name, value: v }
 }
 
+// labeledAll — instant query returning every series' label + value.
+async function labeledAll(query: string, label: string): Promise<{ name: string; value: number }[]> {
+  const res = await api.queryMetrics({ query })
+  return (res?.data?.result ?? [])
+    .map((s) => ({ name: s.metric?.[label] ?? '', value: parseFloat(s.value?.[1] ?? '') }))
+    .filter((r) => r.name && Number.isFinite(r.value))
+    .sort((a, b) => b.value - a.value)
+}
+
 // relDelta — (now − prev) / prev, null when either side is missing or
 // the previous window isn't a usable baseline. Two guards beyond the
 // divide-by-zero: (a) prev negligible relative to now (< 2%) and (b)
@@ -226,18 +349,12 @@ function deltaArrow(delta: number | null): string {
   return delta > 0 ? '▲' : delta < 0 ? '▼' : '·'
 }
 
-function latencySub(
-  delta: number | null,
-  hot: { name: string; value: number } | null | undefined,
-): string {
-  const parts: string[] = []
+function latencySentence(delta: number | null): string {
   if (delta != null && Math.abs(delta) > DELTA_NOTABLE) {
-    parts.push(`${deltaArrow(delta)} ${Math.round(Math.abs(delta) * 100)}% vs previous window`)
-  } else if (delta != null) {
-    parts.push('steady vs previous window')
+    return `${deltaArrow(delta)} ${Math.round(Math.abs(delta) * 100)}% vs the window before`
   }
-  if (hot) parts.push(`${hot.name} hottest`)
-  return parts.length > 0 ? parts.join(' · ') : 'cluster-wide average'
+  if (delta != null) return 'steady vs the window before'
+  return 'cluster-wide average'
 }
 
 function formatRange(minutes: number): string {
@@ -250,6 +367,12 @@ function formatPct(v: number): string {
   if (v >= 10) return v.toFixed(0)
   if (v >= 1) return v.toFixed(1)
   return v.toFixed(2)
+}
+
+// Under 10 ms a whole number hides the movement the delta reports
+// ("▲ 14%" over two bars both reading "5 ms").
+function formatMs(v: number): string {
+  return v < 10 ? v.toFixed(1) : `${Math.round(v)}`
 }
 
 function formatRps(v: number): string {

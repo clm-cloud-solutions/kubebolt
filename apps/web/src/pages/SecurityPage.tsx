@@ -2,7 +2,9 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Activity, ChevronLeft, ChevronRight, FileWarning, ScrollText, ShieldAlert, ShieldCheck, Wrench } from 'lucide-react'
 import { api } from '@/services/api'
-import { StripCard } from '@/components/dashboard/StripCard'
+import { KpiCard } from '@/components/shared/kpi/KpiCard'
+import { BarList, EventTrack, KPI_COLOR, Legend, SemiGauge, SplitBar } from '@/components/shared/kpi/MiniCharts'
+import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { HoverTooltip, TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
 import { FindingDetailModal } from '@/components/security/FindingDetailModal'
@@ -239,6 +241,22 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
     refetchInterval: 60_000,
   })
 
+  // The KPI row's "worst workloads" — the unfiltered first page, which is the
+  // same request (and cache entry) the list makes before any chip is pressed.
+  // Facet-free on purpose, like every other number in the row.
+  const { data: wlTop } = useQuery({
+    queryKey: ['finding-workloads', group, '', '', cluster, 1],
+    queryFn: () =>
+      api.listFindingWorkloads({
+        group: group === 'runtime' ? 'compliance' : group,
+        cluster: cluster || undefined,
+        page: 1,
+      }),
+    refetchInterval: 60_000,
+    enabled: group !== 'runtime',
+  })
+  const [kpiRef, kpiWidth] = useElementWidth<HTMLDivElement>()
+
   const { data: rt } = useQuery({
     queryKey: ['runtime-events', cluster],
     queryFn: () => api.listRuntimeEvents({ cluster: cluster || undefined, since: '24h' }),
@@ -411,23 +429,45 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
         </p>
       </div>
 
-      {/* StripCard, not a private KPI component. It is the app's documented
-          card grammar for summary strips, already used by Capacity, Reliability
-          and Fleet — a second implementation is exactly what makes a page read
-          as "not one of ours". Its accents replace the hand-passed tone classes.
+      {/* The headline row in the site's card anatomy (KpiCard), the family
+          Home, Fleet and the cluster dashboards use. Each card keeps its number
+          and gains the chart that says where it comes from: the severity split
+          behind the criticals, the workloads carrying the most, the share with
+          a published fix, and when the runtime events landed.
 
-          Tooltips matter more here than on other strips: "23 critical" means
+          Tooltips matter more here than on other rows: "23 critical" means
           different things depending on WHICH scanner produced it, and the page
           normalizes four of them. */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StripCard
-          label="Critical"
+      <div
+        ref={kpiRef}
+        className={`grid gap-4 ${kpiWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
+        style={kpiWidth ? { gridTemplateColumns: `repeat(${columnsFor(kpiWidth, 280, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
+      >
+        <KpiCard
+          primary
+          alert={(bySeverity.critical ?? 0) > 0 ? 'crit' : undefined}
           value={bySeverity.critical ?? 0}
-          valueAccent={(bySeverity.critical ?? 0) > 0 ? 'crit' : 'default'}
-          sub={
+          unit="critical"
+          description={
             (data?.newLast24h ?? 0) > 0 ? `▲ ${data?.newLast24h} new in 24h` : 'none new in 24h'
           }
-          subAccent={(data?.newLast24h ?? 0) > 0 ? 'crit' : 'default'}
+          viz={
+            bandTotal > 0 ? (
+              <SplitBar
+                parts={[
+                  { value: bySeverity.critical ?? 0, color: KPI_COLOR.err },
+                  { value: bySeverity.high ?? 0, color: KPI_COLOR.warn },
+                  { value: bySeverity.medium ?? 0, color: KPI_COLOR.info },
+                  { value: bySeverity.low ?? 0, color: KPI_COLOR.muted },
+                ]}
+                left={`${Math.round(((bySeverity.critical ?? 0) / bandTotal) * 100)}% of ${bandTotal}`}
+                right={SEV_ORDER.filter((sv) => sv !== 'critical' && (bySeverity[sv] ?? 0) > 0)
+                  .map((sv) => `${bySeverity[sv]} ${sv}`)
+                  .join(' · ')}
+              />
+            ) : undefined
+          }
+          caption="Trivy · Kyverno · CIS, one severity scale"
           info={
             <>
               <TooltipHeader>Critical findings</TooltipHeader>
@@ -443,15 +483,28 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
             about how bad the situation is; "18 workloads affected, and one of
             them carries 47 of the findings" says both how wide the problem is
             and where to start. */}
-        <StripCard
-          label={`${Unit}s affected`}
+        <KpiCard
           value={affected}
-          valueAccent={affected > 0 ? 'warn' : 'default'}
-          sub={
+          unit={`${unit}s affected`}
+          // The worst one is named by the first bar below; the sentence says
+          // how concentrated it is, so a long Role name never wraps the card.
+          description={
             topResource
-              ? `worst: ${topResource.split('/').pop()} (${topCount})`
+              ? `the worst carries ${topCount} finding${topCount === 1 ? '' : 's'}`
               : `${bySeverity.high ?? 0} high · ${bySeverity.critical ?? 0} critical`
           }
+          viz={
+            (wlTop?.workloads ?? []).length > 0 ? (
+              <BarList
+                color={KPI_COLOR.warn}
+                rows={[...(wlTop?.workloads ?? [])]
+                  .sort((a, b) => b.total - a.total)
+                  .slice(0, 3)
+                  .map((w) => ({ label: w.name, value: w.total }))}
+              />
+            ) : undefined
+          }
+          caption={`findings per ${unit}, worst first`}
           info={
             <>
               <TooltipHeader>Distinct {unit}s carrying a finding</TooltipHeader>
@@ -462,15 +515,31 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
             </>
           }
         />
-        <StripCard
-          label="Fixable"
+        <KpiCard
           value={fixable}
-          valueAccent={fixable > 0 ? 'info' : 'default'}
-          sub={
+          unit="fixable"
+          description={
             scopeTotal > 0
-              ? `${Math.round((fixable / scopeTotal) * 100)}% of ${scopeTotal} have a published fix`
+              ? `${Math.round((fixable / scopeTotal) * 100)}% have a published fix`
               : 'nothing to fix'
           }
+          viz={
+            scopeTotal > 0 ? (
+              <SemiGauge
+                percent={(fixable / scopeTotal) * 100}
+                color={KPI_COLOR.info}
+                legend={
+                  <Legend
+                    rows={[
+                      { color: KPI_COLOR.info, label: `${fixable} with a fix` },
+                      { color: KPI_COLOR.muted, label: `${scopeTotal - fixable} judgement call` },
+                    ]}
+                  />
+                }
+              />
+            ) : undefined
+          }
+          caption="a version to bump, a field to set"
           info={
             <>
               <TooltipHeader>Findings with a known remedy</TooltipHeader>
@@ -481,12 +550,20 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
             </>
           }
         />
-        <StripCard
-          label="Runtime threats"
+        <KpiCard
+          alert={events.length > 0 ? 'crit' : undefined}
           value={events.length}
-          valueAccent={events.length > 0 ? 'crit' : 'default'}
-          sub={newest ? `latest ${ago(newest.at)} ago` : 'none in 24h'}
-          subAccent={events.length > 0 ? 'crit' : 'default'}
+          unit={events.length === 1 ? 'runtime threat' : 'runtime threats'}
+          description={newest ? `latest ${ago(newest.at)} ago` : 'none in 24h'}
+          viz={
+            <EventTrack
+              events={events.map((e) => Date.parse(e.at) / 1000)}
+              from={Date.now() / 1000 - 86400}
+              to={Date.now() / 1000}
+              left="24h ago"
+            />
+          }
+          caption="Falco · events, not standing findings"
           info={
             <>
               <TooltipHeader>Runtime threats</TooltipHeader>
@@ -509,7 +586,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
           whether "CIS controls 3" and "CIS · compliance 3" were the same metric.
           The strip above now carries severity and actionability; this carries
           where it came from. */}
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-2.5 bg-kb-elevated border border-kb-border rounded-lg">
+      <div className="kb-panel flex flex-wrap items-center gap-x-6 gap-y-2 px-5 py-3">
         <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
           By source
         </span>
@@ -550,7 +627,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
       // list it was explaining scrolled in a third of the width.
       <div className="grid grid-cols-1 gap-4">
         {/* Findings that need action — the core */}
-        <div className="bg-kb-card border border-kb-border rounded-xl overflow-hidden">
+        <div className="kb-panel overflow-hidden">
           <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between gap-3 flex-wrap">
             <h2 className="text-sm font-semibold text-kb-text-primary">Findings that need action</h2>
             <div className="flex gap-1.5 flex-wrap">
@@ -1198,7 +1275,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
             </p>
           )}
           {group === 'compliance' && (
-          <div className="bg-kb-card border border-kb-border rounded-xl overflow-hidden">
+          <div className="kb-panel overflow-hidden">
             <div className="px-4 py-3 border-b border-kb-border flex items-center gap-2">
               <ScrollText className="w-3.5 h-3.5 text-kb-text-tertiary" />
               <h2 className="text-sm font-semibold text-kb-text-primary">CIS compliance</h2>
@@ -1327,7 +1404,7 @@ function RuntimeOnly({ cluster }: { cluster: string }) {
           onClose={() => setSelected(null)}
         />
       )}
-      <div className="bg-kb-card border border-kb-border rounded-xl overflow-hidden">
+      <div className="kb-panel overflow-hidden">
         <div className="px-4 py-3 border-b border-kb-border flex items-center gap-2 flex-wrap">
           <Activity className="w-3.5 h-3.5 text-kb-text-tertiary" />
           <h2 className="text-sm font-semibold text-kb-text-primary">Runtime threats</h2>
