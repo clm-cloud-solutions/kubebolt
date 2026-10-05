@@ -64,17 +64,17 @@ function NodeCard({
         : memPercent >= 80 || (stress && stress.psiMemory >= PSI_WARN)
           ? 'warn'
           : 'ok'
-  const accentBar =
+  // Severity colours the status dot (it used to paint a rail down the card's
+  // left edge): not ready and memory/PSI pressure both read at a glance,
+  // without washing the card — the same grammar as Fleet's cluster cards.
+  const dotClass =
     severity === 'crit' ? 'bg-status-error' : severity === 'warn' ? 'bg-status-warn' : 'bg-status-ok'
 
   return (
-    <Link to={`/nodes/_/${node.name}`} className="relative block bg-kb-card border border-kb-border rounded-[10px] p-4 pl-[1.1rem] overflow-hidden hover:bg-kb-card-hover transition-colors">
-      {/* Left accent bar — node severity at a glance (design mockup) */}
-      <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${accentBar}`} aria-hidden />
-
+    <Link to={`/nodes/_/${node.name}`} className="kb-panel kb-panel-hover block p-5 overflow-hidden">
       {/* Header */}
       <div className="flex items-center gap-2.5 mb-2.5">
-        <div className={`w-2.5 h-2.5 rounded-full ${node.status === 'Ready' ? 'bg-status-ok' : 'bg-status-error'}`} />
+        <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${dotClass}`} />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-1.5">
             <div className="text-[13px] font-semibold text-kb-text-primary truncate">{node.name}</div>
@@ -341,10 +341,10 @@ export function NodesPage() {
         <span className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
           All nodes
         </span>
-        <span className="text-[10px] font-mono text-kb-text-tertiary/70">sorted by pressure</span>
+        <span className="text-[10px] font-mono text-kb-text-tertiary">sorted by pressure</span>
       </div>
 
-      <div className="grid grid-cols-3 gap-3 mb-5">
+      <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4 mb-5">
         {sorted.map((node) => (
           <NodeCard
             key={node.name}

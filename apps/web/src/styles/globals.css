@@ -40,20 +40,31 @@
   --kb-yaml-comment: #8b949e;
 }
 
+/* Dark = the site's night palette: warm neutrals with paper-toned text, the
+   same family the sign-in pages, Kobi and kubebolt.io use. It used to be a
+   cool navy set (#161720 cards, #22243a elevated, lavender greys), which is
+   what made the app read as a different product next to the site. Tertiary
+   is the one value the site palette does not carry: Kobi's #6b6864 measures
+   ~3.6:1 on these surfaces, #8a857f clears AA (~5:1) for the small mono
+   labels the app is full of. */
 .dark {
-  --kb-bg: #0a0b0f;
-  --kb-surface: #101118;
-  --kb-card: #161720;
-  --kb-card-hover: #1c1d2a;
-  --kb-elevated: #22243a;
-  --kb-sidebar: #0d0e14;
-  --kb-border: rgba(255, 255, 255, 0.06);
-  --kb-border-active: rgba(255, 255, 255, 0.14);
-  --kb-text-primary: #e8e9ed;
-  --kb-text-secondary: #8b8d9a;
-  --kb-text-tertiary: #555770;
-  --kb-scrollbar: rgba(255, 255, 255, 0.14);
-  --kb-bar-track: rgba(255, 255, 255, 0.06);
+  /* Card vs page: the first cut of this palette put cards ~10 levels above
+     the page, which vanished on a monitor with light falling on it. Cards
+     now sit ~20 levels up with a hairline that holds under glare — still
+     the site's night, but a card reads as a card in a lit room. */
+  --kb-bg: #0b0c0b;
+  --kb-surface: #111211;
+  --kb-card: #1a1b1a;
+  --kb-card-hover: #202120;
+  --kb-elevated: #252625;
+  --kb-sidebar: #0c0d0c;
+  --kb-border: rgba(245, 242, 236, 0.11);
+  --kb-border-active: rgba(245, 242, 236, 0.22);
+  --kb-text-primary: #f5f2ec;
+  --kb-text-secondary: #a8a29e;
+  --kb-text-tertiary: #8a857f;
+  --kb-scrollbar: rgba(245, 242, 236, 0.14);
+  --kb-bar-track: rgba(245, 242, 236, 0.08);
   --kb-accent: #00e07a;
   --kb-accent-light: rgba(0, 224, 122, 0.12);
   /* YAML syntax highlighting */
@@ -892,3 +903,98 @@ input:-webkit-autofill:active {
   }
 }
 
+
+/* KPI card (components/shared/kpi/KpiCard) — the site's card anatomy for the
+   rows a page opens with: a big figure with its unit, one sentence, a
+   minichart and a mono caption. Same signature as the sign-in card — 20px
+   radius, lit top edge, soft separating shadow — and the green bevel at
+   left-centre marks the row's primary card. Light theme keeps the shape on
+   the plain card surface. `.kb-panel` is the same surface without the
+   padding, for cards that lay out their own sections (Home's greeting). */
+.kb-kpi,
+.kb-panel {
+  position: relative;
+  border-radius: 20px;
+  border: 1px solid var(--kb-border);
+  background: var(--kb-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.kb-kpi {
+  padding: 1.25rem 1.25rem 1rem;
+}
+.dark .kb-kpi,
+.dark .kb-panel {
+  border-color: rgba(245, 242, 236, 0.14);
+  background: linear-gradient(180deg, #212221, #1a1b1a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+}
+/* A panel that is itself the link (Fleet's cluster cards). */
+.kb-panel-hover {
+  cursor: pointer;
+  transition: border-color 150ms ease;
+}
+.kb-panel-hover:hover,
+.dark .kb-panel-hover:hover {
+  border-color: var(--kb-border-active);
+}
+.kb-kpi-primary {
+  border-color: color-mix(in srgb, var(--kb-accent) 22%, var(--kb-border));
+}
+.dark .kb-kpi-primary {
+  border-color: rgba(0, 224, 122, 0.16);
+}
+.kb-kpi-primary::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 1.5px;
+  height: 96px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, transparent, var(--kb-accent), transparent);
+  box-shadow: 0 0 12px rgba(0, 224, 122, 0.45);
+  pointer-events: none;
+}
+
+/* The card whose number asks for someone (KpiCard `alert`): the figure takes
+   the state colour, the left bevel lights in it, and a tint rises from that
+   edge. Calm cards stay neutral, so the one that needs you is the only one
+   that glows — colour as a signal, not as a wash over the whole row. */
+.kb-kpi-alert {
+  --kb-alert: #ef4056;
+  border-color: color-mix(in srgb, var(--kb-alert) 40%, var(--kb-border));
+  background:
+    radial-gradient(130% 100% at 0% 50%, color-mix(in srgb, var(--kb-alert) 7%, transparent), transparent 65%),
+    var(--kb-card);
+}
+.dark .kb-kpi-alert {
+  border-color: color-mix(in srgb, var(--kb-alert) 38%, transparent);
+  background:
+    radial-gradient(130% 100% at 0% 50%, color-mix(in srgb, var(--kb-alert) 13%, transparent), transparent 65%),
+    linear-gradient(180deg, #212221, #1a1b1a);
+}
+.kb-kpi-alert-warn {
+  --kb-alert: #f5a623;
+}
+.kb-kpi-alert::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 2px;
+  height: 112px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, transparent, var(--kb-alert), transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--kb-alert) 60%, transparent);
+  pointer-events: none;
+}
+
+/* Ambient light behind the content (dark only): a faint glow from above, the
+   way the sign-in scene is lit, so cards separate from a pure-black page.
+   Fixed to the scroll container's box — it stays at the top as you scroll. */
+.dark .kb-ambient {
+  background:
+    radial-gradient(1100px 520px at 75% -14%, rgba(0, 224, 122, 0.06), transparent 62%),
+    radial-gradient(900px 460px at 10% -10%, rgba(245, 242, 236, 0.045), transparent 60%),
+    var(--kb-bg);
+}

@@ -1,20 +1,23 @@
-import { Boxes } from 'lucide-react'
-import { StripCard } from '@/components/dashboard/StripCard'
 import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
+import { KpiCard } from '@/components/shared/kpi/KpiCard'
+import { BarList, KPI_COLOR, Legend, NodeRings, SemiGauge, UnitStrip } from '@/components/shared/kpi/MiniCharts'
+import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import type { ResourceItem, ClusterOverview } from '@/types/kubernetes'
 
-// NodesSummaryStrip is the scan layer above the node grid (design/
-// kubebolt-nodes-redesign.html): Nodes ready · Bin-packing · Pods
-// scheduled · Under pressure · Consolidation. Every number is derived
+// NodesSummaryStrip is the scan layer above the node grid, in the site's
+// card anatomy (KpiCard) like every other headline row: Nodes ready (one
+// cell per node) · Bin-packing (requested CPU and memory) · Pods scheduled
+// (share of pod capacity) · Under pressure (the busiest nodes' rings, with
+// the consolidation observation in its caption). Every number is derived
 // from data the page already has — node items (usage %, pod counts,
 // cordon) + the cluster overview (requested vs allocatable). No new
 // backend, no cost data.
 //
-// DELIBERATELY NO $/mo and NO "drainable" claim on the Consolidation
-// card: a trustworthy "N nodes drainable" needs a scheduling-aware
+// DELIBERATELY NO $/mo and NO "drainable" claim in the consolidation
+// line: a trustworthy "N nodes drainable" needs a scheduling-aware
 // bin-packing simulation (taints/affinity/PDB/topology/local-PV), and
 // the dollar figure needs node pricing (the OpenCost/Cost slice, not
-// in EE yet). Until both exist, the card is an OBSERVATION — "the
+// in EE yet). Until both exist, the line is an OBSERVATION — "the
 // least-loaded node" — not a promise. Same discipline as the
 // right-sizing "reclaimable" number: never over-promise a saving we
 // can't verify.
@@ -31,6 +34,7 @@ const MEM_PRESSURE_PCT = 80
 const BIND_MARGIN_PCT = 15
 
 export function NodesSummaryStrip({ nodes, overview }: Props) {
+  const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
   const total = nodes.length
   const ready = nodes.filter((n) => n.status === 'Ready').length
   const cordoned = nodes.filter((n) => isUnschedulable(n)).length
@@ -47,133 +51,170 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
   // pods fit and whether a node can be freed.
   const cpuReqPct = overview?.cpu?.percentRequested
   const memReqPct = overview?.memory?.percentRequested
+  const reqKnown = cpuReqPct != null && memReqPct != null
+  const cpuReq = clampPct(cpuReqPct)
+  const memReq = clampPct(memReqPct)
+  const binding = reqKnown ? bindingInsight(cpuReq, memReq) : null
 
   // Least-loaded node by memory usage (the binding resource in most
   // clusters) — surfaced as the consolidation observation, no claim.
   const idle = leastLoadedNode(nodes)
 
+  // One cell per node: not ready, then cordoned, then ready.
+  const cells = [...nodes]
+    .map((n) => ({ n, rank: n.status !== 'Ready' ? 0 : isUnschedulable(n) ? 1 : 2 }))
+    .sort((a, b) => a.rank - b.rank)
+    .map(({ n, rank }) => ({
+      color: rank === 0 ? KPI_COLOR.err : KPI_COLOR.ok,
+      hatched: rank === 1,
+      title: `${n.name} — ${rank === 0 ? 'not ready' : rank === 1 ? 'cordoned' : 'ready'}`,
+    }))
+
+  // The busiest nodes, as the Overview's node card draws them.
+  const busiest = withShortNames(
+    [...nodes]
+      .map((n) => ({ name: String(n.name ?? ''), cpu: num(n.cpuPercent), mem: num(n.memoryPercent) }))
+      .sort((a, b) => Math.max(b.cpu, b.mem) - Math.max(a.cpu, a.mem))
+      .slice(0, 2),
+  )
+
+  const podNodes = withShortNames(
+    [...nodes]
+      .sort((a, b) => num(b.podCount) - num(a.podCount))
+      .slice(0, 2)
+      .map((n) => ({ name: String(n.name ?? ''), pods: num(n.podCount) })),
+    14,
+  )
+  // Reserved capacity: green with plenty of headroom, amber past 70 %, red
+  // past 90 % — the scheduler starts struggling to place pods as it fills.
+  const reqColor = (p: number) => (p >= 90 ? KPI_COLOR.err : p >= 70 ? KPI_COLOR.warn : KPI_COLOR.ok)
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3 mb-5">
-      <StripCard
-        label="Nodes ready"
-        value={`${ready}`}
-        valueSuffix={`/ ${total}`}
-        valueAccent={ready === total ? 'ok' : 'warn'}
-        sub={cordoned > 0 ? `${cordoned} cordoned` : 'all schedulable'}
-        subAccent={cordoned > 0 ? 'warn' : 'ok'}
+    <div
+      ref={gridRef}
+      className={`grid gap-4 mb-5 ${gridWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
+      style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, 280, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
+    >
+      <KpiCard
+        primary
+        alert={ready < total ? 'crit' : cordoned > 0 ? 'warn' : undefined}
+        value={ready}
+        unit={`/ ${total} ready`}
+        description={cordoned > 0 ? `${cordoned} cordoned` : 'all schedulable'}
+        viz={
+          total > 0 ? (
+            <UnitStrip
+              cells={cells}
+              legend={
+                <div className="flex flex-wrap gap-x-3 gap-y-1">
+                  <Legend rows={[{ color: KPI_COLOR.ok, label: `${ready - cordoned} schedulable` }]} />
+                  {cordoned > 0 && <Legend rows={[{ color: KPI_COLOR.muted, label: `${cordoned} cordoned` }]} />}
+                  {total - ready > 0 && <Legend rows={[{ color: KPI_COLOR.err, label: `${total - ready} not ready` }]} />}
+                </div>
+              }
+            />
+          ) : undefined
+        }
+        caption="one cell per node"
       />
 
-      <BinPackingCard cpuReqPct={cpuReqPct} memReqPct={memReqPct} />
-
-      <StripCard
-        label="Pods scheduled"
-        value={`${podsScheduled}`}
-        valueSuffix={podsCapacity > 0 ? `/ ${podsCapacity}` : undefined}
-        sub={podsCapacity > 0 ? `${Math.round(podsPct)}% of capacity` : 'pod capacity unknown'}
-      />
-
-      <StripCard
-        label="Under pressure"
-        value={`${underPressure}`}
-        valueAccent={underPressure > 0 ? 'warn' : 'ok'}
-        sub={underPressure > 0 ? `nodes > ${MEM_PRESSURE_PCT}% memory` : 'no memory pressure'}
-        subAccent={underPressure > 0 ? 'warn' : 'ok'}
-      />
-
-      <StripCard
-        hero
-        label="Consolidation"
-        icon={<Boxes className="w-3 h-3" />}
+      <KpiCard
+        alert={!reqKnown ? undefined : Math.max(cpuReq, memReq) >= 90 ? 'crit' : Math.max(cpuReq, memReq) >= 70 ? 'warn' : undefined}
+        value={reqKnown ? Math.round(Math.max(cpuReq, memReq)) : '—'}
+        unit="% requested"
+        description={binding ? binding.text : 'requested vs allocatable unavailable'}
+        viz={
+          reqKnown ? (
+            <BarList
+              max={100}
+              color={reqColor(Math.max(cpuReq, memReq))}
+              rows={[
+                { label: 'CPU', value: cpuReq, display: `${Math.round(cpuReq)}%` },
+                { label: 'Memory', value: memReq, display: `${Math.round(memReq)}%` },
+              ]}
+            />
+          ) : undefined
+        }
+        caption="what pod specs reserve, not live usage"
         info={
           <>
-            <TooltipHeader right="observation">Consolidation</TooltipHeader>
-            <TooltipRow color="#4c9aff" label="Shows" value="least-loaded node" />
+            <TooltipHeader right="scheduler view">Bin-packing</TooltipHeader>
             <TooltipNote>
-              The node using the least memory right now — a candidate to review for
-              consolidation. It is <b>not</b> a "drainable" verdict: confirming a node can be
-              freed needs a scheduling-aware simulation (taints, affinity, PodDisruptionBudgets,
-              local volumes), and the \$/mo saving needs node pricing — neither is available yet.
-              Treat this as a starting point, not a promise.
+              CPU and memory reserved by pod requests against what the nodes can allocate — what
+              the scheduler sees when it places a pod, not what the pods use. When one resource
+              runs far ahead of the other, the lagging one is stranded: paid for, but it cannot
+              be scheduled against.
             </TooltipNote>
           </>
         }
-        // The one card in this strip whose value is a NAME, not a count. The
-        // shared slot is sized for "58" / "3/4" — at text-2xl a 34-character
-        // hostname wraps to two lines and dominates the whole strip, and
-        // tabular-nums does nothing for letters. Stepped down here only; the
-        // other four keep the number treatment. `title` carries the full name,
-        // since the middle elision is not recoverable by eye.
-        value={
+      />
+
+      <KpiCard
+        alert={podsPct >= 90 ? 'warn' : undefined}
+        value={podsScheduled}
+        unit={podsCapacity > 0 ? `/ ${podsCapacity} pods` : 'pods'}
+        description={podsCapacity > 0 ? `${Math.round(podsPct)}% of pod capacity` : 'pod capacity unknown'}
+        viz={
+          podsCapacity > 0 ? (
+            <SemiGauge
+              percent={podsPct}
+              color={podsPct >= 90 ? KPI_COLOR.warn : KPI_COLOR.ok}
+              legend={
+                <Legend
+                  rows={[
+                    { color: podsPct >= 90 ? KPI_COLOR.warn : KPI_COLOR.ok, label: `${podsScheduled} scheduled` },
+                    { color: KPI_COLOR.muted, label: `${Math.max(0, podsCapacity - podsScheduled)} free` },
+                  ]}
+                />
+              }
+            />
+          ) : undefined
+        }
+        caption={
+          podNodes.length > 0
+            ? podNodes.map((n) => `${n.name} ${n.pods}`).join(' · ') + (nodes.length > podNodes.length ? ` · +${nodes.length - podNodes.length}` : '')
+            : undefined
+        }
+        info={
+          <>
+            <TooltipHeader>Pods scheduled</TooltipHeader>
+            <TooltipNote>
+              Pods placed on the nodes against the kubelet's max-pods summed across them. The
+              caption names the nodes carrying the most.
+            </TooltipNote>
+          </>
+        }
+      />
+
+      <KpiCard
+        alert={underPressure > 0 ? 'warn' : undefined}
+        value={underPressure}
+        unit="under pressure"
+        description={underPressure > 0 ? `nodes above ${MEM_PRESSURE_PCT}% memory` : 'no memory pressure'}
+        viz={busiest.length > 0 ? <NodeRings nodes={busiest} /> : undefined}
+        caption={
           idle ? (
-            <span className="block text-base font-medium truncate" title={String(idle.name ?? '')}>
-              {idleShort(idle)}
+            <span title={String(idle.name ?? '')}>
+              least loaded · {idleShort(idle)} {Math.round(num(idle.memoryPercent))}% mem — review to consolidate
             </span>
           ) : (
-            '—'
+            'no clearly idle node to consolidate'
           )
         }
-        valueAccent={idle ? 'info' : 'default'}
-        sub={
-          idle
-            ? `${Math.round(num(idle.memoryPercent))}% mem · ${num(idle.podCount)} pods · review to consolidate`
-            : 'no clearly idle node'
+        info={
+          <>
+            <TooltipHeader right="observation">Pressure &amp; consolidation</TooltipHeader>
+            <TooltipRow color="#4c9aff" label="Rings" value="cpu inside · memory outside" />
+            <TooltipNote>
+              The busiest nodes right now, and — when one stands well below the rest — the node
+              using the least memory, a candidate to review for consolidation. It is <b>not</b> a
+              "drainable" verdict: confirming a node can be freed needs a scheduling-aware
+              simulation (taints, affinity, PodDisruptionBudgets, local volumes), and the $/mo
+              saving needs node pricing. Treat it as a starting point, not a promise.
+            </TooltipNote>
+          </>
         }
-        subAccent="default"
       />
-    </div>
-  )
-}
-
-// BinPackingCard — the one card StripCard can't express (dual mini-bar).
-// Same visual tokens so it sits in the strip cohesively.
-function BinPackingCard({
-  cpuReqPct,
-  memReqPct,
-}: {
-  cpuReqPct?: number
-  memReqPct?: number
-}) {
-  const cpu = clampPct(cpuReqPct)
-  const mem = clampPct(memReqPct)
-  const known = cpuReqPct != null && memReqPct != null
-  const insight = known ? bindingInsight(cpu, mem) : null
-
-  return (
-    <div className="relative rounded-[10px] border border-kb-border bg-kb-card p-4 min-w-0">
-      <div className="text-[10px] font-mono uppercase tracking-[0.09em] text-kb-text-tertiary mb-2.5">
-        Bin-packing
-      </div>
-      {known ? (
-        <>
-          <div className="space-y-1.5">
-            <MiniBar label="CPU" pct={cpu} />
-            <MiniBar label="Mem" pct={mem} />
-          </div>
-          {insight && (
-            <div className={`text-[11px] font-mono mt-2 ${insight.accent}`}>{insight.text}</div>
-          )}
-        </>
-      ) : (
-        <div className="text-[11px] font-mono text-kb-text-tertiary py-2">
-          requested vs allocatable unavailable
-        </div>
-      )}
-    </div>
-  )
-}
-
-function MiniBar({ label, pct }: { label: string; pct: number }) {
-  // Reserved capacity bar: green when there's plenty of headroom,
-  // amber past 70%, red past 90% — the scheduler starts struggling to
-  // place pods as the reservation fills.
-  const color = pct >= 90 ? 'bg-status-error' : pct >= 70 ? 'bg-status-warn' : 'bg-status-ok'
-  return (
-    <div className="flex items-center gap-2 text-[10px] font-mono">
-      <span className="w-8 text-kb-text-tertiary shrink-0">{label}</span>
-      <span className="flex-1 h-1.5 rounded-full overflow-hidden" style={{ background: 'var(--kb-bar-track)' }}>
-        <span className={`block h-full rounded-full ${color}`} style={{ width: `${pct}%` }} />
-      </span>
-      <span className="w-9 text-right text-kb-text-primary tabular-nums shrink-0">{Math.round(pct)}%</span>
     </div>
   )
 }
@@ -258,4 +299,16 @@ export function shortenNodeName(name: string, max = 26): string {
 
 function idleShort(n: ResourceItem): string {
   return shortenNodeName(String(n.name ?? ''))
+}
+
+// withShortNames drops the prefix every shown node shares (on a "-" boundary:
+// "kubebolt-dev-control-plane" / "kubebolt-dev-worker" → "control-plane" /
+// "worker") — it is the cluster's name, already in the page header — then
+// elides what is still long the way shortenNodeName does.
+export function withShortNames<T extends { name: string }>(nodes: T[], max = 20): T[] {
+  if (nodes.length < 2) return nodes.map((n) => ({ ...n, name: shortenNodeName(n.name, max) }))
+  let prefix = nodes[0].name
+  for (const n of nodes) while (!n.name.startsWith(prefix)) prefix = prefix.slice(0, -1)
+  const cut = prefix.lastIndexOf('-') + 1
+  return nodes.map((n) => ({ ...n, name: shortenNodeName(n.name.slice(cut) || n.name, max) }))
 }

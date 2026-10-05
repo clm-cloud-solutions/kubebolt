@@ -16,11 +16,9 @@ import { ShiftReportChip, ShiftReportSection, useShiftReport } from '@/component
 import { api } from '@/services/api'
 import { useFleetRollup } from '@/hooks/useFleetRollup'
 import { usePlan, type PlanTier } from '@/hooks/usePlan'
-import { StripCard } from '@/components/dashboard/StripCard'
+import { HomeKpis } from '@/components/home/HomeKpis'
 import { FleetBreakdown } from '@/components/home/FleetBreakdown'
-import { TooltipHeader, TooltipNote } from '@/components/shared/Tooltip'
 import { useCopilot } from '@/contexts/CopilotContext'
-import { useTheme } from '@/contexts/ThemeContext'
 import type { ConversationSummary } from '@/services/copilot/types'
 
 // HomePage — the plan-aware landing (design/kubebolt-home-{free,team,…}.html).
@@ -50,10 +48,6 @@ import type { ConversationSummary } from '@/services/copilot/types'
 function money(v: number | null): string {
   if (v === null) return '—'
   return `$${Math.round(v).toLocaleString()}`
-}
-
-function num(v: number | null | undefined): string {
-  return v === null || v === undefined ? '—' : Math.round(v).toLocaleString()
 }
 
 // KobiPanel — recent conversations plus a box that actually asks.
@@ -439,101 +433,23 @@ function useNow(): Date {
   return now
 }
 
-// ─── La zona de estado ──────────────────────────────────────────────────────
+// ─── The greeting card ──────────────────────────────────────────────────────
 //
-// Misma anatomía que la zona insignia de Autopilot —glow radial + hairline en
-// degradado + eyebrow + tile con anillo (styles/autopilot.css)— pero teñida por
-// el ESTADO de la flota en vez de por el acento de Kobi, y con el degradado más
-// marcado: aquel es ambiente de marca y éste es una lectura.
-//
-// Por qué se reimplementa en vez de importar `.kb-zone-*`: esas clases viven en
-// `styles/autopilot.css`, que es EE-only y lo carga únicamente AutopilotLayout.
-// Home ship en las DOS ediciones, así que usarlas dejaría al OSS con la
-// cabecera desnuda y sin que nadie se entere hasta mirarla. Y globals.css debe
-// quedarse byte-idéntico entre ediciones, así que tampoco es sitio. Autocontenido
-// aquí: cuesta unas líneas y no ata Home a una hoja de estilos ajena.
-//
-// Sobre el volumen: un intento anterior tiñó a la vez banda, tarjeta, cabecera
-// de panel, borde y riel de fila, y con críticos abiertos la página abría como
-// un cuarto rojo. Cinco alarmas no son cinco veces la señal. Ahora el color
-// vive AQUÍ y en las dos tarjetas que de verdad llevan mala lectura, y por eso
-// esta cabecera puede permitirse cargar con la señal ella sola.
+// The same surface as the KPI row under it (`.kb-panel`, the site's card), not
+// a zone washed in the fleet's state. The state used to tint the whole block —
+// glow, surface, border, hairline, tile and eyebrow — and with one critical
+// open the landing page opened as a red room. It now lives in the verdict pill
+// and in the rows of «While you were away», where it points at something.
 
 type HomeTone = 'ok' | 'warn' | 'crit'
 
-// La paleta de estado, no el acento de marca — es lo que tiñe cada indicador de
-// estado del producto. `ok` en particular tuvo que salir de --kb-accent, que en
-// modo claro resuelve a un verde más oscuro (#009a54) y hacía que el verde de
-// Home discrepara del mismo "todo bien" del resto. Sigue valiendo tras mover el
-// acento a la familia de marca: esto es estado, no marca.
+// The status palette, not the brand accent: `ok` in particular cannot come
+// from --kb-accent, which resolves to a darker green in light mode and made
+// Home's "all clear" disagree with the same state everywhere else.
 const TONE_TINT: Record<HomeTone, string> = {
   ok: '#22d68a',
   warn: '#f5a623',
   crit: '#ef4056',
-}
-
-// El mismo color en tripleta RGB, que es lo que piden `rgb(... / alpha)` y el
-// degradado radial. Se escriben a mano en vez de derivarse del hex en tiempo de
-// ejecución: son tres constantes, y un parser de hex aquí sería código que
-// puede fallar para ahorrar tres líneas que no cambian nunca.
-const TONE_RGB: Record<HomeTone, string> = {
-  ok: '34 214 138',
-  warn: '245 166 35',
-  crit: '239 64 86',
-}
-
-// La intensidad NO puede ser una constante: depende del tema.
-//
-// Sobre fondo oscuro un tinte se absorbe y hay que empujarlo para que se vea;
-// sobre blanco el MISMO alpha se convierte en un pastel saturado que ocupa
-// media cabecera. Afinar a ojo en un tema y mirar en el otro es cómo se acaba
-// oscilando entre "no se ve" y "demasiado", así que cada tema lleva su escala.
-//
-// Los valores de claro son aproximadamente la mitad. No es un factor mágico:
-// es que el blanco no tiene nada que absorber, así que todo el alpha se ve.
-interface ToneScale {
-  glow: number
-  glowSpread: string
-  surface: number
-  border: number
-  hairline: number
-  ring: number
-  tileBg: number
-}
-
-const SCALE: Record<'dark' | 'light', ToneScale> = {
-  dark: { glow: 0.16, glowSpread: '62% 120%', surface: 0.07, border: 0.24, hairline: 0.5, ring: 0.28, tileBg: 0.12 },
-  light: { glow: 0.09, glowSpread: '50% 110%', surface: 0.035, border: 0.16, hairline: 0.3, ring: 0.2, tileBg: 0.09 },
-}
-
-// El glow, anclado arriba-izquierda: nace detrás del saludo y se apaga antes de
-// llegar a los botones de la derecha, que deben leerse como acciones y no como
-// parte del aviso. Su alcance también encoge en claro — sobre blanco el borde
-// del degradado se nota mucho más que sobre negro, así que un radio menor evita
-// ese corte visible.
-function zoneGlow(tone: HomeTone, s: ToneScale): React.CSSProperties {
-  return {
-    background: `radial-gradient(${s.glowSpread} at 12% 0%, rgb(${TONE_RGB[tone]} / ${s.glow}), transparent 70%)`,
-  }
-}
-
-// La superficie: lavado diagonal muy tenue para que el bloque tenga cuerpo
-// también donde el glow apenas se ve.
-function zoneSurface(tone: HomeTone, s: ToneScale): React.CSSProperties {
-  const rgb = TONE_RGB[tone]
-  return {
-    background: `linear-gradient(120deg, rgb(${rgb} / ${s.surface}) 0%, var(--kb-card) 55%)`,
-    borderColor: `rgb(${rgb} / ${s.border})`,
-  }
-}
-
-// La hairline que cierra la zona, igual que en Autopilot: fuerte a la
-// izquierda, apagándose a la derecha. Marca el límite sin dibujar una caja.
-function zoneHairline(tone: HomeTone, s: ToneScale): React.CSSProperties {
-  const rgb = TONE_RGB[tone]
-  return {
-    background: `linear-gradient(90deg, rgb(${rgb} / ${s.hairline}) 0%, rgb(${rgb} / ${s.hairline * 0.28}) 38%, rgb(${rgb} / 0) 100%)`,
-  }
 }
 
 // The verdict pill. Only the critical one pulses: an animation that plays on
@@ -714,10 +630,6 @@ export function HomePage() {
 
   const firstName = displayFirstName(me?.username)
   const now = useNow()
-  // La escala del tinte depende del tema — ver SCALE.
-  const { theme } = useTheme()
-  const scale = SCALE[theme === 'light' ? 'light' : 'dark']
-
   // The page's tone: the worst thing on it. Nothing pending → calm.
   const tone: HomeTone = attention_items.some((i) => i.sev === 'crit')
     ? 'crit'
@@ -732,59 +644,22 @@ export function HomePage() {
     // for the same reason: the landing page cannot be the one that measures
     // differently.
     <div className="space-y-4">
-      <header className="relative overflow-hidden rounded-2xl border" style={zoneSurface(tone, scale)}>
-        {/* Glow — se pinta detrás de todo y no intercepta el ratón. */}
-        <span className="absolute inset-0 pointer-events-none" style={zoneGlow(tone, scale)} aria-hidden />
-
-        <div className="relative px-5 py-4 flex items-start justify-between gap-4 flex-wrap">
-          <div className="flex items-start gap-3 min-w-0">
-            {/* Tile con anillo, como el de Autopilot. El ÍCONO cambia con el
-                estado además del color: escudo cuando todo está limpio, aviso
-                cuando algo pide una mirada. Quien no distingue rojo de verde
-                —y quien mira de reojo— lee la forma antes que el tono. */}
-            <span
-              className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 mt-0.5"
-              style={{
-                background: `rgb(${TONE_RGB[tone]} / ${scale.tileBg})`,
-                color: TONE_TINT[tone],
-                boxShadow: `0 0 0 1px rgb(${TONE_RGB[tone]} / ${scale.ring}), 0 6px 20px -8px rgb(${TONE_RGB[tone]} / ${scale.ring * 1.5})`,
-              }}
-            >
-              {tone === 'ok' ? (
-                <ShieldCheck className="w-[22px] h-[22px]" />
-              ) : (
-                <AlertTriangle className="w-[22px] h-[22px]" />
-              )}
-            </span>
-            <div className="min-w-0">
-              {/* Eyebrow con su línea de fuga, igual que "KOBI · AUTOPILOT". */}
-              <div className="flex items-center gap-2.5 mb-1">
-                <span
-                  className="text-[9px] font-mono font-medium uppercase tracking-[0.22em]"
-                  style={{ color: TONE_TINT[tone] }}
-                >
-                  {today(now)}
-                </span>
-                <span
-                  className="h-px w-16 shrink-0"
-                  style={{ background: `linear-gradient(90deg, rgb(${TONE_RGB[tone]} / ${scale.hairline}), transparent)` }}
-                  aria-hidden
-                />
-              </div>
-              {/* DM Sans, no `font-display`: la display (Space Grotesk) está
-                  reservada a los títulos de marca Kobi —Autopilot y el panel de
-                  chat—, y Home no es una superficie de Kobi. Copiar la
-                  tipografía junto con la anatomía habría diluido esa distinción
-                  justo en la página que más se ve. */}
-              <h1 className="text-2xl font-semibold text-kb-text-primary leading-none tracking-tight">
-                {greeting(now)}
-                {firstName ? `, ${firstName}` : ''} 👋
-              </h1>
-              <p className="text-[11px] font-mono text-kb-text-tertiary mt-1.5">
-                {clusters.length} {clusters.length === 1 ? 'cluster' : 'clusters'} ·{' '}
-                {attention === 0 ? 'all reporting' : `${attention} need attention`}
-              </p>
+      <header className="kb-panel overflow-hidden">
+        <div className="px-5 pt-4 pb-3 flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            <div className="text-[10.5px] font-mono uppercase tracking-[0.16em] text-kb-text-tertiary">
+              {today(now)}
             </div>
+            {/* DM Sans, not `font-display`: the display face is reserved for
+                Kobi's brand titles, and Home is not a Kobi surface. */}
+            <h1 className="mt-1.5 text-[26px] font-semibold text-kb-text-primary leading-none tracking-[-0.02em]">
+              {greeting(now)}
+              {firstName ? `, ${firstName}` : ''}
+            </h1>
+            <p className="text-[11px] font-mono text-kb-text-tertiary mt-2">
+              {clusters.length} {clusters.length === 1 ? 'cluster' : 'clusters'} ·{' '}
+              {attention === 0 ? 'all reporting' : `${attention} need attention`}
+            </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {/* Dismissed report → the «⟳ while you were away» chip lives HERE,
@@ -805,7 +680,7 @@ export function HomePage() {
                 tiene salida. Fleet lo lleva también; los dos son puertas válidas. */}
             <Link
               to="/fleet"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-kb-accent text-white text-[11px] font-mono font-semibold hover:bg-kb-accent/90 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-kb-accent text-white text-[11px] font-mono font-semibold hover:bg-kb-accent/90 transition-colors"
             >
               <Plus className="w-3 h-3" />
               Connect cluster
@@ -813,110 +688,32 @@ export function HomePage() {
           </div>
         </div>
 
-        {/* Cierre de zona: fuerte a la izquierda, apagándose a la derecha —
-            marca el límite sin dibujar otra caja dentro de la caja. */}
-        <div className="relative h-px" style={zoneHairline(tone, scale)} aria-hidden />
-
         {/* El parte de guardia (Fase 3): la sección inferior de ESTA misma
             caja — el saludo se expande con «mientras no estabas» (diseño
             Home), no con una tarjeta suelta debajo. */}
-        <ShiftReportSection report={shift.report} dismissed={shift.dismissed} dismiss={shift.dismiss} />
+        {shift.report && !shift.dismissed && <div className="mx-5 border-t border-kb-border" aria-hidden />}
+        <ShiftReportSection
+          report={shift.report}
+          dismissed={shift.dismissed}
+          dismiss={shift.dismiss}
+          visibleIds={visibleIds}
+        />
       </header>
 
-      {/* StripCard, no una tarjeta propia. Es la gramática documentada de la app
-          —la usan Capacity, Reliability, Fleet y Security— y Home tenía la suya,
-          que es la razón principal de que la página se sintiera de otro producto.
-          Además trae tooltips, acentos y sparklines gratis. */}
-      {/* Only the two cards that carry a STATE can wash themselves, and only
-          when that state is bad. Pods and spend are inventory — there is no
-          reading of "84 pods" that is good or bad news, so tinting them would
-          be decoration, and decoration is what teaches a reader to stop
-          trusting the colour on the cards that mean it. */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <StripCard
-          label="Clusters"
-          hero={attention > 0 ? 'warn' : undefined}
-          icon={attention > 0 ? <AlertTriangle className="w-3 h-3" /> : undefined}
-          value={clusters.length}
-          valueAccent={attention === 0 ? 'ok' : 'warn'}
-          sub={attention === 0 ? 'all reporting' : `${attention} need attention`}
-          subAccent={attention === 0 ? 'ok' : 'warn'}
-          info={
-            <>
-              <TooltipHeader>Clusters you can see</TooltipHeader>
-              <TooltipNote>
-                Every cluster this install can reach — the same set Fleet and the switcher show.
-              </TooltipNote>
-            </>
-          }
-        />
-        <StripCard
-          label="Pods"
-          value={rollup.totalPods ?? '—'}
-          sub={rollup.totalPods != null ? `${num(rollup.totalNodes)} nodes` : 'waiting for samples'}
-          info={
-            <>
-              <TooltipHeader right="live">Pods across your clusters</TooltipHeader>
-              <TooltipNote>
-                Counted from the container samples each agent ships, not from a periodic
-                inventory — so it moves with the fleet and a cluster whose agent has gone
-                quiet simply stops contributing instead of reporting a stale figure. Nodes
-                come from the same stream.
-              </TooltipNote>
-            </>
-          }
-        />
-        <StripCard
-          label="Monthly spend"
-          icon={canSeeCost ? undefined : <Lock className="w-3 h-3" />}
-          value={canSeeCost && rollup.costAvailable ? money(rollup.fleetSpendMonthly) : '—'}
-          // A bare em-dash next to the word "Team" is the reason this page
-          // prompted "there are metrics I can't see and I don't know why". A
-          // locked card has to look locked and say what unlocks it — the dash
-          // alone is indistinguishable from an agent that stopped reporting.
-          sub={
-            canSeeCost
-              ? rollup.costAvailable
-                ? 'OpenCost run-rate'
-                : 'no cost data'
-              : 'Team plan →'
-          }
-          subTo={canSeeCost ? undefined : '/account'}
-          info={
-            <>
-              <TooltipHeader right={costIsPromo ? 'limited time' : 'OpenCost'}>
-                Fleet run-rate
-              </TooltipHeader>
-              <TooltipNote>
-                {canSeeCost
-                  ? 'OpenCost’s hourly node cost projected to a month, folded from the clusters above rather than summed server-side — so it always describes the same set the page is showing. Clusters without OpenCost contribute nothing instead of a zero.'
-                  : 'Cost visibility arrives with the Team plan. Pods, clusters and security findings above are included in Free.'}
-                {costIsPromo && ' Included in Free for a limited time.'}
-              </TooltipNote>
-            </>
-          }
-        />
-        <StripCard
-          label="Critical findings"
-          hero={critical > 0 ? 'crit' : undefined}
-          icon={critical > 0 ? <ShieldAlert className="w-3 h-3" /> : undefined}
-          value={critical}
-          valueAccent={critical > 0 ? 'crit' : 'ok'}
-          sub={critical > 0 ? `${high} high` : 'nothing critical open'}
-          subAccent={critical > 0 ? 'crit' : 'ok'}
-          info={
-            <>
-              <TooltipHeader right="open">Critical findings</TooltipHeader>
-              <TooltipNote>
-                Open findings at critical severity across the clusters above — CVEs and
-                exposed secrets from the scanners installed on each one. A cluster with no
-                scanner contributes nothing, so a zero here means "nothing found", not
-                "nothing looked".
-              </TooltipNote>
-            </>
-          }
-        />
-      </div>
+      {/* The headline row in the site's card anatomy (HomeKpis → KpiCard), the
+          same family as the cluster Overview's row. Colour lives in each card's
+          minichart — which clusters need you, how much spend is idle, the
+          critical share — and a card lights up only when its number asks for
+          someone. */}
+      <HomeKpis
+        clusters={clusters}
+        visibleIds={visibleIds}
+        rollup={rollup}
+        critical={critical}
+        high={high}
+        canSeeCost={canSeeCost}
+        costIsPromo={costIsPromo}
+      />
 
       {/* LA página. Home responde "¿qué necesita algo de mí?"; Fleet responde
           "¿qué tengo?" — y hasta ahora Home repetía las tarjetas de cluster de

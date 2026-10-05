@@ -1,23 +1,23 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { DollarSign } from 'lucide-react'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
 import { parseClusterDisplayName } from '@/utils/cluster'
-import { StripCard } from '@/components/dashboard/StripCard'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
-import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { useFleetRollup, type FleetClusterRollup } from '@/hooks/useFleetRollup'
+import { useFleetPodsTrend } from '@/hooks/useFleetPodsTrend'
+import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
+import { FleetKpis } from '@/components/fleet/FleetKpis'
+import { KPI_COLOR, Sparkline } from '@/components/shared/kpi/MiniCharts'
 import { AddClusterButton } from '@/components/admin/AddClusterButton'
 import { CloudProviderIcon, providerLabel } from '@/components/shared/CloudProviderIcon'
 import {
-  fleetHealthSummary,
   healthFromInsights,
   healthLabel,
   HEALTH_BADGE_CLASS,
-  HEALTH_RAIL_CLASS,
+  type HealthVerdict,
   type InsightCounts,
 } from '@/utils/clusterHealth'
 import type { ClusterInfo } from '@/types/kubernetes'
@@ -47,6 +47,8 @@ import type { ClusterInfo } from '@/types/kubernetes'
 //     mode instead, which we do know for every cluster.
 
 type FleetView = 'grid' | 'table'
+// Narrowest a cluster card can be before its four figures crowd each other.
+const CARD_MIN_WIDTH = 360
 const VIEW_KEY = 'kb-fleet-view'
 
 function readView(): FleetView {
@@ -148,23 +150,28 @@ const LINK_LABEL: Record<Health, string> = {
   crit: 'Error',
 }
 
-// In-card label/value pair. Deliberately one tier below the KPI strip's label
-// token (10px / 0.09em) — mixing them flattens the two levels of the page.
+// In-card figure: the number in the KPI cards' face, one size down, with its
+// label underneath in mono — the site's "figure, then what it is" order.
 //
 // `hint` follows the same principle as metricsState below: a dash alone reads as
 // "we lost your data", when the honest meaning is often "this number needs an
 // add-on you haven't installed". Pass it only when the value is absent AND the
 // reason is actionable — never as a permanent caption, which would compete with
 // the number it sits under.
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Figure({ label, value, hint, hintColor }: { label: string; value: string; hint?: string; hintColor?: string }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-[9px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-        {label}
+    <div className="flex flex-col min-w-0">
+      <span className="font-display text-[22px] font-semibold leading-none tracking-[-0.03em] tabular-nums text-kb-text-primary">
+        {value}
       </span>
-      <span className="text-sm font-semibold tabular-nums text-kb-text-primary mt-0.5">{value}</span>
+      <span className="mt-1.5 text-[10.5px] font-mono text-kb-text-tertiary truncate">{label}</span>
       {hint && (
-        <span className="text-[9px] font-mono text-kb-text-tertiary leading-tight">{hint}</span>
+        <span
+          className="text-[10px] font-mono text-kb-text-tertiary truncate"
+          style={hintColor ? { color: hintColor } : undefined}
+        >
+          {hint}
+        </span>
       )}
     </div>
   )
@@ -192,9 +199,17 @@ function metricsState(
   return { has: true, reason: '' }
 }
 
+const VERDICT_TINT: Record<HealthVerdict, string> = {
+  healthy: KPI_COLOR.ok,
+  warning: KPI_COLOR.warn,
+  critical: KPI_COLOR.err,
+  unknown: 'var(--kb-text-tertiary)',
+}
+
 function ClusterCard({
   cluster,
   rollup,
+  podTrend,
   findings,
   teamName,
   insights,
@@ -202,6 +217,8 @@ function ClusterCard({
 }: {
   cluster: ClusterInfo
   rollup?: FleetClusterRollup
+  /** Pods over the last 24h (useFleetPodsTrend); undefined = no series. */
+  podTrend?: number[]
   /** Conteo por severidad de ESTE cluster; undefined = sin escáneres. */
   findings?: Record<string, number>
   /** Nombre del equipo dueño; vacío cuando no hay equipos o no se resuelve. */
@@ -213,33 +230,28 @@ function ClusterCard({
   const health = healthOf(cluster)
   const verdict = healthFromInsights(insights)
   const metrics = metricsState(cluster, rollup)
+  const tint = VERDICT_TINT[verdict]
+  const offline = cluster.source === 'agent-proxy' && !cluster.agentConnected
   return (
     <button
       type="button"
       onClick={onOpen}
       // `flex flex-col` + cuerpo elástico: la rejilla estira las tarjetas a la
-      // misma altura, y sin esto una tarjeta con menos contenido —un cluster sin
-      // agente, que no tiene rejilla de cifras— repartía el espacio sobrante y
-      // bajaba su título respecto al de al lado. El nombre es el ancla con la
-      // que se recorre la fila, así que tiene que estar SIEMPRE a la misma
-      // altura; lo que sobra se acumula en el hueco de las cifras, que es donde
-      // el vacío significa algo.
-      className="relative text-left flex flex-col h-full bg-kb-card border border-kb-border rounded-[10px] p-4 pl-[1.1rem] overflow-hidden hover:bg-kb-card-hover transition-colors"
+      // misma altura, y el nombre —el ancla con la que se recorre la fila— se
+      // queda SIEMPRE a la misma altura. Lo que sobra lo absorbe el cuerpo, que
+      // en una tarjeta sin datos es el bloque punteado que lo explica, no un
+      // hueco.
+      className="kb-panel kb-panel-hover text-left flex flex-col h-full p-5 min-w-0"
     >
-      <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${HEALTH_RAIL_CLASS[verdict]}`} aria-hidden />
-
-      <div className="flex items-start justify-between gap-2 mb-2.5">
+      <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-[13px] font-semibold text-kb-text-primary truncate">
+          <div className="text-[15px] font-semibold text-kb-text-primary truncate">
             {parseClusterDisplayName(cluster)}
           </div>
-          {/* La identidad del cluster, que el diseño pedía y no teníamos: dónde
-              corre y sobre qué versión. Llega en la lista desde la caché de
-              perfiles del backend, así que se pinta sin conectar a ninguno.
-              Cuando el perfil aún no se ha resuelto cae al par
-              entorno/modo que siempre conocemos, en vez de dejar la línea
-              vacía. */}
-          <div className="flex items-center gap-1.5 text-[10px] font-mono text-kb-text-tertiary truncate">
+          {/* La identidad del cluster: dónde corre y sobre qué versión. Llega en
+              la lista desde la caché de perfiles del backend, así que se pinta
+              sin conectar a ninguno; sin perfil cae al par entorno/modo. */}
+          <div className="mt-1 flex items-center gap-1.5 text-[10.5px] font-mono text-kb-text-tertiary min-w-0">
             {cluster.cloudProvider && (
               <CloudProviderIcon provider={cluster.cloudProvider} className="w-3 h-3 shrink-0" />
             )}
@@ -255,83 +267,93 @@ function ClusterCard({
             </span>
           </div>
         </div>
-        {/* La insignia vuelve a decir SALUD, como pide el diseño, y ahora es
-            verdad: sale de /insights/summary, el mismo store del que el
-            Overview calcula la suya. El estado del ENLACE no desaparece —baja
-            al pie, junto al latido del agente, que es su sitio natural.
-            Un cluster sin evaluar dice «NO DATA» y no «HEALTHY»: afirmar salud
-            sobre algo que nadie ha mirado es el bug que esto viene a cerrar. */}
+        {/* SALUD, del mismo store que el Overview (/insights/summary). Un
+            cluster sin evaluar dice «NO DATA» y no «HEALTHY»: afirmar salud
+            sobre algo que nadie ha mirado es el bug que esto vino a cerrar. El
+            estado del ENLACE vive al pie, junto al latido del agente. */}
         <span
-          className={`shrink-0 text-[9px] font-mono font-semibold uppercase tracking-[0.03em] px-1.5 py-0.5 rounded ${HEALTH_BADGE_CLASS[verdict]}`}
+          className="shrink-0 inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.08em]"
+          style={{ color: tint, background: `color-mix(in srgb, ${tint} 12%, transparent)` }}
           title={
             verdict === 'unknown'
               ? 'No insight data for this cluster yet'
               : 'Active insights — same source as the cluster Overview'
           }
         >
-          {healthLabel(verdict, insights)}
+          <span className="w-1.5 h-1.5 rounded-full" style={{ background: tint }} />
+          {healthLabel(verdict, insights).toLowerCase()}
         </span>
       </div>
 
-      {/* Three stats today; the Security slice adds Findings + CIS for six.
-          Keep the count a multiple of three so the grid never leaves a hole. */}
-      <div className="flex-1">
-      {metrics.has ? (
-        <div className="grid grid-cols-3 gap-x-3 gap-y-2">
-          <Stat label="Pods" value={count(rollup?.pods ?? null)} />
-          <Stat label="Nodes" value={count(rollup?.nodes ?? null)} />
-          {/* Only cost carries a hint: it is the one stat that depends on an
-              optional integration. Pods and Nodes come from the agent itself,
-              so a dash there really does mean the data is missing.
-              El delta va de HINT y no de valor: el gasto es la cifra que se
-              lee, y el movimiento el contexto que la explica. */}
-          <Stat
-            label="Cost/mo"
-            value={money(rollup?.costMonthly ?? null)}
-            hint={
-              rollup?.costMonthly == null
-                ? 'needs OpenCost'
-                : deltaHint(rollup?.costDelta ?? null)
-            }
-          />
-          {/* Findings: el conteo del plan que tenga la org. En Free son CVEs y
-              secretos; en Team suma configuración y RBAC; en Business,
-              compliance y runtime. Mismo campo, más cobertura al subir — sin
-              un solo `if` por tier.
-              NO se pinta CIS%: arranca en Business, así que en la mayoría de
-              las tarjetas sería un hueco permanente. */}
-          <Stat
-            label="Findings"
-            value={findings ? String((findings.critical ?? 0) + (findings.high ?? 0)) : '—'}
-            hint={findings?.critical ? `${findings.critical} critical` : undefined}
-          />
-        </div>
-      ) : (
-        <div className="text-[10px] font-mono text-kb-text-tertiary py-1">{metrics.reason}</div>
-      )}
+      <div className="flex-1 flex flex-col justify-center mt-4">
+        {metrics.has ? (
+          <>
+            <div className="grid grid-cols-4 gap-3">
+              <Figure label="pods" value={count(rollup?.pods ?? null)} />
+              <Figure label="nodes" value={count(rollup?.nodes ?? null)} />
+              {/* Sólo el coste lleva pista: es la única cifra que depende de una
+                  integración opcional. El delta va de pista y no de valor: el
+                  gasto es la cifra que se lee, el movimiento su contexto. */}
+              <Figure
+                label="/mo"
+                value={money(rollup?.costMonthly ?? null)}
+                hint={rollup?.costMonthly == null ? 'needs OpenCost' : deltaHint(rollup?.costDelta ?? null)}
+              />
+              {/* Findings: el conteo del plan que tenga la org (Free: CVEs y
+                  secretos; Team suma configuración y RBAC; Business, compliance
+                  y runtime). Sin CIS%: arranca en Business y sería un hueco. */}
+              <Figure
+                label="findings"
+                value={findings ? String((findings.critical ?? 0) + (findings.high ?? 0)) : '—'}
+                hint={findings?.critical ? `${findings.critical} critical` : undefined}
+                hintColor={findings?.critical ? KPI_COLOR.err : undefined}
+              />
+            </div>
+            {podTrend && podTrend.length >= 2 && (
+              <div className="mt-4">
+                <Sparkline
+                  values={podTrend.map(Math.round)}
+                  height={30}
+                  left={
+                    Math.min(...podTrend) === Math.max(...podTrend)
+                      ? `pods 24h · steady at ${Math.round(podTrend[0])}`
+                      : `pods 24h · ${Math.round(Math.min(...podTrend))}–${Math.round(Math.max(...podTrend))}`
+                  }
+                />
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="h-full min-h-[84px] flex flex-col justify-center rounded-xl border border-dashed border-kb-border px-4 py-3">
+            <div className="text-[13px] text-kb-text-secondary">{metrics.reason}</div>
+            <div className="mt-1 text-[10.5px] font-mono text-kb-text-tertiary">
+              {!cluster.clusterId
+                ? 'open it once to start reading it'
+                : offline
+                  ? 'its numbers return when the agent reconnects'
+                  : 'install the agent to see pods, nodes and cost'}
+            </div>
+          </div>
+        )}
       </div>
 
-      <div className="flex items-center gap-2 mt-3 pt-2.5 border-t border-kb-border text-[10px] font-mono text-kb-text-tertiary">
+      <div className="flex items-center gap-2 mt-4 pt-3 border-t border-kb-border text-[10.5px] font-mono text-kb-text-tertiary">
         <span
-          className={`w-1.5 h-1.5 rounded-full ${cluster.agentConnected ? 'bg-status-ok' : 'bg-kb-text-tertiary'}`}
+          className={`w-1.5 h-1.5 rounded-full ${cluster.agentConnected ? 'bg-status-ok' : offline ? 'bg-status-warn' : 'bg-kb-text-tertiary'}`}
         />
         <span className="truncate">
           {cluster.agentConnected
             ? `Agent live · ${timeAgo(cluster.lastSeen)}`
-            : cluster.source === 'agent-proxy'
+            : offline
               ? // An agent-proxy cluster with no live agent is OFFLINE, not
-                // "Reporting" (in-vivo 2026-09-15): it stays registered in the
-                // tenant and keeps its stored data, but the link is down — say
-                // so, matching the Clusters page's OFFLINE badge, and keep the
-                // last contact so the gap is legible.
+                // "Reporting" (in-vivo 2026-09-15): it stays registered and
+                // keeps its stored data, but the link is down — say so, and
+                // keep the last contact so the gap is legible.
                 `Agent offline · ${timeAgo(cluster.lastSeen)}`
               : LINK_LABEL[health]}
         </span>
-        {/* El equipo dueño. Es la pregunta «¿a quién le toca esto?», que en una
-            flota con varios equipos precede a cualquier otra — y el dato ya
-            viajaba en la lista sin que nadie lo pintara aquí.
-            Un equipo del que el usuario no es miembro NO se nombra: enseñar su
-            id filtraría la existencia de un equipo ajeno. */}
+        {/* El equipo dueño — «¿a quién le toca esto?». Un equipo del que el
+            usuario no es miembro NO se nombra: su id filtraría su existencia. */}
         {teamName && <span className="ml-auto shrink-0 truncate max-w-[45%]">{teamName}</span>}
       </div>
     </button>
@@ -372,6 +394,9 @@ export function FleetPage() {
     clusters.length > 0,
     clusters.map((c) => c.clusterId).filter((id): id is string => !!id),
   )
+  // One 24h pods line per card — the same cached series Home sums.
+  const podTrends = useFleetPodsTrend(clusters.length > 0)
+  const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
 
   // Hallazgos por cluster. MISMA queryKey que Home y que la página de Security,
   // así que las tres comparten una sola petición y no pueden discrepar en el
@@ -391,18 +416,8 @@ export function FleetPage() {
     retry: false,
   })
 
-  // Reparto de salud de la flota, para el KPI. Cuenta CLUSTERS y no insights:
-  // «1 de 3» es la unidad en la que se actúa, y sumar avisos mezclaría uno con
-  // once leves y otro con un crítico.
-  const fleetHealth = fleetHealthSummary(
-    clusters.map((c) => c.clusterId).filter((id): id is string => !!id),
-    insightSummary?.bySeverityCluster,
-  )
-
   const connected = clusters.filter((c) => healthOf(c) === 'ok').length
   const attention = clusters.length - connected
-  const agentsLive = clusters.filter((c) => c.agentConnected).length
-  const anyCrit = clusters.some((c) => healthOf(c) === 'crit')
 
   // A local kubeconfig routinely holds a dozen contexts — every cluster the
   // operator can reach, not every cluster they monitor. Lead with the ones
@@ -410,15 +425,6 @@ export function FleetPage() {
   // "not connected" cards, and surface the ratio in the subtitle so the gap
   // reads as a fact about the fleet rather than as a broken page.
   const reporting = clusters.filter((c) => metricsState(c, c.clusterId ? rollup.byCluster[c.clusterId] : undefined).has)
-  // How much of the fleet the spend figure actually covers. Denominator is
-  // `reporting`, not every cluster: one that isn't connected has no cost for an
-  // obvious reason, and counting it would make the OpenCost gap look worse than
-  // it is. Surfaced only when partial — "2 of 2 clusters" is noise, and a KPI
-  // that qualifies itself when nothing is wrong teaches people to ignore the
-  // qualifier.
-  const costReporting = reporting.filter(
-    (c) => c.clusterId && rollup.byCluster[c.clusterId]?.costMonthly != null,
-  ).length
   // Lo peor primero, en las DOS vistas — comparten este orden a propósito:
   // cambiar de Grid a Table no debería reordenar la flota bajo el cursor.
   //
@@ -538,115 +544,50 @@ export function FleetPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-3">
-        <StripCard
-          hero
-          label="Fleet spend"
-          icon={<DollarSign className="w-3 h-3" />}
-          info={
-            <>
-              <TooltipHeader right="OpenCost">Fleet spend</TooltipHeader>
-              <TooltipRow
-                color="#22d68a"
-                label="Basis"
-                value="Σ node_total_hourly_cost × 730, by cluster_id"
-              />
-              <TooltipNote>
-                Summed across every cluster in the org, not just the active one. Clusters without
-                OpenCost contribute nothing.
-              </TooltipNote>
-            </>
-          }
-          value={money(rollup.fleetSpendMonthly)}
-          valueSuffix={rollup.costAvailable ? '/mo' : undefined}
-          sub={
-            !rollup.costAvailable
-              ? 'no cost data'
-              : costReporting < reporting.length
-                ? `OpenCost · ${costReporting} of ${reporting.length} clusters`
-                : 'OpenCost · run-rate'
-          }
-        />
-        {/* El «3/3 · 1 with warnings» del diseño. La sub-línea prioriza, en
-            este orden: clusters con críticos, con warnings, sin enlace, y por
-            último los que aún no se han evaluado. Un cluster sin datos NO se
-            cuenta como sano ni como problema — se dice aparte, porque «no lo
-            sabemos» es una tercera respuesta y esconderla es lo que hacía que
-            esta tarjeta pareciera más tranquilizadora de lo que sabía. */}
-        <StripCard
-          label="Clusters"
-          value={String(clusters.length)}
-          valueAccent={fleetHealth.critical > 0 ? 'crit' : fleetHealth.warning > 0 ? 'warn' : 'default'}
-          sub={
-            fleetHealth.critical > 0
-              ? `${fleetHealth.critical} with criticals`
-              : fleetHealth.warning > 0
-                ? `${fleetHealth.warning} with warnings`
-                : attention > 0
-                  ? `${attention} not reporting`
-                  : fleetHealth.unknown > 0
-                    ? `${fleetHealth.unknown} not evaluated yet`
-                    : 'all healthy'
-          }
-          subAccent={
-            fleetHealth.critical > 0
-              ? 'crit'
-              : fleetHealth.warning > 0 || attention > 0
-                ? 'warn'
-                : fleetHealth.unknown > 0
-                  ? 'default'
-                  : 'ok'
-          }
-        />
-        <StripCard label="Nodes" value={count(rollup.totalNodes)} sub="across fleet" />
-        <StripCard label="Pods" value={count(rollup.totalPods)} sub="across fleet" />
-        <StripCard
-          label="Live agents"
-          info={
-            <>
-              <TooltipHeader right="live">Live agents</TooltipHeader>
-              <TooltipRow color="#4c9aff" label="Shows" value="agent channel currently open" />
-              <TooltipNote>
-                Channel liveness, not cluster reachability — a direct-kubeconfig cluster never
-                counts here.
-              </TooltipNote>
-            </>
-          }
-          value={String(agentsLive)}
-          valueSuffix={`/ ${clusters.length}`}
-          valueAccent={agentsLive === clusters.length ? 'default' : 'warn'}
-          sub={agentsLive === clusters.length ? 'all reporting' : 'partial coverage'}
-          subAccent={agentsLive === clusters.length ? 'ok' : 'warn'}
-        />
-      </div>
+      {/* The headline row in the site's card anatomy (FleetKpis → KpiCard),
+          the same family as Home and the cluster Overview: the fleet's shape —
+          health per cluster, spend over 7 days, pods per cluster, agent
+          coverage — instead of five label-and-number strips. */}
+      <FleetKpis
+        clusters={clusters}
+        rollup={rollup}
+        insights={insightSummary?.bySeverityCluster}
+        reporting={reporting.length}
+        canManage={canManage}
+      />
 
       <div>
         <div className="flex items-center gap-3 border-t border-kb-border pt-4 mb-3">
           <span className="text-[11px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
             All clusters
           </span>
-          <span className="text-[10px] font-mono text-kb-text-tertiary/70">click to switch</span>
+          <span className="text-[10px] font-mono text-kb-text-tertiary">click to switch</span>
         </div>
 
         {isLoading && (
-          <div className="bg-kb-card border border-kb-border rounded-[10px] px-4 py-8 text-center text-xs text-kb-text-tertiary">
+          <div className="kb-panel px-4 py-8 text-center text-xs text-kb-text-tertiary">
             Loading fleet…
           </div>
         )}
 
         {!isLoading && clusters.length === 0 && (
-          <div className="bg-kb-card border border-kb-border rounded-[10px] px-4 py-8 text-center text-xs text-kb-text-tertiary">
+          <div className="kb-panel px-4 py-8 text-center text-xs text-kb-text-tertiary">
             No clusters yet — connect one from the Clusters page.
           </div>
         )}
 
         {!isLoading && clusters.length > 0 && view === 'grid' && (
-          <div className="grid grid-cols-3 gap-3">
+          <div
+            ref={gridRef}
+            className={`grid gap-4 ${gridWidth ? '' : 'grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3'}`}
+            style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, CARD_MIN_WIDTH, 16, [3, 2, 1])}, minmax(0, 1fr))` } : undefined}
+          >
             {ordered.map((c) => (
               <ClusterCard
                 key={c.context}
                 cluster={c}
                 rollup={c.clusterId ? rollup.byCluster[c.clusterId] : undefined}
+                podTrend={c.clusterId ? podTrends.get(c.clusterId)?.map(([, v]) => v) : undefined}
                 findings={c.clusterId ? findings?.bySeverityCluster?.[c.clusterId] : undefined}
                 insights={c.clusterId ? insightSummary?.bySeverityCluster?.[c.clusterId] : undefined}
                 onOpen={() => switchMutation.mutate(c.context)}
@@ -656,7 +597,7 @@ export function FleetPage() {
         )}
 
         {!isLoading && clusters.length > 0 && view === 'table' && (
-          <div className="bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
+          <div className="kb-panel overflow-hidden">
             <table className="w-full text-left">
               {/* Una tabla se lee por COLUMNAS, así que puede llevar más que
                   la tarjeta, no menos — y llevaba menos: sin salud real, sin
@@ -781,6 +722,8 @@ export function FleetPage() {
                           </span>
                         )}
                       </td>
+
+
                     </tr>
                   )
                 })}
