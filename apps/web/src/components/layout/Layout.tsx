@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Outlet, useLocation, useNavigate } from 'react-router-dom'
+import { enterKey, lastEnterCluster, rememberEnterCluster, useEnterMode } from '@/utils/enterOnce'
 import { useIsMutating, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Unplug, ShieldAlert, Loader2, Cable, X, Info } from 'lucide-react'
 import { Sidebar } from './Sidebar'
@@ -99,6 +100,16 @@ export function Layout() {
   // degrade the resource views, rather than treating the overview's "monitored-only"
   // 503 as "cluster unreachable".
   const isMetricsOnly = (clusters ?? []).find(c => c.active)?.mode === 'metrics-only'
+  // Whether this visit replays the KPI rows' enter animation: once per page per
+  // sign-in, and on cluster pages once per page per CLUSTER, so switching
+  // cluster plays the new one's figures (utils/enterOnce.ts). Written on
+  // <main> below.
+  const activeClusterCtx = (clusters ?? []).find(c => c.active)?.context
+  const enterCluster = scope === 'cluster' ? (activeClusterCtx ?? lastEnterCluster()) : undefined
+  const enterMode = useEnterMode(location.pathname, enterCluster)
+  useEffect(() => {
+    if (activeClusterCtx) rememberEnterCluster(activeClusterCtx)
+  }, [activeClusterCtx])
   // Routes that don't depend on a connected cluster. /clusters owns the
   // add-cluster wizard (must render so the user has a way out of the
   // empty state), and /admin /settings are platform-level pages whose
@@ -284,6 +295,8 @@ export function Layout() {
             right) — without it the last table's tail rows sit under
             the button and can't be read. */}
         <main
+          data-kb-enter={enterMode}
+          data-kb-enter-page={enterKey(location.pathname, enterCluster)}
           className={`kb-ambient flex-1 min-h-0 transition-[margin] duration-200 ease-out ${
             isMapRoute ? 'overflow-hidden' : 'overflow-y-auto p-5 pb-24'
           }`}

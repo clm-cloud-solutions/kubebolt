@@ -922,6 +922,18 @@ input:-webkit-autofill:active {
 .kb-kpi {
   padding: 1.25rem 1.25rem 1rem;
 }
+/* The compact card (KpiCard `compact`): a secondary row under a page's
+   headline, smaller so the headline stays the first thing read. */
+.kb-kpi-compact {
+  padding: 0.875rem 1rem 0.75rem;
+  border-radius: 14px;
+}
+.kb-kpi-compact.kb-kpi-primary::before {
+  height: 64px;
+}
+.kb-kpi-compact.kb-kpi-alert::before {
+  height: 76px;
+}
 .dark .kb-kpi,
 .dark .kb-panel {
   border-color: rgba(245, 242, 236, 0.14);
@@ -987,6 +999,58 @@ input:-webkit-autofill:active {
   background: linear-gradient(180deg, transparent, var(--kb-alert), transparent);
   box-shadow: 0 0 14px color-mix(in srgb, var(--kb-alert) 60%, transparent);
   pointer-events: none;
+}
+
+/* Enter animation for the KPI rows: the figures count up (CountUp.tsx) and
+   the minicharts fill when the row mounts — on the first visit to each page
+   after signing in only (utils/enterOnce.ts: Layout writes
+   data-kb-enter="skip" on <main> for a page that already played). A data
+   refresh does not replay it: the elements stay mounted. Cards start left to right through --kb-enter-i,
+   which every grid sets on its children (only these animations read it).
+   Individual transform properties (scale / translate) so the animation never
+   overrides a utility's own transform. `backwards` fill: before the delay the
+   element sits at the start state; afterwards it is simply itself. Reduced
+   motion shows the final state. */
+.grid > :nth-child(2) { --kb-enter-i: 1; }
+.grid > :nth-child(3) { --kb-enter-i: 2; }
+.grid > :nth-child(4) { --kb-enter-i: 3; }
+.grid > :nth-child(5) { --kb-enter-i: 4; }
+.grid > :nth-child(6) { --kb-enter-i: 5; }
+@keyframes kb-enter-grow { from { scale: 0 1; } }
+@keyframes kb-enter-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes kb-enter-arc { from { stroke-dasharray: 0 1000; } }
+@keyframes kb-enter-pop { from { scale: 0; opacity: 0; } }
+@keyframes kb-enter-rise { from { opacity: 0; translate: 0 5px; } }
+.kb-enter-grow,
+.kb-enter-reveal,
+.kb-enter-arc,
+.kb-enter-pop,
+.kb-enter-rise {
+  animation-duration: 1000ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-fill-mode: backwards;
+  animation-delay: calc(120ms + var(--kb-enter-i, 0) * 70ms + var(--kb-enter-d, 0ms));
+}
+.kb-enter-grow { animation-name: kb-enter-grow; transform-origin: left center; }
+.kb-enter-reveal { animation-name: kb-enter-reveal; }
+.kb-enter-arc { animation-name: kb-enter-arc; }
+.kb-enter-pop { animation-name: kb-enter-pop; animation-duration: 500ms; transform-box: fill-box; transform-origin: center; }
+.kb-enter-rise { animation-name: kb-enter-rise; animation-duration: 600ms; }
+[data-kb-enter="skip"] .kb-enter-grow,
+[data-kb-enter="skip"] .kb-enter-reveal,
+[data-kb-enter="skip"] .kb-enter-arc,
+[data-kb-enter="skip"] .kb-enter-pop,
+[data-kb-enter="skip"] .kb-enter-rise {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kb-enter-grow,
+  .kb-enter-reveal,
+  .kb-enter-arc,
+  .kb-enter-pop,
+  .kb-enter-rise {
+    animation: none;
+  }
 }
 
 /* Ambient light behind the content (dark only): a faint glow from above, the

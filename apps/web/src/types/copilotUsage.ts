@@ -21,6 +21,10 @@ export interface CopilotUsageSummary {
   avgDurationMs: number
   compacts: number
   estimatedUsd: number
+  // Billable AI credits — sent only where the platform runs the AI and bills
+  // it in credits (Enterprise SaaS). Absent here: OSS is BYOK and shows the
+  // estimated cost instead (useAiSpendUnit).
+  credits?: number
   topTools: Array<{
     name: string
     calls: number
@@ -48,6 +52,9 @@ export interface CopilotUsageBucket {
   cacheReadTokens: number
   compacts: number
   estimatedUsd: number
+  // Credits used in the bucket, where the platform bills them (see the
+  // summary's). Absent in OSS.
+  credits?: number
 }
 
 export interface CopilotSessionEnriched {
@@ -74,4 +81,6 @@ export interface CopilotSessionEnriched {
   tools?: Record<string, { calls: number; bytes: number; errors: number; durationMs: number }>
   compacts?: Array<{ turnsFolded: number; tokensBefore: number; tokensAfter: number; model: string }>
   estimatedUsd: number
+  // Where the platform bills credits (see the summary's). Absent in OSS.
+  credits?: number
 }

@@ -390,4 +390,10 @@ export interface CopilotConfig {
   // panel keeps only the final assistant text and a transient loading
   // indicator. Server-side: KUBEBOLT_AI_SHOW_TOOL_CALLS.
   showToolCalls?: boolean
+  // The unit the usage views show AI spend in. "credits" when the platform
+  // runs the AI (SaaS): the customer never sees the LLM cost behind a credit.
+  // "usd" when the org brings its own key (self-hosted EE, OSS): the cost is
+  // their own provider bill. Absent on older backends — read it through
+  // useAiSpendUnit, which falls back to credits.
+  spendUnit?: 'credits' | 'usd'
 }

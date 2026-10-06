@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { burstPhrases, fmtDur, isQuietShift, type Phrase } from './ShiftReportCard'
+import {
+  burstPhrases,
+  burstSummaryPhrases,
+  fmtDur,
+  isQuietShift,
+  pickBursts,
+  SHIFT_BURSTS_SHOWN,
+  spansDays,
+  type Phrase,
+} from './ShiftReportCard'
 import type { OperationalBurst, ShiftReport } from '@/services/api'
 
 // The shift report narrates arithmetic over the clusterer's output — these
@@ -69,6 +78,74 @@ describe('burstPhrases', () => {
   it('falls back to a cluster count when names are unknown', () => {
     const s = text(burstPhrases(burst({ clusters: ['x', 'y'] }), {}))
     expect(s).toContain('across 2 clusters')
+  })
+})
+
+// A month away held ~50 bursts and the narrative wrote 50 sentences in a row
+// (in-vivo 2026-10-05). Past SHIFT_BURSTS_SHOWN it summarizes instead.
+describe('summarizing many bursts', () => {
+  const at = (day: number, over: Partial<OperationalBurst> = {}) =>
+    burst({
+      id: `op-${day}`,
+      windowFrom: `2026-09-${String(day).padStart(2, '0')}T10:00:00Z`,
+      windowTo: `2026-09-${String(day).padStart(2, '0')}T10:30:00Z`,
+      ...over,
+    })
+  const blast = (affected: number, stillFiring = 0) => ({
+    affected,
+    autoRecovered: affected - stillFiring,
+    remediated: 0,
+    stillFiring,
+    expired: 0,
+    worstSeconds: 0,
+    worstResource: '',
+  })
+
+  it('a few bursts are all told, untouched', () => {
+    const few = [at(1), at(2), at(3)]
+    expect(pickBursts(few)).toBe(few)
+  })
+
+  it('beyond the cap, still-down first, then the largest, told in order', () => {
+    const many = [
+      at(1, { blast: blast(5) }),
+      at(2, { blast: blast(59) }),
+      at(3, { blast: blast(4, 1) }), // still down: always told
+      at(4, { blast: blast(43) }),
+      at(5, { blast: blast(6) }),
+    ]
+    const picked = pickBursts(many)
+    expect(picked).toHaveLength(SHIFT_BURSTS_SHOWN)
+    expect(picked.map((b) => b.id)).toEqual(['op-2', 'op-3', 'op-4'])
+  })
+
+  it('the lead sentence counts, splits recovered from down, and breaks down by kind', () => {
+    const many = [
+      at(1, { kind: 'mass_rollout' }),
+      at(2, { kind: 'mass_rollout' }),
+      at(3, { kind: 'unknown_burst', blast: blast(4, 2) }),
+      at(4, { kind: 'node_rotation' }),
+    ]
+    const ps = burstSummaryPhrases(many, '2026-09-01T00:00:00Z')
+    const s = text(ps)
+    expect(s).toMatch(/^4 bursts since /)
+    expect(s).toContain('3 recovered on their own, 1 with workloads still down')
+    expect(s).toContain('(2 broad rollouts, 1 burst of findings, 1 node rotation).')
+    expect(ps.find((p) => p.t === '1 with workloads still down')?.tone).toBe('bad')
+  })
+
+  it('all recovered reads as good news', () => {
+    const s = text(burstSummaryPhrases([at(1), at(2), at(3), at(4)], '2026-09-01T00:00:00Z'))
+    expect(s).toContain('all recovered on their own')
+  })
+
+  it('a window longer than a day dates every time; a short one does not', () => {
+    expect(spansDays('2026-09-05T13:52:00Z', '2026-10-05T13:52:00Z')).toBe(true)
+    expect(spansDays('2026-10-05T01:00:00Z', '2026-10-05T13:00:00Z')).toBe(false)
+    const dated = text(burstPhrases(at(12), {}, true))
+    const bare = text(burstPhrases(at(12), {}))
+    expect(dated.length).toBeGreaterThan(bare.length)
+    expect(dated).toMatch(/at \S+ \d+, /) // «at Sep 12, 10:00 AM»
   })
 })
 
