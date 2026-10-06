@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
@@ -99,7 +98,7 @@ func (r *Runtime) Copilot(ctx context.Context) config.CopilotConfig {
 func (r *Runtime) resolveCopilotLocked(ctx context.Context) config.CopilotConfig {
 	cfg := r.envBase // value copy — safe to mutate
 
-	if auth.MultiTenantEnabled {
+	if PlatformManagedAI() {
 		// When the multi-tenant seam is on, the AI provider, model, key and
 		// cost/context tunables come from the install-global PLATFORM override
 		// (see copilot_platform.go); the per-org record contributes ONLY the

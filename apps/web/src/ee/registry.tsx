@@ -36,3 +36,10 @@ export const eeRouteScopes: { global: string[]; cluster: string[]; public: strin
 // keeps the global layer only: the tab is hidden and «Adjust rule» lands on
 // the Rules tab.
 export const eeInsightEnvironments = false
+
+// The unit AI spend shows in until GET /copilot/config answers (useAiSpendUnit).
+// OSS is always BYOK — the org pays its own provider, so the estimated cost is
+// shown — and the backend says usd; starting there avoids a flash of credits.
+// The Enterprise build starts at credits: on SaaS a dollar figure must never
+// show, not even for a moment.
+export const eeAiSpendUnitDefault: 'credits' | 'usd' = 'usd'

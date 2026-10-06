@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
@@ -19,6 +20,24 @@ import (
 // layers them. When the seam is off (single-tenant), this config is unused —
 // the per-org record owns everything (BYOK).
 const copilotPlatformSettingsKey = "copilot_platform"
+
+// PlatformManagedAI reports whether this install's AI is run and paid for by
+// the platform: the provider, model and key are platform-owned and every org
+// is billed in credits. That is SaaS (auth.MultiTenantEnabled). Self-hosted EE
+// and OSS are BYOK: each org brings its own key and pays its own provider, so
+// the LLM cost is theirs to see. The config resolver and what the usage views
+// show (GET /copilot/config's spendUnit) both read this one rule.
+func PlatformManagedAI() bool { return auth.MultiTenantEnabled }
+
+// AISpendUnit is the unit the usage views show AI spend in: "credits" when the
+// platform runs the AI (the customer never sees the LLM cost behind a credit),
+// "usd" when the org brings its own key (the cost is their provider bill).
+func AISpendUnit() string {
+	if PlatformManagedAI() {
+		return "credits"
+	}
+	return "usd"
+}
 
 // copilotPlatformFieldClass: which StoredCopilotSettings fields the platform
 // owns (provider + cost/context) vs the org owns (governance + display). The

@@ -50,14 +50,78 @@ const KIND_OPENERS: Record<OperationalBurst['kind'], string> = {
   unknown_burst: 'A burst of findings',
 }
 
-function hhmm(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+function hhmm(iso: string, withDate = false): string {
+  const d = new Date(iso)
+  const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+  // Over a window longer than a day "05:30 PM" doesn't say which day.
+  return withDate ? `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}, ${time}` : time
+}
+
+// spansDays — the report's window is long enough that a bare time is ambiguous.
+export function spansDays(fromIso: string, toIso: string): boolean {
+  return Date.parse(toIso) - Date.parse(fromIso) > 24 * 3600_000
+}
+
+// SHIFT_BURSTS_SHOWN — sentences the narrative writes out. Past it the report
+// summarizes: a month away can hold fifty bursts, and fifty sentences in a row
+// is a wall nobody reads (in-vivo 2026-10-05).
+export const SHIFT_BURSTS_SHOWN = 3
+
+// pickBursts — which bursts get a sentence when there are too many: the ones
+// with workloads still down first (worst first), then the largest; told in
+// the order they happened.
+export function pickBursts(bursts: OperationalBurst[], max = SHIFT_BURSTS_SHOWN): OperationalBurst[] {
+  if (bursts.length <= max) return bursts
+  const ranked = [...bursts].sort(
+    (a, b) =>
+      b.blast.stillFiring - a.blast.stillFiring ||
+      b.blast.affected - a.blast.affected ||
+      Date.parse(b.windowFrom) - Date.parse(a.windowFrom),
+  )
+  return ranked.slice(0, max).sort((a, b) => Date.parse(a.windowFrom) - Date.parse(b.windowFrom))
+}
+
+const KIND_PLURALS: Record<OperationalBurst['kind'], [string, string]> = {
+  node_rotation: ['node rotation', 'node rotations'],
+  node_pressure: ['node-pressure burst', 'node-pressure bursts'],
+  mass_rollout: ['broad rollout', 'broad rollouts'],
+  unknown_burst: ['burst of findings', 'bursts of findings'],
+}
+
+// burstSummaryPhrases — the lead sentence when the narrative is summarized:
+// «47 bursts since Sep 5 — 45 recovered on their own, 2 with workloads still
+// down (32 bursts of findings, 15 broad rollouts).»
+export function burstSummaryPhrases(bursts: OperationalBurst[], windowFrom: string): Phrase[] {
+  const down = bursts.filter((b) => b.blast.stillFiring > 0).length
+  const since = new Date(windowFrom).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
+  const kinds = new Map<OperationalBurst['kind'], number>()
+  for (const b of bursts) kinds.set(b.kind, (kinds.get(b.kind) ?? 0) + 1)
+  const breakdown = [...kinds.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, n]) => `${n} ${KIND_PLURALS[k][n === 1 ? 0 : 1]}`)
+    .join(', ')
+  const out: Phrase[] = [
+    { t: `${bursts.length} bursts`, tone: 'bad' },
+    { t: ' since ' },
+    { t: since, tone: 'time' },
+    { t: ' — ' },
+  ]
+  if (down === 0) {
+    out.push({ t: 'all recovered on their own', tone: 'ok' })
+  } else {
+    out.push(
+      { t: `${bursts.length - down} recovered on their own, ` },
+      { t: `${down} with workloads still down`, tone: 'bad' },
+    )
+  }
+  out.push({ t: ` (${breakdown}).` })
+  return out
 }
 
 // burstPhrases — the mock's sentence as typed segments: «A node rotation at
 // 05:51 across gke-orquestador and gke-procesamiento hit 46 workloads.
 // Everything recovered by 06:40» (or «N still down»).
-export function burstPhrases(b: OperationalBurst, names: Record<string, string>): Phrase[] {
+export function burstPhrases(b: OperationalBurst, names: Record<string, string>, withDate = false): Phrase[] {
   const named = b.clusters.map((uid) => names[uid]).filter(Boolean)
   const where =
     named.length > 0
@@ -66,7 +130,7 @@ export function burstPhrases(b: OperationalBurst, names: Record<string, string>)
   const out: Phrase[] = [
     { t: KIND_OPENERS[b.kind] },
     { t: ' at ' },
-    { t: hhmm(b.windowFrom), tone: 'time' },
+    { t: hhmm(b.windowFrom, withDate), tone: 'time' },
     { t: ' across ' },
     { t: where, tone: 'name' },
     { t: ' hit ' },
@@ -74,7 +138,7 @@ export function burstPhrases(b: OperationalBurst, names: Record<string, string>)
     { t: '. ' },
   ]
   if (b.blast.stillFiring === 0) {
-    out.push({ t: 'Everything recovered by ' }, { t: hhmm(b.windowTo), tone: 'time' }, { t: '.' })
+    out.push({ t: 'Everything recovered by ' }, { t: hhmm(b.windowTo, withDate), tone: 'time' }, { t: '.' })
   } else {
     out.push(
       { t: `${b.blast.autoRecovered + b.blast.remediated} recovered` },
@@ -391,6 +455,9 @@ export function ShiftReportSection({
   const rows = pickRows(episodes, from, 3)
   const multiCluster = new Set(episodes.map((ep) => ep.clusterId)).size > 1
   const more = episodes.length - rows.length
+  const withDates = spansDays(report.windowFrom, report.windowTo)
+  const shownBursts = pickBursts(report.bursts)
+  const summarized = shownBursts.length < report.bursts.length
 
   return (
     <div className="relative px-5 pt-3 pb-4">
@@ -417,15 +484,33 @@ export function ShiftReportSection({
         </p>
       ) : (
         <div className="space-y-2.5">
-          {/* Narrative: one sentence per burst, the straggler linked. */}
+          {/* Narrative: one sentence per burst, the straggler linked. Past
+              SHIFT_BURSTS_SHOWN it summarizes and links to the burst view. */}
           {report.bursts.length > 0 && (
             <p className="text-[13px] text-kb-text-secondary leading-relaxed max-w-[90ch]">
-              {report.bursts.map((b, bi) => (
+              {summarized && (
+                <>
+                  {burstSummaryPhrases(report.bursts, report.windowFrom).map(toneSpan)}{' '}
+                  {report.bursts.some((b) => b.blast.stillFiring > 0) ? 'The worst:' : 'The largest:'}{' '}
+                </>
+              )}
+              {shownBursts.map((b, bi) => (
                 <span key={b.id}>
                   {bi > 0 && ' '}
-                  {burstPhrases(b, names).map(toneSpan)}
+                  {burstPhrases(b, names, withDates).map(toneSpan)}
                 </span>
               ))}
+              {summarized && (
+                <>
+                  {' '}
+                  <Link
+                    to={`/insights?view=bursts&from=${encodeURIComponent(report.windowFrom)}&to=${encodeURIComponent(report.windowTo)}`}
+                    className="font-mono text-kb-accent underline underline-offset-2 hover:opacity-80 whitespace-nowrap"
+                  >
+                    See all {report.bursts.length} bursts →
+                  </Link>
+                </>
+              )}
               {report.worst && report.worst.status === 'firing' && report.worst.seconds > 0 && (
                 <>
                   {' '}
