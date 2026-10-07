@@ -261,8 +261,7 @@ RBAC problems first.
 
 The agent-proxy deadline no longer applies to direct connections (in-cluster
 and kubeconfig contexts): they are bounded by the cache-sync deadline alone,
-**Cluster connect timeout** in *Administration → Settings → General* (45s by
-default). A sync that finishes at 30s now finishes. If Events on your cluster
+the **Cluster connect timeout** setting (45s by default). A sync that finishes at 30s now finishes. If Events on your cluster
 take longer than that, raise **Cluster connect timeout** — the right knob now —
 rather than the agent-proxy one. The message "agent may be stuck" is only
 shown for agent-proxy clusters.
