@@ -49,6 +49,9 @@ OpenShift out of the box. Drop-in, no migration; agent 1.4.2. Full note: [docs/r
 
 - The `web` Deployment runs under the chart's ServiceAccount, without mounting
   its token.
+- The API's default memory limit is 1Gi (was 256Mi) and its request 128Mi (was
+  64Mi): with a large Events collection the API could not finish its first
+  sync at 256Mi.
 - Ships with agent 1.4.2: its chart drops the default `runAsUser` on OpenShift
   and the image's `USER` is numeric. See packages/agent/CHANGELOG.md.
 
