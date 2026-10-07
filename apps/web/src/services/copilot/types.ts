@@ -223,9 +223,9 @@ export function parseActionProposal(content: string): ActionProposal | null {
 //   - missing `request`/`limit`/`utilizationPercent` → KSM absent path,
 //     card renders without threshold lines
 
-export type WorkloadMetricKey = 'cpu' | 'memory' | 'network_rx' | 'network_tx'
+export type WorkloadMetricKey = 'cpu' | 'memory' | 'network_rx' | 'network_tx' | 'filesystem'
 
-export type WorkloadMetricUnit = 'cores' | 'bytes' | 'bytes/sec'
+export type WorkloadMetricUnit = 'cores' | 'bytes' | 'bytes/sec' | 'percent'
 
 export interface WorkloadMetricsSummary {
   min: number
@@ -257,6 +257,11 @@ export interface WorkloadMetricsEntry {
   limit?: number
   utilizationPercent?: WorkloadMetricsUtilization
   perContainer?: Record<string, WorkloadMetricsContainerEntry>
+  // Node filesystem only, when the node has more than one disk: the
+  // top-level summary/trend are the fullest one at each point.
+  perMountpoint?: Record<string, WorkloadMetricsContainerEntry>
+  // Why the metric came back empty (refused or failed). Read by the model.
+  error?: string
 }
 
 export interface WorkloadMetricsResponse {

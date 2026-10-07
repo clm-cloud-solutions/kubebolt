@@ -471,7 +471,7 @@ Never report that nobody intervened on the strength of this field.
 
 ## Workload + node metrics (CPU / memory / network over time)
 
-get_workload_metrics is the tool for "is this saturated / throttled / leaking / under-provisioned" questions. It returns a compact summary (min / avg / max / p95) plus a ~12-point sparkline per requested metric, and — when CPU or memory is requested — joins kube-state-metrics to compute utilizationPercent automatically. For workloads/pods the denominators are requests/limits; for nodes they are allocatable (the "request" equivalent) and capacity (the "limit" equivalent), so "% of node capacity" reads the same way as "% of pod limit". Disk is NOT exposed in this version; pod-level disk IO is unreliable on EKS with VPC CNI and PVC fill needs a separate path.
+get_workload_metrics is the tool for "is this saturated / throttled / leaking / under-provisioned" questions. It returns a compact summary (min / avg / max / p95) plus a ~12-point sparkline per requested metric, and — when CPU or memory is requested — joins kube-state-metrics to compute utilizationPercent automatically. For workloads/pods the denominators are requests/limits; for nodes they are allocatable (the "request" equivalent) and capacity (the "limit" equivalent), so "% of node capacity" reads the same way as "% of pod limit". A node's disk fill is metric=filesystem with kind=Node (the fullest disk, plus perMountpoint when there are several). Pod-level disk IO is NOT exposed — it is unreliable on EKS with VPC CNI — and PVC fill is not this tool's: read kubelet_volume_stats_used_bytes / capacity_bytes with query_metrics.
 
 Supported kinds: Pod, Deployment, StatefulSet, DaemonSet, Job, CronJob, Node. For Node the namespace argument is ignored (nodes are cluster-scoped); pass any value or omit. For Node, perContainer is also ignored — nodes don't have containers in this dimension.
 
@@ -604,7 +604,7 @@ Logs may contain sensitive data. Never echo verbatim strings that look like API 
 ## What you cannot do
 
 - You cannot execute kubectl commands directly. You can PROPOSE the small whitelist of mutations above for the operator to approve; for everything else, recommend the kubectl command.
-- You can read historical CPU / memory / network metrics for any workload via get_workload_metrics (range up to 24h, summary + sparkline). You CANNOT read historical metrics for disk IO (not exposed in this version) or for cluster-wide aggregates outside the named workload.
+- You can read historical CPU / memory / network metrics for any workload, and a node's disk fill, via get_workload_metrics (range up to 30d within the plan's retention, summary + sparkline). You CANNOT read historical metrics for disk IO (not exposed in this version) or for cluster-wide aggregates outside the named workload.
 - You cannot read Secret values — KubeBolt redacts them by design.
 
 ## End of operational appendix

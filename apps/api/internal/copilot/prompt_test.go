@@ -289,8 +289,10 @@ func TestWorkloadMetricsGuidance(t *testing.T) {
 		// Operators ask "is X bad over the last hour" — anchor the
 		// prompt to that exact framing so the LLM picks the right tool.
 		"saturated",
-		// Negative guidance: disk metrics are deliberately absent.
-		"disk is not exposed",
+		// Node disk fill IS measurable, and the prompt must say how.
+		"kind=node and metric=filesystem",
+		// Disk IO is the part that is deliberately absent.
+		"disk io is not exposed",
 		// Acknowledgement that we DO have historical metrics (corrects
 		// the long-standing "you don't have historical metrics" lie).
 		"historical cpu / memory / network metrics",
@@ -298,6 +300,13 @@ func TestWorkloadMetricsGuidance(t *testing.T) {
 	for _, s := range mustContain {
 		if !strings.Contains(lower, s) {
 			t.Errorf("system prompt missing metrics-tool guidance %q — Kobi will regress to point-in-time guessing or call a non-existent disk tool", s)
+		}
+	}
+	// This test used to REQUIRE "disk is not exposed", so the sentence
+	// outlived the filesystem lane and the prompt told Kobi both things.
+	for _, stale := range []string{"disk is not exposed", "range up to 24h"} {
+		if strings.Contains(lower, stale) {
+			t.Errorf("system prompt still says %q — it contradicts the filesystem lane", stale)
 		}
 	}
 }

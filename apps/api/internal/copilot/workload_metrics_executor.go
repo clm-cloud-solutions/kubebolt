@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
@@ -83,6 +84,14 @@ type metricResponse struct {
 	// (or pod) aggregate so the LLM can answer "how much does the pod use
 	// overall?" without re-aggregating. Empty unless perContainer=true.
 	PerContainer map[string]containerMetric `json:"perContainer,omitempty"`
+	// PerMountpoint is the filesystem split when the node reports more than
+	// one disk (node-exporter). Summary/Trend are then the FULLEST mountpoint
+	// at each point — DiskPressure is decided by the disk that fills, and an
+	// average or a sum of percentages would hide it.
+	PerMountpoint map[string]containerMetric `json:"perMountpoint,omitempty"`
+	// Error is why this metric came back empty. Without it a refusal or a
+	// failed query is indistinguishable from an idle target.
+	Error string `json:"error,omitempty"`
 }
 
 type containerMetric struct {
@@ -101,7 +110,23 @@ type utilizationPercent struct {
 // reqCtx carries the resolved (tenant, cluster) — needed to ask what this
 // org's plan retains. The VM call below still builds its own bounded context;
 // this one is only read from.
-func (e *Executor) execGetWorkloadMetrics(reqCtx context.Context, _ ToolCall, args map[string]interface{}, conn *cluster.Connector) (string, error) {
+// metricsTarget is what the tool reads from the cluster: does the target
+// exist, which pods it owns, and the cluster's identity for the VM scope.
+// *cluster.Connector satisfies it; tests use a fake so the tool can be run end
+// to end — the pieces were each tested and the wiring between them was not.
+type metricsTarget interface {
+	GetResourceDetail(resourceType, namespace, name string) (map[string]interface{}, error)
+	ClusterUID() string
+	GetDeploymentPods(namespace, name string) []map[string]interface{}
+	GetStatefulSetPods(namespace, name string) []map[string]interface{}
+	GetDaemonSetPods(namespace, name string) []map[string]interface{}
+	GetJobPods(namespace, name string) []map[string]interface{}
+	GetCronJobJobs(namespace, name string) []map[string]interface{}
+}
+
+var _ metricsTarget = (*cluster.Connector)(nil)
+
+func (e *Executor) execGetWorkloadMetrics(reqCtx context.Context, _ ToolCall, args map[string]interface{}, conn metricsTarget) (string, error) {
 	kind := stringArg(args, "kind")
 	namespace := stringArg(args, "namespace")
 	name := stringArg(args, "name")
@@ -253,6 +278,7 @@ func (e *Executor) execGetWorkloadMetrics(reqCtx context.Context, _ ToolCall, ar
 				Unit:    unitFor(m),
 				Summary: metricSummary{},
 				Trend:   []metricPoint{},
+				Error:   qerr.Error(),
 			}
 			continue
 		}
@@ -276,11 +302,9 @@ func parseMetricsArg(raw interface{}) ([]MetricKind, error) {
 	if len(asSlice) == 0 {
 		return nil, fmt.Errorf("metrics must be a non-empty array of strings")
 	}
-	valid := map[string]MetricKind{
-		"cpu":        MetricCPU,
-		"memory":     MetricMemory,
-		"network_rx": MetricNetworkRX,
-		"network_tx": MetricNetworkTX,
+	valid := make(map[string]MetricKind, len(supportedMetrics))
+	for _, m := range supportedMetrics {
+		valid[string(m)] = m
 	}
 	seen := map[MetricKind]bool{}
 	out := make([]MetricKind, 0, len(asSlice))
@@ -291,7 +315,7 @@ func parseMetricsArg(raw interface{}) ([]MetricKind, error) {
 		}
 		mk, ok := valid[s]
 		if !ok {
-			return nil, fmt.Errorf("invalid metric %q (valid: cpu, memory, network_rx, network_tx)", s)
+			return nil, fmt.Errorf("invalid metric %q (valid: %s)", s, strings.Join(metricNames(), ", "))
 		}
 		if seen[mk] {
 			continue
@@ -307,7 +331,7 @@ func parseMetricsArg(raw interface{}) ([]MetricKind, error) {
 // and union their pods — gives Kobi a useful snapshot of "what's running
 // right now under this CronJob", which is the question that maps to the
 // metric data we have.
-func resolveWorkloadPods(conn *cluster.Connector, kind, namespace, name string) ([]string, error) {
+func resolveWorkloadPods(conn metricsTarget, kind, namespace, name string) ([]string, error) {
 	switch kind {
 	case "Pod":
 		return []string{name}, nil
@@ -396,6 +420,9 @@ func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time
 	if err != nil {
 		return metricResponse{}, err
 	}
+	if m == MetricFilesystem {
+		return filesystemResponse(series), nil
+	}
 	// Always initialise Trend to a non-nil slice. Go marshals nil slices
 	// as JSON null, which broke the frontend's `.length` access in chart
 	// rendering (caught by ErrorBoundary as "Cannot read properties of
@@ -440,6 +467,65 @@ func runMetric(ctx context.Context, b promBuilder, m MetricKind, start, end time
 	out.Summary = summarize(aggregate)
 	out.Trend = downsample(aggregate, trendTargetPoints)
 	return out, nil
+}
+
+// filesystemResponse shapes a node's disk series. node-exporter reports one
+// series per mountpoint; the agent's fallback one series with no mountpoint.
+// The top-level Summary/Trend are the fullest disk at each point, and with
+// more than one mountpoint the split comes back alongside so the model can
+// name the disk that filled.
+func filesystemResponse(series []vmSeries) metricResponse {
+	out := metricResponse{Unit: unitFor(MetricFilesystem), Trend: []metricPoint{}}
+	if len(series) == 0 {
+		return out
+	}
+	peak := maxSeriesByTimestamp(series)
+	out.Summary = summarize(peak)
+	out.Trend = downsample(peak, trendTargetPoints)
+	if len(series) > 1 {
+		out.PerMountpoint = map[string]containerMetric{}
+		for _, s := range series {
+			mp := s.Labels["mountpoint"]
+			if mp == "" {
+				mp = "node"
+			}
+			// The same mountpoint on two devices (a bind mount, a remount)
+			// keeps the fuller one, matching the top-level reading.
+			if prev, ok := out.PerMountpoint[mp]; ok && prev.Summary.Max >= summarize(s.Points).Max {
+				continue
+			}
+			out.PerMountpoint[mp] = containerMetric{
+				Summary: summarize(s.Points),
+				Trend:   downsample(s.Points, trendTargetPoints),
+			}
+		}
+	}
+	return out
+}
+
+// maxSeriesByTimestamp keeps the highest value across series at each
+// timestamp — the fullest disk, where mergeSeriesByTimestamp would add
+// percentages together.
+func maxSeriesByTimestamp(series []vmSeries) []metricPoint {
+	byTs := map[int64]float64{}
+	for _, s := range series {
+		for _, p := range s.Points {
+			ts := p.T.Unix()
+			if v, ok := byTs[ts]; !ok || p.V > v {
+				byTs[ts] = p.V
+			}
+		}
+	}
+	keys := make([]int64, 0, len(byTs))
+	for k := range byTs {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i] < keys[j] })
+	out := make([]metricPoint, len(keys))
+	for i, k := range keys {
+		out[i] = metricPoint{T: time.Unix(k, 0).UTC(), V: byTs[k]}
+	}
+	return out
 }
 
 // mergeSeriesByTimestamp sums sample values across series at matching
@@ -535,6 +621,8 @@ func unitFor(m MetricKind) string {
 		return "bytes"
 	case MetricNetworkRX, MetricNetworkTX:
 		return "bytes/sec"
+	case MetricFilesystem:
+		return "percent"
 	}
 	return ""
 }

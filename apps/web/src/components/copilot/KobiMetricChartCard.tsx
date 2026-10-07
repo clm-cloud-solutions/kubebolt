@@ -47,14 +47,16 @@ const MAX_PER_CONTAINER_ROWS = 4
 // METRIC_ORDER controls the vertical stacking when a call requests multiple
 // metrics. CPU first because operators read it first in the prose, memory
 // second (the second most common question), network last (less frequent
-// and conceptually distinct from compute saturation).
-const METRIC_ORDER: WorkloadMetricKey[] = ['cpu', 'memory', 'network_rx', 'network_tx']
+// and conceptually distinct from compute saturation). Disk (node-only) closes
+// the stack.
+const METRIC_ORDER: WorkloadMetricKey[] = ['cpu', 'memory', 'network_rx', 'network_tx', 'filesystem']
 
 const METRIC_DISPLAY: Record<WorkloadMetricKey, { label: string; accent: string }> = {
   cpu: { label: 'CPU', accent: METRIC_ACCENTS.cpu[0] },
   memory: { label: 'Memory', accent: METRIC_ACCENTS.memory[0] },
   network_rx: { label: 'Network RX', accent: METRIC_ACCENTS.networkRxTx[0] },
   network_tx: { label: 'Network TX', accent: METRIC_ACCENTS.networkRxTx[1] },
+  filesystem: { label: 'Disk', accent: METRIC_ACCENTS.filesystem[0] },
 }
 
 interface Props {
@@ -193,6 +195,7 @@ function MetricBlock({ metricKey, entry }: MetricBlockProps) {
         limit={entry.limit}
         utilization={entry.utilizationPercent}
         scale={scale}
+        boundless={unitKind === 'percent'}
       />
       <ChartArea
         points={trend}
@@ -209,6 +212,14 @@ function MetricBlock({ metricKey, entry }: MetricBlockProps) {
           scale={scale}
         />
       )}
+      {entry.perMountpoint && Object.keys(entry.perMountpoint).length > 0 && (
+        <PerContainerRows
+          containers={entry.perMountpoint}
+          accent={display.accent}
+          scale={scale}
+          noun="mountpoint"
+        />
+      )}
     </div>
   )
 }
@@ -220,6 +231,9 @@ interface MetricStripProps {
   limit?: number
   utilization?: WorkloadMetricsEntry['utilizationPercent']
   scale: UnitScale
+  // A percentage of the disk has no request or limit to compare against;
+  // "no limits" there would read as a misconfiguration.
+  boundless?: boolean
 }
 
 function MetricStrip({
@@ -229,6 +243,7 @@ function MetricStrip({
   limit,
   utilization,
   scale,
+  boundless,
 }: MetricStripProps) {
   return (
     <div className="flex items-center justify-between gap-2 px-3 py-1.5">
@@ -255,7 +270,7 @@ function MetricStrip({
         {utilization?.vsRequest != null && utilization.vsLimit == null && (
           <UtilizationChip percent={utilization.vsRequest} threshold="request" />
         )}
-        {!limit && !request && (
+        {!limit && !request && !boundless && (
           <span className="text-[10px] text-kobi-text-tertiary italic">no limits</span>
         )}
       </div>
@@ -460,9 +475,11 @@ interface PerContainerRowsProps {
   containers: NonNullable<WorkloadMetricsEntry['perContainer']>
   accent: string
   scale: UnitScale
+  // What each row is: a container, or a node's mountpoint for Disk.
+  noun?: 'container' | 'mountpoint'
 }
 
-function PerContainerRows({ containers, accent, scale }: PerContainerRowsProps) {
+function PerContainerRows({ containers, accent, scale, noun = 'container' }: PerContainerRowsProps) {
   // Sort by max usage descending so the dominant container is visually
   // first. Cap at MAX_PER_CONTAINER_ROWS and surface the count of hidden
   // ones — beyond that the operator should narrow to kind=Pod.
@@ -475,7 +492,7 @@ function PerContainerRows({ containers, accent, scale }: PerContainerRowsProps) 
   return (
     <div className="border-t border-kobi-border bg-kobi-bg/30">
       <div className="px-3 py-1 text-[10px] font-mono uppercase tracking-wider text-kobi-text-tertiary">
-        per container
+        per {noun}
       </div>
       <div className="flex flex-col">
         {visible.map(([name, c]) => (
@@ -483,7 +500,9 @@ function PerContainerRows({ containers, accent, scale }: PerContainerRowsProps) 
         ))}
         {hidden > 0 && (
           <div className="px-3 py-1.5 text-[10px] text-kobi-text-tertiary italic border-t border-kobi-border">
-            +{hidden} more container{hidden === 1 ? '' : 's'} hidden — narrow to kind=Pod for full detail
+            {noun === 'container'
+              ? `+${hidden} more container${hidden === 1 ? '' : 's'} hidden — narrow to kind=Pod for full detail`
+              : `+${hidden} more mountpoint${hidden === 1 ? '' : 's'} hidden`}
           </div>
         )}
       </div>
@@ -546,6 +565,8 @@ function vmUnitToChartUnit(u: string): UnitKind {
       return 'bytes'
     case 'bytes/sec':
       return 'bytes/s'
+    case 'percent':
+      return 'percent'
     default:
       return 'count'
   }
