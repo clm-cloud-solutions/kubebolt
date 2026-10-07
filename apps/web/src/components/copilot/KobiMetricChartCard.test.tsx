@@ -223,4 +223,35 @@ describe('KobiMetricChartCard', () => {
     expect(screen.getByText('Network RX')).toBeInTheDocument()
     expect(screen.getByText('Network TX')).toBeInTheDocument()
   })
+
+  it('renders node disk as a percentage with one row per mountpoint', () => {
+    const disk = makeResponse({
+      workload: { kind: 'Node', namespace: '', name: 'aks-default-vmss000004' },
+      podsResolved: 1,
+      metrics: {
+        filesystem: {
+          unit: 'percent',
+          summary: { min: 41, avg: 60, max: 88.7, p95: 88.7 },
+          trend: [
+            { t: '2026-09-16T03:00:00Z', v: 53 },
+            { t: '2026-09-16T03:10:00Z', v: 88.7 },
+          ],
+          perMountpoint: {
+            '/': { summary: { min: 41, avg: 41.5, max: 42, p95: 42 }, trend: [] },
+            '/var/lib/containerd': {
+              summary: { min: 39.9, avg: 60, max: 88.7, p95: 88.7 },
+              trend: [],
+            },
+          },
+        },
+      },
+    })
+    render(<KobiMetricChartCard data={disk} />)
+    expect(screen.getByText('Disk')).toBeInTheDocument()
+    expect(screen.getByText('per mountpoint')).toBeInTheDocument()
+    expect(screen.getByText('/var/lib/containerd')).toBeInTheDocument()
+    expect(screen.getAllByText(/88\.7.*%/).length).toBeGreaterThan(0)
+    // A disk has no request or limit; "no limits" would read as a misconfiguration.
+    expect(screen.queryByText('no limits')).not.toBeInTheDocument()
+  })
 })

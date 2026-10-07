@@ -687,7 +687,7 @@ func ToolDefinitions() []ToolDefinition {
 		},
 		{
 			Name: "get_workload_metrics",
-			Description: "Query CPU, memory, and network metrics for a workload, pod, OR node over a time " +
+			Description: "Query CPU, memory, and network metrics for a workload, pod, OR node — and a node's disk fill — over a time " +
 				"range. Returns a compact summary {min, avg, max, p95} plus a downsampled sparkline " +
 				"(~12 points) per requested metric. When CPU or memory is requested, also returns the " +
 				"target's current resource bounds and a derived utilizationPercent — for workloads/pods " +
@@ -704,13 +704,16 @@ func ToolDefinitions() []ToolDefinition {
 				"reported by `kubectl get nodes`. Use kind=Node when the operator asks about node-level " +
 				"saturation, node memory pressure, or \"which node is doing X\". " +
 				"metric=filesystem is NODE-ONLY and returns % of the node's disk used, per real mountpoint " +
-				"where node-exporter is present and one coarse series per node otherwise. Use it whenever the " +
+				"where node-exporter is present and one coarse series per node otherwise: summary/trend are the " +
+				"FULLEST disk at each point and perMountpoint names which one. Use it whenever the " +
 				"question involves DiskPressure, evictions for ephemeral-storage, or \"the disk filled up\" — " +
 				"that is a node fact, and guessing it from workload memory or from retention settings is how a " +
 				"cause gets invented. Requesting it for a pod or workload is refused rather than approximated: " +
 				"a pod's disk usage is not the node's. " +
 				"Pod-level disk IO is still not exposed (unreliable on EKS with VPC CNI), and PVC fill has its " +
-				"own path — the PVC's monitor.",
+				"own path — the PVC's monitor. " +
+				"A metric that comes back with an `error` field was not measured — refused or failed — and " +
+				"its empty trend says nothing about the target.",
 			InputSchema: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -722,7 +725,7 @@ func ToolDefinitions() []ToolDefinition {
 						"description": "Which metrics to query. At least one; up to four. Each call is one VM round-trip per metric, so request only what you need.",
 						"items": map[string]interface{}{
 							"type": "string",
-							"enum": []string{"cpu", "memory", "network_rx", "network_tx", "filesystem"},
+							"enum": metricNames(),
 						},
 						"minItems": 1,
 						"maxItems": 4,

@@ -35,6 +35,22 @@ const (
 	MetricFilesystem MetricKind = "filesystem"
 )
 
+// supportedMetrics is the ONE list of metrics the tool accepts. The input
+// schema's enum, the argument validator and its error message all read it.
+// They used to be three hand-kept lists: filesystem was added to the schema
+// and the query builder but not to the validator, so from 2.2.0 every call
+// the model made for it was refused before a query ran.
+var supportedMetrics = []MetricKind{MetricCPU, MetricMemory, MetricNetworkRX, MetricNetworkTX, MetricFilesystem}
+
+// metricNames returns supportedMetrics as strings, in order.
+func metricNames() []string {
+	out := make([]string, len(supportedMetrics))
+	for i, m := range supportedMetrics {
+		out[i] = string(m)
+	}
+	return out
+}
+
 // fsPseudoTypes are filesystems that are memory or kernel artifacts, not disk.
 // Counting them as "disk usage" is how a node with plenty of room reports
 // pressure.
@@ -308,10 +324,13 @@ func (b *promBuilder) buildFilesystem() string {
 		`((100 * node_fs_used_bytes{%s} / node_fs_capacity_bytes{%s}) unless on(node) node_filesystem_avail_bytes{%s})`,
 		nodeSel, nodeSel, nodeSel,
 	)
-	// No peakOverBucket: this is already a percentage of a slow-moving gauge,
-	// and a max-over-bucket on a near-flat series only makes the sparkline
-	// lie about volatility.
-	return primary + " or " + fallback
+	// Peak of each step, like CPU and memory. A node's disk is not a
+	// slow-moving gauge at the moment that matters: on 2026-09-16 it went
+	// 53% → 88.7% → 39.9% in twenty minutes. Sampled at 24h's 2-hour step the
+	// fill that made kubelet evict falls between two points and the trend reads
+	// calm — while the response tells the model each point is a peak.
+	// max_over_time keeps the mountpoint label, so the split survives.
+	return b.peakOverBucket("("+primary+" or "+fallback+")", true)
 }
 
 // isNode is a small helper to keep the kind check terse where it appears
