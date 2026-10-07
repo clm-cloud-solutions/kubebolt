@@ -6,8 +6,8 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [2.3.0] — 2026-10-07
 
-The app in the site's language, and a Kobi that reads the node's disk.
-Drop-in, no migration. Full note: [docs/releases/v2.3.0.md](docs/releases/v2.3.0.md).
+The app in the site's language, a Kobi that reads the node's disk, and
+OpenShift out of the box. Drop-in, no migration; agent 1.4.2. Full note: [docs/releases/v2.3.0.md](docs/releases/v2.3.0.md).
 
 ### Changed
 
@@ -35,6 +35,22 @@ Drop-in, no migration. Full note: [docs/releases/v2.3.0.md](docs/releases/v2.3.0
 - `hpa-maxed-out` fires only on `ScalingLimited=True` / `TooManyReplicas` (CPU
   above target as fallback), not on HPAs pinned at max or without metrics.
 - Reliability shows 0 % instead of "—" for 5xx when no 5xx series exists.
+- OpenShift: the `web` image runs under an arbitrary UID in group 0
+  (`restricted-v2`); the agent-proxy connect deadline no longer applies to
+  in-cluster / kubeconfig connects, which were cut at 25s on clusters with a
+  large Events collection and reported as "agent may be stuck".
+
+### Added
+
+- `api.podSecurityContext` / `api.securityContext` and `web.podSecurityContext`
+  / `web.securityContext` chart values, empty by default.
+
+### Changed (chart)
+
+- The `web` Deployment runs under the chart's ServiceAccount, without mounting
+  its token.
+- Ships with agent 1.4.2: its chart drops the default `runAsUser` on OpenShift
+  and the image's `USER` is numeric. See packages/agent/CHANGELOG.md.
 
 ## [2.2.1] — 2026-10-02
 
