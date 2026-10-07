@@ -213,9 +213,11 @@ func invariantFixtures() map[string]rulePair {
 
 	hpa := func(current int32) *autoscalingv1.HorizontalPodAutoscaler {
 		return &autoscalingv1.HorizontalPodAutoscaler{
-			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "api"},
-			Spec:       autoscalingv1.HorizontalPodAutoscalerSpec{MaxReplicas: 10},
-			Status:     autoscalingv1.HorizontalPodAutoscalerStatus{CurrentReplicas: current},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "api", Annotations: map[string]string{
+				hpaConditionsAnnotation: `[{"type":"ScalingLimited","status":"True","reason":"TooManyReplicas"}]`,
+			}},
+			Spec:   autoscalingv1.HorizontalPodAutoscalerSpec{MaxReplicas: 10},
+			Status: autoscalingv1.HorizontalPodAutoscalerStatus{CurrentReplicas: current},
 		}
 	}
 
@@ -261,6 +263,7 @@ func invariantFixtures() map[string]rulePair {
 
 	notReady := func(transition metav1.Time) *corev1.Pod {
 		p := podWith(running)
+		p.Spec.Containers = []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{}}}
 		p.Status.Conditions = []corev1.PodCondition{{
 			Type: corev1.PodReady, Status: corev1.ConditionFalse,
 			Reason: "ContainersNotReady", LastTransitionTime: transition,
