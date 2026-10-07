@@ -457,7 +457,7 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 | `podAnnotations` | `{}` | Extra pod annotations. |
 | `podLabels` | `{}` | Extra pod labels. |
 | `podAnnotationChecksum` | `true` | Add a checksum of the values to the DaemonSet pod template so `helm upgrade` rolls the pods whenever values change. |
-| `podSecurityContext` | `runAsNonRoot: true`, `runAsUser: 65532` | Pod security context. |
+| `podSecurityContext` | `runAsNonRoot: true`, `runAsUser: 65532` | Pod security context. On OpenShift (`security.openshift.io/v1` served) the default `runAsUser` is dropped so the SCC assigns the UID; a value you set is kept. |
 | `containerSecurityContext` | read-only root FS, no privilege escalation, all capabilities dropped | Container security context. |
 | `nameOverride` / `fullnameOverride` | `""` | Override chart-derived resource names. |
 

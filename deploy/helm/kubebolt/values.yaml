@@ -56,6 +56,11 @@ api:
     limits:
       cpu: 500m
       memory: 256Mi
+  # Pod- and container-level securityContext, empty by default. Leave runAsUser
+  # unset on OpenShift: restricted-v2 assigns a UID from the namespace's range
+  # and REJECTS a pod that asks for one outside it (docs/guides/openshift.md).
+  podSecurityContext: {}
+  securityContext: {}
 
 # Web frontend (nginx)
 web:
@@ -71,6 +76,10 @@ web:
     limits:
       cpu: 100m
       memory: 64Mi
+  # Same contract as api.podSecurityContext / api.securityContext. The image
+  # runs under any UID in group 0, so nothing needs to be set for OpenShift.
+  podSecurityContext: {}
+  securityContext: {}
 
 # Service configuration for the main HTTP service (web UI + API behind
 # nginx proxy in the web pod).

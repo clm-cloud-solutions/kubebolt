@@ -163,3 +163,19 @@ Empty string when nothing is configured (the env var is omitted).
 {{- end -}}
 {{- join "," $entries -}}
 {{- end -}}
+
+{{/*
+Pod securityContext. On OpenShift (security.openshift.io/v1 is served) the
+restricted-v2 SCC assigns a UID from the namespace's range and REJECTS a pod
+that asks for one outside it, so the chart's default runAsUser (65532) is
+dropped there; runAsNonRoot still holds, since the assigned UID is never 0 and
+the image's USER is numeric. A runAsUser you set yourself is kept as written.
+docs/guides/openshift.md.
+*/}}
+{{- define "kubebolt-agent.podSecurityContext" -}}
+{{- $psc := deepCopy (.Values.podSecurityContext | default dict) -}}
+{{- if and (.Capabilities.APIVersions.Has "security.openshift.io/v1") (eq (toString (get $psc "runAsUser")) "65532") -}}
+{{- $_ := unset $psc "runAsUser" -}}
+{{- end -}}
+{{- toYaml $psc -}}
+{{- end -}}

@@ -1,18 +1,20 @@
 # KubeBolt on OpenShift
 
-> **Status — last verified 2026-08-16** on KubeBolt 1.23.1 / OpenShift 4.20 /
-> Kubernetes 1.33.6. Not re-tested on OpenShift since; the 2.1.0 source still
-> lacks the `web` image fix and still has the 25s / 45s connect-deadline
-> mismatch (see [Pending fixes](#pending-fixes)), so expect both problems and
-> use the workarounds. TWO independent problems:
+> **Status — fixed in KubeBolt 2.3.0 and agent 1.4.2**, pending re-verification
+> on OpenShift. The problems below were reported on KubeBolt 1.23.1 / OpenShift
+> 4.20 / Kubernetes 1.33.6 (2026-08-16):
 >
-> 1. The **`web` image** does not start under the default `restricted-v2` SCC.
->    `api`, `victoriametrics` and the agent are fine. Two workarounds below.
-> 2. The **in-cluster context times out** on clusters with a large Events
->    collection, and reports it as a stuck agent that does not exist.
+> 1. The **`web` image** did not start under the default `restricted-v2` SCC.
+>    From 2.3.0 it runs under any UID in group 0 — no SCC grant, no patch.
+> 2. The **agent chart** pinned `runAsUser: 65532`, which `restricted-v2`
+>    rejects. From agent 1.4.2 the chart drops it on OpenShift by itself.
+> 3. The **in-cluster context timed out** on clusters with a large Events
+>    collection, and reported a stuck agent that does not exist. From 2.3.0 the
+>    agent-proxy deadline no longer applies to direct connections.
 >
-> Both have verified workarounds; the permanent fixes are tracked in
-> [Pending fixes](#pending-fixes).
+> One part stays open: a slow Events informer still holds back the others
+> until it syncs ([Pending fixes](#pending-fixes)). On releases before 2.3.0 /
+> agent 1.4.2, use the workarounds in each section.
 
 ## The symptom
 
@@ -72,7 +74,7 @@ Two plausible-sounding theories that the evidence rules out:
   allocated range is **rejected at admission**. Under `restricted-v2` the field
   must be left empty. The fix belongs in the image, not the chart.
 
-## Workaround A — grant the `anyuid` SCC
+## Before 2.3.0: workaround A — grant the `anyuid` SCC
 
 Fastest path, needs `cluster-admin`. The pod runs as root, exactly as it does on
 vanilla Kubernetes.
@@ -89,7 +91,7 @@ oc rollout restart deployment/kubebolt-web -n kubebolt
 This weakens the namespace's security posture. Prefer workaround B if your
 platform team will not grant `anyuid`.
 
-## Workaround B — no SCC change
+## Before 2.3.0: workaround B — no SCC change
 
 Keeps `restricted-v2`. An initContainer renders the nginx config into an
 `emptyDir`, the main container bypasses the entrypoint scripts, and the three
@@ -144,6 +146,13 @@ to `<release-name>-api:8080`.
 > keep it in a post-render kustomization.
 
 ## The agent
+
+> **From agent 1.4.2** the chart detects OpenShift (`security.openshift.io/v1`)
+> and leaves the UID to the SCC; the image's `USER` is numeric (`65532`), so
+> `runAsNonRoot` holds either way. A `runAsUser` you set yourself is kept. When
+> the chart is rendered without cluster access (`helm template`, some GitOps
+> tools), pass `--api-versions security.openshift.io/v1` or use the `=null`
+> below. What follows applies to 1.4.1 and earlier.
 
 The agent chart has the opposite problem: it *does* set a security context, but
 pins a UID that `restricted-v2` will reject.
@@ -248,7 +257,17 @@ use it. The error message is the tell — it describes a component that is not i
 the picture, which is exactly why the reporter went hunting for connectivity and
 RBAC problems first.
 
-### Workarounds
+### What 2.3.0 changes
+
+The agent-proxy deadline no longer applies to direct connections (in-cluster
+and kubeconfig contexts): they are bounded by the cache-sync deadline alone,
+**Cluster connect timeout** in *Administration → Settings → General* (45s by
+default). A sync that finishes at 30s now finishes. If Events on your cluster
+take longer than that, raise **Cluster connect timeout** — the right knob now —
+rather than the agent-proxy one. The message "agent may be stuck" is only
+shown for agent-proxy clusters.
+
+### Before 2.3.0: workarounds
 
 **A — drop `events` from the ClusterRole.** What the reporter did. The cluster
 comes up immediately; the cost is that the Events tab and any insight that reads
@@ -279,48 +298,23 @@ the whole of what OpenShift does differently.
 
 ## Pending fixes
 
-1. **Make the `web` image tolerate an arbitrary UID.** Red Hat's "support
-   arbitrary user IDs" rule: the UID is unpredictable but the GID is always 0, so
-   everything writable must belong to group root and be group-writable.
+**Stop one informer from blocking the rest.** `Connector.Start()` still waits on
+the whole factory, so a 138 MiB Events collection holds back Nodes and Pods that
+were ready in under two seconds — now until the cache-sync deadline instead of
+being cut at 25s. Options, roughly in order of cost: bound the Events informer
+(a `limit`, a field selector, or a shorter window); sync it asynchronously and
+let the cluster come up without it; or wait per-informer so a slow one degrades
+its own tab instead of the whole context.
 
-   ```dockerfile
-   RUN chgrp -R 0 /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /run \
-    && chmod -R g=u /var/cache/nginx /var/log/nginx /etc/nginx/conf.d /run
-   ```
+### Done
 
-   Verified: the patched image runs as UID `1000700000:0`, serves `HTTP 200`,
-   substitutes `API_BACKEND`, and still runs as root with no regression — so the
-   same image keeps working on vanilla Kubernetes and Docker Compose.
-
-2. **Make the agent's `runAsUser` omittable** rather than needing `=null` at the
-   call site, so the chart is installable on OpenShift out of the box.
-
-3. **Give the `web` Deployment a `serviceAccountName`.** It silently uses
-   `default` today while the API uses the chart's SA — an inconsistency that makes
-   SCC grants land on the wrong subject.
-
-4. **Expose optional `podSecurityContext` / `securityContext` on the api and web
-   Deployments**, defaulting to empty. Never ship a hardcoded `runAsUser`: on
-   OpenShift it is the one value that guarantees rejection.
-
-5. **Stop one informer from blocking the rest.** `Connector.Start()` waits on the
-   whole factory, so a 138 MiB Events collection strands Nodes and Pods that were
-   ready in under two seconds. Options, roughly in order of cost: bound the Events
-   informer (a `limit`, a field selector, or a shorter window); sync it
-   asynchronously and let the cluster come up without it; or wait per-informer so
-   a slow one degrades its own tab instead of the whole context.
-
-6. **Make the outer connect deadline at least the inner sync budget.**
-   `DefaultConnectTimeout` is 25s while `defaultCacheSyncTimeout` is 45s, so the
-   connector is killed before it can spend the budget it was given. Whatever the
-   values become, the outer one must not be the smaller.
-
-7. **Do not apply the agent-proxy connect deadline to the in-cluster path**, and
-   stop saying "agent may be stuck" where there is no agent. The deadline exists
-   for wedged agent-proxy calls; on a direct connection it turns a slow-but-
-   healthy start into a false "Cluster unreachable", and the message actively
-   misdirects whoever debugs it. Same class as the in-cluster cluster having no
-   ownership row: agent-proxy logic applied to the one topology that has no agent.
+| Fix | Since |
+|---|---|
+| `web` image tolerates an arbitrary UID (`chgrp 0` + `chmod g=u` on the four paths) | 2.3.0 |
+| `web` Deployment runs under the chart's ServiceAccount (token not mounted) | 2.3.0 |
+| Optional `api` / `web` `podSecurityContext` and `securityContext`, empty by default | 2.3.0 |
+| The agent-proxy connect deadline no longer applies to in-cluster / kubeconfig connects, so the outer deadline cannot cut a direct sync short and "agent may be stuck" is not shown where there is no agent | 2.3.0 |
+| The agent chart drops its default `runAsUser` on OpenShift; the agent image's `USER` is numeric | agent 1.4.2 |
 
 ## References
 

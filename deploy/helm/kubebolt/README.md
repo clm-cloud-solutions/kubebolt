@@ -80,11 +80,13 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 | `api.image.pullPolicy` | API image pull policy | `IfNotPresent` |
 | `api.port` | API container port | `8080` |
 | `api.resources` | API requests / limits | `50m`/`64Mi` – `500m`/`256Mi` |
+| `api.podSecurityContext` / `api.securityContext` | Pod / container security context for the API | `{}` — leave `runAsUser` unset on OpenShift |
 | `web.image.repository` | Web (nginx + UI) image | `ghcr.io/clm-cloud-solutions/kubebolt/web` |
 | `web.image.tag` | Web image tag | `""` (Chart appVersion) |
 | `web.image.pullPolicy` | Web image pull policy | `IfNotPresent` |
 | `web.port` | Web container port | `3000` |
 | `web.resources` | Web requests / limits | `10m`/`16Mi` – `100m`/`64Mi` |
+| `web.podSecurityContext` / `web.securityContext` | Pod / container security context for the web pod | `{}` — the image runs under any UID in group 0 |
 | `replicaCount` | Replicas for the API and web Deployments. Keep at `1`: the embedded database is single-writer (the API uses `strategy: Recreate`). | `1` |
 | `extraEnv` | Extra env vars for the API container, for `KUBEBOLT_*` settings without a dedicated value (see [Environment variables](https://kubebolt.io/docs/environment-variables) and the examples in `values.yaml`) | `[]` |
 
