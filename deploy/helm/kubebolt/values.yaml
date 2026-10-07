@@ -49,13 +49,17 @@ api:
     tag: ""  # defaults to Chart.appVersion
     pullPolicy: IfNotPresent
   port: 8080
+  # The API caches every resource it watches, Events included. A busy cluster
+  # carries 100+ MiB of Events: at the old 256Mi limit the API could not finish
+  # its first sync and was restarted by its liveness probe before serving
+  # (docs/guides/openshift.md). Size the limit to the cluster, not the API.
   resources:
     requests:
       cpu: 50m
-      memory: 64Mi
+      memory: 128Mi
     limits:
       cpu: 500m
-      memory: 256Mi
+      memory: 1Gi
   # Pod- and container-level securityContext, empty by default. Leave runAsUser
   # unset on OpenShift: restricted-v2 assigns a UID from the namespace's range
   # and REJECTS a pod that asks for one outside it (docs/guides/openshift.md).

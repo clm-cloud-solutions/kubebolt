@@ -266,6 +266,19 @@ take longer than that, raise **Cluster connect timeout** — the right knob now 
 rather than the agent-proxy one. The message "agent may be stuck" is only
 shown for agent-proxy clusters.
 
+### Memory: size the API to its Events
+
+The API caches the Events it watches. On a test cluster with 161 MB of Events
+the API held ~253 MiB once synced — right at the old default limit of 256Mi,
+so it never finished its first sync and its liveness probe restarted it every
+~80s. With the 25s cut-off gone, that is the next wall a cluster like the one
+reported here would hit. **From 2.3.0 the default API memory limit is 1Gi**
+(request 128Mi). On a cluster whose Events are larger still, raise it:
+
+```bash
+helm upgrade kubebolt ... --set api.resources.limits.memory=2Gi
+```
+
 ### Before 2.3.0: workarounds
 
 **A — drop `events` from the ClusterRole.** What the reporter did. The cluster

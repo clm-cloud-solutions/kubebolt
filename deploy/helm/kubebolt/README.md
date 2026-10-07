@@ -79,7 +79,7 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 | `api.image.tag` | API image tag | `""` (Chart appVersion) |
 | `api.image.pullPolicy` | API image pull policy | `IfNotPresent` |
 | `api.port` | API container port | `8080` |
-| `api.resources` | API requests / limits | `50m`/`64Mi` – `500m`/`256Mi` |
+| `api.resources` | API requests / limits. The API caches what it watches, Events included: raise the memory limit on clusters with a large Events collection. | `50m`/`128Mi` – `500m`/`1Gi` |
 | `api.podSecurityContext` / `api.securityContext` | Pod / container security context for the API | `{}` — leave `runAsUser` unset on OpenShift |
 | `web.image.repository` | Web (nginx + UI) image | `ghcr.io/clm-cloud-solutions/kubebolt/web` |
 | `web.image.tag` | Web image tag | `""` (Chart appVersion) |
