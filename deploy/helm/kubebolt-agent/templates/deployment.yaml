@@ -63,7 +63,7 @@ spec:
       priorityClassName: {{ include "kubebolt-agent.fullname" . }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- include "kubebolt-agent.podSecurityContext" . | nindent 8 }}
       containers:
         - name: agent
           image: {{ include "kubebolt-agent.image" . | quote }}

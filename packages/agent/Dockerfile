@@ -37,6 +37,9 @@ FROM gcr.io/distroless/static-debian12:nonroot
 
 COPY --from=builder /out/kubebolt-agent /kubebolt-agent
 
-USER nonroot:nonroot
+# Numeric, the same 65532 as distroless's `nonroot`: a pod with runAsNonRoot and
+# no runAsUser (OpenShift, where the chart leaves the UID to the SCC) can only
+# be verified non-root against a numeric USER.
+USER 65532:65532
 
 ENTRYPOINT ["/kubebolt-agent"]

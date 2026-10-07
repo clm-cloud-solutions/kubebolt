@@ -786,7 +786,7 @@ function IngestChannelForm({
             stacked
             label="Connect deadline (seconds)"
             dirty={dirtyMap.connectTimeoutSeconds}
-            helper="Hard deadline on a single cluster connect. A stuck agent fails fast ('cluster unreachable') instead of stranding the connect + hanging the API. Range 5–600s."
+            helper="Hard deadline on connecting to a cluster through its agent. A stuck agent fails fast ('cluster unreachable') instead of stranding the connect + hanging the API. Clusters reached directly (kubeconfig, in-cluster) are bounded by the Cluster connect timeout instead. Range 5–600s."
           >
             <input
               type="number"

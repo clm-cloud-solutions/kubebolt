@@ -676,6 +676,10 @@ podLabels: {}
 podAnnotationChecksum: true
 
 # ─── Security ──────────────────────────────────────────────
+# On OpenShift the chart drops this default runAsUser by itself: restricted-v2
+# assigns the UID and rejects one outside the namespace's range. When rendering
+# without cluster access (helm template, some GitOps tools) pass
+# --api-versions security.openshift.io/v1, or --set podSecurityContext.runAsUser=null.
 podSecurityContext:
   runAsNonRoot: true
   runAsUser: 65532
