@@ -40,10 +40,10 @@ type ModelPricing struct {
 // All values are USD per 1,000,000 tokens.
 var modelPricing = map[string]ModelPricing{
 	// ─── Anthropic — https://www.anthropic.com/pricing#api ──────────
-	// CacheCreation uses the 5-minute TTL (default). Anthropic also has
-	// a 1-hour TTL that's 1.6× more expensive (e.g. Opus 4.7 5m=$6.25,
-	// 1h=$10); the struct only has a single field, so we go with the
-	// default cadence that operators actually see most often.
+	// CacheCreation is the 5-minute TTL write (1.25x input). One-hour writes
+	// cost 2x input and are billed from Usage.CacheCreation1hTokens at
+	// cacheWrite1hMultiplier — Kobi writes its static prefix for an hour, so
+	// most of its writes are those.
 	//
 	// IMPORTANT: Opus 4.5+ (4.5, 4.6, 4.7) are ~3× CHEAPER than older
 	// Opus 4 / 4.1 — the May 2026 price reshuffle made the new line
@@ -196,6 +196,11 @@ func PricingFor(provider, model string) (ModelPricing, bool) {
 	return ModelPricing{}, false
 }
 
+// cacheWrite1hMultiplier prices a one-hour cache write: 2x base input on every
+// Anthropic model (a 5-minute write is 1.25x — ModelPricing.CacheCreation).
+// Only the Anthropic adapter reports 1h writes, so other providers never reach it.
+const cacheWrite1hMultiplier = 2.0
+
 // EstimateUSD computes an estimated USD cost from a Usage and pricing.
 // Returns 0 when pricing is unknown. Cache-creation defaults to
 // input price if not set on the pricing struct. The part of the usage that
@@ -205,16 +210,18 @@ func EstimateUSD(u Usage, p ModelPricing) float64 {
 		return estimateSingleRate(u, p)
 	}
 	long := Usage{
-		InputTokens:         u.LongInputTokens,
-		OutputTokens:        u.LongOutputTokens,
-		CacheCreationTokens: u.LongCacheCreationTokens,
-		CacheReadTokens:     u.LongCacheReadTokens,
+		InputTokens:           u.LongInputTokens,
+		OutputTokens:          u.LongOutputTokens,
+		CacheCreationTokens:   u.LongCacheCreationTokens,
+		CacheReadTokens:       u.LongCacheReadTokens,
+		CacheCreation1hTokens: u.LongCacheCreation1hTokens,
 	}
 	short := Usage{
-		InputTokens:         u.InputTokens - long.InputTokens,
-		OutputTokens:        u.OutputTokens - long.OutputTokens,
-		CacheCreationTokens: u.CacheCreationTokens - long.CacheCreationTokens,
-		CacheReadTokens:     u.CacheReadTokens - long.CacheReadTokens,
+		InputTokens:           u.InputTokens - long.InputTokens,
+		OutputTokens:          u.OutputTokens - long.OutputTokens,
+		CacheCreationTokens:   u.CacheCreationTokens - long.CacheCreationTokens,
+		CacheReadTokens:       u.CacheReadTokens - long.CacheReadTokens,
+		CacheCreation1hTokens: u.CacheCreation1hTokens - long.CacheCreation1hTokens,
 	}
 	return estimateSingleRate(short, p) + estimateSingleRate(long, *p.Long)
 }
@@ -235,6 +242,7 @@ func TagLongContext(u Usage, provider, model string) Usage {
 	u.LongOutputTokens = u.OutputTokens
 	u.LongCacheCreationTokens = u.CacheCreationTokens
 	u.LongCacheReadTokens = u.CacheReadTokens
+	u.LongCacheCreation1hTokens = u.CacheCreation1hTokens
 	return u
 }
 
@@ -243,8 +251,13 @@ func estimateSingleRate(u Usage, p ModelPricing) float64 {
 	if cacheCreationPrice == 0 {
 		cacheCreationPrice = p.Input
 	}
+	// The one-hour part of the writes bills at 2x input, the rest at the
+	// 5-minute rate. Clamped: the 1h count is part of the total, never more.
+	writes1h := min(u.CacheCreation1hTokens, u.CacheCreationTokens)
+	writes5m := u.CacheCreationTokens - writes1h
 	return (float64(u.InputTokens)*p.Input +
 		float64(u.CacheReadTokens)*p.CachedInput +
-		float64(u.CacheCreationTokens)*cacheCreationPrice +
+		float64(writes5m)*cacheCreationPrice +
+		float64(writes1h)*p.Input*cacheWrite1hMultiplier +
 		float64(u.OutputTokens)*p.Output) / 1_000_000.0
 }
