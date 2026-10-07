@@ -282,3 +282,30 @@ func TestTagLongContext_SingleRateModelsUnchanged(t *testing.T) {
 		t.Errorf("EstimateUSD = %.9f, want %.9f", got, want)
 	}
 }
+
+// Kobi writes its static prefix with a one-hour TTL, which Anthropic bills at
+// 2x base input; a 5-minute write is 1.25x. The adapter reports the 1h part
+// (CacheCreation1hTokens) and the estimate bills each part at its own rate —
+// including on Haiku 5.5's long-context card.
+func TestEstimateUSD_OneHourCacheWrites(t *testing.T) {
+	sonnet, _ := PricingFor("anthropic", "claude-sonnet-5")
+	u := Usage{InputTokens: 1_000, OutputTokens: 500, CacheCreationTokens: 30_000, CacheCreation1hTokens: 27_000}
+	want := (1_000*2 + 500*10 + 3_000*2.50 + 27_000*4.00) / 1_000_000.0
+	if got := EstimateUSD(u, sonnet); math.Abs(got-want) > 1e-12 {
+		t.Errorf("sonnet-5: EstimateUSD = %.6f, want %.6f (1h writes at 2x input)", got, want)
+	}
+
+	// A record without the split (written before it existed) prices as before.
+	old := Usage{InputTokens: 1_000, OutputTokens: 500, CacheCreationTokens: 30_000}
+	if got, want := EstimateUSD(old, sonnet), (1_000*2+500*10+30_000*2.50)/1_000_000.0; math.Abs(got-want) > 1e-12 {
+		t.Errorf("record without the split: EstimateUSD = %.6f, want %.6f", got, want)
+	}
+
+	// Haiku 5.5, a call over 100K tokens: its 1h writes bill at 2x the LONG input.
+	haiku, _ := PricingFor("anthropic", "claude-haiku-5-5")
+	big := TagLongContext(Usage{InputTokens: 2_000, CacheReadTokens: 90_000, CacheCreationTokens: 30_000, CacheCreation1hTokens: 27_000, OutputTokens: 1_000}, "anthropic", "claude-haiku-5-5")
+	wantBig := (2_000*0.50 + 90_000*0.05 + 3_000*0.625 + 27_000*1.00 + 1_000*2.50) / 1_000_000.0
+	if got := EstimateUSD(big, haiku); math.Abs(got-wantBig) > 1e-12 {
+		t.Errorf("haiku-5-5 long call: EstimateUSD = %.6f, want %.6f", got, wantBig)
+	}
+}

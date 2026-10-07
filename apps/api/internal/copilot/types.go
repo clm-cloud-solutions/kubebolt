@@ -68,6 +68,12 @@ type Usage struct {
 	OutputTokens        int `json:"outputTokens"`
 	CacheCreationTokens int `json:"cacheCreationTokens,omitempty"`
 	CacheReadTokens     int `json:"cacheReadTokens,omitempty"`
+	// CacheCreation1hTokens is the part of CacheCreationTokens written with a
+	// ONE-HOUR TTL. Anthropic bills those at 2x base input, a 5-minute write at
+	// 1.25x — and Kobi writes its static prefix (system prompt + tools) for an
+	// hour (staticPrefixCache). Zero for providers without the split and for
+	// records written before it.
+	CacheCreation1hTokens int `json:"cacheCreation1hTokens,omitempty"`
 
 	// The part of the four totals above that came from calls billed at the
 	// model's long-context rate card (ModelPricing.Long): a call whose prompt
@@ -77,8 +83,9 @@ type Usage struct {
 	// model with a single rate card, and for records written before them.
 	LongInputTokens         int `json:"longInputTokens,omitempty"`
 	LongOutputTokens        int `json:"longOutputTokens,omitempty"`
-	LongCacheCreationTokens int `json:"longCacheCreationTokens,omitempty"`
-	LongCacheReadTokens     int `json:"longCacheReadTokens,omitempty"`
+	LongCacheCreationTokens   int `json:"longCacheCreationTokens,omitempty"`
+	LongCacheReadTokens       int `json:"longCacheReadTokens,omitempty"`
+	LongCacheCreation1hTokens int `json:"longCacheCreation1hTokens,omitempty"`
 }
 
 // Total returns InputTokens + OutputTokens.
@@ -90,8 +97,10 @@ func (u *Usage) Add(other Usage) {
 	u.OutputTokens += other.OutputTokens
 	u.CacheCreationTokens += other.CacheCreationTokens
 	u.CacheReadTokens += other.CacheReadTokens
+	u.CacheCreation1hTokens += other.CacheCreation1hTokens
 	u.LongInputTokens += other.LongInputTokens
 	u.LongOutputTokens += other.LongOutputTokens
 	u.LongCacheCreationTokens += other.LongCacheCreationTokens
 	u.LongCacheReadTokens += other.LongCacheReadTokens
+	u.LongCacheCreation1hTokens += other.LongCacheCreation1hTokens
 }
