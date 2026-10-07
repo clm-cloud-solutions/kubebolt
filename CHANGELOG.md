@@ -4,6 +4,38 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] — 2026-10-07
+
+The app in the site's language, and a Kobi that reads the node's disk.
+Drop-in, no migration. Full note: [docs/releases/v2.3.0.md](docs/releases/v2.3.0.md).
+
+### Changed
+
+- Every headline row is a row of `KpiCard`s (figure, sentence, minichart,
+  caption) on a warm dark palette; `alert` lights only the card whose number
+  asks for someone. Overview, Home, Fleet, Capacity, Reliability, Cost,
+  Security, Nodes and Kobi Usage move to it; `StripCard` is removed.
+- KPI rows enter animated once per page per session (per cluster on cluster
+  pages).
+- The sign-in pages are one night scene with a glass form card and readable
+  small text.
+- «While you were away» summarizes past three bursts and links to the burst
+  view for the window; times carry their date over windows longer than a day.
+- `GET /copilot/config` returns `spendUnit` (always `usd` in OSS).
+
+### Fixed
+
+- Kobi's `get_workload_metrics` accepted `metric=filesystem` in its schema but
+  refused it in the validator since 2.2.0. It now reads the node's disk: the
+  fullest mountpoint with a `perMountpoint` split, the peak of each step, unit
+  `percent`, and a per-metric `error` when a metric was refused or failed. The
+  prompt no longer says disk is not exposed.
+- `readiness-probe-failing` no longer fires on pods without a readiness probe
+  or between crash-loop restarts.
+- `hpa-maxed-out` fires only on `ScalingLimited=True` / `TooManyReplicas` (CPU
+  above target as fallback), not on HPAs pinned at max or without metrics.
+- Reliability shows 0 % instead of "—" for 5xx when no 5xx series exists.
+
 ## [2.2.1] — 2026-10-02
 
 A cluster map you can read at any replica count. Drop-in, no migration. Full
