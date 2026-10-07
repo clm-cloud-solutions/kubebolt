@@ -972,6 +972,31 @@ func missingConfigDependencyRule() Rule {
 	}
 }
 
+// hasReadinessProbe reports whether any container of the pod declares one.
+func hasReadinessProbe(pod *corev1.Pod) bool {
+	for _, c := range pod.Spec.Containers {
+		if c.ReadinessProbe != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// runsSettled reports whether every container is running and its current run
+// has been up longer than grace — i.e. not starting, crashing or restarting.
+// A run with no recorded start time counts as settled (nothing says otherwise).
+func runsSettled(pod *corev1.Pod, grace time.Duration) bool {
+	for _, cs := range pod.Status.ContainerStatuses {
+		if cs.State.Running == nil {
+			return false // Waiting (crash / pull / config) or Terminated (between restarts)
+		}
+		if started := cs.State.Running.StartedAt.Time; !started.IsZero() && time.Since(started) < grace {
+			return false
+		}
+	}
+	return true
+}
+
 // readinessProbeFailingRule flags pods whose container is Running but whose
 // Ready condition has been False (reason=ContainersNotReady) for more than the
 // startup grace window. This is "running but not serving traffic" — the pod
@@ -981,6 +1006,17 @@ func missingConfigDependencyRule() Rule {
 // so we only fire once it's been not-Ready for >2 minutes. Pods with a Waiting
 // container are skipped — those are crash-loop / image-pull / config-error,
 // other rules' concern. Tier-1 (2026-06).
+//
+// Two more conditions keep it about the PROBE (#64 pattern tests, 2026-10-06):
+//   - some container must declare a readiness probe. A pod without one is
+//     not-Ready only because a container isn't running — there is no probe to
+//     check, and the old text told the reader to check it anyway;
+//   - every container's current run must have been up past the grace too. A
+//     crash-looping container passes through Running and Terminated between
+//     restarts, so the Waiting check alone let it through while the pod had been
+//     not-Ready for minutes: the rule fired on pods with no readiness probe at
+//     all, beside the crash-loop and OOM insights for the same container, and
+//     cost Autopilot a second investigation of the same crash.
 func readinessProbeFailingRule() Rule {
 	const grace = 2 * time.Minute
 	return Rule{
@@ -996,14 +1032,7 @@ func readinessProbeFailingRule() Rule {
 				// Skip pods with any container still Waiting — that's a
 				// startup/crash problem owned by another rule, not a probe
 				// failing on a running container.
-				stillWaiting := false
-				for _, cs := range pod.Status.ContainerStatuses {
-					if cs.State.Waiting != nil {
-						stillWaiting = true
-						break
-					}
-				}
-				if stillWaiting {
+				if !hasReadinessProbe(pod) || !runsSettled(pod, grace) {
 					continue
 				}
 				for _, cond := range pod.Status.Conditions {

@@ -255,8 +255,18 @@ func TestMissingConfigDependencyRule_IgnoresOtherWaitingReasons(t *testing.T) {
 	}
 }
 
+// withReadinessProbe is a pod whose container declares a readiness probe.
+func withReadinessProbe(ns, name string) *corev1.Pod {
+	p := pod(ns, name)
+	p.Spec.Containers = []corev1.Container{{
+		Name:           "app",
+		ReadinessProbe: &corev1.Probe{ProbeHandler: corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/ready"}}},
+	}}
+	return p
+}
+
 func TestReadinessProbeFailingRule_FiresAfterGrace(t *testing.T) {
-	p := pod("default", "not-ready")
+	p := withReadinessProbe("default", "not-ready")
 	p.Status.Phase = corev1.PodRunning
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:  "app",
@@ -277,7 +287,7 @@ func TestReadinessProbeFailingRule_FiresAfterGrace(t *testing.T) {
 
 func TestReadinessProbeFailingRule_IgnoresSlowStart(t *testing.T) {
 	// Not-Ready but only for 10s — a legitimately slow start, must not fire.
-	p := pod("default", "starting")
+	p := withReadinessProbe("default", "starting")
 	p.Status.Phase = corev1.PodRunning
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:  "app",
@@ -298,7 +308,7 @@ func TestReadinessProbeFailingRule_IgnoresSlowStart(t *testing.T) {
 func TestReadinessProbeFailingRule_IgnoresWaitingContainer(t *testing.T) {
 	// A pod with a Waiting container is another rule's concern (crash/pull),
 	// even if it's not-Ready past the grace window.
-	p := pod("default", "crashing")
+	p := withReadinessProbe("default", "crashing")
 	p.Status.Phase = corev1.PodRunning
 	p.Status.ContainerStatuses = []corev1.ContainerStatus{{
 		Name:  "app",
@@ -313,6 +323,38 @@ func TestReadinessProbeFailingRule_IgnoresWaitingContainer(t *testing.T) {
 	state := &ClusterState{Pods: []*corev1.Pod{p}}
 	if got := readinessProbeFailingRule().Evaluate(state); len(got) != 0 {
 		t.Errorf("pod with Waiting container should not fire readiness rule, got %d", len(got))
+	}
+}
+
+// #64 pattern tests, 2026-10-06: a container that exits on start (or is
+// OOM-killed) passes through Running and Terminated between restarts. Neither
+// lab Deployment declared a readiness probe, yet the rule fired beside the
+// crash-loop / OOM insights and cost Autopilot a second investigation.
+func TestReadinessProbeFailingRule_IgnoresCrashLoopingContainers(t *testing.T) {
+	longNotReady := []corev1.PodCondition{{
+		Type: corev1.PodReady, Status: corev1.ConditionFalse, Reason: "ContainersNotReady",
+		LastTransitionTime: metav1.Time{Time: time.Now().Add(-10 * time.Minute)},
+	}}
+	justRestarted := corev1.ContainerState{Running: &corev1.ContainerStateRunning{StartedAt: metav1.Time{Time: time.Now().Add(-20 * time.Second)}}}
+	between := corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Error", ExitCode: 1}}
+
+	cases := map[string]*corev1.Pod{}
+	noProbe := pod("default", "no-probe") // the lab shape: no readiness probe at all
+	noProbe.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 9, State: justRestarted}}
+	cases["no readiness probe"] = noProbe
+	restarted := withReadinessProbe("default", "restarted")
+	restarted.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 9, State: justRestarted}}
+	cases["current run younger than the grace"] = restarted
+	terminated := withReadinessProbe("default", "terminated")
+	terminated.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "app", RestartCount: 9, State: between}}
+	cases["between restarts"] = terminated
+
+	for name, p := range cases {
+		p.Status.Phase = corev1.PodRunning
+		p.Status.Conditions = longNotReady
+		if got := readinessProbeFailingRule().Evaluate(&ClusterState{Pods: []*corev1.Pod{p}}); len(got) != 0 {
+			t.Errorf("%s: fired %d insight(s), want none", name, len(got))
+		}
 	}
 }
 

@@ -261,6 +261,7 @@ func invariantFixtures() map[string]rulePair {
 
 	notReady := func(transition metav1.Time) *corev1.Pod {
 		p := podWith(running)
+		p.Spec.Containers = []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{}}}
 		p.Status.Conditions = []corev1.PodCondition{{
 			Type: corev1.PodReady, Status: corev1.ConditionFalse,
 			Reason: "ContainersNotReady", LastTransitionTime: transition,
