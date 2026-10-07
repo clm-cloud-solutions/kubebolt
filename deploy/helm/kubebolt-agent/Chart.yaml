@@ -2,8 +2,8 @@ apiVersion: v2
 name: kubebolt-agent
 description: KubeBolt agent — outbound-only agent that connects a cluster to KubeBolt. Kubelet and Hubble metrics, optional reads from an existing Prometheus, and a tunneled Kubernetes API proxy with metrics/reader/operator RBAC tiers
 type: application
-version: 1.4.1
-appVersion: "1.4.1"
+version: 1.4.2
+appVersion: "1.4.2"
 home: https://github.com/clm-cloud-solutions/kubebolt
 icon: https://raw.githubusercontent.com/clm-cloud-solutions/kubebolt/main/docs/images/kubebolt-icon.png
 sources:
