@@ -1,6 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api, setAccessToken, clearAccessToken, ApiError } from '@/services/api'
+import { resetEnterAnimations } from '@/utils/enterOnce'
 
 /**
  * sessionIsGone decides whether a failed /auth/me means the session ended.
@@ -65,6 +66,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsSignupEnabled(!!config.signupEnabled)
 
         if (!config.enabled) {
+          // No sessions to begin or end: every load starts fresh and replays
+          // the KPI rows' enter animation (utils/enterOnce.ts).
+          resetEnterAnimations()
           setIsLoading(false)
           return
         }
@@ -77,6 +81,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           setAccessToken(token)
           const me = await api.getMe()
           if (!cancelled) setUser(me)
+        } else {
+          // Definitively no session: the next sign-in replays the KPI rows'
+          // enter animation on every page (utils/enterOnce.ts).
+          resetEnterAnimations()
         }
       } catch {
         // Auth config fetch failed or refresh failed — user needs to login
@@ -92,6 +100,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const response = await api.login(username, password)
     setAccessToken(response.accessToken)
+    resetEnterAnimations()
     // The login payload carries the bare user; /auth/me adds the org+team
     // context (the hierarchy the topbar + teams page render). Fetch it now so
     // those surfaces are populated immediately rather than after the next
@@ -107,6 +116,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (data: { orgName: string; name: string; email: string; password: string }) => {
       const response = await api.signup(data)
       setAccessToken(response.accessToken)
+      resetEnterAnimations()
       // Mirror login: the signup payload carries the bare user; /auth/me adds
       // the org+team context the topbar renders. Fetch it now, falling back to
       // the signup user if the follow-up call fails.
@@ -127,6 +137,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     clearAccessToken()
     setUser(null)
+    resetEnterAnimations()
     // Drop every cached server query so the next user who logs in on this
     // same browser never sees the previous user's data (e.g. Kobi's
     // conversation list). Per-user in-memory state is reset separately by
@@ -152,6 +163,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (sessionIsGone(err)) {
         clearAccessToken()
         setUser(null)
+        resetEnterAnimations()
         return
       }
       // Kept, not swallowed: this path is invisible from the UI, and the bug it

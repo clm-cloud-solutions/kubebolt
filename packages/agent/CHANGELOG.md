@@ -11,6 +11,31 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.2] — 2026-10-07
+
+Installs on OpenShift out of the box. Same v1.0 metric/label schema — drop-in
+within 1.x.
+
+### Changed
+
+- **The chart drops its default `runAsUser: 65532` on OpenShift.** When the
+  cluster serves `security.openshift.io/v1`, the pod security context leaves
+  the UID to the SCC: `restricted-v2` assigns one from the namespace's range
+  and rejected the pinned one at admission. A `runAsUser` you set yourself is
+  kept. Rendering without cluster access (`helm template`, some GitOps tools):
+  pass `--api-versions security.openshift.io/v1`, or keep using
+  `--set podSecurityContext.runAsUser=null`.
+- **The image's `USER` is numeric** (`65532:65532`, was `nonroot:nonroot` —
+  the same UID). `runAsNonRoot` can only be verified against a numeric user
+  when the pod sets no `runAsUser`.
+
+### Compatibility
+
+- Backend: any 1.13+ / 2.x. No flag, value or protocol change.
+- Run chart 1.4.2 with image 1.4.2 (the default). Chart 1.4.2 on OpenShift with
+  an older image pinned by `image.tag` fails `runAsNonRoot` verification (the
+  older image's user is non-numeric).
+
 ## [1.4.1] — 2026-09-28
 
 Security patch. Same v1.0 metric/label schema — drop-in within 1.x.

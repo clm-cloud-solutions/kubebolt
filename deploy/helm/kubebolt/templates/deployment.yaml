@@ -25,6 +25,10 @@ spec:
         app.kubernetes.io/component: api
     spec:
       serviceAccountName: {{ include "kubebolt.serviceAccountName" . }}
+      {{- with .Values.api.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- if or .Values.auth.enabled (and .Values.agentIngest.enabled .Values.agentIngest.tls.enabled) }}
       volumes:
         {{- if .Values.auth.enabled }}
@@ -74,6 +78,10 @@ spec:
             {{- end }}
           resources:
             {{- toYaml .Values.api.resources | nindent 12 }}
+          {{- with .Values.api.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           env:
             # --- Metrics storage ---
             # Points the API at the embedded VictoriaMetrics service
@@ -286,6 +294,16 @@ spec:
         {{- include "kubebolt.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: web
     spec:
+      # The chart's ServiceAccount, like the api: without it the pod ran as the
+      # namespace's `default` SA and an SCC grant for the release landed on the
+      # wrong subject. nginx never calls the Kubernetes API, and this SA is bound
+      # to the chart's ClusterRole: its token is not mounted here.
+      serviceAccountName: {{ include "kubebolt.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- with .Values.web.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: web
           image: "{{ .Values.web.image.repository }}:{{ .Values.web.image.tag | default .Chart.AppVersion }}"
@@ -298,3 +316,7 @@ spec:
               protocol: TCP
           resources:
             {{- toYaml .Values.web.resources | nindent 12 }}
+          {{- with .Values.web.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

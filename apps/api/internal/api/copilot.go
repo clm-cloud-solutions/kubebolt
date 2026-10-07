@@ -18,6 +18,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
+	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 )
 
 // friendlyCopilotError translates raw provider errors into user-friendly messages.
@@ -155,6 +156,10 @@ func (h *handlers) HandleCopilotConfig(w http.ResponseWriter, r *http.Request) {
 		// declaring it stalled and auto-investigating. Milliseconds so the
 		// frontend can feed it straight into setInterval/Date math.
 		"actionProgressTimeoutMs": cfg.ActionProgressTimeout.Milliseconds(),
+		// The unit the usage views show AI spend in: credits when the platform
+		// runs the AI (SaaS), usd when the org brings its own key (self-hosted
+		// EE, OSS). See settings.PlatformManagedAI.
+		"spendUnit": settings.AISpendUnit(),
 	}
 	if cfg.Fallback != nil {
 		resp["fallback"] = map[string]string{

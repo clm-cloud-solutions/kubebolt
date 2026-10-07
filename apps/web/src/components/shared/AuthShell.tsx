@@ -5,14 +5,20 @@ import { Starfield } from '@/components/shared/Starfield'
 import { VERSION } from '@/version'
 import { authLicense, authPillars, authReleaseNotesUrl, authSiteUrl, authTagline } from '@/ee/authCopy'
 
-// AuthShell — the shared split-panel chrome for the pre-login pages (Login,
-// SignUp). Left: a cinematic dark branding panel ported from the site's "3am"
-// hero — a layered night scene (sky → breathing aurora → horizon glow →
-// vignette) under a green-glowing headline. Right: the form. The whole shell is
-// forced to the DARK theme (`.dark` wrapper) so the kb-* tokens resolve to the
-// site-matching dark palette regardless of the user's in-app theme — these pages
-// own their look. Uses ONLY existing tokens/fonts; the brand accent #00e07a ≈
-// rgb(0,224,122) drives every glow.
+// AuthShell — the shared chrome for the pre-login pages (Login, SignUp, the
+// password and invite flows). ONE night scene ported from the site's "3am"
+// hero — sky → breathing aurora → horizon glow → starfield → vignette — runs
+// edge to edge behind two columns: the branding copy on the left (desktop
+// only) and the form on the right, on a glass card. The whole shell is forced
+// to the DARK theme (`.dark` wrapper) so the kb-* tokens resolve to the
+// site-matching dark palette regardless of the user's in-app theme — these
+// pages own their look. Uses ONLY existing tokens/fonts; the brand accent
+// #00e07a ≈ rgb(0,224,122) drives every glow.
+//
+// It used to be two backgrounds: the scene behind the copy and a near-black
+// half behind the form, with three layers (a seam fade, the horizon carried
+// across, a warm light) to hide where they met. The halves still read as two
+// pages glued together. One scene has no seam to hide.
 
 // The panel says a different thing at each moment of the funnel. It used to
 // be one pitch for every page, so someone recovering a password — already a
@@ -83,32 +89,34 @@ export function AuthShell({
     // the phone — signup, or login with the keyboard up — was clipped with no
     // way to reach the rest of the form. The inner min-h-full row keeps both
     // columns as tall as the page, however long the form runs.
-    <div className="dark h-full overflow-y-auto overscroll-contain bg-[var(--kobi-bg)] text-kb-text-primary">
-    <div className="min-h-full flex">
-      {/* Branding panel — desktop only */}
-      <div className="hidden lg:flex lg:w-[52%] xl:w-[56%] relative overflow-hidden flex-col justify-between p-12 xl:p-16 2xl:p-24 isolate">
-        {/* sky */}
+    <div className="auth-scene dark h-full overflow-y-auto overscroll-contain bg-[var(--kobi-bg)] text-kb-text-primary">
+    <div className="relative min-h-full flex isolate">
+      {/* The scene — one sky behind both columns, on every viewport. It is
+          sized by this row, so it grows with a long form instead of ending
+          at the first screen. */}
+      <div className="absolute inset-0 z-0 overflow-hidden pointer-events-none" aria-hidden="true">
+        {/* sky — lit from above, a step off black so the page has a floor */}
         <div
-          className="absolute inset-0 z-0 pointer-events-none"
-          style={{ background: 'radial-gradient(120% 80% at 50% -20%, #0d0f0e 0%, #090a09 45%, #060706 100%)' }}
+          className="absolute inset-0"
+          style={{ background: 'radial-gradient(120% 85% at 50% -20%, #171a18 0%, #0f110f 45%, #0a0b0a 100%)' }}
         />
-        {/* breathing aurora */}
+        {/* breathing aurora — the whole horizon, not one column's */}
         <div
-          className="absolute left-1/2 z-[1] pointer-events-none auth-aurora-anim"
+          className="absolute left-1/2 z-[1] auth-aurora-anim"
           style={{
-            bottom: '-14%',
-            width: '160%',
-            height: '62%',
+            bottom: '-8%',
+            width: '130%',
+            height: '58%',
             transform: 'translateX(-50%)',
             background:
-              'radial-gradient(60% 100% at 50% 100%, rgba(0,224,122,0.28), rgba(0,224,122,0.12) 38%, transparent 70%)',
+              'radial-gradient(60% 100% at 45% 100%, rgba(0,224,122,0.34), rgba(0,224,122,0.14) 40%, transparent 72%)',
             filter: 'blur(40px)',
             mixBlendMode: 'screen',
           }}
         />
         {/* horizon glow */}
         <div
-          className="absolute inset-x-0 bottom-0 z-[1] pointer-events-none"
+          className="absolute inset-x-0 bottom-0 z-[1]"
           style={{
             height: '34%',
             background: 'linear-gradient(180deg, transparent, rgba(0,224,122,0.06) 60%, rgba(0,224,122,0.11))',
@@ -116,19 +124,20 @@ export function AuthShell({
           }}
         />
         {/* twinkling starfield */}
-        <Starfield className="absolute inset-0 z-[2] pointer-events-none" />
-        {/* vignette — centred toward the seam, so it darkens the screen's
-            outer edges and NOT the edge this panel shares with the form.
-            Centred, it pushed that edge to near-black against the form's
-            lit half and the page split into two pages glued together. */}
+        <Starfield className="absolute inset-0 z-[2]" />
+        {/* vignette — centred on the page now that there is no seam to keep
+            lit; soft enough that the corners stay sky, not black */}
         <div
-          className="absolute inset-0 z-[3] pointer-events-none"
+          className="absolute inset-0 z-[3]"
           style={{
             background:
-              'radial-gradient(130% 100% at 78% 40%, transparent 45%, rgba(0,0,0,0.5) 82%, rgba(0,0,0,0.8) 100%)',
+              'radial-gradient(140% 110% at 50% 45%, transparent 55%, rgba(0,0,0,0.3) 85%, rgba(0,0,0,0.55) 100%)',
           }}
         />
+      </div>
 
+      {/* Branding column — desktop only */}
+      <div className="hidden lg:flex lg:w-[52%] xl:w-[56%] relative z-[1] flex-col justify-between p-12 xl:p-16 2xl:p-24">
         <SiteLink className="relative z-[5] flex items-center gap-2.5 w-fit">
           <div className="w-9 h-9 2xl:w-11 2xl:h-11 rounded-lg bg-kb-accent-light flex items-center justify-center">
             <KubeBoltLogo className="w-6 h-6 2xl:w-7 2xl:h-7 text-kb-accent" />
@@ -153,34 +162,9 @@ export function AuthShell({
         </div>
       </div>
 
-      {/* Form panel */}
-      <div className="flex-1 flex items-center justify-center p-6 relative overflow-hidden">
-        {/* faint glow behind the form on small screens (branding panel hidden below lg) */}
-        <div
-          className="absolute inset-0 pointer-events-none lg:hidden"
-          style={{ background: 'radial-gradient(80% 50% at 50% 0%, rgba(0,224,122,0.08), transparent 60%)' }}
-        />
-        {/* Desktop: the horizon of the left panel, continued across the seam.
-            Without it this half is FLAT BLACK next to a half carrying aurora,
-            starfield, horizon and vignette — and that contrast, not the card's
-            width, is what made the form read as floating in a void. Far fainter
-            than the branding side (0.05 vs 0.11) so it reads as the same scene
-            seen from further away, never as a second light source. */}
-        <div
-          className="auth-seam-fade absolute inset-0 pointer-events-none hidden lg:block"
-          style={{
-            background: 'radial-gradient(75% 55% at 50% 100%, rgba(0,224,122,0.05), transparent 68%)',
-            mixBlendMode: 'screen',
-          }}
-        />
-        {/* The charco — the site's warm light with sand grain, shapeless on
-            purpose (see .auth-charco in globals.css). Desktop only. */}
-        {/* Everything that lights this half fades out toward the seam, so the
-            two halves meet without a vertical cut. */}
-        <div className="auth-seam-fade absolute inset-0 pointer-events-none hidden lg:block" aria-hidden="true">
-          <div className="auth-charco absolute pointer-events-none" />
-          <div className="auth-charco-grain absolute inset-0 pointer-events-none" />
-        </div>
+      {/* Form column — on the same scene; the card carries its own surface
+          (glass, see .auth-form .bg-kb-card in globals.css). */}
+      <div className="flex-1 flex items-center justify-center p-6 relative z-[1]">
         <div key={pathname} className="relative w-full max-w-sm auth-form">
           {/* mobile logo */}
           <SiteLink className="lg:hidden flex flex-col items-center mb-8">

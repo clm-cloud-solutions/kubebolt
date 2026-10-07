@@ -40,20 +40,31 @@
   --kb-yaml-comment: #8b949e;
 }
 
+/* Dark = the site's night palette: warm neutrals with paper-toned text, the
+   same family the sign-in pages, Kobi and kubebolt.io use. It used to be a
+   cool navy set (#161720 cards, #22243a elevated, lavender greys), which is
+   what made the app read as a different product next to the site. Tertiary
+   is the one value the site palette does not carry: Kobi's #6b6864 measures
+   ~3.6:1 on these surfaces, #8a857f clears AA (~5:1) for the small mono
+   labels the app is full of. */
 .dark {
-  --kb-bg: #0a0b0f;
-  --kb-surface: #101118;
-  --kb-card: #161720;
-  --kb-card-hover: #1c1d2a;
-  --kb-elevated: #22243a;
-  --kb-sidebar: #0d0e14;
-  --kb-border: rgba(255, 255, 255, 0.06);
-  --kb-border-active: rgba(255, 255, 255, 0.14);
-  --kb-text-primary: #e8e9ed;
-  --kb-text-secondary: #8b8d9a;
-  --kb-text-tertiary: #555770;
-  --kb-scrollbar: rgba(255, 255, 255, 0.14);
-  --kb-bar-track: rgba(255, 255, 255, 0.06);
+  /* Card vs page: the first cut of this palette put cards ~10 levels above
+     the page, which vanished on a monitor with light falling on it. Cards
+     now sit ~20 levels up with a hairline that holds under glare — still
+     the site's night, but a card reads as a card in a lit room. */
+  --kb-bg: #0b0c0b;
+  --kb-surface: #111211;
+  --kb-card: #1a1b1a;
+  --kb-card-hover: #202120;
+  --kb-elevated: #252625;
+  --kb-sidebar: #0c0d0c;
+  --kb-border: rgba(245, 242, 236, 0.11);
+  --kb-border-active: rgba(245, 242, 236, 0.22);
+  --kb-text-primary: #f5f2ec;
+  --kb-text-secondary: #a8a29e;
+  --kb-text-tertiary: #8a857f;
+  --kb-scrollbar: rgba(245, 242, 236, 0.14);
+  --kb-bar-track: rgba(245, 242, 236, 0.08);
   --kb-accent: #00e07a;
   --kb-accent-light: rgba(0, 224, 122, 0.12);
   /* YAML syntax highlighting */
@@ -683,38 +694,15 @@ input:-webkit-autofill:active {
   html.auth-scale { font-size: 22px; }
 }
 
-/* The charco (from the site, HomePlatform / HomeStory): warm light in the
-   house paper tone, with sand grain living only where the light does.
-   It must have NO shape. As one ellipse fading to zero at a fixed radius, its
-   rim read as an object — an egg behind the card, then a rug under it. So:
-   three sources of different size, offset from each other and from the card,
-   each falling off in several steps to the very end of its radius (no rim),
-   and the whole layer blurred so no contour survives. The layer overhangs
-   the column so the blur never pulls a dark edge in from the sides. The
-   grain is a sibling (a filter on this element would blur it away), masked
-   by a wider, softer footprint than the light and fainter than before. */
-.auth-charco {
-  inset: -12%;
-  filter: blur(56px);
-  background:
-    radial-gradient(34% 30% at 46% 54%, rgba(245, 242, 236, 0.05), rgba(245, 242, 236, 0.03) 30%, rgba(245, 242, 236, 0.014) 55%, rgba(245, 242, 236, 0.004) 80%, transparent 100%),
-    radial-gradient(28% 24% at 60% 38%, rgba(245, 242, 236, 0.026), rgba(245, 242, 236, 0.012) 45%, rgba(245, 242, 236, 0.003) 80%, transparent 100%),
-    radial-gradient(40% 20% at 40% 72%, rgba(245, 242, 236, 0.024), rgba(245, 242, 236, 0.01) 50%, transparent 100%);
-}
-.auth-charco-grain {
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='1.6' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='matrix' values='0 0 0 0.7 -0.2 0 0 0 0.7 -0.2 0 0 0 0.7 -0.2 0 0 0 0 1'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  background-size: 160px 160px;
-  opacity: 0.1;
-  -webkit-mask-image: radial-gradient(60% 50% at 48% 54%, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.4) 35%, rgba(0, 0, 0, 0.15) 65%, rgba(0, 0, 0, 0.04) 85%, transparent 100%);
-  mask-image: radial-gradient(60% 50% at 48% 54%, rgba(0, 0, 0, 0.7), rgba(0, 0, 0, 0.4) 35%, rgba(0, 0, 0, 0.15) 65%, rgba(0, 0, 0, 0.04) 85%, transparent 100%);
-}
-
-/* The form half's light fades out over its first quarter, toward the seam
-   with the branding panel: lit right up to the edge, it met the panel's dark
-   edge in a hard vertical line. */
-.auth-seam-fade {
-  -webkit-mask-image: linear-gradient(90deg, transparent, #000 28%);
-  mask-image: linear-gradient(90deg, transparent, #000 28%);
+/* Text tiers on the night scene (AuthShell's root). The app's dark tertiary
+   (#555770) is tuned for flat surfaces; on the scene it measured ~2.8:1 and
+   every small mono label — field labels, the eyebrow, the console, the
+   version — dimmed the page. Each tier moves one step up, to values the dark
+   palette already has: tertiary takes the app's secondary (~6:1), secondary
+   takes Kobi's warm secondary. Primary is untouched. */
+.auth-scene {
+  --kb-text-tertiary: #8b8d9a;
+  --kb-text-secondary: #a8a29e;
 }
 
 /* Auth console (AuthShell ClusterConsole): the site's mockup frame — 12px
@@ -740,9 +728,11 @@ input:-webkit-autofill:active {
 /* Auth form — the site's vocabulary on the pages' own markup (AuthShell wraps
    every auth page in .auth-form, so the six pages keep their classes and
    still agree with each other):
-     card    card-v3: 18px, Elevated → Dip, lit top edge, the soft separating
-             shadow, and the resting green bevel segment at left-centre — the
-             site's card signature;
+     card    card-v3 shape — 18px, lit top edge, the soft separating shadow
+             and the resting green bevel segment at left-centre (the site's
+             card signature) — on GLASS: the card sits on the night scene, so
+             a translucent surface with a blur reads on any part of the sky
+             without becoming a black box pasted over it;
      labels  mono, uppercase, tracked — the site's small-label voice;
      fields  pills on Elevated with a hairline; focus shifts the border green
              and adds a faint ring;
@@ -755,9 +745,14 @@ input:-webkit-autofill:active {
 .auth-form .bg-kb-card {
   position: relative;
   border-radius: 18px;
-  border-color: var(--kobi-border);
-  background: linear-gradient(180deg, var(--kobi-card), var(--kobi-code-bg));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+  border-color: rgba(245, 242, 236, 0.12);
+  background: linear-gradient(180deg, rgba(28, 30, 28, 0.72), rgba(17, 19, 17, 0.66));
+  -webkit-backdrop-filter: blur(18px) saturate(1.15);
+  backdrop-filter: blur(18px) saturate(1.15);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.08),
+    0 30px 80px -30px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(0, 224, 122, 0.04);
   padding: 1.75rem;
 }
 .auth-form .bg-kb-card::before {
@@ -908,3 +903,162 @@ input:-webkit-autofill:active {
   }
 }
 
+
+/* KPI card (components/shared/kpi/KpiCard) — the site's card anatomy for the
+   rows a page opens with: a big figure with its unit, one sentence, a
+   minichart and a mono caption. Same signature as the sign-in card — 20px
+   radius, lit top edge, soft separating shadow — and the green bevel at
+   left-centre marks the row's primary card. Light theme keeps the shape on
+   the plain card surface. `.kb-panel` is the same surface without the
+   padding, for cards that lay out their own sections (Home's greeting). */
+.kb-kpi,
+.kb-panel {
+  position: relative;
+  border-radius: 20px;
+  border: 1px solid var(--kb-border);
+  background: var(--kb-card);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+.kb-kpi {
+  padding: 1.25rem 1.25rem 1rem;
+}
+/* The compact card (KpiCard `compact`): a secondary row under a page's
+   headline, smaller so the headline stays the first thing read. */
+.kb-kpi-compact {
+  padding: 0.875rem 1rem 0.75rem;
+  border-radius: 14px;
+}
+.kb-kpi-compact.kb-kpi-primary::before {
+  height: 64px;
+}
+.kb-kpi-compact.kb-kpi-alert::before {
+  height: 76px;
+}
+.dark .kb-kpi,
+.dark .kb-panel {
+  border-color: rgba(245, 242, 236, 0.14);
+  background: linear-gradient(180deg, #212221, #1a1b1a);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 24px 60px -30px rgba(0, 0, 0, 0.9);
+}
+/* A panel that is itself the link (Fleet's cluster cards). */
+.kb-panel-hover {
+  cursor: pointer;
+  transition: border-color 150ms ease;
+}
+.kb-panel-hover:hover,
+.dark .kb-panel-hover:hover {
+  border-color: var(--kb-border-active);
+}
+.kb-kpi-primary {
+  border-color: color-mix(in srgb, var(--kb-accent) 22%, var(--kb-border));
+}
+.dark .kb-kpi-primary {
+  border-color: rgba(0, 224, 122, 0.16);
+}
+.kb-kpi-primary::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 1.5px;
+  height: 96px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, transparent, var(--kb-accent), transparent);
+  box-shadow: 0 0 12px rgba(0, 224, 122, 0.45);
+  pointer-events: none;
+}
+
+/* The card whose number asks for someone (KpiCard `alert`): the figure takes
+   the state colour, the left bevel lights in it, and a tint rises from that
+   edge. Calm cards stay neutral, so the one that needs you is the only one
+   that glows — colour as a signal, not as a wash over the whole row. */
+.kb-kpi-alert {
+  --kb-alert: #ef4056;
+  border-color: color-mix(in srgb, var(--kb-alert) 40%, var(--kb-border));
+  background:
+    radial-gradient(130% 100% at 0% 50%, color-mix(in srgb, var(--kb-alert) 7%, transparent), transparent 65%),
+    var(--kb-card);
+}
+.dark .kb-kpi-alert {
+  border-color: color-mix(in srgb, var(--kb-alert) 38%, transparent);
+  background:
+    radial-gradient(130% 100% at 0% 50%, color-mix(in srgb, var(--kb-alert) 13%, transparent), transparent 65%),
+    linear-gradient(180deg, #212221, #1a1b1a);
+}
+.kb-kpi-alert-warn {
+  --kb-alert: #f5a623;
+}
+.kb-kpi-alert::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 2px;
+  height: 112px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, transparent, var(--kb-alert), transparent);
+  box-shadow: 0 0 14px color-mix(in srgb, var(--kb-alert) 60%, transparent);
+  pointer-events: none;
+}
+
+/* Enter animation for the KPI rows: the figures count up (CountUp.tsx) and
+   the minicharts fill when the row mounts — on the first visit to each page
+   after signing in only (utils/enterOnce.ts: Layout writes
+   data-kb-enter="skip" on <main> for a page that already played). A data
+   refresh does not replay it: the elements stay mounted. Cards start left to right through --kb-enter-i,
+   which every grid sets on its children (only these animations read it).
+   Individual transform properties (scale / translate) so the animation never
+   overrides a utility's own transform. `backwards` fill: before the delay the
+   element sits at the start state; afterwards it is simply itself. Reduced
+   motion shows the final state. */
+.grid > :nth-child(2) { --kb-enter-i: 1; }
+.grid > :nth-child(3) { --kb-enter-i: 2; }
+.grid > :nth-child(4) { --kb-enter-i: 3; }
+.grid > :nth-child(5) { --kb-enter-i: 4; }
+.grid > :nth-child(6) { --kb-enter-i: 5; }
+@keyframes kb-enter-grow { from { scale: 0 1; } }
+@keyframes kb-enter-reveal { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0 0 0 0); } }
+@keyframes kb-enter-arc { from { stroke-dasharray: 0 1000; } }
+@keyframes kb-enter-pop { from { scale: 0; opacity: 0; } }
+@keyframes kb-enter-rise { from { opacity: 0; translate: 0 5px; } }
+.kb-enter-grow,
+.kb-enter-reveal,
+.kb-enter-arc,
+.kb-enter-pop,
+.kb-enter-rise {
+  animation-duration: 1000ms;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  animation-fill-mode: backwards;
+  animation-delay: calc(120ms + var(--kb-enter-i, 0) * 70ms + var(--kb-enter-d, 0ms));
+}
+.kb-enter-grow { animation-name: kb-enter-grow; transform-origin: left center; }
+.kb-enter-reveal { animation-name: kb-enter-reveal; }
+.kb-enter-arc { animation-name: kb-enter-arc; }
+.kb-enter-pop { animation-name: kb-enter-pop; animation-duration: 500ms; transform-box: fill-box; transform-origin: center; }
+.kb-enter-rise { animation-name: kb-enter-rise; animation-duration: 600ms; }
+[data-kb-enter="skip"] .kb-enter-grow,
+[data-kb-enter="skip"] .kb-enter-reveal,
+[data-kb-enter="skip"] .kb-enter-arc,
+[data-kb-enter="skip"] .kb-enter-pop,
+[data-kb-enter="skip"] .kb-enter-rise {
+  animation: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .kb-enter-grow,
+  .kb-enter-reveal,
+  .kb-enter-arc,
+  .kb-enter-pop,
+  .kb-enter-rise {
+    animation: none;
+  }
+}
+
+/* Ambient light behind the content (dark only): a faint glow from above, the
+   way the sign-in scene is lit, so cards separate from a pure-black page.
+   Fixed to the scroll container's box — it stays at the top as you scroll. */
+.dark .kb-ambient {
+  background:
+    radial-gradient(1100px 520px at 75% -14%, rgba(0, 224, 122, 0.06), transparent 62%),
+    radial-gradient(900px 460px at 10% -10%, rgba(245, 242, 236, 0.045), transparent 60%),
+    var(--kb-bg);
+}

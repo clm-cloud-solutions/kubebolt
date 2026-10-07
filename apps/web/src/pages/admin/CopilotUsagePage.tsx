@@ -3,10 +3,7 @@ import { Modal } from '@/components/shared/Modal'
 import { useQuery } from '@tanstack/react-query'
 import {
   BarChart3,
-  Bot,
-  CircleDollarSign,
   Clock,
-  Database,
   Wrench,
   AlertTriangle,
   Scissors,
@@ -18,7 +15,9 @@ import {
 import { api } from '@/services/api'
 import { useClusterLabel } from '@/hooks/useClusterLabel'
 import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
-import { ReliabilityStrip, BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
+import { BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
+import { CopilotUsageKpis } from '@/components/admin/CopilotUsageKpis'
+import { fmtCredits, fmtUsd, useAiSpendUnit } from '@/hooks/useAiSpendUnit'
 import type {
   CopilotSessionEnriched,
   CopilotUsageBucket,
@@ -33,13 +32,6 @@ function fmtTokens(n: number): string {
   if (n >= 10_000) return `${Math.round(n / 1_000)}k`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
-}
-
-function fmtUSD(n: number): string {
-  if (n < 0.01) return `$${n.toFixed(4)}`
-  if (n < 1) return `$${n.toFixed(3)}`
-  if (n < 100) return `$${n.toFixed(2)}`
-  return `$${Math.round(n).toLocaleString()}`
 }
 
 function fmtDuration(ms: number): string {
@@ -127,9 +119,7 @@ export function CopilotUsagePage() {
         </div>
       </div>
 
-      {summary && <SummaryTiles summary={summary} />}
-
-      {summary && <ReliabilityStrip summary={summary} />}
+      {summary && <CopilotUsageKpis summary={summary} buckets={timeseries} range={range} />}
 
       <BreakdownSection range={range} />
 
@@ -165,54 +155,6 @@ function RangeSelector({ value, onChange }: { value: Range; onChange: (v: Range)
         >
           {opt}
         </button>
-      ))}
-    </div>
-  )
-}
-
-function SummaryTiles({ summary }: { summary: CopilotUsageSummary }) {
-  const tiles = [
-    {
-      label: 'Sessions',
-      value: summary.sessions.toLocaleString(),
-      sub:
-        summary.errorSessions > 0
-          ? `${summary.errorSessions} error${summary.errorSessions === 1 ? '' : 's'}`
-          : `${summary.avgRounds.toFixed(1)} avg rounds`,
-      icon: Bot,
-    },
-    {
-      label: 'Tokens billed',
-      value: fmtTokens(summary.totalBilledTokens),
-      sub: `${summary.cacheHitPct.toFixed(0)}% cached · ${fmtTokens(summary.cacheReadTokens)} read`,
-      icon: Database,
-    },
-    {
-      label: 'Estimated cost',
-      value: fmtUSD(summary.estimatedUsd),
-      sub: summary.estimatedUsd > 0 ? 'list pricing, approx' : 'no known pricing',
-      icon: CircleDollarSign,
-    },
-    {
-      label: 'Avg duration',
-      value: fmtDuration(summary.avgDurationMs),
-      sub: `${summary.compacts} compact${summary.compacts === 1 ? '' : 's'} fired`,
-      icon: Clock,
-    },
-  ]
-  return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-      {tiles.map(({ label, value, sub, icon: Icon }) => (
-        <div key={label} className="bg-kb-card border border-kb-border rounded-[10px] p-4">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-              {label}
-            </span>
-            <Icon className="w-4 h-4 text-kb-text-tertiary" />
-          </div>
-          <div className="text-xl font-semibold text-kb-text-primary">{value}</div>
-          <div className="text-[10px] font-mono text-kb-text-tertiary mt-1">{sub}</div>
-        </div>
       ))}
     </div>
   )
@@ -363,7 +305,9 @@ function ToolsChart({ summary }: { summary?: CopilotUsageSummary }) {
                   style={{ width: `${w}%` }}
                 />
                 <span className="absolute inset-0 flex items-center px-2 text-[10px] font-mono text-kb-text-primary">
-                  {t.calls} calls · {fmtTokens(t.bytes / 4)} tokens
+                  {/* Tokens are estimated from the bytes the tool returned (~4 per
+                      token): rounded, a token count never carries decimals. */}
+                  {t.calls} {t.calls === 1 ? 'call' : 'calls'} · {fmtTokens(Math.round(t.bytes / 4))} tokens
                   {errorRate > 0 && (
                     <span className="ml-auto text-status-warn">
                       {errorRate.toFixed(0)}% err
@@ -388,6 +332,7 @@ function SessionsTable({
   onSelect: (s: CopilotSessionEnriched) => void
   isLoading: boolean
 }) {
+  const unit = useAiSpendUnit()
   // La tabla vive a altura de organización, así que dos filas idénticas pueden
   // ser de clusters distintos y sin esta columna no hay forma de saber cuál
   // mirar. Autopilot ya la tenía; esto cierra la divergencia entre las dos
@@ -427,7 +372,7 @@ function SessionsTable({
                 <th className="text-right px-4 py-2">Cached</th>
                 <th className="text-right px-4 py-2">Tools</th>
                 <th className="text-right px-4 py-2">Duration</th>
-                <th className="text-right px-4 py-2">Cost</th>
+                <th className="text-right px-4 py-2">{unit === 'credits' ? 'Credits' : 'Cost (est.)'}</th>
               </tr>
             </thead>
             <tbody>
@@ -475,7 +420,9 @@ function SessionsTable({
                       {fmtDuration(s.durationMs)}
                     </td>
                     <td className="px-4 py-2 text-right text-kb-accent font-mono">
-                      {s.estimatedUsd > 0 ? fmtUSD(s.estimatedUsd) : '—'}
+                      {unit === 'credits'
+                        ? (s.credits ?? 0) > 0 ? fmtCredits(s.credits ?? 0) : '—'
+                        : s.estimatedUsd > 0 ? fmtUsd(s.estimatedUsd) : '—'}
                     </td>
                   </tr>
                 )
@@ -540,6 +487,7 @@ function SessionModal({
   session: CopilotSessionEnriched
   onClose: () => void
 }) {
+  const unit = useAiSpendUnit()
   // The stored `cluster` field is the raw agent-proxy context (e.g.
   // "agent:<uid>") — noise. useClusterLabel lo resuelve al nombre legible y
   // devuelve vacío cuando el cluster ya no existe, para caer al timestamp a
@@ -561,7 +509,11 @@ function SessionModal({
             <KV label="Input" value={fmtTokens(session.usage.inputTokens)} />
             <KV label="Output" value={fmtTokens(session.usage.outputTokens)} />
             <KV label="Cache read" value={fmtTokens(session.usage.cacheReadTokens ?? 0)} />
-            <KV label="Cost (est.)" value={fmtUSD(session.estimatedUsd)} />
+            {unit === 'credits' ? (
+              <KV label="Credits" value={fmtCredits(session.credits ?? 0)} />
+            ) : (
+              <KV label="Cost (est.)" value={fmtUsd(session.estimatedUsd)} />
+            )}
           </div>
 
           {session.tools && Object.keys(session.tools).length > 0 && (

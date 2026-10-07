@@ -1968,6 +1968,20 @@ func (m *Manager) connectToContextLocked(contextName string) error {
 // Set from KUBEBOLT_AGENT_PROXY_CONNECT_TIMEOUT in main.go; 0 = unbounded (not advised).
 var DefaultConnectTimeout = 25 * time.Second
 
+// connectDeadline is the outer deadline startRuntime races Start() against.
+// It belongs to agent-proxy contexts only. A direct connection (kubeconfig,
+// in-cluster) has no agent to wedge, and Start() is already bounded by its own
+// cache-sync deadline; racing it against the shorter agent-proxy value (25s
+// against 45s) only killed syncs that were progressing. On OpenShift a 138 MiB
+// Events collection took ~30s to sync and the in-cluster context was reported
+// as "agent may be stuck" — on a path with no agent (docs/guides/openshift.md).
+func connectDeadline(agentProxyCID string, connectTimeout time.Duration) time.Duration {
+	if agentProxyCID == "" {
+		return 0
+	}
+	return connectTimeout
+}
+
 func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID string, insightStore insights.InsightStore, tenantID string, cacheSyncTimeout, connectTimeout time.Duration) (*clusterRuntime, error) {
 	connector, err := NewConnectorFromAccess(access, m.wsHub)
 	if err != nil {
@@ -1979,14 +1993,15 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 	// but a stuck agent-proxy can wedge the live calls before the sync (discovery, the
 	// permission probe) where no inner deadline applies — the goroutine-dump hang was an
 	// ~8-minute spin here, stranding the pool placeholder. Race Start against
-	// DefaultConnectTimeout; on timeout, Stop() the connector (closes stopCh) and fail
+	// the agent-proxy deadline (connectDeadline: direct connections are bounded by
+	// the cache-sync deadline alone); on timeout, Stop() the connector (closes stopCh) and fail
 	// fast so getOrSpinPooled's error path closes the placeholder ready (cluster shown
 	// unreachable) instead of hanging. The buffered chan keeps the Start goroutine from
 	// leaking when we time out — it sends and exits once Start unwinds.
 	connectDone := make(chan error, 1)
 	go func() { connectDone <- connector.Start() }()
 	var connectErr error
-	if to := connectTimeout; to > 0 {
+	if to := connectDeadline(agentProxyCID, connectTimeout); to > 0 {
 		timer := time.NewTimer(to)
 		select {
 		case connectErr = <-connectDone:

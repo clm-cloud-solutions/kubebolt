@@ -3,64 +3,12 @@ import { useQuery } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { api } from '@/services/api'
 import type { BreakdownDimension, CopilotUsageSummary } from '@/types/copilotUsage'
+import { fmtCredits, fmtUsd, useAiSpendUnit, type AiSpendUnit } from '@/hooks/useAiSpendUnit'
 
 function fmtTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
   return String(n)
-}
-const fmtUsd = (n: number) => `$${n.toFixed(n >= 1 ? 2 : 4)}`
-
-// ─── Reliability strip ───────────────────────────────────────────────
-// Overall system-health tiles: error rate, fallback rate, max-rounds hits,
-// and interactive-vs-total (aux records excluded from "interactive").
-
-export function ReliabilityStrip({ summary }: { summary: CopilotUsageSummary }) {
-  const tiles: Array<{ label: string; value: string; sub: string; warn: boolean }> = [
-    {
-      label: 'Error rate',
-      value: `${summary.errorRate.toFixed(0)}%`,
-      sub: `${summary.errorSessions}/${summary.sessions} sessions`,
-      warn: summary.errorRate > 0,
-    },
-    {
-      label: 'Fallback rate',
-      value: `${summary.fallbackRate.toFixed(0)}%`,
-      sub: `${summary.fallbackSessions} used fallback`,
-      warn: summary.fallbackRate > 0,
-    },
-    {
-      label: 'Max-rounds hit',
-      value: `${summary.maxRoundsSessions}`,
-      sub: 'capped before finishing',
-      warn: summary.maxRoundsSessions > 0,
-    },
-    {
-      label: 'Interactive',
-      value: `${summary.interactiveSessions}`,
-      sub: `of ${summary.sessions} records (excl. automatic)`,
-      warn: false,
-    },
-  ]
-  return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
-      {tiles.map((t) => (
-        <div key={t.label} className="bg-kb-card border border-kb-border rounded-[10px] p-3">
-          <div className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
-            {t.label}
-          </div>
-          <div
-            className={`text-xl font-semibold tabular-nums mt-1 ${
-              t.warn ? 'text-status-warn' : 'text-kb-text-primary'
-            }`}
-          >
-            {t.value}
-          </div>
-          <div className="text-[10px] text-kb-text-tertiary mt-0.5 truncate">{t.sub}</div>
-        </div>
-      ))}
-    </div>
-  )
 }
 
 // ─── Breakdown section ───────────────────────────────────────────────
@@ -70,20 +18,32 @@ const DIMENSIONS: Array<{ id: BreakdownDimension; label: string }> = [
   { id: 'trigger', label: 'Trigger' },
 ]
 
-const METRICS: Array<{
+type Metric = {
   id: string
   label: string
   get: (s: CopilotUsageSummary) => number
   fmt: (v: number) => string
-}> = [
-  { id: 'cost', label: 'Cost', get: (s) => s.estimatedUsd, fmt: fmtUsd },
+}
+
+// Spend is ONE metric, in the unit the install shows (useAiSpendUnit):
+// credits where the platform runs the AI, the estimated cost where the org
+// brings its own key. Never both — next to each other they give away the
+// price of a credit.
+const SPEND: Record<AiSpendUnit, Metric> = {
+  credits: { id: 'spend', label: 'Credits', get: (s) => s.credits ?? 0, fmt: fmtCredits },
+  usd: { id: 'spend', label: 'Cost', get: (s) => s.estimatedUsd, fmt: fmtUsd },
+}
+
+const OTHER_METRICS: Metric[] = [
   { id: 'sessions', label: 'Sessions', get: (s) => s.sessions, fmt: (v) => v.toLocaleString() },
   { id: 'tokens', label: 'Tokens', get: (s) => s.totalBilledTokens, fmt: fmtTokens },
 ]
 
 export function BreakdownSection({ range }: { range: string }) {
   const [dim, setDim] = useState<BreakdownDimension>('user')
-  const [metricId, setMetricId] = useState('cost')
+  const unit = useAiSpendUnit()
+  const METRICS = [SPEND[unit], ...OTHER_METRICS]
+  const [metricId, setMetricId] = useState('spend')
   const metric = METRICS.find((m) => m.id === metricId) ?? METRICS[0]
 
   const { data, isLoading } = useQuery({

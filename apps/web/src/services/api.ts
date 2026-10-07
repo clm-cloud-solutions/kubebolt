@@ -1553,6 +1553,8 @@ export const api = {
       proxyMode: boolean
       fallback?: { provider: string; model: string }
       actionProgressTimeoutMs?: number
+      // credits | usd — see useAiSpendUnit.
+      spendUnit?: 'credits' | 'usd'
     }>(`${API_BASE}/copilot/config`),
 
   // Kobi conversation history (per-user persist + resume).

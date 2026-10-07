@@ -223,9 +223,9 @@ export function parseActionProposal(content: string): ActionProposal | null {
 //   - missing `request`/`limit`/`utilizationPercent` → KSM absent path,
 //     card renders without threshold lines
 
-export type WorkloadMetricKey = 'cpu' | 'memory' | 'network_rx' | 'network_tx'
+export type WorkloadMetricKey = 'cpu' | 'memory' | 'network_rx' | 'network_tx' | 'filesystem'
 
-export type WorkloadMetricUnit = 'cores' | 'bytes' | 'bytes/sec'
+export type WorkloadMetricUnit = 'cores' | 'bytes' | 'bytes/sec' | 'percent'
 
 export interface WorkloadMetricsSummary {
   min: number
@@ -257,6 +257,11 @@ export interface WorkloadMetricsEntry {
   limit?: number
   utilizationPercent?: WorkloadMetricsUtilization
   perContainer?: Record<string, WorkloadMetricsContainerEntry>
+  // Node filesystem only, when the node has more than one disk: the
+  // top-level summary/trend are the fullest one at each point.
+  perMountpoint?: Record<string, WorkloadMetricsContainerEntry>
+  // Why the metric came back empty (refused or failed). Read by the model.
+  error?: string
 }
 
 export interface WorkloadMetricsResponse {
@@ -390,4 +395,10 @@ export interface CopilotConfig {
   // panel keeps only the final assistant text and a transient loading
   // indicator. Server-side: KUBEBOLT_AI_SHOW_TOOL_CALLS.
   showToolCalls?: boolean
+  // The unit the usage views show AI spend in. "credits" when the platform
+  // runs the AI (SaaS): the customer never sees the LLM cost behind a credit.
+  // "usd" when the org brings its own key (self-hosted EE, OSS): the cost is
+  // their own provider bill. Absent on older backends — read it through
+  // useAiSpendUnit, which falls back to credits.
+  spendUnit?: 'credits' | 'usd'
 }

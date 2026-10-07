@@ -1,17 +1,21 @@
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
-import { Zap } from 'lucide-react'
 import { api } from '@/services/api'
 import { useRightSizing } from '@/hooks/useRightSizing'
 import { useCostAvailable } from '@/hooks/useCostAvailable'
 import { useNodeRates, estimateMonthlySavings } from '@/hooks/useClusterCost'
 import { formatCPU, formatMemory, formatMoney } from '@/utils/formatters'
-import { StripCard } from './StripCard'
 import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
+import { KpiCard } from '@/components/shared/kpi/KpiCard'
+import { BarList, EventTrack, KPI_COLOR, Legend, SemiGauge, Sparkline } from '@/components/shared/kpi/MiniCharts'
+import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import type { ClusterOverview } from '@/types/kubernetes'
 
-// CapacityStrip — the scan layer above the Capacity charts (design/
-// kubebolt-capacity-redesign.html): Peak CPU · Peak Memory ·
-// Rightsizing opportunity (hero) · OOMKills. Every number derives
+// CapacityStrip — the scan layer above the Capacity charts, in the site's
+// card anatomy (KpiCard), the same family as the Overview's row: Peak CPU
+// (its curve over the range) · Peak Memory (how much of capacity the peak
+// took) · Rightsizing opportunity (primary: the workloads that would hand the
+// most back) · OOMKills (when, on the range's track). Every number derives
 // from the same sources as the panels below — the peaks come from
 // the SAME series the trend charts plot, the rightsizing totals from
 // the SAME hook the recommendations panel renders, the OOM count
@@ -48,10 +52,19 @@ const OOM_QUERY = [
   '(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"} == 1)',
 ].join(' ')
 
+const KPI_MIN_WIDTH = 280
+
+// "9.3 Gi" → ["9.3", "Gi"]: the figure and its unit render apart.
+function splitUnit(s: string): [string, string] {
+  const i = s.lastIndexOf(' ')
+  return i < 0 ? [s, ''] : [s.slice(0, i), s.slice(i + 1)]
+}
+
 export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
+  const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
   const cpu = usePeakSeries('cpu', CPU_QUERY, rangeMinutes, installed)
   const mem = usePeakSeries('mem', MEM_QUERY, rangeMinutes, installed)
-  const { totals, isLoading: recsLoading } = useRightSizing(installed, overview)
+  const { recs, totals, isLoading: recsLoading, windowDays, preliminary } = useRightSizing(installed, overview)
 
   // Money layer: when OpenCost cost rates are available, price the
   // reclaimable capacity into $/mo — the same node rates and formula
@@ -97,11 +110,52 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const oomNames = dedupe(oomRows.map((r) => shortenPodName(r.pod))).slice(0, 2)
 
   const rangeLabel = formatRange(rangeMinutes)
+  const now = Date.now() / 1000
+
+  // The workloads that would hand back the most, on the axis the headline
+  // uses (CPU when there is CPU to reclaim, else memory).
+  const byCpu = totals.reclaimCpuMilli > 0
+  const reclaimRows = recs
+    .map((r) => {
+      const f = byCpu ? r.cpu : r.mem
+      return { name: r.name, value: f.state === 'over' ? Math.max(0, f.request - f.suggest) : 0 }
+    })
+    .filter((r) => r.value > 0)
+    .sort((a, b) => b.value - a.value)
+  const reclaimHeadline = byCpu
+    ? splitUnit(formatCPU(totals.reclaimCpuMilli))
+    : totals.reclaimMemBytes > 0
+      ? splitUnit(formatMemory(totals.reclaimMemBytes))
+      : null
+  const cpuValues = cpu.spark
+  const cpuLo = cpuValues.length ? Math.min(...cpuValues) : 0
+  const memNow = mem.spark.length ? mem.spark[mem.spark.length - 1] : null
+  const [memPeakFig, memPeakUnit] = memPeak != null ? splitUnit(formatMemory(memPeak)) : ['—', '']
 
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
-      <StripCard
-        label={`Peak CPU (${rangeLabel})`}
+    <div
+      ref={gridRef}
+      className={`grid gap-4 ${gridWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
+      style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, KPI_MIN_WIDTH, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
+    >
+      <KpiCard
+        alert={cpuPct == null ? undefined : cpuPct >= 90 ? 'crit' : cpuPct >= 80 ? 'warn' : undefined}
+        value={cpuPeak != null ? cpuPeak.toFixed(1) : '—'}
+        unit={cpuCapacity > 0 ? `/ ${Math.round(cpuCapacity)} cores peak` : 'cores peak'}
+        description={
+          cpuPct != null
+            ? `${Math.round(cpuPct)}% of capacity${cpuPct < 80 ? ' · headroom OK' : ''}`
+            : 'no samples in range'
+        }
+        viz={
+          cpuValues.length >= 2 ? (
+            <Sparkline
+              values={cpuValues}
+              left={`${rangeLabel} · ${cpuLo.toFixed(1)}–${(cpuPeak ?? 0).toFixed(1)} cores`}
+            />
+          ) : undefined
+        }
+        caption="whole node — the OS and kubelet included"
         info={
           <>
             <TooltipHeader right="whole node">Peak CPU</TooltipHeader>
@@ -115,19 +169,33 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
             </TooltipNote>
           </>
         }
-        value={cpuPeak != null ? cpuPeak.toFixed(1) : '—'}
-        valueSuffix={cpuCapacity > 0 ? `/ ${Math.round(cpuCapacity)}` : 'cores'}
-        sub={
-          cpuPct != null
-            ? `${Math.round(cpuPct)}% of capacity${cpuPct < 80 ? ' · headroom OK' : ''}`
+      />
+      <KpiCard
+        alert={memPct == null ? undefined : memPct >= 90 ? 'crit' : memPct >= 80 ? 'warn' : undefined}
+        value={memPeakFig}
+        unit={memCapacity > 0 ? `${memPeakUnit} / ${formatMemory(memCapacity)}` : memPeakUnit}
+        description={
+          memPct != null
+            ? `${Math.round(memPct)}% of capacity at peak${memPct < 80 ? ' · headroom OK' : ''}`
             : 'no samples in range'
         }
-        subAccent={cpuPct != null && cpuPct >= 80 ? 'warn' : 'default'}
-        spark={cpu.spark}
-        sparkAccent="ok"
-      />
-      <StripCard
-        label={`Peak memory (${rangeLabel})`}
+        viz={
+          memPct != null ? (
+            <SemiGauge
+              percent={memPct}
+              color={memPct >= 80 ? KPI_COLOR.warn : KPI_COLOR.info}
+              legend={
+                <Legend
+                  rows={[
+                    { color: memPct >= 80 ? KPI_COLOR.warn : KPI_COLOR.info, label: `peak ${formatMemory(memPeak ?? 0)}` },
+                    ...(memNow != null ? [{ color: KPI_COLOR.muted, label: `now ${formatMemory(memNow)}` }] : []),
+                  ]}
+                />
+              }
+            />
+          ) : undefined
+        }
+        caption={`whole node · last ${rangeLabel}`}
         info={
           <>
             <TooltipHeader right="whole node">Peak memory</TooltipHeader>
@@ -141,21 +209,44 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
             </TooltipNote>
           </>
         }
-        value={memPeak != null ? formatMemory(memPeak) : '—'}
-        valueSuffix={memCapacity > 0 ? `/ ${formatMemory(memCapacity)}` : undefined}
-        sub={
-          memPct != null
-            ? `${Math.round(memPct)}% of capacity${memPct < 80 ? ' · headroom OK' : ''}`
-            : 'no samples in range'
-        }
-        subAccent={memPct != null && memPct >= 80 ? 'warn' : 'default'}
-        spark={mem.spark}
-        sparkAccent="info"
       />
-      <StripCard
-        hero
-        label="Rightsizing opportunity"
-        icon={<Zap className="w-3 h-3" />}
+      <KpiCard
+        primary
+        value={recsLoading ? '…' : reclaimHeadline ? reclaimHeadline[0] : '0'}
+        unit={byCpu ? (reclaimHeadline?.[1] === 'cores' ? 'cores' : 'cpu') : reclaimHeadline ? `${reclaimHeadline[1]} memory` : undefined}
+        description={
+          totals.count > 0
+            ? `reclaimable${showMoney ? ` · ≈ ${formatMoney(savingsMonthly, { exact: true })}/mo` : ''} · ${totals.count} ${totals.count === 1 ? 'rec' : 'recs'}`
+            : recsLoading
+              ? 'computing from 7d P95…'
+              : 'well sized — nothing to hand back'
+        }
+        viz={
+          reclaimRows.length > 0 ? (
+            <BarList
+              color={KPI_COLOR.ok}
+              rows={reclaimRows.slice(0, 3).map((r) => ({
+                label: r.name,
+                value: r.value,
+                display: byCpu ? formatCPU(r.value) : formatMemory(r.value),
+              }))}
+            />
+          ) : undefined
+        }
+        caption={
+          <>
+            {`P95 over ${windowDays != null ? `${Math.max(1, Math.round(windowDays))}d` : '7d'}`}
+            {preliminary && <span className="text-status-warn"> · preliminary</span>}
+            {totals.count > 0 && (
+              <>
+                {' · '}
+                <Link to="/cost" className="hover:text-kb-text-primary transition-colors">
+                  open Cost →
+                </Link>
+              </>
+            )}
+          </>
+        }
         info={
           <>
             <TooltipHeader right="P95 over 7d">Rightsizing opportunity</TooltipHeader>
@@ -164,41 +255,26 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
               Total CPU / memory you could hand back by applying the recommendations
               below — the sum of (request − suggested request) across over-provisioned
               workloads. Suggestions come from each workload's P95 usage over 7 days plus
-              headroom. When OpenCost cost rates are present, the sub-line prices this
-              into ≈$/mo and links to the Cost tab; otherwise it's reported as cores / GiB.
+              headroom. When OpenCost cost rates are present, the sentence prices this
+              into ≈$/mo; otherwise it's reported as cores / GiB.
             </TooltipNote>
           </>
         }
-        value={
-          recsLoading
-            ? '…'
-            : totals.reclaimCpuMilli > 0
-              ? formatCPU(totals.reclaimCpuMilli)
-              : totals.reclaimMemBytes > 0
-                ? formatMemory(totals.reclaimMemBytes)
-                : '0'
-        }
-        valueAccent={totals.count > 0 ? 'ok' : 'default'}
-        sub={
-          totals.count > 0
-            ? `${
-                showMoney
-                  ? `≈ ${formatMoney(savingsMonthly, { exact: true })}/mo`
-                  : reclaimSummary(totals.reclaimCpuMilli, totals.reclaimMemBytes)
-              } · ${totals.count} ${totals.count === 1 ? 'rec' : 'recs'} →`
-            : recsLoading
-              ? 'computing from 7d P95…'
-              : 'no recommendations — well sized'
-        }
-        subAccent={totals.count > 0 ? 'ok' : 'default'}
-        subTo={totals.count > 0 ? '/cost' : undefined}
       />
-      <StripCard
-        label={`OOMKills (${rangeLabel})`}
-        value={`${oomRows.length}`}
-        valueAccent={oomRows.length > 0 ? 'warn' : 'default'}
-        sub={oomRows.length > 0 ? oomNames.join(' · ') : 'none in range'}
-        subAccent={oomRows.length > 0 ? 'warn' : 'default'}
+      <KpiCard
+        alert={oomRows.length > 0 ? 'warn' : undefined}
+        value={oomRows.length}
+        unit={oomRows.length === 1 ? 'OOMKill' : 'OOMKills'}
+        description={oomRows.length > 0 ? `in the last ${rangeLabel}` : `none in the last ${rangeLabel}`}
+        viz={
+          <EventTrack
+            events={oomRows.map((r) => r.timestamp)}
+            from={now - rangeMinutes * 60}
+            to={now}
+            left={`${rangeLabel} ago`}
+          />
+        }
+        caption={oomRows.length > 0 ? oomNames.join(' · ') : 'last exit out of memory, per container'}
       />
     </div>
   )
@@ -236,13 +312,6 @@ function usePeakSeries(
     peak: values.length > 0 ? Math.max(...values) : null,
     spark: values,
   }
-}
-
-function reclaimSummary(cpuMilli: number, memBytes: number): string {
-  const parts: string[] = []
-  if (cpuMilli > 0) parts.push(formatCPU(cpuMilli))
-  if (memBytes > 0) parts.push(formatMemory(memBytes))
-  return `${parts.join(' + ')} reclaimable`
 }
 
 function formatRange(minutes: number): string {
