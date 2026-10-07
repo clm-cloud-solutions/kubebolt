@@ -139,7 +139,7 @@ func TestCompact_ResetAll(t *testing.T) {
 
 func TestCompact_PicksCheapModelWhenEmpty(t *testing.T) {
 	// With no explicit CompactModel and anthropic provider, the compact
-	// call should use claude-haiku-4-5.
+	// call should use claude-haiku-5-5, with no reasoning.
 	fp := registerFake(t, "anthropic", "summary")
 	defer RegisterProvider(&stubAnthropic{}) // restore after test
 
@@ -161,8 +161,11 @@ func TestCompact_PicksCheapModelWhenEmpty(t *testing.T) {
 	if req == nil {
 		t.Fatal("fake provider never called")
 	}
-	if req.Provider.Model != "claude-haiku-4-5" {
-		t.Errorf("want model=claude-haiku-4-5, got %q", req.Provider.Model)
+	if req.Provider.Model != "claude-haiku-5-5" {
+		t.Errorf("want model=claude-haiku-5-5, got %q", req.Provider.Model)
+	}
+	if !req.NoThinking {
+		t.Error("a compaction summary needs no reasoning: want NoThinking")
 	}
 }
 

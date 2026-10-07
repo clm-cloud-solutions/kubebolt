@@ -46,7 +46,7 @@ func TestSanitizeTitle(t *testing.T) {
 }
 
 func TestGenerateTitle_SuccessSanitizes(t *testing.T) {
-	registerFake(t, "title-fake-ok", `  "payments pod OOMKilled."  `)
+	fp := registerFake(t, "title-fake-ok", `  "payments pod OOMKilled."  `)
 	res, err := GenerateTitle(
 		context.Background(),
 		config.ProviderConfig{Provider: "title-fake-ok"},
@@ -62,6 +62,9 @@ func TestGenerateTitle_SuccessSanitizes(t *testing.T) {
 	// The call's token usage must be surfaced so the spend can be recorded.
 	if res.Usage.Total() == 0 {
 		t.Fatalf("GenerateTitle dropped the call's token usage")
+	}	// A title needs no reasoning, and 32 tokens leave no room for it.
+	if req := fp.lastReq.Load(); req == nil || !req.NoThinking {
+		t.Fatal("title call must ask for no reasoning (NoThinking)")
 	}
 }
 

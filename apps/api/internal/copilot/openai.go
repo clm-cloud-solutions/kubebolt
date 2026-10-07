@@ -253,11 +253,13 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 	out := &ChatResponse{
 		Text:       text,
 		StopReason: choice.FinishReason,
-		Usage: Usage{
+		// Per call, like the Anthropic adapter: a no-op until a model in the
+		// pricing table carries a long-context card (ModelPricing.Long).
+		Usage: TagLongContext(Usage{
 			InputTokens:     nonCachedInput,
 			OutputTokens:    or.Usage.CompletionTokens,
 			CacheReadTokens: cachedTokens,
-		},
+		}, "openai", model),
 	}
 	for _, tc := range choice.Message.ToolCalls {
 		out.ToolCalls = append(out.ToolCalls, ToolCall{

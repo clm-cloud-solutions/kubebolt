@@ -18,6 +18,7 @@ func TestContextWindowFor(t *testing.T) {
 		// Anthropic 200K default
 		{"anthropic", "claude-sonnet-4-5", 200_000},
 		{"anthropic", "claude-haiku-4-5", 200_000},
+		{"anthropic", "claude-haiku-5-5", 1_000_000},
 		{"anthropic", "", 200_000},
 		// OpenAI
 		{"openai", "gpt-5", 400_000},
@@ -45,8 +46,8 @@ func TestCheapModelFor(t *testing.T) {
 		provider string
 		want     string
 	}{
-		{"anthropic", "claude-haiku-4-5"},
-		{"Anthropic", "claude-haiku-4-5"},
+		{"anthropic", "claude-haiku-5-5"},
+		{"Anthropic", "claude-haiku-5-5"},
 		{"openai", "gpt-4o-mini"},
 		{"OpenAI", "gpt-4o-mini"},
 		{"custom", ""},

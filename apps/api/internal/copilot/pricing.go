@@ -14,6 +14,15 @@ type ModelPricing struct {
 	CachedInput   float64 // $/1M tokens, cache-read
 	CacheCreation float64 // $/1M tokens, cache-write
 	Output        float64 // $/1M tokens
+
+	// LongAbove and Long are a second rate card that applies to a WHOLE call
+	// once its prompt (input + cache reads + cache writes) passes LongAbove
+	// tokens. Claude Haiku 5.5 bills $0.10/$0.50 up to 100K and $0.50/$2.50
+	// beyond; a Kobi conversation crosses that line long before compaction.
+	// TagLongContext marks such calls where they are made; EstimateUSD bills
+	// the marked part at Long. Zero / nil for single-rate models.
+	LongAbove int
+	Long      *ModelPricing
 }
 
 // modelPricing is a best-effort snapshot of public list prices. It exists
@@ -66,6 +75,16 @@ var modelPricing = map[string]ModelPricing{
 	"claude-sonnet-4-5": {Input: 3, CachedInput: 0.30, CacheCreation: 3.75, Output: 15},
 	"claude-sonnet-4":   {Input: 3, CachedInput: 0.30, CacheCreation: 3.75, Output: 15},
 	"claude-haiku-4-5":  {Input: 1, CachedInput: 0.10, CacheCreation: 1.25, Output: 5},
+	// Haiku 5.5 (2026-10-07): two rate cards chosen by prompt length — 10x
+	// cheaper than Haiku 4.5 up to a 100K-token prompt, and still half its
+	// price beyond. Same multipliers on both cards (cache read 0.1x, 5-minute
+	// write 1.25x). Without the Long card every large call would bill at a
+	// fifth of what Anthropic charges.
+	"claude-haiku-5-5": {
+		Input: 0.10, CachedInput: 0.01, CacheCreation: 0.125, Output: 0.50,
+		LongAbove: 100_000,
+		Long:      &ModelPricing{Input: 0.50, CachedInput: 0.05, CacheCreation: 0.625, Output: 2.50},
+	},
 
 	// ─── OpenAI — https://openai.com/api/pricing ────────────────────
 	// CacheCreation = 0 → falls back to Input for the older lines (OpenAI
@@ -179,8 +198,47 @@ func PricingFor(provider, model string) (ModelPricing, bool) {
 
 // EstimateUSD computes an estimated USD cost from a Usage and pricing.
 // Returns 0 when pricing is unknown. Cache-creation defaults to
-// input price if not set on the pricing struct.
+// input price if not set on the pricing struct. The part of the usage that
+// came from long-context calls (Usage.Long*) is billed at p.Long.
 func EstimateUSD(u Usage, p ModelPricing) float64 {
+	if p.Long == nil {
+		return estimateSingleRate(u, p)
+	}
+	long := Usage{
+		InputTokens:         u.LongInputTokens,
+		OutputTokens:        u.LongOutputTokens,
+		CacheCreationTokens: u.LongCacheCreationTokens,
+		CacheReadTokens:     u.LongCacheReadTokens,
+	}
+	short := Usage{
+		InputTokens:         u.InputTokens - long.InputTokens,
+		OutputTokens:        u.OutputTokens - long.OutputTokens,
+		CacheCreationTokens: u.CacheCreationTokens - long.CacheCreationTokens,
+		CacheReadTokens:     u.CacheReadTokens - long.CacheReadTokens,
+	}
+	return estimateSingleRate(short, p) + estimateSingleRate(long, *p.Long)
+}
+
+// TagLongContext marks ONE call's usage as billed at the model's long rate
+// card when that call's prompt passed the threshold. It must run per call,
+// where the prompt size is known: once calls are summed, nothing says which
+// of them were large. No-op for models with a single rate card.
+func TagLongContext(u Usage, provider, model string) Usage {
+	p, ok := PricingFor(provider, model)
+	if !ok || p.Long == nil || p.LongAbove <= 0 {
+		return u
+	}
+	if u.InputTokens+u.CacheReadTokens+u.CacheCreationTokens <= p.LongAbove {
+		return u
+	}
+	u.LongInputTokens = u.InputTokens
+	u.LongOutputTokens = u.OutputTokens
+	u.LongCacheCreationTokens = u.CacheCreationTokens
+	u.LongCacheReadTokens = u.CacheReadTokens
+	return u
+}
+
+func estimateSingleRate(u Usage, p ModelPricing) float64 {
 	cacheCreationPrice := p.CacheCreation
 	if cacheCreationPrice == 0 {
 		cacheCreationPrice = p.Input

@@ -60,11 +60,11 @@ routing through a proxy or gateway.
 | `claude-sonnet-5` | **Default** — balanced depth and speed for live chat | $$ |
 | `claude-opus-5` | Deep reasoning and complex investigations | $$$ |
 | `claude-fable-5` | Hardest, long-horizon investigations; highest cost and latency | $$$$ |
-| `claude-haiku-4-5` | Fast, cheap; short turns, fallback, compaction | $ |
+| `claude-haiku-5-5` | Fastest and cheapest; short turns, fallback, compaction. Prompts over 100K tokens bill at the higher rate card | $ |
 
 Previous-generation models are also in the catalog for accounts pinned to them:
 `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`,
-`claude-sonnet-4-5`, and the date-pinned `claude-opus-4-5-20251101`,
+`claude-sonnet-4-5`, `claude-haiku-4-5`, and the date-pinned `claude-opus-4-5-20251101`,
 `claude-opus-4-1-20250805`, `claude-opus-4-20250514`, `claude-sonnet-4-20250514`.
 
 ```bash
@@ -428,7 +428,7 @@ copilot:
   fallback:
     enabled: true
     provider: anthropic
-    model: claude-haiku-4-5
+    model: claude-haiku-5-5
     existingSecret: anthropic-key
 ```
 
@@ -448,7 +448,7 @@ copilot:
   fallback:
     enabled: true
     provider: anthropic
-    model: claude-haiku-4-5
+    model: claude-haiku-5-5
     existingSecret: anthropic-key
 extraEnv:
   - name: KUBEBOLT_AI_COMPACT_MODEL
@@ -525,12 +525,12 @@ The Makefile sources `.env` and exports the variables to the API process.
 - **o3 / o4-mini** — reasoning models for multi-step plans
 
 ### Speed matters?
-- **Claude Haiku 4.5**
+- **Claude Haiku 5.5**
 - **GPT-5.6 Luna**, **GPT-4o-mini**, **GPT-5.4 nano**
 - **Llama on Groq** — very low latency
 
 ### Cost matters?
-- **Claude Haiku 4.5** — cheapest in the Anthropic catalog
+- **Claude Haiku 5.5** — cheapest in the Anthropic catalog
 - **GPT-5.6 Luna**, **GPT-4o-mini** — cheapest OpenAI options
 - **DeepSeek Chat**, **Qwen Turbo** — very low per-token prices
 - **Self-hosted (Ollama, vLLM)** — pay only for compute
@@ -564,6 +564,8 @@ USD per 1M tokens:
 | Claude Opus 5 / Opus 4.8 / 4.7 / 4.6 | $5 | $25 |
 | Claude Sonnet 5 | $2 | $10 |
 | Claude Sonnet 4.6 / 4.5 | $3 | $15 |
+| Claude Haiku 5.5 — prompt up to 100K tokens | $0.10 | $0.50 |
+| Claude Haiku 5.5 — prompt over 100K tokens (the whole call) | $0.50 | $2.50 |
 | Claude Haiku 4.5 | $1 | $5 |
 | GPT-5.6 Sol | $5 | $30 |
 | GPT-5.6 Terra | $2 | $12 |
@@ -624,7 +626,7 @@ Tool results fill context quickly; a multi-step investigation can reach 20–50K
 window KubeBolt assumes (used for the auto-compact budget) comes from
 `apps/api/internal/copilot/budget.go`:
 
-- Claude Fable 5, Opus 5, Sonnet 5, Opus 4.8 / 4.7 / 4.6, Sonnet 4.6: 1M tokens
+- Claude Fable 5, Opus 5, Sonnet 5, Haiku 5.5, Opus 4.8 / 4.7 / 4.6, Sonnet 4.6: 1M tokens
 - Other Claude models (Sonnet 4.5, Haiku 4.5, ...): 200K tokens
 - GPT-5.6 line: 1.05M tokens
 - Other GPT-5 models: 400K tokens
