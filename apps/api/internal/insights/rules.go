@@ -1,6 +1,7 @@
 package insights
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
@@ -839,7 +841,38 @@ func nodeNotReadyRule() Rule {
 	}
 }
 
-// 9. HPA maxed out (current == max replicas)
+// hpaConditionsAnnotation is where the autoscaling/v1 representation carries
+// the v2 status conditions (ScalingLimited, ScalingActive, AbleToScale).
+const hpaConditionsAnnotation = "autoscaling.alpha.kubernetes.io/conditions"
+
+// hpaWantsMoreThanMax reports whether the HPA computed more replicas than its
+// maximum allows — the condition worth reporting — rather than merely sitting
+// at its maximum. A pinned HPA (min == max) or one that can't read its metrics
+// sits at max with nothing wrong.
+//
+// The source is the controller's own verdict: ScalingLimited=True with reason
+// TooManyReplicas. When the conditions annotation is absent (an older API
+// server), CPU utilization above its target stands in for it.
+func hpaWantsMoreThanMax(hpa *autoscalingv1.HorizontalPodAutoscaler) bool {
+	if raw := hpa.Annotations[hpaConditionsAnnotation]; raw != "" {
+		var conds []struct{ Type, Status, Reason string }
+		if err := json.Unmarshal([]byte(raw), &conds); err == nil {
+			for _, c := range conds {
+				if c.Type == "ScalingLimited" && c.Status == "True" && c.Reason == "TooManyReplicas" {
+					return true
+				}
+			}
+			return false
+		}
+	}
+	target, current := hpa.Spec.TargetCPUUtilizationPercentage, hpa.Status.CurrentCPUUtilizationPercentage
+	return target != nil && current != nil && *current > *target
+}
+
+// 9. HPA maxed out: at its maximum replicas AND wanting more. Being at the
+// maximum alone fired for every HPA pinned with min == max, and for one that
+// couldn't read its metrics at all — and Autopilot auto-triggers on this rule
+// (#64 pattern tests, 2026-10-06: an HPA showing cpu <unknown> fired in 49 s).
 func hpaMaxedOutRule() Rule {
 	return Rule{
 		ID:       "hpa-maxed-out",
@@ -848,7 +881,7 @@ func hpaMaxedOutRule() Rule {
 		Evaluate: func(state *ClusterState) []models.Insight {
 			var insights []models.Insight
 			for _, hpa := range state.HPAs {
-				if hpa.Status.CurrentReplicas >= hpa.Spec.MaxReplicas && hpa.Status.CurrentReplicas > 0 {
+				if hpa.Status.CurrentReplicas >= hpa.Spec.MaxReplicas && hpa.Status.CurrentReplicas > 0 && hpaWantsMoreThanMax(hpa) {
 					insights = append(insights, newInsight(
 						"warning",
 						fmt.Sprintf("HPA/%s/%s", hpa.Namespace, hpa.Name),

@@ -213,9 +213,11 @@ func invariantFixtures() map[string]rulePair {
 
 	hpa := func(current int32) *autoscalingv1.HorizontalPodAutoscaler {
 		return &autoscalingv1.HorizontalPodAutoscaler{
-			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "api"},
-			Spec:       autoscalingv1.HorizontalPodAutoscalerSpec{MaxReplicas: 10},
-			Status:     autoscalingv1.HorizontalPodAutoscalerStatus{CurrentReplicas: current},
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "api", Annotations: map[string]string{
+				hpaConditionsAnnotation: `[{"type":"ScalingLimited","status":"True","reason":"TooManyReplicas"}]`,
+			}},
+			Spec:   autoscalingv1.HorizontalPodAutoscalerSpec{MaxReplicas: 10},
+			Status: autoscalingv1.HorizontalPodAutoscalerStatus{CurrentReplicas: current},
 		}
 	}
 

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -861,5 +862,39 @@ func TestEngine_EvaluateIntegratesRules(t *testing.T) {
 	}
 	if !found {
 		t.Error("expected crash-loop insight missing")
+	}
+}
+
+// #64 pattern tests, 2026-10-06: an HPA pinned at min == max whose metrics were
+// <unknown> fired "at maximum replicas" in 49 s and cost Autopilot an
+// investigation. At the maximum is not a problem; wanting more than it is.
+func TestHPAMaxedOutRule_FiresOnlyWhenItWantsMore(t *testing.T) {
+	int32p := func(v int32) *int32 { return &v }
+	hpa := func(conditions string, target, current *int32) *autoscalingv1.HorizontalPodAutoscaler {
+		h := &autoscalingv1.HorizontalPodAutoscaler{
+			ObjectMeta: metav1.ObjectMeta{Namespace: "prod", Name: "api"},
+			Spec:       autoscalingv1.HorizontalPodAutoscalerSpec{MinReplicas: int32p(1), MaxReplicas: 1, TargetCPUUtilizationPercentage: target},
+			Status:     autoscalingv1.HorizontalPodAutoscalerStatus{CurrentReplicas: 1, CurrentCPUUtilizationPercentage: current},
+		}
+		if conditions != "" {
+			h.Annotations = map[string]string{hpaConditionsAnnotation: conditions}
+		}
+		return h
+	}
+	cases := []struct {
+		name string
+		hpa  *autoscalingv1.HorizontalPodAutoscaler
+		want int
+	}{
+		{"pinned, metrics unknown (the lab shape)", hpa(`[{"type":"ScalingActive","status":"False","reason":"FailedGetResourceMetric"}]`, int32p(50), nil), 0},
+		{"pinned, under target", hpa(`[{"type":"ScalingLimited","status":"False","reason":"DesiredWithinRange"}]`, int32p(50), int32p(20)), 0},
+		{"controller says it wants more", hpa(`[{"type":"ScalingLimited","status":"True","reason":"TooManyReplicas"}]`, int32p(50), int32p(90)), 1},
+		{"no conditions annotation, CPU over target", hpa("", int32p(50), int32p(90)), 1},
+		{"no conditions annotation, CPU under target", hpa("", int32p(50), int32p(30)), 0},
+	}
+	for _, c := range cases {
+		if got := hpaMaxedOutRule().Evaluate(&ClusterState{HPAs: []*autoscalingv1.HorizontalPodAutoscaler{c.hpa}}); len(got) != c.want {
+			t.Errorf("%s: %d insight(s), want %d", c.name, len(got), c.want)
+		}
 	}
 }
