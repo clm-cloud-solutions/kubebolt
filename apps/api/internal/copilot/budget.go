@@ -10,12 +10,13 @@ func ContextWindowFor(provider, model string) int {
 	m := strings.ToLower(model)
 	switch strings.ToLower(provider) {
 	case "anthropic":
-		// 1M-token models: the Claude 5 family (Fable 5, Opus 5, Sonnet 5) and
-		// Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6. Everything else in the 4.x family
-		// (Sonnet 4.5, Haiku 4.5) is 200K.
+		// 1M-token models: the Claude 5 family (Fable 5, Opus 5, Sonnet 5,
+		// Haiku 5.5) and Opus 4.8 / 4.7 / 4.6 / Sonnet 4.6. Everything else in
+		// the 4.x family (Sonnet 4.5, Haiku 4.5) is 200K.
 		if strings.Contains(m, "fable-5") ||
 			strings.Contains(m, "opus-5") ||
 			strings.Contains(m, "sonnet-5") ||
+			strings.Contains(m, "haiku-5") ||
 			strings.Contains(m, "opus-4-8") ||
 			strings.Contains(m, "opus-4-7") ||
 			strings.Contains(m, "opus-4-6") ||
@@ -44,11 +45,14 @@ func ContextWindowFor(provider, model string) int {
 // CheapModelFor returns the cheapest model of a given provider suitable for
 // summarization. Callers use this when KUBEBOLT_AI_COMPACT_MODEL is unset.
 // The chosen models trade capability for price and latency — compaction
-// doesn't need reasoning, just faithful summarization.
+// doesn't need reasoning, just faithful summarization, so its callers (title,
+// compaction) also send ChatRequest.NoThinking: Haiku 5.5 reasons by default.
+// Haiku 5.5 is a tenth of Haiku 4.5's price up to a 100K-token prompt and half
+// of it beyond (two rate cards, ModelPricing.Long).
 func CheapModelFor(provider string) string {
 	switch strings.ToLower(provider) {
 	case "anthropic":
-		return "claude-haiku-4-5"
+		return "claude-haiku-5-5"
 	case "openai":
 		return "gpt-4o-mini"
 	}

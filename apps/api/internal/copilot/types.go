@@ -68,6 +68,17 @@ type Usage struct {
 	OutputTokens        int `json:"outputTokens"`
 	CacheCreationTokens int `json:"cacheCreationTokens,omitempty"`
 	CacheReadTokens     int `json:"cacheReadTokens,omitempty"`
+
+	// The part of the four totals above that came from calls billed at the
+	// model's long-context rate card (ModelPricing.Long): a call whose prompt
+	// passed ModelPricing.LongAbove is billed at that rate WHOLE. Which calls
+	// were large is only known per call, so TagLongContext fills these where
+	// the call is made and Add carries them through the sums. Zero for every
+	// model with a single rate card, and for records written before them.
+	LongInputTokens         int `json:"longInputTokens,omitempty"`
+	LongOutputTokens        int `json:"longOutputTokens,omitempty"`
+	LongCacheCreationTokens int `json:"longCacheCreationTokens,omitempty"`
+	LongCacheReadTokens     int `json:"longCacheReadTokens,omitempty"`
 }
 
 // Total returns InputTokens + OutputTokens.
@@ -79,4 +90,8 @@ func (u *Usage) Add(other Usage) {
 	u.OutputTokens += other.OutputTokens
 	u.CacheCreationTokens += other.CacheCreationTokens
 	u.CacheReadTokens += other.CacheReadTokens
+	u.LongInputTokens += other.LongInputTokens
+	u.LongOutputTokens += other.LongOutputTokens
+	u.LongCacheCreationTokens += other.LongCacheCreationTokens
+	u.LongCacheReadTokens += other.LongCacheReadTokens
 }

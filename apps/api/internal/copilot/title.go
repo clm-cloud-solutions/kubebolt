@@ -75,6 +75,8 @@ func GenerateTitle(ctx context.Context, provider config.ProviderConfig, firstUse
 		Messages:  []Message{{Role: RoleUser, Content: content}},
 		Provider:  p,
 		MaxTokens: 32,
+		// A title needs no reasoning, and 32 tokens leave no room for it.
+		NoThinking: true,
 	})
 	if err != nil {
 		return nil, err

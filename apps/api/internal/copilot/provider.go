@@ -37,6 +37,12 @@ type ChatRequest struct {
 	Tools     []ToolDefinition
 	Provider  config.ProviderConfig
 	MaxTokens int
+	// NoThinking asks for no reasoning on a call that does not need it — a
+	// conversation title, a compaction summary. Honoured only where the
+	// model thinks by default AND accepts turning it off (see
+	// anthropicThinkingOff); ignored everywhere else, so it can never turn
+	// into a 400.
+	NoThinking bool
 }
 
 // ChatResponse is the result of a single Chat call. Either Text is set

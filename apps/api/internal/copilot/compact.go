@@ -127,6 +127,9 @@ func Compact(ctx context.Context, msgs []Message, opts CompactOptions) (*Compact
 		Messages:  []Message{userMsg},
 		Provider:  compactProvider,
 		MaxTokens: 1024,
+		// Faithful summarization, not reasoning — and thinking would spend
+		// the 1024-token budget the summary itself needs.
+		NoThinking: true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("compaction LLM call failed: %w", err)

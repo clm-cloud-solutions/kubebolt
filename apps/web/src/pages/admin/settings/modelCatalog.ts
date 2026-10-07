@@ -40,8 +40,8 @@ export interface ModelOption {
    *  "recent", "legacy" — which stopped being rankable the moment two rungs
    *  wore the same one ("GPT-5 (previous)" above "GPT-4o (previous)", with
    *  an unqualified "GPT-4.1" in between). It also forced Haiku 4.5 into
-   *  the "Claude 5" group: it is the newest Haiku Anthropic ships, but it
-   *  is a 4.x, and a recency label made those two facts contradict. */
+   *  the "Claude 5" group while it was the newest Haiku: a 4.x under a
+   *  recency label made those two facts contradict. */
   group?: string
 }
 
@@ -74,13 +74,19 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
     description: "Anthropic's most capable model, for the hardest reasoning and long-horizon work. Highest cost and latency — reserve for the deepest investigations.",
     group: 'Claude 5 (current)',
   },
+  {
+    id: 'claude-haiku-5-5',
+    label: 'Claude Haiku 5.5',
+    description: 'Fastest and cheapest — a tenth of Haiku 4.5\'s price, and it reasons. Good for high-volume diagnostics and short turns; less depth than Sonnet on long tool chains. Prompts over 100K tokens bill at five times the base rate.',
+    group: 'Claude 5 (current)',
+  },
   // ─── Claude 4 ────────────────────────────────────────────────────
   // Still served by Anthropic; useful for accounts pinned to a version,
   // or for cost/behaviour comparisons against the Claude 5 line.
   {
     id: 'claude-haiku-4-5',
     label: 'Claude Haiku 4.5',
-    description: 'Fast and cheap — the newest Haiku there is (Anthropic has not shipped a Haiku 5), so it sits here by version number, not because it was superseded. Good for high-volume diagnostics and short turns. Less depth than Sonnet on tricky tool chains.',
+    description: 'Previous Haiku. Superseded by Haiku 5.5, which costs a tenth as much; kept for accounts pinned to it.',
     group: 'Claude 4',
   },
   {
@@ -456,6 +462,14 @@ export const OPENAI_COMPATIBLE_MODELS: ModelOption[] = [
 export const MODELS_BY_PROVIDER: Record<ProviderID, ModelOption[]> = {
   anthropic: ANTHROPIC_MODELS,
   openai: OPENAI_COMPATIBLE_MODELS,
+}
+
+// What a blank compaction model resolves to, per provider. MIRROR of
+// CheapModelFor in apps/api/internal/copilot/budget.go: the backend picks it,
+// the picker only names it so «Automatic» says which model will run.
+export const CHEAP_MODEL_BY_PROVIDER: Record<ProviderID, string> = {
+  anthropic: 'claude-haiku-5-5',
+  openai: 'gpt-4o-mini',
 }
 
 // Custom sentinel — when picked, the form reveals a free-text input so

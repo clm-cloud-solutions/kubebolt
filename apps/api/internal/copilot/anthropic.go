@@ -131,6 +131,21 @@ type anthropicRequest struct {
 	System    any                `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Thinking  *anthropicThinking `json:"thinking,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type string `json:"type"` // "disabled"
+}
+
+// anthropicThinkingOff reports whether a request may send thinking
+// {"type":"disabled"} for this model. It is an allow-list on purpose: Claude
+// Haiku 5.5 thinks by default and accepts disabling it (verified against the
+// live API 2026-10-07), while Opus 5.5, Sonnet 5.5 and Fable reject the same
+// body with a 400 — a guess here fails the call. Models that do not think by
+// default have nothing to turn off.
+func anthropicThinkingOff(model string) bool {
+	return strings.HasPrefix(strings.ToLower(model), "claude-haiku-5-5")
 }
 
 type anthropicUsage struct {
@@ -173,6 +188,9 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		MaxTokens: req.MaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
 		Tools:     toAnthropicTools(req.Tools),
+	}
+	if req.NoThinking && anthropicThinkingOff(model) {
+		body.Thinking = &anthropicThinking{Type: "disabled"}
 	}
 	if req.System != "" {
 		body.System = []anthropicSystemBlock{{
@@ -253,15 +271,22 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	// Extract text and tool calls from the content blocks
+	// Extract text and tool calls from the content blocks. A `thinking` block
+	// (models that reason by default, e.g. Haiku 5.5) is skipped like any
+	// other non-text block: it is not sent back on the next round, which the
+	// API accepts, so a tool loop keeps working at the cost of that round's
+	// reasoning.
 	out := &ChatResponse{
 		StopReason: ar.StopReason,
-		Usage: Usage{
+		// Tagged here, per call, because this is the only place that knows
+		// how large THIS call's prompt was (two-rate-card models, see
+		// ModelPricing.Long).
+		Usage: TagLongContext(Usage{
 			InputTokens:         ar.Usage.InputTokens,
 			OutputTokens:        ar.Usage.OutputTokens,
 			CacheCreationTokens: ar.Usage.CacheCreationInputTokens,
 			CacheReadTokens:     ar.Usage.CacheReadInputTokens,
-		},
+		}, "anthropic", model),
 	}
 	for _, block := range ar.Content {
 		switch block.Type {
