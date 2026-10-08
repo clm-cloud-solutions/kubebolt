@@ -55,7 +55,10 @@ var modelPricing = map[string]ModelPricing{
 	// tier; Sonnet 5 is $2/$10 (Anthropic made the launch rate PERMANENT —
 	// it no longer reverts to $3/$15 after the 2026-08-31 intro window);
 	// Fable 5 is the premium tier at $10/$50.
-	"claude-fable-5": {Input: 10, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
+	// Fable 5.1 keeps Fable 5's rates except cache reads: $0.25 (0.025x), a
+	// quarter of Fable 5's $1. Same prefix trap as Sonnet 5.5 and Opus 5.5.
+	"claude-fable-5-1": {Input: 10, CachedInput: 0.25, CacheCreation: 12.50, Output: 50},
+	"claude-fable-5":   {Input: 10, CachedInput: 1.00, CacheCreation: 12.50, Output: 50},
 	// Opus 5.5 (2026-09-22) undercuts Opus 5 on every bucket, and its cache
 	// read is 0.05x base input — not the 0.1x that held for every earlier
 	// Claude. This entry MUST exist: without it "claude-opus-5-5" prefix-
@@ -64,7 +67,12 @@ var modelPricing = map[string]ModelPricing{
 	"claude-opus-5-5": {Input: 4, CachedInput: 0.20, CacheCreation: 5.00, Output: 20},
 	"claude-opus-5":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-8": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
-	"claude-sonnet-5": {Input: 2, CachedInput: 0.20, CacheCreation: 2.50, Output: 10},
+	// Sonnet 5.5 (2026-10-07) keeps Sonnet 5's input/output and write prices
+	// but reads cache at 0.05x — $0.10, half of Sonnet 5's $0.20. This entry
+	// MUST exist: without it "claude-sonnet-5-5" prefix-matches
+	// "claude-sonnet-5" and bills every cache read at twice its price.
+	"claude-sonnet-5-5": {Input: 2, CachedInput: 0.10, CacheCreation: 2.50, Output: 10},
+	"claude-sonnet-5":   {Input: 2, CachedInput: 0.20, CacheCreation: 2.50, Output: 10},
 	"claude-opus-4-7": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-6": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	"claude-opus-4-5": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
