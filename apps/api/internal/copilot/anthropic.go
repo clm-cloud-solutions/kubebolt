@@ -135,17 +135,27 @@ type anthropicRequest struct {
 }
 
 type anthropicThinking struct {
-	Type string `json:"type"` // "disabled"
+	Type string `json:"type"` // "disabled" | "between_tools" — see anthropicThinkingOff
 }
 
-// anthropicThinkingOff reports whether a request may send thinking
-// {"type":"disabled"} for this model. It is an allow-list on purpose: Claude
-// Haiku 5.5 thinks by default and accepts disabling it (verified against the
-// live API 2026-10-07), while Opus 5.5, Sonnet 5.5 and Fable reject the same
-// body with a 400 — a guess here fails the call. Models that do not think by
-// default have nothing to turn off.
-func anthropicThinkingOff(model string) bool {
-	return strings.HasPrefix(strings.ToLower(model), "claude-haiku-5-5")
+// anthropicThinkingOff is the thinking type that turns reasoning off for this
+// model, or "" when there is none to send. Per model on purpose, because the
+// same body is a 400 elsewhere (verified against the live API 2026-10-07/08):
+//
+//	Claude Haiku 5.5   thinks by default, accepts {"type":"disabled"}
+//	Claude Sonnet 5.5  rejects "disabled"; its lowest setting is "between_tools"
+//	Opus 5.5, Fable    accept neither — nothing is sent, they keep reasoning
+//
+// Models that do not think by default have nothing to turn off.
+func anthropicThinkingOff(model string) string {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "claude-haiku-5-5"):
+		return "disabled"
+	case strings.HasPrefix(m, "claude-sonnet-5-5"):
+		return "between_tools"
+	}
+	return ""
 }
 
 type anthropicUsage struct {
@@ -194,8 +204,10 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		Messages:  toAnthropicMessages(req.Messages),
 		Tools:     toAnthropicTools(req.Tools),
 	}
-	if req.NoThinking && anthropicThinkingOff(model) {
-		body.Thinking = &anthropicThinking{Type: "disabled"}
+	if req.NoThinking {
+		if t := anthropicThinkingOff(model); t != "" {
+			body.Thinking = &anthropicThinking{Type: t}
+		}
 	}
 	if req.System != "" {
 		body.System = []anthropicSystemBlock{{

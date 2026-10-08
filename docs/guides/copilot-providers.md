@@ -58,6 +58,7 @@ routing through a proxy or gateway.
 | Model ID | Best for | Cost |
 |---|---|---|
 | `claude-sonnet-5` | **Default** — balanced depth and speed for live chat | $$ |
+| `claude-sonnet-5-5` | Sonnet 5's successor: same input/output price, half the cache-read price; faster and more reliable chaining tools | $$ |
 | `claude-opus-5` | Deep reasoning and complex investigations | $$$ |
 | `claude-fable-5` | Hardest, long-horizon investigations; highest cost and latency | $$$$ |
 | `claude-haiku-5-5` | Fastest and cheapest; short turns, fallback, compaction. Prompts over 100K tokens bill at the higher rate card | $ |
@@ -562,7 +563,7 @@ USD per 1M tokens:
 |---|---|---|
 | Claude Fable 5 | $10 | $50 |
 | Claude Opus 5 / Opus 4.8 / 4.7 / 4.6 | $5 | $25 |
-| Claude Sonnet 5 | $2 | $10 |
+| Claude Sonnet 5.5 / Sonnet 5 | $2 | $10 |
 | Claude Sonnet 4.6 / 4.5 | $3 | $15 |
 | Claude Haiku 5.5 — prompt up to 100K tokens | $0.10 | $0.50 |
 | Claude Haiku 5.5 — prompt over 100K tokens (the whole call) | $0.50 | $2.50 |

@@ -40,29 +40,34 @@ func anthropicCapture(t *testing.T, req ChatRequest, reply string) (map[string]a
 const okReply = `{"id":"m","type":"message","role":"assistant","stop_reason":"end_turn",
 "content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":10,"output_tokens":2}}`
 
-// Haiku 5.5 reasons by default. A call that does not need it asks for none —
-// but only where the model accepts {"type":"disabled"}: Opus 5.5, Sonnet 5.5
-// and Fable reject that body with a 400, so for them nothing is sent.
+// A call that does not need reasoning asks for none, in the shape each model
+// accepts: Haiku 5.5 takes "disabled", Sonnet 5.5 rejects it and takes
+// "between_tools", Opus 5.5 takes neither — so it gets nothing, as does any
+// model that does not reason by default.
 func TestAnthropic_NoThinkingOnlyWhereAccepted(t *testing.T) {
 	cases := []struct {
 		model      string
 		noThinking bool
-		want       bool // thinking:{type:disabled} in the body
+		want       string // thinking.type in the body; "" = no thinking field
 	}{
-		{"claude-haiku-5-5", true, true},
-		{"claude-haiku-5-5", false, false},
-		{"claude-sonnet-5-5", true, false},
-		{"claude-opus-5-5", true, false},
-		{"claude-haiku-4-5", true, false},
+		{"claude-haiku-5-5", true, "disabled"},
+		{"claude-haiku-5-5", false, ""},
+		{"claude-sonnet-5-5", true, "between_tools"},
+		{"claude-sonnet-5-5", false, ""},
+		{"claude-opus-5-5", true, ""},
+		{"claude-haiku-4-5", true, ""},
 	}
 	for _, c := range cases {
 		body, _ := anthropicCapture(t, ChatRequest{
 			Provider:   config.ProviderConfig{Model: c.model},
 			NoThinking: c.noThinking,
 		}, okReply)
-		th, has := body["thinking"].(map[string]any)
-		if has != c.want || (has && th["type"] != "disabled") {
-			t.Errorf("%s noThinking=%v: thinking=%v, want disabled=%v", c.model, c.noThinking, body["thinking"], c.want)
+		got := ""
+		if th, ok := body["thinking"].(map[string]any); ok {
+			got, _ = th["type"].(string)
+		}
+		if got != c.want {
+			t.Errorf("%s noThinking=%v: thinking.type=%q, want %q", c.model, c.noThinking, got, c.want)
 		}
 	}
 }

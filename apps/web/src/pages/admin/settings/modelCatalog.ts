@@ -63,6 +63,12 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
     group: 'Claude 5 (current)',
   },
   {
+    id: 'claude-sonnet-5-5',
+    label: 'Claude Sonnet 5.5',
+    description: 'Sonnet 5\'s successor at the same input/output price and half the cache-read price — faster, and more reliable chaining tools. Fast enough for live chat, deep enough for most operator tasks.',
+    group: 'Claude 5 (current)',
+  },
+  {
     id: 'claude-sonnet-5',
     label: 'Claude Sonnet 5',
     description: 'Balanced default — fast enough for live chat, deep enough for most operator tasks. Recommended for production.',

@@ -309,3 +309,39 @@ func TestEstimateUSD_OneHourCacheWrites(t *testing.T) {
 		t.Errorf("haiku-5-5 long call: EstimateUSD = %.6f, want %.6f", got, wantBig)
 	}
 }
+
+// The 5.5 / 5.1 revisions read cache cheaper than their parent (Sonnet 5.5
+// and Fable 5.1 keep the parent's input and output; Opus 5.5 lowers those
+// too) — and each id prefix-matches its parent ("claude-sonnet-5-5" starts
+// with "claude-sonnet-5"). Without its own entry a model silently bills its
+// largest bucket in an agentic loop at the parent's rate.
+// Prices from the official pricing page, 2026-10-08.
+func TestPricingFor_CacheReadsOfRevisionsDoNotCollapse(t *testing.T) {
+	cases := []struct {
+		model    string
+		cacheRd  float64
+		inherits string
+	}{
+		{"claude-sonnet-5-5", 0.10, "claude-sonnet-5"},
+		{"claude-sonnet-5", 0.20, ""},
+		{"claude-opus-5-5", 0.20, ""},
+		{"claude-opus-5", 0.50, ""},
+		{"claude-fable-5-1", 0.25, "claude-fable-5"},
+		{"claude-fable-5", 1.00, ""},
+	}
+	for _, c := range cases {
+		p, ok := PricingFor("anthropic", c.model)
+		if !ok {
+			t.Fatalf("%s must be priced", c.model)
+		}
+		if p.CachedInput != c.cacheRd {
+			t.Errorf("%s cache read = $%.2f, want $%.2f", c.model, p.CachedInput, c.cacheRd)
+		}
+		if c.inherits != "" {
+			parent, _ := PricingFor("anthropic", c.inherits)
+			if p.Input != parent.Input || p.Output != parent.Output {
+				t.Errorf("%s input/output should match %s", c.model, c.inherits)
+			}
+		}
+	}
+}
