@@ -335,6 +335,19 @@ metrics:
     # gRPC + vmagent HTTP).
     authMode: disabled
 
+  # Alert rules on KubeBolt's own health (files/kubebolt-alerts.yaml): the
+  # metrics store unreachable, API server errors and latency, late background
+  # jobs, failing calls to VictoriaMetrics, dropped live updates, restarts,
+  # and Kobi (failures, provider errors, fallback, refusals, cut answers,
+  # latency, answer quality, spend). Rendered as a prometheus-operator
+  # PrometheusRule for a Prometheus that scrapes the API's /metrics. Off by
+  # default: it needs the monitoring.coreos.com CRDs. `labels` is what your
+  # Prometheus' ruleSelector matches (kube-prometheus-stack: release: <its
+  # release name>).
+  alertRules:
+    enabled: false
+    labels: {}
+
 # Number of replicas
 replicaCount: 1
 

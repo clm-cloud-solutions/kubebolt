@@ -1,0 +1,225 @@
+# Unit tests for deploy/helm/kubebolt/files/kubebolt-alerts.yaml:
+#   promtool test rules deploy/prometheus/kubebolt-alerts.test.yaml
+# (make ci-local and CI run it in the prom/prometheus image). Each case is a
+# scraped or a pushed shape of the API's own series; the expected annotations
+# are the rules' own.
+
+rule_files:
+- ../helm/kubebolt/files/kubebolt-alerts.yaml
+evaluation_interval: 1m
+tests:
+- name: 'the store is unreachable: the root fires and holds a late job'
+  interval: 1m
+  input_series:
+  - series: kubebolt_job_interval_seconds{name="selfwrite", instance="api:8080", job="kubebolt"}
+    values: 30x40
+  - series: kubebolt_job_last_success_timestamp_seconds{name="selfwrite", instance="api:8080", job="kubebolt"}
+    values: 60+60x10 660x30
+  - series: kubebolt_job_interval_seconds{name="series_cap", instance="api:8080", job="kubebolt"}
+    values: 60x40
+  - series: kubebolt_job_last_success_timestamp_seconds{name="series_cap", instance="api:8080", job="kubebolt"}
+    values: 60+60x10 660x30
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: KubeBoltMetricsStoreUnreachable
+    exp_alerts: []
+  - eval_time: 20m
+    alertname: KubeBoltMetricsStoreUnreachable
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: KubeBolt cannot write its own metrics to VictoriaMetrics
+        description: 'The API''s push of its own series to VictoriaMetrics is late, or it failed at least twice in the last 10 minutes. VictoriaMetrics is down or unreachable: dashboards, Kobi''s metric
+          tools and both Health tabs are empty or stale. The rules that would only repeat this are held while it fires.'
+  - eval_time: 20m
+    alertname: KubeBoltJobLate
+    exp_alerts: []
+- name: failed pushes alone are the root too, and hold failing VictoriaMetrics calls
+  interval: 1m
+  input_series:
+  - series: kubebolt_vm_requests_total{caller="selfwrite", op="import", result="timeout", instance="api:8080", job="kubebolt"}
+    values: 0+1x20
+  - series: kubebolt_vm_requests_total{caller="dashboards", op="query", result="timeout", instance="api:8080", job="kubebolt"}
+    values: 0+5x20
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: KubeBoltMetricsStoreUnreachable
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: KubeBolt cannot write its own metrics to VictoriaMetrics
+        description: 'The API''s push of its own series to VictoriaMetrics is late, or it failed at least twice in the last 10 minutes. VictoriaMetrics is down or unreachable: dashboards, Kobi''s metric
+          tools and both Health tabs are empty or stale. The rules that would only repeat this are held while it fires.'
+  - eval_time: 15m
+    alertname: KubeBoltVictoriaMetricsCallsFailing
+    exp_alerts: []
+- name: a job that stopped succeeding, and one that never has, while the push is healthy
+  interval: 1m
+  input_series:
+  - series: process_start_time_seconds{instance="api:8080", job="kubebolt"}
+    values: '0x40'
+  - series: kubebolt_job_interval_seconds{name="selfwrite", instance="api:8080", job="kubebolt"}
+    values: 30x40
+  - series: kubebolt_job_last_success_timestamp_seconds{name="selfwrite", instance="api:8080", job="kubebolt"}
+    values: 60+60x40
+  - series: kubebolt_job_interval_seconds{name="retention", instance="api:8080", job="kubebolt"}
+    values: 60x40
+  - series: kubebolt_job_last_success_timestamp_seconds{name="retention", instance="api:8080", job="kubebolt"}
+    values: 60x40
+  - series: kubebolt_job_interval_seconds{name="series_cap", instance="api:8080", job="kubebolt"}
+    values: 30x40
+  - series: kubebolt_job_interval_seconds{name="findings_sweep", instance="api:8080", job="kubebolt"}
+    values: 600x40
+  alert_rule_test:
+  - eval_time: 2m
+    alertname: KubeBoltJobLate
+    exp_alerts: []
+  - eval_time: 20m
+    alertname: KubeBoltJobLate
+    exp_alerts:
+    - exp_labels:
+        name: retention
+        severity: warning
+      exp_annotations:
+        summary: The background job retention has stopped succeeding
+        description: The job has not finished without error for three of its intervals (two minutes at least), or never has since the API started three intervals ago. Administration › System › Health ›
+          Background jobs says whether its runs are failing or it stopped running.
+    - exp_labels:
+        name: series_cap
+        severity: warning
+      exp_annotations:
+        summary: The background job series_cap has stopped succeeding
+        description: The job has not finished without error for three of its intervals (two minutes at least), or never has since the API started three intervals ago. Administration › System › Health ›
+          Background jobs says whether its runs are failing or it stopped running.
+  - eval_time: 20m
+    alertname: KubeBoltMetricsStoreUnreachable
+    exp_alerts: []
+- name: server errors on one route group; 503 does not count
+  interval: 1m
+  input_series:
+  - series: kubebolt_http_requests_total{group="resources", code="5xx", instance="api:8080", job="kubebolt"}
+    values: 0+3x30
+  - series: kubebolt_http_requests_total{group="resources", code="2xx", instance="api:8080", job="kubebolt"}
+    values: 0+20x30
+  - series: kubebolt_http_requests_total{group="metrics", code="503", instance="api:8080", job="kubebolt"}
+    values: 0+30x30
+  - series: kubebolt_http_requests_total{group="metrics", code="2xx", instance="api:8080", job="kubebolt"}
+    values: 0+1x30
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: KubeBoltAPIServerErrors
+    exp_alerts:
+    - exp_labels:
+        group: resources
+        severity: warning
+      exp_annotations:
+        summary: The API is answering resources with server errors
+        description: More than 5% of the route group's requests ended in 5xx over the last 10 minutes (at least 10). 503 — a cluster unreachable or a feature not configured — is not counted.
+- name: 'a replica restarting, scraped: its process start time keeps changing'
+  interval: 1m
+  input_series:
+  - series: process_start_time_seconds{instance="api:8080", job="kubebolt"}
+    values: 0 0 100 100 200 200 300 300 400 400 500 500 600 600 700 700
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="api:8080", job="kubebolt"}
+    values: 1x15
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: KubeBoltAPIRestarting
+    exp_alerts:
+    - exp_labels:
+        instance: api:8080
+        severity: critical
+      exp_annotations:
+        summary: The API replica api:8080 keeps restarting
+        description: 'More than 5 API processes ran on the same replica in the last hour: a crash loop or repeated OOM kills.'
+- name: 'a replica restarting, pushed: one run_id per process'
+  interval: 1m
+  input_series:
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="kubebolt-api-0", job="kubebolt-api", run_id="r0"}
+    values: 1x10
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="kubebolt-api-0", job="kubebolt-api", run_id="r1"}
+    values: 1x10
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="kubebolt-api-0", job="kubebolt-api", run_id="r2"}
+    values: 1x10
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="kubebolt-api-0", job="kubebolt-api", run_id="r3"}
+    values: 1x10
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="kubebolt-api-0", job="kubebolt-api", run_id="r4"}
+    values: 1x10
+  - series: kubebolt_build_info{edition="oss", version="v2.4.0", instance="kubebolt-api-0", job="kubebolt-api", run_id="r5"}
+    values: 1x10
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: KubeBoltAPIRestarting
+    exp_alerts:
+    - exp_labels:
+        instance: kubebolt-api-0
+        severity: critical
+      exp_annotations:
+        summary: The API replica kubebolt-api-0 keeps restarting
+        description: 'More than 5 API processes ran on the same replica in the last hour: a crash loop or repeated OOM kills.'
+- name: live updates dropped for everyone
+  interval: 1m
+  input_series:
+  - series: kubebolt_ws_dropped_total{reason="queue_full", instance="api:8080", job="kubebolt"}
+    values: 0 0 0 5 5 5 5
+  - series: kubebolt_ws_dropped_total{reason="slow_client", instance="api:8080", job="kubebolt"}
+    values: 0 0 9 9 9 9 9
+  alert_rule_test:
+  - eval_time: 6m
+    alertname: KubeBoltLiveUpdatesDropped
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: Live updates are being dropped
+        description: 'The WebSocket hub''s queue filled up in the last 10 minutes and events were dropped for every browser: lists stay stale until their next poll.'
+- name: Kobi failing, and on its fallback
+  interval: 1m
+  input_series:
+  - series: kubebolt_kobi_copilot_sessions_total{outcome="error", tenant_id="", cluster_id="c1", model="m", trigger="manual", instance="api:8080", job="kubebolt"}
+    values: 0+1x20
+  - series: kubebolt_kobi_copilot_sessions_total{outcome="done", tenant_id="", cluster_id="c1", model="m", trigger="manual", instance="api:8080", job="kubebolt"}
+    values: 0+5x20
+  - series: kubebolt_kobi_copilot_fallback_total{from_model="a", to_model="b", rescued="true", instance="api:8080", job="kubebolt"}
+    values: 0+1x20
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: KobiTurnsFailing
+    exp_alerts:
+    - exp_labels:
+        severity: critical
+      exp_annotations:
+        summary: Kobi is failing
+        description: More than 5% of Kobi's chat turns ended in error over the last 15 minutes (at least 2). Administration › AI › Health shows the provider errors behind them.
+  - eval_time: 15m
+    alertname: KobiOnFallback
+    exp_alerts:
+    - exp_labels:
+        from_model: a
+        to_model: b
+        severity: warning
+      exp_annotations:
+        summary: Kobi is running on its fallback model b
+        description: Calls to the primary model failed over to the fallback at least 3 times in 10 minutes.
+- name: 'answer quality: more than 20% 👎 with at least 20 ratings'
+  interval: 1m
+  input_series:
+  - series: kubebolt_kobi_copilot_feedback_total{rating="up", reason="none", tenant_id="", cluster_id="c1", instance="api:8080", job="kubebolt"}
+    values: 0+1x60
+  - series: kubebolt_kobi_copilot_feedback_total{rating="down", reason="incorrect", tenant_id="", cluster_id="c1", instance="api:8080", job="kubebolt"}
+    values: 0+1x60
+  alert_rule_test:
+  - eval_time: 5m
+    alertname: KobiAnswerQuality
+    exp_alerts: []
+  - eval_time: 60m
+    alertname: KobiAnswerQuality
+    exp_alerts:
+    - exp_labels:
+        severity: warning
+      exp_annotations:
+        summary: Users rate Kobi's answers poorly
+        description: More than 20% of the ratings users gave Kobi's answers over the last 24 hours were 👎 (at least 20 ratings). Administration › AI › Health splits them by reason; each 👎's comment stays
+          with its conversation.

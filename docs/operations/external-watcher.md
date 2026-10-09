@@ -91,14 +91,16 @@ count(kubebolt_build_info{env="prod"}) or vector(0)
   that is the outage).
 - Contact point: the platform Slack channel, or on-call.
 
-One rule per `env` you want watched. For the rest — server errors, latency,
-late jobs, failing calls to VictoriaMetrics, Kobi's provider and answer
-quality — load `deploy/prometheus/kubebolt-alerts.yaml` into the Prometheus
-or Grafana that receives these series: this one exists for when the API
-itself is gone.
-
-Optional, also from outside: replicas restarting —
-`count by (instance) (count by (instance, run_id) (last_over_time(kubebolt_build_info{env="prod"}[1h]))) > 5`.
+One rule per `env` you want watched: this one exists for when the API itself
+is gone. For the rest — the metrics store unreachable, server errors and
+latency, late jobs, failing calls to VictoriaMetrics, restarts — load the
+rules in `deploy/helm/kubebolt/files/kubebolt-alerts.yaml` (group
+`kubebolt-api`) into the ruler of the stack that receives these series — on
+Grafana Cloud, `mimirtool rules load` with the stack's Prometheus URL,
+instance id and a token with `rules:write`. The `kubebolt-kobi` group needs a
+Prometheus that scrapes the API's `/metrics`, because the push leaves Kobi
+out; with prometheus-operator the chart renders both groups as a
+PrometheusRule (`metrics.alertRules.enabled`).
 
 ## 5. Synthetic Monitoring: the public API
 
