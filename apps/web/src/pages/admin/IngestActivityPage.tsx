@@ -6,6 +6,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { DonutGauge } from '@/components/shared/DonutGauge'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { RangeSelector, OVERVIEW_RANGE_OPTIONS } from '@/components/shared/RangeSelector'
+import { SERVER_OWNED_SERIES_MATCHER } from '@/utils/promql'
 
 // IngestActivityPage answers "what is my ingest doing right now?" —
 // spec #09 V2 Item 5b. The companion piece to Item 5a's Prometheus
@@ -164,8 +165,9 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
   //     first sample already holds its events, and increase() drops a
   //     first sample that looks large — after a restart it hid 10,335
   //     rate-limited requests (a catch-up burst) and the chip vanished.
-  //   - the activeSeries gauge is already a per-tenant value, no agg
-  //     needed beyond the tenant label match.
+  //   - the activeSeries gauge is a per-tenant value that every API
+  //     replica publishes (each with its own instance label), so it is
+  //     read through max(): the replicas agree, a sum would multiply it.
   const tenantLabel = `tenant_id="${tenant.id}"`
   // PromQL duration string for the selected window — used in
   // increase_pure() and the chip header copy. Pulled from the same
@@ -197,7 +199,7 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
     queryKey: ['ingest-activity', tenant.id, 'active-series'],
     queryFn: () =>
       api.adminQueryMetrics({
-        query: `kubebolt_prom_write_active_series{${tenantLabel}}`,
+        query: `max(kubebolt_prom_write_active_series{${tenantLabel}})`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -218,7 +220,7 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
     queryKey: ['ingest-activity', tenant.id, 'series-by-cluster'],
     queryFn: () =>
       api.adminQueryMetrics({
-        query: `count by (cluster_id) ({${tenantLabel}})`,
+        query: `count by (cluster_id) ({${tenantLabel},${SERVER_OWNED_SERIES_MATCHER}})`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -381,7 +383,7 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
                 icon={<Database className="w-4 h-4" />}
                 unit="count"
                 bypassClusterScope
-                query={`kubebolt_prom_write_active_series{${tenantLabel}}`}
+                query={`max(kubebolt_prom_write_active_series{${tenantLabel}})`}
                 // Sin esto el tooltip enseña el selector crudo —
                 // «tenant_id=62148473-bca…»— que es el UUID de la org que el
                 // usuario YA está mirando. Nombra la serie por lo que mide.

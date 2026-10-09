@@ -168,6 +168,10 @@ type anthropicUsage struct {
 	CacheCreation struct {
 		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
+	// The part of output_tokens spent in thinking blocks.
+	OutputTokensDetails struct {
+		ThinkingTokens int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type anthropicResponse struct {
@@ -304,6 +308,7 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 			CacheCreationTokens:   ar.Usage.CacheCreationInputTokens,
 			CacheReadTokens:       ar.Usage.CacheReadInputTokens,
 			CacheCreation1hTokens: ar.Usage.CacheCreation.Ephemeral1hInputTokens,
+			ThinkingTokens:        ar.Usage.OutputTokensDetails.ThinkingTokens,
 		}, "anthropic", model),
 	}
 	for _, block := range ar.Content {

@@ -74,6 +74,9 @@ type retentionDeps struct {
 	events        orgEventPruner
 	audit         orgPruner
 	conversations orgPruner
+	// feedback holds the 👍/👎 on Kobi's answers, a 👎's comment included: the
+	// user's words, kept as long as the transcripts they rate.
+	feedback orgPruner
 	// Orphan sweep (in-vivo 2026-09-15): security data whose cluster is no
 	// longer REGISTERED in the org. The sweeper can never resolve it (no
 	// connector) and PruneOrg never touches actives, so without this a
@@ -172,7 +175,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Warn("retention: cannot list orgs", slog.String("error", err.Error()))
 		return
 	}
-	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalEpisodes, totalOrphans int
+	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalFeedback, totalEpisodes, totalOrphans int
 	auditCutoff := now.Add(-auditRetentionHorizon())
 	insightsCutoff := now.Add(-insightsRetentionHorizon())
 	findingsCutoff := now.Add(-findingsRetentionHorizon())
@@ -228,6 +231,14 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 				totalConversations += n
 			}
 		}
+		if d.feedback != nil {
+			if n, err := d.feedback.PruneOrg(org.ID, conversationsCutoff); err != nil {
+				slog.Warn("retention: copilot feedback prune failed",
+					slog.String("org", org.ID), slog.String("error", err.Error()))
+			} else {
+				totalFeedback += n
+			}
+		}
 	}
 	// Logged on EVERY pass, including the all-zero one. A retention job that
 	// only speaks up when it deletes something cannot be distinguished from one
@@ -241,6 +252,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Int("runtime_events_pruned", totalEvents),
 		slog.Int("audit_records_pruned", totalAudit),
 		slog.Int("conversations_pruned", totalConversations),
+		slog.Int("copilot_feedback_pruned", totalFeedback),
 	)
 }
 

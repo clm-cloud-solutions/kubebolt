@@ -1,6 +1,14 @@
 // Shared PromQL helpers — small utilities for query construction
 // reused across the time-series panels.
 
+// SERVER_OWNED_SERIES_MATCHER leaves out the series KubeBolt's API writes
+// itself about a cluster — the AI observability families. They are KubeBolt's
+// bookkeeping, not ingest, so any query that counts "the series a cluster
+// ships" adds it. Mirrors the API's seriesgate.ServerOwnedFamiliesRegex;
+// change both together.
+export const SERVER_OWNED_SERIES_MATCHER =
+  '__name__!~"kubebolt_(kobi|autopilot|ai)_.+|kubebolt_cluster_team_info"'
+
 // collapsePodToWorkload wraps a metric expression in nested
 // label_replace calls that derive a "workload" label from a pod
 // name. Hubble flow metrics (pod_flow_*) carry destination_pod /

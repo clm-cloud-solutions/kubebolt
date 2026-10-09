@@ -72,9 +72,16 @@ export function Sparkline({ values, height = 46, window, left, right = 'now', fr
         <path d={line} fill="none" stroke="var(--kb-text-tertiary)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
         <circle cx={lx} cy={ly} r={3.6} fill={KPI_COLOR.ok} />
       </svg>
-      <Ends left={left ?? `${window ? `${window} · ` : ''}${hi > Math.min(...values) ? `${Math.min(...values)}–${hi}` : `steady at ${hi}`}`} right={right} />
+      <Ends left={left ?? `${window ? `${window} · ` : ''}${hi > Math.min(...values) ? `${endLabel(Math.min(...values))}–${endLabel(hi)}` : `steady at ${endLabel(hi)}`}`} right={right} />
     </div>
   )
+}
+
+// endLabel formats a sparkline's low/high for its ends line: thousands
+// grouped, whole numbers from 10 up, one decimal below.
+function endLabel(v: number): string {
+  const d = Math.abs(v) >= 10 || Number.isInteger(v) ? 0 : 1
+  return v.toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })
 }
 
 // SemiGauge — a 0–100 score as a half ring, with its breakdown beside it.

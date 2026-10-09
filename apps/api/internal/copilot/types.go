@@ -27,6 +27,11 @@ type Message struct {
 	// instead of collapsing to "now". Never sent to the LLM (the provider
 	// adapters read role/content/tools only). Optional for backward-compat.
 	Timestamp time.Time `json:"timestamp,omitempty"`
+	// TurnID names the chat turn this message ANSWERED: stamped by the chat
+	// handler on the final assistant message of a turn, the same id as the
+	// turn's SessionRecord. A 👍/👎 is given against it (copilot_feedback).
+	// Never sent to the LLM, like Timestamp.
+	TurnID string `json:"turnId,omitempty"`
 }
 
 // ToolCall represents an LLM-issued request to invoke a tool.
@@ -74,6 +79,11 @@ type Usage struct {
 	// hour (staticPrefixCache). Zero for providers without the split and for
 	// records written before it.
 	CacheCreation1hTokens int `json:"cacheCreation1hTokens,omitempty"`
+	// ThinkingTokens is the part of OutputTokens the model spent reasoning
+	// (Anthropic output_tokens_details.thinking_tokens, OpenAI
+	// completion_tokens_details.reasoning_tokens). Already inside
+	// OutputTokens and billed there: it only tells reasoning from answer.
+	ThinkingTokens int `json:"thinkingTokens,omitempty"`
 
 	// The part of the four totals above that came from calls billed at the
 	// model's long-context rate card (ModelPricing.Long): a call whose prompt
@@ -98,6 +108,7 @@ func (u *Usage) Add(other Usage) {
 	u.CacheCreationTokens += other.CacheCreationTokens
 	u.CacheReadTokens += other.CacheReadTokens
 	u.CacheCreation1hTokens += other.CacheCreation1hTokens
+	u.ThinkingTokens += other.ThinkingTokens
 	u.LongInputTokens += other.LongInputTokens
 	u.LongOutputTokens += other.LongOutputTokens
 	u.LongCacheCreationTokens += other.LongCacheCreationTokens

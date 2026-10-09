@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -207,9 +208,18 @@ func (h *handlers) handleDeleteConversation(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	id := chi.URLParam(r, "id")
-	if err := h.copilotConversations.Delete(copilot.DefaultConversationTenant, conversationUserID(r), id); err != nil {
+	tenant, user := copilot.DefaultConversationTenant, conversationUserID(r)
+	if err := h.copilotConversations.Delete(tenant, user, id); err != nil {
 		respondError(w, http.StatusInternalServerError, "failed to delete conversation")
 		return
+	}
+	// The ratings go with the transcript: a 👎's comment is the user's words
+	// about it.
+	if fb := copilotFeedbackStore(); fb != nil {
+		if _, err := fb.DeleteConversation(tenant, user, id); err != nil {
+			slog.Warn("copilot feedback: delete with conversation failed",
+				slog.String("conversation", id), slog.String("error", err.Error()))
+		}
 	}
 	respondJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

@@ -14,7 +14,7 @@ import type {
   HelmReleaseDetail,
 } from '@/types/kubernetes'
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
-import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
+import type { ConversationSummary, ConversationDetail, CopilotFeedback, CopilotFeedbackRating, CopilotFeedbackReason } from '@/services/copilot/types'
 
 // API origin — empty string keeps every call same-origin (the nginx-proxied
 // self-hosted / Docker deploy, unchanged). Set VITE_API_URL at build time to
@@ -1575,6 +1575,20 @@ export const api = {
   ) => patchJSON<ConversationSummary>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`, body),
   deleteConversation: (id: string) =>
     deleteRequest<{ ok: boolean }>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
+
+  // 👍/👎 on Kobi's answers: the caller's ratings in one conversation, and
+  // setting (or, with rating '', withdrawing) the rating of one answer.
+  listConversationFeedback: (conversationId: string) =>
+    fetchJSON<{ feedback: CopilotFeedback[] }>(
+      `${API_BASE}/copilot/conversations/${encodeURIComponent(conversationId)}/feedback`,
+    ).then((r) => r.feedback ?? []),
+  rateCopilotAnswer: (body: {
+    conversationId: string
+    turnId: string
+    rating: CopilotFeedbackRating | ''
+    reason?: CopilotFeedbackReason
+    comment?: string
+  }) => postJSON<{ feedback: CopilotFeedback | null }>(`${API_BASE}/copilot/feedback`, body),
 
   // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
   //

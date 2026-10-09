@@ -273,6 +273,10 @@ func main() {
 	// resume. Wired alongside copilotUsage inside the authCfg.Enabled block
 	// (needs the open BoltDB). Interface type so it stays nil-safe.
 	var copilotConversations copilot.ConversationStore
+	// copilotFeedback keeps the 👍/👎 on Kobi's answers (doc #67, phase 1c),
+	// next to the transcripts and pruned with them. Nil without persistence:
+	// the feedback endpoints then answer 503.
+	var copilotFeedback copilot.FeedbackStore
 	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
 	// is disabled — same gate as the rest of the admin surface, since
 	// persistence requires BoltDB to be open. Constructed inside the
@@ -485,6 +489,12 @@ func main() {
 		// 90d / 200 per user.
 		convRetention, convMaxPerUser := copilot.ConversationStoreConfigFromEnv()
 		copilotConversations = newConversationStore(boltHandle(store), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
+		if fb, err := newFeedbackStore(boltHandle(store), auth.CopilotFeedbackBucket()); err != nil {
+			fatal("failed to open copilot feedback store", slog.String("error", err.Error()))
+		} else {
+			copilotFeedback = fb
+			api.SetCopilotFeedbackStore(fb)
+		}
 
 		// W1 identity-model bootstrap invariant: every install has a default
 		// org (the auto-seeded "default" tenant) AND a default team under it.
@@ -882,6 +892,10 @@ func main() {
 	// Always-on (W2 §10.3): expose the connector-pool size on /metrics so
 	// operators can watch the resident-runtime cost as agents connect.
 	api.NewPoolMetricsCollector(prometheus.DefaultRegisterer, manager)
+
+	// AI observability series (doc #67, phase 1): Kobi's health per cluster,
+	// and the detail (tools, latency, fallback, tokens, cost, ratings).
+	api.SetKobiMetrics(api.NewKobiMetrics(prometheus.DefaultRegisterer))
 
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
@@ -1294,6 +1308,7 @@ func main() {
 		events:        eventStore,
 		audit:         actionAuditStore,
 		conversations: copilotConversations,
+		feedback:      copilotFeedback,
 		episodes:      episodePruner,
 	}
 	// Orphan sweep wiring (in-vivo 2026-09-15): the KEEP set is the manager's

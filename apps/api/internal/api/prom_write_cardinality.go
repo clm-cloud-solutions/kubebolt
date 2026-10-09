@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
@@ -214,7 +215,7 @@ func (c *CardinalityTracker) RunRefreshLoop(ctx context.Context) {
 // Without this we'd serve stale counts from a previous refresh
 // indefinitely after a tenant's data ages out.
 func (c *CardinalityTracker) refresh(ctx context.Context) {
-	const query = `count by (tenant_id) ({tenant_id!=""})`
+	const query = `count by (tenant_id) ({tenant_id!="",` + seriesgate.ExcludeServerOwned + `})`
 	target, err := url.Parse(c.vmURL + "/api/v1/query")
 	if err != nil {
 		slog.Warn("cardinality refresh: invalid VM URL", slog.String("error", err.Error()))
