@@ -11,6 +11,8 @@ import (
 	"time"
 
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // VMWriter writes samples to VictoriaMetrics via its Prometheus plain-text
@@ -25,7 +27,7 @@ type VMWriter struct {
 func NewVMWriter(endpoint string) *VMWriter {
 	return &VMWriter{
 		endpoint: strings.TrimRight(endpoint, "/"),
-		client:   &http.Client{Timeout: 10 * time.Second},
+		client:   opsmetrics.VMClient("agent_ingest", 10*time.Second),
 	}
 }
 

@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // Workload metrics tool — spec: internal/copilot-execution-capacity/07-workload-metrics-tool.md
@@ -652,7 +654,7 @@ func metricsStorageURLForCopilot() string {
 // vmHTTPClient is the package-level client for VM round-trips. 15s matches
 // the api package's metricsHTTPClient — long enough for slow range queries
 // over 24h windows, short enough to fail loud when VM is wedged.
-var vmHTTPClient = &http.Client{Timeout: 15 * time.Second}
+var vmHTTPClient = opsmetrics.VMClient("kobi", 15*time.Second)
 
 // vmSeries is one labelled time-series from a VM range response. We
 // return the full set (not just the first) so callers can route by

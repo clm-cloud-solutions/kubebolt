@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
@@ -63,6 +64,10 @@ type CardinalityTracker struct {
 	// Set by main.go after construction. nil is safe — the
 	// tracker no-ops when the callback isn't installed.
 	OnSnapshot func(map[string]int)
+
+	// job measures each run for Administration › System › Health (opsmetrics); set
+	// when the loop starts, nil (measuring nothing) before.
+	job *opsmetrics.Job
 }
 
 // NewCardinalityTracker constructs the tracker. vmURL is the base
@@ -76,7 +81,7 @@ type CardinalityTracker struct {
 // the cap longer.
 func NewCardinalityTracker(vmURL string, defaults auth.EffectiveLimits, client *http.Client, interval time.Duration) *CardinalityTracker {
 	if client == nil {
-		client = http.DefaultClient
+		client = opsmetrics.VMClient("series_cap", 15*time.Second)
 	}
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -188,6 +193,7 @@ func (c *CardinalityTracker) RunRefreshLoop(ctx context.Context) {
 	// Do an initial refresh immediately so the first tick doesn't
 	// wait the full interval. Errors logged but not fatal —
 	// permissive-boot semantics handle the empty-cache case.
+	c.job = opsmetrics.NewJob("series_cap", c.interval)
 	c.refresh(ctx)
 	t := time.NewTicker(c.interval)
 	defer t.Stop()
@@ -215,6 +221,10 @@ func (c *CardinalityTracker) RunRefreshLoop(ctx context.Context) {
 // Without this we'd serve stale counts from a previous refresh
 // indefinitely after a tenant's data ages out.
 func (c *CardinalityTracker) refresh(ctx context.Context) {
+	run := c.job.Start()
+	defer run.End()
+	// Server-owned series (the AI observability families) are KubeBolt's own
+	// bookkeeping about the org, not its ingest: they don't count toward the cap.
 	const query = `count by (tenant_id) ({tenant_id!="",` + seriesgate.ExcludeServerOwned + `})`
 	target, err := url.Parse(c.vmURL + "/api/v1/query")
 	if err != nil {
@@ -301,6 +311,7 @@ func (c *CardinalityTracker) refresh(ctx context.Context) {
 	}
 	c.counts = newCounts
 	c.hasFresh = true
+	run.OK()
 	cb := c.OnSnapshot
 	// Build a defensive copy for the callback so the caller can
 	// retain the map without racing on subsequent refreshes.

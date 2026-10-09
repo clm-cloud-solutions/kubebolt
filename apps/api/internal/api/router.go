@@ -90,6 +90,7 @@ func NewRouter(
 	r := chi.NewRouter()
 
 	// Middleware
+	r.Use(opsHTTPMetrics) // outermost: a recovered panic still counts as its 500
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
 	r.Use(LoggingMiddleware)

@@ -532,7 +532,7 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	resp, err := metricsHTTPClient.Do(upstream)
+	resp, err := promWriteClient.Do(upstream)
 	if err != nil {
 		slog.Warn("remote_write upstream failed", slog.String("error", err.Error()))
 		promCatchUp.Interrupted(tenantID, time.Now()) // the sender queues this batch

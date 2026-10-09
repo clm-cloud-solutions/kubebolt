@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 )
 
@@ -60,7 +61,7 @@ func newMetricsFreshnessCache() *metricsFreshnessCache {
 	return &metricsFreshnessCache{
 		entries:  make(map[string]metricsFreshEntry),
 		inFlight: make(map[string]bool),
-		client:   &http.Client{Timeout: metricsFreshnessQueryTimeout},
+		client:   opsmetrics.VMClient("freshness", metricsFreshnessQueryTimeout),
 	}
 }
 

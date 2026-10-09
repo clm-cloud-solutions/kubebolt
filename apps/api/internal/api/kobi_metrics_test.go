@@ -1,8 +1,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -127,5 +131,42 @@ func TestCopilotChat_RecordsKobiMetrics(t *testing.T) {
 	}
 	if n := testutil.CollectAndCount(m.modelCallSecs); n != 1 {
 		t.Errorf("model_call_seconds series = %d, want 1 (one provider/model)", n)
+	}
+}
+
+// Each replica pushes its registry with its own instance label: without it two
+// replicas wrote the same series and VictoriaMetrics interleaved their counters.
+func TestSelfWrite_StampsInstanceAndRun(t *testing.T) {
+	got := make(chan []string, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case got <- r.URL.Query()["extra_label"]:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer srv.Close()
+
+	reg := prometheus.NewRegistry()
+	c := prometheus.NewCounter(prometheus.CounterOpts{Name: "kubebolt_test_total", Help: "t"})
+	reg.MustRegister(c)
+	c.Inc()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go SelfWriteMetricsToVM(ctx, reg, srv.URL)
+	select {
+	case labels := <-got:
+		// instance=<replica>; run_id=<process>, eight hex characters drawn
+		// once, so a restarted process writes series of its own; and
+		// job=kubebolt-api to tell the API's go_*/process_* from
+		// VictoriaMetrics' own.
+		if len(labels) != 3 || !strings.HasPrefix(labels[0], "instance=") || labels[0] == "instance=" ||
+			!regexp.MustCompile(`^run_id=[0-9a-f]{8}$`).MatchString(labels[1]) || labels[1] != "run_id="+selfWriteRunID() ||
+			labels[2] != "job=kubebolt-api" {
+			t.Errorf("extra_label = %q, want [instance=<replica> run_id=<8 hex> job=kubebolt-api]", labels)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no push within 5s")
 	}
 }

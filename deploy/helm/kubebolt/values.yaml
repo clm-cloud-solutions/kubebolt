@@ -455,4 +455,20 @@ copilot:
 #     # backend never reaches out to api.github.com.
 #     - name: KUBEBOLT_UPDATE_CHECK_ENABLED
 #       value: "false"
+#     # External watcher (doc #67, O4): a second copy of the API's health series
+#     # (no tenant, no cluster) pushed by remote_write to an outside Prometheus —
+#     # e.g. Grafana Cloud — where an alert on their absence notices the API
+#     # down. Unset URL = off. The token is a SECRET: source it from a Secret.
+#     # Guide: docs/operations/external-watcher.md.
+#     - name: KUBEBOLT_EXTERNAL_METRICS_URL
+#       value: "https://prometheus-prod-XX-prod-REGION.grafana.net/api/prom/push"
+#     - name: KUBEBOLT_EXTERNAL_METRICS_USER
+#       value: "<prometheus-instance-id>"
+#     - name: KUBEBOLT_EXTERNAL_METRICS_TOKEN
+#       valueFrom:
+#         secretKeyRef:
+#           name: kubebolt-external-metrics
+#           key: token
+#     - name: KUBEBOLT_EXTERNAL_METRICS_LABELS
+#       value: "env=prod"
 extraEnv: []

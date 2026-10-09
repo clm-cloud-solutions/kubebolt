@@ -6,7 +6,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { DonutGauge } from '@/components/shared/DonutGauge'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
 import { RangeSelector, OVERVIEW_RANGE_OPTIONS } from '@/components/shared/RangeSelector'
-import { SERVER_OWNED_SERIES_MATCHER } from '@/utils/promql'
+import { liveProcess, SERVER_OWNED_SERIES_MATCHER } from '@/utils/promql'
 
 // IngestActivityPage answers "what is my ingest doing right now?" —
 // spec #09 V2 Item 5b. The companion piece to Item 5a's Prometheus
@@ -199,7 +199,7 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
     queryKey: ['ingest-activity', tenant.id, 'active-series'],
     queryFn: () =>
       api.adminQueryMetrics({
-        query: `max(kubebolt_prom_write_active_series{${tenantLabel}})`,
+        query: `max(${liveProcess(`kubebolt_prom_write_active_series{${tenantLabel}}`)})`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -383,7 +383,7 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
                 icon={<Database className="w-4 h-4" />}
                 unit="count"
                 bypassClusterScope
-                query={`max(kubebolt_prom_write_active_series{${tenantLabel}})`}
+                query={`max(${liveProcess(`kubebolt_prom_write_active_series{${tenantLabel}}`)})`}
                 // Sin esto el tooltip enseña el selector crudo —
                 // «tenant_id=62148473-bca…»— que es el UUID de la org que el
                 // usuario YA está mirando. Nombra la serie por lo que mide.
