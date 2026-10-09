@@ -4,6 +4,18 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- Go 1.26.6 → 1.26.9 on every build path (`go.mod` ×3, the api and agent
+  Dockerfiles, `ci.yml`, `codeql.yml`, `release.yml`): CVE-2026-78667
+  (net/http) and CVE-2026-97031 (crypto/tls), both HIGH. The e2e harness
+  leaves Go 1.25.10.
+- VictoriaMetrics and vmagent v1.153.0 → v1.154.0 (rc0 for now; the release
+  waits for the final): v1.153.0 is built on Go 1.27.1 and carries the same
+  two CVEs.
+
 ## [2.3.0] — 2026-10-07
 
 The app in the site's language, a Kobi that reads the node's disk, and
