@@ -66,6 +66,10 @@ type PromWriteMetrics struct {
 const (
 	PromWriteStatusAccepted               = "accepted"
 	PromWriteStatusRejectedRateLimit      = "rate_limit"
+	// PromWriteStatusDeferredBacklog: over the rate limit, but the batch is a
+	// backlog (a sender catching up after an interruption), so it was answered
+	// 503 + Retry-After — retried later by the sender, not lost.
+	PromWriteStatusDeferredBacklog = "rate_limit_deferred"
 	PromWriteStatusRejectedCardinality    = "cardinality"
 	PromWriteStatusRejectedAuth           = "auth"
 	PromWriteStatusRejectedBodySize       = "body_size"

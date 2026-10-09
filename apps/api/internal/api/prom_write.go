@@ -390,12 +390,29 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 		if tenant != nil {
 			overrides = tenant.Limits
 		}
+		now := time.Now()
+		promCatchUp.Seen(tenantID, now)
 		if allowed, retryAfter := h.promRateLimiter.Allow(tenantID, overrides, sampleCount); !allowed {
 			seconds := int(retryAfter.Round(time.Second) / time.Second)
 			if seconds < 1 {
 				seconds = 1
 			}
 			w.Header().Set("Retry-After", fmt.Sprintf("%d", seconds))
+			// A catch-up is deferred, not refused. After an interruption (the
+			// API or VictoriaMetrics down, the sender cut off) the sender ships
+			// what it queued at full speed and runs into the limit; Prometheus
+			// drops whatever a 429 refuses (retry_on_http_429 is off by
+			// default) but always retries a 5xx, honouring Retry-After. So a
+			// backlog batch inside the tenant's catch-up window
+			// (prom_write_catchup.go) gets 503 and arrives later, at the rate
+			// the tenant is allowed. Anything else over the limit — live
+			// traffic, or a sustained overrun that fell behind — keeps the
+			// 429: that excess is what the limit is for.
+			if isBacklog(decoded, now) && promCatchUp.Open(tenantID, now) {
+				h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusDeferredBacklog)
+				respondError(w, http.StatusServiceUnavailable, "remote_write rate limit: backlog deferred, retry after the Retry-After delay")
+				return
+			}
 			h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedRateLimit)
 			respondError(w, http.StatusTooManyRequests, "remote_write rate limit exceeded for tenant")
 			return
@@ -518,11 +535,15 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 	resp, err := metricsHTTPClient.Do(upstream)
 	if err != nil {
 		slog.Warn("remote_write upstream failed", slog.String("error", err.Error()))
+		promCatchUp.Interrupted(tenantID, time.Now()) // the sender queues this batch
 		h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusUpstreamError)
 		respondError(w, http.StatusBadGateway, "metrics storage unreachable")
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		promCatchUp.Interrupted(tenantID, time.Now()) // the store refused it; the sender retries
+	}
 
 	// Success path observability (Day 5): record the accepted request
 	// + the sample / byte counts now that we know the upstream

@@ -39,7 +39,7 @@ function formatAge(unixMs: number): string {
 
 export function IngestActivityPage() {
   // Page-level range state — drives both the sparkline (via MetricChart's
-  // controlledRangeMinutes) and the chip increase() windows. 60m default
+  // controlledRangeMinutes) and the chips' increase_pure() windows. 60m default
   // matches the original "last 1h" framing operators saw before the
   // selector landed. RangeSelector lets them widen to 24h or narrow to 5m.
   const [rangeMinutes, setRangeMinutes] = useState(60)
@@ -145,7 +145,7 @@ export function IngestActivityPage() {
 interface TenantIngestCardProps {
   tenant: Tenant
   agents: AdminAgentEntry[]
-  // Selected window in minutes — drives the chip increase() windows
+  // Selected window in minutes — drives the chips' increase_pure() windows
   // and the sparkline's controlled range. Headline samples/sec stays
   // at rate[5m] regardless because "current rate" is a smoothing
   // signal, not a range-dependent aggregation.
@@ -158,13 +158,17 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
   // Instant queries powering the chips + gauge. Each returns a single
   // number; we render the result inline. PromQL functions used:
   //   - sum(rate(...[5m])) for the headline (fixed 5m smoothing)
-  //   - sum by (status) (increase(...[<window>])) for the chips,
-  //     window comes from the RangeSelector
+  //   - sum by (status) (increase_pure(...[<window>])) for the chips,
+  //     window comes from the RangeSelector. increase_pure, never
+  //     increase(): the API's counters are born at zero, so a new status's
+  //     first sample already holds its events, and increase() drops a
+  //     first sample that looks large — after a restart it hid 10,335
+  //     rate-limited requests (a catch-up burst) and the chip vanished.
   //   - the activeSeries gauge is already a per-tenant value, no agg
   //     needed beyond the tenant label match.
   const tenantLabel = `tenant_id="${tenant.id}"`
   // PromQL duration string for the selected window — used in
-  // increase() and the chip header copy. Pulled from the same
+  // increase_pure() and the chip header copy. Pulled from the same
   // OVERVIEW_RANGE_OPTIONS table the RangeSelector uses, so the chip
   // header label always matches the chart's range chip.
   const rangeLabel =
@@ -220,14 +224,14 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
   })
 
   // Stream lifecycle chips: connections / disconnects in the selected
-  // window. increase() captures the count of events even when both go
+  // window. increase_pure() captures the count of events even when both go
   // to 0 (a quiet hour). status="auth_rejected" is RESERVED but not yet
   // wired backend-side — query returns 0 until that lands.
   const { data: streamStats } = useQuery({
     queryKey: ['ingest-activity', tenant.id, 'stream-stats', rangeLabel],
     queryFn: () =>
       api.adminQueryMetrics({
-        query: `sum by (status) (increase(kubebolt_agent_grpc_streams_total{${tenantLabel}}[${rangeLabel}]))`,
+        query: `sum by (status) (increase_pure(kubebolt_agent_grpc_streams_total{${tenantLabel}}[${rangeLabel}]))`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -240,7 +244,7 @@ function TenantIngestCard({ tenant, agents, rangeMinutes, clusterNameById }: Ten
     queryKey: ['ingest-activity', tenant.id, 'request-stats', rangeLabel],
     queryFn: () =>
       api.adminQueryMetrics({
-        query: `sum by (status) (increase(kubebolt_prom_write_requests_total{${tenantLabel}}[${rangeLabel}]))`,
+        query: `sum by (status) (increase_pure(kubebolt_prom_write_requests_total{${tenantLabel}}[${rangeLabel}]))`,
       }),
     refetchInterval: POLL_INTERVAL_MS,
   })
@@ -602,6 +606,9 @@ function RemoteWriteRequestChips({
   const accepted = byStatus['accepted'] ?? 0
   const authRejected = byStatus['auth'] ?? 0
   const rateLimited = byStatus['rate_limit'] ?? 0
+  // Over the limit but a backlog (a sender catching up): answered 503 and
+  // retried later — delayed, not lost.
+  const deferred = byStatus['rate_limit_deferred'] ?? 0
   const cardinality = byStatus['cardinality'] ?? 0
   const malformed = byStatus['malformed'] ?? 0
   // Other rejection categories grouped under "other" so the chip row
@@ -623,6 +630,7 @@ function RemoteWriteRequestChips({
         <Chip label="accepted" count={accepted} variant="ok" />
         {authRejected > 0 && <Chip label="auth" count={authRejected} variant="error" />}
         {rateLimited > 0 && <Chip label="rate-limited" count={rateLimited} variant="warn" />}
+        {deferred > 0 && <Chip label="catch-up deferred" count={deferred} variant="muted" />}
         {cardinality > 0 && <Chip label="cardinality-capped" count={cardinality} variant="warn" />}
         {malformed > 0 && <Chip label="malformed" count={malformed} variant="warn" />}
         {otherRejected > 0 && <Chip label="other rejected" count={otherRejected} variant="muted" />}
