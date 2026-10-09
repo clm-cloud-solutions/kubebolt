@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	bolt "go.etcd.io/bbolt"
+
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 )
 
 type fakeOrgs struct {
@@ -157,4 +161,66 @@ func TestStartRetention_RunsAFirstPassBeforeTheInterval(t *testing.T) {
 		t.Fatal("no first pass ran — retention would wait a full interval, and a " +
 			"pod restarting more often than that would never prune at all")
 	}
+}
+
+// A single-tenant install keys Kobi's transcripts and ratings by the default
+// org's name, while the org list carries the org by its generated id. The pass
+// used to prune by the id alone and never matched one: a self-hosted install
+// kept every conversation and every 👎 comment forever.
+func TestRetentionPass_PrunesTheDefaultOrgsConversationsAndRatings(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "kb.db"), 0o600, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tenants, err := auth.NewTenantsStore(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Update(func(tx *bolt.Tx) error { _, e := tx.CreateBucketIfNotExists([]byte("conv")); return e }); err != nil {
+		t.Fatal(err)
+	}
+	conv := copilot.NewBoltConversationStore(db, []byte("conv"), 0, 0)
+	fb, err := copilot.NewBoltFeedbackStore(db, []byte("feedback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written the way the chat and feedback handlers write them.
+	if err := conv.Upsert(&copilot.ConversationRecord{ID: "c1", UserID: "u1", TenantID: copilot.DefaultConversationTenant}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fb.Set(copilot.Feedback{TenantID: auth.DefaultTenantName, UserID: "u1", ConversationID: "c1", TurnID: "t1", Rating: copilot.FeedbackDown, Comment: "wrong pod"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Past the conversation horizon (90 days by default).
+	runRetentionPass(retentionDeps{tenants: tenants, conversations: conv, feedback: fb}, time.Now().Add(200*24*time.Hour))
+
+	if _, ok, _ := conv.Get(copilot.DefaultConversationTenant, "u1", "c1"); ok {
+		t.Error("the default org's conversation survived the pass")
+	}
+	if left, _ := fb.ForConversation(auth.DefaultTenantName, "u1", "c1"); len(left) != 0 {
+		t.Errorf("the default org's ratings survived the pass: %d left", len(left))
+	}
+}
+
+func TestConversationTenants(t *testing.T) {
+	def := auth.Tenant{ID: "6b1c…", Name: auth.DefaultTenantName}
+	if got := conversationTenants(def); len(got) != 2 || got[1] != copilot.DefaultConversationTenant {
+		t.Errorf("default org = %v, want its id and %q", got, copilot.DefaultConversationTenant)
+	}
+	if got := conversationTenants(auth.Tenant{ID: "o1", Name: "acme"}); len(got) != 1 {
+		t.Errorf("another org = %v, want its id only", got)
+	}
+	withMultiTenantMain(t)
+	if got := conversationTenants(def); len(got) != 1 {
+		t.Errorf("multi-tenant default org = %v, want its id only: there the handlers key by id", got)
+	}
+}
+
+func withMultiTenantMain(t *testing.T) {
+	t.Helper()
+	prev := auth.MultiTenantEnabled
+	auth.MultiTenantEnabled = true
+	t.Cleanup(func() { auth.MultiTenantEnabled = prev })
 }

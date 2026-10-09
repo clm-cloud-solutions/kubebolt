@@ -135,6 +135,21 @@ func findingsRetentionHorizon() time.Duration {
 	return envHorizon("KUBEBOLT_FINDINGS_RETENTION_HORIZON", 30*24*time.Hour)
 }
 
+// conversationTenants is every tenant key an org's Kobi transcripts and
+// ratings may be stored under: its id, and — on a single-tenant install, for
+// the auto-seeded default org — the name the chat handlers key them by
+// (copilot.DefaultConversationTenant, which is also what auth.ContextTenantID
+// answers there). The org list carries the default org by its generated id, so
+// with the id alone the hourly pass never matched a transcript, and a
+// self-hosted install kept every conversation and every 👎 comment forever.
+func conversationTenants(org auth.Tenant) []string {
+	keys := []string{org.ID}
+	if !auth.MultiTenantEnabled && org.Name == auth.DefaultTenantName && org.ID != copilot.DefaultConversationTenant {
+		keys = append(keys, copilot.DefaultConversationTenant)
+	}
+	return keys
+}
+
 // conversationsRetentionHorizon bounds Kobi transcripts — the highest-PII
 // store in the product. Same env the conversation store has always read; the
 // horizon simply moved from "on write, only for users who keep chatting" to
@@ -238,20 +253,22 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 				totalEvents += n
 			}
 		}
-		if d.conversations != nil {
-			if n, err := d.conversations.PruneOrg(org.ID, conversationsCutoff); err != nil {
-				warn("retention: conversations prune failed",
-					slog.String("org", org.ID), slog.String("error", err.Error()))
-			} else {
-				totalConversations += n
+		for _, key := range conversationTenants(org) {
+			if d.conversations != nil {
+				if n, err := d.conversations.PruneOrg(key, conversationsCutoff); err != nil {
+					warn("retention: conversations prune failed",
+						slog.String("org", key), slog.String("error", err.Error()))
+				} else {
+					totalConversations += n
+				}
 			}
-		}
-		if d.feedback != nil {
-			if n, err := d.feedback.PruneOrg(org.ID, conversationsCutoff); err != nil {
-				warn("retention: copilot feedback prune failed",
-					slog.String("org", org.ID), slog.String("error", err.Error()))
-			} else {
-				totalFeedback += n
+			if d.feedback != nil {
+				if n, err := d.feedback.PruneOrg(key, conversationsCutoff); err != nil {
+					warn("retention: copilot feedback prune failed",
+						slog.String("org", key), slog.String("error", err.Error()))
+				} else {
+					totalFeedback += n
+				}
 			}
 		}
 	}

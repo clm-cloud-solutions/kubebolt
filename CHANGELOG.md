@@ -44,6 +44,12 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Kobi no longer shows the AI provider's raw error (URLs, internal addresses,
   provider ids) in the chat: each error class has a fixed message.
+- **Kobi conversations never expired.** The hourly retention pass looked for
+  them under the org's generated id, while a self-hosted install stores them
+  under the default org's name, so `KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON`
+  (2160h) was never applied. The first pass after upgrading deletes the
+  conversations, and their 👍/👎, older than the horizon: raise it before
+  upgrading to keep them longer.
 
 ### Security
 
