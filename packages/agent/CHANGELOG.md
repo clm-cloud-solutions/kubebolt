@@ -11,6 +11,13 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- Go 1.26.6 → 1.26.9: CVE-2026-78667 (net/http) and CVE-2026-97031
+  (crypto/tls), both HIGH.
+- vmagent v1.153.0 → v1.154.0 in the chart's `scrape.image` (same two CVEs in
+  v1.153.0's Go 1.27.1).
+
 ## [1.4.2] — 2026-10-07
 
 Installs on OpenShift out of the box. Same v1.0 metric/label schema — drop-in

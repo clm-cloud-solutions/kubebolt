@@ -13,6 +13,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // startEpisodeLifecycle (OSS build) wires the episode sink — the engines'
@@ -47,6 +48,18 @@ func startEpisodeLifecycle(ctx context.Context, db *bolt.DB, heads insights.Insi
 	}
 	log.Printf("insights: episode sink installed + expired watchdog (BoltDB, ttl %s)", ttl)
 
+	job := opsmetrics.NewJob("insight_expiry", time.Minute)
+	sweep := func() {
+		run := job.Start()
+		defer run.End()
+		if n, err := store.ExpireStaleForOrg(ctx, auth.DefaultTenantName, ttl); err != nil {
+			slog.Warn("episode watchdog: sweep failed", slog.String("error", err.Error()))
+			return
+		} else if n > 0 {
+			slog.Info("episode watchdog: expired stale episodes", slog.Int("count", n))
+		}
+		run.OK()
+	}
 	go func() {
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
@@ -55,11 +68,7 @@ func startEpisodeLifecycle(ctx context.Context, db *bolt.DB, heads insights.Insi
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				if n, err := store.ExpireStaleForOrg(ctx, auth.DefaultTenantName, ttl); err != nil {
-					slog.Warn("episode watchdog: sweep failed", slog.String("error", err.Error()))
-				} else if n > 0 {
-					slog.Info("episode watchdog: expired stale episodes", slog.Int("count", n))
-				}
+				sweep()
 			}
 		}
 	}()

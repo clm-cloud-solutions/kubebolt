@@ -447,5 +447,6 @@ ci-local:
 	@echo "==> Go test -race";      cd apps/api && go test ./... -race -count=1
 	@echo "==> Web test (full suite, as CI runs it)"; cd apps/web && npm test --silent
 	@echo "==> Web build (tsc + vite)";               cd apps/web && npm run build
+	@echo "==> Alert rules (promtool)"; docker run --rm -v "$(CURDIR)":/w -w /w --entrypoint promtool prom/prometheus:v3.5.0 test rules deploy/prometheus/kubebolt-alerts.test.yaml
 	@echo "PASS ci-local — safe to commit/PR"
 endif

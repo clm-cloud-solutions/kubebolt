@@ -323,6 +323,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         toolCalls: m.toolCalls,
         toolResults: m.toolResults,
         timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+        turnId: m.turnId,
       }))
       setMessages(rebuilt)
       setConversationId(rec.id)
@@ -592,6 +593,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
                   toolCalls: m.toolCalls,
                   toolResults: m.toolResults,
                   timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+                  turnId: m.turnId,
                 }))
                 // Carry client-only proposal annotations (execution outcome +
                 // progress/stall lifecycle) from the pre-rebuild transcript so
@@ -773,6 +775,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           toolCalls: m.toolCalls,
           toolResults: m.toolResults,
           timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+          turnId: m.turnId,
         }))
         rebuilt.push({
           id: generateId(),

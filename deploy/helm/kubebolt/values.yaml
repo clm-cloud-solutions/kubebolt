@@ -274,7 +274,7 @@ metrics:
       enabled: true
       image:
         repository: victoriametrics/victoria-metrics
-        tag: v1.153.0-scratch
+        tag: v1.154.0-rc0-scratch
         pullPolicy: IfNotPresent
       # Data retention. Anything older than this is dropped to keep the
       # PVC bounded. Increase if you need historical analysis windows
@@ -334,6 +334,19 @@ metrics:
     # operators get one token to manage, two consumers (agent
     # gRPC + vmagent HTTP).
     authMode: disabled
+
+  # Alert rules on KubeBolt's own health (files/kubebolt-alerts.yaml): the
+  # metrics store unreachable, API server errors and latency, late background
+  # jobs, failing calls to VictoriaMetrics, dropped live updates, restarts,
+  # and Kobi (failures, provider errors, fallback, refusals, cut answers,
+  # latency, answer quality, spend). Rendered as a prometheus-operator
+  # PrometheusRule for a Prometheus that scrapes the API's /metrics. Off by
+  # default: it needs the monitoring.coreos.com CRDs. `labels` is what your
+  # Prometheus' ruleSelector matches (kube-prometheus-stack: release: <its
+  # release name>).
+  alertRules:
+    enabled: false
+    labels: {}
 
 # Number of replicas
 replicaCount: 1
@@ -455,4 +468,20 @@ copilot:
 #     # backend never reaches out to api.github.com.
 #     - name: KUBEBOLT_UPDATE_CHECK_ENABLED
 #       value: "false"
+#     # External watcher (doc #67, O4): a second copy of the API's health series
+#     # (no tenant, no cluster) pushed by remote_write to an outside Prometheus —
+#     # e.g. Grafana Cloud — where an alert on their absence notices the API
+#     # down. Unset URL = off. The token is a SECRET: source it from a Secret.
+#     # Guide: docs/operations/external-watcher.md.
+#     - name: KUBEBOLT_EXTERNAL_METRICS_URL
+#       value: "https://prometheus-prod-XX-prod-REGION.grafana.net/api/prom/push"
+#     - name: KUBEBOLT_EXTERNAL_METRICS_USER
+#       value: "<prometheus-instance-id>"
+#     - name: KUBEBOLT_EXTERNAL_METRICS_TOKEN
+#       valueFrom:
+#         secretKeyRef:
+#           name: kubebolt-external-metrics
+#           key: token
+#     - name: KUBEBOLT_EXTERNAL_METRICS_LABELS
+#       value: "env=prod"
 extraEnv: []

@@ -24,6 +24,7 @@ with the code, so they are versioned with each release.
 | [Deployment scenarios](deployment-scenarios.md) | What to install given what the cluster already runs |
 | [Agent scraping](agent-scraping.md) | The optional vmagent sidecar: scrape Prometheus-style endpoints without running Prometheus |
 | [Amazon EKS](guides/eks.md) · [Google GKE](guides/gke.md) · [Azure AKS](guides/aks.md) · [OpenShift](guides/openshift.md) | Platform guides |
+| [External watcher](operations/external-watcher.md) | Push the API's own health to an outside Prometheus (Grafana Cloud): an alert when it stops reporting, a dashboard, a synthetic check |
 
 ## Kobi
 

@@ -6,7 +6,8 @@ go 1.25.0
 // plus CVE-2026-39821 (x/net/idna), CVE-2026-46600 (x/net/dns/dnsmessage) and
 // the 2026-08 stdlib wave, all fixed in 1.26.6. Bumped in lockstep with
 // apps/api/go.mod and packages/proto/go.mod.
-toolchain go1.26.6
+// 1.26.9 adds CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls).
+toolchain go1.26.9
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0

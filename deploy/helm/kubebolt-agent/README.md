@@ -369,7 +369,7 @@ Setup guides: [self-managed read-only](https://github.com/clm-cloud-solutions/ku
 |-------|---------|---------|
 | `scrape.enabled` | `false` | Add a vmagent sidecar to each DaemonSet pod. See [Scrape sidecar](#scrape-sidecar-scrapeenabled). |
 | `scrape.remoteWriteUrl` | `""` | Where vmagent sends samples — the backend's receiver, e.g. `http://kubebolt-api.kubebolt.svc.cluster.local:8080/api/v1/prom/write` (the backend needs `metrics.remoteWrite.enabled=true`). Required in practice: vmagent crash-loops without a remote_write URL. |
-| `scrape.image.repository` / `tag` / `pullPolicy` | `victoriametrics/vmagent` / `v1.153.0-scratch` / `IfNotPresent` | vmagent image (kept on the same VictoriaMetrics release as the backend chart). |
+| `scrape.image.repository` / `tag` / `pullPolicy` | `victoriametrics/vmagent` / `v1.154.0-rc0-scratch` / `IfNotPresent` | vmagent image (kept on the same VictoriaMetrics release as the backend chart). |
 | `scrape.resources` | `10m`/`64Mi` – `200m`/`256Mi` | Sidecar requests / limits. |
 | `scrape.extraArgs` | `{}` | Extra vmagent flags, rendered as `-key=value`. |
 | `scrape.limits.maxScrapeSize` | `16777216` (16 MiB) | Max scrape body size. |

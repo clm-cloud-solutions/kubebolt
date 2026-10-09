@@ -4,6 +4,63 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Administration › AI › Health**: Kobi's turns and failures, the 👎 share,
+  provider errors and what the fallback rescued, refusals and cut-short
+  answers, empty or failed tool calls, model latency, cost, tokens and the
+  prompt cache — from the new `kubebolt_kobi_copilot_*` series.
+- **👍/👎 on Kobi's answers**, with an optional reason and comment for a 👎.
+  The comment stays with its conversation and never reaches a metric.
+- **Administration › System › Health**: API replicas, memory, the 5xx share,
+  HTTP by route group, background jobs (late ones first), VictoriaMetrics
+  measuring itself and the API's calls to it — from the new `opsmetrics`
+  series (`kubebolt_http_*`, `kubebolt_vm_*`, `kubebolt_job_*`,
+  `kubebolt_ws_*`, `kubebolt_build_info`).
+- **External watcher**: `KUBEBOLT_EXTERNAL_METRICS_*` pushes the API's health
+  series to an outside Prometheus such as Grafana Cloud, with an importable
+  dashboard (`deploy/grafana/kubebolt-platform-health.json`) and a guide
+  (`docs/operations/external-watcher.md`).
+- **Alert rules** on KubeBolt's own health (`deploy/helm/kubebolt/files/kubebolt-alerts.yaml`),
+  unit-tested with promtool, optionally rendered as a `PrometheusRule`
+  (`metrics.alertRules.enabled`).
+
+### Changed
+
+- remote_write: over the rate limit, a **catch-up after an interruption**
+  gets `503` + `Retry-After` (Prometheus retries it) instead of `429`
+  (Prometheus drops it unless `retry_on_http_429` is on); a sustained overrun
+  keeps the `429`. Shown as "catch-up deferred" in Ingest activity.
+- **Reserved names**: the series KubeBolt writes about itself are dropped at
+  both ingest doors, counted with `reason="reserved"`.
+- The bundled VictoriaMetrics (chart and compose) starts with
+  `--selfScrapeInterval=30s`.
+- The API's self-push stamps `instance`, `run_id` and `job=kubebolt-api`, so a
+  restart is never a hidden counter reset.
+
+### Fixed
+
+- Kobi no longer shows the AI provider's raw error (URLs, internal addresses,
+  provider ids) in the chat: each error class has a fixed message.
+- **Kobi conversations never expired.** The hourly retention pass looked for
+  them under the org's generated id, while a self-hosted install stores them
+  under the default org's name, so `KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON`
+  (2160h) was never applied. The first pass after upgrading deletes the
+  conversations, and their 👍/👎, older than the horizon: raise it before
+  upgrading to keep them longer.
+
+### Security
+
+- Go 1.26.6 → 1.26.9 on every build path (`go.mod` ×3, the api and agent
+  Dockerfiles, `ci.yml`, `codeql.yml`, `release.yml`): CVE-2026-78667
+  (net/http) and CVE-2026-97031 (crypto/tls), both HIGH. The e2e harness
+  leaves Go 1.25.10.
+- VictoriaMetrics and vmagent v1.153.0 → v1.154.0 (rc0 for now; the release
+  waits for the final): v1.153.0 is built on Go 1.27.1 and carries the same
+  two CVEs.
+
 ## [2.3.0] — 2026-10-07
 
 The app in the site's language, a Kobi that reads the node's disk, and

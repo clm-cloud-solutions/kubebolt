@@ -41,6 +41,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
@@ -230,6 +231,7 @@ func main() {
 
 	// Create WebSocket hub
 	wsHub := websocket.NewHub()
+	opsmetrics.WSClients(wsHub.ClientCount)
 	go wsHub.Run()
 
 	// Create Cluster Manager (handles connector, collector, engine lifecycle)
@@ -273,6 +275,10 @@ func main() {
 	// resume. Wired alongside copilotUsage inside the authCfg.Enabled block
 	// (needs the open BoltDB). Interface type so it stays nil-safe.
 	var copilotConversations copilot.ConversationStore
+	// copilotFeedback keeps the 👍/👎 on Kobi's answers (doc #67, phase 1c),
+	// next to the transcripts and pruned with them. Nil without persistence:
+	// the feedback endpoints then answer 503.
+	var copilotFeedback copilot.FeedbackStore
 	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
 	// is disabled — same gate as the rest of the admin surface, since
 	// persistence requires BoltDB to be open. Constructed inside the
@@ -485,6 +491,12 @@ func main() {
 		// 90d / 200 per user.
 		convRetention, convMaxPerUser := copilot.ConversationStoreConfigFromEnv()
 		copilotConversations = newConversationStore(boltHandle(store), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
+		if fb, err := newFeedbackStore(boltHandle(store), auth.CopilotFeedbackBucket()); err != nil {
+			fatal("failed to open copilot feedback store", slog.String("error", err.Error()))
+		} else {
+			copilotFeedback = fb
+			api.SetCopilotFeedbackStore(fb)
+		}
 
 		// W1 identity-model bootstrap invariant: every install has a default
 		// org (the auto-seeded "default" tenant) AND a default team under it.
@@ -883,6 +895,19 @@ func main() {
 	// operators can watch the resident-runtime cost as agents connect.
 	api.NewPoolMetricsCollector(prometheus.DefaultRegisterer, manager)
 
+	// AI observability series (doc #67, phase 1): Kobi's health per cluster,
+	// and the detail (tools, latency, fallback, tokens, cost, ratings).
+	api.SetKobiMetrics(api.NewKobiMetrics(prometheus.DefaultRegisterer))
+
+	// One series per replica, labelled with version and edition: the replica
+	// count, version skew during a rollout, and the absence that says a
+	// replica stopped reporting.
+	edition := buildEdition
+	if auth.MultiTenantEnabled {
+		edition = "saas"
+	}
+	api.RegisterBuildInfo(prometheus.DefaultRegisterer, version, edition)
+
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
 	// ({tenant_id!=""})` and caches the result. Pre-forward gate
@@ -971,6 +996,15 @@ func main() {
 	// when the process exits.
 	if vmURL != "" {
 		go api.SelfWriteMetricsToVM(context.Background(), prometheus.DefaultGatherer, vmURL)
+	}
+
+	// The external watcher (doc #67, O4): a second copy of the API's health
+	// series to an outside Prometheus (e.g. Grafana Cloud), so the API being
+	// down — the one failure it cannot report about itself — is noticed from
+	// outside. Independent of VictoriaMetrics on purpose. Off unless
+	// KUBEBOLT_EXTERNAL_METRICS_URL is set.
+	if ext := api.ExternalMetricsConfigFromEnv(); ext.URL != "" {
+		go api.PushMetricsExternally(context.Background(), prometheus.DefaultGatherer, ext)
 	}
 
 	// Meter per-org active-series cardinality from VM on a ticker. No-op unless
@@ -1241,6 +1275,7 @@ func main() {
 		// on every tick, so UI changes take effect on the next hourly
 		// pass without a restart. Falls back to the env-only baseline
 		// when the runtime isn't available (auth-disabled mode).
+		pruneJob := opsmetrics.NewJob("agent_registry_prune", time.Hour)
 		go func() {
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
@@ -1259,11 +1294,15 @@ func main() {
 					if settingsRuntime != nil {
 						horizon = settingsRuntime.IngestChannel().AgentRegistryPruneHorizon
 					}
+					run := pruneJob.Start()
 					removed, err := agentStore.Prune(time.Now().UTC().Add(-horizon))
 					if err != nil {
+						run.End()
 						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
 						continue
 					}
+					run.OK()
+					run.End()
 					if removed > 0 {
 						slog.Info("agent registry pruned",
 							slog.Int("removed", removed),
@@ -1294,6 +1333,7 @@ func main() {
 		events:        eventStore,
 		audit:         actionAuditStore,
 		conversations: copilotConversations,
+		feedback:      copilotFeedback,
 		episodes:      episodePruner,
 	}
 	// Orphan sweep wiring (in-vivo 2026-09-15): the KEEP set is the manager's

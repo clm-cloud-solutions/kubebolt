@@ -3,6 +3,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/golang/snappy"
 	"google.golang.org/protobuf/encoding/protowire"
@@ -266,4 +267,95 @@ func countSamplesInWriteRequest(decoded []byte) (int, error) {
 		rem = rem[skipLen:]
 	}
 	return count, nil
+}
+
+// promWriteBacklogAge is how old a batch's newest sample must be for the batch
+// to count as a backlog: Prometheus ships a live sample within seconds
+// (batch_send_deadline 5s), so two minutes leaves room for a slow sender or a
+// skewed clock and still tells a catch-up apart.
+const promWriteBacklogAge = 2 * time.Minute
+
+// isBacklog reports whether every sample in the decoded WriteRequest is older
+// than promWriteBacklogAge — a sender catching up, not live traffic. A batch
+// without samples is not a backlog.
+func isBacklog(decoded []byte, now time.Time) bool {
+	newest, ok := newestSampleMillis(decoded)
+	return ok && now.Sub(time.UnixMilli(newest)) > promWriteBacklogAge
+}
+
+// newestSampleMillis walks a decoded WriteRequest for its newest sample
+// timestamp (Sample.timestamp, ms). ok is false when there is none. Only run
+// when the rate limiter has already refused the batch, so it stays off the
+// hot path.
+func newestSampleMillis(decoded []byte) (newest int64, ok bool) {
+	const (
+		fieldTimeSeries = 1 // WriteRequest.timeseries
+		fieldSamples    = 2 // TimeSeries.samples
+		fieldTimestamp  = 2 // Sample.timestamp
+	)
+	rem := decoded
+	for len(rem) > 0 {
+		num, typ, tagLen := protowire.ConsumeTag(rem)
+		if tagLen < 0 {
+			return newest, ok
+		}
+		rem = rem[tagLen:]
+		if num == fieldTimeSeries && typ == protowire.BytesType {
+			ts, n := protowire.ConsumeBytes(rem)
+			if n < 0 {
+				return newest, ok
+			}
+			rem = rem[n:]
+			for len(ts) > 0 {
+				innerNum, innerTyp, innerTagLen := protowire.ConsumeTag(ts)
+				if innerTagLen < 0 {
+					break
+				}
+				ts = ts[innerTagLen:]
+				if innerNum == fieldSamples && innerTyp == protowire.BytesType {
+					sample, m := protowire.ConsumeBytes(ts)
+					if m < 0 {
+						break
+					}
+					ts = ts[m:]
+					for len(sample) > 0 {
+						sNum, sTyp, sTagLen := protowire.ConsumeTag(sample)
+						if sTagLen < 0 {
+							break
+						}
+						sample = sample[sTagLen:]
+						if sNum == fieldTimestamp && sTyp == protowire.VarintType {
+							v, k := protowire.ConsumeVarint(sample)
+							if k < 0 {
+								break
+							}
+							if ms := int64(v); !ok || ms > newest {
+								newest, ok = ms, true
+							}
+							sample = sample[k:]
+							continue
+						}
+						skip := protowire.ConsumeFieldValue(sNum, sTyp, sample)
+						if skip < 0 {
+							break
+						}
+						sample = sample[skip:]
+					}
+					continue
+				}
+				skip := protowire.ConsumeFieldValue(innerNum, innerTyp, ts)
+				if skip < 0 {
+					break
+				}
+				ts = ts[skip:]
+			}
+			continue
+		}
+		skip := protowire.ConsumeFieldValue(num, typ, rem)
+		if skip < 0 {
+			return newest, ok
+		}
+		rem = rem[skip:]
+	}
+	return newest, ok
 }

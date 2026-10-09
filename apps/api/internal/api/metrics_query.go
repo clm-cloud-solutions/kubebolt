@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // metricsStorageURL returns the backing VictoriaMetrics (or any
@@ -26,7 +27,14 @@ func metricsStorageURL() string {
 	return "http://localhost:8428"
 }
 
-var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
+// The clients the API reads VictoriaMetrics with, one per call site so
+// Operations can tell whose queries are slow or failing (opsmetrics).
+var (
+	metricsHTTPClient  = opsmetrics.VMClient("dashboards", 15*time.Second)
+	platformHTTPClient = opsmetrics.VMClient("platform", 15*time.Second)
+	kobiMetricsClient  = opsmetrics.VMClient("kobi", 15*time.Second)
+	promWriteClient    = opsmetrics.VMClient("remote_write", 15*time.Second)
+)
 
 // activeClusterUID returns the kube-system UID of the cluster this
 // handler is currently pointed at, or empty when no connector is

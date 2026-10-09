@@ -148,11 +148,18 @@ type openaiPromptTokensDetails struct {
 	CachedTokens int `json:"cached_tokens"`
 }
 
+// openaiCompletionTokensDetails reports the part of completion_tokens spent
+// reasoning (o-series, GPT-5 and later). A subset of completion_tokens.
+type openaiCompletionTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
+}
+
 type openaiUsage struct {
-	PromptTokens        int                       `json:"prompt_tokens"`
-	CompletionTokens    int                       `json:"completion_tokens"`
-	TotalTokens         int                       `json:"total_tokens"`
-	PromptTokensDetails openaiPromptTokensDetails `json:"prompt_tokens_details"`
+	PromptTokens            int                           `json:"prompt_tokens"`
+	CompletionTokens        int                           `json:"completion_tokens"`
+	TotalTokens             int                           `json:"total_tokens"`
+	PromptTokensDetails     openaiPromptTokensDetails     `json:"prompt_tokens_details"`
+	CompletionTokensDetails openaiCompletionTokensDetails `json:"completion_tokens_details"`
 }
 
 type openaiResponse struct {
@@ -259,6 +266,7 @@ func (p *OpenAIProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRespon
 			InputTokens:     nonCachedInput,
 			OutputTokens:    or.Usage.CompletionTokens,
 			CacheReadTokens: cachedTokens,
+			ThinkingTokens:  or.Usage.CompletionTokensDetails.ReasoningTokens,
 		}, "openai", model),
 	}
 	for _, tc := range choice.Message.ToolCalls {

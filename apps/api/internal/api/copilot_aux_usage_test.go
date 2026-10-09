@@ -16,7 +16,7 @@ func TestRecordAuxUsage_PersistsAttributedRecord(t *testing.T) {
 	defer cleanup()
 
 	h.recordAuxUsage(
-		"alice", "prod", "conv-1", "auto_title",
+		"alice", "prod", "uid-prod", "", "conv-1", "auto_title",
 		"anthropic", "claude-haiku-4-5",
 		copilot.Usage{InputTokens: 120, OutputTokens: 8},
 		50*time.Millisecond,
@@ -50,6 +50,6 @@ func TestRecordAuxUsage_PersistsAttributedRecord(t *testing.T) {
 func TestRecordAuxUsage_NilStoreIsNoOp(t *testing.T) {
 	h := &handlers{} // no copilotUsage wired (auth/persistence disabled)
 	// Must not panic and must be a silent no-op.
-	h.recordAuxUsage("u", "c", "cid", "manual_compact", "openai", "gpt-4o-mini",
+	h.recordAuxUsage("u", "c", "", "", "cid", "manual_compact", "openai", "gpt-4o-mini",
 		copilot.Usage{InputTokens: 10}, time.Millisecond)
 }

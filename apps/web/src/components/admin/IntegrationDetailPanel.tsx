@@ -629,6 +629,8 @@ remote_write:
   - url: http(s)://kubebolt.example.com/api/v1/prom/write
     authorization:
       credentials: <ingest-token>
+    queue_config:
+      retry_on_http_429: true   # retry rate-limited batches instead of dropping them
 `
 
   async function copy() {

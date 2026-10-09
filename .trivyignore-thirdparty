@@ -23,3 +23,11 @@
 # CRITICAL/HIGH on both images. The pin lives in deploy/helm/kubebolt/values.yaml,
 # deploy/docker-compose.yml and the kubebolt-agent chart (vmagent); bump them
 # together — the preflight fails on drift.
+#
+# 2026-10-09: v1.153.0-scratch picked up CVE-2026-78667 (net/http) and
+# CVE-2026-97031 (crypto/tls), fixed in Go 1.27.2 — no stable VictoriaMetrics
+# release carried the fix yet. Moved to v1.154.0-rc0-scratch (0 CRITICAL/HIGH
+# on both images; rules, queries, remote_write/import/export and vmagent
+# scraping checked against it). A release candidate does not ship: move to the
+# v1.154.0 final before cutting a release — or, if it is late, cut the release
+# on v1.153.0-scratch with those two CVEs waived here.

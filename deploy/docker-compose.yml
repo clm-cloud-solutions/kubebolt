@@ -85,6 +85,13 @@ services:
       # Update check — set to false for air-gapped installs so the
       # backend never reaches out to api.github.com. Cache TTL 6h.
       - KUBEBOLT_UPDATE_CHECK_ENABLED=${KUBEBOLT_UPDATE_CHECK_ENABLED:-true}
+      # External watcher (doc #67, O4): the API's health series, a second copy
+      # to an outside Prometheus (e.g. Grafana Cloud) by remote_write. Blank URL = off.
+      - KUBEBOLT_EXTERNAL_METRICS_URL=${KUBEBOLT_EXTERNAL_METRICS_URL:-}
+      - KUBEBOLT_EXTERNAL_METRICS_USER=${KUBEBOLT_EXTERNAL_METRICS_USER:-}
+      - KUBEBOLT_EXTERNAL_METRICS_TOKEN=${KUBEBOLT_EXTERNAL_METRICS_TOKEN:-}
+      - KUBEBOLT_EXTERNAL_METRICS_LABELS=${KUBEBOLT_EXTERNAL_METRICS_LABELS:-}
+      - KUBEBOLT_EXTERNAL_METRICS_INTERVAL=${KUBEBOLT_EXTERNAL_METRICS_INTERVAL:-60s}
       # Cold cluster-connect cache-sync timeout (seconds). Raise for large
       # clusters that flake on first switch. Runtime-overridable via
       # Settings → General (no restart). Default 45.
@@ -103,7 +110,7 @@ services:
     ports: ["3000:3000"]
     depends_on: [api]
   victoriametrics:
-    image: victoriametrics/victoria-metrics:v1.153.0-scratch
+    image: victoriametrics/victoria-metrics:v1.154.0-rc0-scratch
     ports: ["8428:8428"]
     volumes:
       - kubebolt-vm-data:/victoria-metrics-data
@@ -120,6 +127,11 @@ services:
       # this strategy but never wired the flag; closed here.
       # Idempotent for single-vmagent setups — no duplicates to collapse.
       - "--dedup.minScrapeInterval=30s"
+      # VictoriaMetrics measures itself (memory, disk, series, ingest rate)
+      # into its own storage, as job="victoria-metrics": Administration ›
+      # System › Health charts it. No tenant_id, so it never counts toward
+      # the active-series cap.
+      - "--selfScrapeInterval=30s"
     restart: unless-stopped
 
 volumes:

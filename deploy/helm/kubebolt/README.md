@@ -151,12 +151,14 @@ Full reference with comments: [`values.yaml`](https://github.com/clm-cloud-solut
 |-----------|-------------|---------|
 | `metrics.storage.embedded.enabled` | Deploy the bundled single-node VictoriaMetrics StatefulSet | `true` |
 | `metrics.storage.embedded.image.repository` | VictoriaMetrics image | `victoriametrics/victoria-metrics` |
-| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.153.0-scratch` |
+| `metrics.storage.embedded.image.tag` | VictoriaMetrics tag | `v1.154.0-rc0-scratch` |
 | `metrics.storage.embedded.image.pullPolicy` | Pull policy | `IfNotPresent` |
 | `metrics.storage.embedded.retention` | Retention window | `30d` |
 | `metrics.storage.embedded.persistence.enabled` | Use a PVC (otherwise `emptyDir`) | `true` |
 | `metrics.storage.embedded.persistence.size` | PVC size | `10Gi` |
 | `metrics.storage.embedded.persistence.storageClass` | StorageClass; empty = cluster default | `""` |
+| `metrics.alertRules.enabled` | Render KubeBolt's own alert rules (`files/kubebolt-alerts.yaml`) as a prometheus-operator `PrometheusRule` — needs the `monitoring.coreos.com` CRDs | `false` |
+| `metrics.alertRules.labels` | Extra labels on the `PrometheusRule`, for your Prometheus' `ruleSelector` (kube-prometheus-stack: `release: <its release>`) | `{}` |
 | `metrics.storage.embedded.persistence.accessModes` | PVC access modes | `[ReadWriteOnce]` |
 | `metrics.storage.embedded.resources` | VictoriaMetrics requests / limits | `100m`/`256Mi` – `1000m`/`2Gi` |
 | `metrics.storage.embedded.extraArgs` | Extra VictoriaMetrics flags, appended after the chart's (`--dedup.minScrapeInterval=30s` is set by default; pass `--dedup.minScrapeInterval=0` to disable) | `[]` |

@@ -98,7 +98,7 @@ If your AKS cluster uses a private ACR and restricts external registries, you ma
 ```bash
 az acr import --name myacr --source ghcr.io/clm-cloud-solutions/kubebolt/api:2.1.0
 az acr import --name myacr --source ghcr.io/clm-cloud-solutions/kubebolt/web:2.1.0
-az acr import --name myacr --source docker.io/victoriametrics/victoria-metrics:v1.153.0-scratch
+az acr import --name myacr --source docker.io/victoriametrics/victoria-metrics:v1.154.0-rc0-scratch
 ```
 
 Then override `api.image.repository`, `web.image.repository` and `metrics.storage.embedded.image.repository` in the Helm values. Match the tags to the chart version you install.

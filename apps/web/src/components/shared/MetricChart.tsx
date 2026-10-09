@@ -2,6 +2,7 @@ import { useQueries } from '@tanstack/react-query'
 import {
   ComposedChart,
   Area,
+  Bar,
   Line,
   XAxis,
   YAxis,
@@ -14,12 +15,13 @@ import { useId, useMemo, useState } from 'react'
 
 import { api, ApiError, type PromRangeResponse } from '@/services/api'
 import { LoadingSpinner } from './LoadingSpinner'
+import { useElementWidth } from '@/hooks/useElementWidth'
 import { ErrorState } from './ErrorState'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
-export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent' | 'usd'
+export type UnitKind = 'bytes' | 'bytes/s' | 'cores' | 'count' | 'percent' | 'usd' | 'seconds' | 'times'
 
 interface QuerySpec {
   query: string
@@ -143,7 +145,34 @@ interface MetricChartProps {
   // "line" draws only the stroke (lighter, used for CPU / RAM / Network).
   // "area" draws stroke + gradient fill (used for volume-like metrics like
   // Filesystem). Defaults to "area" for backward compatibility.
-  chartType?: 'line' | 'area'
+  //
+  // "stacked" stacks the areas (parts of a whole over time: tokens by kind,
+  // cost by product); "bar" stacks bars per interval (counts of discrete
+  // events: turns by outcome, connections by status).
+  chartType?: 'line' | 'area' | 'stacked' | 'bar'
+
+  // Sparse: the series only has values in the intervals where something
+  // happened (Kobi turns, the p95 of the calls in an interval). Idle
+  // intervals stay empty — no bar, no tooltip — and lines draw a point per
+  // value instead of joining one event to the next across idle time.
+  sparse?: boolean
+
+  // Logarithmic Y axis, for a ratio whose values span orders of magnitude
+  // (0.2× to 20×). Every value must be positive; zero has no place on it.
+  logScale?: boolean
+
+  // A control of the card's own, drawn at the right of its header — e.g. a
+  // "group by" selector that changes the query.
+  headerRight?: React.ReactNode
+
+  // A color per series from its labels, for series whose meaning has a color
+  // (outcome=error → red, status=connected → green). Wins over accents and
+  // the query's accent; undefined falls through to them.
+  seriesColor?: (labels: Record<string, string>, prefix?: string) => string | undefined
+
+  // Extra text shown after the series name in the hover tooltip only, muted
+  // and in parentheses — e.g. the tenant_id behind an organization's name.
+  seriesDetail?: (labels: Record<string, string>, prefix?: string) => string | undefined
 
   // Optional extra rows appended to the bottom of the tooltip,
   // separated by a divider. Receives the hovered timestamp (unix
@@ -161,6 +190,17 @@ interface MetricChartProps {
   // cluster_id label. Default false keeps every existing dashboard
   // unchanged.
   bypassClusterScope?: boolean
+
+  // What an empty result MEANS on this chart, replacing the default copy
+  // (written for pod charts: "the pod may be younger…"). For a counter of
+  // events, empty is good news — say so ("No provider errors in this window").
+  emptyMessage?: string
+  emptyHint?: string
+
+  // Mono line under the chart naming the metrics it is drawn from, so the
+  // reader can tell what the curve measures (Platform › Operations). Shown
+  // with or without data.
+  footnote?: React.ReactNode
 
   // When set, the reference-line toggle state persists to
   // localStorage under this key (e.g. "capacity-cpu") so a user who
@@ -184,6 +224,34 @@ const LEGEND_MAX = 6
 // localStorage unit for refsPersistKey.
 function refKey(rl: ReferenceLineSpec): string {
   return rl.shortLabel ?? rl.label.split(' ')[0]
+}
+
+// stepSeconds reads a range step ("15s", "2m", "1h", "1d") as seconds; 0 if unknown.
+export function stepSeconds(step: string): number {
+  const m = /^(\d+)([smhd])$/.exec(step)
+  if (!m) return 0
+  return Number(m[1]) * ({ s: 1, m: 60, h: 3600, d: 86400 } as const)[m[2] as 's' | 'm' | 'h' | 'd']
+}
+
+// Bars count what happened in each interval, so the interval grows with the
+// range: 10 to 30 bars wide enough to read, instead of the line step's 120
+// slivers at 1h. Never under 30 s — the API writes its counters every 30 s,
+// so a finer bar would just alternate between everything and nothing.
+const BAR_STEPS: Record<number, string> = {
+  5: '30s',
+  15: '1m',
+  60: '2m',
+  360: '15m',
+  1440: '1h',
+  10080: '6h',
+  20160: '12h',
+  43200: '1d',
+}
+
+// barStep is the interval one bar covers at a range (minutes); unknown ranges
+// fall back to the line step.
+export function barStep(rangeMinutes: number, fallback: string): string {
+  return BAR_STEPS[rangeMinutes] ?? fallback
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -275,6 +343,15 @@ export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
     if (absMax >= 10_000) return { divisor: 1000, label: 'k' }
     return { divisor: 1, label: '' }
   }
+  if (unit === 'seconds') {
+    // Latencies: milliseconds below a second, seconds above.
+    if (absMax > 0 && absMax < 1) return { divisor: 0.001, label: 'ms' }
+    return { divisor: 1, label: 's' }
+  }
+  if (unit === 'times') {
+    // A multiple (tokens read back per token written): "4.2 ×".
+    return { divisor: 1, label: '×' }
+  }
   if (unit === 'usd') {
     // Currency: '$' prefix + compact k/M suffix so a $1,842/mo trend
     // and a $0.95/h run-rate both read cleanly on the same axis.
@@ -289,11 +366,11 @@ export function formatValue(v: number | null | undefined, scale: UnitScale, useA
   if (v == null || Number.isNaN(v)) return '—'
   const scaled = (useAbs ? Math.abs(v) : v) / scale.divisor
   const absScaled = Math.abs(scaled)
-  let fixed: string
-  if (absScaled >= 100) fixed = scaled.toFixed(0)
-  else if (absScaled >= 10) fixed = scaled.toFixed(1)
-  else if (absScaled >= 1) fixed = scaled.toFixed(2)
-  else fixed = scaled.toFixed(3)
+  // Thousands grouped ("5,679", "1,023 MiB"): a count below the k threshold
+  // or a scaled value in the hundreds of thousands is unreadable as a bare
+  // run of digits. en-US to match the rest of the UI's figures.
+  const digits = absScaled >= 100 ? 0 : absScaled >= 10 ? 1 : absScaled >= 1 ? 2 : 3
+  const fixed = scaled.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })
   return `${scale.prefix ?? ''}${fixed}${scale.label ? ' ' + scale.label : ''}`
 }
 
@@ -351,6 +428,8 @@ interface ChartPoint {
 interface SeriesInfo {
   name: string
   color: string
+  // Tooltip-only detail (seriesDetail), shown muted after the name.
+  detail?: string
   // True when the query for this series had negate=true — the values are
   // inverted so they render below the zero line. Used to flip the gradient
   // direction so the fill is densest at the peak (away from zero), not
@@ -378,12 +457,20 @@ export function MetricChart({
   rangeOptions = DEFAULT_RANGE_OPTIONS,
   controlledRangeMinutes,
   bypassClusterScope,
+  emptyMessage,
+  emptyHint,
+  footnote,
+  seriesColor,
+  seriesDetail,
   eventMarkers,
   refetchMs = 15_000,
   height = 220,
   showStats = true,
   accents,
   chartType = 'area',
+  sparse = false,
+  logScale = false,
+  headerRight,
   tooltipExtra,
   refsPersistKey,
   recessed = false,
@@ -391,6 +478,7 @@ export function MetricChart({
   const palette = accents && accents.length > 0
     ? [...accents, ...DEFAULT_COLORS.filter(c => !accents.includes(c))]
     : DEFAULT_COLORS
+  const [cardRef, cardWidth] = useElementWidth<HTMLDivElement>()
   const [internalRangeMinutes, setInternalRangeMinutes] = useState(defaultRangeMinutes)
   // Controlled mode: outside selector wins, internal state is ignored.
   const rangeMinutes = controlledRangeMinutes ?? internalRangeMinutes
@@ -434,7 +522,7 @@ export function MetricChart({
   }
 
   const active = rangeOptions.find(r => r.minutes === rangeMinutes) ?? rangeOptions[1]
-  const step = active.step
+  const step = chartType === 'bar' ? barStep(rangeMinutes, active.step) : active.step
 
   const allQueries: QuerySpec[] = queries ?? (query ? [{ query }] : [])
 
@@ -479,8 +567,8 @@ export function MetricChart({
           n++
           name = `${baseName} (${n})`
         }
-        const color = spec?.accent ?? palette[allSeries.length % palette.length]
-        const info: SeriesInfo = { name, color, negated: !!spec?.negate }
+        const color = seriesColor?.(s.metric, spec?.prefix) ?? spec?.accent ?? palette[allSeries.length % palette.length]
+        const info: SeriesInfo = { name, color, negated: !!spec?.negate, detail: seriesDetail?.(s.metric, spec?.prefix) }
 
         const seen: number[] = []
         s.values.forEach(([t, vStr]) => {
@@ -514,11 +602,24 @@ export function MetricChart({
 
     const scale = pickScale(absMax, unit)
 
+    // Sparse series only carry the intervals where something happened. Give
+    // every other interval of the range an empty row, so bars keep their
+    // place in time and hovering an idle interval shows nothing instead of
+    // the nearest event, however far away.
+    const stepSec = stepSeconds(step)
+    if (sparse && stepSec > 0 && pointsMap.size > 0) {
+      const end = Math.floor(Date.now() / 1000)
+      const start = end - rangeMinutes * 60
+      const anchor = pointsMap.keys().next().value as number
+      for (let t = anchor; t >= start - stepSec; t -= stepSec) if (!pointsMap.has(t)) pointsMap.set(t, { t })
+      for (let t = anchor; t <= end; t += stepSec) if (!pointsMap.has(t)) pointsMap.set(t, { t })
+    }
+
     const sortedPoints = Array.from(pointsMap.values()).sort((a, b) => a.t - b.t)
 
     return { points: sortedPoints, series: allSeries, scale }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents])
+  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents, seriesColor, seriesDetail, sparse, step, rangeMinutes])
 
   const toggleSeries = (name: string) => {
     setHidden(prev => {
@@ -531,6 +632,19 @@ export function MetricChart({
 
   const visibleSeries = series.filter(s => !hidden.has(s.name))
   const hasData = points.length > 0 && series.length > 0
+  // The stats column sits beside the plot only when the CARD has room for
+  // both. It used the window's lg breakpoint: in a three-column grid, or with
+  // Kobi's panel docked, a 300px card kept a 130px stats column and the plot
+  // shrank to a sliver. Narrow cards put the stats under the plot. 0 = not
+  // measured yet (and tests): the old breakpoint rule.
+  const statsLayout =
+    !showStats || series.length === 0
+      ? 'grid-cols-1'
+      : cardWidth === 0
+        ? 'lg:grid-cols-[1fr_130px]'
+        : cardWidth >= 560
+          ? 'grid-cols-[1fr_130px]'
+          : 'grid-cols-1'
   // A chart that mirrors a series below the zero line (network RX/TX) prints
   // MAGNITUDES on both halves of the Y axis, so its labels read 0.82 · 0.41 ·
   // 1.07 · 1.74 top-to-bottom — non-monotonic, and nothing on screen says the
@@ -539,7 +653,8 @@ export function MetricChart({
 
   return (
     <div
-      className="rounded-lg border border-kb-border p-4"
+      ref={cardRef}
+      className="rounded-lg border border-kb-border p-4 min-w-0"
       // recessed: the chart sits INSIDE an enclosing panel (Capacity's
       // Cluster trends card) — take the same solid recessed tone the
       // dashboard's inner mini-cards use so it cuts against the parent
@@ -602,6 +717,7 @@ export function MetricChart({
           )}
         </div>
         <div className="flex items-center gap-3">
+          {headerRight}
           {/* Ref toggles are only meaningful when series are actually rendering. */}
           {hasData && referenceLines && referenceLines.length > 0 && (
             <div className="flex items-center gap-1.5">
@@ -724,9 +840,10 @@ export function MetricChart({
 
       {!isLoading && !error && !hasData && (
         <div className="flex flex-col items-center justify-center py-8 gap-1 text-xs text-kb-text-secondary">
-          <span>No data in the selected range.</span>
-          <span className="text-[11px] text-kb-text-tertiary">
-            Try a narrower window — the pod may be younger than {active.label}, or the agent may still be warming up.
+          <span>{emptyMessage ?? 'No data in the selected range.'}</span>
+          <span className="text-[11px] text-kb-text-tertiary text-center">
+            {emptyHint ??
+              `Try a narrower window — the pod may be younger than ${active.label}, or the agent may still be warming up.`}
           </span>
         </div>
       )}
@@ -754,11 +871,11 @@ export function MetricChart({
         const axisFmt = (v: number) => formatTimeAxis(v, spansDays)
         const tipFmt = (v: number) => formatTimeTooltip(v, spansDays)
         return (
-        <div className={`grid gap-3 ${showStats && series.length > 0 ? 'lg:grid-cols-[1fr_130px]' : 'grid-cols-1'}`}>
+        <div className={`grid gap-3 ${statsLayout}`}>
           <div style={{ height: `clamp(160px, 30vh, ${height}px)` }} className="w-full">
             <ResponsiveContainer width="100%" height="100%">
               <ComposedChart data={points} margin={{ top: 4, right: 8, left: 8, bottom: 4 }}>
-                {chartType === 'area' && (
+                {(chartType === 'area' || chartType === 'stacked') && (
                   <defs>
                     {series.map((s, i) => (
                       // Negated series render below the zero line; Recharts
@@ -804,10 +921,12 @@ export function MetricChart({
                   tick={{ fill: 'var(--kb-text-secondary)', fontSize: 10 }}
                   stroke="var(--kb-border)"
                   width={60}
+                  {...(logScale ? { scale: 'log' as const, allowDataOverflow: true } : {})}
                   // Extend domain to include reference lines so they stay
                   // visible. 10% headroom prevents the dashed line from
-                  // being clipped at the chart edge.
-                  domain={[
+                  // being clipped at the chart edge. A log axis cannot reach
+                  // zero: it spans the data with some room either side.
+                  domain={logScale ? [(dataMin: number) => dataMin / 1.5, (dataMax: number) => dataMax * 1.5] : [
                     (dataMin: number) => {
                       const refMin = Math.min(0, ...(effectiveRefs?.map(r => r.y) ?? [0]))
                       return Math.min(dataMin, refMin) * 1.05
@@ -835,23 +954,30 @@ export function MetricChart({
                     return (
                       <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
                         <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border">
-                          {tipFmt(label as number)}
+                          {/* A bar covers the interval that ends at its timestamp. */}
+                          {chartType === 'bar' && stepSeconds(step) > 0
+                            ? `${tipFmt((label as number) - stepSeconds(step))} – ${tipFmt(label as number)}`
+                            : tipFmt(label as number)}
                         </div>
                         <div className="space-y-1">
-                          {payload.map((p, i) => (
+                          {payload.map((p, i) => {
+                            const detail = series.find((s) => s.name === p.name)?.detail
+                            return (
                             <div key={i} className="flex items-center gap-2">
                               <span
                                 className="w-2 h-2 rounded-full flex-shrink-0"
                                 style={{ background: p.color as string }}
                               />
-                              <span className="text-kb-text-secondary truncate max-w-[140px]">
+                              <span className={`text-kb-text-secondary truncate ${detail ? 'max-w-[320px]' : 'max-w-[140px]'}`}>
                                 {p.name}
+                                {detail && <span className="text-kb-text-tertiary font-mono text-[10px]"> ({detail})</span>}
                               </span>
                               <span className="ml-auto tabular-nums font-mono text-kb-text-primary">
                                 {formatValue(p.value as number, scale, true)}
                               </span>
                             </div>
-                          ))}
+                            )
+                          })}
                         </div>
                         {nearbyMarkers.length > 0 && (
                           <div className="mt-2 pt-1.5 border-t border-kb-border space-y-1">
@@ -939,11 +1065,23 @@ export function MetricChart({
                   )
                 })}
                 {series.map((s, i) =>
-                  chartType === 'area' ? (
+                  chartType === 'bar' ? (
+                    <Bar
+                      key={s.name}
+                      dataKey={s.name}
+                      stackId="stack"
+                      fill={s.color}
+                      fillOpacity={0.85}
+                      maxBarSize={14}
+                      isAnimationActive={false}
+                      hide={hidden.has(s.name)}
+                    />
+                  ) : chartType === 'area' || chartType === 'stacked' ? (
                     <Area
                       key={s.name}
                       type="monotone"
                       dataKey={s.name}
+                      stackId={chartType === 'stacked' ? 'stack' : undefined}
                       stroke={s.color}
                       strokeWidth={1.75}
                       fill={`url(#${gradPrefix}-${i})`}
@@ -960,9 +1098,9 @@ export function MetricChart({
                       dataKey={s.name}
                       stroke={s.color}
                       strokeWidth={1.75}
-                      dot={false}
+                      dot={sparse ? { r: 2.5, fill: s.color, strokeWidth: 0 } : false}
                       isAnimationActive={false}
-                      connectNulls
+                      connectNulls={!sparse}
                       hide={hidden.has(s.name)}
                     />
                   ),
@@ -983,6 +1121,12 @@ export function MetricChart({
         </div>
         )
       })()}
+
+      {footnote && (
+        <div className="mt-3 pt-2 border-t border-kb-border text-[10.5px] leading-relaxed font-mono text-kb-text-tertiary break-words">
+          {footnote}
+        </div>
+      )}
     </div>
   )
 }

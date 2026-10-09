@@ -1,0 +1,285 @@
+# KubeBolt's alert rules on its own health (doc #67, O3), in standard PromQL.
+#
+# Load them into the Prometheus (or Grafana / Mimir) that holds the API's
+# health series — either one that scrapes the API's /metrics, or the stack the
+# external watcher pushes to (KUBEBOLT_EXTERNAL_METRICS_*, see
+# docs/operations/external-watcher.md). The kubebolt-kobi group needs /metrics:
+# the external push leaves Kobi out. With prometheus-operator, the chart
+# renders them as a PrometheusRule (metrics.alertRules.enabled).
+#
+# Conventions:
+# - The selectors name KubeBolt's own families only, so the rules work
+#   whatever job label the scrape gives them, with or without the push's
+#   run_id.
+# - KubeBolt's counters start at zero inside the process; increase() needs two
+#   samples, so the first events of a new label set are seen from its second
+#   sample on. Every count rule asks for a minimum, and its description says
+#   so where it matters.
+# - KubeBoltMetricsStoreUnreachable is the root: while the API cannot write its
+#   own series to VictoriaMetrics — and for ten minutes after its last failed
+#   write — the rules that would only repeat that problem (server errors from
+#   the metrics routes, jobs that read VictoriaMetrics, failing calls to it)
+#   are held. The condition is repeated inline in each of them, so no rule
+#   depends on another one's ALERTS series.
+#
+# Tests: deploy/prometheus/kubebolt-alerts.test.yaml (promtool test rules).
+
+groups:
+  - name: kubebolt-api
+    rules:
+      - alert: KubeBoltMetricsStoreUnreachable
+        expr: |
+          max(
+            time() - max by (name) (kubebolt_job_last_success_timestamp_seconds{name="selfwrite"} > 0)
+              > max by (name) (clamp_min(3 * kubebolt_job_interval_seconds{name="selfwrite"}, 120))
+          )
+          or
+          max(sum by (instance) (increase(kubebolt_vm_requests_total{caller="selfwrite", result!~"ok|http_4xx"}[10m]))) >= 2
+        labels:
+          severity: critical
+        annotations:
+          summary: KubeBolt cannot write its own metrics to VictoriaMetrics
+          description: >-
+            The API's push of its own series to VictoriaMetrics is late, or it
+            failed at least twice in the last 10 minutes. VictoriaMetrics is
+            down or unreachable: dashboards, Kobi's metric tools and both Health
+            tabs are empty or stale. The rules that would only repeat this are
+            held while it fires.
+
+      - alert: KubeBoltAPIServerErrors
+        expr: |
+          (
+            (
+              sum by (group) (increase(kubebolt_http_requests_total{code="5xx"}[10m]))
+                / sum by (group) (increase(kubebolt_http_requests_total[10m])) > 0.05
+            )
+            and sum by (group) (increase(kubebolt_http_requests_total{code="5xx"}[10m])) >= 10
+          )
+          unless on ()
+          (
+            max(
+              time() - max by (name) (kubebolt_job_last_success_timestamp_seconds{name="selfwrite"} > 0)
+                > max by (name) (clamp_min(3 * kubebolt_job_interval_seconds{name="selfwrite"}, 120))
+            )
+            or
+            max(sum by (instance) (increase(kubebolt_vm_requests_total{caller="selfwrite", result!~"ok|http_4xx"}[10m]))) >= 2
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The API is answering {{ $labels.group }} with server errors'
+          description: >-
+            More than 5% of the route group's requests ended in 5xx over the last
+            10 minutes (at least 10). 503 — a cluster unreachable or a feature
+            not configured — is not counted.
+
+      - alert: KubeBoltAPISlow
+        expr: |
+          (
+            histogram_quantile(0.95, sum by (group, le) (rate(kubebolt_http_request_seconds_bucket[15m])))
+              > 2 * histogram_quantile(0.95, sum by (group, le) (rate(kubebolt_http_request_seconds_bucket[7d])))
+          )
+          and histogram_quantile(0.95, sum by (group, le) (rate(kubebolt_http_request_seconds_bucket[15m]))) > 0.5
+          and sum by (group) (increase(kubebolt_http_request_seconds_count[15m])) >= 50
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The API is slower than normal on {{ $labels.group }}'
+          description: >-
+            The route group's p95 over the last 15 minutes is more than twice its
+            7-day p95 and above 0.5 s (at least 50 requests), for 10 minutes.
+
+      - alert: KubeBoltJobLate
+        expr: |
+          (
+            (
+              time() - max by (name) (kubebolt_job_last_success_timestamp_seconds{name!="selfwrite"} > 0)
+                > max by (name) (clamp_min(3 * kubebolt_job_interval_seconds{name!="selfwrite"}, 120))
+            )
+            or
+            (
+              max by (name) (
+                clamp_min(3 * kubebolt_job_interval_seconds{name!="selfwrite"}, 120)
+                  < ignoring (name) group_left () (time() - process_start_time_seconds)
+              )
+              unless on (name) (kubebolt_job_last_success_timestamp_seconds > 0)
+            )
+          )
+          unless on ()
+          (
+            max(
+              time() - max by (name) (kubebolt_job_last_success_timestamp_seconds{name="selfwrite"} > 0)
+                > max by (name) (clamp_min(3 * kubebolt_job_interval_seconds{name="selfwrite"}, 120))
+            )
+            or
+            max(sum by (instance) (increase(kubebolt_vm_requests_total{caller="selfwrite", result!~"ok|http_4xx"}[10m]))) >= 2
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The background job {{ $labels.name }} has stopped succeeding'
+          description: >-
+            The job has not finished without error for three of its intervals
+            (two minutes at least), or never has since the API started three
+            intervals ago. Administration › System › Health › Background jobs
+            says whether its runs are failing or it stopped running.
+
+      - alert: KubeBoltVictoriaMetricsCallsFailing
+        expr: |
+          (
+            (
+              sum by (caller) (increase(kubebolt_vm_requests_total{result=~"timeout|http_5xx|error"}[10m]))
+                / sum by (caller) (increase(kubebolt_vm_requests_total[10m])) > 0.10
+            )
+            and sum by (caller) (increase(kubebolt_vm_requests_total{result=~"timeout|http_5xx|error"}[10m])) >= 5
+          )
+          unless on ()
+          (
+            max(
+              time() - max by (name) (kubebolt_job_last_success_timestamp_seconds{name="selfwrite"} > 0)
+                > max by (name) (clamp_min(3 * kubebolt_job_interval_seconds{name="selfwrite"}, 120))
+            )
+            or
+            max(sum by (instance) (increase(kubebolt_vm_requests_total{caller="selfwrite", result!~"ok|http_4xx"}[10m]))) >= 2
+          )
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Calls to VictoriaMetrics from {{ $labels.caller }} are failing'
+          description: >-
+            More than 10% of this caller's requests to VictoriaMetrics timed out
+            or failed over the last 10 minutes (at least 5). 4xx answers — a
+            query someone wrote wrong — do not count.
+
+      - alert: KubeBoltLiveUpdatesDropped
+        expr: sum(increase(kubebolt_ws_dropped_total{reason="queue_full"}[10m])) >= 1
+        labels:
+          severity: warning
+        annotations:
+          summary: Live updates are being dropped
+          description: >-
+            The WebSocket hub's queue filled up in the last 10 minutes and events
+            were dropped for every browser: lists stay stale until their next
+            poll.
+
+      - alert: KubeBoltAPIRestarting
+        expr: |
+          count by (instance) (count by (instance, run_id) (count_over_time(kubebolt_build_info{run_id!=""}[1h]))) > 5
+          or
+          max by (instance) (changes(process_start_time_seconds[1h]) and on (instance, job) kubebolt_build_info) > 5
+        labels:
+          severity: critical
+        annotations:
+          summary: 'The API replica {{ $labels.instance }} keeps restarting'
+          description: >-
+            More than 5 API processes ran on the same replica in the last hour:
+            a crash loop or repeated OOM kills.
+
+  - name: kubebolt-kobi
+    rules:
+      - alert: KobiTurnsFailing
+        expr: |
+          (
+            sum(increase(kubebolt_kobi_copilot_sessions_total{outcome="error"}[15m]))
+              / sum(increase(kubebolt_kobi_copilot_sessions_total[15m])) > 0.05
+          )
+          and sum(increase(kubebolt_kobi_copilot_sessions_total{outcome="error"}[15m])) >= 2
+        labels:
+          severity: critical
+        annotations:
+          summary: Kobi is failing
+          description: >-
+            More than 5% of Kobi's chat turns ended in error over the last 15
+            minutes (at least 2). Administration › AI › Health shows the
+            provider errors behind them.
+
+      - alert: KobiProviderErrors
+        expr: sum by (kind) (increase(kubebolt_kobi_copilot_provider_errors_total{kind=~"rate_limit|overloaded|server"}[10m])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The AI provider is answering Kobi with {{ $labels.kind }} errors'
+          description: >-
+            At least 3 rate-limit, overload or server errors from the AI
+            provider in 10 minutes.
+
+      - alert: KobiOnFallback
+        expr: sum by (from_model, to_model) (increase(kubebolt_kobi_copilot_fallback_total[10m])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Kobi is running on its fallback model {{ $labels.to_model }}'
+          description: >-
+            Calls to the primary model failed over to the fallback at least 3
+            times in 10 minutes.
+
+      - alert: KobiModelRefusals
+        expr: sum(increase(kubebolt_kobi_copilot_model_calls_total{stop_reason="refusal"}[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: The model refused a request to Kobi
+          description: >-
+            The model stopped with a refusal in the last hour. The very first
+            refusal of a process is counted from the second one on.
+
+      - alert: KobiAnswersCut
+        expr: |
+          (
+            sum(increase(kubebolt_kobi_copilot_model_calls_total{stop_reason="max_tokens"}[1h]))
+              / sum(increase(kubebolt_kobi_copilot_model_calls_total[1h])) > 0.01
+          )
+          and sum(increase(kubebolt_kobi_copilot_model_calls_total{stop_reason="max_tokens"}[1h])) >= 3
+        labels:
+          severity: warning
+        annotations:
+          summary: Kobi's answers are cut at the output limit
+          description: >-
+            More than 1% of model calls in the last hour stopped at max_tokens
+            (at least 3). Raise the maximum output tokens in Administration › AI.
+
+      - alert: KobiModelSlow
+        expr: |
+          (
+            histogram_quantile(0.95, sum by (provider, model, le) (rate(kubebolt_kobi_copilot_model_call_seconds_bucket[15m])))
+              > 2 * histogram_quantile(0.95, sum by (provider, model, le) (rate(kubebolt_kobi_copilot_model_call_seconds_bucket[7d])))
+          )
+          and sum by (provider, model) (increase(kubebolt_kobi_copilot_model_call_seconds_count[15m])) >= 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'The model {{ $labels.model }} is slower than normal'
+          description: >-
+            The p95 of model calls over the last 15 minutes is more than twice
+            its 7-day p95 (at least 5 calls), for 10 minutes.
+
+      - alert: KobiAnswerQuality
+        expr: |
+          (
+            sum(increase(kubebolt_kobi_copilot_feedback_total{rating="down"}[24h]))
+              / sum(increase(kubebolt_kobi_copilot_feedback_total[24h])) > 0.20
+          )
+          and sum(increase(kubebolt_kobi_copilot_feedback_total[24h])) >= 20
+        labels:
+          severity: warning
+        annotations:
+          summary: Users rate Kobi's answers poorly
+          description: >-
+            More than 20% of the ratings users gave Kobi's answers over the last
+            24 hours were 👎 (at least 20 ratings). Administration › AI › Health
+            splits them by reason; each 👎's comment stays with its conversation.
+
+      - alert: KobiSpendAboveLastWeek
+        expr: |
+          sum(increase(kubebolt_kobi_copilot_cost_usd_total[1h]))
+            > 3 * (sum(increase(kubebolt_kobi_copilot_cost_usd_total[1h] offset 1w)) or vector(0))
+          and sum(increase(kubebolt_kobi_copilot_cost_usd_total[1h])) > 2
+        labels:
+          severity: warning
+        annotations:
+          summary: Kobi's spend is above last week
+          description: >-
+            Kobi's estimated AI provider cost over the last hour is more than 3×
+            the same hour last week, and above $2.

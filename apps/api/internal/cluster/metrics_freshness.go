@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
+	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 )
 
 // metricsFreshnessTTL bounds how stale a cached freshness verdict may be before
@@ -59,7 +61,7 @@ func newMetricsFreshnessCache() *metricsFreshnessCache {
 	return &metricsFreshnessCache{
 		entries:  make(map[string]metricsFreshEntry),
 		inFlight: make(map[string]bool),
-		client:   &http.Client{Timeout: metricsFreshnessQueryTimeout},
+		client:   opsmetrics.VMClient("freshness", metricsFreshnessQueryTimeout),
 	}
 }
 
@@ -145,7 +147,9 @@ func (c *metricsFreshnessCache) refresh(orgID, clusterID string) {
 // tenant_id at all — OSS/single-tenant, where the whole VM belongs to this
 // install.
 func (c *metricsFreshnessCache) probe(ctx context.Context, orgID, clusterID string) (bool, error) {
-	selector := fmt.Sprintf(`cluster_id=%q`, clusterID)
+	// Server-owned series carry the cluster's id too (a Kobi session on it) but
+	// say nothing about whether the cluster ships metrics.
+	selector := fmt.Sprintf(`cluster_id=%q,%s`, clusterID, seriesgate.ExcludeServerOwned)
 	if orgID != "" {
 		selector = fmt.Sprintf(`tenant_id=%q,%s`, orgID, selector)
 	}

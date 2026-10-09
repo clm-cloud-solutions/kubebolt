@@ -542,10 +542,17 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			// shows ingest IS arriving even when downstream storage is
 			// down, which is useful diagnostically.
 			s.metrics.RecordSamplesReceived(tenantIDLabel, len(batch.GetSamples()))
+			accepted, dropReservedN := dropReserved(batch.GetSamples())
+			if dropReservedN > 0 {
+				s.metrics.RecordDroppedReserved(tenantIDLabel, dropReservedN)
+				slog.Warn("agent gRPC: dropped samples with reserved KubeBolt names",
+					slog.String("tenant_id", tenantIDLabel), slog.String("agent_id", agentID),
+					slog.Int("samples", dropReservedN))
+			}
 			// Meter accepted samples per authenticated tenant, like the
 			// remote_write path (prom_write.go). See meterSamples.
-			s.meterSamples(ctx, tenantIDLabel, len(batch.GetSamples()))
-			if werr := s.writer.Write(ctx, batch.GetSamples()); werr != nil {
+			s.meterSamples(ctx, tenantIDLabel, len(accepted))
+			if werr := s.writer.Write(ctx, accepted); werr != nil {
 				// v1 surfaced rejections via IngestAck. v2 omits the ack —
 				// the agent's buffer + heartbeat already give the operator
 				// the signals they need; we just log here.
