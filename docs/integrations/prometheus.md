@@ -324,6 +324,16 @@ over it). `KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED=false` switches
 the filter off entirely. Kept custom series count toward the
 max-active-series cap.
 
+The families KubeBolt writes about itself — `kubebolt_http_*`,
+`kubebolt_vm_*`, `kubebolt_job_*`, `kubebolt_ws_*`, `kubebolt_kobi_*`,
+`kubebolt_prom_write_*`, `kubebolt_agent_grpc_*`, `kubebolt_api_*`,
+`kubebolt_build_info` and the like — are **reserved**: they are dropped
+whatever the filter settings, at this door and at the agents', and
+counted with `reason="reserved"`. A copy arriving from outside would
+double what Administration › System › Health and AI › Health show.
+The agent's own self-metrics (`kubebolt_agent_heap_*`,
+`kubebolt_agent_info`, `kubebolt_promread_leader`…) are not reserved.
+
 When a limit trips:
 
 | Limit | HTTP response | Retry-After |
@@ -448,9 +458,10 @@ Helm chart exposes the API as the `<release>-api` Service
       action: keep
 ```
 
-Do not also `remote_write` that job back into KubeBolt: the
-`kubebolt_*` series are already there (self-written), and a second
-copy with a `job` label would double any `sum()` over them.
+There is no need to `remote_write` that job back into KubeBolt: the
+`kubebolt_*` series are already there (self-written). If it happens
+anyway, KubeBolt drops them as reserved names (see *Custom series*
+above), so they never double a `sum()` over them.
 
 ---
 

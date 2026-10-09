@@ -17,6 +17,7 @@ import (
 	"github.com/golang/snappy"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
@@ -479,6 +480,33 @@ func (h *handlers) handlePromWrite(w http.ResponseWriter, r *http.Request) {
 					respondError(w, http.StatusRequestEntityTooLarge, "tenant active series cardinality exceeded")
 					return
 				}
+			}
+		}
+
+		// Reserved families first, for every tenant: the series only KubeBolt
+		// writes about itself (seriesgate/reserved.go) never enter through
+		// remote_write — a Prometheus that scrapes the API's /metrics and
+		// forwards them here would otherwise double them in the Health views.
+		// The byte pre-check keeps the walk off every payload that cannot hold one.
+		if seriesgate.MayHoldReserved(decoded) {
+			kept, nSeries, nSamples, dropped, dropErr := dropReservedSeries(decoded)
+			if dropErr != nil {
+				h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusRejectedMalformed)
+				respondError(w, http.StatusBadRequest, "remote_write payload filter: "+dropErr.Error())
+				return
+			}
+			if dropped {
+				h.promWriteMetrics.RecordDroppedReserved(tenantID, nSeries)
+				slog.Warn("remote_write: dropped series with reserved KubeBolt names",
+					slog.String("tenant_id", tenantID), slog.Int("series", nSeries))
+				sampleCount -= nSamples
+				if sampleCount <= 0 {
+					h.promWriteMetrics.RecordRequest(tenantID, PromWriteStatusAccepted)
+					w.WriteHeader(http.StatusNoContent)
+					return
+				}
+				decoded = kept
+				body = snappy.Encode(nil, kept)
 			}
 		}
 
