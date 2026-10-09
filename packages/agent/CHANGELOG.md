@@ -17,6 +17,7 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (crypto/tls), both HIGH.
 - vmagent v1.153.0 → v1.154.0 in the chart's `scrape.image` (same two CVEs in
   v1.153.0's Go 1.27.1).
+- `golang.org/x/net` v0.58.0 → v0.60.0: CVE-2026-78669 (HTTP/2, HIGH).
 
 ## [1.4.2] — 2026-10-07
 

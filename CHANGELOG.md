@@ -60,6 +60,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - VictoriaMetrics and vmagent v1.153.0 → v1.154.0 (rc0 for now; the release
   waits for the final): v1.153.0 is built on Go 1.27.1 and carries the same
   two CVEs.
+- `golang.org/x/net` v0.58.0 → v0.60.0 in the api, agent and proto modules:
+  CVE-2026-78669 (HTTP/2 SETTINGS flood, HIGH). It needs Go 1.26, so the
+  modules' `go` directive moves from 1.25.0 to 1.26.0.
 
 ## [2.3.0] — 2026-10-07
 
