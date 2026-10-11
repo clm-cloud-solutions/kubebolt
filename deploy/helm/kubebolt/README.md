@@ -395,8 +395,8 @@ already grants read access to the scanner CRDs.
 ## Metrics storage
 
 Time-series data (CPU, memory, network and filesystem samples shipped by
-`kubebolt-agent`, Hubble flow events, remote_write samples) lives in a
-Prometheus-compatible TSDB. See
+`kubebolt-agent`, Hubble flow events, remote_write samples) lives in
+VictoriaMetrics. See
 [kubebolt.io/docs/metrics](https://kubebolt.io/docs/metrics).
 
 **Default — embedded VictoriaMetrics.** The chart deploys a single-node

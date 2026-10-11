@@ -46,6 +46,12 @@ kubectl config use-context docker-desktop
 ./deploy/docker-kubeconfig.sh   # generates /tmp/docker-kubeconfig
 cd deploy && docker compose up -d
 
+# kind — its apiserver is on the host's 127.0.0.1 and its certificate doesn't
+# cover kubernetes.docker.internal: internal kubeconfig + the api on the kind network
+kind get kubeconfig --internal --name <cluster> > /tmp/docker-kubeconfig
+cd deploy && docker compose -f docker-compose.yml -f docker-compose.kind.yml up -d
+# (an agent in that kind cluster dials deploy-api-1:9090)
+
 # Rebuild after code changes:
 docker compose -f deploy/docker-compose.yml up -d --build
 ```

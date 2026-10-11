@@ -465,8 +465,12 @@ go tool pprof http://localhost:6060/debug/pprof/heap
 
 | Topology | `backendUrl` |
 |----------|---------------|
-| Backend in Docker Compose on your laptop, agent in Docker Desktop K8s | `host.docker.internal:9090` |
 | Backend in-cluster via the main chart (release `kubebolt` in namespace `kubebolt`) | `kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090` |
+| Backend on your laptop (Homebrew, krew, binary), agent in kind or Docker Desktop K8s on macOS / Windows | `host.docker.internal:9090` |
+| Same, on Linux | your machine's address on the cluster's Docker network (`host.docker.internal` is not defined there) |
+| Backend in the single container started with `--network kind --name kubebolt`, agent in kind | `kubebolt:9090` |
+| Backend in Docker Compose joined to kind (`docker-compose.kind.yml`), agent in kind | `deploy-api-1:9090` |
+| Backend in Docker Compose on your laptop, agent in Docker Desktop K8s | `host.docker.internal:9090` |
 | Backend behind an internal LoadBalancer | that LB's IP:9090 |
 | Backend on a VM reachable from the cluster | that host:9090 |
 | Backend exposed through the `kubebolt` chart's Gateway API agent listener | `agent.<your-domain>:443` with `tls.enabled=true` |
