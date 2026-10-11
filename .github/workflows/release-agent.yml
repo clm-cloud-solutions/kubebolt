@@ -61,6 +61,10 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          # The version the agent reports in its Hello (Administration ›
+          # Agents); without it every release reported a fixed string.
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
           cache-from: type=gha,scope=agent
           cache-to: type=gha,mode=max,scope=agent
 

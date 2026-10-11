@@ -11,6 +11,12 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **The agent reported version 1.0.0 whatever its release.** The version was
+  a constant in the code; the image now carries its release version, which
+  Administration › Agents shows. A local build reports `dev`.
+
 ### Security
 
 - Go 1.26.6 → 1.26.9: CVE-2026-78667 (net/http) and CVE-2026-97031
