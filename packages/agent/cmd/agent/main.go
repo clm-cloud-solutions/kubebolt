@@ -39,11 +39,13 @@ import (
 )
 
 // agentVersion is reported in the gRPC Hello and as the
-// `agent_version` label of `kubebolt_agent_info`. Bump on schema-
-// affecting changes — the backend uses semver comparison against
-// MinAgentVersion to warn when an older agent connects (legacy
-// schema = empty dashboards).
-const agentVersion = "1.0.0"
+// `agent_version` label of `kubebolt_agent_info`, and Administration ›
+// Agents shows it. The image build sets it from the release tag
+// (-ldflags "-X main.agentVersion=<version>", packages/agent/Dockerfile);
+// any other build reports "dev". The backend compares it with
+// MinAgentVersion to warn when an older agent connects (legacy schema =
+// empty dashboards); "dev" is not semver and never warns.
+var agentVersion = "dev"
 
 func main() {
 	backendURL := flag.String("backend", envOr("KUBEBOLT_BACKEND_URL", "localhost:9090"), "Backend gRPC address (host:port)")
