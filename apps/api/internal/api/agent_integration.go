@@ -55,11 +55,26 @@ func (h *handlers) handleAgentAuthInfo(w http.ResponseWriter, r *http.Request) {
 	// roster into the dialog. tenantsStore is nil when app auth is disabled →
 	// empty list, and the UI falls back to "paste a Secret name" only.
 	if h.tenantsStore != nil {
-		if t, err := h.tenantsStore.GetTenant(auth.ContextTenantID(r)); err == nil {
+		if t, err := h.sessionTenant(r); err == nil {
 			out.Tenants = append(out.Tenants, agentTenantBrief{ID: t.ID, Name: t.Name, Disabled: t.Disabled})
 		}
 	}
 	respondJSON(w, http.StatusOK, out)
+}
+
+// sessionTenant returns the caller's own org. A single-tenant install stamps
+// the default org's NAME on every request (auth.DefaultTenantName: its users
+// carry no OrgID) while tenants are keyed by their generated id, so that name
+// resolves to the default tenant here — without it the wizards found no org
+// and refused to issue a token. Multi-tenant never falls back: a session
+// without its org is not found, never answered with another org.
+func (h *handlers) sessionTenant(r *http.Request) (*auth.Tenant, error) {
+	org := auth.ContextTenantID(r)
+	t, err := h.tenantsStore.GetTenant(org)
+	if errors.Is(err, auth.ErrTenantNotFound) && !auth.MultiTenantEnabled && org == auth.DefaultTenantName {
+		return h.tenantsStore.GetDefaultTenant()
+	}
+	return t, err
 }
 
 // agentIssueTokenRequest is the body the dialog's "Generate token +
@@ -118,9 +133,10 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 	// never a client-supplied tenantId — the add-cluster wizard registers a
 	// cluster into the org the operator is signed into. Cross-org issuance is
 	// not a capability of this flow. Validate the org exists so a broken
-	// session still 404s instead of minting an orphan token.
-	orgID := auth.ContextTenantID(r)
-	if _, err := h.tenantsStore.GetTenant(orgID); err != nil {
+	// session still 404s instead of minting an orphan token. The token carries
+	// the org's id, which is what the agent's authentication looks up.
+	org, err := h.sessionTenant(r)
+	if err != nil {
 		if errors.Is(err, auth.ErrTenantNotFound) {
 			respondError(w, http.StatusNotFound, err.Error())
 			return
@@ -128,6 +144,7 @@ func (h *handlers) handleAgentIssueToken(w http.ResponseWriter, r *http.Request)
 		respondError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	orgID := org.ID
 
 	label := req.Label
 	if label == "" {
