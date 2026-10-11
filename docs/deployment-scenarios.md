@@ -452,14 +452,13 @@ and emitting flow samples.
 
 ---
 
-## Scenario 4 — Single-container CLI (evaluation / demo / dev)
+## Scenario 4 — Single container on your laptop (evaluation / demo / dev)
 
 **Profile:** evaluator or operator who wants to **try KubeBolt without
-deploying it to a cluster**. Use case: a 30-second `docker run`
-to point at any cluster reachable from your laptop via `~/.kube/config`.
-Not a production deployment pattern — no agent, no TSDB, no
-auth-by-default — but the right path when "just show me the UI"
-beats "stand up the full stack."
+deploying it to a cluster**: one `docker run` against the clusters in your
+kubeconfig. The operational core works at once; history needs a
+VictoriaMetrics and the agent next to it (below). Not a production
+deployment pattern — for a team, deploy it with Helm.
 
 ### Pre-flight confirmation
 - [ ] `~/.kube/config` resolves to at least one cluster you have RBAC
@@ -469,16 +468,18 @@ beats "stand up the full stack."
 ### Install recipe
 
 ```bash
-# Pulls the published OCI single-container image (api + web + embedded
-# frontend, served on :3000). Each release has a matching
-# single-container image tagged with its version (e.g. 2.1.0);
-# `:latest` tracks the most recent stable.
-docker run --rm -p 3000:3000 \
+# Pulls the published OCI single-container image (api + embedded frontend,
+# served on :3000). Each release has a matching image tagged with its
+# version (e.g. 2.3.0); `:latest` tracks the most recent stable.
+docker run -d --name kubebolt -p 3000:3000 \
   -v ~/.kube/config:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
-  -e KUBEBOLT_AUTH_ENABLED=false \
+  -v kubebolt-data:/data \
   ghcr.io/clm-cloud-solutions/kubebolt:latest
 
-# Open http://localhost:3000
+# The admin password is generated on first start:
+docker logs kubebolt 2>&1 | grep "admin password"
+
+# Open http://localhost:3000 and sign in as admin
 ```
 
 The container runs as a non-root user and reads the kubeconfig named by
@@ -487,6 +488,15 @@ user), switches between
 contexts via the UI (every kubeconfig context shows up in the cluster
 selector), and uses your local kubeconfig credentials for all
 apiserver calls.
+
+- **Sign-in is on.** The `admin` password is printed in the logs on first
+  start; set `KUBEBOLT_ADMIN_PASSWORD` to choose it. `KUBEBOLT_AUTH_ENABLED=false`
+  removes sign-in — anyone who reaches port 3000 is then cluster-admin
+  against your kubeconfig — and turns off the embedded store with it.
+- **The `kubebolt-data` volume keeps the state** (users, settings, insight
+  history, Kobi conversations) across restarts and upgrades. Without it,
+  every new container starts over with a new password — and changing an
+  environment variable means a new container.
 
 ### Reaching your clusters from the container
 
@@ -501,8 +511,9 @@ your laptop may not work there:
 
     ```bash
     kind get kubeconfig --internal --name <cluster> > /tmp/kind-kubeconfig
-    docker run --rm -p 3000:3000 --network kind \
+    docker run -d --name kubebolt -p 3000:3000 --network kind \
       -v /tmp/kind-kubeconfig:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
+      -v kubebolt-data:/data \
       ghcr.io/clm-cloud-solutions/kubebolt:latest
     ```
 
@@ -525,38 +536,65 @@ your laptop may not work there:
     Homebrew or krew install on your machine, or deploy KubeBolt into the
     cluster with Helm.
 
+### History: a VictoriaMetrics and the agent
+
+The container keeps no time series itself. History takes two more pieces:
+a VictoriaMetrics it writes to, and the agent in the cluster sending it
+samples. With kind, put all three on the `kind` network, where they reach
+each other by container name:
+
+```bash
+# The time-series store
+docker run -d --name kubebolt-vm --network kind \
+  -v kubebolt-vm-data:/victoria-metrics-data \
+  victoriametrics/victoria-metrics:latest
+
+# KubeBolt, pointed at it (recreate the container if it already runs)
+docker run -d --name kubebolt -p 3000:3000 --network kind \
+  -v /tmp/kind-kubeconfig:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
+  -v kubebolt-data:/data \
+  -e KUBEBOLT_METRICS_STORAGE_URL=http://kubebolt-vm:8428 \
+  ghcr.io/clm-cloud-solutions/kubebolt:latest
+
+# The agent, dialing the container by its name
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt-system --create-namespace \
+  --set backendUrl=kubebolt:9090
+```
+
+**Administration › Agents** shows one agent per node once they connect, and
+the Capacity charts fill within a couple of minutes. The store must be
+VictoriaMetrics: KubeBolt writes through its import API.
+
 ### What's enabled
 - ✅ **A** Operational core — lists, details, Map, Insights (24 rules),
   exec / logs / port-forward / files (all run through your local
   kubeconfig).
 - ⚠️ **B** Live commitment bars — depend on Metrics Server in the
   target cluster.
-- ❌ **C** Capacity workload trends (CPU/Mem/Network/Filesystem
-  history) — no TSDB bundled, no agent shipping samples.
-- ❌ **D** Reliability sub-tab — no agent, no Hubble flow ingest.
-- ❌ **E** Cluster-state enrichments — no KSM scrape, no VM
-  to store the time series.
-- ❌ **F** Node OS enrichments — no node-exporter scrape, no VM.
+- ⚠️ **C** Capacity workload trends (CPU/Mem/Network/Filesystem
+  history) — with the VictoriaMetrics and the agent above.
+- ❌ **D** Reliability sub-tab — needs Cilium with Hubble, and the agent's
+  flow collector.
+- ⚠️ **E** Cluster-state enrichments — need the agent's scrape sidecar
+  (kube-state-metrics) on top of the VictoriaMetrics.
+- ⚠️ **F** Node OS enrichments — need the agent's scrape sidecar
+  (node-exporter) on top of the VictoriaMetrics.
 - ✅ **G** Recent deploys overlay — apiserver-only, no TSDB needed.
 - ✅ **H** Resource actions — your local kubeconfig credentials.
 
-In short: A + G + H work full-speed. B partial. C/D/E/F unavailable
-because there's no TSDB.
+In short: A + G + H work at once. B with Metrics Server. C, E and F once the
+VictoriaMetrics and the agent are in place.
 
 ### When to graduate to Scenario 1 / 2 / 3
-The moment you want historical CPU/Mem/Network trends or the
-Reliability sub-tab, the single-container path stops being
-sufficient — that's the moment to switch to a Helm install per
-Scenarios 1-3 above. The `docker run` evaluator workflow is
-designed as the "before" of a longer journey, not the destination.
+The single container lives and dies with your laptop. The moment a team
+relies on it, or it has to keep collecting while your laptop is closed,
+deploy KubeBolt into the cluster with Helm per Scenarios 1-3 above.
 
 ### Limitations
-- **No multi-user auth** (the recipe sets `KUBEBOLT_AUTH_ENABLED=false`
-  for zero-config UX — anyone with access to `localhost:3000` is
-  effectively cluster-admin against your kubeconfig).
-- **No persistence** unless you mount a volume at `/data` — that's
-  where the embedded BoltDB (users, Copilot conversations, insight
-  history) lives, and the `--rm` recipe above discards it.
+- **State only with the volume** — without `-v kubebolt-data:/data`
+  (or `--rm`), users, settings, insight history and Kobi conversations go
+  with the container.
 - **Performance ceiling** — single binary, single-process, embedded
   frontend; fine for evaluating against clusters with hundreds of pods
   but not the right shape for fleet-scale production use.
