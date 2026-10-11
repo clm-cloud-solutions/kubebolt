@@ -159,3 +159,45 @@ func TestSeries_DoNotUseLabelsThePushOverwrites(t *testing.T) {
 		t.Fatalf("only %d kubebolt_ families gathered; the check is not seeing the ops series", seen)
 	}
 }
+
+// Every client that talks to VictoriaMetrics shares this transport, so the
+// credentials configured for the store reach all of them; a caller that sets
+// its own Authorization keeps it, and the caller's request is never modified.
+func TestVMTransport_AddsTheStoreCredentials(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+	}))
+	defer srv.Close()
+	client := VMClient("test", 5*time.Second)
+
+	for _, tc := range []struct {
+		name, token, user, pass, own, want string
+	}{
+		{name: "no credentials", want: ""},
+		{name: "bearer token", token: "tok", want: "Bearer tok"},
+		{name: "basic auth", user: "kb", pass: "s3cret", want: "Basic a2I6czNjcmV0"},
+		{name: "caller's own header wins", token: "tok", own: "Bearer mine", want: "Bearer mine"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KUBEBOLT_METRICS_STORAGE_TOKEN", tc.token)
+			t.Setenv("KUBEBOLT_METRICS_STORAGE_USERNAME", tc.user)
+			t.Setenv("KUBEBOLT_METRICS_STORAGE_PASSWORD", tc.pass)
+			req, _ := http.NewRequest(http.MethodGet, srv.URL+"/api/v1/query", nil)
+			if tc.own != "" {
+				req.Header.Set("Authorization", tc.own)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp.Body.Close()
+			if got != tc.want {
+				t.Fatalf("server saw Authorization %q, want %q", got, tc.want)
+			}
+			if tc.own == "" && req.Header.Get("Authorization") != "" {
+				t.Fatal("the caller's request was modified")
+			}
+		})
+	}
+}

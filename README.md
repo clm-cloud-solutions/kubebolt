@@ -375,7 +375,8 @@ to set:
 | `KUBEBOLT_ADMIN_PASSWORD` | generated | Initial admin password (printed once if generated) |
 | `KUBEBOLT_JWT_SECRET` | generated | Generated once and stored in the data dir; set it to pin or share it |
 | `KUBEBOLT_DATA_DIR` | `./data` | Embedded database location |
-| `KUBEBOLT_METRICS_STORAGE_URL` | — | VictoriaMetrics / Prometheus-compatible endpoint for history |
+| `KUBEBOLT_METRICS_STORAGE_URL` | `http://localhost:8428` | The VictoriaMetrics that keeps history (KubeBolt writes through its import API, so it must be VictoriaMetrics) |
+| `KUBEBOLT_METRICS_STORAGE_USERNAME` / `_PASSWORD` / `_TOKEN` | — | Credentials for a VictoriaMetrics that asks for them: basic auth, or a bearer token (wins) |
 | `KUBEBOLT_AI_API_KEY` | — | Enables Kobi Copilot |
 | `KUBEBOLT_UPDATE_CHECK_ENABLED` | `true` | Release check against GitHub |
 

@@ -8,6 +8,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Credentials for the metrics store**: `KUBEBOLT_METRICS_STORAGE_TOKEN`
+  (bearer) or `KUBEBOLT_METRICS_STORAGE_USERNAME` / `_PASSWORD` (basic auth),
+  sent on every call to VictoriaMetrics; in the chart,
+  `metrics.storage.existingSecret`. A managed VictoriaMetrics can be used
+  as the history store.
 - **Administration › AI › Health**: Kobi's turns and failures, the 👎 share,
   provider errors and what the fallback rescued, refusals and cut-short
   answers, empty or failed tool calls, model latency, cost, tokens and the
@@ -29,6 +34,11 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **KubeBolt says at startup where it keeps history**: the VictoriaMetrics
+  in use and whether it came from `KUBEBOLT_METRICS_STORAGE_URL` or the
+  default `http://localhost:8428`, or `history off` when nothing answers
+  there. A failing write from the agent ingest is logged at most once a
+  minute with how many batches failed, instead of once per batch.
 - remote_write: over the rate limit, a **catch-up after an interruption**
   gets `503` + `Retry-After` (Prometheus retries it) instead of `429`
   (Prometheus drops it unless `retry_on_http_429` is on); a sustained overrun

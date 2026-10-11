@@ -7,24 +7,21 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
-// metricsStorageURL returns the backing VictoriaMetrics (or any
-// Prometheus-compatible) endpoint, configurable via env. Falls back to the
-// Docker Compose service DNS and then to localhost for bare-host dev.
+// metricsStorageURL is the VictoriaMetrics base URL (config.MetricsStorageURL:
+// KUBEBOLT_METRICS_STORAGE_URL, else a VictoriaMetrics on localhost:8428).
 func metricsStorageURL() string {
-	if u := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8428"
+	u, _ := config.MetricsStorageURL()
+	return u
 }
 
 // The clients the API reads VictoriaMetrics with, one per call site so

@@ -36,6 +36,7 @@ const VM_CALLER_COLOR: Record<string, string> = {
   remote_write: '#ec4899',
   series_cap: '#f97316',
   freshness: '#14b8a6',
+  integrations: '#a855f7',
 }
 
 const HTTP_USED = `${inInterval('kubebolt_http_requests_total')} > 0`

@@ -61,6 +61,8 @@ type Server struct {
 	agentv2.UnimplementedAgentChannelServer
 	writer   MetricsWriter
 	registry *channel.AgentRegistry
+	// writeFailures keeps a failing metrics store to one log line a minute.
+	writeFailures writeFailureLog
 
 	// clusterRegistrar bridges to cluster.Manager so agent-proxy
 	// clusters can be added/removed in lockstep with agent
@@ -555,8 +557,12 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			if werr := s.writer.Write(ctx, accepted); werr != nil {
 				// v1 surfaced rejections via IngestAck. v2 omits the ack —
 				// the agent's buffer + heartbeat already give the operator
-				// the signals they need; we just log here.
-				slog.Error("metrics write failed", slog.String("error", werr.Error()))
+				// the signals they need; we just log here, at most once a
+				// minute (writeFailureLog).
+				if logNow, failed := s.writeFailures.record(time.Now()); logNow {
+					slog.Error("metrics write failed", slog.String("error", werr.Error()),
+						slog.Int("failed_batches", failed))
+				}
 			}
 
 		case *agentv2.AgentMessage_KubeResponse,

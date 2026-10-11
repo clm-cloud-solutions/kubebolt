@@ -415,6 +415,17 @@ helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set metrics.storage.externalUrl=http://vmselect.observability.svc.cluster.local:8481
 ```
 
+If the store asks for credentials, put them in a Secret in the release
+namespace — `username` + `password` for basic auth, or `token` for a bearer
+token — and name it in `metrics.storage.existingSecret`:
+
+```bash
+kubectl -n kubebolt create secret generic kubebolt-vm-credentials \
+  --from-literal=token=<token>
+helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set metrics.storage.existingSecret=kubebolt-vm-credentials
+```
+
 Plain Prometheus remote-write isn't enough — KubeBolt also queries the
 endpoint back, so it must accept VM-style reads. vmagent + vmselect behind a
 single URL is the typical setup. Rendering fails if embedded storage is off and
