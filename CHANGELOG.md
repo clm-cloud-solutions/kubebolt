@@ -42,6 +42,18 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **The agent's token could not be issued from the UI on a self-hosted
+  install.** "Generate token + create Secret" (first-run wizard, Add cluster,
+  agent install and configure) answered "No active tenant available" since
+  1.17.1, so the agent's read + write mode could not be set up from the
+  wizard. The token is issued under the default org again.
+- **Homebrew failed when Xcode lagged behind macOS** ("Your Xcode is too
+  outdated"). KubeBolt now ships as a cask, for macOS and Linux: Homebrew
+  installs the release binary without the source-build checks, and removes
+  the quarantine attribute on macOS. The install command does not change. An
+  existing formula install is no longer updated by `brew upgrade`; switch it
+  once with `brew uninstall --formula kubebolt && brew install
+  clm-cloud-solutions/tap/kubebolt`.
 - Kobi no longer shows the AI provider's raw error (URLs, internal addresses,
   provider ids) in the chat: each error class has a fixed message.
 - **Kobi conversations never expired.** The hourly retention pass looked for
