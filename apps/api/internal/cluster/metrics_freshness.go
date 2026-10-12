@@ -7,13 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 )
@@ -210,11 +209,9 @@ func (m *Manager) freshnessScope(orgID string) string {
 	return orgID
 }
 
-// metricsStorageURLForFreshness mirrors api.metricsStorageURL() — the cluster
-// package can't import api (cycle), so the env contract is replicated here.
+// metricsStorageURLForFreshness is the VictoriaMetrics base URL every reader
+// shares (config.MetricsStorageURL).
 func metricsStorageURLForFreshness() string {
-	if u := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8428"
+	u, _ := config.MetricsStorageURL()
+	return u
 }

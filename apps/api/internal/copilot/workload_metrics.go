@@ -8,12 +8,12 @@ import (
 	"math"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
@@ -638,17 +638,14 @@ type vmInstantResponse struct {
 // httptest.Server without mutating shared environment.
 var vmURLTestOverride string
 
-// metricsStorageURLForCopilot mirrors api.metricsStorageURL() but lives here
-// to keep the copilot package free of an api-package dep. The env var is the
-// single source of truth — see deploy templates.
+// metricsStorageURLForCopilot is the VictoriaMetrics base URL every reader
+// shares (config.MetricsStorageURL), unless a test overrides it.
 func metricsStorageURLForCopilot() string {
 	if vmURLTestOverride != "" {
 		return strings.TrimRight(vmURLTestOverride, "/")
 	}
-	if u := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8428"
+	u, _ := config.MetricsStorageURL()
+	return u
 }
 
 // vmHTTPClient is the package-level client for VM round-trips. 15s matches

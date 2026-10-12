@@ -17,6 +17,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/failurelog"
 	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
@@ -79,20 +80,25 @@ func SelfWriteMetricsToVM(ctx context.Context, gatherer prometheus.Gatherer, vmU
 	// have at least one data point within seconds of boot — not
 	// 30 seconds. Without this the first tick of refetchInterval=30s
 	// on the page would land on an empty VM.
-	if err := push(); err != nil {
-		slog.Warn("self-write metrics to VM failed on startup",
-			slog.String("error", err.Error()))
+	// A store that is down or rejects the credentials fails every push:
+	// logged at most once a minute, with how many failed since.
+	var failures failurelog.Log
+	pushAndLog := func() {
+		if err := push(); err != nil {
+			if logNow, failed := failures.Record(time.Now()); logNow {
+				slog.Warn("self-write metrics to VM failed",
+					slog.String("error", err.Error()), slog.Int("failed_pushes", failed))
+			}
+		}
 	}
+	pushAndLog()
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			if err := push(); err != nil {
-				slog.Warn("self-write metrics to VM failed",
-					slog.String("error", err.Error()))
-			}
+			pushAndLog()
 		}
 	}
 }

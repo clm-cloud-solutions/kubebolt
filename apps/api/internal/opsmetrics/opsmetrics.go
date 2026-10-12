@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
 var (
@@ -128,7 +130,9 @@ func VMClient(caller string, timeout time.Duration) *http.Client {
 }
 
 // VMTransport wraps base (http.DefaultTransport when nil) so every request to
-// VictoriaMetrics is counted and timed.
+// VictoriaMetrics is counted and timed, and carries the credentials
+// configured for it (config.MetricsStorageAuthorization) unless the caller
+// set its own.
 func VMTransport(caller string, base http.RoundTripper) http.RoundTripper {
 	if base == nil {
 		base = http.DefaultTransport
@@ -142,6 +146,13 @@ type vmTransport struct {
 }
 
 func (t *vmTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Header.Get("Authorization") == "" {
+		if auth := config.MetricsStorageAuthorization(); auth != "" {
+			// A RoundTripper must not modify the caller's request.
+			req = req.Clone(req.Context())
+			req.Header.Set("Authorization", auth)
+		}
+	}
 	start := time.Now()
 	op := vmOp(req.URL.Path)
 	resp, err := t.base.RoundTrip(req)

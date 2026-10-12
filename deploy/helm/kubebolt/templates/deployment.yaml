@@ -90,6 +90,28 @@ spec:
             # so misconfigurations don't reach a running pod.
             - name: KUBEBOLT_METRICS_STORAGE_URL
               value: {{ include "kubebolt.metricsStorageUrl" . | quote }}
+            {{- if .Values.metrics.storage.existingSecret }}
+            # Credentials for an external store that asks for them; every
+            # key is optional (a bearer token wins over user/password).
+            - name: KUBEBOLT_METRICS_STORAGE_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.metrics.storage.existingSecret }}
+                  key: username
+                  optional: true
+            - name: KUBEBOLT_METRICS_STORAGE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.metrics.storage.existingSecret }}
+                  key: password
+                  optional: true
+            - name: KUBEBOLT_METRICS_STORAGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.metrics.storage.existingSecret }}
+                  key: token
+                  optional: true
+            {{- end }}
             # Prom remote_write receiver gate (Phase 2). When false
             # (default), POST /api/v1/prom/write returns 404 with a
             # hint pointing at this var. Flip to true to accept
