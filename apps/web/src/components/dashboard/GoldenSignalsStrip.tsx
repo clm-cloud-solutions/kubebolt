@@ -43,6 +43,19 @@ const ERR_MEANINGFUL_PCT = 0.1
 // Throughput/latency shifts flagged beyond ±10% vs previous window.
 const DELTA_NOTABLE = 0.1
 
+// When a card LIGHTS (KpiCard `alert`) — a higher bar than when a figure is
+// worth colouring. A row with 0.16 % 5xx, +1.6 ms of latency and four drops in
+// a day lit three of four cards: nothing there needed anyone.
+//   5xx: the red of the class stays from 0.1 %; the card lights from 1 %, an
+//        error rate that already breaks a 99 % objective.
+//   latency: a regression is relative AND absolute — +34 % on 4.6 ms is 1.6 ms.
+//   drops: a steady stream (one a minute on average over the range), not a
+//        handful; a policy blocking real traffic drops at its call rate.
+const ERR_ALERT_PCT = 1
+const LAT_ALERT_DELTA = 0.25
+const LAT_ALERT_MIN_MS = 20
+const DROPS_ALERT_PER_MIN = 1
+
 const KPI_MIN_WIDTH = 280
 
 // Sparkline sampling — ~24 points across the range, as CapacityStrip.
@@ -127,13 +140,21 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
 
   const d = q.data
   const errBad = d?.errNow != null && d.errNow >= ERR_MEANINGFUL_PCT
+  const errAlert = d?.errNow != null && d.errNow >= ERR_ALERT_PCT
   const latDelta = relDelta(d?.latNow, d?.latPrev)
+  const latAlert =
+    latDelta != null &&
+    latDelta > LAT_ALERT_DELTA &&
+    d?.latNow != null &&
+    d?.latPrev != null &&
+    d.latNow - d.latPrev >= LAT_ALERT_MIN_MS
   const rpsDelta = relDelta(d?.rpsNow, d?.rpsPrev)
   const errDelta = relDelta(d?.errNow, d?.errPrev)
   // Empty increase() result = no dropped-flow series in range. The
   // strip only renders when Hubble is shipping, so "no series" IS
   // zero drops, not missing data — showing "—" here read as broken.
   const drops = d ? Math.round(d.drops ?? 0) : null
+  const dropsAlert = drops != null && drops / rangeMinutes >= DROPS_ALERT_PER_MIN
   const rangeLabel = formatRange(rangeMinutes)
   const now = Date.now() / 1000
 
@@ -150,6 +171,9 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
   // flowing that is a 0 %, not an unknown — the class split already says so.
   const errNow = d?.errNow ?? (clsTotal > 0 ? pct(cls.server) : null)
   const fmtShare = (v: number) => (v === 0 ? '0' : formatPct(v))
+  // "ok 100%" beside "5xx 0.16%" contradicted itself: rounding 99.84 up. A
+  // share that isn't all of it never shows as all of it.
+  const fmtOk = (v: number) => (v >= 99.5 && v < 100 ? (Math.floor(v * 10) / 10).toFixed(1) : fmtShare(v))
   const dropRows = (d?.dropDst ?? []).filter((r) => r.value >= 0.5)
 
   return (
@@ -160,7 +184,7 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
     >
       <KpiCard
         primary
-        alert={errBad ? 'crit' : undefined}
+        alert={errAlert ? 'crit' : undefined}
         value={errNow != null ? fmtShare(errNow) : '—'}
         unit="% 5xx"
         description={
@@ -178,7 +202,7 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
                 { value: cls.client, color: KPI_COLOR.warn },
                 { value: cls.server, color: KPI_COLOR.err },
               ]}
-              left={`ok ${fmtShare(pct(cls.ok))}%`}
+              left={`ok ${fmtOk(pct(cls.ok))}%`}
               right={
                 <>
                   <span style={{ color: cls.client > 0 ? KPI_COLOR.warn : undefined }}>4xx {fmtShare(pct(cls.client))}%</span>
@@ -204,14 +228,14 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
         }
       />
       <KpiCard
-        alert={latDelta != null && latDelta > DELTA_NOTABLE ? 'warn' : undefined}
+        alert={latAlert ? 'warn' : undefined}
         value={d?.latNow != null ? formatMs(d.latNow) : '—'}
         unit="ms avg"
         description={latencySentence(latDelta)}
         viz={
           d?.latNow != null && d?.latPrev != null ? (
             <BarList
-              color={latDelta != null && latDelta > DELTA_NOTABLE ? KPI_COLOR.warn : KPI_COLOR.ok}
+              color={latAlert ? KPI_COLOR.warn : KPI_COLOR.ok}
               rows={[
                 { label: `last ${rangeLabel}`, value: d.latNow, display: `${formatMs(d.latNow)} ms` },
                 { label: 'window before', value: d.latPrev, display: `${formatMs(d.latPrev)} ms` },
@@ -256,7 +280,7 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
         caption="every request Hubble saw, all workloads"
       />
       <KpiCard
-        alert={drops != null && drops > 0 ? 'warn' : undefined}
+        alert={dropsAlert ? 'warn' : undefined}
         value={drops ?? '—'}
         unit={drops === 1 ? 'L4 drop' : 'L4 drops'}
         description={drops != null && drops > 0 ? `in the last ${rangeLabel}` : `none in the last ${rangeLabel}`}
