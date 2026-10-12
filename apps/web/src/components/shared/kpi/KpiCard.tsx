@@ -103,7 +103,7 @@ export function KpiCard({ value, unit, description, viz, caption, primary, alert
               over, so a shorter chart never sits on a block of empty card. */}
           {viz && <div className={`my-auto ${compact ? 'pt-3' : 'pt-4'}`}>{viz}</div>}
           {caption && (
-            <div className={`mt-auto ${compact ? 'pt-2 text-[10.5px]' : 'pt-3 text-[11px]'} leading-relaxed font-mono text-kb-text-tertiary`}>
+            <div className={`mt-auto ${compact ? 'pt-2 text-[11px]' : 'pt-3 text-[12px]'} leading-relaxed font-mono text-kb-text-tertiary`}>
               {caption}
             </div>
           )}
