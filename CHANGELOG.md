@@ -8,11 +8,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Credentials for the metrics store**: `KUBEBOLT_METRICS_STORAGE_TOKEN`
-  (bearer) or `KUBEBOLT_METRICS_STORAGE_USERNAME` / `_PASSWORD` (basic auth),
-  sent on every call to VictoriaMetrics; in the chart,
-  `metrics.storage.existingSecret`. A managed VictoriaMetrics can be used
-  as the history store.
 - **Administration › AI › Health**: Kobi's turns and failures, the 👎 share,
   provider errors and what the fallback rescued, refusals and cut-short
   answers, empty or failed tool calls, model latency, cost, tokens and the
@@ -34,12 +29,6 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **KubeBolt says at startup where it keeps history**: the VictoriaMetrics
-  in use and whether it came from `KUBEBOLT_METRICS_STORAGE_URL` or the
-  default `http://localhost:8428`, or `history off` when nothing answers
-  there. While the store fails (down, or rejecting the credentials), the
-  agent ingest, the API's self-push and the active-series cap each log it at
-  most once a minute with how many attempts failed, instead of every time.
 - remote_write: over the rate limit, a **catch-up after an interruption**
   gets `503` + `Retry-After` (Prometheus retries it) instead of `429`
   (Prometheus drops it unless `retry_on_http_429` is on); a sustained overrun
@@ -53,39 +42,68 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
-- **The agent's token could not be issued from the UI on a self-hosted
-  install.** "Generate token + create Secret" (first-run wizard, Add cluster,
-  agent install and configure) answered "No active tenant available" since
-  1.17.1, so the agent's read + write mode could not be set up from the
-  wizard. The token is issued under the default org again.
-- **Homebrew failed when Xcode lagged behind macOS** ("Your Xcode is too
-  outdated"). KubeBolt now ships as a cask, for macOS and Linux: Homebrew
-  installs the release binary without the source-build checks, and removes
-  the quarantine attribute on macOS. The install command does not change. An
-  existing formula install is no longer updated by `brew upgrade`; switch it
-  once with `brew uninstall --formula kubebolt && brew install
-  clm-cloud-solutions/tap/kubebolt`.
 - Kobi no longer shows the AI provider's raw error (URLs, internal addresses,
   provider ids) in the chat: each error class has a fixed message.
-- **Kobi conversations never expired.** The hourly retention pass looked for
-  them under the org's generated id, while a self-hosted install stores them
-  under the default org's name, so `KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON`
-  (2160h) was never applied. The first pass after upgrading deletes the
-  conversations, and their 👍/👎, older than the horizon: raise it before
-  upgrading to keep them longer.
 
 ### Security
 
-- Go 1.26.6 → 1.26.9 on every build path (`go.mod` ×3, the api and agent
-  Dockerfiles, `ci.yml`, `codeql.yml`, `release.yml`): CVE-2026-78667
-  (net/http) and CVE-2026-97031 (crypto/tls), both HIGH. The e2e harness
-  leaves Go 1.25.10.
 - VictoriaMetrics and vmagent v1.153.0 → v1.154.0 (rc0 for now; the release
-  waits for the final): v1.153.0 is built on Go 1.27.1 and carries the same
-  two CVEs.
-- `golang.org/x/net` v0.58.0 → v0.60.0 in the api, agent and proto modules:
-  CVE-2026-78669 (HTTP/2 SETTINGS flood, HIGH). It needs Go 1.26, so the
-  modules' `go` directive moves from 1.25.0 to 1.26.0.
+  waits for the final): v1.153.0 is built on Go 1.27.1 and x/net v0.59.0 and
+  carries the three CVEs 2.3.1 waived.
+
+## [2.3.1] — 2026-10-12
+
+Every install path the README promises works as written, history on a laptop
+included. Drop-in, no migration; agent 1.4.3. Full note: [docs/releases/v2.3.1.md](docs/releases/v2.3.1.md).
+
+### Added
+
+- **Credentials for the metrics store**: `KUBEBOLT_METRICS_STORAGE_TOKEN`
+  (bearer) or `KUBEBOLT_METRICS_STORAGE_USERNAME` / `_PASSWORD` (basic auth),
+  sent on every call to VictoriaMetrics; in the chart,
+  `metrics.storage.existingSecret`. A managed VictoriaMetrics can be used as
+  the history store.
+
+### Changed
+
+- **KubeBolt says at startup where it keeps history**: the VictoriaMetrics in
+  use and whether it came from `KUBEBOLT_METRICS_STORAGE_URL` or the default
+  `http://localhost:8428`, or `history off` when nothing answers there. While
+  the store fails (down, or rejecting the credentials), the agent ingest, the
+  API's self-push and the active-series cap each log it at most once a minute
+  with how many attempts failed, instead of every time.
+- **Homebrew installs a cask**, for macOS and Linux. The command does not
+  change. An existing formula install is no longer updated by `brew upgrade`;
+  switch it once with `brew uninstall --formula kubebolt && brew install
+  clm-cloud-solutions/tap/kubebolt`.
+- The README walks every quick-start path with its exact commands, history on
+  a laptop install and where the agent connects in each topology;
+  `deploy/docker-compose.kind.yml` runs Compose against a kind cluster.
+
+### Fixed
+
+- **The agent's token could not be issued from the UI on a self-hosted
+  install.** "Generate token + create Secret" answered "No active tenant
+  available" since 1.17.1, so the agent's read + write mode could not be set
+  up from the wizard.
+- **Homebrew failed when Xcode lagged behind macOS** ("Your Xcode is too
+  outdated"): the formula was a source build to Homebrew. The cask installs
+  the release binary without those checks and clears the macOS quarantine flag.
+- **Kobi conversations never expired** on a self-hosted install. The first
+  retention pass after upgrading deletes the conversations older than the
+  horizon (`KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON`, 2160h by
+  default): raise it before upgrading to keep them longer.
+- **Kobi's estimated cost priced one-hour cache writes at 1.25× input**
+  instead of 2×.
+
+### Security
+
+- Go 1.26.6 → 1.26.9 on every build path: CVE-2026-78667 (net/http) and
+  CVE-2026-97031 (crypto/tls), both HIGH.
+- `golang.org/x/net` v0.58.0 → v0.60.0: CVE-2026-78669 (HTTP/2), HIGH.
+- VictoriaMetrics and vmagent stay on v1.153.0, whose vendor build carries the
+  same three CVEs; waived in `.trivyignore-thirdparty` until the pins move to
+  v1.154.0 final (still a release candidate).
 
 ## [2.3.0] — 2026-10-07
 

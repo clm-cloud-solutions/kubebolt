@@ -144,3 +144,17 @@ func TestAnthropicStaticCacheTTL_UnknownValueFallsBackToTheAPIDefault(t *testing
 		}
 	}
 }
+
+// The API splits cache writes by TTL; the adapter keeps the 1h part, which
+// bills at 2x input instead of the 5-minute 1.25x.
+func TestAnthropicUsage_ReadsOneHourCacheWrites(t *testing.T) {
+	var ar anthropicResponse
+	reply := `{"usage":{"input_tokens":4,"output_tokens":4,"cache_creation_input_tokens":3819,
+"cache_creation":{"ephemeral_5m_input_tokens":1553,"ephemeral_1h_input_tokens":2266}}}`
+	if err := json.Unmarshal([]byte(reply), &ar); err != nil {
+		t.Fatal(err)
+	}
+	if ar.Usage.CacheCreationInputTokens != 3819 || ar.Usage.CacheCreation.Ephemeral1hInputTokens != 2266 {
+		t.Errorf("want 3819 writes of which 2266 for 1h, got %+v", ar.Usage)
+	}
+}
