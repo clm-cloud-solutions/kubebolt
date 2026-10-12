@@ -37,8 +37,9 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **KubeBolt says at startup where it keeps history**: the VictoriaMetrics
   in use and whether it came from `KUBEBOLT_METRICS_STORAGE_URL` or the
   default `http://localhost:8428`, or `history off` when nothing answers
-  there. A failing write from the agent ingest is logged at most once a
-  minute with how many batches failed, instead of once per batch.
+  there. While the store fails (down, or rejecting the credentials), the
+  agent ingest, the API's self-push and the active-series cap each log it at
+  most once a minute with how many attempts failed, instead of every time.
 - remote_write: over the rate limit, a **catch-up after an interruption**
   gets `503` + `Retry-After` (Prometheus retries it) instead of `429`
   (Prometheus drops it unless `retry_on_http_429` is on); a sustained overrun
