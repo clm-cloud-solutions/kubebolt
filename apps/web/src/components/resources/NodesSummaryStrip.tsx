@@ -100,7 +100,11 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
         alert={ready < total ? 'crit' : cordoned > 0 ? 'warn' : undefined}
         value={ready}
         unit={`/ ${total} ready`}
-        description={cordoned > 0 ? `${cordoned} cordoned` : 'all schedulable'}
+        // The sentence follows the colour: a NotReady node lit the card red
+        // while it still said "all schedulable".
+        description={
+          ready < total ? `${total - ready} not ready` : cordoned > 0 ? `${cordoned} cordoned` : 'all schedulable'
+        }
         viz={
           total > 0 ? (
             <UnitStrip

@@ -53,15 +53,17 @@ export function CopilotToggle() {
         </div>
       </div>
 
-      {/* Wrapper carries the cycling outer glow. Sized to the button
-          so the glow halos the round shape, not a square box. */}
-      <div className="relative w-12 h-12 rounded-full animate-kb-ai-glow">
+      {/* No cycling outer glow here any more: on every page it was the
+          brightest thing on screen while nothing asked for Kobi, and it
+          competed with the cards that do. The halo and the shadow stay, at
+          about half their strength, so the launcher is still findable. */}
+      <div className="relative w-12 h-12 rounded-full">
         {/* Soft ambient halo behind the button — pings outward
             slowly to signal "active AI surface" without the
             urgency of Tailwind's default animate-ping. */}
         <span
           aria-hidden
-          className="absolute inset-0 rounded-full bg-kobi-accent-fill/25 animate-kb-ai-toggle-halo pointer-events-none motion-reduce:hidden"
+          className="absolute inset-0 rounded-full bg-kobi-accent-fill/[0.12] animate-kb-ai-toggle-halo pointer-events-none motion-reduce:hidden"
         />
 
         {/* accent-fill: solid-control green, one step brighter than the
@@ -70,7 +72,7 @@ export function CopilotToggle() {
         <button
           onClick={togglePanel}
           aria-label="Open Kobi"
-          className="group relative w-12 h-12 rounded-full bg-gradient-to-br from-kobi-accent-fill to-kobi-accent-deep hover:scale-110 active:scale-95 transition-transform shadow-lg shadow-kobi-accent-fill/40 flex items-center justify-center overflow-hidden"
+          className="group relative w-12 h-12 rounded-full bg-gradient-to-br from-kobi-accent-fill to-kobi-accent-deep hover:scale-110 active:scale-95 transition-transform shadow-lg shadow-kobi-accent-fill/20 flex items-center justify-center overflow-hidden"
         >
           {/* Shimmer sweep on hover — reuses the same diagonal
               white-band pattern as the AskCopilotButton text

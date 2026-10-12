@@ -135,7 +135,11 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
     return h == null ? m : Math.max(m ?? 0, h)
   }, null)
   const direct = clusters.length - live - offline.length
-  const livePct = clusters.length ? Math.round((live / clusters.length) * 100) : 0
+  // Out of the clusters that EXPECT an agent: one connected through a
+  // kubeconfig never has one, so counting it made a fleet with every agent up
+  // read "partial coverage" on an amber ring.
+  const expected = live + offline.length
+  const livePct = expected ? Math.round((live / expected) * 100) : 0
 
   return (
     <div
@@ -146,6 +150,16 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
       <KpiCard
         primary
         alert={tally.critical > 0 ? 'crit' : tally.warning > 0 ? 'warn' : undefined}
+        // The figure is how many clusters there are, not how many are in
+        // trouble: the state goes in the chip and the figure stays neutral
+        // ("4 clusters" in red read as four clusters in trouble).
+        status={
+          tally.critical > 0
+            ? { label: 'Critical', tone: 'crit' }
+            : tally.warning > 0
+              ? { label: 'Warning', tone: 'warn' }
+              : undefined
+        }
         value={clusters.length}
         unit={clusters.length === 1 ? 'cluster' : 'clusters'}
         description={clustersSentence}
@@ -240,13 +254,19 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
       <KpiCard
         alert={offline.length > 0 ? 'warn' : undefined}
         value={live}
-        unit={`/ ${clusters.length} agents live`}
-        description={live === clusters.length ? 'every cluster reporting' : 'partial coverage'}
+        unit={`/ ${expected} agents live`}
+        description={
+          expected === 0
+            ? 'no cluster runs an agent'
+            : offline.length > 0
+              ? `${offline.length} offline`
+              : 'every agent reporting'
+        }
         viz={
-          clusters.length > 0 ? (
+          expected > 0 ? (
             <SemiGauge
               percent={livePct}
-              color={live === clusters.length ? KPI_COLOR.ok : KPI_COLOR.warn}
+              color={offline.length === 0 ? KPI_COLOR.ok : KPI_COLOR.warn}
               legend={
                 <Legend
                   rows={[

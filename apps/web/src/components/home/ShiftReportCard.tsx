@@ -553,12 +553,10 @@ export function ShiftReportSection({
                   <span className="text-status-error">{e.stillFiring} still open</span>
                 </>
               )}
-              {e.criticals > 0 && (
-                <>
-                  {' · '}
-                  <span className="text-status-error">{e.criticals} critical</span>
-                </>
-              )}
+              {/* Criticals OPENED in the window, resolved ones included (the
+                  backend counts episodes, not standing state): neutral, so it
+                  doesn't read as criticals still open next to "still open". */}
+              {e.criticals > 0 && <> · {e.criticals.toLocaleString()} critical opened</>}
               {e.remediated > 0 && <> · {e.remediated.toLocaleString()} remediated</>}
               {e.expired > 0 && <> · {e.expired.toLocaleString()} expired</>}
               {more > 0 && <> · +{more} not shown</>}

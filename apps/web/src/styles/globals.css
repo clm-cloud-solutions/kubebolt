@@ -62,7 +62,10 @@
   --kb-border-active: rgba(245, 242, 236, 0.22);
   --kb-text-primary: #f5f2ec;
   --kb-text-secondary: #a8a29e;
-  --kb-text-tertiary: #8a857f;
+  /* Tertiary was #8a857f: 4.4:1 at the top of a KPI card (#212221), under
+     WCAG AA for the 10-11px mono captions it is used for. #9a948d keeps the
+     warm hue at 5.3:1 there and stays a step below secondary (6.3:1). */
+  --kb-text-tertiary: #9a948d;
   --kb-scrollbar: rgba(245, 242, 236, 0.14);
   --kb-bar-track: rgba(245, 242, 236, 0.08);
   --kb-accent: #00e07a;
@@ -968,9 +971,9 @@ input:-webkit-autofill:active {
   pointer-events: none;
 }
 
-/* The card whose number asks for someone (KpiCard `alert`): the figure takes
-   the state colour, the left bevel lights in it, and a tint rises from that
-   edge. Calm cards stay neutral, so the one that needs you is the only one
+/* The card whose number asks for someone (KpiCard `alert`): the left bevel
+   lights in the state colour and a tint rises from that edge; the figure
+   stays neutral. Calm cards stay neutral, so the one that needs you is the only one
    that glows — colour as a signal, not as a wash over the whole row. */
 .kb-kpi-alert {
   --kb-alert: #ef4056;

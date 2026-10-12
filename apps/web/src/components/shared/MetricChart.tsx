@@ -365,6 +365,9 @@ export function pickScale(absMax: number, unit?: UnitKind): UnitScale {
 export function formatValue(v: number | null | undefined, scale: UnitScale, useAbs = false): string {
   if (v == null || Number.isNaN(v)) return '—'
   const scaled = (useAbs ? Math.abs(v) : v) / scale.divisor
+  // An exact zero is "0", not "0.000": the three decimals are for small
+  // values, and on an axis "0.000 %" wrapped onto two lines.
+  if (scaled === 0) return `${scale.prefix ?? ''}0${scale.label ? ' ' + scale.label : ''}`
   const absScaled = Math.abs(scaled)
   // Thousands grouped ("5,679", "1,023 MiB"): a count below the k threshold
   // or a scaled value in the hundreds of thousands is unreadable as a bare

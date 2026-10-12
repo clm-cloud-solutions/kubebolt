@@ -65,6 +65,9 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
   })
 
   // ── Clusters ──────────────────────────────────────────────────────────
+  // Reachable, not healthy: this is connection state (connected, or an agent
+  // channel open). A connected cluster with criticals open is reachable; it
+  // used to be counted, in green, as "healthy" — the verdict lives on Fleet.
   const isHealthy = (c: ClusterInfo) => c.status === 'connected' || !!c.agentConnected
   const unhealthy = clusters
     .filter((c) => !isHealthy(c))
@@ -83,7 +86,7 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
       to: '/fleet',
     })),
     ...(healthy > 0
-      ? [{ color: KPI_COLOR.ok, label: `${healthy} healthy`, value: unhealthy.length > shownBad.length ? `+${unhealthy.length - shownBad.length} more` : undefined, to: '/fleet' }]
+      ? [{ color: KPI_COLOR.ok, label: `${healthy} reachable`, value: unhealthy.length > shownBad.length ? `+${unhealthy.length - shownBad.length} more` : undefined, to: '/fleet' }]
       : []),
   ]
 
@@ -223,8 +226,10 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
         />
       )}
 
+      {/* Posture, not an incident: open critical findings are worked
+          through, they don't page anyone — the same rule as Security, where
+          only runtime threats light their card. The red stays in the bar. */}
       <KpiCard
-        alert={critical > 0 ? 'crit' : undefined}
         value={critical}
         unit="critical"
         description={critical > 0 ? 'security findings' : 'nothing critical open'}

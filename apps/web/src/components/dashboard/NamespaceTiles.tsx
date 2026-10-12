@@ -51,7 +51,7 @@ export function NamespaceTiles({ namespaceWorkloads }: Props) {
       </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-        {namespaceWorkloads.map((nsw) => (
+        {byHealth(namespaceWorkloads).map((nsw) => (
           <NamespaceTile key={nsw.namespace} nsw={nsw} quota={quotas[nsw.namespace]} />
         ))}
       </div>
@@ -60,6 +60,45 @@ export function NamespaceTiles({ namespaceWorkloads }: Props) {
 }
 
 type Health = 'healthy' | 'degraded' | 'critical' | 'empty'
+
+// tileStats — a namespace's pod tally and health, shared by the tile and the
+// ordering so both read the same rule: all ready → healthy, at least half →
+// degraded, fewer → critical, no pods → empty.
+function tileStats(nsw: NamespaceWorkload) {
+  let totalPods = 0
+  let readyPods = 0
+  const kindCounts: Record<string, number> = {}
+  const unhealthy: WorkloadSummary[] = []
+  for (const w of nsw.workloads ?? []) {
+    kindCounts[w.kind] = (kindCounts[w.kind] ?? 0) + 1
+    for (const p of w.pods ?? []) {
+      totalPods++
+      if (p.ready) readyPods++
+    }
+    if ((w.readyReplicas ?? 0) < (w.replicas ?? 0)) {
+      unhealthy.push(w)
+    }
+  }
+  let health: Health
+  if (totalPods === 0) health = 'empty'
+  else if (readyPods === totalPods) health = 'healthy'
+  else if (readyPods >= totalPods / 2) health = 'degraded'
+  else health = 'critical'
+  return { totalPods, readyPods, kindCounts, unhealthy, health }
+}
+
+// Namespaces that need someone first — critical, then degraded — and the
+// healthy ones after, alphabetical within each group. In alphabetical order
+// alone the one degraded namespace sat wherever its name put it, among a wall
+// of identical green tiles.
+const HEALTH_RANK: Record<Health, number> = { critical: 0, degraded: 1, healthy: 2, empty: 3 }
+
+export function byHealth(list: NamespaceWorkload[]): NamespaceWorkload[] {
+  return list
+    .map((nsw) => ({ nsw, rank: HEALTH_RANK[tileStats(nsw).health] }))
+    .sort((a, b) => a.rank - b.rank || a.nsw.namespace.localeCompare(b.nsw.namespace))
+    .map((x) => x.nsw)
+}
 
 const KIND_SHORT: Record<string, string> = {
   Deployment: 'dep',
@@ -86,27 +125,7 @@ function NamespaceTile({
   quota?: NamespaceQuotaSummary
 }) {
   const workloads = nsw.workloads ?? []
-
-  let totalPods = 0
-  let readyPods = 0
-  const kindCounts: Record<string, number> = {}
-  const unhealthy: WorkloadSummary[] = []
-  for (const w of workloads) {
-    kindCounts[w.kind] = (kindCounts[w.kind] ?? 0) + 1
-    for (const p of w.pods ?? []) {
-      totalPods++
-      if (p.ready) readyPods++
-    }
-    if ((w.readyReplicas ?? 0) < (w.replicas ?? 0)) {
-      unhealthy.push(w)
-    }
-  }
-
-  let health: Health
-  if (totalPods === 0) health = 'empty'
-  else if (readyPods === totalPods) health = 'healthy'
-  else if (readyPods >= totalPods / 2) health = 'degraded'
-  else health = 'critical'
+  const { totalPods, readyPods, kindCounts, unhealthy, health } = tileStats(nsw)
 
   const ratio = totalPods === 0 ? 0 : readyPods / totalPods
 

@@ -44,6 +44,16 @@ type FindingRow = Awaited<ReturnType<typeof api.listFindings>>['findings'][numbe
 
 const SEV_ORDER = ['critical', 'high', 'medium', 'low'] as const
 
+// What the header counts, per lens. The total is the ACTIVE lens's, while the
+// By-source strip below spans every source: "735 findings" read as the whole
+// page next to 735 + 368 + 33 + 36 there.
+const LENS_NOUN: Record<string, [string, string]> = {
+  vulnerability: ['vulnerability', 'vulnerabilities'],
+  configuration: ['configuration finding', 'configuration findings'],
+  rbac: ['permission finding', 'permission findings'],
+  compliance: ['compliance finding', 'compliance findings'],
+}
+
 // Human name per lens, for copy that has to say WHICH lens is empty.
 const LENS_LABEL: Record<string, string> = {
   vulnerability: 'Vulnerabilities',
@@ -196,15 +206,17 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
     queryKey: ['findings', group, severity, kind, cluster, page],
     queryFn: () =>
       api.listFindings({
-        // Runtime has no findings at all (Falco writes to the event store), so
-        // it scopes to compliance and simply never renders the table.
-        group: group === 'runtime' ? 'compliance' : group,
+        // Runtime has no findings of its own (Falco writes to the event
+        // store): there the KPI row describes every source — no group, the
+        // same scope as the By-source strip — and the table isn't rendered.
+        // It used to be disabled, and the row above read 0 critical, 0
+        // workloads, nothing to fix with CVEs open.
+        group: group === 'runtime' ? undefined : group,
         severity: severity || undefined,
         kind: kind || undefined,
         cluster: cluster || undefined,
         page,
       }),
-    enabled: group !== 'runtime',
     refetchInterval: 60_000,
   })
 
@@ -248,12 +260,12 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
     queryKey: ['finding-workloads', group, '', '', cluster, 1],
     queryFn: () =>
       api.listFindingWorkloads({
-        group: group === 'runtime' ? 'compliance' : group,
+        // Every source on Runtime, like the KPI row's other cards.
+        group: group === 'runtime' ? undefined : group,
         cluster: cluster || undefined,
         page: 1,
       }),
     refetchInterval: 60_000,
-    enabled: group !== 'runtime',
   })
   const [kpiRef, kpiWidth] = useElementWidth<HTMLDivElement>()
 
@@ -418,14 +430,18 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
         <p className="text-xs text-kb-text-tertiary mt-0.5">
           {/* Names the scope in words. "455 findings" says nothing about WHOSE,
               and this page does not follow the Topbar's active cluster. */}
-          {scopeTotal} finding{scopeTotal === 1 ? '' : 's'} across{' '}
+          {group === 'runtime'
+            ? `${events.length} runtime ${events.length === 1 ? 'threat' : 'threats'} in 24h`
+            : `${scopeTotal} ${(LENS_NOUN[group] ?? ['finding', 'findings'])[scopeTotal === 1 ? 0 : 1]}`}{' '}
+          across{' '}
           {cluster
             ? clusterName(cluster) || 'the selected cluster'
             : clusters.length === 1
               ? clusters[0].displayName || clusters[0].name
               : `${clusters.length} clusters`}{' '}
-          · {sourcesReporting} of 4 sources reporting
-          {(data?.newLast24h ?? 0) > 0 ? ` · ${data?.newLast24h} new in 24h` : ' · none new in 24h'}
+          · {sourcesReporting} of 4 sources with findings
+          {group !== 'runtime' &&
+            ((data?.newLast24h ?? 0) > 0 ? ` · ${data?.newLast24h} new in 24h` : ' · none new in 24h')}
         </p>
       </div>
 
@@ -443,13 +459,18 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
         className={`grid gap-4 ${kpiWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
         style={kpiWidth ? { gridTemplateColumns: `repeat(${columnsFor(kpiWidth, 280, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
       >
+        {/* Posture, not an incident: open criticals are worked through, they
+            don't page anyone, so this card doesn't light — the runtime card
+            does. Their red stays in the bar. The "new" count is every
+            severity of the lens, so it says "findings", not "critical". */}
         <KpiCard
           primary
-          alert={(bySeverity.critical ?? 0) > 0 ? 'crit' : undefined}
           value={bySeverity.critical ?? 0}
           unit="critical"
           description={
-            (data?.newLast24h ?? 0) > 0 ? `▲ ${data?.newLast24h} new in 24h` : 'none new in 24h'
+            (data?.newLast24h ?? 0) > 0
+              ? `▲ ${data?.newLast24h} new ${data?.newLast24h === 1 ? 'finding' : 'findings'} in 24h`
+              : 'none new in 24h'
           }
           viz={
             bandTotal > 0 ? (
@@ -515,12 +536,14 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
             </>
           }
         />
+        {/* The share is the figure and the count is the sentence: the card
+            used to say 735 three times (fixable, 100% of them, 735 with a fix). */}
         <KpiCard
-          value={fixable}
-          unit="fixable"
+          value={scopeTotal > 0 ? Math.round((fixable / scopeTotal) * 100) : 0}
+          unit="% fixable"
           description={
             scopeTotal > 0
-              ? `${Math.round((fixable / scopeTotal) * 100)}% have a published fix`
+              ? `${fixable} of ${scopeTotal} have a published fix`
               : 'nothing to fix'
           }
           viz={
@@ -531,7 +554,7 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
                 legend={
                   <Legend
                     rows={[
-                      { color: KPI_COLOR.info, label: `${fixable} with a fix` },
+                      { color: KPI_COLOR.info, label: 'with a fix' },
                       { color: KPI_COLOR.muted, label: `${scopeTotal - fixable} judgement call` },
                     ]}
                   />
@@ -590,24 +613,12 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
         <span className="text-[10px] font-mono uppercase tracking-[0.08em] text-kb-text-tertiary">
           By source
         </span>
-        <SourceStat
-          name="Trivy"
-          value={cvesAll}
-          accent={cvesAll > 0 ? 'text-status-error' : undefined}
-          sub="CVEs"
-        />
-        <SourceStat
-          name="CIS"
-          value={cisFailingAll}
-          accent={cisFailingAll > 0 ? 'text-status-warn' : undefined}
-          sub="controls failing"
-        />
-        <SourceStat
-          name="Kyverno"
-          value={policyAll}
-          accent={policyAll > 0 ? 'text-status-warn' : undefined}
-          sub="violations"
-        />
+        {/* Where the findings come from, not how bad they are: the three
+            posture counts stay neutral (735 CVEs in red, with 70 critical,
+            read as 735 emergencies). Red is kept for Falco's live threats. */}
+        <SourceStat name="Trivy" value={cvesAll} sub="CVEs" />
+        <SourceStat name="CIS" value={cisFailingAll} sub="controls failing" />
+        <SourceStat name="Kyverno" value={policyAll} sub="violations" />
         <SourceStat
           name="Falco"
           value={events.length}

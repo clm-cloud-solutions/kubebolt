@@ -111,7 +111,7 @@ function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) 
               title={c.preview || c.title || 'Open this conversation'}
               className="w-full text-left flex items-center gap-2.5 py-1.5 hover:bg-kb-card-hover rounded-md px-1 -mx-1 transition-colors group"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-kb-accent/50 shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-kb-accent opacity-50 shrink-0" />
               <span className="min-w-0 flex-1 text-[12px] text-kb-text-secondary truncate group-hover:text-kb-text-primary transition-colors">
                 {c.title || c.preview || 'Untitled'}
               </span>
