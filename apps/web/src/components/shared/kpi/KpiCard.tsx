@@ -17,15 +17,19 @@ import { CountUp } from './CountUp'
 // the reader, green what is fine, grey everything else. `primary` draws the
 // green bevel the sign-in card carries — one per row. `alert` is for the card
 // whose NUMBER needs someone right now (criticals open, a node down, 5xx over
-// the bar): the figure takes the state colour and the card lights from its
-// left edge. Only then — a row where everything glows has no signal left.
+// the bar): the card lights from its left edge. Only then — a row where
+// everything glows has no signal left.
+//
+// The figure itself never takes the state colour. A big red number shouts
+// louder than the glow, the chip and the bar that already carry the state,
+// and it read as alarming even when the number was fine (an 85 health score,
+// 36 runtime events). The state lives in the frame; the number stays a number.
 // One fact lights one card: when two cards derive from the same condition
 // (the health verdict and the insights behind it), only one of them does.
 //
 // `status` puts the verdict in words next to the figure (a chip: Critical,
-// Warning, Healthy) for a figure that is a score, not a count of problems: an
-// 85 painted red reads as "85 is bad", when the 85 is fine and the state is
-// what is critical. With a status the figure keeps its neutral colour.
+// Warning, Healthy) for a figure that is a score, not a count of problems: the
+// 85 is fine, the state is what is critical.
 
 const STATUS_CHIP = {
   ok: 'bg-status-ok-dim text-status-ok',
@@ -75,7 +79,6 @@ export function KpiCard({ value, unit, description, viz, caption, primary, alert
       <div className={`flex items-baseline ${compact ? 'gap-1.5' : 'gap-2'} min-w-0 pr-16`}>
         <span
           className={`font-display ${compact ? 'text-[28px] 2xl:text-[32px]' : 'text-[40px] 2xl:text-[48px]'} font-semibold leading-none tracking-[-0.035em] tabular-nums text-kb-text-primary`}
-          style={lit && !status ? { color: lit === 'crit' ? '#ef4056' : '#f5a623' } : undefined}
         >
           {restricted ? '—' : <CountUp value={value} />}
         </span>
