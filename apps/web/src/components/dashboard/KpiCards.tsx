@@ -10,6 +10,7 @@ import { useInsights } from '@/hooks/useInsights'
 import { useRefreshInterval } from '@/contexts/RefreshContext'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { shortenNodeName, withShortNames } from '@/components/resources/NodesSummaryStrip'
+import { insightResourcePath } from '@/utils/insightResource'
 
 // A KPI card needs ~300px for its figure, sentence and minichart.
 const KPI_MIN_WIDTH = 300
@@ -109,12 +110,14 @@ export function KpiCards({ overview }: KpiCardsProps) {
   // ── Insights: open findings grouped by rule, worst severity first ─────
   const SEV_RANK = { critical: 0, warning: 1, info: 2 } as const
   const SEV_COLOR = { critical: KPI_COLOR.err, warning: KPI_COLOR.warn, info: KPI_COLOR.info } as const
-  const byRule = new Map<string, { count: number; sev: 'critical' | 'warning' | 'info' }>()
+  // A rule with one open finding links to the object it is about; with
+  // several, to the list filtered by its severity.
+  const byRule = new Map<string, { count: number; sev: 'critical' | 'warning' | 'info'; resource: string }>()
   for (const i of insightsQ.data?.items ?? []) {
     if (i.resolved) continue
     const key = i.ruleId || i.title
     const cur = byRule.get(key)
-    if (!cur) byRule.set(key, { count: 1, sev: i.severity })
+    if (!cur) byRule.set(key, { count: 1, sev: i.severity, resource: i.resource })
     else {
       cur.count++
       if (SEV_RANK[i.severity] < SEV_RANK[cur.sev]) cur.sev = i.severity
@@ -204,7 +207,9 @@ export function KpiCards({ overview }: KpiCardsProps) {
         alert={podsNotReady > 0 ? 'crit' : podsDegraded > 0 ? 'warn' : undefined}
         link={{ text: 'view all', to: '/pods' }}
         value={podsReady}
-        unit={`/ ${podsDenom}`}
+        // "active" when Completed pods are left out of the denominator, so
+        // 68 / 69 reconciles with the sidebar's 82 and the "13 completed" below.
+        unit={podsSucceeded > 0 && podsActive > 0 ? `/ ${podsDenom} active` : `/ ${podsDenom}`}
         description={
           podsNotReady > 0 ? `${podsNotReady} not running` : podsDegraded > 0 ? `${podsDegraded} degraded` : 'pods running'
         }
@@ -240,7 +245,7 @@ export function KpiCards({ overview }: KpiCardsProps) {
                 label: rule,
                 value: `×${r.count}`,
                 valueColor: SEV_COLOR[r.sev],
-                to: `/insights?severity=${r.sev}`,
+                to: (r.count === 1 && insightResourcePath(r.resource)) || `/insights?severity=${r.sev}`,
               }))}
             />
           ) : undefined
