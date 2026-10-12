@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
 
@@ -25,7 +26,7 @@ type VMWriter struct {
 func NewVMWriter(endpoint string) *VMWriter {
 	return &VMWriter{
 		endpoint: strings.TrimRight(endpoint, "/"),
-		client:   &http.Client{Timeout: 10 * time.Second},
+		client:   &http.Client{Timeout: 10 * time.Second, Transport: config.MetricsStorageTransport(nil)},
 	}
 }
 

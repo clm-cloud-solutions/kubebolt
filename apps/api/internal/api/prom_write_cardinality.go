@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
@@ -75,7 +76,7 @@ type CardinalityTracker struct {
 // the cap longer.
 func NewCardinalityTracker(vmURL string, defaults auth.EffectiveLimits, client *http.Client, interval time.Duration) *CardinalityTracker {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Transport: config.MetricsStorageTransport(nil)}
 	}
 	if interval <= 0 {
 		interval = 30 * time.Second

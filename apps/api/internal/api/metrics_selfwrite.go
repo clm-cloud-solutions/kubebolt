@@ -11,6 +11,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
 // SelfWriteMetricsToVM is the small goroutine that pushes the
@@ -52,7 +54,7 @@ func SelfWriteMetricsToVM(ctx context.Context, gatherer prometheus.Gatherer, vmU
 	if gatherer == nil || vmURL == "" {
 		return
 	}
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Timeout: 10 * time.Second, Transport: config.MetricsStorageTransport(nil)}
 	endpoint := vmURL + "/api/v1/import/prometheus"
 
 	tick := time.NewTicker(30 * time.Second)

@@ -31,6 +31,9 @@ services:
       # queries via PromQL. VictoriaMetrics is the default; swap by pointing
       # this URL at any Prom-compatible TSDB.
       - KUBEBOLT_METRICS_STORAGE_URL=${KUBEBOLT_METRICS_STORAGE_URL:-http://victoriametrics:8428}
+      - KUBEBOLT_METRICS_STORAGE_USERNAME=${KUBEBOLT_METRICS_STORAGE_USERNAME:-}
+      - KUBEBOLT_METRICS_STORAGE_PASSWORD=${KUBEBOLT_METRICS_STORAGE_PASSWORD:-}
+      - KUBEBOLT_METRICS_STORAGE_TOKEN=${KUBEBOLT_METRICS_STORAGE_TOKEN:-}
       # Prom remote_write receiver (Phase 2). Gates POST /api/v1/prom/write —
       # the path vmagent (kubebolt-agent v1.0+ sidecar) uses to ship scraped
       # samples into VM. Default off.

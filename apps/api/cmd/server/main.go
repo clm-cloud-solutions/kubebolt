@@ -719,11 +719,8 @@ func main() {
 	// available at boot before the Connector finishes) and fall
 	// back to the Connector's value otherwise. Same selection the
 	// handlers' `activeClusterUID()` helper uses.
-	vmProbeURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
-	if vmProbeURL == "" {
-		vmProbeURL = "http://localhost:8428"
-	}
-	vmProbeClient := integrations.NewVMProbeClient(vmProbeURL, nil)
+	metricsStoreURL, metricsStoreActive := resolveMetricsStore(context.Background())
+	vmProbeClient := integrations.NewVMProbeClient(metricsStoreURL, &http.Client{Timeout: 5 * time.Second, Transport: config.MetricsStorageTransport(nil)})
 	activeClusterUID := func() string {
 		if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
 			return uid
@@ -887,10 +884,14 @@ func main() {
 	// goroutine polls VM every 30s for `count by (tenant_id)
 	// ({tenant_id!=""})` and caches the result. Pre-forward gate
 	// uses the cache + per-tenant MaxActiveSeries cap to reject 413
-	// when exceeded. nil only if VM URL is empty (shouldn't happen
-	// in production — bundled chart wires it always).
+	// when exceeded. nil only when there is no metrics store
+	// (resolveMetricsStore: nothing configured and nothing answering on
+	// localhost:8428) — never with the Helm chart, which always wires one.
 	var promCardinality *api.CardinalityTracker
-	vmURL := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL")
+	vmURL := ""
+	if metricsStoreActive {
+		vmURL = metricsStoreURL
+	}
 	if vmURL != "" {
 		promCardinality = api.NewCardinalityTracker(vmURL, promLimitsEffective, nil, 30*time.Second)
 		// Hook the metrics gauge to the cardinality tracker so each
@@ -1011,15 +1012,14 @@ func main() {
 	agentCtx, agentCancel := context.WithCancel(context.Background())
 	defer agentCancel()
 
-	if vmURL == "" {
-		vmURL = "http://localhost:8428"
-	}
 	agentAddr := os.Getenv("KUBEBOLT_AGENT_GRPC_ADDR")
 	if agentAddr == "" {
 		agentAddr = fmt.Sprintf("%s:9090", host)
 	}
 
-	writer := agent.NewVMWriter(vmURL)
+	// The agent ingest writes to the store the readers use, even when it did
+	// not answer at boot: a VictoriaMetrics started later starts receiving.
+	writer := agent.NewVMWriter(metricsStoreURL)
 	// AgentRegistry was created above NewRouter; wire it into the
 	// cluster.Manager here so AddAgentProxyCluster can resolve
 	// reachability via the live registry. Same effect as the

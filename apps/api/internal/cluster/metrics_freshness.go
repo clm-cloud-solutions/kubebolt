@@ -7,13 +7,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
 // metricsFreshnessTTL bounds how stale a cached freshness verdict may be before
@@ -59,7 +58,7 @@ func newMetricsFreshnessCache() *metricsFreshnessCache {
 	return &metricsFreshnessCache{
 		entries:  make(map[string]metricsFreshEntry),
 		inFlight: make(map[string]bool),
-		client:   &http.Client{Timeout: metricsFreshnessQueryTimeout},
+		client:   &http.Client{Timeout: metricsFreshnessQueryTimeout, Transport: config.MetricsStorageTransport(nil)},
 	}
 }
 
@@ -206,11 +205,9 @@ func (m *Manager) freshnessScope(orgID string) string {
 	return orgID
 }
 
-// metricsStorageURLForFreshness mirrors api.metricsStorageURL() — the cluster
-// package can't import api (cycle), so the env contract is replicated here.
+// metricsStorageURLForFreshness is the VictoriaMetrics base URL every reader
+// shares (config.MetricsStorageURL).
 func metricsStorageURLForFreshness() string {
-	if u := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8428"
+	u, _ := config.MetricsStorageURL()
+	return u
 }
