@@ -32,6 +32,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/agent/channel"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/failurelog"
 	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 	agentv2 "github.com/kubebolt/kubebolt/packages/proto/gen/kubebolt/agent/v2"
 )
@@ -61,6 +62,8 @@ type Server struct {
 	agentv2.UnimplementedAgentChannelServer
 	writer   MetricsWriter
 	registry *channel.AgentRegistry
+	// writeFailures keeps a failing metrics store to one log line a minute.
+	writeFailures failurelog.Log
 
 	// clusterRegistrar bridges to cluster.Manager so agent-proxy
 	// clusters can be added/removed in lockstep with agent
@@ -548,8 +551,12 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 			if werr := s.writer.Write(ctx, batch.GetSamples()); werr != nil {
 				// v1 surfaced rejections via IngestAck. v2 omits the ack —
 				// the agent's buffer + heartbeat already give the operator
-				// the signals they need; we just log here.
-				slog.Error("metrics write failed", slog.String("error", werr.Error()))
+				// the signals they need; we just log here, at most once a
+				// minute (failurelog).
+				if logNow, failed := s.writeFailures.Record(time.Now()); logNow {
+					slog.Error("metrics write failed", slog.String("error", werr.Error()),
+						slog.Int("failed_batches", failed))
+				}
 			}
 
 		case *agentv2.AgentMessage_KubeResponse,

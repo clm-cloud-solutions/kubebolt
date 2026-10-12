@@ -17,9 +17,12 @@
 # Format:
 #   CVE-YYYY-NNNNN  # YYYY-MM-DD <owner> — justification + remove-by date
 
-# No entries. The Go stdlib waivers for victoria-metrics / vmagent
-# v1.148.0-scratch (8 CVEs, remove-by 2026-09-15) were closed on 2026-09-28 by
-# moving the pin to v1.153.0-scratch, built on Go 1.27.1: Trivy reports 0
-# CRITICAL/HIGH on both images. The pin lives in deploy/helm/kubebolt/values.yaml,
-# deploy/docker-compose.yml and the kubebolt-agent chart (vmagent); bump them
-# together — the preflight fails on drift.
+# 2026-10-12: victoria-metrics and vmagent v1.153.0-scratch are built on Go
+# 1.27.1 and golang.org/x/net v0.59.0, which carry the three CVEs below (all
+# HIGH, all fixed in Go 1.27.2 / x/net v0.60.0). The fix ships in VictoriaMetrics
+# v1.154.0, which is still a release candidate; 2.3.1 stays on the latest
+# stable instead. KubeBolt's own images are rebuilt on Go 1.26.9 and x/net
+# v0.60.0 and carry none of them. Remove when the pins move to v1.154.0 final.
+CVE-2026-78667  # 2026-10-12 lmaina — net/http, in VictoriaMetrics' Go 1.27.1 (vendor binary). Remove by 2026-11-15.
+CVE-2026-78669  # 2026-10-12 lmaina — HTTP/2, in VictoriaMetrics' Go 1.27.1 and x/net v0.59.0 (vendor binary). Remove by 2026-11-15.
+CVE-2026-97031  # 2026-10-12 lmaina — crypto/tls, in VictoriaMetrics' Go 1.27.1 (vendor binary). Remove by 2026-11-15.

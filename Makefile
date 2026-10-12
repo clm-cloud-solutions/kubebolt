@@ -91,6 +91,7 @@ AGENT_TAG ?= dev-$(shell date +%s)
 ## the node's container runtime) and the sliding :dev pointer.
 agent-image:
 	docker build -f packages/agent/Dockerfile \
+		--build-arg VERSION=$(AGENT_TAG) \
 		-t kubebolt-agent:$(AGENT_TAG) \
 		-t kubebolt-agent:dev .
 	@echo "Built kubebolt-agent:$(AGENT_TAG)"

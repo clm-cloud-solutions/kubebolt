@@ -1,12 +1,13 @@
 module github.com/kubebolt/kubebolt/packages/proto
 
-go 1.25.0
+go 1.26.0
 
 // Forces Go 1.26.6+ — closes the 5 HIGH stdlib CVEs that landed under 1.25.9,
 // plus CVE-2026-39821 (x/net/idna), CVE-2026-46600 (x/net/dns/dnsmessage) and
 // the 2026-08 stdlib wave, all fixed in 1.26.6. Bumped in lockstep with
 // apps/api/go.mod and packages/agent/go.mod.
-toolchain go1.26.6
+// 1.26.9 adds CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls).
+toolchain go1.26.9
 
 require (
 	google.golang.org/grpc v1.83.2
@@ -14,8 +15,8 @@ require (
 )
 
 require (
-	golang.org/x/net v0.58.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 )

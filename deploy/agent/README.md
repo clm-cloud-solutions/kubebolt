@@ -108,7 +108,12 @@ helm install kubebolt-agent \
 |---|---|
 | `kubebolt` chart in the same cluster (release `kubebolt`, namespace `kubebolt`) | `kubebolt-agent-ingest.kubebolt.svc.cluster.local:9090` |
 | Reachable host / LoadBalancer | `<host>:9090` |
+| Backend on your laptop (Homebrew, krew, binary), agent in kind or Docker Desktop K8s on macOS / Windows | `host.docker.internal:9090` |
 | Remote backend over TLS, for example [KubeBolt Cloud](https://kubebolt.io) | `agent.kubebolt.io:443` + `tls.enabled=true` + `auth.mode=ingest-token` |
+
+The [agent chart](../helm/kubebolt-agent/README.md#connecting-to-the-backend)
+lists every topology, including the single container and Docker Compose on
+the `kind` network, and Linux.
 
 With authentication (strongly recommended for `operator`; required by a remote backend such as KubeBolt Cloud):
 

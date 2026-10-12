@@ -75,8 +75,10 @@ conversations. An hourly retention pass prunes each kind on its own horizon.
 container metrics from the agent, Hubble flows, OpenCost series, and anything
 received over Prometheus `remote_write` (`/api/v1/prom/write`). The Helm chart
 and Docker Compose bundle a single-node instance; you can point at your own
-with `KUBEBOLT_METRICS_STORAGE_URL`. Without it, live CPU/memory still comes
-from metrics-server and only the historical panels stay empty. Prometheus
+with `KUBEBOLT_METRICS_STORAGE_URL`; without it KubeBolt looks for one at
+`http://localhost:8428`. It must be VictoriaMetrics: KubeBolt writes through
+its import API and queries it back. With no store at all, live CPU/memory
+still comes from metrics-server and only the historical panels stay empty. Prometheus
 `remote_write` ingest is capped at 1M active series by default, and the
 Overview warns when the cap is near.
 

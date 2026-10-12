@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
+	"github.com/kubebolt/kubebolt/apps/api/internal/failurelog"
 	"github.com/kubebolt/kubebolt/apps/api/internal/usage"
 )
 
@@ -47,6 +49,9 @@ type CardinalityTracker struct {
 	client   *http.Client
 	interval time.Duration
 
+	// failures keeps a store that keeps failing to one log line a minute.
+	failures failurelog.Log
+
 	mu       sync.RWMutex
 	counts   map[string]int     // tenant_id → current series count
 	known    map[string]struct{} // set of tenants observed via SeenTenant
@@ -75,7 +80,7 @@ type CardinalityTracker struct {
 // the cap longer.
 func NewCardinalityTracker(vmURL string, defaults auth.EffectiveLimits, client *http.Client, interval time.Duration) *CardinalityTracker {
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Transport: config.MetricsStorageTransport(nil)}
 	}
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -239,13 +244,13 @@ func (c *CardinalityTracker) refresh(ctx context.Context) {
 		// Network error / VM unreachable. Don't update — last good
 		// counts remain in cache. Permissive boot still applies if
 		// this was the first attempt.
-		slog.Warn("cardinality refresh: VM query failed", slog.String("error", err.Error()))
+		c.warnFailure("cardinality refresh: VM query failed", slog.String("error", err.Error()))
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		slog.Warn("cardinality refresh: VM returned non-200",
+		c.warnFailure("cardinality refresh: VM returned non-200",
 			slog.Int("status", resp.StatusCode),
 			slog.String("body", string(body)))
 		return
@@ -262,11 +267,11 @@ func (c *CardinalityTracker) refresh(ctx context.Context) {
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		slog.Warn("cardinality refresh: VM response parse", slog.String("error", err.Error()))
+		c.warnFailure("cardinality refresh: VM response parse", slog.String("error", err.Error()))
 		return
 	}
 	if parsed.Status != "success" {
-		slog.Warn("cardinality refresh: VM status not success", slog.String("status", parsed.Status))
+		c.warnFailure("cardinality refresh: VM status not success", slog.String("status", parsed.Status))
 		return
 	}
 
@@ -316,5 +321,14 @@ func (c *CardinalityTracker) refresh(ctx context.Context) {
 		// Invoked outside the lock so a slow consumer doesn't
 		// block the next refresh tick.
 		cb(snap)
+	}
+}
+
+// warnFailure logs a failed refresh at most once a minute, with how many
+// refreshes failed since the last line: a store that is down or rejects the
+// credentials fails every 30 s.
+func (c *CardinalityTracker) warnFailure(msg string, attrs ...any) {
+	if logNow, failed := c.failures.Record(time.Now()); logNow {
+		slog.Warn(msg, append(attrs, slog.Int("failed_refreshes", failed))...)
 	}
 }

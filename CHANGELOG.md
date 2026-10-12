@@ -4,6 +4,60 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.1] — 2026-10-12
+
+Every install path the README promises works as written, history on a laptop
+included. Drop-in, no migration; agent 1.4.3. Full note: [docs/releases/v2.3.1.md](docs/releases/v2.3.1.md).
+
+### Added
+
+- **Credentials for the metrics store**: `KUBEBOLT_METRICS_STORAGE_TOKEN`
+  (bearer) or `KUBEBOLT_METRICS_STORAGE_USERNAME` / `_PASSWORD` (basic auth),
+  sent on every call to VictoriaMetrics; in the chart,
+  `metrics.storage.existingSecret`. A managed VictoriaMetrics can be used as
+  the history store.
+
+### Changed
+
+- **KubeBolt says at startup where it keeps history**: the VictoriaMetrics in
+  use and whether it came from `KUBEBOLT_METRICS_STORAGE_URL` or the default
+  `http://localhost:8428`, or `history off` when nothing answers there. While
+  the store fails (down, or rejecting the credentials), the agent ingest, the
+  API's self-push and the active-series cap each log it at most once a minute
+  with how many attempts failed, instead of every time.
+- **Homebrew installs a cask**, for macOS and Linux. The command does not
+  change. An existing formula install is no longer updated by `brew upgrade`;
+  switch it once with `brew uninstall --formula kubebolt && brew install
+  clm-cloud-solutions/tap/kubebolt`.
+- The README walks every quick-start path with its exact commands, history on
+  a laptop install and where the agent connects in each topology;
+  `deploy/docker-compose.kind.yml` runs Compose against a kind cluster.
+
+### Fixed
+
+- **The agent's token could not be issued from the UI on a self-hosted
+  install.** "Generate token + create Secret" answered "No active tenant
+  available" since 1.17.1, so the agent's read + write mode could not be set
+  up from the wizard.
+- **Homebrew failed when Xcode lagged behind macOS** ("Your Xcode is too
+  outdated"): the formula was a source build to Homebrew. The cask installs
+  the release binary without those checks and clears the macOS quarantine flag.
+- **Kobi conversations never expired** on a self-hosted install. The first
+  retention pass after upgrading deletes the conversations older than the
+  horizon (`KUBEBOLT_COPILOT_CONVERSATION_RETENTION_HORIZON`, 2160h by
+  default): raise it before upgrading to keep them longer.
+- **Kobi's estimated cost priced one-hour cache writes at 1.25× input**
+  instead of 2×.
+
+### Security
+
+- Go 1.26.6 → 1.26.9 on every build path: CVE-2026-78667 (net/http) and
+  CVE-2026-97031 (crypto/tls), both HIGH.
+- `golang.org/x/net` v0.58.0 → v0.60.0: CVE-2026-78669 (HTTP/2), HIGH.
+- VictoriaMetrics and vmagent stay on v1.153.0, whose vendor build carries the
+  same three CVEs; waived in `.trivyignore-thirdparty` until the pins move to
+  v1.154.0 final (still a release candidate).
+
 ## [2.3.0] — 2026-10-07
 
 The app in the site's language, a Kobi that reads the node's disk, and

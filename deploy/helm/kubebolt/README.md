@@ -395,8 +395,8 @@ already grants read access to the scanner CRDs.
 ## Metrics storage
 
 Time-series data (CPU, memory, network and filesystem samples shipped by
-`kubebolt-agent`, Hubble flow events, remote_write samples) lives in a
-Prometheus-compatible TSDB. See
+`kubebolt-agent`, Hubble flow events, remote_write samples) lives in
+VictoriaMetrics. See
 [kubebolt.io/docs/metrics](https://kubebolt.io/docs/metrics).
 
 **Default — embedded VictoriaMetrics.** The chart deploys a single-node
@@ -411,6 +411,17 @@ instead:
 helm install kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
   --set metrics.storage.embedded.enabled=false \
   --set metrics.storage.externalUrl=http://vmselect.observability.svc.cluster.local:8481
+```
+
+If the store asks for credentials, put them in a Secret in the release
+namespace — `username` + `password` for basic auth, or `token` for a bearer
+token — and name it in `metrics.storage.existingSecret`:
+
+```bash
+kubectl -n kubebolt create secret generic kubebolt-vm-credentials \
+  --from-literal=token=<token>
+helm upgrade kubebolt oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt \
+  --reuse-values --set metrics.storage.existingSecret=kubebolt-vm-credentials
 ```
 
 Plain Prometheus remote-write isn't enough — KubeBolt also queries the

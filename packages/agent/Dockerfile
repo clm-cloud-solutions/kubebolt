@@ -6,7 +6,7 @@
 
 # Explicit patch pin — see apps/api/Dockerfile for the CVE rationale.
 # Bump in lockstep with all other Dockerfiles and the CI workflows.
-FROM golang:1.26.6-alpine AS builder
+FROM golang:1.26.9-alpine AS builder
 
 WORKDIR /src
 
@@ -28,8 +28,11 @@ COPY packages/proto/ ./packages/proto/
 COPY packages/agent/ ./packages/agent/
 
 # Build. -s -w strip symbols for a smaller binary. Ends up ~15MB for amd64.
+# VERSION is the release version the agent reports (release-agent.yml passes
+# the tag's); a build without it reports "dev".
+ARG VERSION=dev
 RUN cd packages/agent && \
-    go build -ldflags="-s -w" -o /out/kubebolt-agent ./cmd/agent
+    go build -ldflags="-s -w -X main.agentVersion=${VERSION}" -o /out/kubebolt-agent ./cmd/agent
 
 # Runtime. distroless/static includes CA certs and tzdata, runs as nonroot by
 # tag. No shell, no package manager, minimal attack surface.

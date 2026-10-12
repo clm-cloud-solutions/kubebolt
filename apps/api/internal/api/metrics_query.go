@@ -7,26 +7,24 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 )
 
-// metricsStorageURL returns the backing VictoriaMetrics (or any
-// Prometheus-compatible) endpoint, configurable via env. Falls back to the
-// Docker Compose service DNS and then to localhost for bare-host dev.
+// metricsStorageURL is the VictoriaMetrics base URL (config.MetricsStorageURL:
+// KUBEBOLT_METRICS_STORAGE_URL, else a VictoriaMetrics on localhost:8428).
 func metricsStorageURL() string {
-	if u := os.Getenv("KUBEBOLT_METRICS_STORAGE_URL"); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8428"
+	u, _ := config.MetricsStorageURL()
+	return u
 }
 
-var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second}
+// metricsHTTPClient carries the store's credentials (config.MetricsStorageTransport).
+var metricsHTTPClient = &http.Client{Timeout: 15 * time.Second, Transport: config.MetricsStorageTransport(nil)}
 
 // activeClusterUID returns the kube-system UID of the cluster this
 // handler is currently pointed at, or empty when no connector is

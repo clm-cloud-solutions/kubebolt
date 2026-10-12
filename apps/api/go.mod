@@ -1,6 +1,6 @@
 module github.com/kubebolt/kubebolt/apps/api
 
-go 1.25.0
+go 1.26.0
 
 // Forces Go 1.26.6+ for local + CI builds (downloaded automatically by
 // `go build` if the system toolchain is older). Closes the 5 HIGH stdlib CVEs
@@ -9,8 +9,9 @@ go 1.25.0
 // DoS) and the 2026-08 stdlib wave (encoding/asn1, net/http HTTP/2, html/template,
 // encoding/xml, net/url, crypto/tls) — all fixed in 1.25.13 / 1.26.6. The api
 // image was already on golang:1.26.6-alpine; this brings go.mod, CI and the
-// cross-compiled krew/Homebrew binaries onto the same line.
-toolchain go1.26.6
+// cross-compiled krew/Homebrew binaries onto the same line. 1.26.9 adds the
+// fixes for CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls), both HIGH.
+toolchain go1.26.9
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 
@@ -27,8 +28,8 @@ require (
 	github.com/prometheus/client_model v0.6.2
 	github.com/prometheus/common v0.66.1
 	go.etcd.io/bbolt v1.4.3
-	golang.org/x/crypto v0.55.0
-	golang.org/x/mod v0.40.0
+	golang.org/x/crypto v0.57.0
+	golang.org/x/mod v0.41.0
 	golang.org/x/time v0.15.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
@@ -94,12 +95,12 @@ require (
 	github.com/xlab/treeprint v1.2.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.3 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/net v0.58.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/sync v0.23.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260526163538-3dc84a4a5aaa // indirect
 	gopkg.in/evanphx/json-patch.v4 v4.13.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect

@@ -1,0 +1,16 @@
+# Override for a kind cluster: joins the API to kind's Docker network, where
+# it reaches the cluster's apiserver by its container name (which the kind
+# certificate covers) and the agent reaches the API by its own.
+#
+#   kind get kubeconfig --internal --name <cluster> > /tmp/docker-kubeconfig
+#   docker compose -f docker-compose.yml -f docker-compose.kind.yml up -d
+#
+# The agent then dials the API at deploy-api-1:9090 (<project>-api-1 when the
+# project has another name).
+services:
+  api:
+    networks: [default, kind]
+
+networks:
+  kind:
+    external: true

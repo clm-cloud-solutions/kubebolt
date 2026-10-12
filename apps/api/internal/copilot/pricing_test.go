@@ -224,3 +224,21 @@ func TestPricingFor_AdminCatalogCoverage(t *testing.T) {
 		}
 	}
 }
+
+// Kobi writes its static prefix with a one-hour TTL, which Anthropic bills at
+// 2x base input; a 5-minute write is 1.25x. The adapter reports the 1h part
+// (CacheCreation1hTokens) and the estimate bills each part at its own rate.
+func TestEstimateUSD_OneHourCacheWrites(t *testing.T) {
+	sonnet, _ := PricingFor("anthropic", "claude-sonnet-5")
+	u := Usage{InputTokens: 1_000, OutputTokens: 500, CacheCreationTokens: 30_000, CacheCreation1hTokens: 27_000}
+	want := (1_000*2 + 500*10 + 3_000*2.50 + 27_000*4.00) / 1_000_000.0
+	if got := EstimateUSD(u, sonnet); math.Abs(got-want) > 1e-12 {
+		t.Errorf("sonnet-5: EstimateUSD = %.6f, want %.6f (1h writes at 2x input)", got, want)
+	}
+
+	// A record without the split (written before it existed) prices as before.
+	old := Usage{InputTokens: 1_000, OutputTokens: 500, CacheCreationTokens: 30_000}
+	if got, want := EstimateUSD(old, sonnet), (1_000*2+500*10+30_000*2.50)/1_000_000.0; math.Abs(got-want) > 1e-12 {
+		t.Errorf("record without the split: EstimateUSD = %.6f, want %.6f", got, want)
+	}
+}
