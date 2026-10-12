@@ -521,7 +521,7 @@ export function FleetPage() {
                   onClick={() => chooseView(v)}
                   className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.06em] rounded transition-colors ${
                     view === v
-                      ? 'bg-kb-accent/15 text-kb-accent font-semibold'
+                      ? 'bg-kb-accent-light text-kb-accent font-semibold'
                       : 'text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary'
                   }`}
                 >
