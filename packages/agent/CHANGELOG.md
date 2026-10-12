@@ -11,6 +11,24 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.3] — 2026-10-12
+
+Reports its real version. Same v1.0 metric/label schema — drop-in within 1.x.
+
+### Fixed
+
+- **The agent reported version 1.0.0 whatever its release.** The version was
+  a constant in the code; the image now carries its release version, which
+  Administration › Agents shows. A local build reports `dev`.
+
+### Security
+
+- Go 1.26.6 → 1.26.9: CVE-2026-78667 (net/http) and CVE-2026-97031
+  (crypto/tls), both HIGH.
+- `golang.org/x/net` v0.58.0 → v0.60.0: CVE-2026-78669 (HTTP/2, HIGH).
+- The chart's `scrape.image` stays on vmagent v1.153.0, whose vendor build
+  carries the same three CVEs, until v1.154.0 final.
+
 ## [1.4.2] — 2026-10-07
 
 Installs on OpenShift out of the box. Same v1.0 metric/label schema — drop-in
