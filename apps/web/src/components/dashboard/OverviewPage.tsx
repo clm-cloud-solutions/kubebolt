@@ -68,7 +68,7 @@ export function OverviewPage() {
       />
 
       <div className="grid grid-cols-2 gap-3">
-        <EventsFeed events={overview.events?.slice(0, 15) || []} />
+        <EventsFeed events={overview.events ?? []} />
         <WorkloadHealth overview={overview} />
       </div>
 
