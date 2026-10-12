@@ -62,18 +62,22 @@ export function EfficiencyBand({
   const memEff = efficiencyOf(memory, metricsAvailable)
   const scores = [cpuEff, memEff].filter((e): e is number => e != null)
   const blended = scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : null
+  // A resource running over its requests is a risk, not 100 % efficiency: the
+  // capped score would count it as perfect and the blend would read healthy
+  // (41 % CPU + 238 % memory came out "71 % in use"). While one runs over, the
+  // footer gives each ratio instead of a blend.
+  const cpuCommit = commitmentOf(cpu, metricsAvailable)
+  const memCommit = commitmentOf(memory, metricsAvailable)
+  const isOver = (c: number | null) => c != null && c >= OVER_COMMIT_RATIO * 100
+  const anyOver = isOver(cpuCommit) || isOver(memCommit)
+  const overNames = [isOver(cpuCommit) ? 'CPU' : null, isOver(memCommit) ? 'memory' : null].filter((n): n is string => n != null)
 
   return (
-    // Accent-washed band (mockup: linear-gradient(160deg, accent-dim,
-    // card 55%) + glow border) — built from existing tokens via
-    // color-mix so both themes derive their own wash; no new CSS vars.
-    <div
-      className="rounded-xl border p-4"
-      style={{
-        background: 'linear-gradient(160deg, var(--kb-accent-light), var(--kb-card) 55%)',
-        borderColor: 'color-mix(in srgb, var(--kb-accent) 25%, transparent)',
-      }}
-    >
+    // The plain card surface, like every panel around it. It used to carry an
+    // accent wash and a green border, which told the reader "all good" around
+    // two cards that were both asking for attention: colour here is for the
+    // state of each resource and for the action, not for the frame.
+    <div className="rounded-xl border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
           <span className="w-6 h-6 rounded-md bg-kb-accent-light flex items-center justify-center shrink-0">
@@ -110,7 +114,19 @@ export function EfficiencyBand({
       {(blended != null || recsReady > 0) && (
         <div className="mt-3 pt-3 border-t border-kb-border flex items-center gap-2 text-xs text-kb-text-secondary flex-wrap">
           <TrendingUp className="w-3.5 h-3.5 text-kb-accent shrink-0" />
-          {blended != null ? (
+          {anyOver ? (
+            <span>
+              Reserved resources in use:{' '}
+              {cpuCommit != null && (
+                <b className={`tabular-nums ${isOver(cpuCommit) ? 'text-status-warn' : 'text-kb-text-primary'}`}>CPU {cpuCommit}%</b>
+              )}
+              {cpuCommit != null && memCommit != null && ' · '}
+              {memCommit != null && (
+                <b className={`tabular-nums ${isOver(memCommit) ? 'text-status-warn' : 'text-kb-text-primary'}`}>memory {memCommit}%</b>
+              )}
+              {' '}— {overNames.join(' and ')} {overNames.length === 1 ? 'uses more than it reserves' : 'use more than they reserve'}
+            </span>
+          ) : blended != null ? (
             <span>
               Cluster blended efficiency:{' '}
               <b className="text-kb-text-primary tabular-nums">{blended}%</b> of reserved
@@ -122,9 +138,9 @@ export function EfficiencyBand({
           {recsReady > 0 && (
             <Link
               to="/capacity"
-              className="ml-auto text-[11px] font-mono text-kb-accent hover:opacity-80 transition-opacity"
+              className="ml-auto inline-flex items-center px-2.5 py-1 rounded-md bg-kb-accent-light text-[11px] font-mono font-medium text-kb-accent hover:opacity-80 transition-opacity"
             >
-              {recsReady} rightsizing {recsReady === 1 ? 'rec' : 'recs'} ready →
+              {recsReady} rightsizing {recsReady === 1 ? 'recommendation' : 'recommendations'} →
             </Link>
           )}
         </div>
@@ -223,9 +239,9 @@ function EfficiencyCard({
             <TooltipHeader
               right={
                 overCommit
-                  ? `${commitment}% of requests`
+                  ? `${commitment}% of requests in use`
                   : score != null
-                    ? `${score}% efficient`
+                    ? `${score}% of requests in use`
                     : undefined
               }
             >
@@ -405,7 +421,9 @@ function CardHeader({
   score: number | null
   // Set only when usage has passed the reservation. The pill then reports the
   // true ratio instead of the capped score — "192% efficient" would be a
-  // contradiction, and "100% efficient" was a lie by rounding down.
+  // contradiction, and "100% efficient" was a lie by rounding down. Both
+  // pills name their denominator (requests): "41% efficient" read as a
+  // cluster-wide grade.
   commitment?: number | null
 }) {
   return (
@@ -416,7 +434,7 @@ function CardHeader({
       </span>
       {commitment != null ? (
         <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-status-warn-dim text-status-warn">
-          {commitment}% of requests
+          {commitment}% of requests in use
         </span>
       ) : (
         score != null && (
@@ -425,7 +443,7 @@ function CardHeader({
               score >= 70 ? 'bg-kb-accent-light text-kb-accent' : 'bg-status-warn-dim text-status-warn'
             }`}
           >
-            {score}% efficient
+            {score}% of requests in use
           </span>
         )
       )}
