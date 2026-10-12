@@ -31,10 +31,10 @@ type ModelPricing struct {
 // All values are USD per 1,000,000 tokens.
 var modelPricing = map[string]ModelPricing{
 	// ─── Anthropic — https://www.anthropic.com/pricing#api ──────────
-	// CacheCreation uses the 5-minute TTL (default). Anthropic also has
-	// a 1-hour TTL that's 1.6× more expensive (e.g. Opus 4.7 5m=$6.25,
-	// 1h=$10); the struct only has a single field, so we go with the
-	// default cadence that operators actually see most often.
+	// CacheCreation is the 5-minute TTL write (1.25x input). One-hour writes
+	// cost 2x input and are billed from Usage.CacheCreation1hTokens at
+	// cacheWrite1hMultiplier — Kobi writes its static prefix for an hour, so
+	// most of its writes are those.
 	//
 	// IMPORTANT: Opus 4.5+ (4.5, 4.6, 4.7) are ~3× CHEAPER than older
 	// Opus 4 / 4.1 — the May 2026 price reshuffle made the new line
@@ -185,8 +185,18 @@ func EstimateUSD(u Usage, p ModelPricing) float64 {
 	if cacheCreationPrice == 0 {
 		cacheCreationPrice = p.Input
 	}
+	// The one-hour part of the writes bills at 2x input, the rest at the
+	// 5-minute rate. Clamped: the 1h count is part of the total, never more.
+	writes1h := min(u.CacheCreation1hTokens, u.CacheCreationTokens)
+	writes5m := u.CacheCreationTokens - writes1h
 	return (float64(u.InputTokens)*p.Input +
 		float64(u.CacheReadTokens)*p.CachedInput +
-		float64(u.CacheCreationTokens)*cacheCreationPrice +
+		float64(writes5m)*cacheCreationPrice +
+		float64(writes1h)*p.Input*cacheWrite1hMultiplier +
 		float64(u.OutputTokens)*p.Output) / 1_000_000.0
 }
+
+// cacheWrite1hMultiplier prices a one-hour cache write: 2x base input on every
+// Anthropic model (a 5-minute write is 1.25x — ModelPricing.CacheCreation).
+// Only the Anthropic adapter reports 1h writes, so other providers never reach it.
+const cacheWrite1hMultiplier = 2.0

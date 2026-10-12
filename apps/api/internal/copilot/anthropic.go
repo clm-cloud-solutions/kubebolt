@@ -138,6 +138,11 @@ type anthropicUsage struct {
 	OutputTokens             int `json:"output_tokens"`
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	// The same writes split by TTL. The 1h part (the static prefix,
+	// staticPrefixCache) bills at 2x input, the 5m part at 1.25x.
+	CacheCreation struct {
+		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
+	} `json:"cache_creation"`
 }
 
 type anthropicResponse struct {
@@ -257,10 +262,11 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 	out := &ChatResponse{
 		StopReason: ar.StopReason,
 		Usage: Usage{
-			InputTokens:         ar.Usage.InputTokens,
-			OutputTokens:        ar.Usage.OutputTokens,
-			CacheCreationTokens: ar.Usage.CacheCreationInputTokens,
-			CacheReadTokens:     ar.Usage.CacheReadInputTokens,
+			InputTokens:           ar.Usage.InputTokens,
+			OutputTokens:          ar.Usage.OutputTokens,
+			CacheCreationTokens:   ar.Usage.CacheCreationInputTokens,
+			CacheReadTokens:       ar.Usage.CacheReadInputTokens,
+			CacheCreation1hTokens: ar.Usage.CacheCreation.Ephemeral1hInputTokens,
 		},
 	}
 	for _, block := range ar.Content {
