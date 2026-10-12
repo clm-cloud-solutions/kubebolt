@@ -323,7 +323,7 @@ In both modes, namespace regions are arranged in a grid of up to 3 columns (`NS_
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
-- Backend: `go build ./...`, `go vet ./...`, `go test ./... -race -count=1` (Go 1.26.6, ubuntu-latest)
+- Backend: `go build ./...`, `go vet ./...`, `go test ./... -race -count=1` (Go 1.26.9, ubuntu-latest)
 - Frontend: `npm ci`, `npm test` (Vitest), `npm run build` (tsc + Vite) (Node 22, ubuntu-latest)
 
 `make ci-local` reproduces both jobs locally.

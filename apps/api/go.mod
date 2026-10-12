@@ -9,8 +9,9 @@ go 1.25.0
 // DoS) and the 2026-08 stdlib wave (encoding/asn1, net/http HTTP/2, html/template,
 // encoding/xml, net/url, crypto/tls) — all fixed in 1.25.13 / 1.26.6. The api
 // image was already on golang:1.26.6-alpine; this brings go.mod, CI and the
-// cross-compiled krew/Homebrew binaries onto the same line.
-toolchain go1.26.6
+// cross-compiled krew/Homebrew binaries onto the same line. 1.26.9 adds the
+// fixes for CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls), both HIGH.
+toolchain go1.26.9
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 
