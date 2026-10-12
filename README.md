@@ -250,20 +250,47 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
 
 ### On your laptop
 
+KubeBolt also runs as one process on your machine, against every context in
+your kubeconfig. Homebrew, krew and the binary serve the API and UI on
+<http://localhost:8080> (`--port` to change it), print the generated `admin`
+password on first start, and keep their state in `./data` of the directory
+you start them from (`KUBEBOLT_DATA_DIR`), so start them from the same one.
+
 ```bash
 # Homebrew (macOS, Linux)
 brew install clm-cloud-solutions/tap/kubebolt
 kubebolt --kubeconfig ~/.kube/config
+```
 
-# kubectl plugin (krew, custom index)
+```bash
+# kubectl plugin: needs krew (https://krew.sigs.k8s.io/docs/user-guide/setup/install/)
+# with ~/.krew/bin on your PATH
 kubectl krew index add clm https://github.com/clm-cloud-solutions/krew-index.git
 kubectl krew install clm/kubebolt
 kubectl kubebolt
+```
 
+```bash
+# Binary: darwin-arm64 shown; also darwin-amd64, linux-arm64, linux-amd64
+curl -LO https://github.com/clm-cloud-solutions/kubebolt/releases/latest/download/kubebolt-darwin-arm64
+chmod +x kubebolt-darwin-arm64 && sudo mv kubebolt-darwin-arm64 /usr/local/bin/kubebolt
+kubebolt --kubeconfig ~/.kube/config
+```
+
+Every [release](https://github.com/clm-cloud-solutions/kubebolt/releases/latest)
+also carries a Windows binary (`kubebolt-windows-amd64.exe`), the
+`kubebolt-mcp` stdio server and `CHECKSUMS.txt`. The macOS binaries are not
+notarized: one downloaded with a browser is blocked on first run. Download it
+with `curl` as above, or clear the flag with
+`xattr -d com.apple.quarantine <file>`.
+
+```bash
 # Docker (single container, multi-arch, Cosign-signed; runs as a non-root user)
-docker run -p 3000:3000 \
+docker run -d --name kubebolt -p 3000:3000 \
   -v ~/.kube/config:/kubeconfig:ro -e KUBECONFIG=/kubeconfig \
+  -v kubebolt-data:/data \
   ghcr.io/clm-cloud-solutions/kubebolt:latest
+docker logs kubebolt 2>&1 | grep "admin password"   # then http://localhost:3000
 ```
 
 On Linux, the mounted kubeconfig must be readable by the container's
@@ -272,17 +299,29 @@ local clusters (kind, Docker Desktop) and kubeconfigs that authenticate
 through `aws`, `gke-gcloud-auth-plugin` or `kubelogin` need a small
 adjustment — see
 [Reaching your clusters from the container](docs/deployment-scenarios.md#reaching-your-clusters-from-the-container).
+The `kubebolt-data` volume keeps users, settings and history across
+restarts.
 
-Binaries for Linux and macOS (amd64, arm64) and Windows (amd64) — plus the
-`kubebolt-mcp` stdio server — are attached to every
-[release](https://github.com/clm-cloud-solutions/kubebolt/releases/latest).
-The single-process installs read every context in your kubeconfig and serve
-API and UI on one port — <http://localhost:8080> for Homebrew, krew and the
-binaries (`--port` to change it), <http://localhost:3000> for the container —
-and keep their state in `./data` (`KUBEBOLT_DATA_DIR`). They don't bundle a
-time-series store, so point
-`KUBEBOLT_METRICS_STORAGE_URL` at a VictoriaMetrics (or run the Compose stack
-below) if you want history.
+**History on your laptop.** These installs don't bundle a time-series store.
+KubeBolt keeps history in the VictoriaMetrics at `http://localhost:8428`
+unless `KUBEBOLT_METRICS_STORAGE_URL` points elsewhere (a `.env` file in the
+directory you start it from works too), and the agent in the cluster sends it
+the samples. Start the store before KubeBolt:
+
+```bash
+docker run -d --name kubebolt-vm -p 8428:8428 \
+  -v kubebolt-vm-data:/victoria-metrics-data victoriametrics/victoria-metrics:latest
+
+# then start KubeBolt, and install the agent pointing at your machine
+helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent \
+  --namespace kubebolt-system --create-namespace \
+  --set backendUrl=host.docker.internal:9090
+```
+
+`host.docker.internal` is how a kind or Docker Desktop cluster reaches your
+machine on macOS and Windows; on Linux, use your machine's address on the
+cluster's Docker network. The single container is set up differently, see
+[History: a VictoriaMetrics and the agent](docs/deployment-scenarios.md#history-a-victoriametrics-and-the-agent).
 
 ### Docker Compose (full stack with history)
 
@@ -290,12 +329,25 @@ below) if you want history.
 git clone https://github.com/clm-cloud-solutions/kubebolt.git && cd kubebolt
 ./deploy/docker-kubeconfig.sh   # copies your kubeconfig for the containers (and fixes Docker Desktop's 127.0.0.1)
 cd deploy && docker compose up -d
+docker compose logs api | grep "admin password"   # then http://localhost:3000
 ```
 
 API, web UI and VictoriaMetrics on <http://localhost:3000>. Compose builds
 the images from source, and its API image doesn't include the AWS CLI: for
 EKS kubeconfigs that authenticate with `aws eks get-token`, use Helm or the
 single-container image (which ships `aws`) instead.
+
+With **kind**, the apiserver listens on your machine's `127.0.0.1`, out of
+the containers' reach. Give the API kind's internal kubeconfig and join it to
+the `kind` network instead:
+
+```bash
+kind get kubeconfig --internal --name <cluster> > /tmp/docker-kubeconfig
+cd deploy && docker compose -f docker-compose.yml -f docker-compose.kind.yml up -d
+```
+
+The agent then dials the API by its container name:
+`--set backendUrl=deploy-api-1:9090`.
 
 More options, platform guides (EKS, GKE, AKS, OpenShift, Docker Desktop) and
 troubleshooting: <https://kubebolt.io/docs/installation>.
@@ -317,6 +369,12 @@ helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kube
   --set backendUrl=<kubebolt-host>:9090 \
   --set rbac.mode=reader
 ```
+
+`<kubebolt-host>` is wherever the agent can reach KubeBolt's port 9090: the
+in-cluster Service next to a Helm install, `host.docker.internal` for a
+laptop install seen from kind or Docker Desktop, a container name on the
+`kind` network… The [agent chart](deploy/helm/kubebolt-agent/README.md#connecting-to-the-backend)
+lists them.
 
 | `rbac.mode` | Read inventory | Operate (exec, scale, delete…) |
 |---|:---:|:---:|

@@ -259,7 +259,7 @@ agentIngest:
 
 # ─── Metrics storage (VictoriaMetrics) ────────────────────────────
 # KubeBolt persists time-series data (CPU / memory / network samples
-# from the agent, Hubble flow events) in a Prometheus-compatible TSDB.
+# from the agent, Hubble flow events) in VictoriaMetrics.
 # By default the chart deploys an embedded single-node VictoriaMetrics
 # StatefulSet so installs work out of the box. For larger clusters or
 # clusters that already run a metrics backend, disable the embedded
@@ -268,9 +268,9 @@ metrics:
   storage:
     embedded:
       # Deploy a bundled single-node VictoriaMetrics StatefulSet. Set
-      # to false when you already run VictoriaMetrics, Prometheus
-      # remote-write target, vmagent, or any compatible TSDB and want
-      # KubeBolt to write there instead.
+      # to false when you already run VictoriaMetrics (single-node, or
+      # vmselect/vminsert behind one URL) and want KubeBolt to use it
+      # instead — see externalUrl below.
       enabled: true
       image:
         repository: victoriametrics/victoria-metrics
