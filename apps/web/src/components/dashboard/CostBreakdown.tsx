@@ -248,14 +248,13 @@ export function CostBreakdown({ cost }: Props) {
       {/* Idle callout — the reclaimable-now line the mockup carries.
           Idle is compute you pay for that nothing requested; the fix
           lives on Capacity (right-size requests) and Nodes
-          (consolidate onto fewer nodes). */}
+          (consolidate onto fewer nodes). Waste in amber, like the
+          Overview's idle callout; green only on the action — on a green
+          surface the idle spend read as good news. */}
       {cost.idleMonthly > 0 && (
-        <div
-          className="mt-3 flex items-center justify-between gap-2 rounded-lg border bg-kb-accent-light px-3 py-2"
-          style={{ borderColor: 'color-mix(in srgb, var(--kb-accent) 22%, transparent)' }}
-        >
+        <div className="mt-3 flex items-center justify-between gap-2 rounded-lg border border-status-warn/30 bg-status-warn-dim px-3 py-2">
           <span className="text-xs text-kb-text-secondary">
-            <span className="text-kb-accent font-semibold">
+            <span className="text-status-warn font-semibold">
               {formatMoney(cost.idleMonthly, { exact: cost.idleMonthly < 100_000 })}/mo
             </span>{' '}
             idle · unallocated capacity

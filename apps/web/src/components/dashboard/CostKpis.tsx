@@ -33,8 +33,15 @@ interface Props {
 // Efficiency thresholds — green when you use most of what you pay
 // for, amber in the sloppy middle, red when the cluster is mostly
 // idle spend. Matches the Overview efficiency band's framing.
+//
+// Above the reservation (over 105 %: pods burning more CPU than they asked
+// for) it is amber, not "very efficient": the Overview band's over-commit
+// branch. It used to read green and cap the ring at 100.
+const OVER_COMMIT_PCT = 105
+
 function effAccent(pct: number | null): 'ok' | 'warn' | 'crit' | 'default' {
   if (pct == null) return 'default'
+  if (pct >= OVER_COMMIT_PCT) return 'warn'
   if (pct >= 60) return 'ok'
   if (pct >= 35) return 'warn'
   return 'crit'
@@ -173,7 +180,8 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
               legend={
                 <Legend
                   rows={[
-                    { color: KPI_COLOR.ok, label: `${money(savingsMonthly)} recovered` },
+                    // An estimate of what rightsizing would hand back, not money already saved.
+                    { color: KPI_COLOR.ok, label: `${money(savingsMonthly)} recoverable` },
                     { color: KPI_COLOR.muted, label: `${money(Math.max(0, cost.idleMonthly - savingsMonthly))} still idle` },
                   ]}
                 />
@@ -203,8 +211,10 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
       />
       <KpiCard
         value={eff != null ? formatPercent(eff).replace('%', '') : '—'}
-        unit="% efficient"
-        description="of the CPU you requested is in use"
+        unit="% of requests"
+        description={
+          eff != null && eff >= OVER_COMMIT_PCT ? 'CPU in use runs past what was requested' : 'of the requested CPU is in use'
+        }
         viz={
           eff != null ? (
             <RingStat
