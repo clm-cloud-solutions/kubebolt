@@ -146,9 +146,12 @@ export function KpiCards({ overview }: KpiCardsProps) {
       className={`grid gap-4 ${gridWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
       style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, KPI_MIN_WIDTH, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
     >
+      {/* The health verdict lights this card; the Insights card beside it
+          counts the same findings and stays unlit (one fact, one card). */}
       <KpiCard
         primary
-        alert={(insights?.critical ?? 0) > 0 ? 'crit' : undefined}
+        alert={health?.status === 'critical' ? 'crit' : health?.status === 'warning' ? 'warn' : undefined}
+        status={health?.status ? HEALTH_STATUS[health.status] : undefined}
         value={health?.score != null ? health.score : '—'}
         unit={health?.score != null ? '/ 100' : undefined}
         description="cluster health"
@@ -225,7 +228,6 @@ export function KpiCards({ overview }: KpiCardsProps) {
       />
 
       <KpiCard
-        alert={(insights?.critical ?? 0) > 0 ? 'crit' : (insights?.warning ?? 0) > 0 ? 'warn' : undefined}
         link={{ text: 'view', to: '/insights' }}
         value={insightsTotal}
         unit={insightsTotal === 1 ? 'insight' : 'insights'}
@@ -252,6 +254,12 @@ export function KpiCards({ overview }: KpiCardsProps) {
     </div>
   )
 }
+
+const HEALTH_STATUS = {
+  healthy: { label: 'Healthy', tone: 'ok' },
+  warning: { label: 'Warning', tone: 'warn' },
+  critical: { label: 'Critical', tone: 'crit' },
+} as const
 
 // ACCENT_COLOR resolves a state to the project's status hex constants (same
 // values as utils/colors statusColorMap) for SVG strokes and legend dots.
