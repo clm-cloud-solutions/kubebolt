@@ -45,7 +45,7 @@ export function OverviewPage() {
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <OverviewHeader overview={overview} tab="Overview" />
         <div className="flex items-center gap-3 mt-1">
-          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} />
+          <DataFreshnessIndicator dataUpdatedAt={dataUpdatedAt} isFetching={isFetching} isError={error != null} />
         </div>
       </div>
 

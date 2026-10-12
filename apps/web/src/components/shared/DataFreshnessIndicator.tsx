@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { ChevronDown } from 'lucide-react'
 import { useRefreshInterval } from '@/contexts/RefreshContext'
+import { freshnessOf, type Freshness } from '@/utils/freshness'
 
 const INTERVAL_OPTIONS = [
   { value: 5_000, label: '5s' },
@@ -15,12 +16,22 @@ interface DataFreshnessIndicatorProps {
   dataUpdatedAt: number
   refreshInterval?: number // optional — falls back to global context
   isFetching: boolean
+  // The last poll failed: the dot turns red whatever the age of the data.
+  isError?: boolean
+}
+
+const DOT: Record<Freshness, string> = {
+  live: 'bg-status-ok',
+  delayed: 'bg-status-warn',
+  offline: 'bg-status-error',
+  connecting: 'bg-kb-text-tertiary',
 }
 
 export function DataFreshnessIndicator({
   dataUpdatedAt,
   refreshInterval,
   isFetching,
+  isError,
 }: DataFreshnessIndicatorProps) {
   const [now, setNow] = useState(Date.now())
   const [open, setOpen] = useState(false)
@@ -45,14 +56,8 @@ export function DataFreshnessIndicator({
   const activeInterval = refreshInterval ?? globalInterval
   const elapsed = dataUpdatedAt ? Math.floor((now - dataUpdatedAt) / 1000) : 0
   const refreshSec = Math.round(activeInterval / 1000)
-  const ratio = elapsed / refreshSec
-
-  const statusColor =
-    ratio < 0.5
-      ? 'bg-emerald-400'
-      : ratio < 1
-        ? 'bg-amber-400'
-        : 'bg-red-400'
+  const freshness = freshnessOf({ updatedAt: dataUpdatedAt, intervalMs: activeInterval, now, failed: isError })
+  const statusColor = DOT[freshness]
 
   const label =
     elapsed < 2
@@ -72,7 +77,7 @@ export function DataFreshnessIndicator({
         </span>
       ) : (
         <span className="relative flex h-2 w-2">
-          {ratio < 0.5 && (
+          {freshness === 'live' && elapsed < 2 && (
             <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${statusColor} opacity-75`} />
           )}
           <span className={`relative inline-flex rounded-full h-2 w-2 ${statusColor}`} />

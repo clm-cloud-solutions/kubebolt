@@ -7,6 +7,7 @@ import { Sidebar } from './Sidebar'
 import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
+import { useFreshness } from '@/hooks/useFreshness'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { api, ApiError } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -27,7 +28,7 @@ const ABSENT_INTEGRATION_NAMES: Record<string, string> = {
 }
 
 export function Layout() {
-  const { data: rawOverview, error, refetch } = useClusterOverview()
+  const { data: rawOverview, error, refetch, dataUpdatedAt } = useClusterOverview()
   const isSwitching = useIsMutating({ mutationKey: ['switch-cluster'] }) > 0
   const location = useLocation()
   // La altitud de la pantalla actual (global / cluster / public). Ver
@@ -167,6 +168,11 @@ export function Layout() {
   // an agent registers and the connector recovers, so the UI doesn't
   // need a manual Retry button — the empty state auto-heals.
   const isAwaitingAgent = isUnavailable && /no agent connected yet|waiting for agent to register/i.test(error.message || '')
+  // What the Topbar's state pill says: the overview poll is the cluster
+  // answering. A metrics-only cluster has no connector to answer it (its 503 is
+  // by design), so the pill keeps saying live there instead of offline.
+  const freshness = useFreshness(dataUpdatedAt, error != null && !isMetricsOnly)
+  const connection = isMetricsOnly ? 'live' : freshness
   // When cluster is unreachable, don't pass stale data from the previous cluster
   const overview = isUnavailable ? undefined : rawOverview
 
@@ -255,7 +261,7 @@ export function Layout() {
             even above the docked Copilot panel. The Copilot's
             top:52 avoids covering it, so the cluster switcher,
             search and theme toggle stay reachable.*/}
-        <Topbar overview={overview} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+        <Topbar overview={overview} connection={connection} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
         {isLimited && !limitedBannerDismissed && (
           <div className="px-4 py-1.5 bg-status-warn-dim border-b border-kb-border text-xs text-status-warn flex items-center gap-2 shrink-0">
             <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
