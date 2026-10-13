@@ -68,6 +68,10 @@ export interface NodeCost {
   node: string
   monthly: number
   isSpot: boolean
+  // What the pods on this node requested, priced at its rates, and the rest:
+  // where the cluster's idle spend sits (the Cost idle card names the node).
+  allocatedMonthly: number
+  idleMonthly: number
 }
 
 export interface ClusterCost {
@@ -340,10 +344,12 @@ export function useClusterCost(enabled = true): ClusterCost {
   const nsMonthly = new Map<string, number>()
   const wlMonthly = new Map<string, { namespace: string; workload: string; monthly: number }>()
   let allocatedHourly = 0
+  const allocByNode = new Map<string, number>()
   for (const row of vec(attrQ.data)) {
     const perHour = parseFloat(row.value?.[1] ?? '0')
     if (!Number.isFinite(perHour)) continue
     allocatedHourly += perHour
+    if (row.metric.node) allocByNode.set(row.metric.node, (allocByNode.get(row.metric.node) ?? 0) + perHour * HOURS_PER_MONTH)
     const ns = row.metric.namespace || 'unknown'
     nsMonthly.set(ns, (nsMonthly.get(ns) ?? 0) + perHour * HOURS_PER_MONTH)
     const wl = shortenPodName(row.metric.pod || '')
@@ -414,6 +420,10 @@ export function useClusterCost(enabled = true): ClusterCost {
       monthly: parseFloat(row.value?.[1] ?? '0') * HOURS_PER_MONTH,
       isSpot: spotNodes.has(row.metric.node || ''),
     }))
+    .map((n) => {
+      const allocatedMonthly = allocByNode.get(n.node) ?? 0
+      return { ...n, allocatedMonthly, idleMonthly: Math.max(0, n.monthly - allocatedMonthly) }
+    })
     .filter((n) => Number.isFinite(n.monthly))
     .sort((a, b) => b.monthly - a.monthly)
 
