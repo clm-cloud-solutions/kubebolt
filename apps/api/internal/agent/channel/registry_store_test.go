@@ -150,6 +150,67 @@ func TestStore_Prune(t *testing.T) {
 	}
 }
 
+// TestStore_DeleteCluster: the operator's delete drops the cluster's records,
+// connected or not, in both stores — boot restores a cluster for every record
+// left. A caller org takes its own records and the tenant-less ones; "" takes
+// them all; other clusters and other orgs keep theirs.
+func TestStore_DeleteCluster(t *testing.T) {
+	bolted := func(t *testing.T) AgentStore {
+		db, err := bolt.Open(filepath.Join(t.TempDir(), "test.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+		if err != nil {
+			t.Fatalf("bolt.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		bucket := []byte("agents")
+		if err := db.Update(func(tx *bolt.Tx) error { _, err := tx.CreateBucketIfNotExists(bucket); return err }); err != nil {
+			t.Fatalf("CreateBucket: %v", err)
+		}
+		return NewBoltAgentStore(db, bucket)
+	}
+	stores := map[string]func(*testing.T) AgentStore{
+		"memory": func(*testing.T) AgentStore { return NewMemoryAgentStore() },
+		"bolt":   bolted,
+	}
+	for name, open := range stores {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			now := time.Now().UTC()
+			for _, rec := range []AgentRecord{
+				{ClusterID: "c1", AgentID: "a-live", TenantID: "org-a", FirstSeen: now, LastSeen: now},
+				{ClusterID: "c1", AgentID: "a-gone", TenantID: "org-a", FirstSeen: now, LastSeen: now, DisconnectedAt: now},
+				{ClusterID: "c1", AgentID: "b", TenantID: "org-b", FirstSeen: now, LastSeen: now},
+				{ClusterID: "c1", AgentID: "anon", FirstSeen: now, LastSeen: now},
+				{ClusterID: "c10", AgentID: "a", TenantID: "org-a", FirstSeen: now, LastSeen: now},
+			} {
+				rec := rec
+				if err := store.Upsert(&rec); err != nil {
+					t.Fatalf("Upsert: %v", err)
+				}
+			}
+
+			removed, err := store.DeleteCluster("org-a", "c1")
+			if err != nil || removed != 3 {
+				t.Fatalf("DeleteCluster(org-a, c1) = %d, %v; want 3 (org-a's two + the tenant-less one)", removed, err)
+			}
+			left := map[string]bool{}
+			recs, _ := store.List()
+			for _, r := range recs {
+				left[r.ClusterID+"/"+r.AgentID] = true
+			}
+			if len(left) != 2 || !left["c1/b"] || !left["c10/a"] {
+				t.Errorf("after DeleteCluster(org-a, c1): %v, want c1/b (org-b) and c10/a (another cluster)", left)
+			}
+
+			if removed, err := store.DeleteCluster("", "c1"); err != nil || removed != 1 {
+				t.Errorf("DeleteCluster(\"\", c1) = %d, %v; want 1 (every tenant)", removed, err)
+			}
+			if _, err := store.DeleteCluster("org-a", ""); err == nil {
+				t.Error("DeleteCluster with no clusterID should error")
+			}
+		})
+	}
+}
+
 // TestBoltAgentStore_RoundTrip exercises the BoltDB-backed store
 // against a temporary file: write some records, reopen the file,
 // list them back. This is what protects the boot-restore path

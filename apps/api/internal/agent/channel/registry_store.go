@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -100,6 +101,19 @@ type AgentStore interface {
 	// Prune deletes records whose DisconnectedAt is older than
 	// `before`. Returns the count of removed records.
 	Prune(before time.Time) (int, error)
+	// DeleteCluster deletes the records of clusterID, connected or not:
+	// the operator deleted the cluster, and boot restores one for every
+	// record it finds. tenantID narrows it to that org's records plus
+	// the tenant-less ones; "" matches every tenant (recordMatchesTenant).
+	// Returns the count of removed records.
+	DeleteCluster(tenantID, clusterID string) (int, error)
+}
+
+// recordMatchesTenant mirrors the registry's rule for a caller org: a record
+// with no tenant spoke for every org, and a tenant-less caller (OSS, auth off)
+// matches every record.
+func recordMatchesTenant(rec *AgentRecord, tenantID string) bool {
+	return tenantID == "" || rec.TenantID == "" || rec.TenantID == tenantID
 }
 
 // recordKey is the BoltDB key for a record. Composite so the store
@@ -246,6 +260,44 @@ func (s *BoltAgentStore) Prune(before time.Time) (int, error) {
 	return removed, nil
 }
 
+func (s *BoltAgentStore) DeleteCluster(tenantID, clusterID string) (int, error) {
+	if clusterID == "" {
+		return 0, fmt.Errorf("clusterID is required")
+	}
+	var removed int
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(s.bucket)
+		if b == nil {
+			return fmt.Errorf("bucket %s not found", s.bucket)
+		}
+		prefix := []byte(clusterID + "/")
+		var toDelete [][]byte
+		c := b.Cursor()
+		for k, v := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, v = c.Next() {
+			var rec AgentRecord
+			if err := json.Unmarshal(v, &rec); err == nil && !recordMatchesTenant(&rec, tenantID) {
+				continue
+			}
+			// A corrupt value under the cluster's prefix goes too: it can
+			// only ever have been this cluster's record.
+			keyCopy := make([]byte, len(k))
+			copy(keyCopy, k)
+			toDelete = append(toDelete, keyCopy)
+		}
+		for _, k := range toDelete {
+			if err := b.Delete(k); err != nil {
+				return err
+			}
+		}
+		removed = len(toDelete)
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return removed, nil
+}
+
 // ─── Memory implementation (tests) ────────────────────────────────
 
 // MemoryAgentStore is the in-memory AgentStore for tests that don't
@@ -308,6 +360,22 @@ func (s *MemoryAgentStore) Prune(before time.Time) (int, error) {
 	var removed int
 	for k, rec := range s.records {
 		if !rec.DisconnectedAt.IsZero() && rec.DisconnectedAt.Before(before) {
+			delete(s.records, k)
+			removed++
+		}
+	}
+	return removed, nil
+}
+
+func (s *MemoryAgentStore) DeleteCluster(tenantID, clusterID string) (int, error) {
+	if clusterID == "" {
+		return 0, fmt.Errorf("clusterID is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed int
+	for k, rec := range s.records {
+		if rec.ClusterID == clusterID && recordMatchesTenant(rec, tenantID) {
 			delete(s.records, k)
 			removed++
 		}

@@ -594,11 +594,22 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	contextName := AgentProxyContextName(clusterID)
 
 	// Persistent cleanup — runs even when the in-memory context isn't registered,
-	// so a disconnected cluster's lingering display name + cached UID can still be
-	// deleted.
+	// so a disconnected cluster's lingering display name, cached UID and agent
+	// records can still be deleted.
 	if m.storage != nil {
 		m.storage.DeleteDisplayName(m.storeCtx(), contextName)
 		_ = m.storage.SetClusterUID(m.storeCtx(), contextName, "") // "" → delete the cached UID row
+	}
+	// And the agent records: boot restores a cluster for every record it finds,
+	// so without this a deleted cluster came back on the next restart.
+	if m.agentRegistry != nil {
+		if n, err := m.agentRegistry.ForgetCluster(clusterID); err != nil {
+			slog.Warn("cluster delete: agent records not removed; the cluster comes back on restart",
+				slog.String("cluster_id", clusterID), slog.String("error", err.Error()))
+		} else if n > 0 {
+			slog.Info("cluster delete: agent records removed",
+				slog.String("cluster_id", clusterID), slog.Int("count", n))
+		}
 	}
 
 	// In-memory teardown — nothing to do if the context isn't registered.

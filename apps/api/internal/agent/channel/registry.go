@@ -194,6 +194,21 @@ func (r *AgentRegistry) SetStore(s AgentStore) {
 	r.store = s
 }
 
+// ForgetCluster deletes the persisted records of cluster_id: the operator
+// deleted the cluster, and boot restores one for every record it finds. Live
+// agents are left alone — one still connected re-registers the cluster on its
+// next Hello, as before. Every tenant's records (single-tenant edition).
+// Returns the count of removed records; 0 with no store.
+func (r *AgentRegistry) ForgetCluster(clusterID string) (int, error) {
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return 0, nil
+	}
+	return store.DeleteCluster("", clusterID)
+}
+
 // SetHelloMeta records the per-agent metadata captured from Hello so
 // it can flow into the persisted AgentRecord on the upcoming Register.
 // Cleared on Unregister. No-op when the registry has no store.

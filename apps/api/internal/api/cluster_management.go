@@ -84,8 +84,8 @@ func (h *handlers) handleAddCluster(w http.ResponseWriter, r *http.Request) {
 
 // handleDeleteAgentProxyCluster removes an agent-proxy cluster. Clusters are
 // durable (they persist across agent disconnects), so this is the explicit
-// operator delete — it drops the cluster's display name + cached UID and tears
-// down the proxy context. {clusterId} is the cluster_id (kube-system UID), which
+// operator delete — it drops the cluster's display name, cached UID and agent
+// records (or boot restores the cluster again) and tears down the proxy context. {clusterId} is the cluster_id (kube-system UID), which
 // is why this is a distinct route from the context-name keyed handleDeleteCluster
 // (uploaded kubeconfig contexts).
 //
