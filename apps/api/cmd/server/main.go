@@ -1204,22 +1204,36 @@ func main() {
 		// (sort by LastSeen descending). Multi-agent DaemonSets
 		// converge on the same cluster name from KUBEBOLT_AGENT_
 		// CLUSTER_NAME, so this picks any of them.
+		// A process that owns its store alone (BoltDB) knows no agent is
+		// connected yet: records the previous process left "connected" get a
+		// disconnect stamp, so the prune horizon applies to them (see
+		// BoltAgentStore.MarkAllDisconnected). A shared store (EE Postgres) is
+		// skipped — other replicas hold live agents.
+		if bs, ok := agentStore.(*channel.BoltAgentStore); ok {
+			if n, err := bs.MarkAllDisconnected(time.Now().UTC()); err != nil {
+				slog.Warn("failed to stamp agent records left connected by the previous process", slog.String("error", err.Error()))
+			} else if n > 0 {
+				slog.Info("agent records left connected by the previous process marked disconnected", slog.Int("count", n))
+			}
+		}
 		records, err := agentStore.List()
 		if err != nil {
 			slog.Warn("failed to list persisted agent records on boot", slog.String("error", err.Error()))
 		} else {
 			seen := make(map[string]string)        // cluster_id → display name
+			namedAt := make(map[string]time.Time)  // LastSeen of the record the name came from
 			kubeProxyKeys := make(map[string]bool) // cluster_ids whose agent advertised kube-proxy
 			for i := range records {
 				rec := &records[i]
 				if rec.HasKubeProxy() {
 					kubeProxyKeys[rec.ClusterID] = true
 				}
-				// Last-write-wins on display name — records are
-				// sorted (cluster_id, agent_id) so any of the
-				// equivalent values land here. Good enough.
-				if rec.DisplayName != "" {
+				// The name of the most recently seen record: an agent
+				// installed long ago under another name must not rename
+				// the cluster until its live agents say hello.
+				if rec.DisplayName != "" && (seen[rec.ClusterID] == "" || rec.LastSeen.After(namedAt[rec.ClusterID])) {
 					seen[rec.ClusterID] = rec.DisplayName
+					namedAt[rec.ClusterID] = rec.LastSeen
 				} else if _, ok := seen[rec.ClusterID]; !ok {
 					seen[rec.ClusterID] = ""
 				}
