@@ -36,8 +36,10 @@ type Manager struct {
 	metricInterval  time.Duration
 	insightInterval time.Duration
 	cancelFn        context.CancelFunc
-	connErr         error        // set when the active context failed to connect
-	storage         ClusterStore // optional — nil when auth disabled; drives user-uploaded contexts and display names. W1 seam: BoltDB *Storage (OSS), Postgres (EE).
+	connErr         error          // set when the active context failed to connect
+	storage         ClusterStore   // optional — nil when auth disabled; drives user-uploaded contexts and display names. W1 seam: BoltDB *Storage (OSS), Postgres (EE).
+	selection       SelectionStore // optional — remembers the selected cluster across restarts (selection.go).
+	adoptScheduled  atomic.Bool    // a default pick is already pending (selection.go).
 
 	// agentRegistry is the live registry of connected kubebolt-agents.
 	// Set by main.go via SetAgentRegistry once the gRPC server is up.
@@ -406,6 +408,12 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	// register and ListClusters call piles up behind it.
 	if contextName == m.activeContext && m.connector == nil {
 		go m.retryAgentProxyConnect(contextName, clusterID)
+	}
+	// Nothing selected and an agent just said hello: pick a default soon
+	// (selection.go). Boot restore registers with no agent connected and is
+	// skipped by the live-agent check.
+	if m.activeContext == "" && m.agentRegistry != nil && m.agentRegistry.CountByCluster(clusterID) > 0 {
+		m.scheduleDefaultSelectionLocked()
 	}
 	// Always-on (W2 §10): eager-spin this cluster's runtime into the pool as soon
 	// as its agent connects, so it monitors (evaluates + notifies) even if nobody
@@ -1147,8 +1155,19 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 
 // SwitchCluster switches the active cluster to the given context name.
 func (m *Manager) SwitchCluster(contextName string) error {
+	return m.switchCluster(contextName, false)
+}
+
+// switchCluster is SwitchCluster; onlyIfUnselected makes it a no-op
+// (errAlreadySelected) when a cluster is already selected, checked under the
+// same lock as the switch — the default pick must never override a cluster
+// someone chose meanwhile.
+func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if onlyIfUnselected && m.activeContext != "" {
+		return errAlreadySelected
+	}
 
 	// Allow retry if currently disconnected from this context
 	if contextName == m.activeContext && m.connector != nil {
@@ -1164,6 +1183,7 @@ func (m *Manager) SwitchCluster(contextName string) error {
 	// so switching BACK to it later is instant (no reconnect). Its informers,
 	// collector, and insight ticker stay live in the background.
 	m.parkActiveLocked()
+	m.rememberSelectionLocked(contextName)
 
 	// If the target is already pooled (previously connected, informers still
 	// live), promote it — an INSTANT switch with no WaitForCacheSync. This is

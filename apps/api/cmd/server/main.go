@@ -475,6 +475,8 @@ func main() {
 		if err != nil {
 			fatal("failed to open cluster store", slog.String("error", err.Error()))
 		}
+		// The selected cluster survives a restart (RestoreSelection below).
+		manager.SetSelectionStore(orgSettingStore)
 		if err := manager.SetStorage(clusterStorage); err != nil {
 			slog.Warn("failed to attach cluster storage, uploaded clusters won't persist",
 				slog.String("error", err.Error()))
@@ -1330,6 +1332,13 @@ func main() {
 			}
 		}()
 	}
+
+	// The cluster selected before the restart, now that every persisted cluster
+	// is registered again. Without it a backend whose kubeconfig names no
+	// current context starts with nothing selected, and every cluster view
+	// answers 503 "no cluster selected" (the default pick then covers it once an
+	// agent says hello).
+	manager.RestoreSelection()
 
 	// History retention: insights + audit trail + Kobi conversations (and the
 	// security findings / runtime events once their stores exist), per org, one
