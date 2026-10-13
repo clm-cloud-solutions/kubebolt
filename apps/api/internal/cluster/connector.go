@@ -111,7 +111,11 @@ type Connector struct {
 	clusterUID atomic.Value // string
 	// profileHook recibe el perfil resuelto (proveedor/región/versión) cada vez
 	// que se construye el overview. Ver SetProfileHook.
-	profileHook   func(clusterID, provider, region, version, platform string)
+	profileHook func(clusterID, provider, region, version, platform string)
+	// contactLost answers whether the agent this connector reaches the cluster
+	// through is gone, and since when. Nil for a direct connection. See
+	// SetContactLost.
+	contactLost   func() (since time.Time, lost bool)
 	k8sVersion    string // cached GitVersion — ServerVersion() over agent-proxy is slow, and it never changes; fetch once
 	platform      string // cached, derived from k8sVersion
 	collector     metricsCollector
@@ -882,6 +886,38 @@ func (c *Connector) SetBroadcastGate(g *atomic.Bool) {
 // será la equivocada.
 func (c *Connector) SetProfileHook(fn func(clusterID, provider, region, version, platform string)) {
 	c.profileHook = fn
+}
+
+// SetContactLost wires the liveness of the agent a connector reaches its
+// cluster through (agent-proxy). When the agent goes, the informers keep their
+// caches and every view keeps answering from them: the nodes, pods and events
+// of the moment the channel closed, served as if they were current. The
+// manager installs this so the connector can say so (StaleSince).
+func (c *Connector) SetContactLost(fn func() (since time.Time, lost bool)) {
+	c.contactLost = fn
+}
+
+// StaleSince reports whether this connector's views are the last known state
+// of a cluster it has lost contact with and, when known, since when. A direct
+// connection never reports stale here: its failures surface as errors.
+func (c *Connector) StaleSince() (time.Time, bool) {
+	if c.contactLost == nil {
+		return time.Time{}, false
+	}
+	return c.contactLost()
+}
+
+// staleState is StaleSince as the overview carries it, nil while current.
+func (c *Connector) staleState() *models.StaleState {
+	since, lost := c.StaleSince()
+	if !lost {
+		return nil
+	}
+	st := &models.StaleState{}
+	if !since.IsZero() {
+		st.Since = &since
+	}
+	return st
 }
 
 // SetWSScope tags this connector's WS broadcasts with (tenant, cluster-context)
@@ -1787,6 +1823,7 @@ func (c *Connector) GetOverview() models.ClusterOverview {
 
 	// Health
 	overview.Health = c.buildHealth()
+	overview.Stale = c.staleState()
 
 	// Namespace workloads
 	overview.NamespaceWorkloads = c.buildNamespaceWorkloads(pods, deployments, statefulSets, daemonSets)
@@ -2027,7 +2064,32 @@ func (c *Connector) buildHealth() models.ClusterHealth {
 		health.Status = "warning"
 	}
 
+	if _, lost := c.StaleSince(); lost {
+		markHealthOutOfContact(&health)
+	}
 	return health
+}
+
+// markHealthOutOfContact rewrites a health computed from a cache that stopped
+// updating. Nodes and pods passed on the state of the moment the agent left —
+// in the AKS lab of 2026-10-12 a deallocated single-node cluster read "1/1
+// ready" and "all pods healthy" next to "API server unreachable", and Kobi
+// believed the cache. They become "unknown" and say they are the last known
+// state; the live checks (API server, metrics) cannot be made without the
+// agent, so they are unknown too. No score: there is no current one.
+func markHealthOutOfContact(h *models.ClusterHealth) {
+	for i := range h.Checks {
+		ck := &h.Checks[i]
+		switch ck.Name {
+		case "nodes", "pods":
+			ck.Message = "Last known: " + ck.Message
+		default:
+			ck.Message = "Cannot be checked while the agent is disconnected"
+		}
+		ck.Status = "unknown"
+	}
+	h.Status = "unknown"
+	h.Score = 0
 }
 
 func (c *Connector) buildNamespaceWorkloads(
@@ -2312,6 +2374,12 @@ func (c *Connector) GetHealth(metricsAvailable bool, insights []models.Insight) 
 		health.Status = "critical"
 	} else if health.Insights.Warning > 0 && health.Status == "healthy" {
 		health.Status = "warning"
+	}
+	// Out of contact the insights are the last known ones too: counted above,
+	// but they grade nothing.
+	if _, lost := c.StaleSince(); lost {
+		health.Status = "unknown"
+		health.Score = 0
 	}
 
 	return health

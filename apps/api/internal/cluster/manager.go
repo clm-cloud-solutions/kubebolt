@@ -1095,7 +1095,16 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 			if !agentConnected && metricsOnlyCID != "" {
 				agentConnected = m.metricsFresh(m.tenantID, metricsOnlyCID)
 			}
-			if ls, ok := lastSeenByCluster[clusterID]; ok && !ls.IsZero() {
+			// The durable record is stamped when an agent REGISTERS, so for a
+			// cluster that went dark it is when that agent connected, maybe
+			// days earlier. The moment its last agent left, when this process
+			// saw it, is the last contact.
+			if !agentConnected && clusterID != "" && m.agentRegistry != nil {
+				if since, lost := m.agentRegistry.LostSince(clusterID); lost && !since.IsZero() {
+					lastSeen = &since
+				}
+			}
+			if ls, ok := lastSeenByCluster[clusterID]; lastSeen == nil && ok && !ls.IsZero() {
 				lsCopy := ls
 				lastSeen = &lsCopy
 			}
@@ -2034,6 +2043,17 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 			Provider: provider, Region: region, Version: version, Platform: platform,
 		})
 	})
+
+	// A cluster reached through its agent: when the agent goes, this runtime
+	// keeps serving its caches (nothing tears it down — the registration is
+	// durable), so the connector has to be able to say they are the last
+	// known state.
+	if agentProxyCID != "" && m.agentRegistry != nil {
+		reg := m.agentRegistry
+		connector.SetContactLost(func() (time.Time, bool) {
+			return reg.LostSince(agentProxyCID)
+		})
+	}
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)

@@ -3,6 +3,7 @@ package channel
 import (
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
@@ -295,5 +296,52 @@ func TestAgentRegistry_ConcurrentRegisterUnregister(t *testing.T) {
 	wg.Wait()
 	if got := r.Count(); got != 0 {
 		t.Errorf("Count = %d, want 0 after concurrent register/unregister", got)
+	}
+}
+
+func TestAgentRegistry_LostSince(t *testing.T) {
+	// The moment a cluster's last agent leaves is when its connector stopped
+	// seeing the cluster. The cache keeps answering; this is what dates it. A
+	// peer still connected means nothing was lost.
+	r := NewAgentRegistry()
+	a1 := NewAgent("c1", "a1", "node-1", nil, nil, nil)
+	a2 := NewAgent("c1", "a2", "node-2", nil, nil, nil)
+	r.Register(a1)
+	r.Register(a2)
+
+	if _, lost := r.LostSince("c1"); lost {
+		t.Fatal("two agents connected: nothing is lost")
+	}
+	r.Unregister(a1)
+	if _, lost := r.LostSince("c1"); lost {
+		t.Fatal("a2 is still connected: a peer keeps the cluster in sight")
+	}
+	before := time.Now().UTC()
+	r.Unregister(a2)
+	since, lost := r.LostSince("c1")
+	if !lost || since.Before(before) {
+		t.Fatalf("the last agent left: got (%v, %v), want lost at or after %v", since, lost, before)
+	}
+	// A cluster never seen leaving here is lost with no time.
+	if since, lost := r.LostSince("never-seen"); !lost || !since.IsZero() {
+		t.Errorf("unknown cluster: got (%v, %v), want (zero, true)", since, lost)
+	}
+
+	// The agent coming back clears the loss.
+	r.Register(NewAgent("c1", "a1", "node-1", nil, nil, nil))
+	if _, lost := r.LostSince("c1"); lost {
+		t.Error("an agent reconnected: contact is back")
+	}
+}
+
+func TestAgentRegistry_LostSince_StaleUnregister(t *testing.T) {
+	// A stale Unregister of an evicted predecessor must not date a loss.
+	r := NewAgentRegistry()
+	a := NewAgent("c1", "a1", "node-1", nil, nil, nil)
+	r.Register(a)
+	old := NewAgent("c1", "a1", "node-1", nil, nil, nil)
+	r.Unregister(old)
+	if _, lost := r.LostSince("c1"); lost {
+		t.Error("a stale Unregister removed nothing: the agent is still connected")
 	}
 }
