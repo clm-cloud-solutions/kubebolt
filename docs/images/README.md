@@ -6,7 +6,7 @@ name** — nothing else needs to change.
 
 ## How to capture
 
-- **Version:** the current release (2.2.x), built from this repository — not
+- **Version:** the current release (2.4.x), built from this repository — not
   KubeBolt Cloud, whose screens show plans, teams and Autopilot.
 - **Theme:** dark. **Window:** 1600 × 1000 CSS px at 2× device pixel ratio
   (a 3200 × 2000 capture), browser chrome cropped out, no browser zoom.
