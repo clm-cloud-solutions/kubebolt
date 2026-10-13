@@ -132,9 +132,25 @@ export function KpiCards({ overview }: KpiCardsProps) {
   const listed = caseRows(cases, 3)
   const hovered = caseRows(cases, 8)
 
+  // Out of contact (the agent is gone) the cache still answers, so there is a
+  // last known state but no verdict: no score, a grey chip, and the caption
+  // says since when. The banner above the page says the rest.
+  const outOfContact = health?.status === 'unknown' || overview.stale != null
+  const scored = health?.score != null && !outOfContact
+
   // The health sub-line opens the insights it summarizes.
-  const healthSummary = summarizeHealth(health)
-  const healthTo = (insights?.critical ?? 0) > 0 ? '/insights?severity=critical' : (insights?.warning ?? 0) > 0 ? '/insights?severity=warning' : null
+  const healthSummary = outOfContact
+    ? overview.stale?.since
+      ? `no contact since ${clockOrDay(overview.stale.since)}`
+      : 'no contact with the cluster'
+    : summarizeHealth(health)
+  const healthTo = outOfContact
+    ? null
+    : (insights?.critical ?? 0) > 0
+      ? '/insights?severity=critical'
+      : (insights?.warning ?? 0) > 0
+        ? '/insights?severity=warning'
+        : null
 
   // A breakdown line where every non-zero part links to its filtered list —
   // landing on an empty filtered list is a dead end, so zeros stay plain.
@@ -161,11 +177,17 @@ export function KpiCards({ overview }: KpiCardsProps) {
       {/* The verdict: score and chip, never lit (see the header). */}
       <KpiCard
         primary
-        status={health?.status ? HEALTH_STATUS[health.status] : undefined}
-        value={health?.score != null ? health.score : '—'}
-        unit={health?.score != null ? '/ 100' : undefined}
+        status={outOfContact ? HEALTH_STATUS.unknown : health?.status ? HEALTH_STATUS[health.status] : undefined}
+        value={scored ? health.score : '—'}
+        unit={scored ? '/ 100' : undefined}
         description="cluster health"
-        viz={health?.score != null ? <SemiGauge percent={health.score} color={healthColor} legend={<Legend rows={healthLegend} />} /> : undefined}
+        viz={
+          scored ? (
+            <SemiGauge percent={health.score} color={healthColor} legend={<Legend rows={healthLegend} />} />
+          ) : outOfContact ? (
+            <SemiGauge percent={0} color={KPI_COLOR.muted} legend={<Legend rows={[{ color: KPI_COLOR.muted, label: 'no current reading' }]} />} />
+          ) : undefined
+        }
         caption={
           healthSummary && healthTo ? (
             <Link to={healthTo} className="hover:text-kb-text-primary transition-colors">
@@ -393,6 +415,7 @@ const HEALTH_STATUS = {
   healthy: { label: 'Healthy', tone: 'ok' },
   warning: { label: 'Warning', tone: 'warn' },
   critical: { label: 'Critical', tone: 'crit' },
+  unknown: { label: 'No contact', tone: 'unknown' },
 } as const
 
 // ACCENT_COLOR resolves a state to the project's status hex constants (same
@@ -508,6 +531,7 @@ const CHECK_DOT_COLOR: Record<HealthCheck['status'], string> = {
   pass: '#22d68a',
   warn: '#f5a623',
   fail: '#ef4056',
+  unknown: KPI_COLOR.muted,
 }
 
 // healthTooltip — the score's component breakdown on hover: one row per
@@ -522,7 +546,7 @@ function healthTooltip(health?: ClusterOverview['health']) {
   return (
     <>
       <TooltipHeader right={health?.status?.toUpperCase()}>
-        {health?.score != null ? `${health.score} / 100` : 'Cluster health'}
+        {health?.score != null && health.status !== 'unknown' ? `${health.score} / 100` : 'Cluster health'}
       </TooltipHeader>
       <div className="space-y-1">
         {checks.map((c) => (

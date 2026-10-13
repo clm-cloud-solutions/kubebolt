@@ -4,7 +4,7 @@ import type { ClusterInfo } from '@/types/kubernetes'
 import type { FleetRollup } from '@/hooks/useFleetRollup'
 import { api } from '@/services/api'
 import { parseClusterDisplayName } from '@/utils/cluster'
-import { healthFromInsights, type HealthVerdict, type InsightCounts } from '@/utils/clusterHealth'
+import { clusterVerdict, type HealthVerdict, type InsightCounts } from '@/utils/clusterHealth'
 import { TooltipHeader, TooltipNote, TooltipRow } from '@/components/shared/Tooltip'
 import { useSwitchCluster } from '@/hooks/useSwitchCluster'
 import { clockOrDay } from '@/utils/localTime'
@@ -36,12 +36,22 @@ const COST_BY_CLUSTER_RANGE = 'sum by (cluster_id) (node_total_hourly_cost)'
 
 const HOURS_PER_MONTH = 730
 
-const VERDICT_ORDER: Record<HealthVerdict, number> = { critical: 0, warning: 1, healthy: 2, unknown: 3 }
+// Out of contact sits right after the known problems: nothing says it is
+// fine, and someone has to look at why its agent is gone.
+const VERDICT_ORDER: Record<HealthVerdict, number> = { critical: 0, warning: 1, nocontact: 2, healthy: 3, unknown: 4 }
 const VERDICT_COLOR: Record<HealthVerdict, string> = {
   critical: KPI_COLOR.err,
   warning: KPI_COLOR.warn,
+  nocontact: KPI_COLOR.muted,
   healthy: KPI_COLOR.ok,
   unknown: KPI_COLOR.muted,
+}
+const VERDICT_WORDS: Record<HealthVerdict, string> = {
+  critical: 'critical',
+  warning: 'warning',
+  nocontact: 'no contact',
+  healthy: 'healthy',
+  unknown: 'no data',
 }
 
 function money(v: number | null): string {
@@ -93,21 +103,23 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
   // ── Clusters: one cell each, worst first ──────────────────────────────
   const verdicts = clusters.map((c) => ({
     c,
-    v: healthFromInsights(c.clusterId ? insights?.[c.clusterId] : undefined),
+    v: clusterVerdict(c, c.clusterId ? insights?.[c.clusterId] : undefined),
   }))
-  const tally = { critical: 0, warning: 0, healthy: 0, unknown: 0 }
+  const tally: Record<HealthVerdict, number> = { critical: 0, warning: 0, nocontact: 0, healthy: 0, unknown: 0 }
   for (const { v } of verdicts) tally[v]++
   const cells = [...verdicts]
     .sort((a, b) => VERDICT_ORDER[a.v] - VERDICT_ORDER[b.v])
-    .map(({ c, v }) => ({ color: VERDICT_COLOR[v], hatched: v === 'unknown', title: `${shortName(c)} — ${v === 'unknown' ? 'no data' : v}` }))
+    .map(({ c, v }) => ({ color: VERDICT_COLOR[v], hatched: v === 'unknown' || v === 'nocontact', title: `${shortName(c)} — ${VERDICT_WORDS[v]}` }))
   const clustersSentence =
     tally.critical > 0
       ? `${tally.critical} with criticals`
       : tally.warning > 0
         ? `${tally.warning} with warnings`
-        : tally.unknown > 0
-          ? `${tally.unknown} not evaluated yet`
-          : 'all healthy'
+        : tally.nocontact > 0
+          ? `${tally.nocontact} out of contact`
+          : tally.unknown > 0
+            ? `${tally.unknown} not evaluated yet`
+            : 'all healthy'
   // Worst first, then by how many criticals and warnings it carries.
   const countsOf = (c: ClusterInfo) => (c.clusterId ? insights?.[c.clusterId] : undefined)
   const ranked = [...verdicts].sort(
@@ -116,7 +128,7 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
       (countsOf(b.c)?.critical ?? 0) - (countsOf(a.c)?.critical ?? 0) ||
       (countsOf(b.c)?.warning ?? 0) - (countsOf(a.c)?.warning ?? 0),
   )
-  const worst = ranked[0] && (ranked[0].v === 'critical' || ranked[0].v === 'warning') ? ranked[0] : null
+  const worst = ranked[0] && (ranked[0].v === 'critical' || ranked[0].v === 'warning' || ranked[0].v === 'nocontact') ? ranked[0] : null
 
   // ── Spend: the visible clusters' run-rate per timestamp ──────────────
   const spendTotals = new Map<number, number>()
@@ -175,7 +187,9 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
             ? { label: 'Critical', tone: 'crit' }
             : tally.warning > 0
               ? { label: 'Warning', tone: 'warn' }
-              : undefined
+              : tally.nocontact > 0
+                ? { label: 'No contact', tone: 'unknown' }
+                : undefined
         }
         value={clusters.length}
         unit={clusters.length === 1 ? 'cluster' : 'clusters'}
@@ -194,12 +208,12 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
               cells={cells}
               legend={
                 <div className="flex flex-wrap gap-x-3 gap-y-1">
-                  {(['critical', 'warning', 'healthy', 'unknown'] as HealthVerdict[])
+                  {(['critical', 'warning', 'nocontact', 'healthy', 'unknown'] as HealthVerdict[])
                     .filter((v) => tally[v] > 0)
                     .map((v) => (
                       <Legend
                         key={v}
-                        rows={[{ color: VERDICT_COLOR[v], label: `${tally[v]} ${v === 'unknown' ? 'no data' : v}` }]}
+                        rows={[{ color: VERDICT_COLOR[v], label: `${tally[v]} ${VERDICT_WORDS[v]}` }]}
                       />
                     ))}
                 </div>
@@ -228,7 +242,8 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
             )}
             <TooltipNote>
               One cell per cluster you can see, coloured by its active insights — the same verdict its own Overview
-              shows. A cluster nobody has evaluated yet says "no data", never "healthy". The named cluster opens with a
+              shows. A cluster nobody has evaluated yet says "no data", never "healthy"; one whose agent is gone says
+              "no contact", since its insights stopped changing when contact was lost. The named cluster opens with a
               click, as its card below does.
             </TooltipNote>
           </>
@@ -380,7 +395,7 @@ function OpenCluster({ c }: { c: ClusterInfo }) {
 // verdictLine — what a cluster's tooltip row says: only the severities it has
 // open (the summary omits the ones at zero), so the name keeps its room.
 function verdictLine(v: HealthVerdict, n?: InsightCounts): string {
-  if (v === 'unknown') return 'no data'
+  if (v === 'unknown' || v === 'nocontact') return VERDICT_WORDS[v]
   const parts = [
     n?.critical ? `${n.critical} critical` : '',
     n?.warning ? `${n.warning} warning` : '',

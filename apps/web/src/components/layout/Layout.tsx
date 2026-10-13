@@ -6,6 +6,7 @@ import { Unplug, ShieldAlert, Loader2, Cable, X, Info } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
+import { OutOfContactBanner } from './OutOfContactBanner'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useFreshness } from '@/hooks/useFreshness'
 import { useScrollToHash } from '@/hooks/useScrollToHash'
@@ -163,19 +164,23 @@ export function Layout() {
   // A metrics-only cluster's resource endpoints 503 by design (no connector) — that is
   // NOT "unreachable", so don't route it to the error page; it renders the dashboards.
   const isUnavailable = error instanceof ApiError && error.status === 503 && !isMetricsOnly
-  // "Waiting for agent" is the transient post-restart state where the
-  // backend's agent-proxy connector fast-fails because no agent has
-  // dialed in yet. Distinct from a real "cluster unreachable" because
-  // the cluster IS up — the agent's gRPC backoff is what we're waiting
-  // for. The backend pushes a `cluster:connected` WS event the moment
-  // an agent registers and the connector recovers, so the UI doesn't
-  // need a manual Retry button — the empty state auto-heals.
+  // "Waiting for agent": the backend's agent-proxy connector fast-fails
+  // because no agent is connected. Usually transient (right after a backend
+  // restart the agents dial back in within a minute), but not always: an
+  // agent that is gone for good — its node down with it, a network cut —
+  // reads the same, and KubeBolt cannot tell them apart, so the copy does not
+  // promise the cluster is up. The backend pushes a `cluster:connected` WS
+  // event the moment an agent registers and the connector recovers, so the
+  // UI doesn't need a manual Retry button — the empty state auto-heals.
   const isAwaitingAgent = isUnavailable && /no agent connected yet|waiting for agent to register/i.test(error.message || '')
   // What the Topbar's state pill says: the overview poll is the cluster
   // answering. A metrics-only cluster has no connector to answer it (its 503 is
   // by design), so the pill keeps saying live there instead of offline.
   const freshness = useFreshness(dataUpdatedAt, error != null && !isMetricsOnly)
-  const connection = isMetricsOnly ? 'live' : freshness
+  // Out of contact the overview still answers, from the cache: answering is
+  // not the cluster answering, so the pill says disconnected.
+  const outOfContact = !isUnavailable && rawOverview?.stale != null
+  const connection = isMetricsOnly ? 'live' : outOfContact ? 'offline' : freshness
   // When cluster is unreachable, don't pass stale data from the previous cluster
   const overview = isUnavailable ? undefined : rawOverview
 
@@ -265,6 +270,7 @@ export function Layout() {
             top:52 avoids covering it, so the cluster switcher,
             search and theme toggle stay reachable.*/}
         <Topbar overview={overview} connection={connection} sidebarCollapsed={sidebarCollapsed} onToggleSidebar={toggleSidebar} />
+        {scope === 'cluster' && outOfContact && <OutOfContactBanner since={rawOverview?.stale?.since} />}
         {isLimited && !limitedBannerDismissed && (
           <div className="px-4 py-1.5 bg-status-warn-dim border-b border-kb-border text-xs text-status-warn flex items-center gap-2 shrink-0">
             <ShieldAlert className="w-3.5 h-3.5 shrink-0" />
@@ -345,9 +351,9 @@ export function Layout() {
           ) : isAwaitingAgent ? (
             <div className="flex flex-col items-center justify-center h-full text-center">
               <Loader2 className="w-8 h-8 text-status-info animate-spin mb-4" />
-              <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Waiting for agent to register</h3>
+              <h3 className="text-sm font-semibold text-kb-text-primary mb-1">Waiting for the agent</h3>
               <p className="text-xs text-kb-text-tertiary max-w-sm">
-                The cluster is reachable through the KubeBolt agent. The agent's gRPC channel is reconnecting after the last backend restart — this view will refresh automatically as soon as it dials in (typically within a minute).
+                KubeBolt reaches this cluster through its agent, and the agent is not connected. Right after KubeBolt restarts it dials back in within a minute. If it does not, the agent, its node or the network may be down: KubeBolt cannot tell which from here. This view refreshes on its own when the agent connects.
               </p>
             </div>
           ) : isUnavailable ? (
