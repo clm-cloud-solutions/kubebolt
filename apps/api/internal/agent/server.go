@@ -326,17 +326,31 @@ func (s *Server) Channel(stream agentv2.AgentChannel_ChannelServer) error {
 	// from commit 5+) coordinate via a single mutex inside the Agent.
 	registeredAgent := channel.NewAgent(clusterID, agentID, hello.GetNodeName(), id, hello.GetCapabilities(), streamSender{stream})
 
-	// Defer ordering matters here. LIFO means later-registered defers
-	// fire FIRST. The teardown chain we want at execution time:
-	//   1. Unregister(agent)             — removes this agent from the registry
-	//   2. agent.Close()                 — cancels in-flight RoundTrips
-	//   3. RemoveAgentProxyCluster(...)  — only if no peers remain (count == 0)
-	// To get that order we register them in reverse: cluster cleanup
-	// FIRST (runs last), then Close, then Unregister.
-	if maybeAutoRegisterCluster(s.clusterRegistrar, s.registry, s.resolveAutoRegister(),
-		clusterID, autoRegisterDisplayName(hello, clusterID), hello.GetCapabilities(), s.selfClusterID) {
-		defer maybeAutoUnregisterCluster(s.clusterRegistrar, s.registry, clusterID)
-	}
+	// Register the cluster with the manager on first contact. The
+	// registration is DURABLE: we deliberately do NOT schedule a teardown
+	// defer to remove the agent-proxy cluster when this agent disconnects.
+	//
+	// A cluster registration must survive the agent going away — the cluster
+	// itself still exists (its metrics are retained in VictoriaMetrics) and
+	// the agent reconnects with the same valid ingest token once it's back.
+	// Auto-removing on disconnect made the cluster VANISH from the selector
+	// and Fleet the moment the cluster stopped reporting (a node down with
+	// its agent, a scale-down), then silently reappear on reconnect —
+	// confusing, and inconsistent with the boot-restore path, which keeps
+	// disconnected clusters listed. While no agent is connected, a runtime
+	// that already exists keeps answering from its caches and says they are
+	// the last known state (AgentRegistry.LostSince → Connector.StaleSince);
+	// one that does not exist yet fast-fails (503 "waiting for agent"). Both
+	// self-heal via the cluster:connected broadcast on reconnect. A
+	// registration is only ever removed by an explicit operator delete
+	// (DELETE /clusters/by-id/{clusterId} → RemoveAgentProxyCluster).
+	//
+	// Defer ordering still matters for the remaining teardown. LIFO means
+	// later-registered defers fire FIRST:
+	//   1. Unregister(agent) — removes this agent from the registry
+	//   2. agent.Close()     — cancels in-flight RoundTrips
+	maybeAutoRegisterCluster(s.clusterRegistrar, s.registry, s.resolveAutoRegister(),
+		clusterID, autoRegisterDisplayName(hello, clusterID), hello.GetCapabilities(), s.selfClusterID)
 	defer registeredAgent.Close()
 
 	// Send Welcome FIRST, before registering the agent in the registry.
