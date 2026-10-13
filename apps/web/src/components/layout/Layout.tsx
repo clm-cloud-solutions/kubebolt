@@ -8,6 +8,7 @@ import { resolveDocumentTitle } from '@/utils/pageTitles'
 import { Topbar } from './Topbar'
 import { useClusterOverview } from '@/hooks/useClusterOverview'
 import { useFreshness } from '@/hooks/useFreshness'
+import { useScrollToHash } from '@/hooks/useScrollToHash'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import { api, ApiError } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
@@ -31,6 +32,8 @@ export function Layout() {
   const { data: rawOverview, error, refetch, dataUpdatedAt } = useClusterOverview()
   const isSwitching = useIsMutating({ mutationKey: ['switch-cluster'] }) > 0
   const location = useLocation()
+  // A link to "#panel" scrolls to that panel (KPI cards' links).
+  useScrollToHash()
   // La altitud de la pantalla actual (global / cluster / public). Ver
   // utils/scope.ts — sale de la RUTA, nunca del estado.
   const scope = useScope()

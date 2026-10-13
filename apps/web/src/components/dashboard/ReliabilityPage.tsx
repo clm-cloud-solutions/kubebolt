@@ -127,6 +127,8 @@ export function ReliabilityPage() {
               NaN windows (no traffic in interval) render as gaps;
               that's honest about "we have no signal" rather than
               0% which would falsely suggest "perfectly healthy". */}
+          {/* Anchors (id) are where the KPI cards above link to. */}
+          <div id="error-rate" className="scroll-mt-4">
           <MetricChart
             title="Cluster error rate"
             icon={<Activity className="w-4 h-4" />}
@@ -145,10 +147,13 @@ export function ReliabilityPage() {
             controlledRangeMinutes={rangeMinutes}
             tooltipExtra={(t) => renderVolumeRows(volumeIndex, t, breakdownStepS)}
           />
+          </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
             <TopWorkloadsTraffic rangeMinutes={rangeMinutes} />
-            <ErrorHotspots rangeMinutes={rangeMinutes} />
+            <div id="error-hotspots" className="min-w-0 scroll-mt-4 [&>*]:h-full">
+              <ErrorHotspots rangeMinutes={rangeMinutes} />
+            </div>
           </div>
 
           {/* Latency + L4 drops — different reliability dimensions
@@ -158,8 +163,12 @@ export function ReliabilityPage() {
               connection refusals that never reach the application
               layer at all. */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <TopLatencyWorkloads rangeMinutes={rangeMinutes} />
-            <NetworkDrops rangeMinutes={rangeMinutes} />
+            <div id="latency" className="min-w-0 scroll-mt-4 [&>*]:h-full">
+              <TopLatencyWorkloads rangeMinutes={rangeMinutes} />
+            </div>
+            <div id="network-drops" className="min-w-0 scroll-mt-4 [&>*]:h-full">
+              <NetworkDrops rangeMinutes={rangeMinutes} />
+            </div>
           </div>
         </>
       )}
