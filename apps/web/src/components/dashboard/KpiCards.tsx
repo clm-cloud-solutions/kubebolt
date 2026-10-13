@@ -122,6 +122,11 @@ export function KpiCards({ overview }: KpiCardsProps) {
   // A node the API already reports NotReady before (or without) its insight:
   // named, without a time.
   const notReadyNodes = (nodesQ.data?.items ?? []).filter((n: ResourceItem) => n.status === 'NotReady').map((n) => n.name)
+  // Cordoned: Ready, but the scheduler won't place pods on it — out of the
+  // cluster's capacity all the same, as the Nodes page counts it.
+  const cordonedNodes = (nodesQ.data?.items ?? [])
+    .filter((n: ResourceItem) => n.status === 'Ready' && (n as { unschedulable?: boolean }).unschedulable === true)
+    .map((n) => n.name)
   const podTrouble = podsNotReady > 0 || podsDegraded > 0
   const insightsAlert = (insights?.critical ?? 0) > 0 ? 'crit' : (insights?.warning ?? 0) > 0 ? 'warn' : undefined
   const listed = caseRows(cases, 3)
@@ -175,7 +180,7 @@ export function KpiCards({ overview }: KpiCardsProps) {
 
       <KpiCard
         restricted={restricted('nodes')}
-        alert={nodesNotReady > 0 ? 'crit' : undefined}
+        alert={nodesNotReady > 0 ? 'crit' : cordonedNodes.length > 0 ? 'warn' : undefined}
         link={{ text: 'view all', to: '/nodes' }}
         value={nodesReady}
         unit={`/ ${nodesTotal}`}
@@ -189,12 +194,23 @@ export function KpiCards({ overview }: KpiCardsProps) {
                 <> · <Culprit c={{ name: notReadyNodes[0], to: `/nodes/_/${notReadyNodes[0]}` }} /></>
               ) : null}
             </>
+          ) : cordonedNodes[0] ? (
+            <>
+              {cordonedNodes.length} cordoned · <Culprit c={{ name: cordonedNodes[0], to: `/nodes/_/${cordonedNodes[0]}` }} />
+            </>
           ) : (
             'nodes ready'
           )
         }
         info={
-          nodesNotReady > 0 && (nodeCases.length > 0 || notReadyNodes.length > 0)
+          nodesNotReady === 0 && cordonedNodes.length > 0 ? (
+            <>
+              <TooltipHeader>Cordoned</TooltipHeader>
+              <div className="space-y-1">
+                {cordonedNodes.map((n) => <TooltipRow key={n} color={KPI_COLOR.warn} label={n} value="no new pods" />)}
+              </div>
+            </>
+          ) : nodesNotReady > 0 && (nodeCases.length > 0 || notReadyNodes.length > 0)
             ? nodeCases.length > 0
               ? casesTooltip('Not ready', nodeCases, (c) => c.name)
               : (
