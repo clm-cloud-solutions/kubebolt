@@ -18,6 +18,7 @@ import { LoadingSpinner } from './LoadingSpinner'
 import { useElementWidth } from '@/hooks/useElementWidth'
 import { ErrorState } from './ErrorState'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
+import { RangeSelector } from './RangeSelector'
 import { TOOLTIP_SURFACE } from './Tooltip'
 
 // ─── Public types ───────────────────────────────────────────────────────────
@@ -800,24 +801,7 @@ export function MetricChart({
               query that returns no data would otherwise trap the user
               with no way back to a working window. */}
           {controlledRangeMinutes == null && controlledWindow == null && (
-            <div className="flex items-center gap-1">
-              {rangeOptions.map(opt => {
-                const selected = opt.minutes === rangeMinutes
-                return (
-                  <button
-                    key={opt.minutes}
-                    onClick={() => setRangeMinutes(opt.minutes)}
-                    className={`px-2 py-0.5 text-[10px] font-mono rounded border transition-colors ${
-                      selected
-                        ? 'bg-kb-accent/20 border-kb-accent text-kb-accent font-semibold'
-                        : 'border-kb-border text-kb-text-secondary hover:border-kb-border-active'
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                )
-              })}
-            </div>
+            <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} options={rangeOptions} />
           )}
         </div>
       </div>
