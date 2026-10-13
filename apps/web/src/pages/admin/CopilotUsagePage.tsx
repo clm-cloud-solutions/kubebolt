@@ -19,6 +19,7 @@ import { BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
 import { CopilotUsageKpis } from '@/components/admin/CopilotUsageKpis'
 import { fmtCredits, fmtUsd, useAiSpendUnit } from '@/hooks/useAiSpendUnit'
 import { RangeMenu, RangeMenuItem } from '@/components/shared/RangeMenu'
+import { TOOLTIP_SURFACE } from '@/components/shared/Tooltip'
 import type {
   CopilotSessionEnriched,
   CopilotUsageBucket,
@@ -244,7 +245,7 @@ function TokensChart({ buckets, range }: { buckets: CopilotUsageBucket[]; range:
             pointerEvents: 'none',
             zIndex: 1000,
           }}
-          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[180px]"
+          className={`${TOOLTIP_SURFACE} rounded-md px-3 py-2 text-[11px] min-w-[180px]`}
         >
           <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
             {new Date(hover.bucket.time).toLocaleString()}

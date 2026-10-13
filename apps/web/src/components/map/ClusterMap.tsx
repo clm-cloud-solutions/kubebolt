@@ -31,6 +31,7 @@ import { ExternalEndpointDetailPanel } from './ExternalEndpointDetailPanel'
 import { GROUP_ID_PREFIX, groupReplicas, withoutHistory } from './replicaGroups'
 import type { TopologyNode, TopologyEdge } from '@/types/kubernetes'
 import type { L7Summary } from '@/services/api'
+import { TOOLTIP_SURFACE } from '@/components/shared/Tooltip'
 
 // Running totals for an intent edge's L7 data. requestsPerSec and
 // statusClass sum directly; latencyWeight tracks Σ(avgLatencyMs *
@@ -2354,7 +2355,7 @@ function ClusterMapInner() {
             // it's been replaced by hover-sticky.
             zIndex: 1000,
           }}
-          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[240px] pointer-events-auto"
+          className={`${TOOLTIP_SURFACE} rounded-md px-3 py-2 text-[11px] min-w-[240px] pointer-events-auto`}
         >
           <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border flex items-baseline justify-between gap-3">
             <span>{hoveredTooltip.rate.toFixed(2)} ev/s</span>

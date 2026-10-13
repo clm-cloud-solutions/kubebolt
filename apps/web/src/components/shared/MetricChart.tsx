@@ -18,6 +18,7 @@ import { LoadingSpinner } from './LoadingSpinner'
 import { useElementWidth } from '@/hooks/useElementWidth'
 import { ErrorState } from './ErrorState'
 import { AskCopilotButton } from '@/components/copilot/AskCopilotButton'
+import { TOOLTIP_SURFACE } from './Tooltip'
 
 // ─── Public types ───────────────────────────────────────────────────────────
 
@@ -993,7 +994,7 @@ export function MetricChart({
                       (m) => Math.abs(m.timestamp - (label as number)) <= tolerance,
                     )
                     return (
-                      <div className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[160px]">
+                      <div className={`${TOOLTIP_SURFACE} rounded-md px-3 py-2 text-[11px] min-w-[160px]`}>
                         <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border">
                           {/* A bar covers the interval that ends at its timestamp. */}
                           {chartType === 'bar' && stepSeconds(step) > 0

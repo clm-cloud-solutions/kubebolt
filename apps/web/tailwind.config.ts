@@ -1,26 +1,37 @@
 import type { Config } from 'tailwindcss'
 
+// A theme token that takes an opacity modifier. The --kb-* vars are hex or
+// rgba per theme (not rgb triplets like --kobi-*-rgb), so the alpha is mixed
+// in rather than appended: without a modifier <alpha-value> is 1 and the
+// token reads exactly as the var; an rgba token (kb-border) keeps its own
+// alpha and the modifier scales it.
+const kbColor = (name: string) => `color-mix(in srgb, var(--kb-${name}) calc(<alpha-value> * 100%), transparent)`
+
 export default {
   content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   darkMode: 'class',
   theme: {
     extend: {
       colors: {
+        // Every kb-* token goes through kbColor, so an opacity modifier works
+        // (bg-kb-accent/90, border-kb-accent/30…). With a bare var() Tailwind
+        // could not inject the alpha and dropped the utility without a word:
+        // 163 of them rendered nothing (hover states, tints, tooltip panels).
         kb: {
-          bg: 'var(--kb-bg)',
-          surface: 'var(--kb-surface)',
-          card: 'var(--kb-card)',
-          'card-hover': 'var(--kb-card-hover)',
-          elevated: 'var(--kb-elevated)',
-          sidebar: 'var(--kb-sidebar)',
-          border: 'var(--kb-border)',
-          'border-active': 'var(--kb-border-active)',
-          accent: 'var(--kb-accent)',
-          'accent-light': 'var(--kb-accent-light)',
+          bg: kbColor('bg'),
+          surface: kbColor('surface'),
+          card: kbColor('card'),
+          'card-hover': kbColor('card-hover'),
+          elevated: kbColor('elevated'),
+          sidebar: kbColor('sidebar'),
+          border: kbColor('border'),
+          'border-active': kbColor('border-active'),
+          accent: kbColor('accent'),
+          'accent-light': kbColor('accent-light'),
           text: {
-            primary: 'var(--kb-text-primary)',
-            secondary: 'var(--kb-text-secondary)',
-            tertiary: 'var(--kb-text-tertiary)',
+            primary: kbColor('text-primary'),
+            secondary: kbColor('text-secondary'),
+            tertiary: kbColor('text-tertiary'),
           },
         },
         // Kobi brand surface — tokens consumed only by Kobi/AI surfaces
