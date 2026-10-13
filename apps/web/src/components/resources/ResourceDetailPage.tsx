@@ -1154,6 +1154,11 @@ function dateRangeValid(s: LogFiltersState): boolean {
 // Compact chip showing the active time scope. Click opens a popover with
 // presets + an optional Custom-range section. Keeps the toolbar tight —
 // most users click a preset and never expand the manual inputs.
+// The custom range's native date-time fields. color-scheme tells the browser
+// the page is dark, so the calendar icon is drawn light (dark on dark it
+// vanished) and the picker it opens follows the theme.
+const DATETIME_SCHEME = '[color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer'
+
 function TimeWindowChip({
   filters,
   setFilters,
@@ -1289,7 +1294,7 @@ function TimeWindowChip({
                     type="datetime-local"
                     value={filters.sinceTime}
                     onChange={(e) => onFromChange(e.target.value)}
-                    className="px-2 py-1.5 text-xs bg-kb-card-hover border border-kb-border rounded-md text-kb-text-primary"
+                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border border-kb-border rounded-md text-kb-text-primary ${DATETIME_SCHEME}`}
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-[10px] text-kb-text-tertiary">
@@ -1300,7 +1305,7 @@ function TimeWindowChip({
                     onChange={(e) => onToChange(e.target.value)}
                     min={filters.sinceTime || undefined}
                     title={!rangeOk ? '"To" must be the same as or later than "From"' : undefined}
-                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border rounded-md text-kb-text-primary ${
+                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border rounded-md text-kb-text-primary ${DATETIME_SCHEME} ${
                       rangeOk ? 'border-kb-border' : 'border-status-error'
                     }`}
                   />

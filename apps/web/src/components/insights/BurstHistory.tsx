@@ -162,7 +162,9 @@ export function BurstHistory() {
               const v = e.target.value
               setParam((n) => { if (v) n.set('day', v) })
             }}
-            className="bg-kb-card border border-kb-border rounded px-1.5 py-0.5 text-kb-text-secondary text-[11px] font-mono focus:outline-none focus:border-kb-border-active"
+            // color-scheme: in dark mode the calendar icon is drawn light (dark
+            // on dark it vanished) and the picker it opens follows the theme.
+            className="bg-kb-card border border-kb-border rounded px-1.5 py-0.5 text-kb-text-secondary text-[11px] font-mono focus:outline-none focus:border-kb-border-active [color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer"
           />
         </label>
         <span className="text-[11px] font-mono text-kb-text-tertiary">
