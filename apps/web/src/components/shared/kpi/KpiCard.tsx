@@ -48,6 +48,9 @@ interface KpiCardProps {
   alert?: 'warn' | 'crit'
   // The state behind a score, as a chip beside the figure (see above).
   status?: { label: string; tone: 'ok' | 'warn' | 'crit' }
+  // What the figure says about the state when the card has no chip (Security's
+  // critical findings): the primary card's bevel takes it. Never lights.
+  verdict?: 'ok' | 'warn' | 'crit'
   // Small "view all →" in the top-right corner.
   link?: { text: string; to: string }
   // Hover tooltip over the whole card (e.g. the health score's breakdown).
@@ -61,12 +64,13 @@ interface KpiCardProps {
   compact?: boolean
 }
 
-export function KpiCard({ value, unit, description, viz, caption, primary, alert, status, link, info, restricted, compact }: KpiCardProps) {
+export function KpiCard({ value, unit, description, viz, caption, primary, alert, status, verdict: verdictProp, link, info, restricted, compact }: KpiCardProps) {
   const lit = alert && !restricted ? alert : undefined
-  // The primary card's bevel is the verdict: green while its chip says all is
-  // well, the chip's amber or red otherwise (no halo, no tint). A lit card
-  // already carries its state in the glow.
-  const verdict = primary && !lit && status && status.tone !== 'ok' ? status.tone : undefined
+  // The primary card's bevel is the verdict: green while its chip (or its
+  // verdict, for a card without one) says all is well, amber or red otherwise
+  // (no halo, no tint). A lit card already carries its state in the glow.
+  const tone = status?.tone ?? verdictProp
+  const verdict = primary && !lit && tone && tone !== 'ok' ? tone : undefined
   const brand = primary && !verdict
   const card = (
     <div

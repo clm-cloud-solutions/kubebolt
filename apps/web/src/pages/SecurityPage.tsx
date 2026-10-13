@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 import { Activity, ChevronLeft, ChevronRight, FileWarning, ScrollText, ShieldAlert, ShieldCheck, Wrench } from 'lucide-react'
 import { api } from '@/services/api'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
@@ -7,6 +8,8 @@ import { BarList, EventTrack, KPI_COLOR, Legend, SemiGauge, SplitBar } from '@/c
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { HoverTooltip, TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
+import { WorkloadLink } from '@/components/shared/kpi/CardLinks'
+import { podWorkload } from '@/utils/insightCases'
 import { FindingDetailModal } from '@/components/security/FindingDetailModal'
 import { SecuritySubTabs } from '@/components/security/SecuritySubTabs'
 import { WorkloadFindingsModal } from '@/components/security/WorkloadFindingsModal'
@@ -338,6 +341,18 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
   // one of these outranks a page of highs, and averaged into 449 it disappears.
   const exposedSecrets = byKind.exposed_secret ?? 0
   const newest = events[0]
+  // The rules behind the runtime threats, most frequent first, each with the
+  // workload of its latest event — the runtime card's tooltip.
+  // Where an event happened: its workload, or the node for a host-scoped rule.
+  const whereOf = (e: (typeof events)[number]) =>
+    e.podName ? podWorkload(e.podName) : e.fields?.hostname ? `node ${e.fields.hostname}` : ''
+  const byRule = new Map<string, { count: number; workload: string }>()
+  for (const e of events) {
+    const cur = byRule.get(e.ruleName)
+    if (cur) cur.count++
+    else byRule.set(e.ruleName, { count: 1, workload: whereOf(e) })
+  }
+  const topRules = [...byRule.entries()].sort((a, b) => b[1].count - a[1].count)
 
   // How many of the four normalized sources are actually contributing. A
   // fleet with zero findings and a fleet with zero SCANNERS look identical
@@ -461,10 +476,13 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
       >
         {/* Posture, not an incident: open criticals are worked through, they
             don't page anyone, so this card doesn't light — the runtime card
-            does. Their red stays in the bar. The "new" count is every
-            severity of the lens, so it says "findings", not "critical". */}
+            does. Their red stays in the bar, and the primary card's bevel says
+            the verdict (red with criticals open, amber with highs): green only
+            when there is nothing to fix. The "new" count is every severity of
+            the lens, so it says "findings", not "critical". */}
         <KpiCard
           primary
+          verdict={(bySeverity.critical ?? 0) > 0 ? 'crit' : (bySeverity.high ?? 0) > 0 ? 'warn' : 'ok'}
           value={bySeverity.critical ?? 0}
           unit="critical"
           description={
@@ -577,7 +595,33 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
           alert={events.length > 0 ? 'crit' : undefined}
           value={events.length}
           unit={events.length === 1 ? 'runtime threat' : 'runtime threats'}
-          description={newest ? `latest ${ago(newest.at)} ago` : 'none in 24h'}
+          description={
+            newest ? (
+              <>
+                <Link
+                  to="/security/runtime"
+                  className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors"
+                >
+                  {newest.ruleName}
+                </Link>
+                {newest.podName ? (
+                  <>
+                    {' · '}
+                    {newest.namespace ? (
+                      <WorkloadLink namespace={newest.namespace} name={podWorkload(newest.podName)} />
+                    ) : (
+                      podWorkload(newest.podName)
+                    )}
+                  </>
+                ) : (
+                  whereOf(newest) && ` · ${whereOf(newest)}`
+                )}
+                {` · ${ago(newest.at)} ago`}
+              </>
+            ) : (
+              'none in 24h'
+            )
+          }
           viz={
             <EventTrack
               events={events.map((e) => Date.parse(e.at) / 1000)}
@@ -589,11 +633,26 @@ export function SecurityPage({ group = 'vulnerability' }: { group?: SecurityGrou
           caption="Falco · events, not standing findings"
           info={
             <>
-              <TooltipHeader>Runtime threats</TooltipHeader>
-              <TooltipRow label="Source" value="Falco" />
+              <TooltipHeader right={topRules.length > 0 ? 'last 24h' : undefined}>
+                {topRules.length > 0 ? 'By rule' : 'Runtime threats'}
+              </TooltipHeader>
+              {topRules.length > 0 ? (
+                <div className="space-y-1">
+                  {topRules.slice(0, 5).map(([rule, r]) => (
+                    <TooltipRow
+                      key={rule}
+                      color={KPI_COLOR.err}
+                      label={rule}
+                      value={<span className="whitespace-nowrap">{r.count}{r.workload ? ` · ${r.workload}` : ''}</span>}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <TooltipRow label="Source" value="Falco" />
+              )}
               <TooltipNote>
-                Events from the last 24h, not standing findings — this number falls on its own as
-                events age out.
+                Falco events from the last 24h, not standing findings — this number falls on its own as
+                events age out. The rule opens the Runtime lens; the workload, its page.
               </TooltipNote>
             </>
           }

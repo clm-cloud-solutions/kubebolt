@@ -49,3 +49,28 @@ func TestFalcoNormalize(t *testing.T) {
 		t.Fatal("payload with neither rule nor output must error")
 	}
 }
+
+func TestFalcoNormalizeLeavesOutFieldsFalcoSendsAsNull(t *testing.T) {
+	p := NewFalco().(SignalProvider)
+	body := []byte(`{
+		"output": "Run shell untrusted",
+		"priority": "NOTICE",
+		"rule": "Run shell untrusted",
+		"output_fields": {"k8s.ns.name": null, "k8s.pod.name": "<NA>", "proc.name": "sh"},
+		"hostname": "node-a1"
+	}`)
+	sig, err := p.Normalize(context.Background(), body)
+	if err != nil || len(sig.Events) != 1 {
+		t.Fatalf("Normalize: %v / %d events", err, len(sig.Events))
+	}
+	ev := sig.Events[0]
+	if ev.Namespace != "" || ev.PodName != "" {
+		t.Fatalf("no pod on a host-scoped event, got ns=%q pod=%q", ev.Namespace, ev.PodName)
+	}
+	if _, ok := ev.Fields["k8s.ns.name"]; ok {
+		t.Fatalf("a null field must not be stored, got %q", ev.Fields["k8s.ns.name"])
+	}
+	if ev.Fields["hostname"] != "node-a1" || ev.Fields["proc.name"] != "sh" {
+		t.Fatalf("the other fields stay: %+v", ev.Fields)
+	}
+}
