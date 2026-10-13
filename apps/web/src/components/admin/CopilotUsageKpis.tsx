@@ -41,10 +41,13 @@ export function CopilotUsageKpis({
   summary,
   buckets,
   range,
+  onShowErrors,
 }: {
   summary: CopilotUsageSummary
   buckets: CopilotUsageBucket[]
   range: string
+  // Filters the page's sessions table to the ones that did not finish.
+  onShowErrors?: () => void
 }) {
   const unit = useAiSpendUnit()
   const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
@@ -100,9 +103,21 @@ export function CopilotUsageKpis({
         description={
           sessions === 0
             ? 'nothing to measure yet'
-            : summary.errorSessions > 0
-              ? `${plural(summary.errorSessions, 'session')} ended in an error`
-              : 'every session ended normally'
+            : summary.errorSessions > 0 ? (
+              onShowErrors ? (
+                <button
+                  type="button"
+                  onClick={onShowErrors}
+                  className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors text-left"
+                >
+                  {plural(summary.errorSessions, 'session')} ended in an error
+                </button>
+              ) : (
+                `${plural(summary.errorSessions, 'session')} ended in an error`
+              )
+            ) : (
+              'every session ended normally'
+            )
         }
         viz={
           <StatusList
@@ -119,7 +134,7 @@ export function CopilotUsageKpis({
             <TooltipHeader>Session health</TooltipHeader>
             <TooltipNote>
               A session finishes when Kobi gives its answer. One that ends in an error, runs out of rounds before
-              answering, or needs the fallback provider is counted here.
+              answering, or needs the fallback provider is counted here. One the user stopped is not an error.
             </TooltipNote>
           </>
         }

@@ -180,7 +180,9 @@ export function CostPage() {
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <CostBreakdown cost={cost} />
+            <div id="cost-breakdown" className="min-w-0 scroll-mt-4 [&>*]:h-full">
+              <CostBreakdown cost={cost} />
+            </div>
             <CostRightsizing recs={recs} rates={rates} savingsMonthly={savingsMonthly} preliminary={preliminary} windowDays={windowDays} />
           </div>
         </>

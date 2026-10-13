@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
-import { parseClusterDisplayName } from '@/utils/cluster'
+import { agentDown, parseClusterDisplayName } from '@/utils/cluster'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { useFleetRollup, type FleetClusterRollup } from '@/hooks/useFleetRollup'
@@ -127,6 +127,8 @@ type Health = 'ok' | 'warn' | 'crit'
 // GetHealth en el backend a partir de los insights, y exige un connector vivo.
 function healthOf(c: ClusterInfo): Health {
   if (c.status === 'error') return 'crit'
+  // Its agent is gone: a parked runtime still says "connected" (utils/cluster).
+  if (agentDown(c)) return 'warn'
   if (c.status === 'connected' || c.agentConnected) return 'ok'
   return 'warn'
 }

@@ -9,7 +9,7 @@ export interface CopilotUsageSummary {
   errorSessions: number
   maxRoundsSessions: number
   fallbackSessions: number
-  errorRate: number // % of sessions with reason != "done"
+  errorRate: number // % of sessions that ended in an error (endedInError)
   fallbackRate: number // % of sessions that used the fallback provider
   inputTokens: number
   outputTokens: number

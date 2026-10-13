@@ -198,7 +198,9 @@ export function CapacityPage() {
           shorter card carries some empty space at the bottom but
           the row reads as a balanced pair instead of a stair-step. */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        <TopWorkloadsCpu installed={installed} overview={overview} />
+        <div id="top-workloads-cpu" className="min-w-0 scroll-mt-4 [&>*]:h-full">
+          <TopWorkloadsCpu installed={installed} overview={overview} />
+        </div>
         <RightSizingPanel installed={installed} overview={overview} />
       </div>
 
@@ -207,7 +209,9 @@ export function CapacityPage() {
           or a single row) and a 50% column would be mostly
           whitespace. Full-width keeps the empty state readable
           without dominating the page when there's nothing to show. */}
-      <RecentOOMKills installed={installed} />
+      <div id="oom-kills" className="scroll-mt-4">
+        <RecentOOMKills installed={installed} />
+      </div>
     </div>
   )
 }

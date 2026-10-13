@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
+import React, { createContext, useContext, useState, useEffect, useRef, useLayoutEffect, type ComponentProps } from 'react'
 import { createPortal } from 'react-dom'
 import { EditorView, lineNumbers } from '@codemirror/view'
 import { yaml } from '@codemirror/lang-yaml'
@@ -34,6 +34,8 @@ import { StatusBadge } from './StatusBadge'
 import { ResourceUsageCell } from '@/components/shared/ResourceUsageCell'
 import { HoverTooltip } from '@/components/shared/Tooltip'
 import { MetricChart, METRIC_ACCENTS } from '@/components/shared/MetricChart'
+import { RangeSelector } from '@/components/shared/RangeSelector'
+import { useMonitorRange } from '@/hooks/useDashboardRange'
 import { TerminalTab, DeploymentTerminalTab, StatefulSetTerminalTab, DaemonSetTerminalTab } from './TerminalTab'
 import { FilesTab } from './FilesTab'
 import { PortForwardButton, PortForwardNote } from './PortForwardButton'
@@ -1154,6 +1156,11 @@ function dateRangeValid(s: LogFiltersState): boolean {
 // Compact chip showing the active time scope. Click opens a popover with
 // presets + an optional Custom-range section. Keeps the toolbar tight —
 // most users click a preset and never expand the manual inputs.
+// The custom range's native date-time fields. color-scheme tells the browser
+// the page is dark, so the calendar icon is drawn light (dark on dark it
+// vanished) and the picker it opens follows the theme.
+const DATETIME_SCHEME = '[color-scheme:light] dark:[color-scheme:dark] [&::-webkit-calendar-picker-indicator]:cursor-pointer'
+
 function TimeWindowChip({
   filters,
   setFilters,
@@ -1289,7 +1296,7 @@ function TimeWindowChip({
                     type="datetime-local"
                     value={filters.sinceTime}
                     onChange={(e) => onFromChange(e.target.value)}
-                    className="px-2 py-1.5 text-xs bg-kb-card-hover border border-kb-border rounded-md text-kb-text-primary"
+                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border border-kb-border rounded-md text-kb-text-primary ${DATETIME_SCHEME}`}
                   />
                 </label>
                 <label className="flex flex-col gap-1 text-[10px] text-kb-text-tertiary">
@@ -1300,7 +1307,7 @@ function TimeWindowChip({
                     onChange={(e) => onToChange(e.target.value)}
                     min={filters.sinceTime || undefined}
                     title={!rangeOk ? '"To" must be the same as or later than "From"' : undefined}
-                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border rounded-md text-kb-text-primary ${
+                    className={`px-2 py-1.5 text-xs bg-kb-card-hover border rounded-md text-kb-text-primary ${DATETIME_SCHEME} ${
                       rangeOk ? 'border-kb-border' : 'border-status-error'
                     }`}
                   />
@@ -2318,6 +2325,15 @@ function LogsTab({ namespace, name, item }: { namespace: string; name: string; i
 
 // ─── Monitor Tab ─────────────────────────────────────────────────
 
+// One range for every chart of a Monitor tab, chosen once at the top of it:
+// CPU, memory and network read over the same stretch, so a spike lines up
+// across them (each chart used to carry its own row of range buttons).
+const MonitorRange = createContext(15)
+
+function MonitorChart(props: ComponentProps<typeof MetricChart>) {
+  return <MetricChart {...props} controlledRangeMinutes={useContext(MonitorRange)} />
+}
+
 function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
   // Trend charts read from VictoriaMetrics, which is fed by the
   // KubeBolt Agent (and, in the future, by other metrics-providing
@@ -2334,6 +2350,8 @@ function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
     staleTime: 5_000,
   })
 
+  const [rangeMinutes, setRangeMinutes] = useMonitorRange()
+
   if (isLoading) return <LoadingSpinner />
 
   const trendSourceInstalled =
@@ -2343,22 +2361,37 @@ function MonitorTab({ type, item }: { type: string; item: ResourceItem }) {
     return <MonitorDonuts item={item} agentInstalled={false} />
   }
 
-  switch (type) {
-    case 'pods':
-      return <PodMonitorCharts item={item} />
-    case 'deployments':
-      return <DeploymentMonitorCharts item={item} />
-    case 'statefulsets':
-      return <StatefulSetMonitorCharts item={item} />
-    case 'daemonsets':
-      return <DaemonSetMonitorCharts item={item} />
-    case 'nodes':
-      return <NodeMonitorCharts item={item} />
-    case 'pvcs':
-      return <PVCMonitorCharts item={item} />
-    default:
-      return <MonitorDonuts item={item} agentInstalled />
-  }
+  const charts = (() => {
+    switch (type) {
+      case 'pods':
+        return <PodMonitorCharts item={item} />
+      case 'deployments':
+        return <DeploymentMonitorCharts item={item} />
+      case 'statefulsets':
+        return <StatefulSetMonitorCharts item={item} />
+      case 'daemonsets':
+        return <DaemonSetMonitorCharts item={item} />
+      case 'nodes':
+        return <NodeMonitorCharts item={item} />
+      case 'pvcs':
+        return <PVCMonitorCharts item={item} />
+      default:
+        return null
+    }
+  })()
+  // Types without trend charts keep the snapshot donuts, and no range.
+  if (!charts) return <MonitorDonuts item={item} agentInstalled />
+
+  return (
+    <MonitorRange.Provider value={rangeMinutes}>
+      <div className="space-y-4">
+        <div className="flex justify-end">
+          <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} />
+        </div>
+        {charts}
+      </div>
+    </MonitorRange.Provider>
+  )
 }
 
 const MONITOR_BANNER_DISMISSED_KEY = 'kb-monitor-banner-dismissed'
@@ -2410,7 +2443,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MetricChart
+        <MonitorChart
           title="CPU by container"
           unit="cores"
           // sum by (container) collapses historical pod_uid instances
@@ -2431,7 +2464,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Memory working set by container"
           unit="bytes"
           // Same job=""/container!="" filter pattern as CPU above —
@@ -2443,7 +2476,7 @@ function PodMonitorCharts({ item }: { item: ResourceItem }) {
         />
       </div>
 
-      <MetricChart
+      <MonitorChart
         title="Network traffic (RX up / TX down)"
         unit="bytes/s"
         queries={[
@@ -2581,7 +2614,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MetricChart
+        <MonitorChart
           title={`CPU by container (sum across ${replicaLabel})`}
           unit="cores"
           query={`sum by (container) (rate(container_cpu_usage_seconds_total{${selector}}[1m]))`}
@@ -2589,7 +2622,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title={`Memory working set by container (sum across ${replicaLabel})`}
           unit="bytes"
           query={`sum by (container) (container_memory_working_set_bytes{${selector}})`}
@@ -2599,7 +2632,7 @@ function WorkloadMonitorCharts({ item, selector, replicas, kindLabel }: Workload
         />
       </div>
 
-      <MetricChart
+      <MonitorChart
         title={`Network traffic — total across ${replicaLabel} (RX up / TX down)`}
         unit="bytes/s"
         queries={[
@@ -2664,7 +2697,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MetricChart
+        <MonitorChart
           title="CPU usage"
           unit="cores"
           query={`sum(rate(node_cpu_usage_seconds_total{${selector}}[1m]))`}
@@ -2672,7 +2705,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.cpu}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Memory working set"
           unit="bytes"
           query={`node_memory_working_set_bytes{${selector}}`}
@@ -2680,7 +2713,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.memory}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Filesystem usage"
           unit="percent"
           // Per-mountpoint % used, with OSS-minimal fallback.
@@ -2727,7 +2760,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.filesystem}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Network traffic (RX up / TX down)"
           unit="bytes/s"
           queries={[
@@ -2750,7 +2783,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
             depends on core count (load == cores ≈ saturated) and
             we don't have core count plumbed into this component
             cheaply enough to justify the wiring for a hint. */}
-        <MetricChart
+        <MonitorChart
           title="Load average"
           unit="count"
           queries={[
@@ -2770,7 +2803,7 @@ function NodeMonitorCharts({ item }: { item: ResourceItem }) {
             match the WARN/CRIT bands the list-view PSI badge
             uses. Three series keep cpu/io/memory separable so the
             binding axis is obvious at a glance. */}
-        <MetricChart
+        <MonitorChart
           title="PSI pressure (waiting)"
           unit="percent"
           queries={[
@@ -2864,7 +2897,7 @@ function PVCMonitorCharts({ item }: { item: ResourceItem }) {
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MetricChart
+        <MonitorChart
           title="Space used"
           unit="bytes"
           queries={[
@@ -2884,7 +2917,7 @@ function PVCMonitorCharts({ item }: { item: ResourceItem }) {
           ]}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Space used"
           unit="percent"
           query={`100 * (${byClaim('kubelet_volume_stats_used_bytes')} / ${byClaim('kubelet_volume_stats_capacity_bytes')})`}
@@ -2892,7 +2925,7 @@ function PVCMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.filesystem}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Inodes used"
           unit="percent"
           query={`100 * (${byClaim('kubelet_volume_stats_inodes_used')} / ${byClaim('kubelet_volume_stats_inodes')})`}
@@ -2900,7 +2933,7 @@ function PVCMonitorCharts({ item }: { item: ResourceItem }) {
           accents={METRIC_ACCENTS.memory}
           chartType="area"
         />
-        <MetricChart
+        <MonitorChart
           title="Inodes used"
           unit="count"
           queries={[

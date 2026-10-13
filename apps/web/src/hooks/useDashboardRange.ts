@@ -17,17 +17,19 @@ import { OVERVIEW_RANGE_OPTIONS } from '@/components/shared/RangeSelector'
 //     capacity-planning session from last week.
 // A permanent localStorage value would poison that daily default and
 // make heavy ranges the per-visit baseline — see the range-persistence
-// discussion. Overview has no selector (instantaneous snapshot), and
-// the per-resource Monitor tabs stay independent (different altitude).
+// discussion. Overview has no selector (instantaneous snapshot). The
+// per-resource Monitor tabs keep a range of their own (useMonitorRange):
+// a different altitude, one control per tab rather than one per chart.
 
 const STORAGE_KEY = 'kb-dashboard-range-minutes'
+const MONITOR_STORAGE_KEY = 'kb-monitor-range-minutes'
 const DEFAULT_MINUTES = 15
 
 const VALID_MINUTES = new Set(OVERVIEW_RANGE_OPTIONS.map((o) => o.minutes))
 
-function readInitial(): number {
+function readInitial(storageKey: string): number {
   try {
-    const raw = sessionStorage.getItem(STORAGE_KEY)
+    const raw = sessionStorage.getItem(storageKey)
     if (raw != null) {
       const n = parseInt(raw, 10)
       // Guard against a stale value from an option that no longer
@@ -40,18 +42,33 @@ function readInitial(): number {
   return DEFAULT_MINUTES
 }
 
-export function useDashboardRange(): [number, (minutes: number) => void] {
-  const [rangeMinutes, setRangeMinutesState] = useState(readInitial)
+function useSessionRange(storageKey: string): [number, (minutes: number) => void] {
+  const [rangeMinutes, setRangeMinutesState] = useState(() => readInitial(storageKey))
 
-  const setRangeMinutes = useCallback((minutes: number) => {
-    setRangeMinutesState(minutes)
-    try {
-      sessionStorage.setItem(STORAGE_KEY, String(minutes))
-    } catch {
-      // Persist is best-effort; the in-memory value still drives the
-      // session even when storage is blocked.
-    }
-  }, [])
+  const setRangeMinutes = useCallback(
+    (minutes: number) => {
+      setRangeMinutesState(minutes)
+      try {
+        sessionStorage.setItem(storageKey, String(minutes))
+      } catch {
+        // Persist is best-effort; the in-memory value still drives the
+        // session even when storage is blocked.
+      }
+    },
+    [storageKey],
+  )
 
   return [rangeMinutes, setRangeMinutes]
+}
+
+export function useDashboardRange(): [number, (minutes: number) => void] {
+  return useSessionRange(STORAGE_KEY)
+}
+
+// useMonitorRange — the one range of a resource's Monitor tab: every chart
+// of the tab reads it, and it holds from one resource to the next for the
+// session, apart from the dashboards' (a pod's last hour while Capacity
+// looks at 7 days).
+export function useMonitorRange(): [number, (minutes: number) => void] {
+  return useSessionRange(MONITOR_STORAGE_KEY)
 }

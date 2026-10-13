@@ -5,7 +5,9 @@ import type { FleetRollup } from '@/hooks/useFleetRollup'
 import { api } from '@/services/api'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import { healthFromInsights, type HealthVerdict, type InsightCounts } from '@/utils/clusterHealth'
-import { TooltipHeader, TooltipNote } from '@/components/shared/Tooltip'
+import { TooltipHeader, TooltipNote, TooltipRow } from '@/components/shared/Tooltip'
+import { useSwitchCluster } from '@/hooks/useSwitchCluster'
+import { clockOrDay } from '@/utils/localTime'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { BarList, KPI_COLOR, Legend, SemiGauge, Sparkline, UnitStrip } from '@/components/shared/kpi/MiniCharts'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
@@ -19,6 +21,9 @@ import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 //   spend    → the fleet's run-rate over the last 7 days
 //   pods     → where the pods run, per cluster (nodes in the sentence)
 //   agents   → how much of the fleet has a live agent channel
+//
+// A card that lights names who: the worst cluster (a click opens it, as its
+// card below does), the agent that went silent and since when.
 //
 // Every figure covers the clusters the page lists (the team lens): the
 // per-cluster series come down by cluster_id and are folded here.
@@ -103,6 +108,15 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
         : tally.unknown > 0
           ? `${tally.unknown} not evaluated yet`
           : 'all healthy'
+  // Worst first, then by how many criticals and warnings it carries.
+  const countsOf = (c: ClusterInfo) => (c.clusterId ? insights?.[c.clusterId] : undefined)
+  const ranked = [...verdicts].sort(
+    (a, b) =>
+      VERDICT_ORDER[a.v] - VERDICT_ORDER[b.v] ||
+      (countsOf(b.c)?.critical ?? 0) - (countsOf(a.c)?.critical ?? 0) ||
+      (countsOf(b.c)?.warning ?? 0) - (countsOf(a.c)?.warning ?? 0),
+  )
+  const worst = ranked[0] && (ranked[0].v === 'critical' || ranked[0].v === 'warning') ? ranked[0] : null
 
   // ── Spend: the visible clusters' run-rate per timestamp ──────────────
   const spendTotals = new Map<number, number>()
@@ -129,7 +143,10 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
 
   // ── Agents ────────────────────────────────────────────────────────────
   const live = clusters.filter((c) => c.agentConnected).length
-  const offline = clusters.filter((c) => !c.agentConnected && c.source === 'agent-proxy')
+  const offline = clusters
+    .filter((c) => !c.agentConnected && c.source === 'agent-proxy')
+    // Silent the longest first.
+    .sort((a, b) => (Date.parse(a.lastSeen ?? '') || 0) - (Date.parse(b.lastSeen ?? '') || 0))
   const longestOffline = offline.reduce<number | null>((m, c) => {
     const h = hoursSince(c.lastSeen)
     return h == null ? m : Math.max(m ?? 0, h)
@@ -162,7 +179,15 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
         }
         value={clusters.length}
         unit={clusters.length === 1 ? 'cluster' : 'clusters'}
-        description={clustersSentence}
+        description={
+          worst ? (
+            <>
+              {clustersSentence} · <OpenCluster c={worst.c} />
+            </>
+          ) : (
+            clustersSentence
+          )
+        }
         viz={
           cells.length > 0 ? (
             <UnitStrip
@@ -185,10 +210,26 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
         caption="worst first · from active insights"
         info={
           <>
-            <TooltipHeader>Fleet health</TooltipHeader>
+            <TooltipHeader right="active insights">Fleet health</TooltipHeader>
+            {worst && (
+              <div className="space-y-1">
+                {ranked.slice(0, 6).map(({ c, v }) => {
+                  const n = countsOf(c)
+                  return (
+                    <TooltipRow
+                      key={c.context}
+                      color={VERDICT_COLOR[v]}
+                      label={shortName(c)}
+                      value={<span className="whitespace-nowrap">{verdictLine(v, n)}</span>}
+                    />
+                  )
+                })}
+              </div>
+            )}
             <TooltipNote>
               One cell per cluster you can see, coloured by its active insights — the same verdict its own Overview
-              shows. A cluster nobody has evaluated yet says "no data", never "healthy".
+              shows. A cluster nobody has evaluated yet says "no data", never "healthy". The named cluster opens with a
+              click, as its card below does.
             </TooltipNote>
           </>
         }
@@ -258,9 +299,21 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
         description={
           expected === 0
             ? 'no cluster runs an agent'
-            : offline.length > 0
-              ? `${offline.length} offline`
-              : 'every agent reporting'
+            : offline.length > 0 ? (
+              <>
+                {offline.length} offline ·{' '}
+                {canManage ? (
+                  <Link to="/admin/agents" className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors">
+                    {shortName(offline[0])}
+                  </Link>
+                ) : (
+                  shortName(offline[0])
+                )}
+                {offline[0].lastSeen && <> since {clockOrDay(offline[0].lastSeen)}</>}
+              </>
+            ) : (
+              'every agent reporting'
+            )
         }
         viz={
           expected > 0 ? (
@@ -307,4 +360,30 @@ export function FleetKpis({ clusters, rollup, insights, reporting, canManage }: 
       />
     </div>
   )
+}
+
+// OpenCluster — a cluster's name that opens it (switches to it), the way its
+// card on this page does.
+function OpenCluster({ c }: { c: ClusterInfo }) {
+  const sw = useSwitchCluster()
+  return (
+    <button
+      type="button"
+      onClick={() => sw.mutate(c.context)}
+      className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors"
+    >
+      {shortName(c)}
+    </button>
+  )
+}
+
+// verdictLine — what a cluster's tooltip row says: only the severities it has
+// open (the summary omits the ones at zero), so the name keeps its room.
+function verdictLine(v: HealthVerdict, n?: InsightCounts): string {
+  if (v === 'unknown') return 'no data'
+  const parts = [
+    n?.critical ? `${n.critical} critical` : '',
+    n?.warning ? `${n.warning} warning` : '',
+  ].filter(Boolean)
+  return parts.length > 0 ? parts.join(' · ') : 'healthy'
 }

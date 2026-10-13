@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { MetricChart } from '@/components/shared/MetricChart'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { KPI_COLOR, Sparkline } from '@/components/shared/kpi/MiniCharts'
+import { AnchorLink } from '@/components/shared/kpi/CardLinks'
 import { AutoGrid } from './AutoGrid'
 import { Breakdown } from './Breakdown'
 import {
@@ -51,6 +53,13 @@ const FEEDBACK_REASON_LABEL: Record<string, string> = {
   slow: 'too slow',
   none: 'no reason',
 }
+// How a failed turn ended, in the card's words.
+const FAILED_LABEL: Record<string, string> = { max_rounds: 'out of rounds', error: 'errors' }
+// The sessions table of Usage, over the card's 24 h, filtered to the turns
+// that failed.
+const FAILED_SESSIONS = '/admin/ai?tab=usage&range=24h&sessions=errors#kobi-sessions-table'
+const LINK = 'underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors'
+
 const feedbackLabel = (l: Record<string, string>) =>
   l.rating === 'up' ? '👍 helpful' : `👎 ${FEEDBACK_REASON_LABEL[l.reason ?? ''] ?? l.reason ?? ''}`
 
@@ -92,6 +101,7 @@ function KpiRow() {
   const sessions = useHealthVector('kobi-sessions', `sum by (outcome) (increase_pure(${COPILOT('sessions_total')}[24h]))`)
   const sessionsSpark = useHealthSparkline('kobi-sessions', `sum(increase_pure(${COPILOT('sessions_total')}[1h]))`, 1440, '1h')
   const ratings = useHealthVector('kobi-ratings', `sum by (rating) (increase_pure(${COPILOT('feedback_total')}[24h]))`)
+  const downReasons = useHealthVector('kobi-down-reasons', `sum by (reason) (increase_pure(${COPILOT('feedback_total', 'rating="down"')}[24h])) > 0`)
   const ratio = useHealthVector('kobi-cache-ratio', cacheReadRatio('24h'))
   const ratioSpark = useHealthSparkline('kobi-cache-ratio', cacheReadRatio('1h'), 1440, '1h')
 
@@ -99,12 +109,21 @@ function KpiRow() {
   const turns = Math.round(sum(sessions.data))
   const failed = Math.round((byOutcome.error ?? 0) + (byOutcome.max_rounds ?? 0))
   const failedPct = turns > 0 ? Math.round((failed / turns) * 1000) / 10 : 0
+  // The way most failed turns ended: the card names it.
+  const [mainFailure, mainFailures] = (['max_rounds', 'error'] as const)
+    .map((o) => [o, Math.round(byOutcome[o] ?? 0)] as const)
+    .reduce((a, b) => (b[1] > a[1] ? b : a))
 
   const byRating = Object.fromEntries((ratings.data ?? []).map((r) => [r.labels.rating, Math.round(r.value)])) as Record<string, number>
   const up = byRating.up ?? 0
   const down = byRating.down ?? 0
   const rated = up + down
   const downPct = rated > 0 ? Math.round((down / rated) * 100) : null
+  const downLit = downPct != null && rated >= 20 && downPct > 20
+  const reasons = (downReasons.data ?? [])
+    .map((r) => ({ reason: r.labels.reason || 'none', n: Math.round(r.value) }))
+    .filter((r) => r.n > 0)
+    .sort((a, b) => b.n - a.n)
 
   const r = first(ratio.data)
   return (
@@ -114,37 +133,76 @@ function KpiRow() {
         alert={failedPct >= 20 ? 'crit' : failedPct >= 5 ? 'warn' : undefined}
         value={compact(turns)}
         unit={turns === 1 ? 'turn' : 'turns'}
-        description={turns > 0 ? (failed > 0 ? `${failed} failed or cut off · ${failedPct}%` : 'none failed') : 'nobody used Kobi in the last 24h'}
+        description={
+          turns === 0
+            ? 'nobody used Kobi in the last 24h'
+            : failed === 0
+              ? 'none failed'
+              : failedPct >= 5
+                ? `${failed} failed or cut off · ${mainFailures === failed ? `all ${FAILED_LABEL[mainFailure]}` : `mostly ${FAILED_LABEL[mainFailure]} (${mainFailures})`}`
+                : `${failed} failed or cut off · ${failedPct}%`
+        }
         viz={(sessionsSpark.data?.length ?? 0) >= 2 ? <Sparkline values={(sessionsSpark.data ?? []).map(Math.round)} window="24h" fromZero /> : undefined}
-        caption="Copilot · 24h"
+        caption={
+          failed > 0 ? (
+            <>
+              Copilot · 24h ·{' '}
+              <Link to={FAILED_SESSIONS} className={LINK}>
+                the conversations
+              </Link>
+            </>
+          ) : (
+            'Copilot · 24h'
+          )
+        }
         info={
           <Breakdown
             title="Copilot turns"
             right="24h"
             rows={Object.entries(byOutcome).map(([outcome, n]) => ({
               color: OUTCOME_COLOR[outcome] ?? null,
-              label: outcome.replace('_', ' '),
+              label: outcome === 'max_rounds' ? 'ran out of rounds' : outcome.replace('_', ' '),
               value: Math.round(n),
             }))}
-            note="A turn that ended in an error or ran out of rounds counts as failed."
+            note="A turn that ended in an error or ran out of rounds counts as failed; one the user stopped does not. The conversations link opens Usage with the sessions that failed."
           />
         }
       />
       <KpiCard
-        alert={downPct != null && rated >= 20 && downPct > 20 ? 'warn' : undefined}
+        alert={downLit ? 'warn' : undefined}
         value={downPct != null ? downPct : '—'}
         unit="% 👎"
-        description={rated > 0 ? `${rated} ${rated === 1 ? 'rating' : 'ratings'} · ${up} 👍 · ${down} 👎` : 'no ratings in the last 24h'}
-        caption="answer feedback · 24h"
+        description={
+          rated === 0
+            ? 'no ratings in the last 24h'
+            : downLit && reasons.length > 0
+              ? `${down} 👎 of ${rated} · mostly ${FEEDBACK_REASON_LABEL[reasons[0].reason] ?? reasons[0].reason}`
+              : `${rated} ${rated === 1 ? 'rating' : 'ratings'} · ${up} 👍 · ${down} 👎`
+        }
+        caption={
+          downLit ? (
+            <>
+              answer feedback · 24h · <AnchorLink id="kobi-feedback">by reason</AnchorLink>
+            </>
+          ) : (
+            'answer feedback · 24h'
+          )
+        }
         info={
           <Breakdown
             title="Answer feedback"
             right="24h"
             rows={[
               { color: KPI_COLOR.ok, label: '👍 helpful', value: up },
-              { color: KPI_COLOR.err, label: '👎 not helpful', value: down },
+              ...(reasons.length > 0
+                ? reasons.map((r) => ({
+                    color: FEEDBACK_COLOR[r.reason] ?? KPI_COLOR.err,
+                    label: `👎 ${FEEDBACK_REASON_LABEL[r.reason] ?? r.reason}`,
+                    value: r.n,
+                  }))
+                : [{ color: KPI_COLOR.err, label: '👎 not helpful', value: down }]),
             ]}
-            note="The share of 👎 among the answers users rated. Above 20 % with at least 20 ratings, something in Kobi's answers needs a look."
+            note="The share of 👎 among the answers users rated, each 👎 by the reason the user chose. Above 20 % with at least 20 ratings, something in Kobi's answers needs a look."
           />
         }
       />
@@ -186,19 +244,21 @@ function KobiHealthBody({ charts, perInterval, perPoint }: HealthFrameProps) {
           emptyHint="Every chat turn is counted here once it finishes."
           footnote={`kubebolt_kobi_copilot_sessions_total by (outcome) · ${perInterval}`}
         />
-        <MetricChart
-          {...charts}
-          sparse
-          title="Answer feedback"
-          unit="count"
-          chartType="bar"
-          query={`${inInterval(COPILOT('feedback_total'), 'rating, reason')} > 0`}
-          seriesLabel={feedbackLabel}
-          seriesColor={(l) => FEEDBACK_COLOR[l.rating === 'up' ? 'up' : (l.reason ?? 'none')]}
-          emptyMessage="No ratings in this window."
-          emptyHint="Each 👍 and 👎 users give Kobi's answers, 👎 split by the reason they chose. A changed rating counts again; a withdrawn one does not."
-          footnote={`kubebolt_kobi_copilot_feedback_total by (rating, reason) · ${perInterval}`}
-        />
+        <div id="kobi-feedback" className="min-w-0 scroll-mt-4 [&>*]:h-full">
+          <MetricChart
+            {...charts}
+            sparse
+            title="Answer feedback"
+            unit="count"
+            chartType="bar"
+            query={`${inInterval(COPILOT('feedback_total'), 'rating, reason')} > 0`}
+            seriesLabel={feedbackLabel}
+            seriesColor={(l) => FEEDBACK_COLOR[l.rating === 'up' ? 'up' : (l.reason ?? 'none')]}
+            emptyMessage="No ratings in this window."
+            emptyHint="Each 👍 and 👎 users give Kobi's answers, 👎 split by the reason they chose. A changed rating counts again; a withdrawn one does not."
+            footnote={`kubebolt_kobi_copilot_feedback_total by (rating, reason) · ${perInterval}`}
+          />
+        </div>
         <MetricChart
           {...charts}
           sparse

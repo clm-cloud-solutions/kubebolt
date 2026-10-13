@@ -5,13 +5,16 @@ import { collapsePodToWorkload } from '@/utils/promql'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { BarList, EventTrack, KPI_COLOR, Sparkline, SplitBar } from '@/components/shared/kpi/MiniCharts'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
+import { AnchorLink, WorkloadLink } from '@/components/shared/kpi/CardLinks'
 
 // GoldenSignalsStrip — the scan layer above Reliability's panels, in the
 // site's card anatomy (KpiCard), the same family as the Overview's row:
 // Error rate 5xx (the traffic split by status class) · Latency (this window
 // against the previous one) · Throughput (its curve over the range) · L4
 // drops (where they land). Same Hubble series the detail panels consume;
-// the strip only aggregates them cluster-wide.
+// the strip only aggregates them cluster-wide. A card that lights names who
+// (the workload serving the 5xx, the slowest one, the pair whose traffic is
+// dropped), links to it, and points at the panel below that has the detail.
 //
 // BASELINE SEMANTICS (decision 2026-07-16): every delta compares
 // against the PREVIOUS WINDOW OF THE SAME LENGTH immediately before
@@ -77,29 +80,35 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
       const latExpr = (offset: string) =>
         `1000 * sum(rate(${LAT_SUM}[${w}]${offset})) / clamp_min(sum(rate(${LAT_COUNT}[${w}]${offset})), 1e-9)`
       const dropsExpr = `sum(increase(pod_flow_events_total{source="hubble", verdict="dropped"}[${w}]))`
-      // Hottest workload by avg latency — attribution for the card's
-      // sub-line. Same collapse transform the latency panel uses so
+      // Slowest workloads by avg latency — the card names the first and its
+      // tooltip the three. Same collapse transform the latency panel uses so
       // both name the same workload. The collapse wraps the rate()
       // (label_replace over an instant vector — a range selector
       // can't apply to a function result), and topk ranks the
       // QUOTIENT so the winner is highest-latency, not highest-traffic.
-      const hotExpr = [
-        `topk(1,`,
-        `  (1000 * sum by (workload) (${collapsePodToWorkload(`rate(${LAT_SUM}[${w}])`)}))`,
-        `  / on(workload)`,
-        `  clamp_min(sum by (workload) (${collapsePodToWorkload(`rate(${LAT_COUNT}[${w}])`)}), 1e-9)`,
-        `)`,
-      ].join(' ')
+      // The namespace rides along so the name can link to its workload.
+      const latBy = (m: string) => `sum by (destination_namespace, workload) (${collapsePodToWorkload(`rate(${m}[${w}])`)})`
+      const hotExpr = `topk(3, (1000 * ${latBy(LAT_SUM)}) / on(destination_namespace, workload) clamp_min(${latBy(LAT_COUNT)}, 1e-9))`
+      // Who serves the 5xx: req/s of 5xx per destination workload, and every
+      // workload's total so the tooltip can say what share of its traffic fails.
+      const byDst = (expr: string) =>
+        `sum by (destination_namespace, destination_workload) (${collapsePodToWorkload(expr, 'destination_pod', 'destination_workload')})`
+      const errTopExpr = `topk(3, ${byDst(`rate(${withClass(REQS, 'server_err')}[${w}])`)})`
+      const totByDstExpr = byDst(`rate(${REQS}[${w}])`)
       // The traffic by status class — the error card's split bar.
       const classExpr = `sum by (status_class) (rate(${REQS}[${w}]))`
-      // Where the drops land — the same destination collapse NetworkDrops
-      // uses, so both name the same workloads.
-      const dropDstExpr = `topk(3, sum by (destination_workload) (${collapsePodToWorkload(
-        `increase(pod_flow_events_total{source="hubble", verdict="dropped"}[${w}])`,
+      // Who sends the drops and where they land — the same source and
+      // destination collapse NetworkDrops uses, so both name the same pairs.
+      const dropPairExpr = `topk(3, sum by (source_namespace, source_workload, destination_namespace, destination_workload) (${collapsePodToWorkload(
+        collapsePodToWorkload(
+          `increase(pod_flow_events_total{source="hubble", verdict="dropped"}[${w}])`,
+          'source_pod',
+          'source_workload',
+        ),
         'destination_pod',
         'destination_workload',
       )}))`
-      const [errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot, classes, dropDst] = await Promise.all([
+      const [errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot, classes, dropPairs, errTop, totByDst] = await Promise.all([
         scalar(errExpr('')),
         scalar(errExpr(` offset ${w}`)),
         scalar(rpsExpr('')),
@@ -107,11 +116,13 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
         scalar(latExpr('')),
         scalar(latExpr(` offset ${w}`)),
         scalar(dropsExpr),
-        labeled(hotExpr, 'workload'),
+        series(hotExpr),
         labeledAll(classExpr, 'status_class'),
-        labeledAll(dropDstExpr, 'destination_workload'),
+        series(dropPairExpr),
+        series(errTopExpr),
+        series(totByDstExpr),
       ])
-      return { errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot, classes, dropDst }
+      return { errNow, errPrev, rpsNow, rpsPrev, latNow, latPrev, drops, hot, classes, dropPairs, errTop, totByDst }
     },
     refetchInterval: 30_000,
     retry: false,
@@ -174,7 +185,19 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
   // "ok 100%" beside "5xx 0.16%" contradicted itself: rounding 99.84 up. A
   // share that isn't all of it never shows as all of it.
   const fmtOk = (v: number) => (v >= 99.5 && v < 100 ? (Math.floor(v * 10) / 10).toFixed(1) : fmtShare(v))
-  const dropRows = (d?.dropDst ?? []).filter((r) => r.value >= 0.5)
+  const dropRows = (d?.dropPairs ?? []).filter((r) => r.value >= 0.5)
+  // The 5xx culprits with the share of their own traffic that fails.
+  const totalOf = new Map((d?.totByDst ?? []).map((r) => [`${r.labels.destination_namespace}/${r.labels.destination_workload}`, r.value]))
+  const errTop = (d?.errTop ?? [])
+    .filter((r) => r.value > 0 && r.labels.destination_workload)
+    .map((r) => {
+      const ns = r.labels.destination_namespace ?? ''
+      const name = r.labels.destination_workload
+      const total = totalOf.get(`${ns}/${name}`) ?? 0
+      return { ns, name, rps: r.value, pct: total > 0 ? (r.value / total) * 100 : null }
+    })
+  const hot = (d?.hot ?? []).filter((r) => r.labels.workload)
+  const errDeltaLine = errDelta != null && d?.errPrev != null ? `${deltaArrow(errDelta)} vs ${formatPct(d.errPrev)}% the window before` : null
 
   return (
     <div
@@ -188,11 +211,13 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
         value={errNow != null ? fmtShare(errNow) : '—'}
         unit="% 5xx"
         description={
-          errDelta != null && d?.errPrev != null
-            ? `${deltaArrow(errDelta)} vs ${formatPct(d.errPrev)}% the window before`
-            : errBad
-              ? `server errors over the last ${rangeLabel}`
-              : `no meaningful server errors · ${rangeLabel}`
+          errBad && errTop[0] ? (
+            <>
+              mostly <Who ns={errTop[0].ns} name={errTop[0].name} /> · {formatRps(errTop[0].rps)} req/s
+            </>
+          ) : (
+            errDeltaLine ?? (errBad ? `server errors over the last ${rangeLabel}` : `no meaningful server errors · ${rangeLabel}`)
+          )
         }
         viz={
           clsTotal > 0 ? (
@@ -213,8 +238,36 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
             />
           ) : undefined
         }
-        caption="Hubble L7 · every observed request"
+        caption={
+          errBad ? (
+            <>
+              Hubble L7 · <AnchorLink id="error-hotspots">Error hot-spots</AnchorLink>
+            </>
+          ) : (
+            'Hubble L7 · every observed request'
+          )
+        }
         info={
+          errBad && errTop.length > 0 ? (
+            <>
+              <TooltipHeader right={`last ${rangeLabel}`}>Who answers 5xx</TooltipHeader>
+              <div className="space-y-1">
+                {errTop.map((r) => (
+                  <TooltipRow
+                    key={`${r.ns}/${r.name}`}
+                    color="#ef4056"
+                    label={r.name}
+                    value={<span className="whitespace-nowrap">{`${formatRps(r.rps)} req/s${r.pct != null ? ` · ${formatPct(r.pct)}%` : ''}`}</span>}
+                  />
+                ))}
+                {errDeltaLine && <TooltipRow color={null} label="cluster" value={<span className="whitespace-nowrap">{errDeltaLine}</span>} />}
+              </div>
+              <TooltipNote>
+                Lights at 1 % of all requests. The share is of each workload's own traffic. The error-rate chart right
+                below shows when it started; Error hot-spots shows who calls it.
+              </TooltipNote>
+            </>
+          ) : (
           <>
             <TooltipHeader>Error rate · 5xx</TooltipHeader>
             <TooltipRow color="#ef4056" label="What" value="server errors" />
@@ -225,6 +278,7 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
               length.
             </TooltipNote>
           </>
+          )
         }
       />
       <KpiCard
@@ -243,17 +297,39 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
             />
           ) : undefined
         }
-        caption={d?.hot ? `hottest · ${d.hot.name} ${Math.round(d.hot.value)} ms` : 'cluster-wide mean, not a p99'}
+        caption={
+          hot[0] ? (
+            <>
+              hottest · <Who ns={hot[0].labels.destination_namespace} name={hot[0].labels.workload} /> {formatMs(hot[0].value)} ms
+            </>
+          ) : (
+            'cluster-wide mean, not a p99'
+          )
+        }
         info={
           <>
-            <TooltipHeader right="not p99">Latency · avg</TooltipHeader>
-            <TooltipRow color="#f5a623" label="Metric" value="mean, cluster-wide" />
+            <TooltipHeader right="mean, not p99">{hot.length > 0 ? 'Slowest workloads' : 'Latency · avg'}</TooltipHeader>
+            {hot.length > 0 ? (
+              <div className="space-y-1">
+                {hot.map((r) => (
+                  <TooltipRow
+                    key={`${r.labels.destination_namespace}/${r.labels.workload}`}
+                    color={latAlert ? '#f5a623' : null}
+                    label={r.labels.workload}
+                    value={<span className="whitespace-nowrap">{formatMs(r.value)} ms</span>}
+                  />
+                ))}
+              </div>
+            ) : (
+              <TooltipRow color="#f5a623" label="Metric" value="mean, cluster-wide" />
+            )}
             <TooltipNote>
               Average HTTP response time across all L7 flows — the sum of request
               durations over the count. This is a MEAN, not a p99: the agent ships
               latency as sum + count without histogram buckets, so a true percentile
               isn't computable yet. A consistently high average still points at a real
-              problem; a single outlier can pull it up.
+              problem; a single outlier can pull it up. Lights at +25 % and +20 ms against
+              the window before.
             </TooltipNote>
           </>
         }
@@ -288,23 +364,52 @@ export function GoldenSignalsStrip({ rangeMinutes }: Props) {
           dropRows.length > 0 ? (
             <BarList
               color={KPI_COLOR.warn}
-              rows={dropRows.map((r) => ({ label: `→ ${r.name}`, value: r.value, display: Math.round(r.value) }))}
+              rows={dropRows.map((r) => ({
+                label: (
+                  <>
+                    <Who ns={r.labels.source_namespace} name={r.labels.source_workload} /> → {r.labels.destination_workload || 'outside'}
+                  </>
+                ),
+                value: r.value,
+                display: Math.round(r.value),
+              }))}
             />
           ) : (
             <EventTrack events={[]} from={now - rangeMinutes * 60} to={now} left={`${rangeLabel} ago`} />
           )
         }
-        caption={drops != null && drops > 0 ? 'NetworkPolicy denials or connection refused' : 'Cilium verdict=dropped'}
+        caption={
+          drops != null && drops > 0 ? (
+            <>
+              NetworkPolicy denials · <AnchorLink id="network-drops">Network drops</AnchorLink>
+            </>
+          ) : (
+            'Cilium verdict=dropped'
+          )
+        }
         info={
           <>
-            <TooltipHeader>L4 drops</TooltipHeader>
-            <TooltipRow color="#f5a623" label="Source" value="Hubble verdict=dropped" />
+            <TooltipHeader right={dropRows.length > 0 ? 'per minute' : undefined}>{dropRows.length > 0 ? 'Who is dropped, where' : 'L4 drops'}</TooltipHeader>
+            {dropRows.length > 0 ? (
+              <div className="space-y-1">
+                {dropRows.map((r) => (
+                  <TooltipRow
+                    key={`${r.labels.source_namespace}/${r.labels.source_workload}>${r.labels.destination_workload}`}
+                    color="#f5a623"
+                    label={`${r.labels.source_workload || 'outside'} → ${r.labels.destination_workload || 'outside'}`}
+                    value={<span className="whitespace-nowrap">{(r.value / rangeMinutes).toFixed(1)}</span>}
+                  />
+                ))}
+              </div>
+            ) : (
+              <TooltipRow color="#f5a623" label="Source" value="Hubble verdict=dropped" />
+            )}
             <TooltipNote>
               Count of L4 flows Cilium DROPPED in this range — most are NetworkPolicy
               denials, but connection-refused and host-firewall blocks land here too.
               This is the early-warning channel the HTTP panels miss: dropped traffic
-              never reaches the application layer to become a 4xx/5xx. The bars name the
-              workloads the drops were headed for.
+              never reaches the application layer to become a 4xx/5xx. The bars name who
+              sent the traffic and where it was headed. Lights at one drop a minute on average.
             </TooltipNote>
           </>
         }
@@ -331,18 +436,20 @@ async function scalar(query: string): Promise<number | null> {
   return Number.isFinite(v) ? v : null
 }
 
-// labeled — instant query returning the top series' label + value.
-async function labeled(
-  query: string,
-  label: string,
-): Promise<{ name: string; value: number } | null> {
+// series — instant query returning every series' labels + value, largest first.
+async function series(query: string): Promise<{ labels: Record<string, string>; value: number }[]> {
   const res = await api.queryMetrics({ query })
-  const s = res?.data?.result?.[0]
-  if (!s) return null
-  const v = parseFloat(s.value?.[1] ?? '')
-  const name = s.metric?.[label]
-  if (!name || !Number.isFinite(v)) return null
-  return { name, value: v }
+  return (res?.data?.result ?? [])
+    .map((s) => ({ labels: (s.metric ?? {}) as Record<string, string>, value: parseFloat(s.value?.[1] ?? '') }))
+    .filter((r) => Number.isFinite(r.value))
+    .sort((a, b) => b.value - a.value)
+}
+
+// Who — a workload Hubble named, linked to its page when it has a namespace
+// (traffic from outside the cluster has none).
+function Who({ ns, name }: { ns?: string; name?: string }) {
+  if (!name) return <>outside</>
+  return ns ? <WorkloadLink namespace={ns} name={name} /> : <>{name}</>
 }
 
 // labeledAll — instant query returning every series' label + value.

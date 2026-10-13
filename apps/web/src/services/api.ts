@@ -1074,7 +1074,19 @@ export const api = {
         detectedBehavior: string; source: string; fields?: Record<string, string>
       }>
       total: number
-    }>(`${API_BASE}/runtime-events${qs ? `?${qs}` : ''}`)
+    }>(`${API_BASE}/runtime-events${qs ? `?${qs}` : ''}`).then((r) => ({
+      ...r,
+      // Events stored before the ingest dropped Falco's nulls carry "<nil>"
+      // (and Falco writes "<NA>") where there is no pod: read them as absent.
+      events: (r.events ?? []).map((e) => ({
+        ...e,
+        namespace: falcoValue(e.namespace),
+        podName: falcoValue(e.podName),
+        fields: e.fields
+          ? Object.fromEntries(Object.entries(e.fields).filter(([, v]) => falcoValue(v) !== undefined))
+          : e.fields,
+      })),
+    }))
   },
 
   // Fleet-scoped search (E2 Fleet C1): fans out across every searchable
@@ -2861,6 +2873,11 @@ export interface PromRangeResponse {
 // DeployEvent. `deployedAt` is RFC3339 (Go's default time.Time JSON
 // encoding); the client converts to unix ms / s as needed at the
 // chart layer.
+// falcoValue — a Falco field, or undefined for its placeholders of "unknown".
+function falcoValue(v?: string): string | undefined {
+  return v && v !== '<nil>' && v !== '<NA>' ? v : undefined
+}
+
 export interface DeployEvent {
   namespace: string
   kind: string // "Deployment" today; "StatefulSet" / "DaemonSet" once

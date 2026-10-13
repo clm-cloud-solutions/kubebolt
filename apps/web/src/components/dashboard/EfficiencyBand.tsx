@@ -80,8 +80,10 @@ export function EfficiencyBand({
     <div className="rounded-xl border border-kb-border bg-kb-card p-4">
       <div className="flex items-center justify-between gap-3 mb-3">
         <div className="flex items-center gap-2">
-          <span className="w-6 h-6 rounded-md bg-kb-accent-light flex items-center justify-center shrink-0">
-            <Zap className="w-3.5 h-3.5 text-kb-accent" />
+          {/* Neutral like every panel's icon: the band's surface stopped being
+              green, and a green tile alone still read as "all good". */}
+          <span className="text-kb-text-secondary shrink-0">
+            <Zap className="w-4 h-4" />
           </span>
           <h3 className="text-sm font-semibold text-kb-text-primary">Resource efficiency</h3>
         </div>

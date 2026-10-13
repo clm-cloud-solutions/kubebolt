@@ -40,6 +40,9 @@ interface KobiSigilProps {
    * per-state dot treatments (the orbit IS the state signal here).
    */
   autonomous?: boolean
+  /** Stroke of the K, in viewBox units. 1.8 suits the sigil at its own size;
+   * the icon adapters below draw it heavier for 14–16 px. */
+  stroke?: number
 }
 
 export function KobiSigil({
@@ -48,6 +51,7 @@ export function KobiSigil({
   className = '',
   inheritColor = false,
   autonomous = false,
+  stroke = 1.8,
 }: KobiSigilProps) {
   const colorClass = inheritColor ? '' : STATE_COLOR[state]
 
@@ -77,7 +81,7 @@ export function KobiSigil({
         x2="9"
         y2="26"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth={stroke}
         strokeLinecap="square"
       />
 
@@ -88,7 +92,7 @@ export function KobiSigil({
         x2="20"
         y2="6"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth={stroke}
         strokeLinecap="square"
         className={diagonalsAnimate ? 'kobi-diagonals-investigating' : undefined}
       />
@@ -100,7 +104,7 @@ export function KobiSigil({
         x2="20"
         y2="26"
         stroke="currentColor"
-        strokeWidth="1.8"
+        strokeWidth={stroke}
         strokeLinecap="square"
         className={diagonalsAnimate ? 'kobi-diagonals-investigating' : undefined}
       />
@@ -197,13 +201,18 @@ export function KobiSigil({
 // (anything typed ComponentType<{ className?: string }>). They inherit
 // currentColor from the surrounding text like lucide does; the Tailwind
 // w-*/h-* classes override the SVG's own width/height attributes.
+//
+// Drawn with lucide's weight: its 2-unit stroke on a 24 box is 2.67 on the
+// sigil's 32. At the sigil's own 1.8 a 14 px icon got a 0.8 px K, faint next
+// to the lucide icons around it and lost on a filled (accent) button.
+const ICON_STROKE = 2.67
 
 /** Kobi Copilot mark — fixed intelligence dot. */
 export function KobiSigilIcon({ className }: { className?: string }) {
-  return <KobiSigil inheritColor className={className} />
+  return <KobiSigil inheritColor stroke={ICON_STROKE} className={className} />
 }
 
 /** Kobi Autopilot mark — the dot orbits the K (autonomous mode). */
 export function KobiAutopilotIcon({ className }: { className?: string }) {
-  return <KobiSigil autonomous inheritColor className={className} />
+  return <KobiSigil autonomous inheritColor stroke={ICON_STROKE} className={className} />
 }

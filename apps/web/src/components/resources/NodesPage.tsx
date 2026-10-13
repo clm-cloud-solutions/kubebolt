@@ -14,6 +14,8 @@ import { NodeActionMenu } from './NodeActionMenu'
 import { DrainModal } from './DrainModal'
 import { AgentRequiredPlaceholder } from '@/components/shared/AgentRequiredPlaceholder'
 import { MetricChart } from '@/components/shared/MetricChart'
+import { RangeSelector } from '@/components/shared/RangeSelector'
+import { useDashboardRange } from '@/hooks/useDashboardRange'
 import { HoverTooltip, TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
 import { api } from '@/services/api'
 import { formatCPU, formatMemory } from '@/utils/formatters'
@@ -384,6 +386,9 @@ function idleCandidateName(nodes: ResourceItem[]): string {
 // any extra config. When the agent is absent we fall back to the
 // install prompt — same information, no misleading empty charts.
 function NodeFleetCharts() {
+  // One range for both charts, the dashboards' own: this page reads the
+  // cluster at the altitude Capacity does.
+  const [rangeMinutes, setRangeMinutes] = useDashboardRange()
   const { data: agent, isLoading } = useQuery({
     queryKey: ['integration', 'agent'],
     queryFn: () => api.getIntegration('agent'),
@@ -418,40 +423,47 @@ function NodeFleetCharts() {
   // "TX control-plane"), and the series label keeps the direction
   // visible in the tooltip and legend.
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <MetricChart
-        title="Filesystem used per node"
-        unit="bytes"
-        query="node_fs_used_bytes"
-        chartType="area"
-      />
-      <MetricChart
-        title="Network activity per node (RX up / TX down)"
-        unit="bytes/s"
-        queries={[
-          // device filter excludes virtual interfaces (cilium_*, lxc*,
-          // veth*, cali*, flannel*, gre*, tunl*, lo) that double/triple-count
-          // the same packet as it traverses the CNI overlay. eth0/ens5/eno1
-          // is the physical NIC — what actually crosses the node boundary.
-          // Without this filter the dashboard inflated 6-8× on kind/yagan
-          // (verified against CloudWatch ENI metrics and per-device topk).
-          // Keep in sync with apps/api/internal/copilot/workload_metrics.go's
-          // nodeNetworkDeviceFilter constant.
-          { query: 'sum by (node) (rate(node_network_receive_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))', prefix: 'RX' },
-          { query: 'sum by (node) (rate(node_network_transmit_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))', prefix: 'TX', negate: true },
-        ]}
-        // Multi-node clusters produce one series per (RX, node) and
-        // one per (TX, node). The default seriesLabel collapses by
-        // prefix only, so two RX series would both label as "RX" and
-        // the chart's collision resolver appends " (2)" — confusing
-        // (legend reads "RX" + "RX (2)" with no node hint). Include
-        // the node name explicitly so each line identifies its node.
-        seriesLabel={(labels, prefix) => {
-          const node = labels.node || 'node'
-          return prefix ? `${prefix} ${node}` : node
-        }}
-        chartType="area"
-      />
+    <div className="space-y-3">
+      <div className="flex justify-end">
+        <RangeSelector value={rangeMinutes} onChange={setRangeMinutes} />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MetricChart
+          controlledRangeMinutes={rangeMinutes}
+          title="Filesystem used per node"
+          unit="bytes"
+          query="node_fs_used_bytes"
+          chartType="area"
+        />
+        <MetricChart
+          controlledRangeMinutes={rangeMinutes}
+          title="Network activity per node (RX up / TX down)"
+          unit="bytes/s"
+          queries={[
+            // device filter excludes virtual interfaces (cilium_*, lxc*,
+            // veth*, cali*, flannel*, gre*, tunl*, lo) that double/triple-count
+            // the same packet as it traverses the CNI overlay. eth0/ens5/eno1
+            // is the physical NIC — what actually crosses the node boundary.
+            // Without this filter the dashboard inflated 6-8× on kind/yagan
+            // (verified against CloudWatch ENI metrics and per-device topk).
+            // Keep in sync with apps/api/internal/copilot/workload_metrics.go's
+            // nodeNetworkDeviceFilter constant.
+            { query: 'sum by (node) (rate(node_network_receive_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))', prefix: 'RX' },
+            { query: 'sum by (node) (rate(node_network_transmit_bytes_total{device=~"eth.*|ens.*|en[a-z].*"}[1m]))', prefix: 'TX', negate: true },
+          ]}
+          // Multi-node clusters produce one series per (RX, node) and
+          // one per (TX, node). The default seriesLabel collapses by
+          // prefix only, so two RX series would both label as "RX" and
+          // the chart's collision resolver appends " (2)" — confusing
+          // (legend reads "RX" + "RX (2)" with no node hint). Include
+          // the node name explicitly so each line identifies its node.
+          seriesLabel={(labels, prefix) => {
+            const node = labels.node || 'node'
+            return prefix ? `${prefix} ${node}` : node
+          }}
+          chartType="area"
+        />
+      </div>
     </div>
   )
 }

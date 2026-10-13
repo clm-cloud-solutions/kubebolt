@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { barStep, stepSeconds } from './MetricChart'
+import { barStep, stepSeconds, windowSteps } from './MetricChart'
 
 describe('stepSeconds', () => {
   it('reads the range steps as seconds', () => {
@@ -21,5 +21,20 @@ describe('barStep', () => {
     expect(barStep(10080, '1h')).toBe('6h')
     expect(barStep(43200, '6h')).toBe('1d')
     expect(barStep(999, '5m')).toBe('5m')
+  })
+})
+
+describe('windowSteps', () => {
+  it('takes the steps of the shortest range that covers a window', () => {
+    // 12 days of a month: the 14d line step, the 14d bar.
+    expect(windowSteps(12 * 1440)).toEqual({ line: '2h', bar: '12h' })
+    // A 30-day month is the 30d range exactly.
+    expect(windowSteps(30 * 1440)).toEqual({ line: '6h', bar: '1d' })
+  })
+
+  it('goes coarser past the longest range', () => {
+    // A 31-day month, a 92-day custom range.
+    expect(windowSteps(31 * 1440)).toEqual({ line: '12h', bar: '1d' })
+    expect(windowSteps(92 * 1440)).toEqual({ line: '12h', bar: '1d' })
   })
 })

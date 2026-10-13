@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { RotateCw, X } from 'lucide-react'
 import { api, type InsightEpisode, type OperationalBurst, type ShiftReport } from '@/services/api'
 import { LABELS as CAPABILITY_LABELS } from '@/ee/CapabilitiesSection'
+import { clockOrDate } from '@/utils/localTime'
 
 // «While you were away» — Fase 3's shift report, restyled to the Home design
 // (in-vivo 01-sep): it lives INSIDE the greeting card as its lower section,
@@ -272,17 +273,6 @@ function shortResource(resource: string): string {
   return parts[parts.length - 1] || resource
 }
 
-function clock(iso: string): string {
-  return new Date(iso).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
-}
-
-// A time of day alone reads as "today": anything older carries its date.
-function when(iso: string): string {
-  const d = new Date(iso)
-  if (d.toDateString() === new Date().toDateString()) return clock(iso)
-  return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
-}
-
 const SEV_RANK: Record<string, number> = { critical: 0, warning: 1, info: 2 }
 
 // Which episodes earn one of the three rows. The rows are a sample of the
@@ -324,10 +314,10 @@ function EpisodeRow({ e, showCluster }: { e: InsightEpisode; showCluster: boolea
   const dur = fmtDur(Math.max(0, Math.round((end - start) / 1000)))
   const where = showCluster && e.clusterName ? ` · ${e.clusterName.replace(/ \(via agent\)$/, '')}` : ''
   const sub = firing
-    ? `firing since ${when(e.firstSeen)} · ${dur}${where}`
+    ? `firing since ${clockOrDate(e.firstSeen)} · ${dur}${where}`
     : resolved
-      ? `resolved ${when(e.resolvedAt ?? e.lastSeen)} · after ${dur}${where}`
-      : `expired · no signal since ${when(e.lastSeen)}${where}`
+      ? `resolved ${clockOrDate(e.resolvedAt ?? e.lastSeen)} · after ${dur}${where}`
+      : `expired · no signal since ${clockOrDate(e.lastSeen)}${where}`
   return (
     <div
       className="flex items-center gap-3 rounded-xl px-3.5 py-2.5 min-w-0"
@@ -440,7 +430,7 @@ export function ShiftReportSection({
   const names = report.clusterNames ?? {}
   const windowLabel = report.firstShift
     ? 'your first shift — the last 24h'
-    : `since your last visit · ${when(report.windowFrom)} → now`
+    : `since your last visit · ${clockOrDate(report.windowFrom)} → now`
 
   const ingestTrouble = report.capabilities.some(
     (c) => (c.id === 'ingest_caps' || c.id === 'active_series') && c.status === 'degraded',

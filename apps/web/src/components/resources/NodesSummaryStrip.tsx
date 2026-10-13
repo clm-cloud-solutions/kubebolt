@@ -1,8 +1,11 @@
+import { Link } from 'react-router-dom'
 import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tooltip'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { BarList, KPI_COLOR, Legend, NodeRings, SemiGauge, UnitStrip } from '@/components/shared/kpi/MiniCharts'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import type { ResourceItem, ClusterOverview } from '@/types/kubernetes'
+import { clockOrDay } from '@/utils/localTime'
+import { formatAge } from '@/utils/formatters'
 
 // NodesSummaryStrip is the scan layer above the node grid, in the site's
 // card anatomy (KpiCard) like every other headline row: Nodes ready (one
@@ -11,7 +14,10 @@ import type { ResourceItem, ClusterOverview } from '@/types/kubernetes'
 // the consolidation observation in its caption). Every number is derived
 // from data the page already has — node items (usage %, pod counts,
 // cordon) + the cluster overview (requested vs allocatable). No new
-// backend, no cost data.
+// backend, no cost data. A card that lights names the node: the one not
+// ready (and since when, from its Ready condition), the fullest of pods, the
+// one under pressure. Bin-packing can't: requests per node are only in a
+// node's detail, not in this list.
 //
 // DELIBERATELY NO $/mo and NO "drainable" claim in the consolidation
 // line: a trustworthy "N nodes drainable" needs a scheduling-aware
@@ -43,7 +49,19 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
   const podsCapacity = nodes.reduce((a, n) => a + num(n.podCapacity), 0)
   const podsPct = podsCapacity > 0 ? (podsScheduled / podsCapacity) * 100 : 0
 
-  const underPressure = nodes.filter((n) => num(n.memoryPercent) > MEM_PRESSURE_PCT).length
+  const pressured = [...nodes]
+    .filter((n) => num(n.memoryPercent) > MEM_PRESSURE_PCT)
+    .sort((a, b) => num(b.memoryPercent) - num(a.memoryPercent))
+  const underPressure = pressured.length
+  // Not ready, oldest first (the first to go is usually the cause); then cordoned.
+  const notReady = nodes
+    .filter((n) => n.status !== 'Ready')
+    .sort((a, b) => (Date.parse(readySince(a) ?? '') || 0) - (Date.parse(readySince(b) ?? '') || 0))
+  const cordonedNodes = nodes.filter((n) => n.status === 'Ready' && isUnschedulable(n))
+  const fullest = [...nodes]
+    .filter((n) => num(n.podCapacity) > 0)
+    .map((n) => ({ name: String(n.name ?? ''), pods: num(n.podCount), pct: (num(n.podCount) / num(n.podCapacity)) * 100 }))
+    .sort((a, b) => b.pct - a.pct)
 
   // Cluster-wide bin-packing = requested (reserved by pod specs) vs
   // allocatable, from the overview. This is scheduler reservation, NOT
@@ -103,7 +121,41 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
         // The sentence follows the colour: a NotReady node lit the card red
         // while it still said "all schedulable".
         description={
-          ready < total ? `${total - ready} not ready` : cordoned > 0 ? `${cordoned} cordoned` : 'all schedulable'
+          notReady[0] ? (
+            <>
+              {total - ready} not ready · <NodeLink name={String(notReady[0].name)} />
+              {readySince(notReady[0]) && <> since {clockOrDay(readySince(notReady[0]) as string)}</>}
+            </>
+          ) : cordonedNodes[0] ? (
+            <>
+              {cordoned} cordoned · <NodeLink name={String(cordonedNodes[0].name)} />
+            </>
+          ) : (
+            'all schedulable'
+          )
+        }
+        info={
+          notReady.length + cordonedNodes.length > 0 ? (
+            <>
+              <TooltipHeader right="since">Not schedulable</TooltipHeader>
+              <div className="space-y-1">
+                {notReady.map((n) => {
+                  const since = readySince(n)
+                  return (
+                    <TooltipRow
+                      key={String(n.name)}
+                      color={KPI_COLOR.err}
+                      label={shortenNodeName(String(n.name))}
+                      value={<span className="whitespace-nowrap">{since ? `not ready · ${clockOrDay(since)} · ${formatAge(since)}` : 'not ready'}</span>}
+                    />
+                  )
+                })}
+                {cordonedNodes.map((n) => (
+                  <TooltipRow key={String(n.name)} color={KPI_COLOR.muted} label={shortenNodeName(String(n.name))} value="cordoned" />
+                ))}
+              </div>
+            </>
+          ) : undefined
         }
         viz={
           total > 0 ? (
@@ -175,16 +227,32 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
           ) : undefined
         }
         caption={
-          podNodes.length > 0
-            ? podNodes.map((n) => `${n.name} ${n.pods}`).join(' · ') + (nodes.length > podNodes.length ? ` · +${nodes.length - podNodes.length}` : '')
-            : undefined
+          podsPct >= 90 && fullest[0] ? (
+            <>
+              fullest · <NodeLink name={fullest[0].name} /> {Math.round(fullest[0].pct)}%
+            </>
+          ) : podNodes.length > 0 ? (
+            podNodes.map((n) => `${n.name} ${n.pods}`).join(' · ') + (nodes.length > podNodes.length ? ` · +${nodes.length - podNodes.length}` : '')
+          ) : undefined
         }
         info={
           <>
             <TooltipHeader>Pods scheduled</TooltipHeader>
+            {podsPct >= 90 && fullest.length > 0 && (
+              <div className="space-y-1">
+                {fullest.slice(0, 3).map((n) => (
+                  <TooltipRow
+                    key={n.name}
+                    color={n.pct >= 90 ? KPI_COLOR.warn : null}
+                    label={shortenNodeName(n.name)}
+                    value={<span className="whitespace-nowrap">{Math.round(n.pct)}% · {n.pods} pods</span>}
+                  />
+                ))}
+              </div>
+            )}
             <TooltipNote>
               Pods placed on the nodes against the kubelet's max-pods summed across them. The
-              caption names the nodes carrying the most.
+              caption names the nodes carrying the most. Lights at 90 % of the cluster's pod capacity.
             </TooltipNote>
           </>
         }
@@ -194,7 +262,15 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
         alert={underPressure > 0 ? 'warn' : undefined}
         value={underPressure}
         unit="under pressure"
-        description={underPressure > 0 ? `nodes above ${MEM_PRESSURE_PCT}% memory` : 'no memory pressure'}
+        description={
+          pressured[0] ? (
+            <>
+              above {MEM_PRESSURE_PCT}% memory · <NodeLink name={String(pressured[0].name)} /> at {Math.round(num(pressured[0].memoryPercent))}%
+            </>
+          ) : (
+            'no memory pressure'
+          )
+        }
         viz={busiest.length > 0 ? <NodeRings nodes={busiest} /> : undefined}
         caption={
           idle ? (
@@ -208,7 +284,20 @@ export function NodesSummaryStrip({ nodes, overview }: Props) {
         info={
           <>
             <TooltipHeader right="observation">Pressure &amp; consolidation</TooltipHeader>
-            <TooltipRow color="#4c9aff" label="Rings" value="cpu inside · memory outside" />
+            {pressured.length > 0 ? (
+              <div className="space-y-1">
+                {pressured.slice(0, 4).map((n) => (
+                  <TooltipRow
+                    key={String(n.name)}
+                    color={KPI_COLOR.warn}
+                    label={shortenNodeName(String(n.name))}
+                    value={<span className="whitespace-nowrap">{Math.round(num(n.memoryPercent))}% mem · {Math.round(num(n.cpuPercent))}% cpu</span>}
+                  />
+                ))}
+              </div>
+            ) : (
+              <TooltipRow color="#4c9aff" label="Rings" value="cpu inside · memory outside" />
+            )}
             <TooltipNote>
               The busiest nodes right now, and — when one stands well below the rest — the node
               using the least memory, a candidate to review for consolidation. It is <b>not</b> a
@@ -233,6 +322,25 @@ function num(v: unknown): number {
 function clampPct(v?: number): number {
   if (v == null || !Number.isFinite(v)) return 0
   return Math.max(0, Math.min(100, v))
+}
+
+// readySince — when the node's Ready condition last changed: for a node not
+// ready, since when.
+function readySince(n: ResourceItem): string | undefined {
+  const conditions = (n as unknown as { conditions?: { type: string; lastTransitionTime?: string }[] }).conditions
+  return conditions?.find((c) => c.type === 'Ready')?.lastTransitionTime || undefined
+}
+
+function NodeLink({ name }: { name: string }) {
+  return (
+    <Link
+      to={`/nodes/_/${name}`}
+      title={name}
+      className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors"
+    >
+      {shortenNodeName(name)}
+    </Link>
+  )
 }
 
 function isUnschedulable(n: ResourceItem): boolean {

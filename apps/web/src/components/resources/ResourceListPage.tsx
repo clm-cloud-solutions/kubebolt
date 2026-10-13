@@ -600,8 +600,10 @@ export function ResourceListPage({ resourceType: propType }: ResourceListPagePro
       { replace: true },
     )
   }
-  const [search, setSearch] = useState('')
-  const [debouncedSearch, setDebouncedSearch] = useState('')
+  // ?search= only seeds the box (a KPI card's link to a workload's pods);
+  // typing keeps it local, like the page.
+  const [search, setSearch] = useState(() => searchParams.get('search') ?? '')
+  const [debouncedSearch, setDebouncedSearch] = useState(() => searchParams.get('search') ?? '')
   const [page, setPage] = useState(1)
 
   function resetPage() { setPage(1) }
