@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import type { ClusterOverview, HealthCheck, ResourceItem } from '@/types/kubernetes'
 import { api } from '@/services/api'
-import { TooltipHeader, TooltipRow } from '@/components/shared/Tooltip'
+import { TooltipHeader, TooltipNote, TooltipRow } from '@/components/shared/Tooltip'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { KPI_COLOR, Legend, NodeRings, SemiGauge, Sparkline, StatusList } from '@/components/shared/kpi/MiniCharts'
 import { useAgentInstalled } from '@/hooks/useAgentInstalled'
@@ -10,7 +10,9 @@ import { useInsights } from '@/hooks/useInsights'
 import { useRefreshInterval } from '@/contexts/RefreshContext'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { shortenNodeName, withShortNames } from '@/components/resources/NodesSummaryStrip'
-import { insightResourcePath } from '@/utils/insightResource'
+import { caseRows, NODE_RULES, openCases, POD_RULES, type CaseRow, type InsightCase } from '@/utils/insightCases'
+import { clockOrDay } from '@/utils/localTime'
+import { formatAge } from '@/utils/formatters'
 
 // A KPI card needs ~300px for its figure, sentence and minichart.
 const KPI_MIN_WIDTH = 300
@@ -30,7 +32,13 @@ const PODS_TREND = 'count(count by (namespace, pod) (container_cpu_usage_seconds
 //   1. Is this cluster healthy?       → score on a half ring, what took points off
 //   2. Are all my nodes participating? → the busiest nodes, CPU and memory rings
 //   3. Are my pods running?            → pod count over 24h (or the state list)
-//   4. Is anything actionable?         → open insights grouped by rule
+//   4. Is anything actionable?         → the open cases, worst and oldest first
+//
+// The card that lights names who, since when, and opens it in one click. The
+// Insights card lights for open insights and lists them as cases; Nodes and
+// Pods name their own case. Health gives the verdict (score and chip) and never
+// lights: every check it scores is a card here (nodes, pods) or the page itself
+// (an unreachable API has no Overview), so its glow only repeated another card.
 //
 // Kept from the previous cards: restricted resources hold their slot and say
 // "No access"; Completed pods are out of the denominator (a batch of finished
@@ -107,25 +115,21 @@ export function KpiCards({ overview }: KpiCardsProps) {
   // ── Pods: 24h series ──────────────────────────────────────────────────
   const podSeries = (podsTrendQ.data?.data?.result?.[0]?.values ?? []).map(([, v]) => Math.round(Number(v)))
 
-  // ── Insights: open findings grouped by rule, worst severity first ─────
-  const SEV_RANK = { critical: 0, warning: 1, info: 2 } as const
-  const SEV_COLOR = { critical: KPI_COLOR.err, warning: KPI_COLOR.warn, info: KPI_COLOR.info } as const
-  // A rule with one open finding links to the object it is about; with
-  // several, to the list filtered by its severity.
-  const byRule = new Map<string, { count: number; sev: 'critical' | 'warning' | 'info'; resource: string }>()
-  for (const i of insightsQ.data?.items ?? []) {
-    if (i.resolved) continue
-    const key = i.ruleId || i.title
-    const cur = byRule.get(key)
-    if (!cur) byRule.set(key, { count: 1, sev: i.severity, resource: i.resource })
-    else {
-      cur.count++
-      if (SEV_RANK[i.severity] < SEV_RANK[cur.sev]) cur.sev = i.severity
-    }
-  }
-  const topRules = [...byRule.entries()]
-    .sort((a, b) => SEV_RANK[a[1].sev] - SEV_RANK[b[1].sev] || b[1].count - a[1].count)
-    .slice(0, 3)
+  // ── Insights as cases: who, which rule, since when ────────────────────
+  const cases = openCases(insightsQ.data?.items)
+  const nodeCases = cases.filter((c) => NODE_RULES.has(c.rule))
+  const podCases = cases.filter((c) => POD_RULES.has(c.rule))
+  // A node the API already reports NotReady before (or without) its insight:
+  // named, without a time.
+  const notReadyNodes = (nodesQ.data?.items ?? []).filter((n: ResourceItem) => n.status === 'NotReady').map((n) => n.name)
+  const podTrouble = podsNotReady > 0 || podsDegraded > 0
+  const insightsAlert = (insights?.critical ?? 0) > 0 ? 'crit' : (insights?.warning ?? 0) > 0 ? 'warn' : undefined
+  const listed = caseRows(cases, 3)
+  const hovered = caseRows(cases, 8)
+
+  // The health sub-line opens the insights it summarizes.
+  const healthSummary = summarizeHealth(health)
+  const healthTo = (insights?.critical ?? 0) > 0 ? '/insights?severity=critical' : (insights?.warning ?? 0) > 0 ? '/insights?severity=warning' : null
 
   // A breakdown line where every non-zero part links to its filtered list —
   // landing on an empty filtered list is a dead end, so zeros stay plain.
@@ -149,17 +153,23 @@ export function KpiCards({ overview }: KpiCardsProps) {
       className={`grid gap-4 ${gridWidth ? '' : 'grid-cols-1 sm:grid-cols-2 xl:grid-cols-4'}`}
       style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, KPI_MIN_WIDTH, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
     >
-      {/* The health verdict lights this card; the Insights card beside it
-          counts the same findings and stays unlit (one fact, one card). */}
+      {/* The verdict: score and chip, never lit (see the header). */}
       <KpiCard
         primary
-        alert={health?.status === 'critical' ? 'crit' : health?.status === 'warning' ? 'warn' : undefined}
         status={health?.status ? HEALTH_STATUS[health.status] : undefined}
         value={health?.score != null ? health.score : '—'}
         unit={health?.score != null ? '/ 100' : undefined}
         description="cluster health"
         viz={health?.score != null ? <SemiGauge percent={health.score} color={healthColor} legend={<Legend rows={healthLegend} />} /> : undefined}
-        caption={summarizeHealth(health)}
+        caption={
+          healthSummary && healthTo ? (
+            <Link to={healthTo} className="hover:text-kb-text-primary transition-colors">
+              {healthSummary}
+            </Link>
+          ) : (
+            healthSummary
+          )
+        }
         info={healthTooltip(health)}
       />
 
@@ -169,7 +179,34 @@ export function KpiCards({ overview }: KpiCardsProps) {
         link={{ text: 'view all', to: '/nodes' }}
         value={nodesReady}
         unit={`/ ${nodesTotal}`}
-        description={nodesNotReady > 0 ? `${nodesNotReady} not ready` : 'nodes ready'}
+        description={
+          nodesNotReady > 0 ? (
+            <>
+              {nodesNotReady} not ready
+              {nodeCases[0] ? (
+                <> · <Culprit c={nodeCases[0]} /></>
+              ) : notReadyNodes[0] ? (
+                <> · <Culprit c={{ name: notReadyNodes[0], to: `/nodes/_/${notReadyNodes[0]}` }} /></>
+              ) : null}
+            </>
+          ) : (
+            'nodes ready'
+          )
+        }
+        info={
+          nodesNotReady > 0 && (nodeCases.length > 0 || notReadyNodes.length > 0)
+            ? nodeCases.length > 0
+              ? casesTooltip('Not ready', nodeCases, (c) => c.name)
+              : (
+                <>
+                  <TooltipHeader>Not ready</TooltipHeader>
+                  <div className="space-y-1">
+                    {notReadyNodes.map((n) => <TooltipRow key={n} color={KPI_COLOR.err} label={n} value="NotReady" />)}
+                  </div>
+                </>
+              )
+            : undefined
+        }
         viz={
           shownNodes.length > 0 ? (
             <NodeRings nodes={withShortNames(shownNodes)} />
@@ -211,7 +248,17 @@ export function KpiCards({ overview }: KpiCardsProps) {
         // 68 / 69 reconciles with the sidebar's 82 and the "13 completed" below.
         unit={podsSucceeded > 0 && podsActive > 0 ? `/ ${podsDenom} active` : `/ ${podsDenom}`}
         description={
-          podsNotReady > 0 ? `${podsNotReady} not running` : podsDegraded > 0 ? `${podsDegraded} degraded` : 'pods running'
+          <>
+            {podsNotReady > 0 ? `${podsNotReady} not running` : podsDegraded > 0 ? `${podsDegraded} degraded` : 'pods running'}
+            {podTrouble && podCases[0] && (
+              <> · <Culprit c={podCases[0]} /></>
+            )}
+          </>
+        }
+        info={
+          podTrouble && podCases.length > 0
+            ? casesTooltip('Pods not running well', podCases, (c) => `${c.name}${c.pods > 1 ? ` (${c.pods} pods)` : ''} · ${c.rule}`)
+            : undefined
         }
         viz={
           podSeries.length >= 2 ? (
@@ -233,21 +280,28 @@ export function KpiCards({ overview }: KpiCardsProps) {
       />
 
       <KpiCard
+        alert={insightsAlert}
         link={{ text: 'view', to: '/insights' }}
         value={insightsTotal}
         unit={insightsTotal === 1 ? 'insight' : 'insights'}
         description={insightsTotal === 0 ? 'no issues detected' : 'open right now'}
         viz={
-          topRules.length > 0 ? (
-            <StatusList
-              rows={topRules.map(([rule, r]) => ({
-                color: SEV_COLOR[r.sev],
-                label: rule,
-                value: `×${r.count}`,
-                valueColor: SEV_COLOR[r.sev],
-                to: (r.count === 1 && insightResourcePath(r.resource)) || `/insights?severity=${r.sev}`,
-              }))}
-            />
+          listed.rows.length > 0 ? <StatusList rows={listed.rows.map(caseListRow)} /> : undefined
+        }
+        info={
+          hovered.rows.length > 0 ? (
+            <>
+              <TooltipHeader right="since">Open insights</TooltipHeader>
+              <div className="space-y-1">
+                {hovered.rows.map((r) => {
+                  const row = caseListRow(r)
+                  return (
+                    <TooltipRow key={row.label} color={row.color} label={row.label} value={<span className="whitespace-nowrap">{row.value}</span>} />
+                  )
+                })}
+              </div>
+              {hovered.more > 0 && <TooltipNote>+{hovered.more} more in Insights</TooltipNote>}
+            </>
           ) : undefined
         }
         caption={parts([
@@ -258,6 +312,65 @@ export function KpiCards({ overview }: KpiCardsProps) {
       />
     </div>
   )
+}
+
+const SEV_COLOR = { critical: KPI_COLOR.err, warning: KPI_COLOR.warn, info: KPI_COLOR.info } as const
+
+// Culprit — who, as a link to its page, and since when when it is known.
+function Culprit({ c }: { c: Pick<InsightCase, 'name' | 'to'> & Partial<Pick<InsightCase, 'since' | 'pods'>> }) {
+  const name = c.pods && c.pods > 1 ? `${c.name} (${c.pods} pods)` : c.name
+  return (
+    <>
+      {c.to ? (
+        <Link to={c.to} className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary">
+          {name}
+        </Link>
+      ) : (
+        name
+      )}
+      {c.since && <> since {clockOrDay(c.since)}</>}
+    </>
+  )
+}
+
+// casesTooltip — every case behind a card, with when it started and for how long.
+function casesTooltip(title: string, list: InsightCase[], label: (c: InsightCase) => string, max = 6) {
+  return (
+    <>
+      <TooltipHeader right="since">{title}</TooltipHeader>
+      <div className="space-y-1">
+        {list.slice(0, max).map((c) => (
+          <TooltipRow
+            key={`${c.rule}|${c.resource}`}
+            color={SEV_COLOR[c.severity]}
+            label={label(c)}
+            value={<span className="whitespace-nowrap">{`${clockOrDay(c.since)} · ${formatAge(c.since)}`}</span>}
+          />
+        ))}
+      </div>
+      {list.length > max && <TooltipNote>+{list.length - max} more in Insights</TooltipNote>}
+    </>
+  )
+}
+
+// caseListRow — one row of the Insights card: a case opens its object; a rule
+// folded from several cases opens the list at that severity.
+function caseListRow(r: CaseRow) {
+  if (r.kind === 'case') {
+    const c = r.case
+    return {
+      color: SEV_COLOR[c.severity],
+      label: `${c.name} · ${c.rule}`,
+      value: clockOrDay(c.since),
+      to: c.to ?? `/insights?severity=${c.severity}`,
+    }
+  }
+  return {
+    color: SEV_COLOR[r.severity],
+    label: `${r.rule} ×${r.count}`,
+    value: clockOrDay(r.since),
+    to: `/insights?severity=${r.severity}`,
+  }
 }
 
 const HEALTH_STATUS = {

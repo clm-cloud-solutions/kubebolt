@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { KubeEvent } from '@/types/kubernetes'
-import { groupEvents, summarize } from './eventGroups'
+import { groupEvents, rolloutOf, summarize } from './eventGroups'
 
 const ev = (over: Partial<KubeEvent>): KubeEvent => ({
   type: 'Normal',
@@ -59,5 +59,54 @@ describe('summarize', () => {
   it('leaves the rest to the event message', () => {
     expect(summarize([w('SomethingNew', 'x')])).toBeNull()
     expect(summarize([])).toBeNull()
+  })
+})
+
+describe('rollouts', () => {
+  const scaled = (message: string, timestamp: string) =>
+    ev({ object: 'Deployment/orders-api', namespace: 'shop', reason: 'ScalingReplicaSet', message, timestamp })
+  const rollout = [
+    scaled('Scaled down replica set orders-api-6b8f9c7d5 to 0 from 1', '2026-10-12T11:49:30Z'),
+    scaled('Scaled up replica set orders-api-755f4fd9b6 to 1', '2026-10-12T11:49:00Z'),
+  ]
+  const crash = (pod: string, timestamp: string) =>
+    ev({ object: `Pod/${pod}`, namespace: 'shop', type: 'Warning', reason: 'BackOff', message: 'Back-off restarting failed container app', timestamp })
+
+  it('reads two ReplicaSets scaled on one Deployment as a rollout of the new one', () => {
+    expect(rolloutOf(rollout)).toMatchObject({ replicaSet: 'orders-api-755f4fd9b6', at: '2026-10-12T11:49:00Z' })
+  })
+
+  it('does not read scaling one ReplicaSet as a rollout', () => {
+    expect(rolloutOf([scaled('Scaled up replica set orders-api-755f4fd9b6 to 3', '2026-10-12T11:49:00Z')])).toBeNull()
+  })
+
+  it('reads a scale-up right after the Deployment created a ReplicaSet as a rollout, even with the old one still up', () => {
+    // The new pods never get ready, so the old ReplicaSet is never scaled down.
+    const stuck = [scaled('Scaled up replica set orders-api-755f4fd9b6 from 0 to 1', '2026-10-12T11:49:02Z')]
+    const deploys = [{ namespace: 'shop', name: 'orders-api', deployedAt: '2026-10-12T11:49:00Z' }]
+    expect(rolloutOf(stuck, deploys)).toMatchObject({ replicaSet: 'orders-api-755f4fd9b6' })
+  })
+
+  it('does not read waking an old ReplicaSet from zero as a rollout', () => {
+    const wake = [scaled('Scaled up replica set orders-api-755f4fd9b6 from 0 to 1', '2026-10-12T11:49:02Z')]
+    const deploys = [{ namespace: 'shop', name: 'orders-api', deployedAt: '2026-08-01T09:00:00Z' }]
+    expect(rolloutOf(wake, deploys)).toBeNull()
+  })
+
+  it('links the first pod of the new ReplicaSet that fails soon after', () => {
+    const groups = groupEvents([...rollout, crash('orders-api-755f4fd9b6-phpfj', '2026-10-12T11:51:00Z')])
+    const r = groups.find((g) => g.object === 'Deployment/orders-api')?.rollout
+    expect(r?.then).toEqual({ summary: 'Container crash-looping', afterS: 120 })
+  })
+
+  it('leaves out pods of another ReplicaSet, failures before the rollout and failures long after', () => {
+    for (const other of [
+      crash('orders-api-6b8f9c7d5-x8k2p', '2026-10-12T11:51:00Z'),
+      crash('orders-api-755f4fd9b6-phpfj', '2026-10-12T11:40:00Z'),
+      crash('orders-api-755f4fd9b6-phpfj', '2026-10-12T12:30:00Z'),
+    ]) {
+      const r = groupEvents([...rollout, other]).find((g) => g.object === 'Deployment/orders-api')?.rollout
+      expect(r?.then).toBeNull()
+    }
   })
 })

@@ -21,11 +21,38 @@ export interface EventGroup {
   summary: string | null
   // Newest first.
   events: KubeEvent[]
+  // A Deployment rolling out a new ReplicaSet, or null.
+  rollout: Rollout | null
 }
+
+// A rollout names the ReplicaSet it brought up. Its pods are named after it
+// ("<replicaset>-<suffix>"), so a pod of that ReplicaSet that started failing
+// soon after is matched by name exactly, not guessed.
+export interface Rollout {
+  replicaSet: string
+  at: string
+  // The first pod of that ReplicaSet to start failing within ROLLOUT_WINDOW_S.
+  then: { summary: string | null; afterS: number } | null
+}
+
+// How long after a rollout a failing pod of it still reads as "then".
+export const ROLLOUT_WINDOW_S = 15 * 60
+
+// A ReplicaSet its Deployment created (GET /deploys): when, not which one.
+export interface DeployMark {
+  namespace: string
+  name: string
+  deployedAt: string
+}
+
+// A scale-up this soon after its Deployment created a ReplicaSet is that
+// rollout. The few seconds before absorb the two clocks (creation stamp,
+// event stamp) disagreeing.
+export const DEPLOY_MATCH_S = 120
 
 const ts = (e: KubeEvent) => (e.timestamp ? Date.parse(e.timestamp) || 0 : 0)
 
-export function groupEvents(events: KubeEvent[]): EventGroup[] {
+export function groupEvents(events: KubeEvent[], deploys: DeployMark[] = []): EventGroup[] {
   const byKey = new Map<string, KubeEvent[]>()
   for (const e of events) {
     const key = `${e.namespace}\0${e.object}`
@@ -45,10 +72,60 @@ export function groupEvents(events: KubeEvent[]): EventGroup[] {
       lead: warnings[0] ?? list[0],
       summary: summarize(warnings),
       events: list,
+      rollout: rolloutOf(list, deploys),
     })
   }
+  linkRollouts(groups)
   // Still a feed of RECENT events: newest group first.
   return groups.sort((a, b) => ts(b.events[0]) - ts(a.events[0]))
+}
+
+const SCALED = /^Scaled (up|down) replica set (\S+) /
+
+// rolloutOf — whether a Deployment's events describe a rollout, and of which
+// ReplicaSet. Scaling a ReplicaSet that already existed (kubectl scale, an
+// HPA, waking from zero) is not one.
+//   - A scale-up right after the Deployment created a ReplicaSet is: that
+//     catches the rollout whose new pods never get ready, where the old
+//     ReplicaSet is never scaled down.
+//   - Without one that new (no /deploys, or a rollback that reuses an old
+//     ReplicaSet): two different ReplicaSets scaled, the new one up.
+export function rolloutOf(list: KubeEvent[], deploys: DeployMark[] = []): Rollout | null {
+  const head = list[0]
+  if (!head?.object.startsWith('Deployment/')) return null
+  const name = head.object.slice('Deployment/'.length)
+  const scaled = list
+    .filter((e) => e.reason === 'ScalingReplicaSet')
+    .map((e) => ({ e, m: SCALED.exec(e.message) }))
+    .filter((x): x is { e: KubeEvent; m: RegExpExecArray } => x.m != null)
+  // Newest first: the latest scale-up names the ReplicaSet being rolled out.
+  const ups = scaled.filter((x) => x.m[1] === 'up')
+  const created = deploys.filter((d) => d.namespace === head.namespace && d.name === name).map((d) => Date.parse(d.deployedAt))
+  const fresh = ups.find((x) =>
+    created.some((c) => {
+      const dt = ts(x.e) - c
+      return dt >= -5000 && dt <= DEPLOY_MATCH_S * 1000
+    }),
+  )
+  const up = fresh ?? (new Set(scaled.map((x) => x.m[2])).size >= 2 ? ups[0] : undefined)
+  return up ? { replicaSet: up.m[2], at: up.e.timestamp, then: null } : null
+}
+
+// linkRollouts attaches to each rollout the first of its pods to fail after it.
+function linkRollouts(groups: EventGroup[]) {
+  for (const g of groups) {
+    if (!g.rollout) continue
+    const at = Date.parse(g.rollout.at) || 0
+    const prefix = `Pod/${g.rollout.replicaSet}-`
+    let best: { summary: string | null; first: number } | null = null
+    for (const w of groups) {
+      if (w.type !== 'Warning' || w.namespace !== g.namespace || !w.object.startsWith(prefix)) continue
+      const first = Math.min(...w.events.filter((e) => e.type === 'Warning').map(ts))
+      if (first < at || first - at > ROLLOUT_WINDOW_S * 1000) continue
+      if (!best || first < best.first) best = { summary: w.summary, first }
+    }
+    if (best) g.rollout.then = { summary: best.summary, afterS: Math.round((best.first - at) / 1000) }
+  }
 }
 
 // summarize names the failure a set of Warning events describes, in the words
