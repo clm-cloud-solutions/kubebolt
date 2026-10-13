@@ -18,6 +18,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
 import { CopilotUsageKpis } from '@/components/admin/CopilotUsageKpis'
 import { fmtCredits, fmtUsd, useAiSpendUnit } from '@/hooks/useAiSpendUnit'
+import { RangeMenu, RangeMenuItem } from '@/components/shared/RangeMenu'
 import type {
   CopilotSessionEnriched,
   CopilotUsageBucket,
@@ -155,24 +156,25 @@ export function CopilotUsagePage() {
   )
 }
 
+// The usage window, drawn with the app's RangeMenu like every range control.
+const RANGE_LABEL: Record<Range, string> = { '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' }
+
 function RangeSelector({ value, onChange }: { value: Range; onChange: (v: Range) => void }) {
-  const options: Range[] = ['24h', '7d', '30d']
+  const [open, setOpen] = useState(false)
   return (
-    <div className="flex gap-1">
-      {options.map((opt) => (
-        <button
+    <RangeMenu label={RANGE_LABEL[value]} open={open} onOpenChange={setOpen}>
+      {(Object.keys(RANGE_LABEL) as Range[]).map((opt) => (
+        <RangeMenuItem
           key={opt}
-          onClick={() => onChange(opt)}
-          className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.06em] border transition-colors ${
-            value === opt
-              ? 'bg-kb-accent-light text-kb-accent border-kb-accent/30'
-              : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
-          }`}
-        >
-          {opt}
-        </button>
+          label={RANGE_LABEL[opt]}
+          checked={value === opt}
+          onSelect={() => {
+            onChange(opt)
+            setOpen(false)
+          }}
+        />
       ))}
-    </div>
+    </RangeMenu>
   )
 }
 

@@ -8,6 +8,8 @@
 // The "step" (resolution of each data point) is paired with the range
 // here rather than guessed downstream, so consumers that don't render a
 // MetricChart (e.g. a sparkline panel) can still pick a sensible step.
+import { Fragment, useState } from 'react'
+import { RangeMenu, RangeMenuItem, RangeMenuSeparator } from './RangeMenu'
 
 export interface RangeOption {
   label: string
@@ -38,31 +40,45 @@ interface Props {
   options?: RangeOption[]
 }
 
+// The words of each range in the menu; the option's own label ("15m") stays
+// for chips and footnotes.
+const LONG_LABEL: Record<number, string> = {
+  5: 'Last 5 minutes',
+  15: 'Last 15 minutes',
+  60: 'Last hour',
+  360: 'Last 6 hours',
+  1440: 'Last 24 hours',
+  10080: 'Last 7 days',
+  20160: 'Last 14 days',
+  43200: 'Last 30 days',
+}
+
+export function rangeLongLabel(option: RangeOption): string {
+  return LONG_LABEL[option.minutes] ?? `Last ${option.label}`
+}
+
+// Ranges of a day or more are history; a line sets them apart from what is
+// happening now.
+const HISTORY_MINUTES = 7 * 1440
+
 export function RangeSelector({ value, onChange, options = OVERVIEW_RANGE_OPTIONS }: Props) {
+  const [open, setOpen] = useState(false)
+  const current = options.find((o) => o.minutes === value)
   return (
-    <div
-      className="flex items-center gap-0.5 rounded-md border border-kb-border bg-kb-card p-0.5"
-      role="tablist"
-      aria-label="Time range"
-    >
-      {options.map((opt) => {
-        const selected = opt.minutes === value
-        return (
-          <button
-            key={opt.minutes}
-            role="tab"
-            aria-selected={selected}
-            onClick={() => onChange(opt.minutes)}
-            className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.06em] rounded transition-colors ${
-              selected
-                ? 'bg-kb-accent/15 text-kb-accent font-semibold'
-                : 'text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary'
-            }`}
-          >
-            {opt.label}
-          </button>
-        )
-      })}
-    </div>
+    <RangeMenu label={current ? rangeLongLabel(current) : 'Time range'} open={open} onOpenChange={setOpen}>
+      {options.map((o, i) => (
+        <Fragment key={o.minutes}>
+          {i > 0 && o.minutes >= HISTORY_MINUTES && options[i - 1].minutes < HISTORY_MINUTES && <RangeMenuSeparator />}
+          <RangeMenuItem
+            label={rangeLongLabel(o)}
+            checked={o.minutes === value}
+            onSelect={() => {
+              onChange(o.minutes)
+              setOpen(false)
+            }}
+          />
+        </Fragment>
+      ))}
+    </RangeMenu>
   )
 }
