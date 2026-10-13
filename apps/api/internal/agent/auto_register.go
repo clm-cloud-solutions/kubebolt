@@ -70,8 +70,8 @@ func IsSelfCluster(clusterID, selfClusterID string) bool {
 // the Channel handler stays small and the rule is easy to pin in
 // tests.
 //
-// Returns true when the cluster was registered (so the caller knows
-// to schedule the cleanup defer).
+// Returns true when the cluster was registered. The registration is
+// durable: nothing removes it when the agent disconnects (see server.go).
 func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegistry, autoRegister bool, clusterID, displayName string, capabilities []string, selfClusterID string) bool {
 	if reg == nil || !autoRegister {
 		return false
@@ -161,31 +161,11 @@ func maybeAutoRegisterCluster(reg ClusterRegistrar, registry *channel.AgentRegis
 	return true
 }
 
-// maybeAutoUnregisterCluster removes clusterID from the manager only
-// when no other agent for that cluster_id is still connected.
-// Multi-node clusters (DaemonSet) connect N agents per cluster_id;
-// the cluster must stay reachable as long as at least one peer is
-// still up.
-//
-// MUST be called AFTER the disconnecting agent has been Unregister'd
-// from the AgentRegistry so CountByCluster reflects the post-removal
-// state.
-func maybeAutoUnregisterCluster(reg ClusterRegistrar, registry *channel.AgentRegistry, clusterID string) {
-	if reg == nil {
-		return
-	}
-	if registry != nil && registry.CountByCluster(clusterID) > 0 {
-		slog.Debug("agent-proxy cluster keeping registration: peers still connected",
-			slog.String("cluster_id", clusterID),
-			slog.Int("remaining", registry.CountByCluster(clusterID)),
-		)
-		return
-	}
-	reg.RemoveAgentProxyCluster(clusterID)
-	slog.Info("removed agent-proxy cluster after last agent disconnected",
-		slog.String("cluster_id", clusterID),
-	)
-}
+// NOTE: there is intentionally no auto-unregister-on-disconnect. Agent-proxy
+// cluster registrations are durable — a cluster stays listed even when every
+// agent for it is offline, and only an explicit operator delete (via
+// RemoveAgentProxyCluster) removes it. See the rationale at the
+// maybeAutoRegisterCluster call site in server.go.
 
 func hasCapability(caps []string, want string) bool {
 	for _, c := range caps {

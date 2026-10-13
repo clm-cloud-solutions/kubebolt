@@ -995,6 +995,10 @@ input:-webkit-autofill:active {
 .kb-kpi-verdict-crit {
   --kb-verdict: #ef4056;
 }
+/* No verdict can be given (a cluster out of contact): grey, not green. */
+.kb-kpi-verdict-unknown {
+  --kb-verdict: var(--kb-text-tertiary);
+}
 
 /* The card whose number asks for someone (KpiCard `alert`): the left bevel
    lights in the state colour and a tint rises from that edge; the figure

@@ -64,6 +64,17 @@ type ClusterOverview struct {
 	// "not available") but must be excluded from the limited-access banner — a
 	// missing optional CRD is not a permission restriction.
 	AbsentResources []string `json:"absentResources,omitempty"`
+	// Stale is set when the cluster is reached through an agent and no agent
+	// is connected: everything above is the cache's last known state, not the
+	// present. Nil while the views are current.
+	Stale *StaleState `json:"stale,omitempty"`
+}
+
+// StaleState dates a cluster view that stopped updating.
+type StaleState struct {
+	// Since is when contact was lost: the last agent left. Nil when it was not
+	// witnessed (the loss predates this process).
+	Since *time.Time `json:"since,omitempty"`
 }
 
 // ResourceCount tracks totals and health for a resource type.
@@ -86,7 +97,9 @@ type ResourceUsage struct {
 
 // ClusterHealth is the overall health status.
 type ClusterHealth struct {
-	Status   string        `json:"status"` // "healthy", "warning", "critical"
+	// "healthy", "warning", "critical"; "unknown" while the cluster is out of
+	// contact (ClusterOverview.Stale), when Score is 0: there is no current score.
+	Status   string        `json:"status"`
 	Score    int           `json:"score"`
 	Insights InsightCount  `json:"insights"`
 	Checks   []HealthCheck `json:"checks"`
@@ -95,7 +108,7 @@ type ClusterHealth struct {
 // HealthCheck represents a single health check result.
 type HealthCheck struct {
 	Name    string `json:"name"`
-	Status  string `json:"status"` // pass, warn, fail
+	Status  string `json:"status"` // pass, warn, fail; unknown while out of contact
 	Message string `json:"message"`
 }
 

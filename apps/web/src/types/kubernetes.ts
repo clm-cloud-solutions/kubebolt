@@ -96,9 +96,10 @@ export interface InsightCount {
 // "healthy", "warning", "critical". An earlier version of this type used
 // "degraded" — that was wrong; the backend never produced it, so callers
 // matching `=== 'degraded'` silently fell through to the default branch
-// (typically the error/red treatment).
+// (typically the error/red treatment). "unknown" while the cluster is out of
+// contact (ClusterOverview.stale): the score is 0, there is no current one.
 export interface ClusterHealth {
-  status: 'healthy' | 'warning' | 'critical'
+  status: 'healthy' | 'warning' | 'critical' | 'unknown'
   score: number
   insights: InsightCount
   checks: HealthCheck[]
@@ -106,7 +107,8 @@ export interface ClusterHealth {
 
 export interface HealthCheck {
   name: string
-  status: 'pass' | 'warn' | 'fail'
+  // unknown: out of contact, the message is the last known state.
+  status: 'pass' | 'warn' | 'fail' | 'unknown'
   message: string
 }
 
@@ -167,6 +169,10 @@ export interface ClusterOverview {
   // Optional-CRD keys RBAC grants but the cluster lacks — dimmed "not available"
   // in the UI, but excluded from the limited-access banner (not a restriction).
   absentResources?: string[]
+  // Set when the cluster is reached through its agent and no agent is
+  // connected: the whole overview is the last known state. `since` is when
+  // contact was lost, absent when the server did not witness it.
+  stale?: { since?: string }
 }
 
 // Events

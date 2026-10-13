@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 )
@@ -139,5 +140,31 @@ func TestCompactRow_CompletedPodCarriesNoConditions(t *testing.T) {
 	row["status"] = "Succeeded"
 	if _, ok := compactRow(row)["conditions"]; ok {
 		t.Error("a Succeeded pod listed its not-ready conditions as a problem")
+	}
+}
+
+// An overview served out of contact carries the date of its cache and says it
+// is not the present; one in contact carries neither.
+func TestCompactOverview_StaleSaysItIsTheLastKnownState(t *testing.T) {
+	live := compactOverview(models.ClusterOverview{ClusterName: "lab"})
+	if _, ok := live["stale"]; ok {
+		t.Fatal("an overview in contact is not stale")
+	}
+	if _, ok := live["staleNote"]; ok {
+		t.Fatal("an overview in contact carries no stale note")
+	}
+
+	lostAt := time.Date(2026, 10, 12, 23, 2, 8, 0, time.UTC)
+	out := compactOverview(models.ClusterOverview{ClusterName: "lab", Stale: &models.StaleState{Since: &lostAt}})
+	raw, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"stale":{"since":"2026-10-12T23:02:08Z"}`) {
+		t.Errorf("stale not carried with its time: %s", raw)
+	}
+	note, _ := out["staleNote"].(string)
+	if !strings.Contains(note, "last known state") || !strings.Contains(note, "cannot tell") {
+		t.Errorf("staleNote = %q: must say it is the last known state and that the cause is unknown", note)
 	}
 }

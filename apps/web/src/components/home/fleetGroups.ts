@@ -1,7 +1,7 @@
 import type { ClusterInfo } from '@/types/kubernetes'
 import type { TeamBrief } from '@/types/auth'
 import type { FleetClusterRollup } from '@/hooks/useFleetRollup'
-import { healthFromInsights, type HealthVerdict, type InsightCounts } from '@/utils/clusterHealth'
+import { clusterVerdict, type HealthVerdict, type InsightCounts } from '@/utils/clusterHealth'
 
 // La lógica del desglose de flota de Home, aparte del render para poder
 // probarla: lo que decide qué ve el usuario es el ORDEN y el agrupado, no el
@@ -164,7 +164,7 @@ export function buildRows(
       critical: sev?.critical ?? 0,
       high: sev?.high ?? 0,
       silent,
-      verdict: healthFromInsights(ins),
+      verdict: clusterVerdict(c, ins),
       insights: ins,
     }
   })

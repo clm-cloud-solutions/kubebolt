@@ -29,12 +29,15 @@ import { CountUp } from './CountUp'
 //
 // `status` puts the verdict in words next to the figure (a chip: Critical,
 // Warning, Healthy) for a figure that is a score, not a count of problems: the
-// 85 is fine, the state is what is critical.
+// 85 is fine, the state is what is critical. `unknown` is a verdict that cannot
+// be given (a cluster out of contact): a grey chip and a grey bevel, never the
+// green of a card that says all is well.
 
 const STATUS_CHIP = {
   ok: 'bg-status-ok-dim text-status-ok',
   warn: 'bg-status-warn-dim text-status-warn',
   crit: 'bg-status-error-dim text-status-error',
+  unknown: 'bg-kb-elevated text-kb-text-secondary',
 } as const
 
 interface KpiCardProps {
@@ -47,7 +50,7 @@ interface KpiCardProps {
   // The number asks for someone: 'crit' (red) or 'warn' (amber).
   alert?: 'warn' | 'crit'
   // The state behind a score, as a chip beside the figure (see above).
-  status?: { label: string; tone: 'ok' | 'warn' | 'crit' }
+  status?: { label: string; tone: 'ok' | 'warn' | 'crit' | 'unknown' }
   // What the figure says about the state when the card has no chip (Security's
   // critical findings): the primary card's bevel takes it. Never lights.
   verdict?: 'ok' | 'warn' | 'crit'
