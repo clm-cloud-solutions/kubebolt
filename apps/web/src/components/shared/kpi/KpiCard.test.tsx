@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { render, screen } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
 import { KpiCard } from './KpiCard'
 
 describe('KpiCard verdict', () => {
@@ -14,5 +15,21 @@ describe('KpiCard verdict', () => {
     expect(card).toHaveClass('kb-kpi-verdict', 'kb-kpi-verdict-unknown')
     expect(card).not.toHaveClass('kb-kpi-primary')
     expect(screen.getByText('No contact')).toBeInTheDocument()
+  })
+})
+
+describe('KpiCard figure row', () => {
+  it('leaves the unit the whole width when the card has no corner link', () => {
+    render(<KpiCard value={83} unit="workloads affected" />)
+    expect(screen.getByText('workloads affected').parentElement).not.toHaveClass('pr-16')
+  })
+
+  it('keeps clear of the corner link when there is one', () => {
+    render(
+      <MemoryRouter>
+        <KpiCard value={2} unit="/ 2" link={{ to: '/nodes', text: 'view all' }} />
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('/ 2').parentElement).toHaveClass('pr-16')
   })
 })
