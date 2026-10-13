@@ -971,6 +971,31 @@ input:-webkit-autofill:active {
   pointer-events: none;
 }
 
+/* The primary card's bevel is the verdict (KpiCard `primary` + `status`):
+   green while its chip says all is well (above), the chip's amber or red
+   otherwise — the same line with no halo, no tint and a neutral border, so it
+   never competes with the card that lights. */
+.kb-kpi-verdict::before {
+  content: '';
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 1.5px;
+  height: 96px;
+  transform: translateY(-50%);
+  background: linear-gradient(180deg, transparent, var(--kb-verdict), transparent);
+  pointer-events: none;
+}
+.kb-kpi-compact.kb-kpi-verdict::before {
+  height: 64px;
+}
+.kb-kpi-verdict-warn {
+  --kb-verdict: #f5a623;
+}
+.kb-kpi-verdict-crit {
+  --kb-verdict: #ef4056;
+}
+
 /* The card whose number asks for someone (KpiCard `alert`): the left bevel
    lights in the state colour and a tint rises from that edge; the figure
    stays neutral. Calm cards stay neutral, so the one that needs you is the only one

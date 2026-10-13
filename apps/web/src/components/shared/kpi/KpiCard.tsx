@@ -63,9 +63,14 @@ interface KpiCardProps {
 
 export function KpiCard({ value, unit, description, viz, caption, primary, alert, status, link, info, restricted, compact }: KpiCardProps) {
   const lit = alert && !restricted ? alert : undefined
+  // The primary card's bevel is the verdict: green while its chip says all is
+  // well, the chip's amber or red otherwise (no halo, no tint). A lit card
+  // already carries its state in the glow.
+  const verdict = primary && !lit && status && status.tone !== 'ok' ? status.tone : undefined
+  const brand = primary && !verdict
   const card = (
     <div
-      className={`kb-kpi ${compact ? 'kb-kpi-compact' : ''} ${primary ? 'kb-kpi-primary' : ''} ${lit ? `kb-kpi-alert ${lit === 'warn' ? 'kb-kpi-alert-warn' : ''}` : ''} flex flex-col min-w-0 h-full ${restricted ? 'opacity-60' : ''}`}
+      className={`kb-kpi ${compact ? 'kb-kpi-compact' : ''} ${brand ? 'kb-kpi-primary' : ''} ${verdict ? `kb-kpi-verdict kb-kpi-verdict-${verdict}` : ''} ${lit ? `kb-kpi-alert ${lit === 'warn' ? 'kb-kpi-alert-warn' : ''}` : ''} flex flex-col min-w-0 h-full ${restricted ? 'opacity-60' : ''}`}
     >
       {link && !restricted && (
         <Link
