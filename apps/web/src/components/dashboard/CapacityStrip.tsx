@@ -1,4 +1,5 @@
 import { Link } from 'react-router-dom'
+import type { ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '@/services/api'
 import { useRightSizing } from '@/hooks/useRightSizing'
@@ -9,13 +10,18 @@ import { TooltipHeader, TooltipRow, TooltipNote } from '@/components/shared/Tool
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { BarList, EventTrack, KPI_COLOR, Legend, SemiGauge, Sparkline } from '@/components/shared/kpi/MiniCharts'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
-import type { ClusterOverview } from '@/types/kubernetes'
+import type { ClusterOverview, ResourceItem } from '@/types/kubernetes'
+import { AnchorLink, WorkloadLink } from '@/components/shared/kpi/CardLinks'
+import { podWorkload } from '@/utils/insightCases'
+import { clockOrDay } from '@/utils/localTime'
+import { shortenNodeName } from '@/components/resources/NodesSummaryStrip'
 
 // CapacityStrip — the scan layer above the Capacity charts, in the site's
 // card anatomy (KpiCard), the same family as the Overview's row: Peak CPU
 // (its curve over the range) · Peak Memory (how much of capacity the peak
 // took) · Rightsizing opportunity (primary: the workloads that would hand the
-// most back) · OOMKills (when, on the range's track). Every number derives
+// most back) · OOMKills (when, on the range's track). A card that lights names
+// who: the node that peaked highest, the workloads that ran out of memory. Every number derives
 // from the same sources as the panels below — the peaks come from
 // the SAME series the trend charts plot, the rightsizing totals from
 // the SAME hook the recommendations panel renders, the OOM count
@@ -42,6 +48,13 @@ const SPARK_POINTS = 24
 // Same expressions the trend charts plot — peak = max of the series.
 const CPU_QUERY = `sum(rate(node_cpu_usage_seconds_total[1m]))`
 const MEM_QUERY = `sum(node_memory_working_set_bytes)`
+// The same, per node: a lit card names the node that peaked highest against
+// its own allocatable, since one node fills up long before the cluster does.
+const CPU_BY_NODE = `sum by (node) (rate(node_cpu_usage_seconds_total[1m]))`
+const MEM_BY_NODE = `sum by (node) (node_memory_working_set_bytes)`
+// When a capacity card lights.
+const WARN_PCT = 80
+const CRIT_PCT = 90
 
 // Same query RecentOOMKills renders — last-termination timestamps of
 // containers whose last exit was an OOMKill. The strip counts the
@@ -64,6 +77,8 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const [gridRef, gridWidth] = useElementWidth<HTMLDivElement>()
   const cpu = usePeakSeries('cpu', CPU_QUERY, rangeMinutes, installed)
   const mem = usePeakSeries('mem', MEM_QUERY, rangeMinutes, installed)
+  const cpuNodePeaks = useNodePeaks('cpu', CPU_BY_NODE, rangeMinutes, installed)
+  const memNodePeaks = useNodePeaks('mem', MEM_BY_NODE, rangeMinutes, installed)
   const { recs, totals, isLoading: recsLoading, windowDays, preliminary } = useRightSizing(installed, overview)
 
   // Money layer: when OpenCost cost rates are available, price the
@@ -79,6 +94,13 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   )
   const showMoney = costAvailable && rates.available && savingsMonthly > 0
 
+  const nodesQ = useQuery({
+    // Same key as the Overview's node card: one request for both.
+    queryKey: ['kpi', 'nodes'],
+    queryFn: () => api.getResources('nodes'),
+    enabled: installed,
+    retry: false,
+  })
   const oomQ = useQuery({
     // Same queryKey as RecentOOMKills so both consumers share one
     // in-flight request + cache entry.
@@ -97,17 +119,29 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
   const memPeak = mem.peak
   const cpuPct = cpuCapacity > 0 && cpuPeak != null ? (cpuPeak / cpuCapacity) * 100 : null
   const memPct = memCapacity > 0 && memPeak != null ? (memPeak / memCapacity) * 100 : null
+  const tier = (pct: number | null) => (pct == null ? undefined : pct >= CRIT_PCT ? 'crit' : pct >= WARN_PCT ? 'warn' : undefined)
+  const cpuAlert = tier(cpuPct)
+  const memAlert = tier(memPct)
+  const nodes = nodesQ.data?.items ?? []
+  const cpuNodes = nodePeaks(cpuNodePeaks, nodes, (n) => num(n.cpuAllocatable) / 1000)
+  const memNodes = nodePeaks(memNodePeaks, nodes, (n) => num(n.memoryAllocatable))
 
   // OOMKills inside the selected range, newest first for attribution.
   const cutoff = Date.now() / 1000 - rangeMinutes * 60
   const oomRows = (oomQ.data?.data?.result ?? [])
     .map((s) => ({
+      namespace: s.metric.namespace ?? '',
       pod: s.metric.pod ?? '',
+      container: s.metric.container ?? '',
       timestamp: parseFloat(s.value?.[1] ?? '0'),
     }))
     .filter((r) => r.pod && r.timestamp >= cutoff)
     .sort((a, b) => b.timestamp - a.timestamp)
-  const oomNames = dedupe(oomRows.map((r) => shortenPodName(r.pod))).slice(0, 2)
+  // The workloads that ran out of memory, each once, newest first.
+  const oomWorkloads = dedupeBy(
+    oomRows.map((r) => ({ namespace: r.namespace, name: podWorkload(r.pod) })),
+    (w) => `${w.namespace}/${w.name}`,
+  ).slice(0, 2)
 
   const rangeLabel = formatRange(rangeMinutes)
   const now = Date.now() / 1000
@@ -139,13 +173,18 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
       style={gridWidth ? { gridTemplateColumns: `repeat(${columnsFor(gridWidth, KPI_MIN_WIDTH, 16, [4, 2, 1])}, minmax(0, 1fr))` } : undefined}
     >
       <KpiCard
-        alert={cpuPct == null ? undefined : cpuPct >= 90 ? 'crit' : cpuPct >= 80 ? 'warn' : undefined}
+        alert={cpuAlert}
         value={cpuPeak != null ? cpuPeak.toFixed(1) : '—'}
         unit={cpuCapacity > 0 ? `/ ${Math.round(cpuCapacity)} cores peak` : 'cores peak'}
         description={
-          cpuPct != null
-            ? `${Math.round(cpuPct)}% of capacity${cpuPct < 80 ? ' · headroom OK' : ''}`
-            : 'no samples in range'
+          cpuPct != null ? (
+            <>
+              {Math.round(cpuPct)}% of capacity
+              {cpuAlert && cpuNodes[0] ? <> · busiest <NodeLink node={cpuNodes[0].node} /> at {Math.round(cpuNodes[0].pct)}%</> : cpuPct < WARN_PCT ? ' · headroom OK' : ''}
+            </>
+          ) : (
+            'no samples in range'
+          )
         }
         viz={
           cpuValues.length >= 2 ? (
@@ -155,29 +194,47 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
             />
           ) : undefined
         }
-        caption="whole node — the OS and kubelet included"
+        caption={
+          cpuAlert ? (
+            <>
+              whole node · <AnchorLink id="top-workloads-cpu">Top workloads · CPU</AnchorLink>
+            </>
+          ) : (
+            'whole node — the OS and kubelet included'
+          )
+        }
         info={
           <>
-            <TooltipHeader right="whole node">Peak CPU</TooltipHeader>
-            <TooltipRow color="#22c55e" label="Scope" value="node total" />
+            <TooltipHeader right="whole node">{cpuAlert && cpuNodes.length > 0 ? 'Peak per node' : 'Peak CPU'}</TooltipHeader>
+            {cpuAlert && cpuNodes.length > 0 ? (
+              <NodeRows rows={cpuNodes} color={cpuAlert === 'crit' ? KPI_COLOR.err : KPI_COLOR.warn} fmt={(v) => `${v.toFixed(1)} cores`} />
+            ) : (
+              <TooltipRow color="#22c55e" label="Scope" value="node total" />
+            )}
             <TooltipNote>
               Highest CPU the <b>whole node</b> reached in range — from kubelet's node
               summary, so it includes the OS, kubelet, containerd and kernel on top of
               your pods. Overview's efficiency band counts <b>pods only</b> (Metrics
               Server), so its number is lower; the "pods" line on the chart below shows
-              that subset here too.
+              that subset here too. Lights at {WARN_PCT}% of the cluster; a single node can
+              be full sooner.
             </TooltipNote>
           </>
         }
       />
       <KpiCard
-        alert={memPct == null ? undefined : memPct >= 90 ? 'crit' : memPct >= 80 ? 'warn' : undefined}
+        alert={memAlert}
         value={memPeakFig}
         unit={memCapacity > 0 ? `${memPeakUnit} / ${formatMemory(memCapacity)}` : memPeakUnit}
         description={
-          memPct != null
-            ? `${Math.round(memPct)}% of capacity at peak${memPct < 80 ? ' · headroom OK' : ''}`
-            : 'no samples in range'
+          memPct != null ? (
+            <>
+              {Math.round(memPct)}% of capacity at peak
+              {memAlert && memNodes[0] ? <> · busiest <NodeLink node={memNodes[0].node} /> at {Math.round(memNodes[0].pct)}%</> : memPct < WARN_PCT ? ' · headroom OK' : ''}
+            </>
+          ) : (
+            'no samples in range'
+          )
         }
         viz={
           memPct != null ? (
@@ -198,8 +255,12 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
         caption={`whole node · last ${rangeLabel}`}
         info={
           <>
-            <TooltipHeader right="whole node">Peak memory</TooltipHeader>
-            <TooltipRow color="#3b82f6" label="Scope" value="node total" />
+            <TooltipHeader right="whole node">{memAlert && memNodes.length > 0 ? 'Peak per node' : 'Peak memory'}</TooltipHeader>
+            {memAlert && memNodes.length > 0 ? (
+              <NodeRows rows={memNodes} color={memAlert === 'crit' ? KPI_COLOR.err : KPI_COLOR.warn} fmt={(v) => formatMemory(v)} />
+            ) : (
+              <TooltipRow color="#3b82f6" label="Scope" value="node total" />
+            )}
             <TooltipNote>
               Highest working set the <b>whole node</b> reached in range — includes the
               OS, kubelet, containerd and kernel memory (active page cache) beyond your
@@ -274,7 +335,41 @@ export function CapacityStrip({ rangeMinutes, installed, overview }: Props) {
             left={`${rangeLabel} ago`}
           />
         }
-        caption={oomRows.length > 0 ? oomNames.join(' · ') : 'last exit out of memory, per container'}
+        caption={
+          oomWorkloads.length > 0 ? (
+            <>
+              {oomWorkloads.map((w, i) => (
+                <span key={`${w.namespace}/${w.name}`}>
+                  {i > 0 && ' · '}
+                  {w.namespace ? <WorkloadLink namespace={w.namespace} name={w.name} /> : w.name}
+                </span>
+              ))}
+              {' · '}
+              <AnchorLink id="oom-kills">all</AnchorLink>
+            </>
+          ) : (
+            'last exit out of memory, per container'
+          )
+        }
+        info={
+          oomRows.length > 0 ? (
+            <>
+              <TooltipHeader right={`last ${rangeLabel}`}>Out of memory</TooltipHeader>
+              <div className="space-y-1">
+                {oomRows.slice(0, 6).map((r) => (
+                  <TooltipRow
+                    key={`${r.pod}/${r.container}/${r.timestamp}`}
+                    color={KPI_COLOR.warn}
+                    label={`${podWorkload(r.pod)} / ${r.container}`}
+                    value={<span className="whitespace-nowrap">{clockOrDay(r.timestamp * 1000)}</span>}
+                  />
+                ))}
+              </div>
+              {oomRows.length > 6 && <TooltipNote>+{oomRows.length - 6} more below</TooltipNote>}
+              <TooltipNote>Each name opens its workload; its Monitor tab shows memory against the limit.</TooltipNote>
+            </>
+          ) : undefined
+        }
       />
     </div>
   )
@@ -320,12 +415,69 @@ function formatRange(minutes: number): string {
   return `${Math.round(minutes / 1440)}d`
 }
 
-// shortenPodName strips the ReplicaSet + pod hash suffixes so the
-// attribution line reads "payments-api", not "payments-api-3b1c9-x7f2".
-function shortenPodName(pod: string): string {
-  return pod.replace(/-[a-z0-9]{6,12}-[a-z0-9]{5}$/, '').replace(/-[a-z0-9]{5}$/, '')
+function dedupeBy<T>(xs: T[], key: (x: T) => string): T[] {
+  const seen = new Set<string>()
+  return xs.filter((x) => {
+    const k = key(x)
+    if (seen.has(k)) return false
+    seen.add(k)
+    return true
+  })
 }
 
-function dedupe(xs: string[]): string[] {
-  return [...new Set(xs)]
+const num = (v: unknown) => (typeof v === 'number' ? v : Number(v) || 0)
+
+// useNodePeaks — each node's highest value over the range (same step as the
+// sparkline), only queried while there are nodes to name.
+function useNodePeaks(key: string, query: string, rangeMinutes: number, enabled: boolean): Map<string, number> {
+  const step = Math.max(15, Math.round((rangeMinutes * 60) / SPARK_POINTS))
+  const q = useQuery({
+    queryKey: ['capacity-strip', key, 'by-node', rangeMinutes],
+    queryFn: () => api.queryMetrics({ query: `max_over_time((${query})[${rangeMinutes}m:${step}s])` }),
+    refetchInterval: 30_000,
+    enabled,
+    retry: false,
+  })
+  const out = new Map<string, number>()
+  for (const s of q.data?.data?.result ?? []) {
+    const v = parseFloat(s.value?.[1] ?? '')
+    if (s.metric?.node && Number.isFinite(v)) out.set(s.metric.node, v)
+  }
+  return out
+}
+
+// nodePeaks — the nodes by how full their peak got against their own
+// allocatable, fullest first.
+function nodePeaks(peaks: Map<string, number>, nodes: ResourceItem[], allocatable: (n: ResourceItem) => number) {
+  return nodes
+    .map((n) => {
+      const peak = peaks.get(n.name)
+      const cap = allocatable(n)
+      return peak != null && cap > 0 ? { node: n.name, peak, pct: (peak / cap) * 100 } : null
+    })
+    .filter((r): r is { node: string; peak: number; pct: number } => r != null)
+    .sort((a, b) => b.pct - a.pct)
+}
+
+function NodeLink({ node }: { node: string }) {
+  return (
+    <Link to={`/nodes/_/${node}`} className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors" title={node}>
+      {shortenNodeName(node)}
+    </Link>
+  )
+}
+
+function NodeRows({ rows, color, fmt }: { rows: { node: string; peak: number; pct: number }[]; color: string; fmt: (v: number) => ReactNode }) {
+  return (
+    <div className="space-y-1">
+      {rows.slice(0, 3).map((r, i) => (
+        <TooltipRow
+          key={r.node}
+          color={i === 0 ? color : null}
+          label={shortenNodeName(r.node)}
+          value={<span className="whitespace-nowrap">{Math.round(r.pct)}% · {fmt(r.peak)}</span>}
+        />
+      ))}
+    </div>
+  )
 }
