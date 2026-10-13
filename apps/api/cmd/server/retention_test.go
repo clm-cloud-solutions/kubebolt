@@ -163,11 +163,11 @@ func TestStartRetention_RunsAFirstPassBeforeTheInterval(t *testing.T) {
 	}
 }
 
-// A single-tenant install keys Kobi's transcripts by the default org's name,
-// while the org list carries the org by its generated id. The pass used to
-// prune by the id alone and never matched one: a self-hosted install kept
-// every conversation forever.
-func TestRetentionPass_PrunesTheDefaultOrgsConversations(t *testing.T) {
+// A single-tenant install keys Kobi's transcripts and ratings by the default
+// org's name, while the org list carries the org by its generated id. The pass
+// used to prune by the id alone and never matched one: a self-hosted install
+// kept every conversation and every 👎 comment forever.
+func TestRetentionPass_PrunesTheDefaultOrgsConversationsAndRatings(t *testing.T) {
 	db, err := bolt.Open(filepath.Join(t.TempDir(), "kb.db"), 0o600, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -181,16 +181,26 @@ func TestRetentionPass_PrunesTheDefaultOrgsConversations(t *testing.T) {
 		t.Fatal(err)
 	}
 	conv := copilot.NewBoltConversationStore(db, []byte("conv"), 0, 0)
-	// Written the way the chat handler writes it.
+	fb, err := copilot.NewBoltFeedbackStore(db, []byte("feedback"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Written the way the chat and feedback handlers write them.
 	if err := conv.Upsert(&copilot.ConversationRecord{ID: "c1", UserID: "u1", TenantID: copilot.DefaultConversationTenant}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fb.Set(copilot.Feedback{TenantID: auth.DefaultTenantName, UserID: "u1", ConversationID: "c1", TurnID: "t1", Rating: copilot.FeedbackDown, Comment: "wrong pod"}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Past the conversation horizon (90 days by default).
-	runRetentionPass(retentionDeps{tenants: tenants, conversations: conv}, time.Now().Add(200*24*time.Hour))
+	runRetentionPass(retentionDeps{tenants: tenants, conversations: conv, feedback: fb}, time.Now().Add(200*24*time.Hour))
 
 	if _, ok, _ := conv.Get(copilot.DefaultConversationTenant, "u1", "c1"); ok {
 		t.Error("the default org's conversation survived the pass")
+	}
+	if left, _ := fb.ForConversation(auth.DefaultTenantName, "u1", "c1"); len(left) != 0 {
+		t.Errorf("the default org's ratings survived the pass: %d left", len(left))
 	}
 }
 

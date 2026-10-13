@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Modal } from '@/components/shared/Modal'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -18,6 +19,8 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { BreakdownSection } from '@/components/admin/CopilotUsageBreakdown'
 import { CopilotUsageKpis } from '@/components/admin/CopilotUsageKpis'
 import { fmtCredits, fmtUsd, useAiSpendUnit } from '@/hooks/useAiSpendUnit'
+import { RangeMenu, RangeMenuItem } from '@/components/shared/RangeMenu'
+import { TOOLTIP_SURFACE } from '@/components/shared/Tooltip'
 import type {
   CopilotSessionEnriched,
   CopilotUsageBucket,
@@ -25,6 +28,7 @@ import type {
 } from '@/types/copilotUsage'
 
 type Range = '24h' | '7d' | '30d'
+const RANGES: Range[] = ['24h', '7d', '30d']
 
 function fmtTokens(n: number): string {
   if (!Number.isFinite(n)) return '0'
@@ -54,9 +58,25 @@ function fmtRelative(iso: string): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
+// A session that ended in an error or at the round limit. One the user stopped
+// (canceled) is not: the backend's endedInError counts the same sessions, and
+// so does the failures card in AI › Health.
+function endedInError(reason: string) {
+  return reason !== 'done' && reason !== 'canceled'
+}
+
 export function CopilotUsagePage() {
-  const [range, setRange] = useState<Range>('7d')
+  const [params] = useSearchParams()
+  const [range, setRange] = useState<Range>(() => (RANGES.includes(params.get('range') as Range) ? (params.get('range') as Range) : '7d'))
   const [selected, setSelected] = useState<CopilotSessionEnriched | null>(null)
+  // The session-health card filters the table to the sessions that ended in an
+  // error (endedInError — the same rule the summary counts by). AI › Health
+  // links here already filtered (?sessions=errors).
+  const [onlyErrors, setOnlyErrors] = useState(params.get('sessions') === 'errors')
+  const showErrors = () => {
+    setOnlyErrors(true)
+    document.getElementById('kobi-sessions-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   const summaryQuery = useQuery({
     queryKey: ['copilot-usage-summary', range],
@@ -119,7 +139,7 @@ export function CopilotUsagePage() {
         </div>
       </div>
 
-      {summary && <CopilotUsageKpis summary={summary} buckets={timeseries} range={range} />}
+      {summary && <CopilotUsageKpis summary={summary} buckets={timeseries} range={range} onShowErrors={showErrors} />}
 
       <BreakdownSection range={range} />
 
@@ -129,7 +149,9 @@ export function CopilotUsagePage() {
       </div>
 
       <SessionsTable
-        sessions={sessions}
+        sessions={onlyErrors ? sessions.filter((s) => endedInError(s.reason)) : sessions}
+        onlyErrors={onlyErrors}
+        onShowAll={() => setOnlyErrors(false)}
         onSelect={setSelected}
         isLoading={sessionsQuery.isLoading}
       />
@@ -139,24 +161,25 @@ export function CopilotUsagePage() {
   )
 }
 
+// The usage window, drawn with the app's RangeMenu like every range control.
+const RANGE_LABEL: Record<Range, string> = { '24h': 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days' }
+
 function RangeSelector({ value, onChange }: { value: Range; onChange: (v: Range) => void }) {
-  const options: Range[] = ['24h', '7d', '30d']
+  const [open, setOpen] = useState(false)
   return (
-    <div className="flex gap-1">
-      {options.map((opt) => (
-        <button
+    <RangeMenu label={RANGE_LABEL[value]} open={open} onOpenChange={setOpen}>
+      {(Object.keys(RANGE_LABEL) as Range[]).map((opt) => (
+        <RangeMenuItem
           key={opt}
-          onClick={() => onChange(opt)}
-          className={`px-2.5 py-1 rounded-md text-[10px] font-mono uppercase tracking-[0.06em] border transition-colors ${
-            value === opt
-              ? 'bg-kb-accent-light text-kb-accent border-kb-accent/30'
-              : 'bg-kb-card text-kb-text-secondary border-kb-border hover:border-kb-border-active'
-          }`}
-        >
-          {opt}
-        </button>
+          label={RANGE_LABEL[opt]}
+          checked={value === opt}
+          onSelect={() => {
+            onChange(opt)
+            setOpen(false)
+          }}
+        />
       ))}
-    </div>
+    </RangeMenu>
   )
 }
 
@@ -226,7 +249,7 @@ function TokensChart({ buckets, range }: { buckets: CopilotUsageBucket[]; range:
             pointerEvents: 'none',
             zIndex: 1000,
           }}
-          className="bg-kb-elevated/95 backdrop-blur border border-kb-border rounded-md px-3 py-2 text-[11px] shadow-xl min-w-[180px]"
+          className={`${TOOLTIP_SURFACE} rounded-md px-3 py-2 text-[11px] min-w-[180px]`}
         >
           <div className="text-kb-text-primary font-mono font-semibold text-[12px] tabular-nums mb-2 pb-1.5 border-b border-kb-border/60">
             {new Date(hover.bucket.time).toLocaleString()}
@@ -325,10 +348,14 @@ function ToolsChart({ summary }: { summary?: CopilotUsageSummary }) {
 
 function SessionsTable({
   sessions,
+  onlyErrors,
+  onShowAll,
   onSelect,
   isLoading,
 }: {
   sessions: CopilotSessionEnriched[]
+  onlyErrors: boolean
+  onShowAll: () => void
   onSelect: (s: CopilotSessionEnriched) => void
   isLoading: boolean
 }) {
@@ -348,10 +375,21 @@ function SessionsTable({
   const start = (currentPage - 1) * pageSize
   const pageItems = sessions.slice(start, start + pageSize)
   return (
-    <div className="mt-5 bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
+    <div id="kobi-sessions-table" className="mt-5 bg-kb-card border border-kb-border rounded-[10px] overflow-hidden scroll-mt-4">
       <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between">
         <h3 className="text-xs font-semibold text-kb-text-primary">Recent sessions</h3>
-        <span className="text-[10px] font-mono text-kb-text-tertiary">{sessions.length} total</span>
+        <span className="text-[10px] font-mono text-kb-text-tertiary flex items-center gap-2">
+          {onlyErrors ? (
+            <>
+              {sessions.length} ended in an error
+              <button type="button" onClick={onShowAll} className="text-kb-accent hover:underline">
+                show all
+              </button>
+            </>
+          ) : (
+            `${sessions.length} total`
+          )}
+        </span>
       </div>
       {isLoading ? (
         <div className="py-10"><LoadingSpinner /></div>

@@ -118,7 +118,7 @@ func (s metricsQuerySource) Query(ctx context.Context, promQL string, start, end
 		return nil, fmt.Errorf("build metrics request")
 	}
 	req.Header.Set("Accept", "application/json")
-	resp, err := metricsHTTPClient.Do(req)
+	resp, err := kobiMetricsClient.Do(req)
 	if err != nil {
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			// Not an outage: this query is too heavy. Say so, or the model

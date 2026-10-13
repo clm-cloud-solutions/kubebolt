@@ -4,6 +4,9 @@ import { BarList, KPI_COLOR, Legend, RingStat, SemiGauge, SplitBar } from '@/com
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
 import { formatMoney, formatPercent } from '@/utils/formatters'
 import type { ClusterCost } from '@/hooks/useClusterCost'
+import { Link } from 'react-router-dom'
+import { AnchorLink } from '@/components/shared/kpi/CardLinks'
+import { shortenNodeName } from '@/components/resources/NodesSummaryStrip'
 
 // CostKpis — the scan row at the top of the Cost sub-tab, in the site's
 // card anatomy (KpiCard) like the Capacity and Reliability rows, so the
@@ -33,8 +36,15 @@ interface Props {
 // Efficiency thresholds — green when you use most of what you pay
 // for, amber in the sloppy middle, red when the cluster is mostly
 // idle spend. Matches the Overview efficiency band's framing.
+//
+// Above the reservation (over 105 %: pods burning more CPU than they asked
+// for) it is amber, not "very efficient": the Overview band's over-commit
+// branch. It used to read green and cap the ring at 100.
+const OVER_COMMIT_PCT = 105
+
 function effAccent(pct: number | null): 'ok' | 'warn' | 'crit' | 'default' {
   if (pct == null) return 'default'
+  if (pct >= OVER_COMMIT_PCT) return 'warn'
   if (pct >= 60) return 'ok'
   if (pct >= 35) return 'warn'
   return 'crit'
@@ -64,6 +74,9 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
   // the merely-sloppy case.
   const idleAccent: 'crit' | 'warn' | 'default' =
     cost.idlePct == null ? 'default' : cost.idlePct >= 60 ? 'crit' : cost.idlePct >= 30 ? 'warn' : 'default'
+  const idleLit = idleAccent === 'crit'
+  // Where the idle spend sits, most first: the lit card names the node.
+  const idleNodes = cost.byNode.filter((n) => n.idleMonthly > 0).sort((a, b) => b.idleMonthly - a.idleMonthly)
   // A young P95 window makes idle/savings read optimistically — say so in the
   // caption so the headline number carries its own caveat.
   const prelimSpan =
@@ -118,11 +131,30 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
         }
       />
       <KpiCard
-        alert={idleAccent === 'crit' ? 'warn' : undefined}
+        alert={idleLit ? 'warn' : undefined}
         value={money(cost.idleMonthly)}
         unit="/mo idle"
         description={
-          cost.idlePct != null ? `${formatPercent(cost.idlePct)} of spend nothing requested` : 'per month'
+          cost.idlePct != null ? (
+            <>
+              {formatPercent(cost.idlePct)} of spend nothing requested
+              {idleLit && idleNodes[0] && (
+                <>
+                  {' · most on '}
+                  <Link
+                    to={`/nodes/_/${idleNodes[0].node}`}
+                    title={idleNodes[0].node}
+                    className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors"
+                  >
+                    {shortenNodeName(idleNodes[0].node)}
+                  </Link>
+                  {` (${money(idleNodes[0].idleMonthly)})`}
+                </>
+              )}
+            </>
+          ) : (
+            'per month'
+          )
         }
         viz={
           cost.monthly > 0 ? (
@@ -138,11 +170,36 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
             />
           ) : undefined
         }
-        caption="includes system overhead and HA headroom"
+        caption={
+          idleLit ? (
+            <>
+              includes system overhead · <AnchorLink id="cost-breakdown">Cost breakdown</AnchorLink>
+            </>
+          ) : (
+            'includes system overhead and HA headroom'
+          )
+        }
         info={
           <>
-            <TooltipHeader right="unallocated">Idle</TooltipHeader>
-            <TooltipRow color={dotColor(idleAccent)} label="Basis" value="node total − Σ allocated" />
+            <TooltipHeader right="unallocated">{idleLit && idleNodes.length > 0 ? 'Idle by node' : 'Idle'}</TooltipHeader>
+            {idleLit && idleNodes.length > 0 ? (
+              <div className="space-y-1">
+                {idleNodes.slice(0, 4).map((n) => (
+                  <TooltipRow
+                    key={n.node}
+                    color={KPI_COLOR.warn}
+                    label={shortenNodeName(n.node)}
+                    value={
+                      <span className="whitespace-nowrap">
+                        {money(n.idleMonthly)}/mo · {n.monthly > 0 ? Math.round((n.allocatedMonthly / n.monthly) * 100) : 0}% requested
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+            ) : (
+              <TooltipRow color={dotColor(idleAccent)} label="Basis" value="node total − Σ allocated" />
+            )}
             <TooltipNote>
               Capacity you pay for that no workload requested — the gap between the node
               bill and what's attributed to running pods. It also absorbs node-level
@@ -173,7 +230,8 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
               legend={
                 <Legend
                   rows={[
-                    { color: KPI_COLOR.ok, label: `${money(savingsMonthly)} recovered` },
+                    // An estimate of what rightsizing would hand back, not money already saved.
+                    { color: KPI_COLOR.ok, label: `${money(savingsMonthly)} recoverable` },
                     { color: KPI_COLOR.muted, label: `${money(Math.max(0, cost.idleMonthly - savingsMonthly))} still idle` },
                   ]}
                 />
@@ -203,8 +261,10 @@ export function CostKpis({ cost, savingsMonthly, recCount, ratesAvailable, preli
       />
       <KpiCard
         value={eff != null ? formatPercent(eff).replace('%', '') : '—'}
-        unit="% efficient"
-        description="of the CPU you requested is in use"
+        unit="% of requests"
+        description={
+          eff != null && eff >= OVER_COMMIT_PCT ? 'CPU in use runs past what was requested' : 'of the requested CPU is in use'
+        }
         viz={
           eff != null ? (
             <RingStat

@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // Hub manages WebSocket clients and broadcasts messages.
@@ -71,6 +72,7 @@ func (h *Hub) Run() {
 			h.mu.RUnlock()
 			// Unregister slow clients synchronously to avoid goroutine leak
 			for _, c := range slowClients {
+				opsmetrics.WSDropped("slow_client")
 				h.unregister <- c
 			}
 		}
@@ -107,6 +109,15 @@ func (h *Hub) BroadcastScoped(tenant, cluster, msgType string, data interface{})
 	select {
 	case h.broadcast <- msg:
 	default:
-		// Channel full — drop silently to avoid log spam during cluster switches
+		// Channel full — dropped without a log line (it would spam during
+		// cluster switches), but counted.
+		opsmetrics.WSDropped("queue_full")
 	}
+}
+
+// ClientCount is the number of connected browsers.
+func (h *Hub) ClientCount() int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.clients)
 }

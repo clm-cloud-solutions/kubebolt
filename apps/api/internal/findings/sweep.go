@@ -9,6 +9,7 @@ import (
 	"k8s.io/client-go/dynamic"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // The ingest sweep (E2 SEC-C): every interval, for every live cluster
@@ -110,6 +111,10 @@ type Sweeper struct {
 	interval  time.Duration
 	onDelta   DeltaFunc
 	onCluster ClusterFunc
+
+	// job measures each run for Administration › System › Health (opsmetrics); set
+	// when the loop starts, nil (measuring nothing) before.
+	job *opsmetrics.Job
 }
 
 // WithDelta registers the delta sink. nil (the default) keeps the sweep exactly
@@ -162,6 +167,7 @@ const bootRetry = 15 * time.Second
 // connects just keeps retrying cheaply: the retry costs one iteration over an
 // empty list, no I/O.
 func (s *Sweeper) Run(ctx context.Context) {
+	s.job = opsmetrics.NewJob("findings_sweep", s.interval)
 	for !s.SweepOnce(ctx) {
 		select {
 		case <-ctx.Done():
@@ -186,6 +192,9 @@ func (s *Sweeper) Run(ctx context.Context) {
 // nothing to sweep yet". Exported for tests and for a future manual "rescan
 // now" action.
 func (s *Sweeper) SweepOnce(ctx context.Context) bool {
+	run := s.job.Start() // a pass that finishes is a success; per-cluster failures are logged
+	defer run.End()
+	defer run.OK()
 	sweepStart := time.Now()
 	swept := false
 	s.iterate(func(tenant, clusterName string, dyn dynamic.Interface, owner OwnerResolver) {

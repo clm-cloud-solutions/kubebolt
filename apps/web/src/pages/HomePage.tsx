@@ -15,6 +15,7 @@ import { KobiSigilIcon } from '@/components/kobi'
 import { ShiftReportChip, ShiftReportSection, useShiftReport } from '@/components/home/ShiftReportCard'
 import { api } from '@/services/api'
 import { useFleetRollup } from '@/hooks/useFleetRollup'
+import { agentDown } from '@/utils/cluster'
 import { usePlan, type PlanTier } from '@/hooks/usePlan'
 import { HomeKpis } from '@/components/home/HomeKpis'
 import { FleetBreakdown } from '@/components/home/FleetBreakdown'
@@ -111,7 +112,7 @@ function KobiPanel({ conversations }: { conversations: ConversationSummary[] }) 
               title={c.preview || c.title || 'Open this conversation'}
               className="w-full text-left flex items-center gap-2.5 py-1.5 hover:bg-kb-card-hover rounded-md px-1 -mx-1 transition-colors group"
             >
-              <span className="w-1.5 h-1.5 rounded-full bg-kb-accent/50 shrink-0" />
+              <span className="w-1.5 h-1.5 rounded-full bg-kb-accent opacity-50 shrink-0" />
               <span className="min-w-0 flex-1 text-[12px] text-kb-text-secondary truncate group-hover:text-kb-text-primary transition-colors">
                 {c.title || c.preview || 'Untitled'}
               </span>
@@ -537,7 +538,9 @@ export function HomePage() {
     retry: false,
   })
 
-  const healthy = clusters.filter((c) => c.status === 'connected' || c.agentConnected).length
+  // A cluster whose agent is gone is not reporting, whatever its status says
+  // (utils/cluster agentDown).
+  const healthy = clusters.filter((c) => !agentDown(c) && (c.status === 'connected' || c.agentConnected)).length
   const attention = clusters.length - healthy
 
   // Findings fold the same way. The lens lives in localStorage and never travels
@@ -570,7 +573,7 @@ export function HomePage() {
         where: name,
         to: '/fleet',
       })
-    } else if (!(c.status === 'connected' || c.agentConnected) && (c.lastSeen || c.source === 'agent-proxy')) {
+    } else if ((agentDown(c) || !(c.status === 'connected' || c.agentConnected)) && (c.lastSeen || c.source === 'agent-proxy')) {
       // …y sólo si LLEGÓ a estar conectado. Un kubeconfig de trabajo trae
       // docenas de contextos a los que uno simplemente tiene acceso; contarlos
       // aquí llenaba la lista de «no agent connected» —doce filas en la flota

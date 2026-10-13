@@ -352,7 +352,7 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
     if (collapsed) return null
     if (!collapsible) {
       return (
-        <div className="px-2 mb-1 text-[10px] font-mono font-semibold uppercase tracking-[0.1em] text-kb-text-secondary">
+        <div className="px-2 mb-1 text-[11px] font-mono font-semibold uppercase tracking-[0.1em] text-kb-text-secondary">
           {title}
         </div>
       )
@@ -363,7 +363,7 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
         type="button"
         onClick={() => toggleGroup(title)}
         aria-expanded={!isColl}
-        className="w-full flex items-center gap-1 px-2 py-1 mb-1 rounded-md text-[10px] font-mono font-semibold uppercase tracking-[0.1em] text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card transition-colors"
+        className="w-full flex items-center gap-1 px-2 py-1 mb-1 rounded-md text-[11px] font-mono font-semibold uppercase tracking-[0.1em] text-kb-text-secondary hover:text-kb-text-primary hover:bg-kb-card transition-colors"
       >
         <ChevronRight className={`w-3 h-3 shrink-0 transition-transform ${isColl ? '' : 'rotate-90'}`} />
         <span className="flex-1 text-left">{title}</span>
@@ -467,7 +467,7 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
             title={collapsed ? 'Overview' : undefined}
             className={`flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors relative ${
               dashboardActive
-                ? 'bg-kb-accent-light text-kb-accent'
+                ? 'bg-kb-elevated text-kb-accent'
                 : 'text-kb-text-primary hover:bg-kb-card'
             }`}
           >
@@ -543,7 +543,7 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
                     className={({ isActive }) =>
                       `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                         isActive
-                          ? 'bg-kb-accent-light text-kb-accent'
+                          ? 'bg-kb-elevated text-kb-accent'
                           : 'text-kb-text-primary hover:bg-kb-card'
                       } ${isRestricted ? 'opacity-40' : ''}`
                     }
@@ -595,7 +595,7 @@ export function Sidebar({ overview, collapsed: collapsedProp }: SidebarProps) {
                   className={({ isActive }) =>
                     `flex items-center gap-2.5 px-2 py-1.5 rounded-md text-[13px] transition-colors group relative ${
                       isActive
-                        ? 'bg-kb-accent-light text-kb-accent'
+                        ? 'bg-kb-elevated text-kb-accent'
                         : 'text-kb-text-primary hover:bg-kb-card'
                     }`
                   }

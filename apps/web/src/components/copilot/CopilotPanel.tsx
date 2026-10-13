@@ -31,6 +31,7 @@ import { MarkdownRenderer } from './MarkdownRenderer'
 import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
 import { KobiMetricChartCard } from './KobiMetricChartCard'
+import { AnswerFeedback } from './AnswerFeedback'
 import { computeMetricChartAttachments } from './metricChartAttachment'
 import {
   parseActionProposal,
@@ -159,6 +160,7 @@ export function CopilotPanel() {
     lastRoundUsage,
     layout: layoutState,
     conversationTitle,
+    conversationId,
     staleResume,
     newConversation,
     dismissStaleResume,
@@ -652,6 +654,15 @@ export function CopilotPanel() {
                         <Square className="w-2.5 h-2.5 fill-current shrink-0" />
                         <span className="font-mono">Stopped by you</span>
                       </div>
+                    </div>
+                  )}
+                  {/* 👍/👎 — only on a finished turn's final answer, which the
+                      server stamps with the turn id; needs the persisted
+                      conversation the rating belongs to. */}
+                  {m.turnId && conversationId && (
+                    <div className="flex justify-start gap-2 max-w-[95%] min-w-0 -mt-1">
+                      <div className="w-6 shrink-0" aria-hidden />
+                      <AnswerFeedback conversationId={conversationId} turnId={m.turnId} />
                     </div>
                   )}
                 </div>

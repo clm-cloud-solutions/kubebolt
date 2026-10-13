@@ -158,6 +158,12 @@ type AgentRegistry struct {
 	// Populated via SetHelloMeta before Register; cleared on
 	// Unregister.
 	helloMeta map[string]map[string]HelloMeta // cluster_id → agent_id → meta
+
+	// lost is when a cluster's last agent left: cluster_id → time. Set when
+	// the cluster's bucket empties, cleared when one of its agents registers
+	// again. In memory on purpose: it answers for the connectors of THIS
+	// process, whose caches stopped updating at that moment (see LostSince).
+	lost map[string]time.Time
 }
 
 // HelloMeta is the subset of the Hello envelope the registry persists
@@ -173,6 +179,7 @@ func NewAgentRegistry() *AgentRegistry {
 	return &AgentRegistry{
 		agents:    make(map[string]map[string]*Agent),
 		helloMeta: make(map[string]map[string]HelloMeta),
+		lost:      make(map[string]time.Time),
 	}
 }
 
@@ -185,6 +192,21 @@ func (r *AgentRegistry) SetStore(s AgentStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.store = s
+}
+
+// ForgetCluster deletes the persisted records of cluster_id: the operator
+// deleted the cluster, and boot restores one for every record it finds. Live
+// agents are left alone — one still connected re-registers the cluster on its
+// next Hello, as before. Every tenant's records (single-tenant edition).
+// Returns the count of removed records; 0 with no store.
+func (r *AgentRegistry) ForgetCluster(clusterID string) (int, error) {
+	r.mu.RLock()
+	store := r.store
+	r.mu.RUnlock()
+	if store == nil {
+		return 0, nil
+	}
+	return store.DeleteCluster("", clusterID)
 }
 
 // SetHelloMeta records the per-agent metadata captured from Hello so
@@ -221,6 +243,8 @@ func (r *AgentRegistry) Register(a *Agent) (evicted *Agent) {
 	}
 	evicted = bucket[a.AgentID]
 	bucket[a.AgentID] = a
+	// Contact is back.
+	delete(r.lost, a.ClusterID)
 	store := r.store
 	var meta HelloMeta
 	if mb, ok := r.helloMeta[a.ClusterID]; ok {
@@ -391,6 +415,9 @@ func (r *AgentRegistry) Unregister(a *Agent) {
 		delete(bucket, a.AgentID)
 		if len(bucket) == 0 {
 			delete(r.agents, a.ClusterID)
+			// The cluster's last agent just left: its connectors keep
+			// serving their caches, which stop updating now.
+			r.lost[a.ClusterID] = time.Now().UTC()
 		}
 		// Also clear the helloMeta cache for this slot — the
 		// next Register from a brand-new connection will refresh.
@@ -492,6 +519,24 @@ func (r *AgentRegistry) CountByCluster(clusterID string) int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.agents[clusterID])
+}
+
+// LostSince reports whether clusterID has no agent connected right now and,
+// when this process saw it leave, the moment its last agent did. That moment
+// is when a connector reached through the agent stopped seeing the cluster:
+// its informer caches keep answering with the state of then. The time is zero
+// when the loss was not witnessed here.
+//
+// Lost is all KubeBolt knows. Whether the agent, its node or the network went
+// down cannot be told from this side of the channel; with a single node, the
+// agent goes down with it.
+func (r *AgentRegistry) LostSince(clusterID string) (time.Time, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.agents[clusterID]) > 0 {
+		return time.Time{}, false
+	}
+	return r.lost[clusterID], true
 }
 
 // LastSeenByCluster returns the most-recent LastSeen timestamp across all

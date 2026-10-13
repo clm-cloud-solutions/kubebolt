@@ -11,6 +11,18 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.4] — 2026-10-13
+
+Chart-only security update: the agent's code is the same as 1.4.3. Same v1.0
+metric/label schema — drop-in within 1.x.
+
+### Security
+
+- **vmagent v1.153.0 → v1.154.0** in the chart's `scrape.image`. The vendor's
+  v1.153.0 build carries the three CVEs 1.4.3 waived (CVE-2026-78667,
+  CVE-2026-78669, CVE-2026-97031); v1.154.0 reports 0 CRITICAL/HIGH. Matters
+  only with `scrape.enabled=true`.
+
 ## [1.4.3] — 2026-10-12
 
 Reports its real version. Same v1.0 metric/label schema — drop-in within 1.x.

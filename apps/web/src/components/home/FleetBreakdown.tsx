@@ -105,8 +105,8 @@ export function FleetBreakdown({
     <section>
       <div className="flex items-center justify-between mb-2">
         <h2 className="text-sm font-semibold text-kb-text-primary flex items-center gap-2">
-          <span className="w-5 h-5 rounded-md bg-kb-accent-light flex items-center justify-center text-kb-accent">
-            <Boxes className="w-3 h-3" />
+          <span className="text-kb-text-secondary shrink-0">
+            <Boxes className="w-4 h-4" />
           </span>
           Your fleet
         </h2>

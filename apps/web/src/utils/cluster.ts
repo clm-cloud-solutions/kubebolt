@@ -48,3 +48,15 @@ export function isOpaqueClusterLabel(label: string): boolean {
   const bare = label.trim().replace(/ \(via agent\)$/, '')
   return /^agent:[0-9a-f-]{8,}$/i.test(bare)
 }
+
+/**
+ * agentDown — a cluster reached through an agent whose agent is gone. Its
+ * `status` can still say "connected": a parked runtime keeps its connector
+ * (and so its status) after the agent channel drops, so status alone read a
+ * silent cluster as reachable. Home and Fleet both count it as needing
+ * attention. A metrics-only cluster's `agentConnected` already falls back to
+ * metrics freshness on the server, so it is not flagged while it ingests.
+ */
+export function agentDown(cluster: ClusterInfo): boolean {
+  return cluster.source === 'agent-proxy' && !cluster.agentConnected
+}

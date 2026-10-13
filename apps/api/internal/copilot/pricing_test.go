@@ -1,6 +1,7 @@
 package copilot
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 )
@@ -225,9 +226,67 @@ func TestPricingFor_AdminCatalogCoverage(t *testing.T) {
 	}
 }
 
+// Claude Haiku 5.5 has two rate cards chosen by prompt length: $0.10/$0.50
+// up to a 100K-token prompt, $0.50/$2.50 beyond, applied to the WHOLE call.
+// The tier is a property of each call, so a summed usage prices right only
+// when every call was tagged where it was made (TagLongContext).
+func TestHaikuFiveFive_TwoRateCards(t *testing.T) {
+	const model = "claude-haiku-5-5"
+	p, ok := PricingFor("anthropic", model)
+	if !ok || p.Long == nil || p.LongAbove != 100_000 {
+		t.Fatalf("haiku 5.5 must carry its long-context card above 100K, got %+v", p)
+	}
+
+	// A Kobi round with the ~27K static prefix cached: short card.
+	small := TagLongContext(Usage{InputTokens: 2_000, CacheReadTokens: 27_000, OutputTokens: 800}, "anthropic", model)
+	if small.LongInputTokens+small.LongOutputTokens+small.LongCacheReadTokens+small.LongCacheCreationTokens != 0 {
+		t.Fatalf("a 29K-token prompt must stay on the short card, got %+v", small)
+	}
+	// "100K tokens or fewer" is the short card: the edge itself stays short.
+	if edge := TagLongContext(Usage{InputTokens: 100_000}, "anthropic", model); edge.LongInputTokens != 0 {
+		t.Fatalf("a prompt of exactly 100K must stay on the short card, got %+v", edge)
+	}
+	// A late round of a long conversation: the whole call goes long, output included.
+	big := TagLongContext(Usage{InputTokens: 4_000, CacheReadTokens: 120_000, OutputTokens: 1_000}, "anthropic", model)
+	if big.LongInputTokens != 4_000 || big.LongCacheReadTokens != 120_000 || big.LongOutputTokens != 1_000 {
+		t.Fatalf("a 124K-token prompt must bill whole at the long card, got %+v", big)
+	}
+
+	var session Usage
+	session.Add(small)
+	session.Add(big)
+	want := (2_000*0.10 + 27_000*0.01 + 800*0.50 + // short call
+		4_000*0.50 + 120_000*0.05 + 1_000*2.50) / 1_000_000 // long call
+	if got := EstimateUSD(session, p); math.Abs(got-want) > 1e-12 {
+		t.Errorf("EstimateUSD(session) = %.9f, want %.9f (each call at its own card)", got, want)
+	}
+
+	// Long fields survive the JSON round trip the session store does.
+	b, _ := json.Marshal(session)
+	var back Usage
+	if err := json.Unmarshal(b, &back); err != nil || back != session {
+		t.Fatalf("usage must round-trip through JSON with its long part, got %+v (%v)", back, err)
+	}
+}
+
+// Single-rate models ignore the tagging, and usage recorded before the long
+// fields existed prices exactly as it always did.
+func TestTagLongContext_SingleRateModelsUnchanged(t *testing.T) {
+	u := Usage{InputTokens: 300_000, OutputTokens: 2_000, CacheReadTokens: 400_000}
+	if got := TagLongContext(u, "anthropic", "claude-sonnet-5"); got != u {
+		t.Fatalf("a single-rate model must not be tagged, got %+v", got)
+	}
+	p, _ := PricingFor("anthropic", "claude-sonnet-5")
+	want := (300_000*p.Input + 2_000*p.Output + 400_000*p.CachedInput) / 1_000_000
+	if got := EstimateUSD(u, p); math.Abs(got-want) > 1e-12 {
+		t.Errorf("EstimateUSD = %.9f, want %.9f", got, want)
+	}
+}
+
 // Kobi writes its static prefix with a one-hour TTL, which Anthropic bills at
 // 2x base input; a 5-minute write is 1.25x. The adapter reports the 1h part
-// (CacheCreation1hTokens) and the estimate bills each part at its own rate.
+// (CacheCreation1hTokens) and the estimate bills each part at its own rate —
+// including on Haiku 5.5's long-context card.
 func TestEstimateUSD_OneHourCacheWrites(t *testing.T) {
 	sonnet, _ := PricingFor("anthropic", "claude-sonnet-5")
 	u := Usage{InputTokens: 1_000, OutputTokens: 500, CacheCreationTokens: 30_000, CacheCreation1hTokens: 27_000}
@@ -240,5 +299,49 @@ func TestEstimateUSD_OneHourCacheWrites(t *testing.T) {
 	old := Usage{InputTokens: 1_000, OutputTokens: 500, CacheCreationTokens: 30_000}
 	if got, want := EstimateUSD(old, sonnet), (1_000*2+500*10+30_000*2.50)/1_000_000.0; math.Abs(got-want) > 1e-12 {
 		t.Errorf("record without the split: EstimateUSD = %.6f, want %.6f", got, want)
+	}
+
+	// Haiku 5.5, a call over 100K tokens: its 1h writes bill at 2x the LONG input.
+	haiku, _ := PricingFor("anthropic", "claude-haiku-5-5")
+	big := TagLongContext(Usage{InputTokens: 2_000, CacheReadTokens: 90_000, CacheCreationTokens: 30_000, CacheCreation1hTokens: 27_000, OutputTokens: 1_000}, "anthropic", "claude-haiku-5-5")
+	wantBig := (2_000*0.50 + 90_000*0.05 + 3_000*0.625 + 27_000*1.00 + 1_000*2.50) / 1_000_000.0
+	if got := EstimateUSD(big, haiku); math.Abs(got-wantBig) > 1e-12 {
+		t.Errorf("haiku-5-5 long call: EstimateUSD = %.6f, want %.6f", got, wantBig)
+	}
+}
+
+// The 5.5 / 5.1 revisions read cache cheaper than their parent (Sonnet 5.5
+// and Fable 5.1 keep the parent's input and output; Opus 5.5 lowers those
+// too) — and each id prefix-matches its parent ("claude-sonnet-5-5" starts
+// with "claude-sonnet-5"). Without its own entry a model silently bills its
+// largest bucket in an agentic loop at the parent's rate.
+// Prices from the official pricing page, 2026-10-08.
+func TestPricingFor_CacheReadsOfRevisionsDoNotCollapse(t *testing.T) {
+	cases := []struct {
+		model    string
+		cacheRd  float64
+		inherits string
+	}{
+		{"claude-sonnet-5-5", 0.10, "claude-sonnet-5"},
+		{"claude-sonnet-5", 0.20, ""},
+		{"claude-opus-5-5", 0.20, ""},
+		{"claude-opus-5", 0.50, ""},
+		{"claude-fable-5-1", 0.25, "claude-fable-5"},
+		{"claude-fable-5", 1.00, ""},
+	}
+	for _, c := range cases {
+		p, ok := PricingFor("anthropic", c.model)
+		if !ok {
+			t.Fatalf("%s must be priced", c.model)
+		}
+		if p.CachedInput != c.cacheRd {
+			t.Errorf("%s cache read = $%.2f, want $%.2f", c.model, p.CachedInput, c.cacheRd)
+		}
+		if c.inherits != "" {
+			parent, _ := PricingFor("anthropic", c.inherits)
+			if p.Input != parent.Input || p.Output != parent.Output {
+				t.Errorf("%s input/output should match %s", c.model, c.inherits)
+			}
+		}
 	}
 }

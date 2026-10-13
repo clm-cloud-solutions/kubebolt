@@ -41,6 +41,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
 	"github.com/kubebolt/kubebolt/apps/api/internal/websocket"
@@ -230,6 +231,7 @@ func main() {
 
 	// Create WebSocket hub
 	wsHub := websocket.NewHub()
+	opsmetrics.WSClients(wsHub.ClientCount)
 	go wsHub.Run()
 
 	// Create Cluster Manager (handles connector, collector, engine lifecycle)
@@ -273,6 +275,10 @@ func main() {
 	// resume. Wired alongside copilotUsage inside the authCfg.Enabled block
 	// (needs the open BoltDB). Interface type so it stays nil-safe.
 	var copilotConversations copilot.ConversationStore
+	// copilotFeedback keeps the 👍/👎 on Kobi's answers (doc #67, phase 1c),
+	// next to the transcripts and pruned with them. Nil without persistence:
+	// the feedback endpoints then answer 503.
+	var copilotFeedback copilot.FeedbackStore
 	// settingsRuntime backs UI-editable config (spec #09). Nil when auth
 	// is disabled — same gate as the rest of the admin surface, since
 	// persistence requires BoltDB to be open. Constructed inside the
@@ -469,6 +475,8 @@ func main() {
 		if err != nil {
 			fatal("failed to open cluster store", slog.String("error", err.Error()))
 		}
+		// The selected cluster survives a restart (RestoreSelection below).
+		manager.SetSelectionStore(orgSettingStore)
 		if err := manager.SetStorage(clusterStorage); err != nil {
 			slog.Warn("failed to attach cluster storage, uploaded clusters won't persist",
 				slog.String("error", err.Error()))
@@ -485,6 +493,12 @@ func main() {
 		// 90d / 200 per user.
 		convRetention, convMaxPerUser := copilot.ConversationStoreConfigFromEnv()
 		copilotConversations = newConversationStore(boltHandle(store), auth.CopilotConversationsBucket(), convRetention, convMaxPerUser)
+		if fb, err := newFeedbackStore(boltHandle(store), auth.CopilotFeedbackBucket()); err != nil {
+			fatal("failed to open copilot feedback store", slog.String("error", err.Error()))
+		} else {
+			copilotFeedback = fb
+			api.SetCopilotFeedbackStore(fb)
+		}
 
 		// W1 identity-model bootstrap invariant: every install has a default
 		// org (the auto-seeded "default" tenant) AND a default team under it.
@@ -720,7 +734,7 @@ func main() {
 	// back to the Connector's value otherwise. Same selection the
 	// handlers' `activeClusterUID()` helper uses.
 	metricsStoreURL, metricsStoreActive := resolveMetricsStore(context.Background())
-	vmProbeClient := integrations.NewVMProbeClient(metricsStoreURL, &http.Client{Timeout: 5 * time.Second, Transport: config.MetricsStorageTransport(nil)})
+	vmProbeClient := integrations.NewVMProbeClient(metricsStoreURL, opsmetrics.VMClient("integrations", 5*time.Second))
 	activeClusterUID := func() string {
 		if uid := manager.ActiveAgentProxyClusterID(); uid != "" {
 			return uid
@@ -880,6 +894,19 @@ func main() {
 	// operators can watch the resident-runtime cost as agents connect.
 	api.NewPoolMetricsCollector(prometheus.DefaultRegisterer, manager)
 
+	// AI observability series (doc #67, phase 1): Kobi's health per cluster,
+	// and the detail (tools, latency, fallback, tokens, cost, ratings).
+	api.SetKobiMetrics(api.NewKobiMetrics(prometheus.DefaultRegisterer))
+
+	// One series per replica, labelled with version and edition: the replica
+	// count, version skew during a rollout, and the absence that says a
+	// replica stopped reporting.
+	edition := buildEdition
+	if auth.MultiTenantEnabled {
+		edition = "saas"
+	}
+	api.RegisterBuildInfo(prometheus.DefaultRegisterer, version, edition)
+
 	// Per-tenant cardinality tracker (Phase 3 Day 4). Background
 	// goroutine polls VM every 30s for `count by (tenant_id)
 	// ({tenant_id!=""})` and caches the result. Pre-forward gate
@@ -914,6 +941,9 @@ func main() {
 	// safe. SetAgentRegistry + SetStore wiring still runs further
 	// down where the manager + Bolt store are available.
 	agentRegistry := channel.NewAgentRegistry()
+	// System › Health: live agent channels per replica, and the cost of a
+	// request through the tunnel.
+	channel.RegisterTransportMetrics(prometheus.DefaultRegisterer, agentRegistry)
 
 	// updateCheckSvc drives the "new KubeBolt version available" chip.
 	// Cache TTL 6h keeps GitHub API traffic well under the unauth
@@ -972,6 +1002,15 @@ func main() {
 	// when the process exits.
 	if vmURL != "" {
 		go api.SelfWriteMetricsToVM(context.Background(), prometheus.DefaultGatherer, vmURL)
+	}
+
+	// The external watcher (doc #67, O4): a second copy of the API's health
+	// series to an outside Prometheus (e.g. Grafana Cloud), so the API being
+	// down — the one failure it cannot report about itself — is noticed from
+	// outside. Independent of VictoriaMetrics on purpose. Off unless
+	// KUBEBOLT_EXTERNAL_METRICS_URL is set.
+	if ext := api.ExternalMetricsConfigFromEnv(); ext.URL != "" {
+		go api.PushMetricsExternally(context.Background(), prometheus.DefaultGatherer, ext)
 	}
 
 	// Meter per-org active-series cardinality from VM on a ticker. No-op unless
@@ -1167,22 +1206,36 @@ func main() {
 		// (sort by LastSeen descending). Multi-agent DaemonSets
 		// converge on the same cluster name from KUBEBOLT_AGENT_
 		// CLUSTER_NAME, so this picks any of them.
+		// A process that owns its store alone (BoltDB) knows no agent is
+		// connected yet: records the previous process left "connected" get a
+		// disconnect stamp, so the prune horizon applies to them (see
+		// BoltAgentStore.MarkAllDisconnected). A shared store (EE Postgres) is
+		// skipped — other replicas hold live agents.
+		if bs, ok := agentStore.(*channel.BoltAgentStore); ok {
+			if n, err := bs.MarkAllDisconnected(time.Now().UTC()); err != nil {
+				slog.Warn("failed to stamp agent records left connected by the previous process", slog.String("error", err.Error()))
+			} else if n > 0 {
+				slog.Info("agent records left connected by the previous process marked disconnected", slog.Int("count", n))
+			}
+		}
 		records, err := agentStore.List()
 		if err != nil {
 			slog.Warn("failed to list persisted agent records on boot", slog.String("error", err.Error()))
 		} else {
 			seen := make(map[string]string)        // cluster_id → display name
+			namedAt := make(map[string]time.Time)  // LastSeen of the record the name came from
 			kubeProxyKeys := make(map[string]bool) // cluster_ids whose agent advertised kube-proxy
 			for i := range records {
 				rec := &records[i]
 				if rec.HasKubeProxy() {
 					kubeProxyKeys[rec.ClusterID] = true
 				}
-				// Last-write-wins on display name — records are
-				// sorted (cluster_id, agent_id) so any of the
-				// equivalent values land here. Good enough.
-				if rec.DisplayName != "" {
+				// The name of the most recently seen record: an agent
+				// installed long ago under another name must not rename
+				// the cluster until its live agents say hello.
+				if rec.DisplayName != "" && (seen[rec.ClusterID] == "" || rec.LastSeen.After(namedAt[rec.ClusterID])) {
 					seen[rec.ClusterID] = rec.DisplayName
+					namedAt[rec.ClusterID] = rec.LastSeen
 				} else if _, ok := seen[rec.ClusterID]; !ok {
 					seen[rec.ClusterID] = ""
 				}
@@ -1241,6 +1294,7 @@ func main() {
 		// on every tick, so UI changes take effect on the next hourly
 		// pass without a restart. Falls back to the env-only baseline
 		// when the runtime isn't available (auth-disabled mode).
+		pruneJob := opsmetrics.NewJob("agent_registry_prune", time.Hour)
 		go func() {
 			ticker := time.NewTicker(1 * time.Hour)
 			defer ticker.Stop()
@@ -1259,11 +1313,15 @@ func main() {
 					if settingsRuntime != nil {
 						horizon = settingsRuntime.IngestChannel().AgentRegistryPruneHorizon
 					}
+					run := pruneJob.Start()
 					removed, err := agentStore.Prune(time.Now().UTC().Add(-horizon))
 					if err != nil {
+						run.End()
 						slog.Warn("agent registry prune failed", slog.String("error", err.Error()))
 						continue
 					}
+					run.OK()
+					run.End()
 					if removed > 0 {
 						slog.Info("agent registry pruned",
 							slog.Int("removed", removed),
@@ -1274,6 +1332,13 @@ func main() {
 			}
 		}()
 	}
+
+	// The cluster selected before the restart, now that every persisted cluster
+	// is registered again. Without it a backend whose kubeconfig names no
+	// current context starts with nothing selected, and every cluster view
+	// answers 503 "no cluster selected" (the default pick then covers it once an
+	// agent says hello).
+	manager.RestoreSelection()
 
 	// History retention: insights + audit trail + Kobi conversations (and the
 	// security findings / runtime events once their stores exist), per org, one
@@ -1294,6 +1359,7 @@ func main() {
 		events:        eventStore,
 		audit:         actionAuditStore,
 		conversations: copilotConversations,
+		feedback:      copilotFeedback,
 		episodes:      episodePruner,
 	}
 	// Orphan sweep wiring (in-vivo 2026-09-15): the KEEP set is the manager's

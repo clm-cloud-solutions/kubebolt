@@ -1,11 +1,15 @@
 package api
 
 import (
+	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/encoding/protowire"
 
+	"github.com/golang/snappy"
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 )
 
@@ -250,4 +254,68 @@ func TestPromNameFilter_Policy(t *testing.T) {
 			t.Errorf("nil filter kept=%d, want 12", kept)
 		}
 	})
+}
+
+func TestDropReservedSeries(t *testing.T) {
+	body := buildWriteRequestRich([]struct {
+		Labels  [][2]string
+		Samples int
+	}{
+		{Labels: [][2]string{{"__name__", "kube_pod_info"}, {"namespace", "kubebolt"}}, Samples: 1},
+		{Labels: [][2]string{{"__name__", "kubebolt_http_requests_total"}, {"code", "5xx"}}, Samples: 4},
+		{Labels: [][2]string{{"__name__", "kubebolt_agent_heap_alloc_bytes"}}, Samples: 2},
+		{Labels: [][2]string{{"__name__", "kubebolt_kobi_copilot_cost_usd_total"}}, Samples: 3},
+	})
+	out, series, samples, rewrote, err := dropReservedSeries(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rewrote || series != 2 || samples != 7 {
+		t.Fatalf("dropped %d series / %d samples (rewrote=%v), want 2 / 7", series, samples, rewrote)
+	}
+	if kept, _ := countSamplesInWriteRequest(out); kept != 3 {
+		t.Errorf("kept samples = %d, want 3 (kube_pod_info + the agent's heap)", kept)
+	}
+
+	clean := mixedSeries()
+	out, series, _, rewrote, err = dropReservedSeries(clean)
+	if err != nil || rewrote || series != 0 || len(out) != len(clean) {
+		t.Fatalf("a payload without reserved names changed: rewrote=%v series=%d err=%v", rewrote, series, err)
+	}
+}
+
+// Through the real handler, on a paid-plan-or-free tenant alike: the reserved
+// series never reach VictoriaMetrics and the drop is counted.
+func TestE2E_PromRemoteWrite_DropsReservedNames(t *testing.T) {
+	roomy := auth.EffectiveLimits{WriteSamplesPerSec: 100_000, WriteBurstSamples: 1_000_000, MaxActiveSeries: 10_000_000}
+	h, plaintext, tenantID, upstream, reg := newE2EHandler(t, promWriteAuthEnforced, roomy)
+	body := snappy.Encode(nil, buildWriteRequestRich([]struct {
+		Labels  [][2]string
+		Samples int
+	}{
+		{Labels: [][2]string{{"__name__", "node_cpu_usage_seconds_total"}, {"tenant_id", tenantID}}, Samples: 2},
+		{Labels: [][2]string{{"__name__", "kubebolt_http_requests_total"}, {"tenant_id", tenantID}, {"code", "5xx"}}, Samples: 5},
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/prom/write", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+plaintext)
+	rec := httptest.NewRecorder()
+	h.handlePromWrite(rec, req)
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	upstream.mu.Lock()
+	forwarded, derr := snappy.Decode(nil, upstream.lastBody)
+	upstream.mu.Unlock()
+	if derr != nil {
+		t.Fatal(derr)
+	}
+	if bytes.Contains(forwarded, []byte("kubebolt_http_requests_total")) {
+		t.Error("the reserved series reached VictoriaMetrics")
+	}
+	if !bytes.Contains(forwarded, []byte("node_cpu_usage_seconds_total")) {
+		t.Error("the customer's series was lost")
+	}
+	if v := counterByLabels(t, reg, "kubebolt_prom_write_dropped_series_total", map[string]string{"tenant_id": tenantID, "reason": "reserved"}); v != 1 {
+		t.Errorf("dropped_series_total{reason=reserved} = %v, want 1", v)
+	}
 }

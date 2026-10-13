@@ -7,6 +7,7 @@ import { LoadingSpinner } from '@/components/shared/LoadingSpinner'
 import { ConfirmDialog } from './ConfirmDialog'
 import { Field, UnsavedChip } from './SettingsField'
 import {
+  CHEAP_MODEL_BY_PROVIDER,
   CUSTOM_MODEL_VALUE,
   findModelOption,
   groupModels,
@@ -644,14 +645,13 @@ function CopilotSettingsForm({
               label="Compact model"
               stacked
               dirty={dirtyMap.compactModel}
-              helper="Cheaper model used to run the compaction itself. Blank = auto-pick a cheap model for the primary provider (e.g. claude-haiku-4-5)."
+              helper="Writes the summary when a conversation is compacted. Runs on the same provider and key as the model above."
             >
-              <input
-                type="text"
-                placeholder="claude-haiku-4-5"
-                className="w-full px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary font-mono focus:outline-none focus:border-kb-accent"
+              <ModelPicker
+                provider={form.provider}
                 value={form.compactModel}
-                onChange={(e) => setForm({ ...form, compactModel: e.target.value })}
+                onChange={(compactModel) => setForm({ ...form, compactModel })}
+                automatic
               />
             </Field>
             <Field
@@ -802,14 +802,21 @@ function SectionCard({
 // that goes to the API). The picker derives "is this Custom?" from
 // whether the value matches any catalog entry — keeping a separate
 // "isCustom" flag in state would drift on the first refetch.
+//
+// `automatic` makes the empty value a real choice — «Automatic», the
+// backend's pick for the provider (CHEAP_MODEL_BY_PROVIDER) — instead of
+// a disabled "Select a model…". The compaction model uses it: blank has
+// always meant "the cheap model of the primary provider".
 function ModelPicker({
   provider,
   value,
   onChange,
+  automatic = false,
 }: {
   provider: ProviderName
   value: string
   onChange: (model: string) => void
+  automatic?: boolean
 }) {
   const groups = groupModels(MODELS_BY_PROVIDER[provider] ?? [])
   const matched = findModelOption(provider, value)
@@ -817,6 +824,7 @@ function ModelPicker({
   // a custom (user-typed) entry. Empty value falls through to "pick one".
   const isCustom = value !== '' && !matched
   const selectValue = isCustom ? CUSTOM_MODEL_VALUE : value
+  const autoModel = automatic ? findModelOption(provider, CHEAP_MODEL_BY_PROVIDER[provider]) : null
 
   return (
     <div className="space-y-1">
@@ -835,9 +843,13 @@ function ModelPicker({
           onChange(next)
         }}
       >
-        <option value="" disabled>
-          Select a model…
-        </option>
+        {automatic ? (
+          <option value="">Automatic{autoModel ? ` — ${autoModel.label}` : ''}</option>
+        ) : (
+          <option value="" disabled>
+            Select a model…
+          </option>
+        )}
         {groups.map((g) => (
           <optgroup key={g.group} label={g.group}>
             {g.items.map((opt) => (
@@ -869,6 +881,14 @@ function ModelPicker({
           <code className="text-[10px] font-mono text-kb-text-tertiary">{matched.id}</code>
           <p className="text-[11px] text-kb-text-secondary leading-snug">
             {matched.description}
+          </p>
+        </div>
+      )}
+      {automatic && value === '' && autoModel && (
+        <div className="px-0.5">
+          <code className="text-[10px] font-mono text-kb-text-tertiary">{autoModel.id}</code>
+          <p className="text-[11px] text-kb-text-secondary leading-snug">
+            The cheapest model of this provider, picked for you — it follows the catalog when a cheaper one ships.
           </p>
         </div>
       )}

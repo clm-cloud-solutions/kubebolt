@@ -14,7 +14,7 @@ import type {
   HelmReleaseDetail,
 } from '@/types/kubernetes'
 import type { AuthConfig, AuthUser, LoginResponse, RefreshResponse, Team, TeamMember } from '@/types/auth'
-import type { ConversationSummary, ConversationDetail } from '@/services/copilot/types'
+import type { ConversationSummary, ConversationDetail, CopilotFeedback, CopilotFeedbackRating, CopilotFeedbackReason } from '@/services/copilot/types'
 
 // API origin — empty string keeps every call same-origin (the nginx-proxied
 // self-hosted / Docker deploy, unchanged). Set VITE_API_URL at build time to
@@ -1074,7 +1074,19 @@ export const api = {
         detectedBehavior: string; source: string; fields?: Record<string, string>
       }>
       total: number
-    }>(`${API_BASE}/runtime-events${qs ? `?${qs}` : ''}`)
+    }>(`${API_BASE}/runtime-events${qs ? `?${qs}` : ''}`).then((r) => ({
+      ...r,
+      // Events stored before the ingest dropped Falco's nulls carry "<nil>"
+      // (and Falco writes "<NA>") where there is no pod: read them as absent.
+      events: (r.events ?? []).map((e) => ({
+        ...e,
+        namespace: falcoValue(e.namespace),
+        podName: falcoValue(e.podName),
+        fields: e.fields
+          ? Object.fromEntries(Object.entries(e.fields).filter(([, v]) => falcoValue(v) !== undefined))
+          : e.fields,
+      })),
+    }))
   },
 
   // Fleet-scoped search (E2 Fleet C1): fans out across every searchable
@@ -1575,6 +1587,20 @@ export const api = {
   ) => patchJSON<ConversationSummary>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`, body),
   deleteConversation: (id: string) =>
     deleteRequest<{ ok: boolean }>(`${API_BASE}/copilot/conversations/${encodeURIComponent(id)}`),
+
+  // 👍/👎 on Kobi's answers: the caller's ratings in one conversation, and
+  // setting (or, with rating '', withdrawing) the rating of one answer.
+  listConversationFeedback: (conversationId: string) =>
+    fetchJSON<{ feedback: CopilotFeedback[] }>(
+      `${API_BASE}/copilot/conversations/${encodeURIComponent(conversationId)}/feedback`,
+    ).then((r) => r.feedback ?? []),
+  rateCopilotAnswer: (body: {
+    conversationId: string
+    turnId: string
+    rating: CopilotFeedbackRating | ''
+    reason?: CopilotFeedbackReason
+    comment?: string
+  }) => postJSON<{ feedback: CopilotFeedback | null }>(`${API_BASE}/copilot/feedback`, body),
 
   // Historical metrics (VictoriaMetrics PromQL pass-through, Phase 2)
   //
@@ -2847,6 +2873,11 @@ export interface PromRangeResponse {
 // DeployEvent. `deployedAt` is RFC3339 (Go's default time.Time JSON
 // encoding); the client converts to unix ms / s as needed at the
 // chart layer.
+// falcoValue — a Falco field, or undefined for its placeholders of "unknown".
+function falcoValue(v?: string): string | undefined {
+  return v && v !== '<nil>' && v !== '<NA>' ? v : undefined
+}
+
 export interface DeployEvent {
   namespace: string
   kind: string // "Deployment" today; "StatefulSet" / "DaemonSet" once

@@ -25,6 +25,7 @@ var (
 	clusterUIDBucket      = []byte("cluster_uid")           // kube-system UID per kubeconfig context (resolved at connect time)
 	copilotSessionsBucket = []byte("copilot_sessions")      // copilot usage analytics
 	copilotConvBucket     = []byte("copilot_conversations") // persistent Kobi conversation transcripts (per user)
+	copilotFeedbackBucket = []byte("copilot_feedback")      // 👍/👎 on Kobi answers (per user, per turn)
 	agentsBucket          = []byte("agents")                // persistent agent registry records
 	insightsBucket        = []byte("insights")              // persistent insight records (Sprint 0)
 	findingsBucket        = []byte("findings")              // normalized security findings (E2 SEC-C)
@@ -159,7 +160,7 @@ func NewStore(dataDir string) (*Store, error) {
 
 	// Create buckets (auth + cross-package state like cluster management)
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket, insightEpisodesBucket, insightTransitionsBucket, insightMutesBucket, insightMuteKeysBucket, dashboardSeenBucket, operationalEpisodesBucket, rulePoliciesBucket} {
+		for _, bucket := range [][]byte{usersBucket, usernameIdxBucket, refreshTokenBucket, settingsBucket, clustersBucket, clusterDisplayBucket, clusterUIDBucket, findingsBucket, runtimeEventsBucket, copilotSessionsBucket, copilotConvBucket, copilotFeedbackBucket, agentsBucket, insightsBucket, kobiActionsBucket, orgSettingsBucket, insightEpisodesBucket, insightTransitionsBucket, insightMutesBucket, insightMuteKeysBucket, dashboardSeenBucket, operationalEpisodesBucket, rulePoliciesBucket} {
 			if _, err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("create bucket %s: %w", bucket, err)
 			}
@@ -190,6 +191,12 @@ func (s *Store) DB() *bolt.DB {
 // conversation transcripts (per-user history + resume).
 func CopilotConversationsBucket() []byte {
 	return copilotConvBucket
+}
+
+// CopilotFeedbackBucket returns the bucket name for the 👍/👎 users give
+// Kobi's answers.
+func CopilotFeedbackBucket() []byte {
+	return copilotFeedbackBucket
 }
 
 // CopilotSessionsBucket returns the bucket name for copilot usage records.

@@ -21,34 +21,62 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 )
 
-// friendlyCopilotError translates raw provider errors into user-friendly messages.
+// friendlyCopilotError is what the person chatting reads when a model call
+// fails: what happened and who can fix it. Never the provider's raw response,
+// an internal URL, a model id or a configuration variable — the reader can be
+// any member of any org, and under platform-managed AI nobody in the org runs
+// that configuration. The full error stays in the log and, classified, in the
+// session record (SessionRecord.ProviderErrors).
 func friendlyCopilotError(err error) string {
-	var herr *copilot.ProviderHTTPError
-	if errors.As(err, &herr) {
-		switch {
-		case herr.StatusCode == 401 || herr.StatusCode == 403:
-			return fmt.Sprintf("%s authentication failed (HTTP %d). Check that KUBEBOLT_AI_API_KEY is valid for the configured provider.", herr.Provider, herr.StatusCode)
-		case herr.StatusCode == 404:
-			// Anthropic returns 404 when the model name is unknown for the account
-			if strings.Contains(strings.ToLower(herr.Body), "model") || herr.Provider == "anthropic" {
-				return fmt.Sprintf("%s returned 404 — the configured model is not available for your account. Set KUBEBOLT_AI_MODEL to a model your account has access to (e.g. claude-3-5-sonnet-latest, claude-sonnet-4-5, gpt-4o).", herr.Provider)
-			}
-			return fmt.Sprintf("%s endpoint not found (HTTP 404). Check KUBEBOLT_AI_BASE_URL.", herr.Provider)
-		case herr.StatusCode == 429:
-			return fmt.Sprintf("%s rate limit hit. Configure a fallback provider with KUBEBOLT_AI_FALLBACK_API_KEY to auto-retry.", herr.Provider)
-		case herr.StatusCode >= 500:
-			return fmt.Sprintf("%s upstream error (HTTP %d). Try again or configure a fallback provider.", herr.Provider, herr.StatusCode)
+	switch copilot.ClassifyProviderError(err) {
+	case copilot.ProviderErrAuth:
+		return "The AI provider rejected Kobi's credentials. " + copilotFixHint()
+	case copilot.ProviderErrNotFound:
+		return "The AI model Kobi is set to use is not available. " + copilotFixHint()
+	case copilot.ProviderErrRateLimit:
+		return "The AI provider is limiting requests right now. Try again in a minute."
+	case copilot.ProviderErrOverloaded:
+		return "The AI provider is overloaded right now. Try again in a minute."
+	case copilot.ProviderErrServer:
+		return "The AI provider returned an error. Try again in a minute."
+	case copilot.ProviderErrTimeout:
+		return "The AI provider took too long to answer. Try again."
+	case copilot.ProviderErrNetwork:
+		return "Kobi could not reach the AI provider. " + copilotFixHint()
+	case copilot.ProviderErrBadRequest:
+		if contextTooLong(err) {
+			return "This conversation is too long for the model. Compact it or start a new one."
 		}
-		return fmt.Sprintf("%s error (HTTP %d): %s", herr.Provider, herr.StatusCode, truncate(herr.Body, 200))
+		return "The AI provider rejected the request. " + copilotFixHint()
 	}
-	return err.Error()
+	return "Kobi could not get an answer from the AI provider. Try again in a minute."
 }
 
-func truncate(s string, max int) string {
-	if len(s) <= max {
-		return s
+// copilotFixHint names who can fix a configuration problem: KubeBolt when the
+// platform runs the AI, the org's admin when it brought its own provider.
+func copilotFixHint() string {
+	if settings.PlatformManagedAI() {
+		return "If it keeps happening, contact KubeBolt support."
 	}
-	return s[:max] + "..."
+	return "An admin can check the AI provider under Administration › AI (Kobi)."
+}
+
+// contextTooLong: the provider refused the prompt for its size (Anthropic
+// "prompt is too long", OpenAI context_length_exceeded). Read to pick the
+// message, never shown.
+func contextTooLong(err error) bool {
+	var herr *copilot.ProviderHTTPError
+	if !errors.As(err, &herr) {
+		return false
+	}
+	b := strings.ToLower(herr.Body)
+	return strings.Contains(b, "prompt is too long") || strings.Contains(b, "context_length_exceeded") ||
+		strings.Contains(b, "maximum context length")
+}
+
+// copilotNotConfigured is the 503 when no AI provider is connected.
+func copilotNotConfigured() string {
+	return "Kobi is not set up yet: no AI provider is connected. " + copilotFixHint()
 }
 
 // withSessionContextPrefix returns a fresh slice with `sessionCtx` prepended
@@ -187,7 +215,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// PUT doesn't split the request between two configurations.
 	cfg := h.liveCopilotConfig()
 	if !cfg.Enabled {
-		respondError(w, http.StatusServiceUnavailable, "copilot is not configured (KUBEBOLT_AI_API_KEY not set)")
+		respondError(w, http.StatusServiceUnavailable, copilotNotConfigured())
 		return
 	}
 
@@ -249,6 +277,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// prefix is byte-identical across clusters, views, and operators.
 	clusterName := h.manager.ActiveContextFor(r.Context())
 	systemPrompt := copilot.BuildSystemPrompt()
+	// The cluster's UID and its owning team, read now while the request is
+	// alive and stamped on the session record (doc #67): the UID is the id the
+	// metrics carry, the team is the owner AT THIS MOMENT.
+	sessClusterID, sessTeamID := h.sessionClusterAndTeam(r.Context(), clusterName, conn == nil)
 
 	executor := h.readToolExecutor()
 	// Action governance (Sprint 1): withhold propose_* tools when actions
@@ -289,6 +321,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	sse.event("meta", map[string]any{"conversationId": conversationID})
+	// The turn's id: the SessionRecord's, and stamped on the turn's final
+	// answer so a 👍/👎 can name it (copilot_feedback.go).
+	turnID := newTurnID()
 
 	logger := slog.Default().With(
 		slog.String("component", "copilot"),
@@ -374,12 +409,31 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 	// Per-tool breakdown: nombre → {calls, bytes, errors, duration}
 	type toolStats struct {
-		Calls      int   `json:"calls"`
-		Bytes      int   `json:"bytes"`
-		Errors     int   `json:"errors"`
-		DurationMs int64 `json:"durationMs"`
+		Calls      int            `json:"calls"`
+		Bytes      int            `json:"bytes"`
+		Errors     int            `json:"errors"`
+		DurationMs int64          `json:"durationMs"`
+		Source     string         `json:"source"`
+		Results    map[string]int `json:"results"`
 	}
 	toolBreakdown := map[string]*toolStats{}
+
+	// How each model call of the turn ended, and whether the fallback was
+	// tried. callModel wraps every call — the round, its fallback, the
+	// max-rounds close and its fallback — so none escapes the count. A call
+	// that returns after the client left is not counted (Observe).
+	var callSignals copilot.CallSignals
+	fallbackTried := false
+	callModel := func(req copilot.ChatRequest) (*copilot.ChatResponse, error) {
+		start := time.Now()
+		resp, err := h.callProvider(r, req)
+		callSignals.Observe(resp, err, r.Context().Err() != nil)
+		if err == nil {
+			kobiMetrics().ObserveModelCall(req.Provider.Provider,
+				copilot.ResolvedModel(req.Provider.Provider, req.Provider.Model), time.Since(start))
+		}
+		return resp, err
+	}
 
 	// Auto-compact events fired during this session — we attach them to
 	// the persisted SessionRecord for drill-down in the admin UI.
@@ -404,6 +458,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			slog.Duration("duration", time.Since(sessionStart)),
 			slog.Bool("fallback", usedFallback),
 			slog.Any("toolBreakdown", breakdown),
+			slog.Any("stopReasons", callSignals.StopReasons),
+			slog.Any("providerErrors", callSignals.ProviderErrors),
+			slog.Int("thinkingTokens", sessionUsage.ThinkingTokens),
 		)
 
 		// Persist for the admin analytics page. Skipped silently when auth
@@ -416,6 +473,8 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					Bytes:      s.Bytes,
 					Errors:     s.Errors,
 					DurationMs: s.DurationMs,
+					Source:     s.Source,
+					Results:    s.Results,
 				}
 			}
 			// Provider/Model reflect what the session ACTUALLY ran on — the
@@ -426,6 +485,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			// PricingFor returns no-match → "no known pricing" despite real cost).
 			sessProvider, sessModel := effectiveProviderModel()
 			rec := &copilot.SessionRecord{
+				ID:             turnID,
 				Timestamp:      time.Now(),
 				UserID:         auth.ContextUserID(r),
 				Cluster:        clusterName,
@@ -442,10 +502,16 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				Fallback:       usedFallback,
 				Tools:          tools,
 				Compacts:       sessionCompacts,
+				ClusterID:      sessClusterID,
+				TeamID:         sessTeamID,
+				StopReasons:    callSignals.StopReasons,
+				ProviderErrors: callSignals.ProviderErrors,
+				FallbackTried:  fallbackTried,
 			}
 			if err := h.copilotUsage.Record(rec); err != nil {
 				logger.Warn("failed to persist copilot session", slog.String("error", err.Error()))
 			}
+			kobiMetrics().ObserveSession(rec)
 		}
 	}
 
@@ -495,7 +561,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// Refine the heuristic title with the cheap model for a brand-new
 		// conversation — in the background so it never delays the response.
 		if newConversation && rec.FirstUserMessage() != "" {
-			go h.refineConversationTitle(convUserID, clusterName, conversationID, cfg.Primary, rec.FirstUserMessage(), rec.LastAssistantMessage())
+			go h.refineConversationTitle(convUserID, clusterName, sessClusterID, sessTeamID, conversationID, cfg.Primary, rec.FirstUserMessage(), rec.LastAssistantMessage())
 		}
 	}
 
@@ -618,7 +684,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			MaxTokens: cfg.MaxTokens,
 		}
 
-		resp, err := h.callProvider(r, chatReq)
+		resp, err := callModel(chatReq)
 
 		// Client/gateway hung up mid-call (Envoy route timeout, browser
 		// navigation, user cancel) → the request context is done. A fallback
@@ -656,8 +722,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 					slog.String("fallbackProvider", cfg.Fallback.Provider),
 					slog.String("fallbackModel", cfg.Fallback.Model),
 				)
+				fromModel := copilot.ResolvedModel(chatReq.Provider.Provider, chatReq.Provider.Model)
 				chatReq.Provider = *cfg.Fallback
-				fbResp, fbErr := h.callProvider(r, chatReq)
+				fallbackTried = true
+				fbResp, fbErr := callModel(chatReq)
+				kobiMetrics().ObserveFallback(fromModel, copilot.ResolvedModel(cfg.Fallback.Provider, cfg.Fallback.Model), fbErr == nil)
 				if fbErr == nil {
 					resp, err = fbResp, nil
 					usedFallback = true
@@ -792,9 +861,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			finalMessages = stampTurn(finalMessages, turnID)
 			sse.event("done", map[string]any{
 				"messages":       finalMessages,
 				"conversationId": conversationID,
+				"turnId":         turnID,
 			})
 			persistConversation(finalMessages)
 			finish("done")
@@ -830,9 +901,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 			s, ok := toolBreakdown[call.Name]
 			if !ok {
-				s = &toolStats{}
+				s = &toolStats{Source: copilot.ToolSource(call.Name), Results: map[string]int{}}
 				toolBreakdown[call.Name] = s
 			}
+			toolResult := copilot.ClassifyToolResult(result)
+			s.Results[toolResult]++
+			kobiMetrics().ObserveToolCall(call.Name, s.Source, toolResult, toolDur)
 			s.Calls++
 			s.Bytes += outBytes
 			s.DurationMs += toolDur.Milliseconds()
@@ -899,10 +973,13 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		Provider:  closeProvider,
 		MaxTokens: cfg.MaxTokens,
 	}
-	resp, err := h.callProvider(r, closeReq)
+	resp, err := callModel(closeReq)
 	if err != nil && copilot.IsRecoverable(err) && !usedFallback && fallbackUsable(&cfg) {
+		fromModel := copilot.ResolvedModel(closeReq.Provider.Provider, closeReq.Provider.Model)
 		closeReq.Provider = *cfg.Fallback
-		fbResp, fbErr := h.callProvider(r, closeReq)
+		fallbackTried = true
+		fbResp, fbErr := callModel(closeReq)
+		kobiMetrics().ObserveFallback(fromModel, copilot.ResolvedModel(cfg.Fallback.Provider, cfg.Fallback.Model), fbErr == nil)
 		if fbErr == nil {
 			resp, err = fbResp, nil
 			usedFallback = true
@@ -945,9 +1022,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			Timestamp: time.Now(),
 		})
 	}
+	finalMessages = stampTurn(finalMessages, turnID)
 	sse.event("done", map[string]any{
 		"messages":       finalMessages,
 		"conversationId": conversationID,
+		"turnId":         turnID,
 	})
 	persistConversation(finalMessages)
 	finish("max_rounds")
@@ -958,7 +1037,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 // LLM consumption without a usage record" — these calls spend real tokens, so
 // they must show up in the admin cost analytics, attributed to the user (and
 // the conversation, when there is one). Best-effort; nil store = no-op.
-func (h *handlers) recordAuxUsage(userID, cluster, conversationID, trigger, provider, model string, usage copilot.Usage, dur time.Duration) {
+func (h *handlers) recordAuxUsage(userID, cluster, clusterID, teamID, conversationID, trigger, provider, model string, u copilot.Usage, dur time.Duration) {
+	// Tokens and cost on the Kobi series. Not a session: an aux call is the
+	// product's own side work, so it stays out of the health counters.
+	kobiMetrics().ObserveUsage("", provider, copilot.ResolvedModel(provider, model), u)
 	if h.copilotUsage == nil {
 		return
 	}
@@ -966,13 +1048,15 @@ func (h *handlers) recordAuxUsage(userID, cluster, conversationID, trigger, prov
 		Timestamp:      time.Now(),
 		UserID:         userID,
 		Cluster:        cluster,
+		ClusterID:      clusterID,
+		TeamID:         teamID,
 		ConversationID: conversationID,
 		Provider:       provider,
 		Model:          model,
 		Trigger:        trigger,
 		Reason:         "done",
 		Rounds:         1,
-		Usage:          usage,
+		Usage:          u,
 		DurationMs:     dur.Milliseconds(),
 	}); err != nil {
 		slog.Default().Warn("failed to record auxiliary copilot usage",
@@ -991,7 +1075,7 @@ func (h *handlers) recordAuxUsage(userID, cluster, conversationID, trigger, prov
 //
 // The title call's token usage is always recorded (even when the reply is
 // unusable) so no LLM spend goes unaccounted.
-func (h *handlers) refineConversationTitle(userID, cluster, conversationID string, provider config.ProviderConfig, firstUser, assistantReply string) {
+func (h *handlers) refineConversationTitle(userID, cluster, clusterID, teamID, conversationID string, provider config.ProviderConfig, firstUser, assistantReply string) {
 	if h.copilotConversations == nil {
 		return
 	}
@@ -1000,7 +1084,7 @@ func (h *handlers) refineConversationTitle(userID, cluster, conversationID strin
 	start := time.Now()
 	res, err := copilot.GenerateTitle(ctx, provider, firstUser, assistantReply)
 	if res != nil && res.Usage.Total() > 0 {
-		h.recordAuxUsage(userID, cluster, conversationID, "auto_title", provider.Provider, res.Model, res.Usage, time.Since(start))
+		h.recordAuxUsage(userID, cluster, clusterID, teamID, conversationID, "auto_title", provider.Provider, res.Model, res.Usage, time.Since(start))
 	}
 	if err != nil || res == nil || res.Title == "" {
 		return
@@ -1113,7 +1197,7 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 	// once via the runtime resolver, use the local `cfg` thereafter.
 	cfg := h.liveCopilotConfig()
 	if !cfg.Enabled {
-		respondError(w, http.StatusServiceUnavailable, "copilot is not configured (KUBEBOLT_AI_API_KEY not set)")
+		respondError(w, http.StatusServiceUnavailable, copilotNotConfigured())
 		return
 	}
 	var req CopilotCompactRequest
@@ -1149,7 +1233,9 @@ func (h *handlers) HandleCopilotCompact(w http.ResponseWriter, r *http.Request) 
 	// isn't invisible spend (the "no LLM consumption without a usage record"
 	// rule). Resolve the model the summarizer actually used for pricing.
 	compactModel := copilot.ResolvedModel(cfg.Primary.Provider, cr.UsedModel)
-	h.recordAuxUsage(auth.ContextUserID(r), h.manager.ActiveContextFor(r.Context()), req.ConversationID,
+	compactCluster := h.manager.ActiveContextFor(r.Context())
+	compactClusterID, compactTeamID := h.sessionClusterAndTeam(r.Context(), compactCluster, h.manager.Connector(r.Context()) == nil)
+	h.recordAuxUsage(auth.ContextUserID(r), compactCluster, compactClusterID, compactTeamID, req.ConversationID,
 		"manual_compact", cfg.Primary.Provider, compactModel, cr.Usage, time.Since(compactStart))
 
 	logger.Info("copilot manual compact",

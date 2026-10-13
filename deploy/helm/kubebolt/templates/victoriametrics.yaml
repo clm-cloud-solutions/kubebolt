@@ -62,6 +62,11 @@ spec:
             # this strategy but never wired the flag; closed here.
             # Idempotent for single-vmagent setups — no duplicates to collapse.
             - "--dedup.minScrapeInterval=30s"
+            # VictoriaMetrics measures itself (memory, disk, series, ingest rate)
+            # into its own storage, as job="victoria-metrics": Administration ›
+            # System › Health charts it. No tenant_id, so it never counts toward
+            # the active-series cap.
+            - "--selfScrapeInterval=30s"
             {{- with .Values.metrics.storage.embedded.extraArgs }}
             {{- toYaml . | nindent 12 }}
             {{- end }}

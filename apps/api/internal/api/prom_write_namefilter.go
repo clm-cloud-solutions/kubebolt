@@ -7,6 +7,7 @@ import (
 	"google.golang.org/protobuf/encoding/protowire"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/seriesgate"
 )
 
 // coreMetricPrefixes are the KubeBolt-consumed metric families — the
@@ -189,4 +190,50 @@ func inspectTimeSeries(tsBytes []byte) (name string, sampleCount int) {
 		inner = inner[skip:]
 	}
 	return name, sampleCount
+}
+
+// dropReservedSeries removes the series whose name only the platform writes
+// (seriesgate.IsReservedMetricName) from a decoded WriteRequest — for every
+// tenant, whatever its plan: those families escape the cap and feed the
+// operator's dashboards and alerts. Callers gate it on seriesgate.MayHoldReserved,
+// so the walk only runs on a payload that may carry one. rewrote is false when
+// nothing was dropped (out is then decoded, unchanged).
+func dropReservedSeries(decoded []byte) (out []byte, droppedSeries, droppedSamples int, rewrote bool, err error) {
+	const fieldTimeSeries = 1
+	out = make([]byte, 0, len(decoded))
+	rem := decoded
+	startLen := len(rem)
+	for len(rem) > 0 {
+		fieldStart := startLen - len(rem)
+		num, typ, tagLen := protowire.ConsumeTag(rem)
+		if tagLen < 0 {
+			return nil, 0, 0, false, fmt.Errorf("dropReservedSeries tag: %w", protowire.ParseError(tagLen))
+		}
+		afterTag := rem[tagLen:]
+		if num == fieldTimeSeries && typ == protowire.BytesType {
+			tsBytes, n := protowire.ConsumeBytes(afterTag)
+			if n < 0 {
+				return nil, 0, 0, false, fmt.Errorf("dropReservedSeries ts bytes: %w", protowire.ParseError(n))
+			}
+			name, samples := inspectTimeSeries(tsBytes)
+			if seriesgate.IsReservedMetricName(name) {
+				droppedSeries++
+				droppedSamples += samples
+			} else {
+				out = append(out, decoded[fieldStart:fieldStart+tagLen+n]...)
+			}
+			rem = afterTag[n:]
+			continue
+		}
+		valLen := protowire.ConsumeFieldValue(num, typ, afterTag)
+		if valLen < 0 {
+			return nil, 0, 0, false, fmt.Errorf("dropReservedSeries skip: %w", protowire.ParseError(valLen))
+		}
+		out = append(out, decoded[fieldStart:fieldStart+tagLen+valLen]...)
+		rem = afterTag[valLen:]
+	}
+	if droppedSeries == 0 {
+		return decoded, 0, 0, false, nil
+	}
+	return out, droppedSeries, droppedSamples, true, nil
 }

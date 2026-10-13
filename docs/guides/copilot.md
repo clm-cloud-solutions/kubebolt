@@ -187,7 +187,7 @@ All of these can also be changed from **Administration → AI (Kobi) → Configu
 | `KUBEBOLT_AI_AUTO_COMPACT` | `true` | Master switch for auto-compaction |
 | `KUBEBOLT_AI_SESSION_BUDGET_TOKENS` | model context window | Total ceiling; compaction fires at budget × threshold |
 | `KUBEBOLT_AI_AUTO_COMPACT_THRESHOLD` | `0.80` | Fraction of the budget at which compaction fires (between 0 and 1) |
-| `KUBEBOLT_AI_COMPACT_MODEL` | `claude-haiku-4-5` (anthropic) / `gpt-4o-mini` (openai) | Model used to write the summary |
+| `KUBEBOLT_AI_COMPACT_MODEL` | `claude-haiku-5-5` (anthropic) / `gpt-4o-mini` (openai) | Model used to write the summary |
 | `KUBEBOLT_AI_COMPACT_PRESERVE_TURNS` | `3` | Turns kept intact after a fold |
 
 See [Conversation memory](#conversation-memory) for how compaction works.
@@ -257,7 +257,7 @@ copilot:
   fallback:
     enabled: true
     provider: anthropic
-    model: claude-haiku-4-5
+    model: claude-haiku-5-5
     existingSecret: anthropic-key
 ```
 
@@ -318,7 +318,7 @@ until the model's context window overflows. Kobi manages this automatically.
 **Auto-compact** triggers when the estimated conversation size crosses
 `SESSION_BUDGET_TOKENS × AUTO_COMPACT_THRESHOLD` (default 80% of the model's context window).
 Older turns are folded into a single summary written by the cheap-tier model of the same
-provider — `claude-haiku-4-5` for Anthropic, `gpt-4o-mini` for OpenAI — and bulky tool results
+provider — `claude-haiku-5-5` for Anthropic, with reasoning off; `gpt-4o-mini` for OpenAI — and bulky tool results
 in the preserved tail are stubbed. The active turn's tool results are always kept intact: the
 model never sees a placeholder for data it is still working with.
 

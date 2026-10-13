@@ -90,6 +90,7 @@ func NewRouter(
 	r := chi.NewRouter()
 
 	// Middleware
+	r.Use(opsHTTPMetrics) // outermost: a recovered panic still counts as its 500
 	r.Use(chimiddleware.Recoverer)
 	r.Use(chimiddleware.RequestID)
 	r.Use(LoggingMiddleware)
@@ -156,13 +157,12 @@ func NewRouter(
 		w.Write([]byte("ok"))
 	})
 
-	// Prometheus scrape endpoint (Phase 3 Day 5). Exposes the
-	// kubebolt_prom_write_* observability metrics in the standard
-	// text-exposition format. No auth — operators firewall this
-	// port at the LB / NetworkPolicy layer. Production SaaS setups
-	// should add a ServiceMonitor or scrape config to pull this
-	// into their VM / external Prom.
-	if promWriteMetrics != nil {
+	// Prometheus scrape endpoint (Phase 3 Day 5), text exposition, no auth —
+	// for a self-hosted install that scrapes the API with its own Prometheus.
+	// Not served in multi-tenant mode: its series carry every org's id, every
+	// cluster's UID and the orgs' AI usage. Nothing needs it there — the API
+	// pushes its registry into VictoriaMetrics itself (SelfWriteMetricsToVM).
+	if promWriteMetrics != nil && !auth.MultiTenantEnabled {
 		r.Method(http.MethodGet, "/metrics", PromHTTPHandler(prometheus.DefaultGatherer))
 	}
 
@@ -299,6 +299,10 @@ func NewRouter(
 			r.Get("/copilot/conversations/{id}", h.handleGetConversation)
 			r.Patch("/copilot/conversations/{id}", h.handlePatchConversation)
 			r.Delete("/copilot/conversations/{id}", h.handleDeleteConversation)
+			// 👍/👎 on Kobi's answers (doc #67, phase 1c): same ownership rule —
+			// a user rates only answers inside their own conversations.
+			r.Get("/copilot/conversations/{id}/feedback", h.handleConversationFeedback)
+			r.Post("/copilot/feedback", h.handleCopilotFeedback)
 
 			// Kobi MCP server (read-only) — exposes Kobi's read-only tool
 			// catalogue + guidance prompt to external MCP hosts (Claude Code,

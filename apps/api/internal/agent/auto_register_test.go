@@ -223,34 +223,6 @@ func TestMaybeAutoRegister_RegistersWhenSelfClusterIDEmpty(t *testing.T) {
 	}
 }
 
-func TestMaybeAutoUnregister_NoPeers_RemovesCluster(t *testing.T) {
-	reg := &fakeRegistrar{}
-	registry := channel.NewAgentRegistry()
-	maybeAutoUnregisterCluster(reg, registry, "c-prod")
-	if len(reg.removed) != 1 || reg.removed[0] != "c-prod" {
-		t.Errorf("removed = %+v", reg.removed)
-	}
-}
-
-func TestMaybeAutoUnregister_PeersRemain_KeepsCluster(t *testing.T) {
-	// DaemonSet semantics: when one of N peer agents disconnects, the
-	// cluster MUST stay registered as long as another peer is still
-	// connected. Otherwise the manager would drop the cluster from
-	// ListClusters every time any single pod restarted.
-	reg := &fakeRegistrar{}
-	registry := channel.NewAgentRegistry()
-	registry.Register(channel.NewAgent("c-prod", "agent-other", "node-b", nil, nil, nil))
-
-	maybeAutoUnregisterCluster(reg, registry, "c-prod")
-	if len(reg.removed) != 0 {
-		t.Errorf("must keep cluster while peers remain, got removed = %+v", reg.removed)
-	}
-}
-
-func TestMaybeAutoUnregister_NilRegistrarIsNoop(t *testing.T) {
-	maybeAutoUnregisterCluster(nil, channel.NewAgentRegistry(), "c1") // must not panic
-}
-
 // errSentinel is a tiny error stand-in to keep test deps minimal.
 type errSentinel string
 

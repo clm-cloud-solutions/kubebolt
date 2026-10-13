@@ -16,9 +16,12 @@ import { useCopilot } from '@/contexts/CopilotContext'
 import { parseClusterDisplayName } from '@/utils/cluster'
 import type { ClusterOverview, ClusterInfo } from '@/types/kubernetes'
 import type { UserRole } from '@/types/auth'
+import type { Freshness } from '@/utils/freshness'
 
 interface TopbarProps {
   overview?: ClusterOverview
+  // Whether the active cluster is answering (Layout reads its overview poll).
+  connection?: Freshness
   // Sidebar collapse state, owned by Layout. The toggle button lives here
   // (top-left of the topbar) instead of inside the sidebar header so the
   // logo stays the only thing in the sidebar's top-left corner and the
@@ -32,7 +35,7 @@ interface TopbarProps {
 const TOPBAR_WIDE = 1400
 const TOPBAR_ROOMY = 1040
 
-export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarProps) {
+export function Topbar({ overview, connection = 'live', sidebarCollapsed, onToggleSidebar }: TopbarProps) {
   // The bar decides what to label by ITS OWN width, not the window's. With
   // Kobi docked the window is still past `xl`, so the bar spelled out every
   // label in ~1000px: "Cluster Map" and "2 nodes" broke onto two lines and the
@@ -414,11 +417,10 @@ export function Topbar({ overview, sidebarCollapsed, onToggleSidebar }: TopbarPr
         <div className="flex items-center gap-2">
           {inCluster && (
             <>
-              {/* Live indicator */}
-              <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-status-ok-dim">
-                <span className="w-1.5 h-1.5 rounded-full bg-status-ok animate-pulse-live" />
-                <span className="text-[10px] font-mono font-medium text-status-ok uppercase tracking-[0.08em]">Live</span>
-              </div>
+              {/* Connection state — whether the cluster is answering, not
+                  whether it is healthy (that is the Overview's job). It used to
+                  be a fixed "Live", which kept saying so over a dead cluster. */}
+              <ConnectionPill state={connection} />
 
               {/* Active port-forwards (renders nothing when 0 active) */}
               <PortForwardIndicator />
@@ -773,6 +775,47 @@ function UserMenu() {
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+const CONNECTION: Record<Freshness, { label: string; title: string; chip: string; dot: string; text: string }> = {
+  live: {
+    label: 'Live',
+    title: 'The cluster is answering on schedule',
+    chip: 'bg-status-ok-dim',
+    dot: 'bg-status-ok animate-pulse-live',
+    text: 'text-status-ok',
+  },
+  delayed: {
+    label: 'Delayed',
+    title: 'The cluster missed its last refresh: what you see may be out of date',
+    chip: 'bg-status-warn-dim',
+    dot: 'bg-status-warn',
+    text: 'text-status-warn',
+  },
+  offline: {
+    label: 'Disconnected',
+    title: 'The cluster is not answering: what you see is the last known state',
+    chip: 'bg-status-error-dim',
+    dot: 'bg-status-error',
+    text: 'text-status-error',
+  },
+  connecting: {
+    label: 'Connecting',
+    title: 'Waiting for the cluster\'s first answer',
+    chip: 'bg-kb-elevated',
+    dot: 'bg-kb-text-tertiary',
+    text: 'text-kb-text-secondary',
+  },
+}
+
+function ConnectionPill({ state }: { state: Freshness }) {
+  const c = CONNECTION[state]
+  return (
+    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-md ${c.chip}`} title={c.title}>
+      <span className={`w-1.5 h-1.5 rounded-full ${c.dot}`} />
+      <span className={`text-[10px] font-mono font-medium uppercase tracking-[0.08em] ${c.text}`}>{c.label}</span>
     </div>
   )
 }

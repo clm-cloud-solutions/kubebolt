@@ -165,6 +165,13 @@ func compactContainers(v interface{}) []map[string]interface{} {
 	return out
 }
 
+// staleOverviewNote rides on an overview served while no agent is connected.
+// In the AKS lab of 2026-10-12 a deallocated single-node cluster answered
+// "1/1 nodes ready" from the cache and Kobi took it as current.
+const staleOverviewNote = "No agent of this cluster is connected: everything in this overview is its last known state, " +
+	"from the moment contact was lost (stale.since), not the present. KubeBolt cannot tell whether the agent, its node " +
+	"or the network went down; with a single node, the agent goes down with it. Do not report anything here as current."
+
 // overviewWarningEvents is how many recent Warning events the overview keeps.
 const overviewWarningEvents = 10
 
@@ -199,6 +206,12 @@ func compactOverview(ov models.ClusterOverview) map[string]interface{} {
 		"cpu":    ov.CPU,
 		"memory": ov.Memory,
 		"health": ov.Health,
+	}
+	// Out of contact, all of the above is the cache of the moment the agent
+	// left. Said first-hand here so it is never read as the present.
+	if ov.Stale != nil {
+		out["stale"] = ov.Stale
+		out["staleNote"] = staleOverviewNote
 	}
 
 	var warnings []models.KubeEvent

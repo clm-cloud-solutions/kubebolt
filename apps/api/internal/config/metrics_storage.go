@@ -2,7 +2,6 @@ package config
 
 import (
 	"encoding/base64"
-	"net/http"
 	"net/url"
 	"os"
 	"strings"
@@ -46,30 +45,4 @@ func RedactedURL(u string) string {
 		return "(unparseable URL)"
 	}
 	return parsed.Redacted()
-}
-
-// MetricsStorageTransport wraps base (http.DefaultTransport when nil) so every
-// request to VictoriaMetrics carries MetricsStorageAuthorization, unless the
-// caller set its own Authorization. Every client that talks to the store is
-// built on it.
-func MetricsStorageTransport(base http.RoundTripper) http.RoundTripper {
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return metricsStorageTransport{base: base}
-}
-
-type metricsStorageTransport struct {
-	base http.RoundTripper
-}
-
-func (t metricsStorageTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if req.Header.Get("Authorization") == "" {
-		if auth := MetricsStorageAuthorization(); auth != "" {
-			// A RoundTripper must not modify the caller's request.
-			req = req.Clone(req.Context())
-			req.Header.Set("Authorization", auth)
-		}
-	}
-	return t.base.RoundTrip(req)
 }

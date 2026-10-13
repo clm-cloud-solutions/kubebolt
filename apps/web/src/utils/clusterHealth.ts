@@ -14,8 +14,18 @@
 //
 // Un cluster puede estar reportando y enfermo, o sano y con el agente ausente.
 // Mezclarlas pierde exactamente la mitad que el operador necesita.
+//
+// Con UNA excepción, que es de dependencia y no de mezcla: los insights de un
+// cluster al que se llega por su agente se evalúan sobre la caché del
+// connector. Si no queda agente conectado, esa caché se congela en el momento
+// en que se perdió el contacto y los insights con ella. En el lab de AKS del
+// 2026-10-12 un cluster de un nodo con la VM desasignada seguía «healthy». Su
+// salud no es «sano» ni «sin evaluar»: es «sin contacto» (clusterVerdict).
 
-export type HealthVerdict = 'healthy' | 'warning' | 'critical' | 'unknown'
+import type { ClusterInfo } from '@/types/kubernetes'
+import { agentDown } from '@/utils/cluster'
+
+export type HealthVerdict = 'healthy' | 'warning' | 'critical' | 'nocontact' | 'unknown'
 
 export interface InsightCounts {
   critical?: number
@@ -35,11 +45,22 @@ export interface InsightCounts {
  * un cluster que nadie ha mirado es la mentira que este módulo existe para
  * evitar.
  */
-export function healthFromInsights(counts?: InsightCounts): HealthVerdict {
+export function healthFromInsights(counts?: InsightCounts): Exclude<HealthVerdict, 'nocontact'> {
   if (!counts) return 'unknown'
   if ((counts.critical ?? 0) > 0) return 'critical'
   if ((counts.warning ?? 0) > 0) return 'warning'
   return 'healthy'
+}
+
+/**
+ * clusterVerdict — el veredicto de un cluster de la lista: healthFromInsights,
+ * salvo que se llegue a él por su agente y no quede ninguno conectado. Entonces
+ * sus insights son los del último estado conocido y no dicen nada del presente:
+ * 'nocontact', el mismo veredicto que su propio Overview («No contact»).
+ */
+export function clusterVerdict(cluster: ClusterInfo, counts?: InsightCounts): HealthVerdict {
+  if (agentDown(cluster)) return 'nocontact'
+  return healthFromInsights(counts)
 }
 
 /**
@@ -61,6 +82,8 @@ export function healthLabel(verdict: HealthVerdict, counts?: InsightCounts): str
     }
     case 'healthy':
       return 'HEALTHY'
+    case 'nocontact':
+      return 'NO CONTACT'
     default:
       // Ni «healthy» ni un hueco: el operador tiene que poder distinguir
       // «lo miramos y está bien» de «no lo hemos mirado».
@@ -72,6 +95,7 @@ export const HEALTH_BADGE_CLASS: Record<HealthVerdict, string> = {
   healthy: 'bg-status-ok-dim text-status-ok',
   warning: 'bg-status-warn-dim text-status-warn',
   critical: 'bg-status-error-dim text-status-error',
+  nocontact: 'bg-kb-elevated text-kb-text-secondary',
   unknown: 'bg-kb-elevated text-kb-text-tertiary',
 }
 
@@ -79,6 +103,7 @@ export const HEALTH_RAIL_CLASS: Record<HealthVerdict, string> = {
   healthy: 'bg-status-ok',
   warning: 'bg-status-warn',
   critical: 'bg-status-error',
+  nocontact: 'bg-kb-text-tertiary',
   unknown: 'bg-kb-text-tertiary',
 }
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // History retention — one hourly pass, per org, over every table that
@@ -67,6 +68,10 @@ type clusterScopedEvents interface {
 	DeleteEventsCluster(tenantID, clusterID string) (int, error)
 }
 
+// retentionJob measures each pass for Administration › System › Health; set by
+// startRetention, nil (measuring nothing) when a test calls a pass directly.
+var retentionJob *opsmetrics.Job
+
 type retentionDeps struct {
 	tenants       orgLister
 	insights      orgPruner
@@ -74,6 +79,9 @@ type retentionDeps struct {
 	events        orgEventPruner
 	audit         orgPruner
 	conversations orgPruner
+	// feedback holds the 👍/👎 on Kobi's answers, a 👎's comment included: the
+	// user's words, kept as long as the transcripts they rate.
+	feedback orgPruner
 	// Orphan sweep (in-vivo 2026-09-15): security data whose cluster is no
 	// longer REGISTERED in the org. The sweeper can never resolve it (no
 	// connector) and PruneOrg never touches actives, so without this a
@@ -157,6 +165,7 @@ func startRetention(ctx context.Context, d retentionDeps) {
 	if d.tenants == nil {
 		return
 	}
+	retentionJob = opsmetrics.NewJob("retention", retentionInterval)
 	go func() {
 		first := time.NewTimer(retentionStartDelay)
 		defer first.Stop()
@@ -182,12 +191,21 @@ func startRetention(ctx context.Context, d retentionDeps) {
 // runRetentionPass is the body of one tick, split out so a test can call it
 // directly without waiting an hour.
 func runRetentionPass(d retentionDeps, now time.Time) {
+	// A pass where any prune failed is a failed run: the rows it should have
+	// removed are still there.
+	run := retentionJob.Start()
+	defer run.End()
+	failed := 0
+	warn := func(msg string, args ...any) {
+		failed++
+		slog.Warn(msg, args...)
+	}
 	orgs, err := d.tenants.ListTenants()
 	if err != nil {
-		slog.Warn("retention: cannot list orgs", slog.String("error", err.Error()))
+		warn("retention: cannot list orgs", slog.String("error", err.Error()))
 		return
 	}
-	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalEpisodes, totalOrphans int
+	var totalInsights, totalFindings, totalEvents, totalAudit, totalConversations, totalFeedback, totalEpisodes, totalOrphans int
 	auditCutoff := now.Add(-auditRetentionHorizon())
 	insightsCutoff := now.Add(-insightsRetentionHorizon())
 	findingsCutoff := now.Add(-findingsRetentionHorizon())
@@ -195,7 +213,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 	for _, org := range orgs {
 		if d.audit != nil {
 			if n, err := d.audit.PruneOrg(org.ID, auditCutoff); err != nil {
-				slog.Warn("retention: audit prune failed",
+				warn("retention: audit prune failed",
 					slog.String("org", org.ID), slog.String("error", err.Error()))
 			} else {
 				totalAudit += n
@@ -205,7 +223,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		totalOrphans += sweepSecurityOrphans(d, org.ID)
 		if d.insights != nil {
 			if n, err := d.insights.PruneOrg(org.ID, insightsCutoff); err != nil {
-				slog.Warn("retention: insights prune failed",
+				warn("retention: insights prune failed",
 					slog.String("org", org.ID), slog.String("error", err.Error()))
 			} else {
 				totalInsights += n
@@ -213,7 +231,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		}
 		if d.episodes != nil {
 			if n, err := d.episodes.PruneOrg(org.ID, findingsCutoff); err != nil {
-				slog.Warn("retention: episodes prune failed",
+				warn("retention: episodes prune failed",
 					slog.String("org", org.ID), slog.String("error", err.Error()))
 			} else {
 				totalEpisodes += n
@@ -221,7 +239,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		}
 		if d.findings != nil {
 			if n, err := d.findings.PruneOrg(org.ID, findingsCutoff); err != nil {
-				slog.Warn("retention: findings prune failed",
+				warn("retention: findings prune failed",
 					slog.String("org", org.ID), slog.String("error", err.Error()))
 			} else {
 				totalFindings += n
@@ -229,7 +247,7 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		}
 		if d.events != nil {
 			if n, err := d.events.PruneEventsOrg(org.ID, findingsCutoff); err != nil {
-				slog.Warn("retention: runtime-events prune failed",
+				warn("retention: runtime-events prune failed",
 					slog.String("org", org.ID), slog.String("error", err.Error()))
 			} else {
 				totalEvents += n
@@ -238,10 +256,18 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		for _, key := range conversationTenants(org) {
 			if d.conversations != nil {
 				if n, err := d.conversations.PruneOrg(key, conversationsCutoff); err != nil {
-					slog.Warn("retention: conversations prune failed",
+					warn("retention: conversations prune failed",
 						slog.String("org", key), slog.String("error", err.Error()))
 				} else {
 					totalConversations += n
+				}
+			}
+			if d.feedback != nil {
+				if n, err := d.feedback.PruneOrg(key, conversationsCutoff); err != nil {
+					warn("retention: copilot feedback prune failed",
+						slog.String("org", key), slog.String("error", err.Error()))
+				} else {
+					totalFeedback += n
 				}
 			}
 		}
@@ -258,7 +284,11 @@ func runRetentionPass(d retentionDeps, now time.Time) {
 		slog.Int("runtime_events_pruned", totalEvents),
 		slog.Int("audit_records_pruned", totalAudit),
 		slog.Int("conversations_pruned", totalConversations),
+		slog.Int("copilot_feedback_pruned", totalFeedback),
 	)
+	if failed == 0 {
+		run.OK()
+	}
 }
 
 // sweepSecurityOrphans deletes one org's findings + runtime events stored

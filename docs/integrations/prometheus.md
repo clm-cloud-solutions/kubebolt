@@ -93,6 +93,8 @@ remote_write:
   - url: http://kubebolt.example.com/api/v1/prom/write
     authorization:
       credentials: ${TOKEN}
+    queue_config:
+      retry_on_http_429: true   # retry rate-limited batches instead of dropping them
     write_relabel_configs:
       # Optional: when the label is missing the receiver stamps it
       # from the bearer token's tenant. When present it MUST match
@@ -163,6 +165,8 @@ remote_write:
   - url: https://kubebolt.example.com/api/v1/prom/write
     authorization:
       credentials_file: /etc/prometheus/kubebolt-token
+    queue_config:
+      retry_on_http_429: true   # retry rate-limited batches instead of dropping them
 ```
 
 The three labels do distinct jobs:
@@ -269,6 +273,8 @@ remote_write:
   - url: https://kubebolt.example.com/api/v1/prom/write
     authorization:
       credentials_file: /etc/prometheus/kubebolt-token
+    queue_config:
+      retry_on_http_429: true   # retry rate-limited batches instead of dropping them
 ```
 
 `external_labels` is preferred over `write_relabel_configs`
@@ -318,17 +324,45 @@ over it). `KUBEBOLT_PROM_WRITE_NAME_FILTER_ENABLED=false` switches
 the filter off entirely. Kept custom series count toward the
 max-active-series cap.
 
+The families KubeBolt writes about itself — `kubebolt_http_*`,
+`kubebolt_vm_*`, `kubebolt_job_*`, `kubebolt_ws_*`, `kubebolt_kobi_*`,
+`kubebolt_prom_write_*`, `kubebolt_agent_grpc_*`, `kubebolt_api_*`,
+`kubebolt_build_info` and the like — are **reserved**: they are dropped
+whatever the filter settings, at this door and at the agents', and
+counted with `reason="reserved"`. A copy arriving from outside would
+double what Administration › System › Health and AI › Health show.
+The agent's own self-metrics (`kubebolt_agent_heap_*`,
+`kubebolt_agent_info`, `kubebolt_promread_leader`…) are not reserved.
+
 When a limit trips:
 
 | Limit | HTTP response | Retry-After |
 |---|---|---|
-| Write rate | `429 Too Many Requests` | seconds until the bucket refills |
-| Burst | `429 Too Many Requests` | seconds until the bucket refills |
+| Write rate / burst, live traffic | `429 Too Many Requests` | seconds until the bucket refills |
+| Write rate / burst, catch-up after an interruption (see below) | `503 Service Unavailable` | seconds until the bucket refills |
 | Max active series | `413 Payload Too Large` | 3600 (1h — series caps don't change quickly) |
 | Body size (16 MiB) | `413 Payload Too Large` | — |
 
-`vmagent` and recent Prometheus versions honor `Retry-After`
-natively; older clients fall back to exponential backoff.
+**Prometheus drops what a 429 refuses** unless `queue_config.retry_on_http_429`
+is `true` — it is `false` by default. After any interruption (the KubeBolt
+API or its storage down, a network blip) Prometheus ships everything it
+queued at full speed and runs into the rate limit; with a 429, that
+catch-up would be lost. So KubeBolt answers a **catch-up** with `503` and
+`Retry-After` instead: Prometheus always retries a 5xx, honouring the delay,
+and the catch-up arrives at the rate the tenant is allowed. A batch is a
+catch-up when both hold:
+
+- its newest sample is more than two minutes old, and
+- it arrives within an hour of an interruption: the KubeBolt API starting,
+  the sender coming back after more than two minutes without a request, or
+  the storage refusing the tenant's batches.
+
+Everything else over the limit keeps the `429` — live traffic, and also a
+**sustained overrun** (a sender with more series than its write rate allows,
+which falls behind when it retries its 429s): that excess is what the limit
+is for, and it shows as rate-limited, never as a catch-up. Set `retry_on_http_429: true` anyway (with prometheus-operator:
+`remoteWrite[].queueConfig.retryOnRateLimit: true`) so a live burst is
+retried too. `vmagent` retries both by default.
 
 ---
 
@@ -424,9 +458,10 @@ Helm chart exposes the API as the `<release>-api` Service
       action: keep
 ```
 
-Do not also `remote_write` that job back into KubeBolt: the
-`kubebolt_*` series are already there (self-written), and a second
-copy with a `job` label would double any `sum()` over them.
+There is no need to `remote_write` that job back into KubeBolt: the
+`kubebolt_*` series are already there (self-written). If it happens
+anyway, KubeBolt drops them as reserved names (see *Custom series*
+above), so they never double a `sum()` over them.
 
 ---
 
@@ -442,7 +477,8 @@ copy with a `job` label would double any `sum()` over them.
 | `401 tenant_id label does not match` | Client stamped a tenant other than its bearer's | Make sure `external_labels.tenant_id` matches the tenant the bearer authenticates as, or drop the label and let the receiver stamp it. Spoof attempts are intentionally rejected. |
 | `413 Payload Too Large` (body size) | Single batch exceeds 16 MiB compressed | Lower `queue_config.max_samples_per_send` (default 2000). Most operators see this only with very long-running Prometheus catching up after a network blip. |
 | `413` with `Retry-After: 3600` | Cardinality cap exceeded | Series count is checked every 30s against VM. Raise max active series in the per-tenant limits card (**Administration → Agents & Ingest → Configuration**) or scope your Prom config to fewer targets. |
-| `429 Too Many Requests` | Rate limit tripped | Raise the write rate / burst in the same per-tenant limits card, or reduce scrape frequency. |
+| `429 Too Many Requests` | Rate limit tripped by live traffic | Raise the write rate / burst in the same per-tenant limits card, or reduce scrape frequency. Set `queue_config.retry_on_http_429: true`, or Prometheus drops the refused samples. |
+| `503` with `Retry-After` on `/prom/write` | A catch-up over the rate limit after an interruption (counted as `rate_limit_deferred`) | Nothing to do: Prometheus retries it after the delay and the catch-up is delayed, not lost. An hour after the interruption, whatever is still over the limit gets `429` — then the sender produces more than the tenant's write rate. |
 | `502 Bad Gateway` | VictoriaMetrics unreachable from the backend | Check `kubebolt-api` → VM connectivity. Pre-fix the underlying outage; client should retry. |
 
 ---

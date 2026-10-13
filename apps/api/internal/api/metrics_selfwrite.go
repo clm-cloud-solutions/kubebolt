@@ -3,17 +3,22 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/common/expfmt"
 
-	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/failurelog"
+	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
 )
 
 // SelfWriteMetricsToVM is the small goroutine that pushes the
@@ -55,8 +60,18 @@ func SelfWriteMetricsToVM(ctx context.Context, gatherer prometheus.Gatherer, vmU
 	if gatherer == nil || vmURL == "" {
 		return
 	}
-	client := &http.Client{Timeout: 10 * time.Second, Transport: config.MetricsStorageTransport(nil)}
-	endpoint := vmURL + "/api/v1/import/prometheus"
+	client := opsmetrics.VMClient("selfwrite", 10*time.Second)
+	endpoint := selfWriteEndpoint(vmURL)
+	job := opsmetrics.NewJob("selfwrite", 30*time.Second)
+	push := func() error {
+		run := job.Start()
+		defer run.End()
+		err := pushMetricsOnce(ctx, client, gatherer, endpoint)
+		if err == nil {
+			run.OK()
+		}
+		return err
+	}
 
 	tick := time.NewTicker(30 * time.Second)
 	defer tick.Stop()
@@ -69,7 +84,7 @@ func SelfWriteMetricsToVM(ctx context.Context, gatherer prometheus.Gatherer, vmU
 	// logged at most once a minute, with how many failed since.
 	var failures failurelog.Log
 	pushAndLog := func() {
-		if err := pushMetricsOnce(ctx, client, gatherer, endpoint); err != nil {
+		if err := push(); err != nil {
 			if logNow, failed := failures.Record(time.Now()); logNow {
 				slog.Warn("self-write metrics to VM failed",
 					slog.String("error", err.Error()), slog.Int("failed_pushes", failed))
@@ -87,6 +102,54 @@ func SelfWriteMetricsToVM(ctx context.Context, gatherer prometheus.Gatherer, vmU
 		}
 	}
 }
+
+// selfWriteEndpoint is VictoriaMetrics' import URL with the labels every
+// pushed series carries:
+//
+//   - instance=<this replica>. The push has no timestamps and the series no
+//     other per-replica label, so with two replicas each one wrote the SAME
+//     series with its own counter value and VictoriaMetrics interleaved them —
+//     rate() saw a reset at every flip.
+//   - run_id=<this process>. A restarted process keeps its hostname (a
+//     container restart inside the same pod, an OOMKill; the same machine in
+//     dev) and its counters start again from zero. VictoriaMetrics only sees a
+//     reset when the value drops; a sparse counter that comes back above its
+//     old value hides it — 26,816 cache tokens, a restart, a session of 27,082:
+//     counted 266. With run_id every process writes its own series, which
+//     start at zero. Opaque on purpose: it names the process, nothing else.
+//   - job=kubebolt-api, which tells the API's go_*/process_* apart from the
+//     ones VictoriaMetrics scrapes from itself (job="victoria-metrics").
+//
+// Counters are summed across run_id: every process's increments happened.
+// A gauge is read as the live process reports it (liveProcess in the web
+// app's utils/promql.ts: of the series that differ only in run_id, the one
+// written last), because the dead process's last value stays readable for the
+// 5-minute lookback.
+func selfWriteEndpoint(vmURL string) string {
+	return vmURL + "/api/v1/import/prometheus?" + url.Values{"extra_label": {
+		"instance=" + selfWriteInstance(), "run_id=" + selfWriteRunID(), "job=" + selfWriteJob,
+	}}.Encode()
+}
+
+// selfWriteJob is the job label on everything the API pushes about itself.
+const selfWriteJob = "kubebolt-api"
+
+// selfWriteInstance names this replica: the hostname, which in Kubernetes is
+// the pod name.
+func selfWriteInstance() string {
+	if h, err := os.Hostname(); err == nil && h != "" {
+		return h
+	}
+	return "kubebolt-api"
+}
+
+// selfWriteRunID names this process: eight random hex characters, drawn once.
+// crypto/rand.Read does not fail (since Go 1.24 it aborts the process instead).
+var selfWriteRunID = sync.OnceValue(func() string {
+	b := make([]byte, 4)
+	_, _ = rand.Read(b)
+	return hex.EncodeToString(b)
+})
 
 // pushMetricsOnce renders the gatherer's current state as Prometheus
 // text format and POSTs it to VM's /api/v1/import/prometheus endpoint

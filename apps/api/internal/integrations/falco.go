@@ -166,10 +166,16 @@ func (p *falcoProvider) Normalize(ctx context.Context, raw any) (Signals, error)
 	// shows the hostname instead.
 	fields := make(map[string]string, len(ev.OutputFields))
 	for k, v := range ev.OutputFields {
+		// Falco sends null for a field it has no value for (k8s.pod.name on a
+		// host-scoped rule); fmt.Sprint(nil) stored it as "<nil>", which the UI
+		// then showed as a pod name. Leave such a field out.
+		if v == nil {
+			continue
+		}
 		fields[k] = fmt.Sprint(v)
 	}
-	ns := fields["k8s.ns.name"]
-	pod := fields["k8s.pod.name"]
+	ns := falcoValue(fields["k8s.ns.name"])
+	pod := falcoValue(fields["k8s.pod.name"])
 	if ev.Hostname != "" {
 		fields["hostname"] = ev.Hostname
 	}
@@ -195,4 +201,12 @@ func (p *falcoProvider) Normalize(ctx context.Context, raw any) (Signals, error)
 		Source:           FalcoID,
 		Fields:           fields,
 	}}}, nil
+}
+
+// falcoValue — a field's value, or "" for Falco's placeholder for "unknown".
+func falcoValue(v string) string {
+	if v == "<NA>" || v == "<nil>" {
+		return ""
+	}
+	return v
 }

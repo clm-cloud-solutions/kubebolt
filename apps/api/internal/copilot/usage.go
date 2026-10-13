@@ -17,6 +17,11 @@ type ToolStats struct {
 	Bytes      int   `json:"bytes"`
 	Errors     int   `json:"errors"`
 	DurationMs int64 `json:"durationMs"`
+	// Source is kubebolt or mcp:<connector> (ToolSource).
+	Source string `json:"source,omitempty"`
+	// Results counts the calls by kind (ClassifyToolResult): ok, empty,
+	// not_found, denied, timeout, error. Errors stays as the IsError count.
+	Results map[string]int `json:"results,omitempty"`
 }
 
 // SessionRecord is one persisted copilot chat session. Written once per
@@ -35,7 +40,7 @@ type SessionRecord struct {
 	Provider   string               `json:"provider"`
 	Model      string               `json:"model"`
 	Trigger    string               `json:"trigger"`
-	Reason     string               `json:"reason"` // "done" | "error"
+	Reason     string               `json:"reason"` // "done" | "error" | "max_rounds" | "canceled"
 	Rounds     int                  `json:"rounds"`
 	Usage      Usage                `json:"usage"`
 	ToolCalls  int                  `json:"toolCalls"`
@@ -47,6 +52,25 @@ type SessionRecord struct {
 	// during the tool loop). Manual compacts are their own endpoint calls
 	// and are not attached to a session.
 	Compacts []CompactEvent `json:"compacts,omitempty"`
+
+	// Health signals (doc #67, phase 1). Empty on records written before them.
+	//
+	// ClusterID is the cluster's kube-system UID (CanonicalClusterID), the id
+	// VictoriaMetrics series carry; Cluster keeps the context name. TeamID is
+	// the team that owned the cluster WHEN the session ran: ownership can move
+	// and a team breakdown must not rewrite the past.
+	ClusterID string `json:"clusterId,omitempty"`
+	TeamID    string `json:"teamId,omitempty"`
+	// StopReasons counts the session's model calls by how they ended
+	// (NormalizeStopReason): a refusal or a max_tokens cut is visible even
+	// when the session still finished as "done".
+	StopReasons map[string]int `json:"stopReasons,omitempty"`
+	// ProviderErrors counts the failed model calls by kind
+	// (ClassifyProviderError), the fallback's included.
+	ProviderErrors map[string]int `json:"providerErrors,omitempty"`
+	// FallbackTried: a call went to the fallback provider. Fallback says it
+	// answered; tried without Fallback means the rescue failed too.
+	FallbackTried bool `json:"fallbackTried,omitempty"`
 }
 
 // CompactEvent captures an inline auto-compact.

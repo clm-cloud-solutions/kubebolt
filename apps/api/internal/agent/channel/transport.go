@@ -2,6 +2,7 @@ package channel
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -170,13 +171,20 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	// GetProxyAgent (not Get) to filter out the Mode C promread
 	// Deployment pod that can't service kube_request payloads — see
 	// project_agent_eviction_loop follow-up in registry.go.
-	agent := t.Registry.GetProxyAgent(t.TenantID, t.ClusterID)
-	if agent == nil {
-		return nil, fmt.Errorf("%w: %s", ErrAgentNotConnected, t.ClusterID)
-	}
-
+	start := time.Now()
 	isWatch := strings.EqualFold(req.URL.Query().Get("watch"), "true")
 	isUpgrade := isUpgradeRequest(req)
+	// Only unary requests are timed: a watch or an exec tunnel lives for
+	// minutes and would drown the p95 in their length.
+	unary := !isWatch && !isUpgrade
+
+	agent := t.Registry.GetProxyAgent(t.TenantID, t.ClusterID)
+	if agent == nil {
+		if unary {
+			observeKubeRequest(tunnelNotConnected, start)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrAgentNotConnected, t.ClusterID)
+	}
 
 	body, err := drainBody(req)
 	if err != nil {
@@ -212,6 +220,9 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 
 	if err := agent.Send(backendMsg); err != nil {
 		cancel()
+		if unary {
+			observeKubeRequest(tunnelSendError, start)
+		}
 		return nil, err
 	}
 
@@ -242,16 +253,25 @@ func (t *AgentProxyTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	case msg, ok := <-replies:
 		if !ok {
 			// Slot closed without a reply — agent disconnected mid-flight.
+			observeKubeRequest(tunnelAgentClosed, start)
 			return nil, ErrAgentClosed
 		}
+		observeKubeRequest(tunnelOK, start)
 		return responseFromMessage(req, msg)
 	case <-ctx.Done():
 		cancel()
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			observeKubeRequest(tunnelTimeout, start)
+		} else {
+			observeKubeRequest(tunnelCanceled, start)
+		}
 		return nil, ctx.Err()
 	case <-timeoutC:
 		cancel()
+		observeKubeRequest(tunnelTimeout, start)
 		return nil, fmt.Errorf("agent-proxy: timeout after %s", effTimeout)
 	case <-agent.Closed():
+		observeKubeRequest(tunnelAgentClosed, start)
 		return nil, ErrAgentClosed
 	}
 }

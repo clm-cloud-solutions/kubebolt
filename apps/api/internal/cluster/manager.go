@@ -36,8 +36,10 @@ type Manager struct {
 	metricInterval  time.Duration
 	insightInterval time.Duration
 	cancelFn        context.CancelFunc
-	connErr         error        // set when the active context failed to connect
-	storage         ClusterStore // optional — nil when auth disabled; drives user-uploaded contexts and display names. W1 seam: BoltDB *Storage (OSS), Postgres (EE).
+	connErr         error          // set when the active context failed to connect
+	storage         ClusterStore   // optional — nil when auth disabled; drives user-uploaded contexts and display names. W1 seam: BoltDB *Storage (OSS), Postgres (EE).
+	selection       SelectionStore // optional — remembers the selected cluster across restarts (selection.go).
+	adoptScheduled  atomic.Bool    // a default pick is already pending (selection.go).
 
 	// agentRegistry is the live registry of connected kubebolt-agents.
 	// Set by main.go via SetAgentRegistry once the gRPC server is up.
@@ -407,6 +409,12 @@ func (m *Manager) AddAgentProxyCluster(clusterID, displayName string) (string, e
 	if contextName == m.activeContext && m.connector == nil {
 		go m.retryAgentProxyConnect(contextName, clusterID)
 	}
+	// Nothing selected and an agent just said hello: pick a default soon
+	// (selection.go). Boot restore registers with no agent connected and is
+	// skipped by the live-agent check.
+	if m.activeContext == "" && m.agentRegistry != nil && m.agentRegistry.CountByCluster(clusterID) > 0 {
+		m.scheduleDefaultSelectionLocked()
+	}
 	// Always-on (W2 §10): eager-spin this cluster's runtime into the pool as soon
 	// as its agent connects, so it monitors (evaluates + notifies) even if nobody
 	// opens it in the UI — and so monitoring resumes after a backend restart
@@ -594,11 +602,22 @@ func (m *Manager) RemoveAgentProxyCluster(clusterID string) {
 	contextName := AgentProxyContextName(clusterID)
 
 	// Persistent cleanup — runs even when the in-memory context isn't registered,
-	// so a disconnected cluster's lingering display name + cached UID can still be
-	// deleted.
+	// so a disconnected cluster's lingering display name, cached UID and agent
+	// records can still be deleted.
 	if m.storage != nil {
 		m.storage.DeleteDisplayName(m.storeCtx(), contextName)
 		_ = m.storage.SetClusterUID(m.storeCtx(), contextName, "") // "" → delete the cached UID row
+	}
+	// And the agent records: boot restores a cluster for every record it finds,
+	// so without this a deleted cluster came back on the next restart.
+	if m.agentRegistry != nil {
+		if n, err := m.agentRegistry.ForgetCluster(clusterID); err != nil {
+			slog.Warn("cluster delete: agent records not removed; the cluster comes back on restart",
+				slog.String("cluster_id", clusterID), slog.String("error", err.Error()))
+		} else if n > 0 {
+			slog.Info("cluster delete: agent records removed",
+				slog.String("cluster_id", clusterID), slog.Int("count", n))
+		}
 	}
 
 	// In-memory teardown — nothing to do if the context isn't registered.
@@ -1095,7 +1114,16 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 			if !agentConnected && metricsOnlyCID != "" {
 				agentConnected = m.metricsFresh(m.tenantID, metricsOnlyCID)
 			}
-			if ls, ok := lastSeenByCluster[clusterID]; ok && !ls.IsZero() {
+			// The durable record is stamped when an agent REGISTERS, so for a
+			// cluster that went dark it is when that agent connected, maybe
+			// days earlier. The moment its last agent left, when this process
+			// saw it, is the last contact.
+			if !agentConnected && clusterID != "" && m.agentRegistry != nil {
+				if since, lost := m.agentRegistry.LostSince(clusterID); lost && !since.IsZero() {
+					lastSeen = &since
+				}
+			}
+			if ls, ok := lastSeenByCluster[clusterID]; lastSeen == nil && ok && !ls.IsZero() {
 				lsCopy := ls
 				lastSeen = &lsCopy
 			}
@@ -1127,8 +1155,19 @@ func (m *Manager) ListClusters(_ context.Context) []ClusterInfo {
 
 // SwitchCluster switches the active cluster to the given context name.
 func (m *Manager) SwitchCluster(contextName string) error {
+	return m.switchCluster(contextName, false)
+}
+
+// switchCluster is SwitchCluster; onlyIfUnselected makes it a no-op
+// (errAlreadySelected) when a cluster is already selected, checked under the
+// same lock as the switch — the default pick must never override a cluster
+// someone chose meanwhile.
+func (m *Manager) switchCluster(contextName string, onlyIfUnselected bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if onlyIfUnselected && m.activeContext != "" {
+		return errAlreadySelected
+	}
 
 	// Allow retry if currently disconnected from this context
 	if contextName == m.activeContext && m.connector != nil {
@@ -1144,6 +1183,7 @@ func (m *Manager) SwitchCluster(contextName string) error {
 	// so switching BACK to it later is instant (no reconnect). Its informers,
 	// collector, and insight ticker stay live in the background.
 	m.parkActiveLocked()
+	m.rememberSelectionLocked(contextName)
 
 	// If the target is already pooled (previously connected, informers still
 	// live), promote it — an INSTANT switch with no WaitForCacheSync. This is
@@ -2034,6 +2074,17 @@ func (m *Manager) startRuntime(access *ClusterAccess, contextName, agentProxyCID
 			Provider: provider, Region: region, Version: version, Platform: platform,
 		})
 	})
+
+	// A cluster reached through its agent: when the agent goes, this runtime
+	// keeps serving its caches (nothing tears it down — the registration is
+	// durable), so the connector has to be able to say they are the last
+	// known state.
+	if agentProxyCID != "" && m.agentRegistry != nil {
+		reg := m.agentRegistry
+		connector.SetContactLost(func() (time.Time, bool) {
+			return reg.LostSince(agentProxyCID)
+		})
+	}
 
 	collector := metrics.NewCollector(connector.MetricsClient(), m.metricInterval, connector.Permissions().ScopedNamespaces())
 	connector.SetCollector(collector)

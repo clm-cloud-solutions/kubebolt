@@ -66,6 +66,10 @@ type PromWriteMetrics struct {
 const (
 	PromWriteStatusAccepted               = "accepted"
 	PromWriteStatusRejectedRateLimit      = "rate_limit"
+	// PromWriteStatusDeferredBacklog: over the rate limit, but the batch is a
+	// backlog (a sender catching up after an interruption), so it was answered
+	// 503 + Retry-After — retried later by the sender, not lost.
+	PromWriteStatusDeferredBacklog = "rate_limit_deferred"
 	PromWriteStatusRejectedCardinality    = "cardinality"
 	PromWriteStatusRejectedAuth           = "auth"
 	PromWriteStatusRejectedBodySize       = "body_size"
@@ -106,7 +110,7 @@ func NewPromWriteMetrics(reg prometheus.Registerer) *PromWriteMetrics {
 		}, []string{"tenant_id"}),
 		droppedSeries: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "kubebolt_prom_write_dropped_series_total",
-			Help: "Total series dropped at ingest by the core-only name filter, per tenant and reason.",
+			Help: "Total series dropped at ingest, per tenant and reason (custom: the core-only name filter; reserved: a name only KubeBolt writes).",
 		}, []string{"tenant_id", "reason"}),
 		activeSeriesTenants: make(map[string]struct{}),
 	}
@@ -153,6 +157,15 @@ func (m *PromWriteMetrics) RecordDroppedByName(tenantID string, count int) {
 		return
 	}
 	m.droppedSeries.WithLabelValues(tenantID, "custom").Add(float64(count))
+}
+
+// RecordDroppedReserved bumps the dropped-series counter for series that
+// carried a name only KubeBolt writes (reason="reserved").
+func (m *PromWriteMetrics) RecordDroppedReserved(tenantID string, count int) {
+	if m == nil || count <= 0 {
+		return
+	}
+	m.droppedSeries.WithLabelValues(tenantID, "reserved").Add(float64(count))
 }
 
 // SetActiveSeries replaces the active_series snapshot. Called by

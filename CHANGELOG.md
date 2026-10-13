@@ -4,6 +4,95 @@ All notable changes to KubeBolt are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and versions
 follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.4.0] — 2026-10-13
+
+KubeBolt watches itself, every lit card names who is failing, and a cluster
+keeps its place when its agent goes or the API restarts. Drop-in, no schema
+change; agent 1.4.4. Full note: [docs/releases/v2.4.0.md](docs/releases/v2.4.0.md).
+
+### Added
+
+- **Kobi on Claude Haiku 5.5 and Sonnet 5.5.** Haiku 5.5 also writes titles
+  and compacts conversations, without reasoning. The compaction model is a
+  selector, not a free-text field. Each model is billed by its own rate card;
+  Haiku 5.5's applies above a 100K-token prompt.
+- **Administration › AI › Health**: Kobi's turns and failures, the 👎 share,
+  provider errors and what the fallback rescued, refusals and cut-short
+  answers, empty or failed tool calls, model latency, cost, tokens and the
+  prompt cache — from the new `kubebolt_kobi_copilot_*` series.
+- **👍/👎 on Kobi's answers**, with an optional reason and comment for a 👎.
+  The comment stays with its conversation and never reaches a metric.
+- **Administration › System › Health**: API replicas, memory, the 5xx share,
+  HTTP by route group, background jobs (late ones first), VictoriaMetrics
+  measuring itself and the API's calls to it — from the new `opsmetrics`
+  series (`kubebolt_http_*`, `kubebolt_vm_*`, `kubebolt_job_*`,
+  `kubebolt_ws_*`, `kubebolt_build_info`). An **Agents and tunnel** section
+  shows live agent channels per replica and the Kubernetes requests that
+  cross the tunnel (`kubebolt_agent_channels`,
+  `kubebolt_agent_kube_request_seconds`).
+- **External watcher**: `KUBEBOLT_EXTERNAL_METRICS_*` pushes the API's health
+  series to an outside Prometheus such as Grafana Cloud, with an importable
+  dashboard (`deploy/grafana/kubebolt-platform-health.json`) and a guide
+  (`docs/operations/external-watcher.md`).
+- **Alert rules** on KubeBolt's own health (`deploy/helm/kubebolt/files/kubebolt-alerts.yaml`),
+  unit-tested with promtool, optionally rendered as a `PrometheusRule`
+  (`metrics.alertRules.enabled`).
+- **Lit KPI cards say who, since when and where.** The name is a link to the
+  resource or to the panel that holds the detail, and the tooltip lists the
+  rest — on Overview, Reliability, Nodes, Capacity, Cost, Security, Fleet,
+  Home, Kobi Usage and both Health tabs.
+- **A cluster out of contact says so.** When its agent goes, the cluster stays
+  listed: a «No contact since …» banner, the Disconnected pill, «No contact» on
+  the health card, `NO CONTACT` in Fleet, and Kobi's `get_cluster_overview`
+  marks the overview as the last known state.
+
+### Changed
+
+- **One range control.** Every range selector is one dropdown; a resource's
+  Monitor tab reads one range for all its charts.
+- **Colour says what the data means** (dark mode): one fact lights one card,
+  a KPI figure never takes the state colour, posture never lights while
+  incidents do, and the Topbar pill reads Live / Delayed / Disconnected /
+  Connecting instead of a fixed "Live".
+- **Agent-proxy registration is durable**: a cluster is no longer removed when
+  its last agent disconnects. Only Delete in Clusters removes it.
+- **The selected cluster survives a restart.** With nothing selected (a
+  kubeconfig with no current context), the first cluster with a live agent is
+  selected, by name.
+- remote_write: over the rate limit, a **catch-up after an interruption**
+  gets `503` + `Retry-After` (Prometheus retries it) instead of `429`
+  (Prometheus drops it unless `retry_on_http_429` is on); a sustained overrun
+  keeps the `429`. Shown as "catch-up deferred" in Ingest activity.
+- **Reserved names**: the series KubeBolt writes about itself are dropped at
+  both ingest doors, counted with `reason="reserved"`.
+- The bundled VictoriaMetrics (chart and compose) starts with
+  `--selfScrapeInterval=30s`.
+- The API's self-push stamps `instance`, `run_id` and `job=kubebolt-api`, so a
+  restart is never a hidden counter reset.
+
+### Fixed
+
+- Kobi no longer shows the AI provider's raw error (URLs, internal addresses,
+  provider ids) in the chat: each error class has a fixed message.
+- Kobi's cost estimate: Sonnet 5.5 and Fable 5.1 have their own prices; they
+  borrowed the cache-read price of the model they prefix-match, twice and four
+  times theirs.
+- Kobi Usage counted a session the user canceled as an error.
+- Falco fields that arrive null were stored and shown as `<nil>`.
+- `kb-*/NN` opacity utilities compiled to nothing, so some hovers, tints and
+  floating panels painted nothing.
+- A deleted cluster came back on the next API restart; agent records left
+  "connected" by a stopped API never expired; a cluster could boot under the
+  name of an agent installed long before.
+- A KPI card without a link cut its unit short ("83 workloads affecte…").
+
+### Security
+
+- VictoriaMetrics and vmagent v1.153.0 → **v1.154.0**: 0 CRITICAL/HIGH, so
+  the three CVEs 2.3.1 waived in `.trivyignore-thirdparty` are gone.
+
 ## [2.3.1] — 2026-10-12
 
 Every install path the README promises works as written, history on a laptop

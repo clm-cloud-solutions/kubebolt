@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { api } from '@/services/api'
 import { useAuth } from '@/contexts/AuthContext'
-import { parseClusterDisplayName } from '@/utils/cluster'
+import { agentDown, parseClusterDisplayName } from '@/utils/cluster'
 import { DataFreshnessIndicator } from '@/components/shared/DataFreshnessIndicator'
 import { ResourceTypeIcon } from '@/utils/resourceIcons'
 import { useFleetRollup, type FleetClusterRollup } from '@/hooks/useFleetRollup'
@@ -14,7 +14,7 @@ import { KPI_COLOR, Sparkline } from '@/components/shared/kpi/MiniCharts'
 import { AddClusterButton } from '@/components/admin/AddClusterButton'
 import { CloudProviderIcon, providerLabel } from '@/components/shared/CloudProviderIcon'
 import {
-  healthFromInsights,
+  clusterVerdict,
   healthLabel,
   HEALTH_BADGE_CLASS,
   type HealthVerdict,
@@ -127,6 +127,8 @@ type Health = 'ok' | 'warn' | 'crit'
 // GetHealth en el backend a partir de los insights, y exige un connector vivo.
 function healthOf(c: ClusterInfo): Health {
   if (c.status === 'error') return 'crit'
+  // Its agent is gone: a parked runtime still says "connected" (utils/cluster).
+  if (agentDown(c)) return 'warn'
   if (c.status === 'connected' || c.agentConnected) return 'ok'
   return 'warn'
 }
@@ -203,6 +205,7 @@ const VERDICT_TINT: Record<HealthVerdict, string> = {
   healthy: KPI_COLOR.ok,
   warning: KPI_COLOR.warn,
   critical: KPI_COLOR.err,
+  nocontact: 'var(--kb-text-tertiary)',
   unknown: 'var(--kb-text-tertiary)',
 }
 
@@ -228,7 +231,7 @@ function ClusterCard({
   onOpen: () => void
 }) {
   const health = healthOf(cluster)
-  const verdict = healthFromInsights(insights)
+  const verdict = clusterVerdict(cluster, insights)
   const metrics = metricsState(cluster, rollup)
   const tint = VERDICT_TINT[verdict]
   const offline = cluster.source === 'agent-proxy' && !cluster.agentConnected
@@ -277,7 +280,9 @@ function ClusterCard({
           title={
             verdict === 'unknown'
               ? 'No insight data for this cluster yet'
-              : 'Active insights — same source as the cluster Overview'
+              : verdict === 'nocontact'
+                ? 'Its agent is disconnected: the insights are the last known ones, not the present'
+                : 'Active insights — same source as the cluster Overview'
           }
         >
           <span className="w-1.5 h-1.5 rounded-full" style={{ background: tint }} />
@@ -432,10 +437,10 @@ export function FleetPage() {
   // orden de kubeconfig, que es el orden de alta: el cluster con criticals podía
   // quedar el último. Ahora manda la salud, luego los hallazgos, y el nombre
   // desempata para que dos clusters igual de sanos no bailen entre refrescos.
-  const HEALTH_ORDER: Record<string, number> = { critical: 0, warning: 1, unknown: 2, healthy: 3 }
+  const HEALTH_ORDER: Record<string, number> = { critical: 0, warning: 1, nocontact: 2, unknown: 3, healthy: 4 }
   const ordered = [...clusters].sort((a, b) => {
-    const av = healthFromInsights(a.clusterId ? insightSummary?.bySeverityCluster?.[a.clusterId] : undefined)
-    const bv = healthFromInsights(b.clusterId ? insightSummary?.bySeverityCluster?.[b.clusterId] : undefined)
+    const av = clusterVerdict(a, a.clusterId ? insightSummary?.bySeverityCluster?.[a.clusterId] : undefined)
+    const bv = clusterVerdict(b, b.clusterId ? insightSummary?.bySeverityCluster?.[b.clusterId] : undefined)
     if (HEALTH_ORDER[av] !== HEALTH_ORDER[bv]) return HEALTH_ORDER[av] - HEALTH_ORDER[bv]
 
     // A igual salud, el que no reporta métricas sube: sus paneles saldrán
@@ -521,7 +526,7 @@ export function FleetPage() {
                   onClick={() => chooseView(v)}
                   className={`px-2.5 py-1 text-[10px] font-mono uppercase tracking-[0.06em] rounded transition-colors ${
                     view === v
-                      ? 'bg-kb-accent/15 text-kb-accent font-semibold'
+                      ? 'bg-kb-accent-light text-kb-accent font-semibold'
                       : 'text-kb-text-secondary hover:bg-kb-elevated hover:text-kb-text-primary'
                   }`}
                 >
@@ -625,7 +630,7 @@ export function FleetPage() {
                   const health = healthOf(c)
                   const r = c.clusterId ? rollup.byCluster[c.clusterId] : undefined
                   const ins = c.clusterId ? insightSummary?.bySeverityCluster?.[c.clusterId] : undefined
-                  const verdict = healthFromInsights(ins)
+                  const verdict = clusterVerdict(c, ins)
                   const sev = c.clusterId ? findings?.bySeverityCluster?.[c.clusterId] : undefined
                   const crit = sev?.critical ?? 0
                   const totalFindings = crit + (sev?.high ?? 0)

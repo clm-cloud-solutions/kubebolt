@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import { SlidersHorizontal, Bell, ScrollText } from 'lucide-react'
+import { SlidersHorizontal, Bell, ScrollText, HeartPulse } from 'lucide-react'
 import { AdminHub } from './AdminHub'
 import { GeneralSettingsTab } from './settings/GeneralSettingsTab'
 import { NotificationsSettingsTab } from './settings/NotificationsSettingsTab'
 import { BootedWithModal } from './settings/BootedWithModal'
+import { ApiHealth } from './health/ApiHealth'
 
-// System — instance-wide configuration: general settings + notifications, plus
-// the boot-snapshot inspector that used to live in the Settings header.
+// System — instance-wide configuration: general settings + notifications, the
+// health of KubeBolt itself, and the boot-snapshot inspector that used to live
+// in the Settings header.
 export function SystemHub() {
   const [bootOpen, setBootOpen] = useState(false)
 
@@ -41,6 +43,7 @@ export function SystemHub() {
             subtitle: 'Where KubeBolt sends alerts and at what severity.',
             render: () => <NotificationsSettingsTab />,
           },
+          { key: 'health', label: 'Health', Icon: HeartPulse, render: () => <ApiHealth /> },
         ]}
       />
       {bootOpen && <BootedWithModal onClose={() => setBootOpen(false)} />}

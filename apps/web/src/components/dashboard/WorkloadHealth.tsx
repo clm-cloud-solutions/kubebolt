@@ -223,15 +223,42 @@ function AttentionRow({ workload: w }: { workload: WorkloadSummary }) {
       <ArrowRight className="w-3 h-3 shrink-0 text-kb-text-tertiary opacity-0 group-hover:opacity-100 transition-opacity" />
     </>
   )
+  // The row goes to the workload; Kobi has its own button beside it (the K),
+  // never the row itself — a click that opens Kobi says so.
+  const ask = (
+    <AskCopilotButton
+      variant="icon"
+      payload={{
+        type: 'not_ready_resource',
+        resource: {
+          kind: w.kind,
+          namespace: w.namespace,
+          name: w.name,
+          status: w.status,
+          details: { replicas: w.replicas, readyReplicas: w.readyReplicas },
+        },
+      }}
+      label={`Ask Kobi about ${w.name}`}
+      className="shrink-0"
+    />
+  )
   if (!route) {
-    return <div className="flex items-center gap-2 text-xs font-mono">{inner}</div>
+    return (
+      <div className="flex items-center gap-2">
+        <div className="flex-1 min-w-0 flex items-center gap-2 text-xs font-mono">{inner}</div>
+        {ask}
+      </div>
+    )
   }
   return (
-    <Link
-      to={`/${route}/${w.namespace}/${w.name}`}
-      className="flex items-center gap-2 text-xs font-mono group"
-    >
-      {inner}
-    </Link>
+    <div className="flex items-center gap-2">
+      <Link
+        to={`/${route}/${w.namespace}/${w.name}`}
+        className="flex-1 min-w-0 flex items-center gap-2 text-xs font-mono group"
+      >
+        {inner}
+      </Link>
+      {ask}
+    </div>
   )
 }

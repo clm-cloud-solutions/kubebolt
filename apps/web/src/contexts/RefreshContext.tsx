@@ -17,9 +17,9 @@ const STORAGE_KEY = 'kb-refresh-interval'
 
 const VALID_INTERVALS: RefreshInterval[] = [5_000, 10_000, 15_000, 30_000, 60_000, 120_000]
 
-function loadStoredInterval(): RefreshInterval | null {
+function loadStoredInterval(key = STORAGE_KEY): RefreshInterval | null {
   try {
-    const stored = localStorage.getItem(STORAGE_KEY)
+    const stored = localStorage.getItem(key)
     if (stored) {
       const parsed = Number(stored) as RefreshInterval
       if (VALID_INTERVALS.includes(parsed)) return parsed
@@ -50,6 +50,35 @@ export function RefreshProvider({ children }: { children: ReactNode }) {
   function setInterval(value: RefreshInterval) {
     setIntervalState(value)
     try { localStorage.setItem(STORAGE_KEY, String(value)) } catch {}
+  }
+
+  return (
+    <RefreshContext.Provider value={{ interval, setInterval }}>
+      {children}
+    </RefreshContext.Provider>
+  )
+}
+
+// ScopedRefreshProvider gives one surface its own refresh interval, apart from
+// the app-wide one the cluster pages share: a choice made there does not carry
+// over, and the org's default (a cluster-dashboard setting) does not apply.
+// Everything under it — the freshness picker included — reads and sets this one.
+export function ScopedRefreshProvider({
+  storageKey,
+  defaultInterval,
+  children,
+}: {
+  storageKey: string
+  defaultInterval: RefreshInterval
+  children: ReactNode
+}) {
+  const [interval, setIntervalState] = useState<RefreshInterval>(
+    () => loadStoredInterval(storageKey) ?? defaultInterval,
+  )
+
+  function setInterval(value: RefreshInterval) {
+    setIntervalState(value)
+    try { localStorage.setItem(storageKey, String(value)) } catch {}
   }
 
   return (

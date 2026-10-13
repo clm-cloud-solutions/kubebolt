@@ -23,17 +23,25 @@ import { createPortal } from 'react-dom'
 // Or, when the caller already manages mouse state, render
 // <TooltipPanel> + rows directly inside their own portal.
 
+// The surface every floating tooltip shares (this panel, the charts', the
+// cluster map's): frosted glass on the card colour — white in light, the card
+// charcoal in dark — at 65 % over an 8 px blur, so it reads clearly over a
+// chart and still keeps the shape of what lies under it. Opacity modifiers
+// follow Tailwind's 5-step scale (/60, /65, /70…); a value off it compiles to
+// nothing unless bracketed (/[0.63]). (It used to be the elevated grey at
+// 95 %, a utility that compiled to nothing until 2026-10: in practice the
+// panel had no background at all.)
+export const TOOLTIP_SURFACE = 'bg-kb-card/65 backdrop-blur backdrop-saturate-150 border border-kb-border shadow-xl'
+
 // Solid mode drops the translucency + backdrop-blur for surfaces that
 // hover over plain toolbar chrome (no data visible underneath worth
 // seeing through). Default is the translucent variant used over charts
 // and the cluster map, where the blur preserves spatial context.
 export function TooltipPanel({ children, className = '', solid = false }: { children: ReactNode; className?: string; solid?: boolean }) {
-  const surface = solid
-    ? 'bg-kb-elevated border-kb-border-active shadow-2xl'
-    : 'bg-kb-elevated/95 backdrop-blur border-kb-border shadow-xl'
+  const surface = solid ? 'bg-kb-elevated border border-kb-border-active shadow-2xl' : TOOLTIP_SURFACE
   return (
     <div
-      className={`${surface} border rounded-md px-3 py-2 text-[11px] ${className}`}
+      className={`${surface} rounded-md px-3 py-2 text-[11px] ${className}`}
     >
       {children}
     </div>

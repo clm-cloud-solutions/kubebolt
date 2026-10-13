@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { healthFromInsights, healthLabel, fleetHealthSummary } from './clusterHealth'
+import type { ClusterInfo } from '@/types/kubernetes'
+import { clusterVerdict, healthFromInsights, healthLabel, fleetHealthSummary } from './clusterHealth'
 
 // Este módulo existe por un bug concreto: Fleet decía «Healthy» de un cluster
 // cuyo propio Overview decía «warning». Lo que se prueba aquí es que el
@@ -79,5 +80,29 @@ describe('fleetHealthSummary', () => {
     expect(fleetHealthSummary(['a', 'b'], undefined)).toEqual({
       healthy: 0, warning: 0, critical: 0, unknown: 2,
     })
+  })
+})
+
+describe('clusterVerdict', () => {
+  const viaAgent = (agentConnected: boolean) =>
+    ({ name: 'lab', context: 'agent:lab', source: 'agent-proxy', status: 'connected', agentConnected }) as ClusterInfo
+
+  it('sin agente conectado no hay salud que dar, aunque sus insights digan sano', () => {
+    // El lab de AKS del 2026-10-12: VM desasignada, agente caído con ella, y
+    // Fleet seguía pintando «healthy» con los insights de la caché congelada.
+    expect(clusterVerdict(viaAgent(false), {})).toBe('nocontact')
+    expect(clusterVerdict(viaAgent(false), { warning: 2 })).toBe('nocontact')
+    expect(healthLabel('nocontact')).toBe('NO CONTACT')
+  })
+
+  it('con el agente conectado manda lo de siempre: sus insights', () => {
+    expect(clusterVerdict(viaAgent(true), {})).toBe('healthy')
+    expect(clusterVerdict(viaAgent(true), { critical: 1 })).toBe('critical')
+    expect(clusterVerdict(viaAgent(true), undefined)).toBe('unknown')
+  })
+
+  it('un cluster por kubeconfig no tiene agente que perder', () => {
+    const direct = { name: 'dev', context: 'dev', source: 'file', status: 'connected', agentConnected: false } as ClusterInfo
+    expect(clusterVerdict(direct, {})).toBe('healthy')
   })
 })

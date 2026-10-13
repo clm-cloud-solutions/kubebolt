@@ -3,7 +3,10 @@ import { useQuery } from '@tanstack/react-query'
 import type { ClusterInfo } from '@/types/kubernetes'
 import type { FleetRollup } from '@/hooks/useFleetRollup'
 import { api } from '@/services/api'
-import { TooltipHeader, TooltipNote } from '@/components/shared/Tooltip'
+import { TooltipHeader, TooltipNote, TooltipRow } from '@/components/shared/Tooltip'
+import { useAuth } from '@/contexts/AuthContext'
+import { clockOrDay } from '@/utils/localTime'
+import { agentDown } from '@/utils/cluster'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { KPI_COLOR, Legend, RingStat, Sparkline, SplitBar, StatusList } from '@/components/shared/kpi/MiniCharts'
 import { columnsFor, useElementWidth } from '@/hooks/useElementWidth'
@@ -65,11 +68,21 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
   })
 
   // ── Clusters ──────────────────────────────────────────────────────────
-  const isHealthy = (c: ClusterInfo) => c.status === 'connected' || !!c.agentConnected
+  // Reachable, not healthy: this is connection state (connected, or an agent
+  // channel open). A connected cluster with criticals open is reachable; it
+  // used to be counted, in green, as "healthy" — the verdict lives on Fleet.
+  // A cluster whose agent is gone is not reachable even when its status still
+  // says "connected" (a parked runtime keeps it; utils/cluster agentDown).
+  const isHealthy = (c: ClusterInfo) => !agentDown(c) && (c.status === 'connected' || !!c.agentConnected)
   const unhealthy = clusters
     .filter((c) => !isHealthy(c))
-    .map((c) => ({ name: c.displayName || c.name, crit: c.status === 'error' }))
-    .sort((a, b) => Number(b.crit) - Number(a.crit))
+    .map((c) => ({ name: c.displayName || c.name, crit: c.status === 'error', lastSeen: c.lastSeen ?? null }))
+    // Unreachable first; then the one silent the longest.
+    .sort((a, b) => Number(b.crit) - Number(a.crit) || (Date.parse(a.lastSeen ?? '') || 0) - (Date.parse(b.lastSeen ?? '') || 0))
+  // Where a cluster that stopped answering gets fixed: its agent, for whoever
+  // may manage agents; Fleet, where its card says what is known, for the rest.
+  const { hasRole } = useAuth()
+  const fixAt = hasRole('admin') ? '/admin/agents' : '/fleet'
   const healthy = clusters.length - unhealthy.length
   // Three rows at most — the Overview's insights list sets the row height and
   // a fourth row here would stretch every card beside it.
@@ -83,7 +96,7 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
       to: '/fleet',
     })),
     ...(healthy > 0
-      ? [{ color: KPI_COLOR.ok, label: `${healthy} healthy`, value: unhealthy.length > shownBad.length ? `+${unhealthy.length - shownBad.length} more` : undefined, to: '/fleet' }]
+      ? [{ color: KPI_COLOR.ok, label: `${healthy} reachable`, value: unhealthy.length > shownBad.length ? `+${unhealthy.length - shownBad.length} more` : undefined, to: '/fleet' }]
       : []),
   ]
 
@@ -130,7 +143,19 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
         alert={unhealthy.some((u) => u.crit) ? 'crit' : unhealthy.length > 0 ? 'warn' : undefined}
         value={clusters.length}
         unit={clusters.length === 1 ? 'cluster' : 'clusters'}
-        description={unhealthy.length > 0 ? `${unhealthy.length} need your attention` : 'all reporting'}
+        description={
+          unhealthy[0] ? (
+            <>
+              {unhealthy.length} need your attention ·{' '}
+              <Link to={fixAt} className="underline decoration-dotted underline-offset-2 hover:text-kb-text-primary transition-colors">
+                {unhealthy[0].name.replace(/ \(via agent\)$/, '')}
+              </Link>
+              {unhealthy[0].lastSeen && <> since {clockOrDay(unhealthy[0].lastSeen)}</>}
+            </>
+          ) : (
+            'all reporting'
+          )
+        }
         viz={<StatusList rows={clusterRows} />}
         caption={
           <Link to="/fleet" className="hover:text-kb-text-primary transition-colors">
@@ -140,6 +165,23 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
         info={
           <>
             <TooltipHeader>Clusters you can see</TooltipHeader>
+            {unhealthy.length > 0 && (
+              <div className="space-y-1">
+                {unhealthy.slice(0, 6).map((u) => (
+                  <TooltipRow
+                    key={u.name}
+                    color={u.crit ? KPI_COLOR.err : KPI_COLOR.warn}
+                    label={u.name.replace(/ \(via agent\)$/, '')}
+                    value={
+                      <span className="whitespace-nowrap">
+                        {u.crit ? 'unreachable' : 'no agent'}
+                        {u.lastSeen ? ` · since ${clockOrDay(u.lastSeen)}` : ''}
+                      </span>
+                    }
+                  />
+                ))}
+              </div>
+            )}
             <TooltipNote>
               Narrowed by the team lens in the user menu — the same set Fleet and the switcher show. Not every
               cluster in the org.
@@ -223,8 +265,10 @@ export function HomeKpis({ clusters, visibleIds, rollup, critical, high, canSeeC
         />
       )}
 
+      {/* Posture, not an incident: open critical findings are worked
+          through, they don't page anyone — the same rule as Security, where
+          only runtime threats light their card. The red stays in the bar. */}
       <KpiCard
-        alert={critical > 0 ? 'crit' : undefined}
         value={critical}
         unit="critical"
         description={critical > 0 ? 'security findings' : 'nothing critical open'}

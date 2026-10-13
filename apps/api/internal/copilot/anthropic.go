@@ -131,6 +131,31 @@ type anthropicRequest struct {
 	System    any                `json:"system,omitempty"`
 	Messages  []anthropicMessage `json:"messages"`
 	Tools     []anthropicTool    `json:"tools,omitempty"`
+	Thinking  *anthropicThinking `json:"thinking,omitempty"`
+}
+
+type anthropicThinking struct {
+	Type string `json:"type"` // "disabled" | "between_tools" — see anthropicThinkingOff
+}
+
+// anthropicThinkingOff is the thinking type that turns reasoning off for this
+// model, or "" when there is none to send. Per model on purpose, because the
+// same body is a 400 elsewhere (verified against the live API 2026-10-07/08):
+//
+//	Claude Haiku 5.5   thinks by default, accepts {"type":"disabled"}
+//	Claude Sonnet 5.5  rejects "disabled"; its lowest setting is "between_tools"
+//	Opus 5.5, Fable    accept neither — nothing is sent, they keep reasoning
+//
+// Models that do not think by default have nothing to turn off.
+func anthropicThinkingOff(model string) string {
+	m := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(m, "claude-haiku-5-5"):
+		return "disabled"
+	case strings.HasPrefix(m, "claude-sonnet-5-5"):
+		return "between_tools"
+	}
+	return ""
 }
 
 type anthropicUsage struct {
@@ -143,6 +168,10 @@ type anthropicUsage struct {
 	CacheCreation struct {
 		Ephemeral1hInputTokens int `json:"ephemeral_1h_input_tokens"`
 	} `json:"cache_creation"`
+	// The part of output_tokens spent in thinking blocks.
+	OutputTokensDetails struct {
+		ThinkingTokens int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 type anthropicResponse struct {
@@ -178,6 +207,11 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		MaxTokens: req.MaxTokens,
 		Messages:  toAnthropicMessages(req.Messages),
 		Tools:     toAnthropicTools(req.Tools),
+	}
+	if req.NoThinking {
+		if t := anthropicThinkingOff(model); t != "" {
+			body.Thinking = &anthropicThinking{Type: t}
+		}
 	}
 	if req.System != "" {
 		body.System = []anthropicSystemBlock{{
@@ -258,16 +292,24 @@ func (p *AnthropicProvider) Chat(ctx context.Context, req ChatRequest) (*ChatRes
 		return nil, fmt.Errorf("parse response: %w", err)
 	}
 
-	// Extract text and tool calls from the content blocks
+	// Extract text and tool calls from the content blocks. A `thinking` block
+	// (models that reason by default, e.g. Haiku 5.5) is skipped like any
+	// other non-text block: it is not sent back on the next round, which the
+	// API accepts, so a tool loop keeps working at the cost of that round's
+	// reasoning.
 	out := &ChatResponse{
 		StopReason: ar.StopReason,
-		Usage: Usage{
+		// Tagged here, per call, because this is the only place that knows
+		// how large THIS call's prompt was (two-rate-card models, see
+		// ModelPricing.Long).
+		Usage: TagLongContext(Usage{
 			InputTokens:           ar.Usage.InputTokens,
 			OutputTokens:          ar.Usage.OutputTokens,
 			CacheCreationTokens:   ar.Usage.CacheCreationInputTokens,
 			CacheReadTokens:       ar.Usage.CacheReadInputTokens,
 			CacheCreation1hTokens: ar.Usage.CacheCreation.Ephemeral1hInputTokens,
-		},
+			ThinkingTokens:        ar.Usage.OutputTokensDetails.ThinkingTokens,
+		}, "anthropic", model),
 	}
 	for _, block := range ar.Content {
 		switch block.Type {

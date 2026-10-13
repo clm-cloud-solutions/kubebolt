@@ -25,3 +25,11 @@ jobs:
         run: cd apps/web && npm test
       - name: Build
         run: cd apps/web && npm run build
+  alert-rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      # The rules in the chart (files/kubebolt-alerts.yaml) against their unit
+      # tests. promtool from the official image, pinned.
+      - name: Test the alert rules
+        run: docker run --rm -v "$PWD":/w -w /w --entrypoint promtool prom/prometheus:v3.5.0 test rules deploy/prometheus/kubebolt-alerts.test.yaml

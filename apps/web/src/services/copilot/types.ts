@@ -28,6 +28,10 @@ export interface CopilotMessage {
    * renders a "Stopped by you" marker so a half-finished (or empty) answer
    * reads as a deliberate cancel, not a hang or a completed reply. */
   cancelled?: boolean
+  /** Set by the server on the final answer of a finished turn: the turn's id,
+   * which a 👍/👎 names (POST /copilot/feedback). Round-trips with the
+   * transcript so earlier answers stay rateable. */
+  turnId?: string
 }
 
 export interface CopilotToolCall {
@@ -72,6 +76,9 @@ export interface CopilotStreamEvent {
   // `meta` event (so a mid-stream refresh can still resume) and echoed on
   // `done`. Empty/absent when persistence isn't wired (auth/BoltDB disabled).
   conversationId?: string
+  // "done" payload: the id of the turn that just finished (also stamped on its
+  // final assistant message). Absent when the turn ended in an error.
+  turnId?: string
   // "usage" event payload: per-round delta and running session totals
   round?: number
   turn?: CopilotUsage
@@ -95,6 +102,7 @@ export interface CopilotStreamEvent {
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
     timestamp?: string
+    turnId?: string
   }>
 }
 
@@ -106,6 +114,7 @@ export interface CompactResponse {
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
     timestamp?: string
+    turnId?: string
   }>
   tokensBefore: number
   tokensAfter: number
@@ -369,6 +378,7 @@ export interface ConversationDetail {
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
     timestamp?: string
+    turnId?: string
   }>
   lastRoundUsage?: CopilotUsage
   trigger?: string
@@ -402,3 +412,22 @@ export interface CopilotConfig {
   // useAiSpendUnit, which falls back to credits.
   spendUnit?: 'credits' | 'usd'
 }
+
+// ─── Answer feedback (👍/👎) ────────────────────────────────────────
+//
+// A user's rating of one Kobi answer, named by its turn id. A 👎 can carry a
+// reason and a free-text comment; the comment stays with the conversation,
+// inside the org. Mirrors copilot.Feedback.
+
+export type CopilotFeedbackRating = 'up' | 'down'
+export type CopilotFeedbackReason = 'incorrect' | 'incomplete' | 'off_topic' | 'slow'
+
+export interface CopilotFeedback {
+  conversationId: string
+  turnId: string
+  rating: CopilotFeedbackRating
+  reason?: CopilotFeedbackReason
+  comment?: string
+  updatedAt?: string
+}
+
