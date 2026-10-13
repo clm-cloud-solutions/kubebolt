@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from 'react'
-import { Database, Globe, ListChecks, Server } from 'lucide-react'
+import { Cable, Database, Globe, ListChecks, Server } from 'lucide-react'
 import { MetricChart } from '@/components/shared/MetricChart'
 import { KpiCard } from '@/components/shared/kpi/KpiCard'
 import { KPI_COLOR, Sparkline, StatusList } from '@/components/shared/kpi/MiniCharts'
@@ -8,17 +8,30 @@ import { liveProcess } from '@/utils/promql'
 import { AutoGrid } from './AutoGrid'
 import { Breakdown } from './Breakdown'
 import { duration, HttpCharts, jobStatus, JobsTable, RouteGroupsTable, VMCallsCharts } from './ApiHealthSections'
-import { first, HealthFrame, useHealthSparkline, useHealthVector, type HealthFrameProps } from './healthShared'
+import { first, HealthFrame, inInterval, useHealthSparkline, useHealthVector, type HealthFrameProps } from './healthShared'
 
 // Administration › System › Health: is this KubeBolt healthy right now, and if
 // not, which piece — the API replicas, what the API answers, its background
-// jobs, the metrics store. Every series is KubeBolt's own (doc #67, O2),
+// jobs, the metrics store, the tunnel to the agents. Every series is KubeBolt's own (doc #67, O2),
 // written by the API about itself (job="kubebolt-api") and by VictoriaMetrics
 // about itself (job="victoria-metrics", --selfScrapeInterval).
 
 const API = 'job="kubebolt-api"'
 const VM = 'job="victoria-metrics"'
 const STATE_COLOR: Record<string, string> = { active: '#22c55e', building: '#f59e0b', parked: '#94a3b8' }
+// One colour per value, so no two bars of a chart read alike.
+const TUNNEL_RESULT_COLOR: Record<string, string> = {
+  timeout: '#f59e0b',
+  canceled: '#94a3b8',
+  agent_closed: '#ef4056',
+  not_connected: '#a855f7',
+  send_error: '#f97316',
+}
+// A quantile of the tunnel calls in each interval on its own — like Kobi's
+// model latency — and nothing where there were none.
+const TUNNEL_OK = 'kubebolt_agent_kube_request_seconds_{kind}{result="ok"}'
+const tunnelQuantile = (q: number) =>
+  `histogram_quantile(${q}, ${inInterval(TUNNEL_OK.replace('{kind}', 'bucket'), 'le')}) and on () (${inInterval(TUNNEL_OK.replace('{kind}', 'count'))} > 0)`
 
 function Section({ title, note, Icon, children }: { title: string; note: string; Icon: ComponentType<{ className?: string }>; children: ReactNode }) {
   return (
@@ -37,7 +50,7 @@ function Section({ title, note, Icon, children }: { title: string; note: string;
 
 export function ApiHealth() {
   return (
-    <HealthFrame intro="KubeBolt itself: the API replicas, what the API answers, its background jobs and the metrics store. Only KubeBolt's own series — none of your workloads' metrics.">
+    <HealthFrame intro="KubeBolt itself: the API replicas, what the API answers, its background jobs, the metrics store and the tunnel to the agents. Only KubeBolt's own series — none of your workloads' metrics.">
       {(p) => <ApiHealthBody {...p} />}
     </HealthFrame>
   )
@@ -277,6 +290,51 @@ function ApiHealthBody({ charts, rangeMinutes, perInterval, perPoint }: HealthFr
             emptyMessage="No cluster runtimes in this window."
             emptyHint="Runtimes appear as soon as a cluster is connected to this API."
             footnote="kubebolt_api_runtimes by (state)"
+          />
+        </AutoGrid>
+      </Section>
+
+      <Section title="Agents and tunnel" note="where each agent channel lives, and what crossing the tunnel costs" Icon={Cable}>
+        <AutoGrid minCol={340} allowed={[3, 1]} fallback="grid-cols-1 lg:grid-cols-3">
+          <MetricChart
+            {...charts}
+            title="Live channels per replica"
+            unit="count"
+            chartType="area"
+            accents={['#22c55e', '#94a3b8', '#06b6d4']}
+            query={liveProcess('kubebolt_agent_channels')}
+            seriesLabel={(l) => l.instance ?? 'api'}
+            emptyMessage="No agent channel in this window."
+            emptyHint="A channel is pinned to the replica the agent connected to; with several replicas this shows how they share them."
+            footnote="kubebolt_agent_channels by (instance)"
+          />
+          <MetricChart
+            {...charts}
+            sparse
+            title="Requests through the tunnel"
+            unit="seconds"
+            chartType="line"
+            queries={[
+              { query: tunnelQuantile(0.95), prefix: 'p95', accent: '#f59e0b' },
+              { query: tunnelQuantile(0.5), prefix: 'p50', accent: '#94a3b8' },
+            ]}
+            seriesLabel={(_l, prefix) => prefix ?? 'latency'}
+            emptyMessage="No requests through the tunnel in this window."
+            emptyHint="Unary Kubernetes API calls the API makes through an agent, each interval on its own; no calls, no point. Watches and exec sessions are not timed."
+            footnote={`kubebolt_agent_kube_request_seconds{result="ok"} · ${perPoint}`}
+          />
+          <MetricChart
+            {...charts}
+            sparse
+            title="Tunnel failures"
+            unit="count"
+            chartType="bar"
+            query={`${inInterval('kubebolt_agent_kube_request_seconds_count{result!="ok"}', 'result')} > 0`}
+            seriesLabel={(l) => (l.result ?? 'failed').replace('_', ' ')}
+            seriesColor={(l) => TUNNEL_RESULT_COLOR[l.result ?? '']}
+            emptyMessage="No tunnel failures in this window."
+            emptyHint="Timeouts, agents that dropped mid-request and requests for a cluster with no agent show up here."
+            footnote={`kubebolt_agent_kube_request_seconds_count{result!="ok"} by (result) · ${perInterval}`}
           />
         </AutoGrid>
       </Section>

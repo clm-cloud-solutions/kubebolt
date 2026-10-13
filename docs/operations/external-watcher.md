@@ -13,7 +13,8 @@ watcher closes that gap from outside:
 Only the API's own health crosses — series without `tenant_id` or
 `cluster_id`, from an allowlist (`apps/api/internal/api/metrics_external.go`):
 `kubebolt_build_info`, `kubebolt_http_*`, `kubebolt_job_*`, `kubebolt_vm_*`,
-`kubebolt_ws_*`, `kubebolt_api_runtimes`, `process_resident_memory_bytes`,
+`kubebolt_ws_*`, `kubebolt_api_runtimes`, `kubebolt_agent_channels`,
+`kubebolt_agent_kube_request_seconds`, `process_resident_memory_bytes`,
 `process_cpu_seconds_total`, `process_start_time_seconds`, `go_goroutines`.
 No cluster identifier and nothing of Kobi leave the install. A few hundred
 series per replica, one data point per minute: inside Grafana Cloud's free tier.
@@ -63,10 +64,10 @@ kubebolt_build_info{env="prod"}
 Upload dashboard JSON file**, then pick the stack's Prometheus data source. It
 mirrors Administration › System › Health: overview (replicas reporting, last
 push, version, 5xx share, jobs late), API (memory, CPU, goroutines, uptime,
-cluster runtimes), HTTP (status, 5xx by route group, response time,
-route-group table, open requests, WebSocket drops), background jobs (table and
-time since last success in intervals) and calls to VictoriaMetrics. Variables:
-data source, `env`, replica.
+cluster runtimes, agent channels), HTTP (status, 5xx by route group, response
+time, route-group table, open requests, WebSocket drops), background jobs
+(table and time since last success in intervals), calls to VictoriaMetrics
+and the agent tunnel. Variables: data source, `env`, replica.
 
 Grafana Cloud speaks standard PromQL, not VictoriaMetrics' MetricsQL, so the
 queries differ from the in-product ones: counters through `rate` /

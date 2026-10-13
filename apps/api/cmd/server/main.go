@@ -939,6 +939,9 @@ func main() {
 	// safe. SetAgentRegistry + SetStore wiring still runs further
 	// down where the manager + Bolt store are available.
 	agentRegistry := channel.NewAgentRegistry()
+	// System › Health: live agent channels per replica, and the cost of a
+	// request through the tunnel.
+	channel.RegisterTransportMetrics(prometheus.DefaultRegisterer, agentRegistry)
 
 	// updateCheckSvc drives the "new KubeBolt version available" chip.
 	// Cache TTL 6h keeps GitHub API traffic well under the unauth

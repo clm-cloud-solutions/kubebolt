@@ -686,7 +686,7 @@
       },
       "gridPos": {
         "h": 8,
-        "w": 16,
+        "w": 8,
         "x": 8,
         "y": 14
       },
@@ -734,10 +734,68 @@
       }
     },
     {
+      "type": "timeseries",
+      "title": "Live agent channels per replica",
+      "id": 13,
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum without (run_id) (kubebolt_agent_channels{env=\"$env\", instance=~\"$instance\"} and (timestamp(kubebolt_agent_channels{env=\"$env\", instance=~\"$instance\"}) == ignoring (run_id) group_left max without (run_id) (timestamp(kubebolt_agent_channels{env=\"$env\", instance=~\"$instance\"}))))",
+          "legendFormat": "{{instance}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
       "type": "row",
       "title": "HTTP",
       "collapsed": false,
-      "id": 13,
+      "id": 14,
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -749,7 +807,7 @@
     {
       "type": "timeseries",
       "title": "Requests by status",
-      "id": 14,
+      "id": 15,
       "description": "503 stands apart from 5xx: a cluster unreachable or a feature not configured.",
       "datasource": {
         "type": "prometheus",
@@ -807,7 +865,7 @@
     {
       "type": "timeseries",
       "title": "Server errors by route group",
-      "id": 15,
+      "id": 16,
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -865,7 +923,7 @@
     {
       "type": "timeseries",
       "title": "Response time",
-      "id": 16,
+      "id": 17,
       "description": "Every request but the streams (WebSocket, terminal, port-forward, Kobi chat, MCP).",
       "datasource": {
         "type": "prometheus",
@@ -934,7 +992,7 @@
     {
       "type": "table",
       "title": "Route groups over the range",
-      "id": 17,
+      "id": 18,
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1042,7 +1100,7 @@
     {
       "type": "timeseries",
       "title": "Open right now",
-      "id": 18,
+      "id": 19,
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1111,7 +1169,7 @@
     {
       "type": "timeseries",
       "title": "WebSocket events dropped",
-      "id": 19,
+      "id": 20,
       "description": "queue_full: dropped for every browser; slow_client: a browser fell behind and was disconnected.",
       "datasource": {
         "type": "prometheus",
@@ -1170,7 +1228,7 @@
       "type": "row",
       "title": "Background jobs",
       "collapsed": false,
-      "id": 20,
+      "id": 21,
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -1182,7 +1240,7 @@
     {
       "type": "table",
       "title": "Jobs",
-      "id": 21,
+      "id": 22,
       "description": "Last success, how often it should run, failed runs in the range, and how long the slowest replica's last run took.",
       "datasource": {
         "type": "prometheus",
@@ -1359,7 +1417,7 @@
     {
       "type": "timeseries",
       "title": "Time since last success, in intervals",
-      "id": 22,
+      "id": 23,
       "description": "A job crossing 3 has missed three runs in a row: late.",
       "datasource": {
         "type": "prometheus",
@@ -1434,7 +1492,7 @@
       "type": "row",
       "title": "Calls to VictoriaMetrics",
       "collapsed": false,
-      "id": 23,
+      "id": 24,
       "gridPos": {
         "h": 1,
         "w": 24,
@@ -1446,7 +1504,7 @@
     {
       "type": "timeseries",
       "title": "Calls by caller",
-      "id": 24,
+      "id": 25,
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1504,7 +1562,7 @@
     {
       "type": "timeseries",
       "title": "Failed calls",
-      "id": 25,
+      "id": 26,
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1562,7 +1620,7 @@
     {
       "type": "timeseries",
       "title": "Response time, p95 by operation",
-      "id": 26,
+      "id": 27,
       "description": "",
       "datasource": {
         "type": "prometheus",
@@ -1598,6 +1656,146 @@
             "spanNulls": false,
             "stacking": {
               "mode": "none",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "title": "Agent tunnel",
+      "collapsed": false,
+      "id": 28,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "title": "Requests through the tunnel",
+      "id": 29,
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 61
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(kubebolt_agent_kube_request_seconds_bucket{env=\"$env\", instance=~\"$instance\", result=\"ok\"}[$__rate_interval])))",
+          "legendFormat": "p95",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(kubebolt_agent_kube_request_seconds_bucket{env=\"$env\", instance=~\"$instance\", result=\"ok\"}[$__rate_interval])))",
+          "legendFormat": "p50",
+          "refId": "B",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            }
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "title": "Tunnel failures",
+      "id": 30,
+      "description": "",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 61
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (result) (rate(kubebolt_agent_kube_request_seconds_count{env=\"$env\", instance=~\"$instance\", result!=\"ok\"}[$__rate_interval])) > 0",
+          "legendFormat": "{{result}}",
+          "refId": "A",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "mode": "normal",
               "group": "A"
             }
           },
