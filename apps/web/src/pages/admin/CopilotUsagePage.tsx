@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Modal } from '@/components/shared/Modal'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -27,6 +28,7 @@ import type {
 } from '@/types/copilotUsage'
 
 type Range = '24h' | '7d' | '30d'
+const RANGES: Range[] = ['24h', '7d', '30d']
 
 function fmtTokens(n: number): string {
   if (!Number.isFinite(n)) return '0'
@@ -64,11 +66,13 @@ function endedInError(reason: string) {
 }
 
 export function CopilotUsagePage() {
-  const [range, setRange] = useState<Range>('7d')
+  const [params] = useSearchParams()
+  const [range, setRange] = useState<Range>(() => (RANGES.includes(params.get('range') as Range) ? (params.get('range') as Range) : '7d'))
   const [selected, setSelected] = useState<CopilotSessionEnriched | null>(null)
   // The session-health card filters the table to the sessions that ended in an
-  // error (endedInError — the same rule the summary counts by).
-  const [onlyErrors, setOnlyErrors] = useState(false)
+  // error (endedInError — the same rule the summary counts by). AI › Health
+  // links here already filtered (?sessions=errors).
+  const [onlyErrors, setOnlyErrors] = useState(params.get('sessions') === 'errors')
   const showErrors = () => {
     setOnlyErrors(true)
     document.getElementById('kobi-sessions-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
