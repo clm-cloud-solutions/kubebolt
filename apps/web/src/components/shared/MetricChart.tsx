@@ -131,6 +131,12 @@ interface MetricChartProps {
   // step from this number uses the same lookup as the internal state.
   controlledRangeMinutes?: number
 
+  // An absolute window from an outer page (Platform › Operations' calendar
+  // ranges): a fixed start, and a fixed end or none while it ends now. Wins
+  // over controlledRangeMinutes and hides the per-chart selector the same way.
+  // The step is the one of the shortest range option that covers it.
+  controlledWindow?: { start: number; end?: number }
+
   refetchMs?: number
 
   height?: number
@@ -252,6 +258,19 @@ const BAR_STEPS: Record<number, string> = {
 // fall back to the line step.
 export function barStep(rangeMinutes: number, fallback: string): string {
   return BAR_STEPS[rangeMinutes] ?? fallback
+}
+
+// windowSteps — the line and bar steps for a window of any length (a calendar
+// month, a custom range): those of the shortest option that covers it, so the
+// point counts stay inside the bounds the options were sized for. Past the
+// longest option, a 12h line and a day per bar.
+export function windowSteps(minutes: number, options: RangeOption[] = DEFAULT_RANGE_OPTIONS): { line: string; bar: string } {
+  const line = options.find((o) => o.minutes >= minutes)?.step ?? '12h'
+  const barKey = Object.keys(BAR_STEPS)
+    .map(Number)
+    .sort((a, b) => a - b)
+    .find((m) => m >= minutes)
+  return { line, bar: barKey != null ? BAR_STEPS[barKey] : '1d' }
 }
 
 // ─── Defaults ───────────────────────────────────────────────────────────────
@@ -459,6 +478,7 @@ export function MetricChart({
   defaultRangeMinutes = 15,
   rangeOptions = DEFAULT_RANGE_OPTIONS,
   controlledRangeMinutes,
+  controlledWindow,
   bypassClusterScope,
   emptyMessage,
   emptyHint,
@@ -483,8 +503,12 @@ export function MetricChart({
     : DEFAULT_COLORS
   const [cardRef, cardWidth] = useElementWidth<HTMLDivElement>()
   const [internalRangeMinutes, setInternalRangeMinutes] = useState(defaultRangeMinutes)
-  // Controlled mode: outside selector wins, internal state is ignored.
-  const rangeMinutes = controlledRangeMinutes ?? internalRangeMinutes
+  // Controlled mode: outside selector wins, internal state is ignored. A
+  // window's length is measured up to its end, or up to now while it has none.
+  const windowEnd = controlledWindow?.end
+  const rangeMinutes = controlledWindow
+    ? Math.max(1, Math.round(((windowEnd ?? Math.floor(Date.now() / 1000)) - controlledWindow.start) / 60))
+    : (controlledRangeMinutes ?? internalRangeMinutes)
   const setRangeMinutes = setInternalRangeMinutes
   const [hidden, setHidden] = useState<Set<string>>(new Set())
   // hiddenRefs holds refKey()s (stable pill identities), not full
@@ -525,16 +549,32 @@ export function MetricChart({
   }
 
   const active = rangeOptions.find(r => r.minutes === rangeMinutes) ?? rangeOptions[1]
-  const step = chartType === 'bar' ? barStep(rangeMinutes, active.step) : active.step
+  const fitted = controlledWindow ? windowSteps(rangeMinutes, rangeOptions) : null
+  const step = fitted
+    ? chartType === 'bar' ? fitted.bar : fitted.line
+    : chartType === 'bar' ? barStep(rangeMinutes, active.step) : active.step
+  // [start, end] of a request: the window's, or the range back from now.
+  const bounds = (): { start: number; end: number } => {
+    const end = windowEnd ?? Math.floor(Date.now() / 1000)
+    return { start: controlledWindow?.start ?? end - rangeMinutes * 60, end }
+  }
 
   const allQueries: QuerySpec[] = queries ?? (query ? [{ query }] : [])
 
   const results = useQueries({
     queries: allQueries.map((spec, idx) => ({
-      queryKey: ['metrics-range', spec.query, rangeMinutes, step, idx, bypassClusterScope ? 'admin' : 'scoped'],
+      // A window keys on its edges, not its length: one that ends now grows
+      // by the minute and would otherwise refetch from scratch every minute.
+      queryKey: [
+        'metrics-range',
+        spec.query,
+        controlledWindow ? `${controlledWindow.start}:${windowEnd ?? 'now'}` : rangeMinutes,
+        step,
+        idx,
+        bypassClusterScope ? 'admin' : 'scoped',
+      ],
       queryFn: (): Promise<PromRangeResponse> => {
-        const end = Math.floor(Date.now() / 1000)
-        const start = end - rangeMinutes * 60
+        const { start, end } = bounds()
         const fn = bypassClusterScope ? api.adminQueryMetricsRange : api.queryMetricsRange
         return fn({ query: spec.query, start, end, step })
       },
@@ -611,8 +651,7 @@ export function MetricChart({
     // the nearest event, however far away.
     const stepSec = stepSeconds(step)
     if (sparse && stepSec > 0 && pointsMap.size > 0) {
-      const end = Math.floor(Date.now() / 1000)
-      const start = end - rangeMinutes * 60
+      const { start, end } = bounds()
       const anchor = pointsMap.keys().next().value as number
       for (let t = anchor; t >= start - stepSec; t -= stepSec) if (!pointsMap.has(t)) pointsMap.set(t, { t })
       for (let t = anchor; t <= end; t += stepSec) if (!pointsMap.has(t)) pointsMap.set(t, { t })
@@ -622,7 +661,7 @@ export function MetricChart({
 
     return { points: sortedPoints, series: allSeries, scale }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents, seriesColor, seriesDetail, sparse, step, rangeMinutes])
+  }, [results, allQueries, effectiveRefs, seriesLabel, transform, unit, accents, seriesColor, seriesDetail, sparse, step, rangeMinutes, controlledWindow?.start, windowEnd])
 
   const toggleSeries = (name: string) => {
     setHidden(prev => {
@@ -759,7 +798,7 @@ export function MetricChart({
               uncontrolled mode it stays always visible: a wide-range
               query that returns no data would otherwise trap the user
               with no way back to a working window. */}
-          {controlledRangeMinutes == null && (
+          {controlledRangeMinutes == null && controlledWindow == null && (
             <div className="flex items-center gap-1">
               {rangeOptions.map(opt => {
                 const selected = opt.minutes === rangeMinutes
@@ -865,8 +904,7 @@ export function MetricChart({
         // (honest) instead of compressing the axis. allowDataOverflow stays
         // default-false, so full-coverage charts still auto-extend by the
         // sub-second edge margin without clipping any real point.
-        const domainEnd = Math.floor(Date.now() / 1000)
-        const domainStart = domainEnd - rangeMinutes * 60
+        const { start: domainStart, end: domainEnd } = bounds()
         // Date-boundary detection now keys off the WINDOW, not the data, so a
         // 7d/24h axis always carries dates even when data covers only part of it.
         const spansDays =
