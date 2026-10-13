@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-KubeBolt is an instant Kubernetes monitoring platform — full cluster visibility in under 2 minutes with zero configuration. Go backend + React frontend monorepo. Supports multi-cluster switching and Gateway API resources.
+KubeBolt is the open-source Kubernetes operations platform (Apache 2.0): one place to see, understand and operate clusters — health, topology, operations, cost and security — with Kobi, an AI SRE that reasons over the same context and acts only when a person approves. Product site and user docs: https://kubebolt.io.
+
+This repository is the Community edition, a Go workspace + React monorepo: the API (`apps/api`), the web app (`apps/web`) and `kubebolt-agent` (`packages/agent`), which connects a cluster over an outbound gRPC channel and ships its metrics and flows into VictoriaMetrics. Clusters come from kubeconfig contexts or through the agent; the insights engine, the topology map and Gateway API resources are part of the core. Autopilot, plans, teams and billing belong to KubeBolt Cloud / the Enterprise edition and are not in this repo.
 
 ## Build & Run Commands
 
