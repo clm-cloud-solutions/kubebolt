@@ -88,7 +88,9 @@ export function KpiCard({ value, unit, description, viz, caption, primary, alert
           <ArrowRight className="w-2.5 h-2.5" />
         </Link>
       )}
-      <div className={`flex items-baseline ${compact ? 'gap-1.5' : 'gap-2'} min-w-0 pr-16`}>
+      {/* Room for the corner link only when there is one: reserved always, it
+          cut a unit like "workloads affected" on a card without a link. */}
+      <div className={`flex items-baseline ${compact ? 'gap-1.5' : 'gap-2'} min-w-0 ${link && !restricted ? 'pr-16' : ''}`}>
         <span
           className={`font-display ${compact ? 'text-[28px] 2xl:text-[32px]' : 'text-[40px] 2xl:text-[48px]'} font-semibold leading-none tracking-[-0.035em] tabular-nums text-kb-text-primary`}
         >
