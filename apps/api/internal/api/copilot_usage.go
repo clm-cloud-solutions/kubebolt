@@ -95,7 +95,7 @@ type usageSummaryResponse struct {
 	ErrorSessions       int     `json:"errorSessions"`
 	MaxRoundsSessions   int     `json:"maxRoundsSessions"`
 	FallbackSessions    int     `json:"fallbackSessions"`
-	ErrorRate           float64 `json:"errorRate"`    // ErrorSessions / Sessions * 100
+	ErrorRate           float64 `json:"errorRate"`    // ErrorSessions / Sessions * 100 (see endedInError)
 	FallbackRate        float64 `json:"fallbackRate"` // FallbackSessions / Sessions * 100
 	InputTokens         int     `json:"inputTokens"`
 	OutputTokens        int     `json:"outputTokens"`
@@ -118,6 +118,14 @@ func isAuxTrigger(t string) bool {
 	return t == "auto_title" || t == "manual_compact"
 }
 
+// endedInError reports whether a session ended without its answer through a
+// fault: an error or the round limit. A turn the user stopped (canceled) is
+// not one — the same rule as the failures card in AI › Health, which counts
+// error + max_rounds.
+func endedInError(reason string) bool {
+	return reason != "done" && reason != "canceled"
+}
+
 // computeUsageSummary aggregates a set of session records into the summary
 // shape (rates finalized). Reused for the whole window and per breakdown group.
 func computeUsageSummary(records []copilot.SessionRecord) usageSummaryResponse {
@@ -131,7 +139,7 @@ func computeUsageSummary(records []copilot.SessionRecord) usageSummaryResponse {
 		if !isAuxTrigger(rec.Trigger) {
 			resp.InteractiveSessions++
 		}
-		if rec.Reason != "done" {
+		if endedInError(rec.Reason) {
 			resp.ErrorSessions++
 		}
 		if rec.Reason == "max_rounds" {

@@ -51,6 +51,23 @@ func TestComputeUsageSummary_AuxAndReliability(t *testing.T) {
 	}
 }
 
+// A turn the user stopped is not an error: the Usage page and the failures card
+// in AI › Health count the same sessions.
+func TestComputeUsageSummary_CanceledIsNotAnError(t *testing.T) {
+	s := computeUsageSummary([]copilot.SessionRecord{
+		rec("alice", "manual", "done", false),
+		rec("alice", "manual", "canceled", false),
+		rec("alice", "manual", "error", false),
+		rec("alice", "manual", "max_rounds", false),
+	})
+	if s.ErrorSessions != 2 {
+		t.Fatalf("ErrorSessions = %d, want 2 (error + max_rounds; canceled is not one)", s.ErrorSessions)
+	}
+	if s.ErrorRate < 49.9 || s.ErrorRate > 50.1 {
+		t.Fatalf("ErrorRate = %.1f, want 50.0 (over every session, canceled included)", s.ErrorRate)
+	}
+}
+
 func TestGroupKeyFor(t *testing.T) {
 	cases := []struct {
 		groupBy string

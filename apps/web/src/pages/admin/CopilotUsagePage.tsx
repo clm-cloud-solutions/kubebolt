@@ -54,9 +54,23 @@ function fmtRelative(iso: string): string {
   return `${Math.floor(h / 24)}d ago`
 }
 
+// A session that ended in an error or at the round limit. One the user stopped
+// (canceled) is not: the backend's endedInError counts the same sessions, and
+// so does the failures card in AI › Health.
+function endedInError(reason: string) {
+  return reason !== 'done' && reason !== 'canceled'
+}
+
 export function CopilotUsagePage() {
   const [range, setRange] = useState<Range>('7d')
   const [selected, setSelected] = useState<CopilotSessionEnriched | null>(null)
+  // The session-health card filters the table to the sessions that ended in an
+  // error (endedInError — the same rule the summary counts by).
+  const [onlyErrors, setOnlyErrors] = useState(false)
+  const showErrors = () => {
+    setOnlyErrors(true)
+    document.getElementById('kobi-sessions-table')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
 
   const summaryQuery = useQuery({
     queryKey: ['copilot-usage-summary', range],
@@ -119,7 +133,7 @@ export function CopilotUsagePage() {
         </div>
       </div>
 
-      {summary && <CopilotUsageKpis summary={summary} buckets={timeseries} range={range} />}
+      {summary && <CopilotUsageKpis summary={summary} buckets={timeseries} range={range} onShowErrors={showErrors} />}
 
       <BreakdownSection range={range} />
 
@@ -129,7 +143,9 @@ export function CopilotUsagePage() {
       </div>
 
       <SessionsTable
-        sessions={sessions}
+        sessions={onlyErrors ? sessions.filter((s) => endedInError(s.reason)) : sessions}
+        onlyErrors={onlyErrors}
+        onShowAll={() => setOnlyErrors(false)}
         onSelect={setSelected}
         isLoading={sessionsQuery.isLoading}
       />
@@ -325,10 +341,14 @@ function ToolsChart({ summary }: { summary?: CopilotUsageSummary }) {
 
 function SessionsTable({
   sessions,
+  onlyErrors,
+  onShowAll,
   onSelect,
   isLoading,
 }: {
   sessions: CopilotSessionEnriched[]
+  onlyErrors: boolean
+  onShowAll: () => void
   onSelect: (s: CopilotSessionEnriched) => void
   isLoading: boolean
 }) {
@@ -348,10 +368,21 @@ function SessionsTable({
   const start = (currentPage - 1) * pageSize
   const pageItems = sessions.slice(start, start + pageSize)
   return (
-    <div className="mt-5 bg-kb-card border border-kb-border rounded-[10px] overflow-hidden">
+    <div id="kobi-sessions-table" className="mt-5 bg-kb-card border border-kb-border rounded-[10px] overflow-hidden scroll-mt-4">
       <div className="px-4 py-3 border-b border-kb-border flex items-center justify-between">
         <h3 className="text-xs font-semibold text-kb-text-primary">Recent sessions</h3>
-        <span className="text-[10px] font-mono text-kb-text-tertiary">{sessions.length} total</span>
+        <span className="text-[10px] font-mono text-kb-text-tertiary flex items-center gap-2">
+          {onlyErrors ? (
+            <>
+              {sessions.length} ended in an error
+              <button type="button" onClick={onShowAll} className="text-kb-accent hover:underline">
+                show all
+              </button>
+            </>
+          ) : (
+            `${sessions.length} total`
+          )}
+        </span>
       </div>
       {isLoading ? (
         <div className="py-10"><LoadingSpinner /></div>
