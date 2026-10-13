@@ -136,6 +136,31 @@ func TestManager_RemoveAgentProxyCluster(t *testing.T) {
 	}
 }
 
+// The operator's delete also forgets the cluster's agent records: boot restores
+// a cluster for every record it finds, so a deleted cluster whose records
+// stayed came back on the next restart. Another cluster's records stay.
+func TestManager_RemoveAgentProxyCluster_ForgetsAgentRecords(t *testing.T) {
+	m := newBareManager()
+	reg := channel.NewAgentRegistry()
+	store := channel.NewMemoryAgentStore()
+	reg.SetStore(store)
+	m.SetAgentRegistry(reg)
+	now := time.Now().UTC()
+	_ = store.Upsert(&channel.AgentRecord{ClusterID: "cid-1", AgentID: "a", FirstSeen: now, LastSeen: now})
+	_ = store.Upsert(&channel.AgentRecord{ClusterID: "cid-1", AgentID: "b", FirstSeen: now, LastSeen: now, DisconnectedAt: now})
+	_ = store.Upsert(&channel.AgentRecord{ClusterID: "cid-2", AgentID: "a", FirstSeen: now, LastSeen: now})
+	if _, err := m.AddAgentProxyCluster("cid-1", "Lab"); err != nil {
+		t.Fatal(err)
+	}
+
+	m.RemoveAgentProxyCluster("cid-1")
+
+	recs, _ := store.List()
+	if len(recs) != 1 || recs[0].ClusterID != "cid-2" {
+		t.Errorf("records after deleting cid-1 = %+v, want only cid-2's", recs)
+	}
+}
+
 func TestManager_RemoveAgentProxyCluster_UnknownIsNoop(t *testing.T) {
 	m := newBareManager()
 	m.SetAgentRegistry(channel.NewAgentRegistry())

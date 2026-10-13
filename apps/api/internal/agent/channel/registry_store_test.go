@@ -150,6 +150,115 @@ func TestStore_Prune(t *testing.T) {
 	}
 }
 
+// TestStore_DeleteCluster: the operator's delete drops the cluster's records,
+// connected or not, in both stores — boot restores a cluster for every record
+// left. A caller org takes its own records and the tenant-less ones; "" takes
+// them all; other clusters and other orgs keep theirs.
+func TestStore_DeleteCluster(t *testing.T) {
+	bolted := func(t *testing.T) AgentStore {
+		db, err := bolt.Open(filepath.Join(t.TempDir(), "test.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+		if err != nil {
+			t.Fatalf("bolt.Open: %v", err)
+		}
+		t.Cleanup(func() { _ = db.Close() })
+		bucket := []byte("agents")
+		if err := db.Update(func(tx *bolt.Tx) error { _, err := tx.CreateBucketIfNotExists(bucket); return err }); err != nil {
+			t.Fatalf("CreateBucket: %v", err)
+		}
+		return NewBoltAgentStore(db, bucket)
+	}
+	stores := map[string]func(*testing.T) AgentStore{
+		"memory": func(*testing.T) AgentStore { return NewMemoryAgentStore() },
+		"bolt":   bolted,
+	}
+	for name, open := range stores {
+		t.Run(name, func(t *testing.T) {
+			store := open(t)
+			now := time.Now().UTC()
+			for _, rec := range []AgentRecord{
+				{ClusterID: "c1", AgentID: "a-live", TenantID: "org-a", FirstSeen: now, LastSeen: now},
+				{ClusterID: "c1", AgentID: "a-gone", TenantID: "org-a", FirstSeen: now, LastSeen: now, DisconnectedAt: now},
+				{ClusterID: "c1", AgentID: "b", TenantID: "org-b", FirstSeen: now, LastSeen: now},
+				{ClusterID: "c1", AgentID: "anon", FirstSeen: now, LastSeen: now},
+				{ClusterID: "c10", AgentID: "a", TenantID: "org-a", FirstSeen: now, LastSeen: now},
+			} {
+				rec := rec
+				if err := store.Upsert(&rec); err != nil {
+					t.Fatalf("Upsert: %v", err)
+				}
+			}
+
+			removed, err := store.DeleteCluster("org-a", "c1")
+			if err != nil || removed != 3 {
+				t.Fatalf("DeleteCluster(org-a, c1) = %d, %v; want 3 (org-a's two + the tenant-less one)", removed, err)
+			}
+			left := map[string]bool{}
+			recs, _ := store.List()
+			for _, r := range recs {
+				left[r.ClusterID+"/"+r.AgentID] = true
+			}
+			if len(left) != 2 || !left["c1/b"] || !left["c10/a"] {
+				t.Errorf("after DeleteCluster(org-a, c1): %v, want c1/b (org-b) and c10/a (another cluster)", left)
+			}
+
+			if removed, err := store.DeleteCluster("", "c1"); err != nil || removed != 1 {
+				t.Errorf("DeleteCluster(\"\", c1) = %d, %v; want 1 (every tenant)", removed, err)
+			}
+			if _, err := store.DeleteCluster("org-a", ""); err == nil {
+				t.Error("DeleteCluster with no clusterID should error")
+			}
+		})
+	}
+}
+
+// TestBoltAgentStore_MarkAllDisconnected: at boot no agent is connected, so a
+// record the previous process left "connected" gets the boot time as its
+// disconnect and reaches the prune horizon like any other; one already
+// disconnected keeps its own time, and LastSeen is never rewritten.
+func TestBoltAgentStore_MarkAllDisconnected(t *testing.T) {
+	db, err := bolt.Open(filepath.Join(t.TempDir(), "test.db"), 0600, &bolt.Options{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("bolt.Open: %v", err)
+	}
+	defer db.Close()
+	bucket := []byte("agents")
+	if err := db.Update(func(tx *bolt.Tx) error { _, err := tx.CreateBucketIfNotExists(bucket); return err }); err != nil {
+		t.Fatalf("CreateBucket: %v", err)
+	}
+	store := NewBoltAgentStore(db, bucket)
+	seen := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	left := time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC)
+	_ = store.Upsert(&AgentRecord{ClusterID: "c1", AgentID: "never-left", FirstSeen: seen, LastSeen: seen})
+	_ = store.Upsert(&AgentRecord{ClusterID: "c1", AgentID: "left", FirstSeen: seen, LastSeen: left, DisconnectedAt: left})
+
+	boot := time.Date(2026, 10, 13, 18, 0, 0, 0, time.UTC)
+	stamped, err := store.MarkAllDisconnected(boot)
+	if err != nil || stamped != 1 {
+		t.Fatalf("MarkAllDisconnected = %d, %v; want 1", stamped, err)
+	}
+	recs, _ := store.List()
+	byID := map[string]AgentRecord{}
+	for _, r := range recs {
+		byID[r.AgentID] = r
+	}
+	if got := byID["never-left"]; !got.DisconnectedAt.Equal(boot) || !got.LastSeen.Equal(seen) {
+		t.Errorf("never-left = disconnected %v, last seen %v; want %v and %v", got.DisconnectedAt, got.LastSeen, boot, seen)
+	}
+	if got := byID["left"]; !got.DisconnectedAt.Equal(left) {
+		t.Errorf("left = disconnected %v; want its own %v", got.DisconnectedAt, left)
+	}
+
+	// The hourly prune passes now-24h. An hour after boot only the June one
+	// is past it; a day after boot the one stamped at boot is too.
+	horizon := 24 * time.Hour
+	if removed, _ := store.Prune(boot.Add(time.Hour - horizon)); removed != 1 {
+		t.Errorf("prune an hour after boot removed %d, want 1 (only the one that left in June)", removed)
+	}
+	if removed, _ := store.Prune(boot.Add(25*time.Hour - horizon)); removed != 1 {
+		t.Errorf("prune a day after boot removed %d, want 1 (the one stamped at boot)", removed)
+	}
+}
+
 // TestBoltAgentStore_RoundTrip exercises the BoltDB-backed store
 // against a temporary file: write some records, reopen the file,
 // list them back. This is what protects the boot-restore path
