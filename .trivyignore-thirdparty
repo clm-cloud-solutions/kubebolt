@@ -35,3 +35,7 @@
 # 2026-10-12: 2.3.1 was cut that way, on v1.153.0-scratch with three CVEs waived
 # (CVE-2026-78667, CVE-2026-78669 — HTTP/2 in Go and x/net v0.59.0 —, and
 # CVE-2026-97031); see the v2.3.1 tag. Not needed here while the pin is rc0.
+#
+# 2026-10-13: 2.4.0 moves the pin to the v1.154.0-scratch final (released
+# 2026-10-12): 0 CRITICAL/HIGH on both images with the Trivy DB of 2026-10-12.
+# No waiver needed.
