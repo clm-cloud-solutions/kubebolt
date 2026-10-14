@@ -6,6 +6,34 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.1] — 2026-10-14
+
+A new install gets one first step: connect a cluster in three steps, or try
+it on a laptop. Drop-in, no schema change; the agent stays on 1.4.4. Full
+note: [docs/releases/v2.4.1.md](docs/releases/v2.4.1.md).
+
+### Added
+
+- **First-cluster wizard** for an install with no cluster: name → install →
+  go live. It issues the agent's token before showing anything to copy and
+  hands over one block that is safe to paste twice. A laptop path runs kind,
+  k3d or minikube end to end. Home with no cluster, Add cluster and the setup
+  wizard's Agent step open it; Home also plays an 18-second product tour.
+
+### Fixed
+
+- `GET /clusters` answers `[]` instead of `null` when nothing is registered;
+  Home crashed on it.
+- The full add-cluster wizard no longer lets its command be copied while it
+  still carries a `<…>` placeholder, which a shell reads as a redirection.
+- The setup wizard's Agent step stops saying no cluster is connected once one
+  is.
+- A deep link keeps its query through sign-in (`/admin/insights?tab=rules`
+  opened on the default tab).
+- The chart's API `HTTPRoute` sets `X-KubeBolt-Edge: public`, so `kbs_`
+  service tokens are refused from the internet also when the UI is served
+  off-cluster (`web.enabled=false`).
+
 ## [2.4.0] — 2026-10-13
 
 KubeBolt watches itself, every lit card names who is failing, and a cluster
