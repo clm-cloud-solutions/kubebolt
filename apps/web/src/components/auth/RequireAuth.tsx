@@ -24,7 +24,9 @@ export function RequireAuth({ children }: RequireAuthProps) {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location.pathname }} replace />
+    // The query travels too: a deep link such as /admin/insights?tab=rules must
+    // land on the same tab after signing in, not on the page's default.
+    return <Navigate to="/login" state={{ from: location.pathname + location.search }} replace />
   }
 
   return <>{children}</>

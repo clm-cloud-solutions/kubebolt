@@ -86,7 +86,9 @@ export function landingAfterAuth(from?: string | null): string {
   // se rechaza igual porque el valor viene del estado del cliente y esta función
   // es la que alguien copiará el día que el destino sí se pase a `location`.
   if (!from || !from.startsWith('/') || from.startsWith('//')) return POST_AUTH_LANDING
-  if (NOT_A_DESTINATION.some((p) => from === p || from.startsWith(p + '/'))) {
+  // Compared on the path alone: `from` may carry a query (RequireAuth keeps it).
+  const path = from.split(/[?#]/)[0]
+  if (NOT_A_DESTINATION.some((p) => path === p || path.startsWith(p + '/'))) {
     return POST_AUTH_LANDING
   }
   return from
