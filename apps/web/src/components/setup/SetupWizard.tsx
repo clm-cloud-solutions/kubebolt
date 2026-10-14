@@ -30,6 +30,7 @@ import {
 } from '@/components/setup/agentHelmCommand'
 import { agentAddressProblem, LOCAL_BACKEND_URL, unresolvedPlaceholders } from '@/utils/agentInstall'
 import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
+import { OnboardingTour } from '@/components/onboarding/OnboardingTour'
 import {
   CUSTOM_MODEL_VALUE,
   findModelOption,
@@ -728,6 +729,13 @@ function StepFirstCluster({ clusters }: { clusters: ClusterInfo[] }) {
           </button>
         </div>
       )}
+
+      <figure className="space-y-1.5">
+        <OnboardingTour />
+        <figcaption className="text-[10px] font-mono uppercase tracking-[0.12em] text-kb-text-tertiary">
+          What you'll see once data arrives
+        </figcaption>
+      </figure>
 
       <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
         The agent is read-only by default and brings history, network flows and cost. Skip this step and Home offers

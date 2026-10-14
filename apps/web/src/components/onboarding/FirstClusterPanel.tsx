@@ -1,6 +1,6 @@
-import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { Activity, Check, DollarSign, Laptop, Network, Server, ShieldAlert, Sparkles } from 'lucide-react'
+import { Check, Laptop, Server } from 'lucide-react'
+import { OnboardingTour } from '@/components/onboarding/OnboardingTour'
 
 // FirstClusterPanel — what Home shows while no cluster is registered.
 //
@@ -9,7 +9,7 @@ import { Activity, Check, DollarSign, Laptop, Network, Server, ShieldAlert, Spar
 // a pill to Fleet and a menu from there. Now the next step is the page.
 export function FirstClusterPanel({ onConnect }: { onConnect: (where: 'own' | 'local') => void }) {
   return (
-    <section className="kb-panel p-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] items-start">
+    <section className="kb-panel p-5 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)] items-start">
       <div className="space-y-5 min-w-0">
         <ol className="grid grid-cols-3 gap-2" aria-label="Getting started">
           <Progress state="done" label="KubeBolt running" />
@@ -47,41 +47,13 @@ export function FirstClusterPanel({ onConnect }: { onConnect: (where: 'own' | 'l
           as an admin and they can connect it.
         </p>
       </div>
-      <div className="space-y-2 min-w-0">
-        <div className="text-[11px] font-mono uppercase tracking-[0.12em] text-kb-text-tertiary">
+      <figure className="space-y-2 min-w-0">
+        <OnboardingTour />
+        <figcaption className="text-[11px] font-mono uppercase tracking-[0.12em] text-kb-text-tertiary">
           What you'll see once data arrives
-        </div>
-        <ul className="divide-y divide-kb-border rounded-lg border border-kb-border">
-          <Feature icon={<Activity className="w-4 h-4" />} title="Health and insights">
-            Crash loops, OOM kills, throttling and node pressure, each with what to check next.
-          </Feature>
-          <Feature icon={<Network className="w-4 h-4" />} title="Cluster map">
-            Every workload, the Services in front of it and what it talks to.
-          </Feature>
-          <Feature icon={<DollarSign className="w-4 h-4" />} title="Cost">
-            Spend per namespace and workload, and the capacity you pay for without using it.
-          </Feature>
-          <Feature icon={<ShieldAlert className="w-4 h-4" />} title="Security">
-            Vulnerabilities, misconfigurations and exposed secrets from Trivy, Kyverno and Falco.
-          </Feature>
-          <Feature icon={<Sparkles className="w-4 h-4" />} title="Kobi">
-            Ask about the cluster in plain language, with your own AI provider key.
-          </Feature>
-        </ul>
-      </div>
+        </figcaption>
+      </figure>
     </section>
-  )
-}
-
-function Feature({ icon, title, children }: { icon: ReactNode; title: string; children: ReactNode }) {
-  return (
-    <li className="flex items-start gap-3 px-3 py-2.5">
-      <span className="text-kb-accent mt-0.5 shrink-0">{icon}</span>
-      <div className="min-w-0">
-        <div className="text-[12px] font-medium text-kb-text-primary">{title}</div>
-        <div className="text-[11px] text-kb-text-tertiary leading-relaxed">{children}</div>
-      </div>
-    </li>
   )
 }
 
