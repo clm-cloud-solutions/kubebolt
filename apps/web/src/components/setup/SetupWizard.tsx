@@ -12,12 +12,14 @@ import {
   Eye,
   EyeOff,
   KeyRound,
+  Laptop,
   Loader2,
   Mail,
   Server,
   Sparkles,
 } from 'lucide-react'
 import { api } from '@/services/api'
+import type { ClusterInfo } from '@/types/kubernetes'
 import { useAuth } from '@/contexts/AuthContext'
 import { RBACModePicker } from '@/components/admin/RBACModePicker'
 import {
@@ -26,6 +28,8 @@ import {
   setupAgentBlocked,
   type AgentRBACMode,
 } from '@/components/setup/agentHelmCommand'
+import { agentAddressProblem, LOCAL_BACKEND_URL, unresolvedPlaceholders } from '@/utils/agentInstall'
+import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
 import {
   CUSTOM_MODEL_VALUE,
   findModelOption,
@@ -658,7 +662,85 @@ function WizardModelPicker({
 
 // ─── Step 3: Agent install snippet ────────────────────────────────────
 
+// With no cluster registered there is nothing to install the agent next to:
+// the Secret the regular step creates goes into the connected cluster, and the
+// command it shows has no address to dial. The step becomes the first-cluster
+// flow instead. Decided once, when the step opens, so a cluster connecting
+// mid-step does not swap the content under the person.
 function StepAgent() {
+  const { data: clusters, isSuccess: clustersLoaded } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
+  const [firstCluster, setFirstCluster] = useState<boolean | null>(null)
+  useEffect(() => {
+    if (clustersLoaded && firstCluster === null) setFirstCluster((clusters ?? []).length === 0)
+  }, [clustersLoaded, clusters, firstCluster])
+
+  if (firstCluster === null) {
+    return (
+      <div className="flex items-center gap-2 text-xs text-kb-text-secondary">
+        <Loader2 className="w-3.5 h-3.5 animate-spin" /> Checking your clusters…
+      </div>
+    )
+  }
+  return firstCluster ? <StepFirstCluster clusters={clusters ?? []} /> : <StepAgentForCluster />
+}
+
+function StepFirstCluster({ clusters }: { clusters: ClusterInfo[] }) {
+  const [open, setOpen] = useState<'own' | 'local' | null>(null)
+  const connected = clusters[0]
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-kb-text-primary mb-1">Connect your first cluster</h2>
+        <p className="text-xs text-kb-text-secondary leading-relaxed">
+          No cluster is connected yet. The agent runs inside the cluster and dials out to KubeBolt, so the cluster can
+          be anywhere — your laptop, a private network, a cloud. One block to paste, about two minutes.
+        </p>
+      </div>
+
+      {connected ? (
+        <div className="rounded-md border border-status-ok-dim bg-status-ok-dim/30 p-3 text-xs">
+          <div className="flex items-start gap-2 text-status-ok">
+            <Check className="w-4 h-4 mt-0.5 shrink-0" />
+            <div>
+              <div className="font-semibold">{connected.displayName || connected.name} is connected</div>
+              <div className="text-kb-text-secondary mt-0.5 leading-relaxed">
+                Continue with notifications. More clusters can be added any time from Fleet.
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => setOpen('own')}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-kb-accent text-white text-[13px] font-medium hover:bg-kb-accent/90 transition-colors"
+          >
+            <Server className="w-4 h-4" /> Connect my cluster
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen('local')}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-kb-border text-[13px] text-kb-text-primary hover:bg-kb-card-hover transition-colors"
+          >
+            <Laptop className="w-4 h-4" /> Try it on my laptop
+          </button>
+        </div>
+      )}
+
+      <p className="text-[11px] text-kb-text-tertiary leading-relaxed">
+        The agent is read-only by default and brings history, network flows and cost. Skip this step and Home offers
+        the same thing when the wizard closes.
+      </p>
+
+      {/* Modal portals to the end of <body>, so it paints over this overlay. */}
+      {open && <FirstClusterWizard initialWhere={open} onClose={() => setOpen(null)} />}
+    </div>
+  )
+}
+
+function StepAgentForCluster() {
   const [copiedKey, setCopiedKey] = useState<string | null>(null)
 
   // Spec #09 V2 — when the backend's gRPC channel runs `enforced` (or
@@ -688,7 +770,14 @@ function StepAgent() {
     queryFn: () => api.getAgentInstallDefaults(),
     staleTime: 60_000,
   })
-  const target = resolveSetupAgentTarget(installDefaults)
+  const discovered = resolveSetupAgentTarget(installDefaults)
+  // Outside a cluster the backend cannot tell which of its addresses the
+  // agent's cluster reaches; the person types it, and until it is a usable
+  // host:port the placeholder stays in the command and Copy stays off.
+  const [address, setAddress] = useState('')
+  const typed = address.trim()
+  const addressProblem = discovered.inferred || !typed ? null : agentAddressProblem(typed)
+  const target = discovered.inferred || !typed || addressProblem ? discovered : { ...discovered, backendUrl: typed }
   const [rbacMode, setRbacMode] = useState<AgentRBACMode>('reader')
 
   const channelAuthMode = channel?.effective.agentAuthMode ?? 'disabled'
@@ -734,6 +823,9 @@ function StepAgent() {
     rbacMode,
     tokenSecretName: issuedSecret?.secretName,
   })
+  // A `<…>` left in the command is a shell redirection: pasted, it fails before
+  // Helm runs.
+  const missing = unresolvedPlaceholders(helmCmd)
 
   function copy(key: string, text: string) {
     navigator.clipboard.writeText(text)
@@ -842,7 +934,8 @@ function StepAgent() {
           <button
             type="button"
             onClick={() => copy('helm', helmCmd)}
-            disabled={blocked}
+            disabled={blocked || missing.length > 0}
+            title={missing.length > 0 ? 'Enter where the agent reaches KubeBolt first' : undefined}
             className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] text-kb-text-secondary hover:bg-kb-elevated disabled:opacity-40"
           >
             {copiedKey === 'helm' ? (
@@ -871,12 +964,24 @@ function StepAgent() {
 {helmCmd}
           </pre>
         )}
-        {!target.inferred && (
-          <p className="text-[11px] text-status-warning leading-relaxed">
-            KubeBolt is not running inside a cluster, so it cannot tell which address the agent will reach it on.
-            Replace <code className="font-mono">{target.backendUrl}</code> with the host and gRPC port (9090) the
-            agent&apos;s cluster can dial.
-          </p>
+        {!discovered.inferred && (
+          <div className="space-y-1.5">
+            <label htmlFor="setup-agent-address" className="text-[10px] font-mono font-semibold text-kb-text-tertiary uppercase tracking-wider">
+              Where the agent reaches KubeBolt
+            </label>
+            <input
+              id="setup-agent-address"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              placeholder="kubebolt.example.com:9090"
+              spellCheck={false}
+              className="w-full px-3 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs font-mono text-kb-text-primary focus:outline-none focus:ring-1 focus:ring-kb-accent"
+            />
+            <p className={`text-[11px] leading-relaxed ${addressProblem || !typed ? 'text-status-warning' : 'text-kb-text-tertiary'}`}>
+              {addressProblem ??
+                `KubeBolt is not running inside a cluster, so it cannot tell which address the agent will reach it on: enter the host and gRPC port (9090) the agent's cluster can dial — ${LOCAL_BACKEND_URL} for a kind, k3d or minikube cluster on this machine.`}
+            </p>
+          </div>
         )}
       </div>
 
