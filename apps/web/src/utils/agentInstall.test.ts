@@ -81,6 +81,7 @@ describe('agentAddressProblem', () => {
     for (const a of ['localhost:9090', '127.0.0.1:9090', '[::1]:9090', '0.0.0.0:9090']) {
       expect(agentAddressProblem(a)).toMatch(/own pod/)
     }
+    expect(agentAddressProblem('localhost:9091')).toContain('host.docker.internal:9091')
   })
 
   it('refuses what the chart cannot take', () => {

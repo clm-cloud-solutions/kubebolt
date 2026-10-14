@@ -191,7 +191,8 @@ export function agentAddressProblem(addr: string): string | null {
   if (!m || Number(m[2]) < 1 || Number(m[2]) > 65535) return 'Use host:port, for example kubebolt.example.com:9090.'
   const host = m[1].replace(/^\[|\]$/g, '').toLowerCase()
   if (host === 'localhost' || host === '::1' || host === '0.0.0.0' || /^127\./.test(host)) {
-    return `Inside a cluster, localhost is the agent's own pod. For a cluster on this machine, use ${LOCAL_BACKEND_URL}.`
+    // Keep the port they typed: a backend on another gRPC port is still this machine.
+    return `Inside a cluster, localhost is the agent's own pod. For a cluster on this machine, use host.docker.internal:${m[2]}.`
   }
   return null
 }
