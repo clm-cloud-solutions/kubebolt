@@ -692,11 +692,15 @@ function StepFirstCluster({ clusters }: { clusters: ClusterInfo[] }) {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-base font-semibold text-kb-text-primary mb-1">Connect your first cluster</h2>
-        <p className="text-xs text-kb-text-secondary leading-relaxed">
-          No cluster is connected yet. The agent runs inside the cluster and dials out to KubeBolt, so the cluster can
-          be anywhere — your laptop, a private network, a cloud. One block to paste, about two minutes.
-        </p>
+        <h2 className="text-base font-semibold text-kb-text-primary mb-1">
+          {connected ? 'Your first cluster is connected' : 'Connect your first cluster'}
+        </h2>
+        {!connected && (
+          <p className="text-xs text-kb-text-secondary leading-relaxed">
+            No cluster is connected yet. The agent runs inside the cluster and dials out to KubeBolt, so the cluster can
+            be anywhere — your laptop, a private network, a cloud. One block to paste, about two minutes.
+          </p>
+        )}
       </div>
 
       {connected ? (
