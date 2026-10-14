@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { opencostPromUrlFor, parseOpenCostPrometheus } from '@/utils/opencostPrometheus'
+import { buildHelmCommand, unresolvedPlaceholders } from '@/utils/agentInstall'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { AlertTriangle, Check, Copy, Eye, EyeOff, Loader2, KeyRound, ExternalLink } from 'lucide-react'
 import { api, type AgentInstallConfig, type AgentIssueTokenResponse } from '@/services/api'
@@ -160,8 +160,12 @@ export function AddClusterWizard({ onClose }: Props) {
     : ''
 
   const helmCommand = buildHelmCommand(cfg, nodeSelector)
+  // A `<…>` left in the command is a shell redirection: pasted, it fails before
+  // Helm runs. Copy waits until every one of them has a value.
+  const missing = unresolvedPlaceholders(helmCommand)
 
   function copyHelm() {
+    if (missing.length > 0) return
     const done = () => {
       setCopied(true)
       setWaiting(true) // copying the command = about to run it → start watching for the agent
@@ -335,7 +339,9 @@ export function AddClusterWizard({ onClose }: Props) {
             <button
               type="button"
               onClick={copyHelm}
-              className={`flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono border rounded transition-colors ${
+              disabled={missing.length > 0}
+              title={missing.length > 0 ? `Fill in ${missing.join(', ')} first` : undefined}
+              className={`flex items-center gap-1 px-2 py-0.5 text-[10px] font-mono border rounded transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
                 copied ? 'text-status-ok border-status-ok/40 bg-status-ok-dim' : 'text-kb-text-secondary hover:text-kb-text-primary border-kb-border hover:bg-kb-card-hover'
               }`}
             >
@@ -344,6 +350,13 @@ export function AddClusterWizard({ onClose }: Props) {
             </button>
           </div>
           <pre className="text-[10px] font-mono bg-kb-elevated border border-kb-border rounded p-3 overflow-x-auto text-kb-text-primary leading-relaxed">{helmCommand}</pre>
+          {missing.length > 0 && (
+            <p className="text-[10px] text-status-warn mt-2">
+              {missing.includes('<token-secret-name>')
+                ? 'Generate a token on the left first — the command needs it before it can run.'
+                : `Fill in ${missing.join(', ')} on the left — the command can't run with it empty.`}
+            </p>
+          )}
           {issuedToken?.token && (
             <p className="text-[10px] text-kb-text-tertiary mt-2">
               This command references the Secret <span className="font-mono text-kb-text-secondary">{tokenSecretName}</span> — create it in the target cluster with the token + kubectl shown in the auth section on the left.
@@ -426,128 +439,4 @@ function copyViaTextarea(text: string, done: () => void) {
   } finally {
     document.body.removeChild(ta)
   }
-}
-
-// buildHelmCommand translates the full AgentInstallConfig into `helm install`
-// --set flags (chart value paths verified against deploy/helm/kubebolt-agent).
-// The optional advanced fields only emit a flag when set, keeping the command
-// readable for the common case.
-function buildHelmCommand(cfg: AgentInstallConfig, nodeSelector: Array<{ k: string; v: string }>): string {
-  const ns = cfg.namespace?.trim() || 'kubebolt-system'
-  // Escape backslashes FIRST, then the metachar — otherwise a backslash already
-  // in the input slips through and the escaping is incomplete (CodeQL flags this
-  // as js/incomplete-sanitization).
-  const escKey = (s: string) => s.replace(/\\/g, '\\\\').replace(/\./g, '\\.') // dots are helm path separators
-  const escVal = (s: string) => s.replace(/\\/g, '\\\\').replace(/,/g, '\\,')  // commas separate --set entries
-  const flags: string[] = [
-    `backendUrl=${cfg.backendUrl.trim() || '<BACKEND_URL>'}`,
-    `cluster.name=${cfg.clusterName?.trim() || '<cluster-name>'}`,
-    `rbac.mode=${cfg.rbacMode ?? 'reader'}`,
-    `tls.enabled=${cfg.tlsEnabled ? 'true' : 'false'}`,
-    `hubble.enabled=${cfg.hubbleEnabled ? 'true' : 'false'}`,
-  ]
-  if ((cfg.authMode ?? '') === 'ingest-token') {
-    flags.push('auth.mode=ingest-token')
-    flags.push(`auth.ingestToken.existingSecret=${cfg.authTokenSecret?.trim() || '<token-secret-name>'}`)
-  } else {
-    flags.push('auth.mode=disabled')
-  }
-  // Metrics source — scrape XOR promread (kubelet is always on).
-  if (cfg.metricsSource === 'scrape') {
-    flags.push('scrape.enabled=true')
-  } else if (cfg.metricsSource === 'promread') {
-    flags.push('scrape.enabled=false')
-    flags.push('agent.promRead.enabled=true')
-    flags.push(`agent.promRead.url=${cfg.promRead?.url?.trim() || '<PROMETHEUS_URL>'}`)
-    const pAuth = cfg.promRead?.authMode ?? 'none'
-    if (pAuth !== 'none') {
-      flags.push(`agent.promRead.auth.mode=${pAuth}`)
-      if (pAuth === 'basicAuth' && cfg.promRead?.basicAuthUsername?.trim()) flags.push(`agent.promRead.auth.basicAuthUsername=${escVal(cfg.promRead.basicAuthUsername.trim())}`)
-      if (pAuth === 'bearer' && cfg.promRead?.bearerToken?.trim()) flags.push(`agent.promRead.auth.bearerToken=${escVal(cfg.promRead.bearerToken.trim())}`)
-      if (pAuth === 'awsSigV4') flags.push(`agent.promRead.auth.awsRegion=${cfg.promRead?.awsRegion?.trim() || '<AWS_REGION>'}`)
-    }
-  }
-  // OpenCost cost integration. 'promread' rides the promRead metrics source
-  // (the picker sets metricsSource='promread', so the block above already emits
-  // promRead.enabled + url) — here we only flip cost on.
-  switch (cfg.opencostMode) {
-    case 'bundled': {
-      flags.push('opencost.enabled=true')
-      // The sub-chart's OWN Prometheus. Omitting it is not a soft default: the
-      // official chart points at prometheus-server.prometheus-system and
-      // OpenCost dies on boot when that name does not resolve.
-      //
-      // ONE source for the URL: when the metrics source is promRead, that URL is
-      // the one — the dedicated field is not even rendered — otherwise the
-      // dedicated field. Never a fallback between them; see opencostPromUrlFor.
-      const promUrl = opencostPromUrlFor(cfg.metricsSource, cfg.promRead?.url, cfg.opencostPrometheusUrl)
-      const target = parseOpenCostPrometheus(promUrl)
-      if (target.kind === 'internal') {
-        flags.push(`opencost.opencost.prometheus.internal.serviceName=${escVal(target.serviceName)}`)
-        flags.push(`opencost.opencost.prometheus.internal.namespaceName=${escVal(target.namespaceName)}`)
-        flags.push(`opencost.opencost.prometheus.internal.port=${target.port}`)
-        if (target.scheme !== 'http') flags.push(`opencost.opencost.prometheus.internal.scheme=${target.scheme}`)
-        if (target.path) flags.push(`opencost.opencost.prometheus.internal.path=${escVal(target.path)}`)
-      } else if (target.kind === 'external') {
-        // internal.enabled defaults TRUE in the official chart, so the external
-        // branch only takes effect once it is turned off explicitly.
-        flags.push('opencost.opencost.prometheus.internal.enabled=false')
-        flags.push('opencost.opencost.prometheus.external.enabled=true')
-        flags.push(`opencost.opencost.prometheus.external.url=${escVal(target.url)}`)
-      } else {
-        // Nothing given. A placeholder is the honest rendering — it makes the
-        // missing piece visible in the command instead of shipping a default
-        // that crash-loops.
-        flags.push('opencost.opencost.prometheus.internal.serviceName=<PROMETHEUS_SERVICE>')
-        flags.push('opencost.opencost.prometheus.internal.namespaceName=<PROMETHEUS_NAMESPACE>')
-      }
-      break
-    }
-    case 'scrape':
-      flags.push(`collectors.exporters.opencost=${escVal(cfg.opencostScrapeUrl?.trim() || '<OPENCOST_METRICS_URL>')}`)
-      break
-    case 'promread':
-      flags.push('agent.promRead.cost.enabled=true')
-      break
-  }
-  // mTLS — only meaningful when transport TLS is on.
-  if (cfg.tlsEnabled && cfg.tlsCaSecret?.trim()) flags.push(`tls.caSecret=${cfg.tlsCaSecret.trim()}`)
-  if (cfg.tlsEnabled && cfg.tlsClientCertSecret?.trim()) flags.push(`tls.clientCertSecret=${cfg.tlsClientCertSecret.trim()}`)
-  if (cfg.imageRepo?.trim()) flags.push(`image.repository=${cfg.imageRepo.trim()}`)
-  if (cfg.imageTag?.trim()) flags.push(`image.tag=${cfg.imageTag.trim()}`)
-  if (cfg.imagePullPolicy) flags.push(`image.pullPolicy=${cfg.imagePullPolicy}`)
-  if (cfg.priorityClassName?.trim()) flags.push(`priorityClassName=${cfg.priorityClassName.trim()}`)
-  if (cfg.tolerateAll) flags.push('tolerations[0].operator=Exists')
-  if (cfg.gomemlimit?.trim()) flags.push(`gomemlimit=${cfg.gomemlimit.trim()}`)
-  if (cfg.logLevel && cfg.logLevel !== 'info') flags.push(`logLevel=${cfg.logLevel}`)
-  const r = cfg.resources
-  if (r?.cpuRequest?.trim()) flags.push(`resources.requests.cpu=${r.cpuRequest.trim()}`)
-  if (r?.memoryRequest?.trim()) flags.push(`resources.requests.memory=${r.memoryRequest.trim()}`)
-  if (r?.cpuLimit?.trim()) flags.push(`resources.limits.cpu=${r.cpuLimit.trim()}`)
-  if (r?.memoryLimit?.trim()) flags.push(`resources.limits.memory=${r.memoryLimit.trim()}`)
-  if (cfg.hubbleRelayAddress?.trim()) flags.push(`hubble.relay.address=${cfg.hubbleRelayAddress.trim()}`)
-  // Relay TLS — previously collected in the UI but never emitted (bug).
-  if (cfg.hubbleRelayTls?.existingSecret?.trim()) flags.push(`hubble.relay.tls.existingSecret=${cfg.hubbleRelayTls.existingSecret.trim()}`)
-  if (cfg.hubbleRelayTls?.serverName?.trim()) flags.push(`hubble.relay.tls.serverName=${cfg.hubbleRelayTls.serverName.trim()}`)
-  // Node selector — fed from the wizard's separate array state. The old
-  // cfg.nodeSelector read never received it, so selectors were silently dropped.
-  for (const { k, v } of nodeSelector) {
-    if (k.trim()) flags.push(`nodeSelector.${escKey(k.trim())}=${escVal(v.trim())}`)
-  }
-  // ServiceAccount annotations (IRSA / Workload Identity).
-  for (const { k, v } of cfg.serviceAccountAnnotations ?? []) {
-    if (k.trim()) flags.push(`serviceAccount.annotations.${escKey(k.trim())}=${escVal(v.trim())}`)
-  }
-  // Extra env vars — re-indexed contiguously so a blank row doesn't leave a gap.
-  ;(cfg.extraEnv ?? []).filter((e) => e.name.trim()).forEach((e, i) => {
-    flags.push(`extraEnv[${i}].name=${e.name.trim()}`)
-    flags.push(`extraEnv[${i}].value=${escVal(e.value.trim())}`)
-  })
-
-  const head = [
-    'helm install kubebolt-agent oci://ghcr.io/clm-cloud-solutions/kubebolt/helm/kubebolt-agent',
-    `  --namespace ${ns} --create-namespace`,
-  ]
-  const setLines = flags.map((f) => `  --set ${f}`)
-  return [...head, ...setLines].join(' \\\n')
 }

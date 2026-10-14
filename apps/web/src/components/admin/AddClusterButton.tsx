@@ -1,7 +1,10 @@
 import { useState, useRef, useEffect } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { Plus, ChevronDown, FileText, Cable } from 'lucide-react'
+import { api } from '@/services/api'
 import { AddClusterWizard } from '@/components/admin/AddClusterWizard'
 import { AddKubeconfigModal } from '@/components/admin/AddKubeconfigModal'
+import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
 
 // La puerta de entrada del producto: dar de alta un cluster.
 //
@@ -27,8 +30,12 @@ interface Props {
 
 export function AddClusterButton({ canManage, label = 'Add cluster', align = 'right' }: Props) {
   const [menuOpen, setMenuOpen] = useState(false)
-  const [modal, setModal] = useState<'kubeconfig' | 'agent' | null>(null)
+  const [modal, setModal] = useState<'kubeconfig' | 'agent' | 'first' | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
+  // An org with no cluster yet skips the choice: it gets the first-cluster
+  // wizard, whose «Advanced setup» still leads to every option.
+  const { data: clusters, isSuccess } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters, enabled: canManage })
+  const firstCluster = isSuccess && (clusters?.length ?? 0) === 0
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -46,12 +53,12 @@ export function AddClusterButton({ canManage, label = 'Add cluster', align = 'ri
     <>
       <div className="relative" ref={menuRef}>
         <button
-          onClick={() => setMenuOpen((o) => !o)}
+          onClick={() => (firstCluster ? setModal('first') : setMenuOpen((o) => !o))}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-kb-accent text-white text-xs font-medium hover:bg-kb-accent-bright transition-colors"
         >
           <Plus className="w-3.5 h-3.5" />
           {label}
-          <ChevronDown className={`w-3 h-3 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />
+          {!firstCluster && <ChevronDown className={`w-3 h-3 transition-transform ${menuOpen ? 'rotate-180' : ''}`} />}
         </button>
         {menuOpen && (
           <div
@@ -61,7 +68,23 @@ export function AddClusterButton({ canManage, label = 'Add cluster', align = 'ri
           >
             {/* La letra pequeña de cada camino es lo que hace útil el
                 desplegable: el criterio no es de gusto, es si este backend
-                alcanza al apiserver. */}
+                alcanza al apiserver. El agente va primero: funciona siempre;
+                el kubeconfig, solo con el apiserver a la vista. */}
+            <button
+              type="button"
+              onClick={() => { setMenuOpen(false); setModal('agent') }}
+              className="w-full text-left px-3 py-2.5 hover:bg-kb-card-hover transition-colors"
+            >
+              <div className="flex items-center gap-2 mb-0.5">
+                <Cable className="w-3.5 h-3.5 text-kb-text-secondary" />
+                <span className="text-xs font-medium text-kb-text-primary">Install agent</span>
+                <span className="text-[9px] font-mono uppercase tracking-wider text-kb-accent">Recommended</span>
+              </div>
+              <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
+                A small read-only agent dials out to KubeBolt. Works for any cluster, private or public.
+              </div>
+            </button>
+            <div className="border-t border-kb-border" />
             <button
               type="button"
               onClick={() => { setMenuOpen(false); setModal('kubeconfig') }}
@@ -72,21 +95,7 @@ export function AddClusterButton({ canManage, label = 'Add cluster', align = 'ri
                 <span className="text-xs font-medium text-kb-text-primary">Import kubeconfig</span>
               </div>
               <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
-                KubeBolt dials the apiserver directly. Best when you have a SA token and the cluster is reachable from this backend.
-              </div>
-            </button>
-            <div className="border-t border-kb-border" />
-            <button
-              type="button"
-              onClick={() => { setMenuOpen(false); setModal('agent') }}
-              className="w-full text-left px-3 py-2.5 hover:bg-kb-card-hover transition-colors"
-            >
-              <div className="flex items-center gap-2 mb-0.5">
-                <Cable className="w-3.5 h-3.5 text-kb-text-secondary" />
-                <span className="text-xs font-medium text-kb-text-primary">Install agent</span>
-              </div>
-              <div className="text-[10px] text-kb-text-tertiary pl-5 leading-snug">
-                Remote agent dials back over gRPC. Best when the cluster's apiserver isn't reachable from this backend.
+                KubeBolt connects to the apiserver itself. Only when it is reachable from this backend and you have a service-account token.
               </div>
             </button>
           </div>
@@ -95,6 +104,7 @@ export function AddClusterButton({ canManage, label = 'Add cluster', align = 'ri
 
       {modal === 'kubeconfig' && <AddKubeconfigModal onClose={() => setModal(null)} />}
       {modal === 'agent' && <AddClusterWizard onClose={() => setModal(null)} />}
+      {modal === 'first' && <FirstClusterWizard onClose={() => setModal(null)} />}
     </>
   )
 }
