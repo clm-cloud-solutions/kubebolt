@@ -168,6 +168,11 @@ func (h *handlers) listClusters(w http.ResponseWriter, r *http.Request) {
 	clusters = h.filterClustersByOrg(r, clusters)
 	clusters = h.scopeClustersByTeam(r, clusters)
 	clusters = h.filterClustersByToken(r, clusters)
+	// Nothing registered yet is an empty list, never JSON null: the UI reads
+	// `.length` on it, and Home with zero clusters is the first-cluster step.
+	if clusters == nil {
+		clusters = []cluster.ClusterInfo{}
+	}
 	respondJSON(w, http.StatusOK, clusters)
 }
 

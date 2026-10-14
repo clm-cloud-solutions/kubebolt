@@ -685,7 +685,9 @@ export const api = {
     deleteRequest<LimitsResponse>(`${API_BASE}/admin/tenants/${tenantID}/limits`),
 
   // --- Cluster management ---
-  listClusters: () => fetchJSON<ClusterInfo[]>(`${API_BASE}/clusters`),
+  // An API older than the fix answered `null` for an empty list (a Go nil
+  // slice); every caller reads `.length`, so the shape is settled here.
+  listClusters: () => fetchJSON<ClusterInfo[] | null>(`${API_BASE}/clusters`).then((c) => c ?? []),
 
   // Nombres legibles de TODOS los clusters de la org, incluidos los dados de
   // baja. No es la lista de /clusters: aquella es la de los vivos y alimenta el

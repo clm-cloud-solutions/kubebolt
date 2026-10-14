@@ -21,6 +21,17 @@ spec:
       # are still bounded by stream_idle_timeout + the SSE heartbeat.
     - timeouts:
         request: {{ .Values.gatewayAPI.api.requestTimeout | default "0s" | quote }}
+      # Everything that arrives here came from the internet. The API trusts this
+      # marker to refuse kbs_ service tokens presented from outside; the web
+      # nginx sets it too, but with the UI served off-cluster (web.enabled=false)
+      # this route goes straight to the API and nothing else would. Set, not
+      # added, so a client cannot send its own value.
+      filters:
+        - type: RequestHeaderModifier
+          requestHeaderModifier:
+            set:
+              - name: X-KubeBolt-Edge
+                value: public
       backendRefs:
         {{- if .Values.web.enabled }}
         - name: {{ include "kubebolt.fullname" . }}

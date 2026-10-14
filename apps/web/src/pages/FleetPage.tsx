@@ -577,7 +577,7 @@ export function FleetPage() {
 
         {!isLoading && clusters.length === 0 && (
           <div className="kb-panel px-4 py-8 text-center text-xs text-kb-text-tertiary">
-            No clusters yet — connect one from the Clusters page.
+            No clusters yet. Use Connect cluster above — the first one takes about two minutes.
           </div>
         )}
 

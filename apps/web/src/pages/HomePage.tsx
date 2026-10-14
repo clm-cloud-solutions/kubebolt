@@ -19,6 +19,8 @@ import { agentDown } from '@/utils/cluster'
 import { usePlan, type PlanTier } from '@/hooks/usePlan'
 import { HomeKpis } from '@/components/home/HomeKpis'
 import { FleetBreakdown } from '@/components/home/FleetBreakdown'
+import { FirstClusterPanel } from '@/components/onboarding/FirstClusterPanel'
+import { FirstClusterWizard } from '@/components/onboarding/FirstClusterWizard'
 import { useCopilot } from '@/contexts/CopilotContext'
 import type { ConversationSummary } from '@/services/copilot/types'
 
@@ -478,7 +480,7 @@ function VerdictPill({ tone, count }: { tone: HomeTone; count: number }) {
 
 export function HomePage() {
   const plan = usePlan()
-  const { data: allClusters = [] } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
+  const { data: allClusters = [], isSuccess: clustersLoaded } = useQuery({ queryKey: ['clusters'], queryFn: api.listClusters })
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: api.getMe, retry: false })
 
   // ONE hook call feeds both halves of the shift report (the chip in the
@@ -522,6 +524,10 @@ export function HomePage() {
   // OSS is single-tenant: no team lens, the fleet is every cluster the backend
   // lists — the same set Fleet and the switcher show.
   const clusters = allClusters
+  // No cluster yet: the page is the first-cluster step, not a dashboard of
+  // empty panels. Waits for the query so a slow list never flashes it.
+  const noClusters = clustersLoaded && allClusters.length === 0
+  const [firstCluster, setFirstCluster] = useState<'own' | 'local' | null>(null)
   const visibleIds = clusters.map((c) => c.clusterId).filter((id): id is string => !!id)
 
   // Totals must cover the SAME clusters as the page says it is describing. The
@@ -660,15 +666,22 @@ export function HomePage() {
               {firstName ? `, ${firstName}` : ''}
             </h1>
             <p className="text-[11px] font-mono text-kb-text-tertiary mt-2">
-              {clusters.length} {clusters.length === 1 ? 'cluster' : 'clusters'} ·{' '}
-              {attention === 0 ? 'all reporting' : `${attention} need attention`}
+              {noClusters ? (
+                'No clusters yet · one step left'
+              ) : (
+                <>
+                  {clusters.length} {clusters.length === 1 ? 'cluster' : 'clusters'} ·{' '}
+                  {attention === 0 ? 'all reporting' : `${attention} need attention`}
+                </>
+              )}
             </p>
           </div>
           <div className="flex items-center gap-2 flex-wrap justify-end">
             {/* Dismissed report → the «⟳ while you were away» chip lives HERE,
                 in the greeting's own chip row (the design's placement). */}
-            <ShiftReportChip report={shift.report} dismissed={shift.dismissed} reopen={shift.reopen} />
-            <VerdictPill tone={tone} count={attention_items.length} />
+            {!noClusters && <ShiftReportChip report={shift.report} dismissed={shift.dismissed} reopen={shift.reopen} />}
+            {/* "All clear" over zero clusters reads as a healthy fleet. */}
+            {!noClusters && <VerdictPill tone={tone} count={attention_items.length} />}
             {plan.label && (
               <Link
                 to="/account"
@@ -681,217 +694,237 @@ export function HomePage() {
             {/* Obligatorio, no decorativo: una org recién creada aterriza AQUÍ con
                 cero clusters, y sin este botón la primera pantalla del producto no
                 tiene salida. Fleet lo lleva también; los dos son puertas válidas. */}
-            <Link
-              to="/fleet"
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-kb-accent text-white text-[11px] font-mono font-semibold hover:bg-kb-accent/90 transition-colors"
-            >
-              <Plus className="w-3 h-3" />
-              Connect cluster
-            </Link>
+            {noClusters ? (
+              <button
+                type="button"
+                onClick={() => setFirstCluster('own')}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-kb-accent text-white text-[11px] font-mono font-semibold hover:bg-kb-accent/90 transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Connect cluster
+              </button>
+            ) : (
+              <Link
+                to="/fleet"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-kb-accent text-white text-[11px] font-mono font-semibold hover:bg-kb-accent/90 transition-colors"
+              >
+                <Plus className="w-3 h-3" />
+                Connect cluster
+              </Link>
+            )}
           </div>
         </div>
 
         {/* El parte de guardia (Fase 3): la sección inferior de ESTA misma
             caja — el saludo se expande con «mientras no estabas» (diseño
             Home), no con una tarjeta suelta debajo. */}
-        {shift.report && !shift.dismissed && <div className="mx-5 border-t border-kb-border" aria-hidden />}
-        <ShiftReportSection
+        {!noClusters && shift.report && !shift.dismissed && <div className="mx-5 border-t border-kb-border" aria-hidden />}
+        {!noClusters && <ShiftReportSection
           report={shift.report}
           dismissed={shift.dismissed}
           dismiss={shift.dismiss}
           visibleIds={visibleIds}
-        />
+        />}
       </header>
 
-      {/* The headline row in the site's card anatomy (HomeKpis → KpiCard), the
-          same family as the cluster Overview's row. Colour lives in each card's
-          minichart — which clusters need you, how much spend is idle, the
-          critical share — and a card lights up only when its number asks for
-          someone. */}
-      <HomeKpis
-        clusters={clusters}
-        visibleIds={visibleIds}
-        rollup={rollup}
-        critical={critical}
-        high={high}
-        canSeeCost={canSeeCost}
-        costIsPromo={costIsPromo}
-      />
+      {noClusters ? (
+        <FirstClusterPanel onConnect={setFirstCluster} />
+      ) : (
+        <>
 
-      {/* LA página. Home responde "¿qué necesita algo de mí?"; Fleet responde
-          "¿qué tengo?" — y hasta ahora Home repetía las tarjetas de cluster de
-          Fleet, que es lo que hacía que las dos pantallas se sintieran la misma
-          (D16 del doc de navegación).
-
-          Una lista priorizada además ESCALA: con 2 clusters las tarjetas caben,
-          con 10 la página deja de aterrizar y se vuelve scroll. Y cada fila
-          enlaza a un destino DISTINTO — el cluster, Security, el plan — que es
-          lo que la convierte en un aterrizaje y no en un resumen. */}
-      {/* La capacidad que aparece al subir a Team: qué clusters están peor y de
-          quién son. Doble puerta a propósito.
-          Por PLAN, porque es lo que el plan de pago compra —clusters ilimitados
-          y equipos—; y por ESCALA, porque con un solo cluster el desglose sería
-          la misma frase de la cabecera ocupando quince veces más sitio. Las dos
-          condiciones son verdad a la vez en Free, así que allí no se pinta;
-          pero un usuario Team con un cluster tampoco merece una lista de uno. */}
-      {paid && clusters.length > 1 && (
-        <FleetBreakdown
+        {/* The headline row in the site's card anatomy (HomeKpis → KpiCard), the
+            same family as the cluster Overview's row. Colour lives in each card's
+            minichart — which clusters need you, how much spend is idle, the
+            critical share — and a card lights up only when its number asks for
+            someone. */}
+        <HomeKpis
           clusters={clusters}
-          byCluster={rollup.byCluster}
-          bySeverityCluster={perCluster}
-          insightsByCluster={insightSummary?.bySeverityCluster}
-          teams={[]}
+          visibleIds={visibleIds}
+          rollup={rollup}
+          critical={critical}
+          high={high}
+          canSeeCost={canSeeCost}
+          costIsPromo={costIsPromo}
         />
+
+        {/* LA página. Home responde "¿qué necesita algo de mí?"; Fleet responde
+            "¿qué tengo?" — y hasta ahora Home repetía las tarjetas de cluster de
+            Fleet, que es lo que hacía que las dos pantallas se sintieran la misma
+            (D16 del doc de navegación).
+
+            Una lista priorizada además ESCALA: con 2 clusters las tarjetas caben,
+            con 10 la página deja de aterrizar y se vuelve scroll. Y cada fila
+            enlaza a un destino DISTINTO — el cluster, Security, el plan — que es
+            lo que la convierte en un aterrizaje y no en un resumen. */}
+        {/* La capacidad que aparece al subir a Team: qué clusters están peor y de
+            quién son. Doble puerta a propósito.
+            Por PLAN, porque es lo que el plan de pago compra —clusters ilimitados
+            y equipos—; y por ESCALA, porque con un solo cluster el desglose sería
+            la misma frase de la cabecera ocupando quince veces más sitio. Las dos
+            condiciones son verdad a la vez en Free, así que allí no se pinta;
+            pero un usuario Team con un cluster tampoco merece una lista de uno. */}
+        {paid && clusters.length > 1 && (
+          <FleetBreakdown
+            clusters={clusters}
+            byCluster={rollup.byCluster}
+            bySeverityCluster={perCluster}
+            insightsByCluster={insightSummary?.bySeverityCluster}
+            teams={[]}
+          />
+        )}
+
+        <AttentionPanel items={attention_items} tone={tone} />
+
+        {/* Kobi alone on this row: Autopilot, its second face, is Enterprise-only
+            and the EE build renders its panel beside this one. */}
+        <KobiPanel conversations={conversations} />
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          {canSeeCost ? (
+            <>
+              <Panel
+                title="Cost"
+                icon={<DollarSign className="w-3 h-3" />}
+                cta="Cost dashboard"
+                ctaTo="/cost"
+                badge={costIsPromo ? 'Limited time' : undefined}
+              >
+                {rollup.costAvailable ? (
+                  <div className="space-y-1.5">
+                    {clusters
+                      .filter((c) => c.clusterId && rollup.byCluster[c.clusterId]?.costMonthly != null)
+                      .slice(0, 4)
+                      .map((c) => {
+                        const r = rollup.byCluster[c.clusterId!]
+                        const pct =
+                          rollup.fleetSpendMonthly && r.costMonthly
+                            ? (r.costMonthly / rollup.fleetSpendMonthly) * 100
+                            : 0
+                        return (
+                          <div key={c.context}>
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="text-kb-text-secondary truncate">
+                                {c.displayName || c.name}
+                              </span>
+                              <span className="font-mono tabular-nums text-kb-text-primary">
+                                {money(r.costMonthly)}
+                              </span>
+                            </div>
+                            <div className="h-1.5 bg-kb-elevated rounded-full mt-1 overflow-hidden">
+                              {/* status-ok, NOT --kb-accent. The two greens agree in
+                                  dark mode and diverge in light (#22d68a vs the
+                                  accent's #009a54), so this bar read as a darker,
+                                  different green than the Cost breakdown's bars
+                                  sitting one click away. Same trap EfficiencyBand
+                                  documents: brand accent is for chrome — buttons,
+                                  links, chips — and any fill that represents DATA
+                                  takes the status palette so every bar in the
+                                  product is the same colour in both themes. */}
+                              <div className="h-full bg-status-ok rounded-full" style={{ width: `${pct}%` }} />
+                            </div>
+                          </div>
+                        )
+                      })}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-kb-text-tertiary py-4 text-center">
+                    No cost data yet — install OpenCost on a cluster to see fleet spend.
+                  </p>
+                )}
+              </Panel>
+            </>
+          ) : (
+            <LockedPanel
+              title="Cost"
+              requires="Team"
+              blurb="See what your fleet costs"
+              // Capabilities, not results. The veil used to read "data/postgres —
+              // $842/mo · 12 critical CVEs", numbers invented on the two surfaces
+              // where inventing one costs the most: a prospect who upgrades and
+              // finds different figures learned that this product makes them up.
+              teaser={
+                <div>
+                  <TeaserRow left="Spend per cluster and namespace" right="OpenCost" />
+                  <TeaserRow left="Idle capacity you are paying for" right="run-rate" />
+                  <TeaserRow left="Rightsizing priced at your node rates" right="$/mo" />
+                </div>
+              }
+            />
+          )}
+
+          {/* Security is NOT behind the veil. Vulnerabilities and exposed
+              secrets ship in Free by the 2026-08-05 pricing decision — cutting
+              lenses or severities in security is selling blindness. Team adds
+              the Configuration and Compliance lenses, which is why the third
+              tile is the only part of this panel that locks. */}
+          <Panel
+            title="Security"
+            icon={<ShieldAlert className="w-3 h-3" />}
+            cta="Security"
+            ctaTo="/security"
+            // No "limited time" chip on this panel, unlike Cost. Vulnerabilities
+            // and exposed secrets are Free PERMANENTLY (pricing 2026-08-05); only
+            // the Configuration tile inside is on loan. Badging the whole panel
+            // would tell a Free user their CVE feed is about to be taken away,
+            // which is the opposite of the decision.
+          >
+            <div className="grid grid-cols-3 gap-2">
+              <SecurityTile n={critical} label="Critical" tone={critical > 0 ? 'text-status-error' : ''} />
+              <SecurityTile n={high} label="High" tone={high > 0 ? 'text-status-warn' : ''} />
+              {cisFailing == null ? (
+                <Link
+                  to="/account"
+                  className="bg-kb-elevated border border-dashed border-kb-border rounded-lg py-2.5 text-center hover:border-kb-accent/40 transition-colors"
+                >
+                  <Lock className="w-4 h-4 text-kb-text-tertiary mx-auto" />
+                  <div className="text-[9px] font-mono uppercase tracking-wider text-kb-text-tertiary mt-1">
+                    Config · Team
+                  </div>
+                </Link>
+              ) : (
+                <SecurityTile
+                  n={cisFailing}
+                  label="CIS failing"
+                  tone={cisFailing > 0 ? 'text-status-warn' : ''}
+                />
+              )}
+            </div>
+            {(findings?.newLast24h ?? 0) > 0 && (
+              <p className="text-[10px] font-mono text-status-warn mt-2.5">
+                ▲ {findings?.newLast24h} new in the last 24h
+              </p>
+            )}
+          </Panel>
+
+          {/* Business tier teaser — the next rung, shown to everyone below it and
+              hidden once they own it.
+              It used to require `paid`, which was fine while Free had a veil of
+              its own. Now that Cost and Security are open on loan, a Free user
+              would see no locked panel anywhere — and this page's stated job is
+              to make the ladder legible. One rung above whatever you are on. */}
+          {!plan.atLeast('business' as PlanTier) && (
+            <LockedPanel
+              className="lg:col-span-2"
+              title="Lifecycle & FinOps"
+              requires="Business"
+              blurb="Let KubeBolt act on the savings it finds"
+              // Same rule as the Cost veil: name the capability, never a saving.
+              // "saves $340/mo" on a cluster nobody has measured is a quote, and
+              // the first bill that disagrees with it is the last one they read.
+              teaser={
+                <div>
+                  <TeaserRow left="Apply rightsizing recommendations" right="one click" />
+                  <TeaserRow left="Scale environments on a schedule" right="off-hours" />
+                  <TeaserRow left="Reclaim orphaned volumes and load balancers" right="automatic" />
+                </div>
+              }
+            />
+          )}
+        </div>
+        </>
       )}
 
-      <AttentionPanel items={attention_items} tone={tone} />
-
-      {/* Kobi alone on this row: Autopilot, its second face, is Enterprise-only
-          and the EE build renders its panel beside this one. */}
-      <KobiPanel conversations={conversations} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-        {canSeeCost ? (
-          <>
-            <Panel
-              title="Cost"
-              icon={<DollarSign className="w-3 h-3" />}
-              cta="Cost dashboard"
-              ctaTo="/cost"
-              badge={costIsPromo ? 'Limited time' : undefined}
-            >
-              {rollup.costAvailable ? (
-                <div className="space-y-1.5">
-                  {clusters
-                    .filter((c) => c.clusterId && rollup.byCluster[c.clusterId]?.costMonthly != null)
-                    .slice(0, 4)
-                    .map((c) => {
-                      const r = rollup.byCluster[c.clusterId!]
-                      const pct =
-                        rollup.fleetSpendMonthly && r.costMonthly
-                          ? (r.costMonthly / rollup.fleetSpendMonthly) * 100
-                          : 0
-                      return (
-                        <div key={c.context}>
-                          <div className="flex items-center justify-between text-[11px]">
-                            <span className="text-kb-text-secondary truncate">
-                              {c.displayName || c.name}
-                            </span>
-                            <span className="font-mono tabular-nums text-kb-text-primary">
-                              {money(r.costMonthly)}
-                            </span>
-                          </div>
-                          <div className="h-1.5 bg-kb-elevated rounded-full mt-1 overflow-hidden">
-                            {/* status-ok, NOT --kb-accent. The two greens agree in
-                                dark mode and diverge in light (#22d68a vs the
-                                accent's #009a54), so this bar read as a darker,
-                                different green than the Cost breakdown's bars
-                                sitting one click away. Same trap EfficiencyBand
-                                documents: brand accent is for chrome — buttons,
-                                links, chips — and any fill that represents DATA
-                                takes the status palette so every bar in the
-                                product is the same colour in both themes. */}
-                            <div className="h-full bg-status-ok rounded-full" style={{ width: `${pct}%` }} />
-                          </div>
-                        </div>
-                      )
-                    })}
-                </div>
-              ) : (
-                <p className="text-[11px] text-kb-text-tertiary py-4 text-center">
-                  No cost data yet — install OpenCost on a cluster to see fleet spend.
-                </p>
-              )}
-            </Panel>
-          </>
-        ) : (
-          <LockedPanel
-            title="Cost"
-            requires="Team"
-            blurb="See what your fleet costs"
-            // Capabilities, not results. The veil used to read "data/postgres —
-            // $842/mo · 12 critical CVEs", numbers invented on the two surfaces
-            // where inventing one costs the most: a prospect who upgrades and
-            // finds different figures learned that this product makes them up.
-            teaser={
-              <div>
-                <TeaserRow left="Spend per cluster and namespace" right="OpenCost" />
-                <TeaserRow left="Idle capacity you are paying for" right="run-rate" />
-                <TeaserRow left="Rightsizing priced at your node rates" right="$/mo" />
-              </div>
-            }
-          />
-        )}
-
-        {/* Security is NOT behind the veil. Vulnerabilities and exposed
-            secrets ship in Free by the 2026-08-05 pricing decision — cutting
-            lenses or severities in security is selling blindness. Team adds
-            the Configuration and Compliance lenses, which is why the third
-            tile is the only part of this panel that locks. */}
-        <Panel
-          title="Security"
-          icon={<ShieldAlert className="w-3 h-3" />}
-          cta="Security"
-          ctaTo="/security"
-          // No "limited time" chip on this panel, unlike Cost. Vulnerabilities
-          // and exposed secrets are Free PERMANENTLY (pricing 2026-08-05); only
-          // the Configuration tile inside is on loan. Badging the whole panel
-          // would tell a Free user their CVE feed is about to be taken away,
-          // which is the opposite of the decision.
-        >
-          <div className="grid grid-cols-3 gap-2">
-            <SecurityTile n={critical} label="Critical" tone={critical > 0 ? 'text-status-error' : ''} />
-            <SecurityTile n={high} label="High" tone={high > 0 ? 'text-status-warn' : ''} />
-            {cisFailing == null ? (
-              <Link
-                to="/account"
-                className="bg-kb-elevated border border-dashed border-kb-border rounded-lg py-2.5 text-center hover:border-kb-accent/40 transition-colors"
-              >
-                <Lock className="w-4 h-4 text-kb-text-tertiary mx-auto" />
-                <div className="text-[9px] font-mono uppercase tracking-wider text-kb-text-tertiary mt-1">
-                  Config · Team
-                </div>
-              </Link>
-            ) : (
-              <SecurityTile
-                n={cisFailing}
-                label="CIS failing"
-                tone={cisFailing > 0 ? 'text-status-warn' : ''}
-              />
-            )}
-          </div>
-          {(findings?.newLast24h ?? 0) > 0 && (
-            <p className="text-[10px] font-mono text-status-warn mt-2.5">
-              ▲ {findings?.newLast24h} new in the last 24h
-            </p>
-          )}
-        </Panel>
-
-        {/* Business tier teaser — the next rung, shown to everyone below it and
-            hidden once they own it.
-            It used to require `paid`, which was fine while Free had a veil of
-            its own. Now that Cost and Security are open on loan, a Free user
-            would see no locked panel anywhere — and this page's stated job is
-            to make the ladder legible. One rung above whatever you are on. */}
-        {!plan.atLeast('business' as PlanTier) && (
-          <LockedPanel
-            className="lg:col-span-2"
-            title="Lifecycle & FinOps"
-            requires="Business"
-            blurb="Let KubeBolt act on the savings it finds"
-            // Same rule as the Cost veil: name the capability, never a saving.
-            // "saves $340/mo" on a cluster nobody has measured is a quote, and
-            // the first bill that disagrees with it is the last one they read.
-            teaser={
-              <div>
-                <TeaserRow left="Apply rightsizing recommendations" right="one click" />
-                <TeaserRow left="Scale environments on a schedule" right="off-hours" />
-                <TeaserRow left="Reclaim orphaned volumes and load balancers" right="automatic" />
-              </div>
-            }
-          />
-        )}
-      </div>
+      {firstCluster && <FirstClusterWizard initialWhere={firstCluster} onClose={() => setFirstCluster(null)} />}
     </div>
   )
 }
