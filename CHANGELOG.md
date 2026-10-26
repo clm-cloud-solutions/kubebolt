@@ -6,6 +6,25 @@ follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.2] — 2026-10-26
+
+Security rebuild on current bases. Drop-in, no schema change; the agent moves
+to 1.4.5, also a security rebuild. Full note:
+[docs/releases/v2.4.2.md](docs/releases/v2.4.2.md).
+
+### Security
+
+- Go 1.26.9 → 1.26.10 on every build path: CVE-2026-111943 (crypto/x509,
+  HIGH).
+- api image on Alpine 3.24 (was 3.21, which leaves support on 2026-11-01);
+  chi 5.2.5 → 5.4.0 (CVE-2026-114437).
+- web image on nginx 1.30 / Alpine 3.24 (was nginx 1.27 / Alpine 3.21): curl,
+  pcre2, expat and brotli, 17 HIGH.
+- single-container image on Alpine 3.24 (was 3.22).
+- VictoriaMetrics stays on v1.154.0 with CVE-2026-111943 waived in
+  `.trivyignore-thirdparty` until 2026-11-09: no stable release has the fix
+  yet, and v1.155.0-rc0 is a release candidate.
+
 ## [2.4.1] — 2026-10-14
 
 A new install gets one first step: connect a cluster in three steps, or try

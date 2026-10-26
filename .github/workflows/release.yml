@@ -497,7 +497,8 @@ jobs:
           # crypto/tls — all HIGH, all fixed in 1.25.13 / 1.26.6).
           # 2.3.1: bumped 1.26.6 -> 1.26.9 for CVE-2026-78667 (net/http) and
           # CVE-2026-97031 (crypto/tls), both HIGH.
-          go-version: '1.26.9'
+          # 2.4.2: bumped 1.26.9 -> 1.26.10 for CVE-2026-111943 (crypto/x509), HIGH.
+          go-version: '1.26.10'
 
       - uses: actions/setup-node@v4
         with:

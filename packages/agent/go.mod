@@ -6,22 +6,23 @@ go 1.26.0
 // plus CVE-2026-39821 (x/net/idna), CVE-2026-46600 (x/net/dns/dnsmessage) and
 // the 2026-08 stdlib wave, all fixed in 1.26.6. Bumped in lockstep with
 // apps/api/go.mod and packages/proto/go.mod.
-// 1.26.9 adds CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls).
-toolchain go1.26.9
+// 1.26.9 adds CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls);
+// 1.26.10 adds CVE-2026-111943 (crypto/x509).
+toolchain go1.26.10
 
 require (
 	github.com/Azure/azure-sdk-for-go/sdk/azcore v1.20.0
 	github.com/Azure/azure-sdk-for-go/sdk/azidentity v1.13.1
 	github.com/aws/aws-sdk-go-v2 v1.41.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.7
-	github.com/cilium/cilium v1.19.3
+	github.com/cilium/cilium v1.19.5
 	github.com/kubebolt/kubebolt/packages/proto v0.0.0
 	golang.org/x/oauth2 v0.36.0
 	google.golang.org/grpc v1.83.2
 	google.golang.org/protobuf v1.36.12-0.20260120151049-f2248ac996af
-	k8s.io/api v0.35.3
-	k8s.io/apimachinery v0.35.3
-	k8s.io/client-go v0.35.3
+	k8s.io/api v0.35.6
+	k8s.io/apimachinery v0.35.6
+	k8s.io/client-go v0.35.6
 )
 
 require (
@@ -83,7 +84,7 @@ require (
 	gopkg.in/inf.v0 v0.9.1 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260317180543-43fb72c5454a // indirect
-	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5 // indirect
+	k8s.io/utils v0.0.0-20260507154919-ff6756f316d2 // indirect
 	sigs.k8s.io/json v0.0.0-20250730193827-2d320260d730 // indirect
 	sigs.k8s.io/randfill v1.0.0 // indirect
 	sigs.k8s.io/structured-merge-diff/v6 v6.3.2 // indirect
