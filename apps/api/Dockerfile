@@ -10,7 +10,7 @@
 # Explicit patch pin (not floating 1.25-alpine) so the build reuses
 # the CVE-patched toolchain consistently across CI / release / local.
 # Bump in lockstep with .github/workflows/release.yml setup-go.
-FROM --platform=$BUILDPLATFORM golang:1.26.9-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
@@ -46,7 +46,7 @@ RUN cd apps/api && \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -ldflags="-s -w -X main.version=${VERSION}" -o /kubebolt-api ./cmd/server
 
-FROM alpine:3.21
+FROM alpine:3.24
 # ca-certificates is required for outbound TLS — the Copilot dialer
 # hits Anthropic/OpenAI HTTPS endpoints, and the metrics-storage
 # external-URL path may dial managed VM endpoints over TLS. NO

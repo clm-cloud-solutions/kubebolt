@@ -10,14 +10,15 @@ go 1.26.0
 // encoding/xml, net/url, crypto/tls) — all fixed in 1.25.13 / 1.26.6. The api
 // image was already on golang:1.26.6-alpine; this brings go.mod, CI and the
 // cross-compiled krew/Homebrew binaries onto the same line. 1.26.9 adds the
-// fixes for CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls), both HIGH.
-toolchain go1.26.9
+// fixes for CVE-2026-78667 (net/http) and CVE-2026-97031 (crypto/tls), both HIGH;
+// 1.26.10 adds CVE-2026-111943 (crypto/x509, HIGH).
+toolchain go1.26.10
 
 replace github.com/kubebolt/kubebolt/packages/proto => ../../packages/proto
 
 require (
 	github.com/blang/semver/v4 v4.0.0
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.4.0
 	github.com/go-chi/cors v1.2.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang/snappy v1.0.0

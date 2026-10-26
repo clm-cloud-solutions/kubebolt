@@ -342,7 +342,7 @@ In both modes, namespace regions are arranged in a grid of up to 3 columns (`NS_
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) on push/PR to `main`:
-- Backend: `go build ./...`, `go vet ./...`, `go test ./... -race -count=1` (Go 1.26.9, ubuntu-latest)
+- Backend: `go build ./...`, `go vet ./...`, `go test ./... -race -count=1` (Go 1.26.10, ubuntu-latest)
 - Alert rules: `promtool test rules deploy/prometheus/kubebolt-alerts.test.yaml` in `prom/prometheus:v3.5.0`
 - Frontend: `npm ci`, `npm test` (Vitest), `npm run build` (tsc + Vite) (Node 22, ubuntu-latest)
 
