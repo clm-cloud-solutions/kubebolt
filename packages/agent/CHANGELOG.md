@@ -11,6 +11,23 @@ versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.4.5] — 2026-10-26
+
+Security rebuild: the agent's code is the same as 1.4.4. Same v1.0
+metric/label schema — drop-in within 1.x.
+
+### Security
+
+- Go 1.26.9 → 1.26.10: CVE-2026-111943 (crypto/x509, HIGH).
+- `github.com/cilium/cilium` 1.19.3 → 1.19.5: CVE-2026-53935, CVE-2026-56742
+  and CVE-2026-56743, all MEDIUM.
+- Base image distroless `static-debian12` → `static-debian13`: the Debian 12
+  fixes for ca-certificates and tzdata no longer reach the debian12 image. Same
+  user, `65532:65532`.
+- The chart's `scrape.image` stays on vmagent v1.154.0, whose vendor build
+  carries CVE-2026-111943, until the v1.155.0 final. Matters only with
+  `scrape.enabled=true`.
+
 ## [1.4.4] — 2026-10-13
 
 Chart-only security update: the agent's code is the same as 1.4.3. Same v1.0

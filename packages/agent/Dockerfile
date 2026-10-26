@@ -6,7 +6,7 @@
 
 # Explicit patch pin — see apps/api/Dockerfile for the CVE rationale.
 # Bump in lockstep with all other Dockerfiles and the CI workflows.
-FROM golang:1.26.9-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 
 WORKDIR /src
 
@@ -35,8 +35,9 @@ RUN cd packages/agent && \
     go build -ldflags="-s -w -X main.agentVersion=${VERSION}" -o /out/kubebolt-agent ./cmd/agent
 
 # Runtime. distroless/static includes CA certs and tzdata, runs as nonroot by
-# tag. No shell, no package manager, minimal attack surface.
-FROM gcr.io/distroless/static-debian12:nonroot
+# tag. No shell, no package manager, minimal attack surface. Debian 13: the
+# debian12 image no longer picks up Debian LTS fixes (ca-certificates, tzdata).
+FROM gcr.io/distroless/static-debian13:nonroot
 
 COPY --from=builder /out/kubebolt-agent /kubebolt-agent
 
