@@ -57,6 +57,19 @@ jobs:
             exit 1
           fi
 
+      - name: Extract pinned Azure MCP Server image from values.yaml
+        id: azmcp
+        run: |
+          BLOCK=$(grep -A8 "repository: mcr.microsoft.com/azure-sdk/azure-mcp" deploy/helm/kubebolt/values.yaml)
+          TAG=$(echo "$BLOCK" | grep -m1 '^\s*tag:' | awk '{print $2}')
+          DIGEST=$(echo "$BLOCK" | grep -m1 '^\s*digest:' | awk '{print $2}')
+          if [ -z "$TAG" ] || [ -z "$DIGEST" ]; then
+            echo "::error::Could not parse the Azure MCP Server tag and digest from values.yaml"
+            exit 1
+          fi
+          echo "ref=mcr.microsoft.com/azure-sdk/azure-mcp:$TAG@$DIGEST" >> $GITHUB_OUTPUT
+          echo "Pinned Azure MCP Server: $TAG@$DIGEST"
+
       # `.trivyignore-thirdparty`, NOT `.trivyignore` — same reasoning as the
       # release preflight: we do not build this binary, so a CVE inside it can
       # only be waited out, while one in an image we compile must keep failing.
@@ -65,6 +78,18 @@ jobs:
         uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: docker.io/victoriametrics/victoria-metrics:${{ steps.vm.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore-thirdparty
+        env:
+          TRIVY_DISABLE_VEX_NOTICE: 'true'
+
+      - name: Trivy scan Azure MCP Server image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.azmcp.outputs.ref }}
           format: table
           severity: CRITICAL,HIGH
           ignore-unfixed: true
