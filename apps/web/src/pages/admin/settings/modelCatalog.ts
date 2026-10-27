@@ -71,7 +71,7 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
   {
     id: 'claude-sonnet-5',
     label: 'Claude Sonnet 5',
-    description: 'Balanced default — fast enough for live chat, deep enough for most operator tasks. Recommended for production.',
+    description: 'Previous Sonnet — fast enough for live chat, deep enough for most operator tasks. Sonnet 5.5 does the same at half the cache-read price.',
     group: 'Claude 5 (current)',
   },
   {
@@ -83,7 +83,7 @@ export const ANTHROPIC_MODELS: ModelOption[] = [
   {
     id: 'claude-haiku-5-5',
     label: 'Claude Haiku 5.5',
-    description: 'Fastest and cheapest — a tenth of Haiku 4.5\'s price, and it reasons. Good for high-volume diagnostics and short turns; less depth than Sonnet on long tool chains. Prompts over 100K tokens bill at five times the base rate.',
+    description: 'Kobi\'s default. Fastest and cheapest — a tenth of Haiku 4.5\'s price. Inside a cluster it diagnoses as well as Sonnet 5.5; investigations that reach the cloud or another cluster go deeper with Sonnet 5.5 as the escalation model. Prompts over 100K tokens bill at five times the base rate.',
     group: 'Claude 5 (current)',
   },
   // ─── Claude 4 ────────────────────────────────────────────────────

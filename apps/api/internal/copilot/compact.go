@@ -267,24 +267,22 @@ func stubToolResults(msgs []Message, protectFrom int) ([]Message, int) {
 				elided[j] = tr
 				continue
 			}
-			elided[j] = ToolResult{
-				ToolCallID: tr.ToolCallID,
-				Content: fmt.Sprintf(
-					"[tool result stubbed during compact; original %d chars. Call the tool again if you need the full data.]",
-					len(tr.Content),
-				),
-				IsError: tr.IsError,
-			}
+			// Only the content is elided: how the call ended, how long it
+			// took and its digest are what the chat still shows for it.
+			stub := tr
+			stub.Content = fmt.Sprintf(
+				"[tool result stubbed during compact; original %d chars. Call the tool again if you need the full data.]",
+				len(tr.Content),
+			)
+			elided[j] = stub
 			stubbed++
 			anyStubbed = true
 		}
 		if anyStubbed {
-			out[i] = Message{
-				Role:        m.Role,
-				Content:     m.Content,
-				ToolCalls:   m.ToolCalls,
-				ToolResults: elided,
-			}
+			// The rest of the message (its timestamp above all) stays.
+			stubbedMsg := m
+			stubbedMsg.ToolResults = elided
+			out[i] = stubbedMsg
 		} else {
 			out[i] = m
 		}

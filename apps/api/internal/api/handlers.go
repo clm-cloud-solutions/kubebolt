@@ -19,6 +19,8 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpcatalog"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpgateway"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
@@ -141,6 +143,20 @@ type handlers struct {
 	// wiring the service. The handler short-circuits to
 	// `{"enabled": false}` in either case.
 	updateCheck *updatecheck.Service
+	// mcpGateway serves the org's external MCP connectors (AWS, Google Cloud,
+	// Azure) to Kobi and backs /admin/mcp-connectors. nil when the feature is
+	// off or there is no settings runtime: the admin routes answer 404, Kobi
+	// gets no connector tools, and get_external_connections reports every
+	// connector as not enabled.
+	mcpGateway *mcpgateway.Gateway
+	// mcpCatalog is the connector catalog, built once in main.go and handed to
+	// the gateway too. Present even when the gateway is off. nil = no
+	// connectors to list.
+	mcpCatalog *mcpcatalog.Catalog
+	// fleetAddrs caches what each cluster exposes (LoadBalancer Services,
+	// Ingresses, Gateways) for get_external_connections' fleet lookup. nil in
+	// test fixtures: each lookup then reads uncached.
+	fleetAddrs *fleetAddressIndex
 }
 
 // liveCopilotConfig resolves the runtime Copilot config: BoltDB override

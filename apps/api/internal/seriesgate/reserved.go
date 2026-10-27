@@ -9,7 +9,8 @@ import (
 // families it stamps with an org (kubebolt_kobi_*, kubebolt_ai_*,
 // kubebolt_autopilot_*, kubebolt_cluster_team_info) and the API's own
 // operational series (HTTP, VictoriaMetrics calls, WebSocket, jobs, Postgres
-// pool, platform alerts, ingest and agent-channel counters, build info).
+// pool, platform alerts, ingest and agent-channel counters, cloud connector
+// calls, build info).
 //
 // A customer's door — Prometheus remote_write or an agent — never writes them.
 // If it did:
@@ -42,6 +43,8 @@ var reservedPrefixes = []string{
 	"kubebolt_api_",
 	"kubebolt_agent_grpc_",
 	"kubebolt_agent_kube_request_",
+	// The cloud connector gateway's calls (internal/mcpgateway/metrics.go).
+	"kubebolt_mcp_",
 }
 
 var reservedExact = map[string]struct{}{

@@ -16,6 +16,7 @@ import (
 type fakeProvider struct {
 	name     string
 	reply    string
+	stop     string // StopReason to report; "" = end_turn
 	calls    atomic.Int32
 	lastReq  atomic.Pointer[ChatRequest]
 }
@@ -25,9 +26,13 @@ func (p *fakeProvider) Name() string { return p.name }
 func (p *fakeProvider) Chat(_ context.Context, req ChatRequest) (*ChatResponse, error) {
 	p.calls.Add(1)
 	p.lastReq.Store(&req)
+	stop := p.stop
+	if stop == "" {
+		stop = "end_turn"
+	}
 	return &ChatResponse{
 		Text:       p.reply,
-		StopReason: "end_turn",
+		StopReason: stop,
 		Usage:      Usage{InputTokens: 100, OutputTokens: 50},
 	}, nil
 }

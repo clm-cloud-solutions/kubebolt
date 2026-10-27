@@ -1,0 +1,13 @@
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Here are the available commands and their input schema for 'aks' tool.\nIf you do not find a suitable \"command\", run again with the \"learn=true\" to get a list of available commands and their parameters.\nNext, identify the command you want to execute and run again with the \"command\" and \"parameters\" arguments, respecting \"required\" parameters if present.\n\n[{\"command\":\"aks_cluster_get\",\"description\":\"List/enumerate all AKS (Azure Kubernetes Service) clusters in a subscription. Get/retrieve/show the details of a specific cluster if a name is provided.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"tenant\":{\"type\":\"string\",\"description\":\"The Microsoft Entra ID tenant GUID identifier or display name.\"},\"subscription\":{\"type\":\"string\",\"description\":\"The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.\"},\"resource-group\":{\"type\":\"string\",\"description\":\"The Azure resource group name.\"},\"cluster\":{\"type\":\"string\",\"description\":\"AKS Cluster name.\"}},\"additionalProperties\":false}},{\"command\":\"aks_nodepool_get\",\"description\":\"List/enumerate all AKS (Azure Kubernetes Service) node pools in a cluster. Get/retrieve/show the details of a specific node pool if a name is provided.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"tenant\":{\"type\":\"string\",\"description\":\"The Microsoft Entra ID tenant GUID identifier or display name.\"},\"subscription\":{\"type\":\"string\",\"description\":\"The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.\"},\"resource-group\":{\"type\":\"string\",\"description\":\"The Azure resource group name.\"},\"cluster\":{\"type\":\"string\",\"description\":\"AKS Cluster name.\"},\"nodepool\":{\"type\":\"string\",\"description\":\"AKS node pool (agent pool) name.\"}},\"required\":[\"resource-group\",\"cluster\"],\"additionalProperties\":false}}]"
+      }
+    ],
+    "isError": false
+  },
+  "id": 3,
+  "jsonrpc": "2.0"
+}

@@ -35,10 +35,13 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
 	"github.com/kubebolt/kubebolt/apps/api/internal/config"
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 	"github.com/kubebolt/kubebolt/apps/api/internal/findings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/logging"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpcatalog"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpgateway"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/opsmetrics"
@@ -228,6 +231,11 @@ func main() {
 		slog.String("listen", fmt.Sprintf("%s:%d", host, cfg.Port)),
 		slog.String("mode", mode),
 	)
+
+	// The external MCP connectors' catalog. Built this early so an invalid
+	// catalog stops the boot before anything else starts, and built whether
+	// or not the gateway runs: the router lists it either way.
+	mcpCatalog := mustMCPCatalog()
 
 	// Create WebSocket hub
 	wsHub := websocket.NewHub()
@@ -988,7 +996,12 @@ func main() {
 		go sweeper.Run(context.Background())
 	}
 
-	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, findingsStore, eventStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc, insightPolicySvc, episodeReader)
+	// External MCP connectors: read-only doors into the org's own AWS,
+	// Google Cloud and Azure accounts, for Kobi. nil when off — no admin
+	// routes, no cloud tools. Closed after the HTTP server drains, below.
+	mcpGateway := newMCPGateway(mcpCatalog, settingsRuntime)
+
+	router := api.NewRouter(manager, wsHub, cfg.CORSOrigins, copilotCfg, copilotUsage, copilotConversations, authHandlers, tenantHandlers, notifManager, integrationRegistry, resolvedEnforcement, tenantsStore, ingestTokenStore, resolvedPromWriteEnforcement, promRateLimiter, promCardinality, promNameFilter, promWriteMetrics, usageStore, findingsStore, eventStore, settingsRuntime, bootEnv, agentRegistry, updateCheckSvc, insightPolicySvc, episodeReader, mcpGateway, mcpCatalog)
 
 	// Spec #09 V2 Item 5b — push the backend's own Prometheus
 	// counters into VM every 30s so the /admin/ingest-activity panel
@@ -1575,7 +1588,55 @@ func main() {
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		slog.Error("HTTP server shutdown error", slog.String("error", err.Error()))
 	}
+	// After the server has drained, so no in-flight turn loses its binding
+	// mid-call: this closes the provider sessions the gateway holds and waits
+	// for those closes (the session DELETEs). It gets a budget of its own
+	// because server.Shutdown may have spent all of shutdownCtx's.
+	if mcpGateway != nil {
+		gwCtx, gwCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		mcpGateway.Shutdown(gwCtx)
+		gwCancel()
+	}
 	slog.Info("kubebolt stopped")
+}
+
+// newMCPGateway builds the external MCP connector gateway, or returns nil when
+// the feature is off: with no settings runtime (auth/persistence disabled)
+// there is nowhere to keep an org's connector configuration, and
+// KUBEBOLT_MCP_CONNECTORS=false turns it off explicitly.
+//
+// Ambient credentials — AWS's default chain, Google's ADC, the Azure sidecar's
+// single identity — are the machine's own, so they are offered only where the
+// machine's owner is the only org: single-tenant installs. The
+// KUBEBOLT_MCP_ALLOW_AMBIENT=true override exists for developing a
+// multi-tenant build locally; the gateway logs a WARN at construction when it
+// is on there, because every org would then read clouds as KubeBolt.
+//
+// cat is the catalog mustMCPCatalog built; the gateway gets that one, never a
+// catalog of its own, so the gateway and the admin view cannot disagree.
+func newMCPGateway(cat *mcpcatalog.Catalog, st *settings.Runtime) *mcpgateway.Gateway {
+	if st == nil {
+		slog.Info("mcp connectors: off — no settings runtime to keep an org's connectors in")
+		return nil
+	}
+	if !mcpConnectorsEnabled(os.Getenv("KUBEBOLT_MCP_CONNECTORS")) {
+		slog.Info("mcp connectors: off (KUBEBOLT_MCP_CONNECTORS)")
+		return nil
+	}
+	azmcpURL := strings.TrimSpace(os.Getenv("KUBEBOLT_MCP_AZMCP_URL"))
+	if azmcpURL == "" {
+		azmcpURL = mcpcatalog.DefaultAzmcpURL
+	}
+	gw := mcpgateway.New(cat, st, mcpgateway.Options{
+		MultiTenant:     auth.MultiTenantEnabled,
+		AmbientAllowed:  mcpAmbientAllowed(auth.MultiTenantEnabled, os.Getenv("KUBEBOLT_MCP_ALLOW_AMBIENT")),
+		AzmcpURL:        azmcpURL,
+		AWSPrincipalARN: strings.TrimSpace(os.Getenv("KUBEBOLT_MCP_AWS_PRINCIPAL_ARN")),
+		Registerer:      prometheus.DefaultRegisterer,
+		Logger:          slog.Default(),
+	})
+	slog.Info("mcp connectors: on", slog.Int("connectors", len(cat.List())), slog.Bool("multiTenant", auth.MultiTenantEnabled))
+	return gw
 }
 
 // parseAutoRegisterFlag interprets KUBEBOLT_AGENT_AUTOREGISTER_CLUSTERS.
@@ -1650,7 +1711,7 @@ func persistAdminPasswordSecret(password string) error {
 			"username": "admin",
 		},
 	}
-	if _, err := client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{}); err != nil {
+	if _, err := client.CoreV1().Secrets(ns).Create(ctx, secret, metav1.CreateOptions{FieldManager: fieldmanager.Name}); err != nil {
 		return fmt.Errorf("create Secret %s/%s: %w", ns, secretName, err)
 	}
 	slog.Info("admin password persisted to Kubernetes Secret",

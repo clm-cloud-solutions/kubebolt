@@ -9,6 +9,15 @@ export interface CopilotMessage {
   toolCalls?: CopilotToolCall[]
   toolResults?: CopilotToolResult[]
   timestamp: Date
+  /** The chat request's trigger on the user message it came with ('insight',
+   * 'action_stalled', 'cluster_switch'…); absent when the operator typed it.
+   * The server reads the operator's language from what they wrote. */
+  trigger?: string
+  /** The page the operator was on when they sent this message, stamped by the
+   * server on the turn's message. Sent back untouched: the server rebuilds the
+   * message's context from it, so the history reads the same next turn and
+   * stays in the model provider's cache. */
+  view?: string
   /** Optional message kind. 'compact-notice' marks where compaction happened;
    * 'maxrounds-notice' marks where a turn hit the tool-step limit and offers a
    * Continue control. Neither is ever sent to the provider. */
@@ -28,6 +37,10 @@ export interface CopilotMessage {
    * renders a "Stopped by you" marker so a half-finished (or empty) answer
    * reads as a deliberate cancel, not a hang or a completed reply. */
   cancelled?: boolean
+  /** Set on the assistant turn that ended in an error before it answered: the
+   * error as the server words it (friendlyCopilotError) and how long the
+   * question had run. The panel shows it as the investigation's last row. */
+  failure?: { message: string; afterMs?: number }
   /** Set by the server on the final answer of a finished turn: the turn's id,
    * which a 👍/👎 names (POST /copilot/feedback). Round-trips with the
    * transcript so earlier answers stay rateable. */
@@ -44,6 +57,17 @@ export interface CopilotToolResult {
   toolCallId: string
   content: string
   isError?: boolean
+  /** How the call ended, as the server classified it: ok, empty, not_found,
+   *  denied, timeout, error, or not_sent (KubeBolt refused it before it
+   *  reached anything). Absent on conversations stored before it existed. */
+  status?: string
+  durationMs?: number
+  /** What came back, counted and listed by the server (never what it means);
+   *  times inside are `@` + RFC 3339, shown in the operator's zone. */
+  digest?: string
+  /** For a call that did not read: the error's first sentence (never what the
+   *  result tells the model to do). */
+  reason?: string
 }
 
 // Usage reported by the provider for a single Chat call or an aggregated
@@ -70,8 +94,22 @@ export interface CopilotStreamEvent {
   type: CopilotStreamEventType
   text?: string
   toolName?: string
+  // "tool_call" / "tool_result": the call's id pairs the two; the call carries
+  // its input, the result its content, status and duration. Both, and "text",
+  // carry the model round they belong to (`round`, below).
+  id?: string
+  input?: Record<string, unknown>
+  content?: string
+  isError?: boolean
+  status?: string
+  durationMs?: number
+  digest?: string
+  reason?: string
   error?: string
   fallback?: boolean
+  // "meta" payload: the conversation runs on this escalation model — sent
+  // when it first leaves the cluster, and at the start of every later turn.
+  escalated?: string
   // "meta" / "done" payload: the persisted conversation id. Sent early in a
   // `meta` event (so a mid-stream refresh can still resume) and echoed on
   // `done`. Empty/absent when persistence isn't wired (auth/BoltDB disabled).
@@ -102,6 +140,8 @@ export interface CopilotStreamEvent {
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
     timestamp?: string
+    trigger?: string
+    view?: string
     turnId?: string
   }>
 }
@@ -114,6 +154,8 @@ export interface CompactResponse {
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
     timestamp?: string
+    trigger?: string
+    view?: string
     turnId?: string
   }>
   tokensBefore: number
@@ -378,6 +420,8 @@ export interface ConversationDetail {
     toolCalls?: CopilotToolCall[]
     toolResults?: CopilotToolResult[]
     timestamp?: string
+    trigger?: string
+    view?: string
     turnId?: string
   }>
   lastRoundUsage?: CopilotUsage

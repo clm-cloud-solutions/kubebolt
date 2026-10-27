@@ -3,6 +3,7 @@ package api
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/copilot"
 )
@@ -30,10 +31,10 @@ func TestWithSessionContextPrefix_DoesNotMutateInput(t *testing.T) {
 	originalContent0 := original[0].Content
 	originalContent1 := original[1].Content
 
-	out := withSessionContextPrefix(original, "# Session context\ncluster: x")
+	out := withSessionContextPrefix(original, sessionNotesFor("x"))
 
 	// The returned slice must carry the prefix on the first user message.
-	if !strings.HasPrefix(out[0].Content, "# Session context\ncluster: x\n\n") {
+	if !strings.HasPrefix(out[0].Content, "# Session context\ncluster: x\n") {
 		t.Errorf("returned slice missing prefix on first user message; got %q", out[0].Content)
 	}
 	if !strings.HasSuffix(out[0].Content, "what happened with my pod?") {
@@ -52,46 +53,42 @@ func TestWithSessionContextPrefix_DoesNotMutateInput(t *testing.T) {
 	}
 }
 
-// TestWithSessionContextPrefix_PrefixesOnlyFirstUser checks that when a
-// conversation has multiple user turns, only the FIRST one carries the
-// session-context prefix on the LLM-facing slice. The model only needs
-// the cluster / view / Now anchor once per request.
-func TestWithSessionContextPrefix_PrefixesOnlyFirstUser(t *testing.T) {
+// TestWithSessionContextPrefix_FollowUpsCarryTheirOwnBlock checks that only
+// the FIRST user message carries the whole session block (the cluster line),
+// and that a follow-up carries its own view and time, once.
+func TestWithSessionContextPrefix_FollowUpsCarryTheirOwnBlock(t *testing.T) {
 	in := []copilot.Message{
 		{Role: copilot.RoleUser, Content: "first question"},
 		{Role: copilot.RoleAssistant, Content: "first answer"},
 		{Role: copilot.RoleUser, Content: "follow-up"},
 	}
-	out := withSessionContextPrefix(in, "# Session context\nx")
+	out := withSessionContextPrefix(in, sessionNotesFor("x"))
 
-	if !strings.Contains(out[0].Content, "# Session context") {
-		t.Errorf("first user message should carry the prefix")
+	if !strings.Contains(out[0].Content, "cluster: x") {
+		t.Errorf("first user message should carry the cluster line; got %q", out[0].Content)
 	}
-	if strings.Contains(out[2].Content, "# Session context") {
-		t.Errorf("follow-up user message should NOT carry the prefix; got %q", out[2].Content)
+	if strings.Contains(out[2].Content, "cluster:") {
+		t.Errorf("follow-up should not repeat the cluster line; got %q", out[2].Content)
+	}
+	if strings.Count(out[2].Content, "# Now") != 1 || !strings.HasSuffix(out[2].Content, "\n\nfollow-up") {
+		t.Errorf("follow-up should carry one Now block before its text; got %q", out[2].Content)
 	}
 }
 
-// TestWithSessionContextPrefix_EmptyInputs covers the no-op paths so a
-// future change can't silently start emitting empty Session Context
-// headers ("# Session context\n\n<question>") which would confuse Kobi.
+// TestWithSessionContextPrefix_EmptyInputs covers the no-op path.
 func TestWithSessionContextPrefix_EmptyInputs(t *testing.T) {
-	t.Run("empty sessionCtx returns input unchanged", func(t *testing.T) {
-		in := []copilot.Message{{Role: copilot.RoleUser, Content: "q"}}
-		out := withSessionContextPrefix(in, "")
-		if &in[0] != &out[0] {
-			// Pointer equality on the underlying array element — the
-			// helper returns the input slice directly when there is no
-			// work to do (avoids a needless allocation per round).
-			t.Errorf("empty sessionCtx should return input slice as-is")
-		}
-	})
-	t.Run("empty messages returns input unchanged", func(t *testing.T) {
-		out := withSessionContextPrefix(nil, "# Session context\nx")
-		if out != nil {
-			t.Errorf("nil messages should pass through")
-		}
-	})
+	out := withSessionContextPrefix(nil, sessionNotesFor("x"))
+	if out != nil {
+		t.Errorf("nil messages should pass through")
+	}
+}
+
+func sessionNotesFor(cluster string) copilot.SessionNotesInput {
+	return copilot.SessionNotesInput{
+		ClusterName: cluster,
+		CurrentPath: "/pods",
+		Now:         time.Date(2026, 10, 12, 14, 55, 8, 0, time.UTC),
+	}
 }
 
 // TestNoClusterContextBlock_Contract pins the no-cluster session note (the

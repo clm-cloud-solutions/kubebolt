@@ -27,6 +27,11 @@
       "labels": ["dependencies", "image-bump"]
     },
     {
+      "description": "Never bump the Azure MCP Server sidecar on its own: Kobi's Azure allowlist (apps/api/internal/mcpcatalog/azure.go, azmcpVersion) was reviewed against this release, and the betas rename commands every few days. A bump moves azmcpVersion, the chart, docker-compose and the live test together; TestAzureDeploymentsStartTheReviewedSidecar fails on drift.",
+      "matchPackageNames": ["mcr.microsoft.com/azure-sdk/azure-mcp"],
+      "enabled": false
+    },
+    {
       "description": "Hold patch-only Go module bumps weekly to avoid PR noise.",
       "matchManagers": ["gomod"],
       "matchUpdateTypes": ["patch"],

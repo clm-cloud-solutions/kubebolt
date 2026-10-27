@@ -73,6 +73,15 @@ func TestClusterEpisodes_SeedPrecedence(t *testing.T) {
 		t.Fatalf("kind = %s, want node_pressure", ops[0].Kind)
 	}
 
+	// Evictions for going over the pod's own storage limit do not seed
+	// node_pressure: they say nothing about the node.
+	own := mk("evicted-pods")
+	own[0].Title = evictedOwnLimitTitle
+	ops = ClusterEpisodes("org-1", own)
+	if ops[0].Kind == OpKindNodePressure {
+		t.Fatalf("kind = %s for an own-limit eviction, want anything but node_pressure", ops[0].Kind)
+	}
+
 	// No structural seed, but 5 distinct workloads on rollout rules.
 	ops = ClusterEpisodes("org-1", mk("policy-orphan"))
 	if ops[0].Kind != OpKindMassRollout {

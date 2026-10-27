@@ -47,7 +47,16 @@ type SessionRecord struct {
 	ToolBytes  int                  `json:"toolResultBytes"`
 	DurationMs int64                `json:"durationMs"`
 	Fallback   bool                 `json:"fallback"`
+	// Escalation is set when the session moved to the escalation model:
+	// which model, what moved it and the usage that model consumed (Usage
+	// above is the whole session's).
+	Escalation *EscalationRecord `json:"escalation,omitempty"`
 	Tools      map[string]ToolStats `json:"tools,omitempty"`
+	// MCPCalls counts the external connector calls (mcp__<connector>__<tool>)
+	// the session made — every one a call into a customer's cloud account,
+	// so worth a number of its own rather than a sum over Tools. Omitted when
+	// zero, so records from before connectors existed stay byte-identical.
+	MCPCalls int `json:"mcpCalls,omitempty"`
 	// Compaction events that fired within this session (auto-compact
 	// during the tool loop). Manual compacts are their own endpoint calls
 	// and are not attached to a session.
@@ -263,4 +272,28 @@ func (s *UsageStore) Count() (int, error) {
 		return nil
 	})
 	return n, err
+}
+
+// SubtractUsage is a minus b, field by field, floored at zero: the share of a
+// session that one model did not consume.
+func SubtractUsage(a, b Usage) Usage {
+	sub := func(x, y int) int {
+		if x < y {
+			return 0
+		}
+		return x - y
+	}
+	return Usage{
+		InputTokens:               sub(a.InputTokens, b.InputTokens),
+		OutputTokens:              sub(a.OutputTokens, b.OutputTokens),
+		CacheCreationTokens:       sub(a.CacheCreationTokens, b.CacheCreationTokens),
+		CacheReadTokens:           sub(a.CacheReadTokens, b.CacheReadTokens),
+		CacheCreation1hTokens:     sub(a.CacheCreation1hTokens, b.CacheCreation1hTokens),
+		ThinkingTokens:            sub(a.ThinkingTokens, b.ThinkingTokens),
+		LongInputTokens:           sub(a.LongInputTokens, b.LongInputTokens),
+		LongOutputTokens:          sub(a.LongOutputTokens, b.LongOutputTokens),
+		LongCacheCreationTokens:   sub(a.LongCacheCreationTokens, b.LongCacheCreationTokens),
+		LongCacheReadTokens:       sub(a.LongCacheReadTokens, b.LongCacheReadTokens),
+		LongCacheCreation1hTokens: sub(a.LongCacheCreation1hTokens, b.LongCacheCreation1hTokens),
+	}
 }

@@ -1,0 +1,264 @@
+package mcpcatalog
+
+import (
+	"fmt"
+	"regexp"
+	"strings"
+)
+
+// The AWS connector reaches the customer's account through the AWS MCP
+// Server that AWS hosts (https://aws-mcp.<hostRegion>.api.aws/mcp), signing
+// every request with SigV4. What it may read is defined by the family table
+// in aws_policy.go; this file turns that table into the marketplace entry and
+// the setup manual.
+
+const (
+	awsConnectorID = "aws"
+	awsDocsURL     = "https://docs.aws.amazon.com/agent-toolkit/latest/userguide/getting-started-aws-mcp-server.html"
+
+	awsModeAssumeRole = "assume-role"
+	awsModeAmbient    = "ambient"
+
+	awsDefaultHostRegion = "us-east-1"
+	awsDefaultRoleName   = "KubeBoltReadOnly"
+)
+
+// awsHostRegions are the only two regions AWS runs its MCP server in. The
+// host region picks the server and the SigV4 signing region; the region the
+// calls target travels separately.
+var awsHostRegions = []FieldOption{
+	{Value: "us-east-1", Label: "US East (N. Virginia)"},
+	{Value: "eu-central-1", Label: "Europe (Frankfurt)"},
+}
+
+// Field patterns. A field that ends up in a URL, a header or an STS call is
+// matched against a strict shape, so it cannot steer a request elsewhere.
+const (
+	// A role in the commercial partition: the MCP server's hosts live there,
+	// and a GovCloud or China role cannot be assumed from them.
+	awsRoleARNPattern = `^arn:aws:iam::[0-9]{12}:role/([\w+=,.@-]+/)*[\w+=,.@-]{1,64}$`
+	// STS's own ExternalId character set. The value is KubeBolt's, never
+	// the customer's: the gateway generates one per org (32 random bytes,
+	// hex) and the admin only copies it into the trust policy. AWS does not
+	// treat an external ID as a secret — anyone who can read the role sees
+	// it — so what stops another org from pointing its connector at this
+	// role (the confused deputy) is that no org can choose the value its
+	// connector sends. The pattern still guards what is stored and printed
+	// into the policy; the lower bound of 16 (STS accepts 2) keeps scrub()
+	// from spelling out a short value inside error text. MaxLen enforces
+	// the upper bound (RE2 caps a repeat at 1000).
+	awsExternalIDPattern = `^[\w+=,.@:/-]{16,}$`
+	awsExternalIDMaxLen  = 1224
+	awsRegionPattern     = `^[a-z]{2}(-[a-z]+)+-[0-9]{1,2}$`
+	awsProfilePattern    = `^[A-Za-z0-9_.+=,@-]{1,64}$`
+)
+
+func init() { register(newAWSConnector) }
+
+func newAWSConnector() *ConnectorDef {
+	return &ConnectorDef{
+		ID:       awsConnectorID,
+		Name:     "Amazon Web Services",
+		Category: CategoryCloud,
+		Description: "Lets Kobi read the AWS resources your workloads depend on — RDS databases, " +
+			"load balancers, security groups, CloudWatch metrics and logs, CloudTrail changes — through the " +
+			"AWS MCP Server, with an IAM role you control.",
+		Tags:      []string{"EKS", "RDS", "CloudWatch", "CloudTrail", "Cost Explorer"},
+		DocsURL:   awsDocsURL,
+		MinPlan:   "team",
+		AuthModes: awsAuthModes(),
+		Families:  awsFamilies(),
+		Never: []string{
+			"Change anything in your account: no create, update, delete, start, stop or reboot.",
+			"Read secret values: Secrets Manager values, Parameter Store values, KMS decryption, EC2 user data, the values of Lambda environment variables.",
+			"Query your databases or tables: no RDS Data API, no DynamoDB items.",
+			"Read object contents from S3 or a function's code, or hand out pre-signed URLs.",
+			"Run code of its own: every call is one read operation from the list above.",
+		},
+		Guide:  awsGuide,
+		Binder: &awsBinder{},
+	}
+}
+
+func awsFields(ambient bool) []FieldSchema {
+	region := FieldSchema{
+		Name:        "region",
+		Label:       "Region",
+		Help:        "The AWS region your workloads' resources live in. Kobi can still ask about another region in a single call.",
+		Placeholder: "us-east-2",
+		Required:    true,
+		Pattern:     awsRegionPattern,
+		MaxLen:      32,
+	}
+	hostRegion := FieldSchema{
+		Name:     "hostRegion",
+		Label:    "AWS MCP Server location",
+		Help:     "AWS runs its MCP server in two regions. Pick the closer one, or the one your data-residency rules require; calls still target your region.",
+		Advanced: true,
+		Options:  awsHostRegions,
+		Default:  awsDefaultHostRegion,
+	}
+	if ambient {
+		return []FieldSchema{
+			region,
+			hostRegion,
+			{
+				Name:        "profile",
+				Label:       "Profile",
+				Help:        "A named profile from this machine's AWS config files. Leave empty to use the default credential chain.",
+				Placeholder: "kubebolt-readonly",
+				Advanced:    true,
+				Pattern:     awsProfilePattern,
+				MaxLen:      64,
+			},
+		}
+	}
+	return []FieldSchema{
+		{
+			Name:        "roleArn",
+			Label:       "Role ARN",
+			Help:        "The role KubeBolt assumes in your account, created from the policies above.",
+			Placeholder: "arn:aws:iam::123456789012:role/" + awsDefaultRoleName,
+			Required:    true,
+			Pattern:     awsRoleARNPattern,
+			MaxLen:      2048,
+		},
+		{
+			Name:      "externalId",
+			Label:     "External ID",
+			Help:      "Generated by KubeBolt for this organization and already required by the trust policy above. It ties the role to this organization, so no other KubeBolt customer can use it.",
+			Generated: true,
+			Required:  true,
+			Pattern:   awsExternalIDPattern,
+			MaxLen:    awsExternalIDMaxLen,
+		},
+		region,
+		hostRegion,
+	}
+}
+
+func awsAuthModes() []AuthMode {
+	return []AuthMode{
+		{
+			ID:          awsModeAssumeRole,
+			Label:       "IAM role",
+			Description: "KubeBolt assumes a read-only role in your account, protected by an external ID KubeBolt generates for your organization. Every call runs with temporary credentials narrowed to the reads listed here.",
+			Fields:      awsFields(false),
+		},
+		{
+			ID:             awsModeAmbient,
+			Label:          "This machine's credentials",
+			Description:    "KubeBolt signs with the AWS identity it already runs with (environment, config profile, IRSA, Pod Identity or instance role). KubeBolt only sends the read operations listed here, but it does not limit what that identity may do in IAM.",
+			SelfHostedOnly: true,
+			Fields:         awsFields(true),
+		},
+	}
+}
+
+// awsFamilies is the marketplace view of the family table.
+func awsFamilies() []Family {
+	table := awsFamilyTable()
+	out := make([]Family, 0, len(table))
+	for _, f := range table {
+		out = append(out, f.Family)
+	}
+	return out
+}
+
+var awsRoleNameRE = regexp.MustCompile(`:role/(?:[\w+=,.@-]+/)*([\w+=,.@-]{1,64})$`)
+
+// awsGuide renders the setup manual. The two policies are generated from the
+// family table, so the role the customer creates grants exactly what the
+// typed tool may call, no more. fields are the org's stored settings, the
+// external ID KubeBolt generated for it among them: the guide prints it
+// where the customer needs it, since the customer never chooses it.
+func awsGuide(env Env, fields map[string]string) SetupGuide {
+	roleName := awsDefaultRoleName
+	if m := awsRoleNameRE.FindStringSubmatch(strings.TrimSpace(fields["roleArn"])); m != nil {
+		roleName = m[1]
+	}
+	externalID := strings.TrimSpace(fields["externalId"])
+	if !awsIsExternalID(externalID) {
+		externalID = ""
+	}
+	permissions, err := awsRolePolicy()
+	if err != nil {
+		// Unreachable with the static table; the tests encode it.
+		permissions = "{}"
+	}
+	trust, err := awsTrustPolicy(env.AWSPrincipalARN, externalID)
+	if err != nil {
+		trust = "{}"
+	}
+
+	mustBe := ", which must be the External ID shown below,"
+	if externalID != "" {
+		mustBe = ", which must be `" + externalID + "`,"
+	}
+	steps := []SetupStep{
+		{
+			Title: "Create the permissions policy",
+			Body: "This policy allows only the reads listed under what Kobi can read. It explicitly denies secret values, " +
+				"instance user data, database and table queries and S3 object contents, and denies anything else that arrives through the AWS MCP Server " +
+				"(aws:ViaAWSMCPService), so the role stays read-only even if a broader policy is attached to it later. " +
+				"Save it as permissions-policy.json.",
+			Code:     permissions,
+			Language: "json",
+		},
+		{
+			Title:    "Create the trust policy",
+			Body:     awsTrustExternalIDNote(externalID) + awsTrustPrincipalNote(env.AWSPrincipalARN) + "Save it as trust-policy.json.",
+			Code:     trust,
+			Language: "json",
+		},
+		{
+			Title: "Create the role",
+			Body: "With the AWS CLI, or the same two policies in the IAM console. The last two commands print the external ID the role " +
+				"requires" + mustBe + " and the role ARN to paste below.",
+			Code: fmt.Sprintf("aws iam create-role --role-name %s --assume-role-policy-document file://trust-policy.json\n"+
+				"aws iam put-role-policy --role-name %s --policy-name KubeBoltRead --policy-document file://permissions-policy.json\n"+
+				"aws iam get-role --role-name %s --query 'Role.AssumeRolePolicyDocument.Statement[0].Condition.StringEquals.\"sts:ExternalId\"' --output text\n"+
+				"aws iam get-role --role-name %s --query Role.Arn --output text", roleName, roleName, roleName, roleName),
+			Language: "shell",
+		},
+		{
+			Title: "Connect KubeBolt",
+			Body: "Paste the role ARN and the region of your resources below, then run Test. KubeBolt assumes the role with this " +
+				"organization's external ID and temporary credentials narrowed to the reads listed above, and AWS records every call in " +
+				"CloudTrail under a session named after the reader (kubebolt-kobi for Kobi).",
+		},
+	}
+	if env.AmbientAllowed {
+		steps = append(steps, SetupStep{
+			Title: "Or use this machine's AWS credentials",
+			Body: "On a self-hosted install you can skip the role and choose \"This machine's credentials\": KubeBolt then signs with the AWS " +
+				"identity it runs with — environment variables, the config and credentials files (optionally a named profile), IRSA, EKS " +
+				"Pod Identity or the instance role. KubeBolt only ever sends the read operations listed above, but it does not restrict " +
+				"what that identity is allowed to do in IAM. Use a dedicated read-only role or profile with the permissions policy " +
+				"from step 1, never an administrator or the account's root user.",
+			Alternative: true,
+		})
+	}
+	return SetupGuide{Steps: steps}
+}
+
+// awsTrustExternalIDNote says where the policy's external ID comes from: the
+// org's own, generated by KubeBolt, or a placeholder until it exists.
+func awsTrustExternalIDNote(externalID string) string {
+	if externalID != "" {
+		return "The policy requires the external ID KubeBolt generated for this organization, `" + externalID + "`: KubeBolt sends it " +
+			"with every request to assume the role, and no other organization's requests carry it. "
+	}
+	return "Replace `" + awsExternalIDPlaceholder + "` with the External ID shown below: KubeBolt generates it for this organization, " +
+		"and a value of your own would not match what KubeBolt sends. "
+}
+
+// awsTrustPrincipalNote tells the admin who may assume the role: the
+// configured KubeBolt principal, or how to find it when none is configured.
+func awsTrustPrincipalNote(principal string) string {
+	if awsPrincipalARNRE.MatchString(principal) {
+		return "The policy already names KubeBolt's AWS principal (`" + principal + "`). "
+	}
+	return "Replace `" + awsPrincipalPlaceholder + "` with the AWS principal KubeBolt runs as — on a self-hosted install, the IAM role of KubeBolt's " +
+		"service account (IRSA or EKS Pod Identity) or of its instance; `aws sts get-caller-identity` run where KubeBolt runs prints it. "
+}

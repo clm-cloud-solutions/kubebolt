@@ -14,6 +14,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // agentAuthInfoResponse drives the "is the agent install/configure
@@ -225,7 +226,7 @@ func upsertAgentTokenSecret(ctx context.Context, cs kubernetes.Interface, ns, na
 			},
 		},
 	}
-	if _, err := cs.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{}); err != nil && !apierrors.IsAlreadyExists(err) {
+	if _, err := cs.CoreV1().Namespaces().Create(ctx, nsObj, metav1.CreateOptions{FieldManager: fieldmanager.Name}); err != nil && !apierrors.IsAlreadyExists(err) {
 		return fmt.Errorf("ensure namespace %q: %w", ns, err)
 	}
 
@@ -247,7 +248,7 @@ func upsertAgentTokenSecret(ctx context.Context, cs kubernetes.Interface, ns, na
 
 	existing, err := cs.CoreV1().Secrets(ns).Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		_, err = cs.CoreV1().Secrets(ns).Create(ctx, desired, metav1.CreateOptions{})
+		_, err = cs.CoreV1().Secrets(ns).Create(ctx, desired, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 		return err
 	}
 	if err != nil {
@@ -256,6 +257,6 @@ func upsertAgentTokenSecret(ctx context.Context, cs kubernetes.Interface, ns, na
 	existing.Data = desired.Data
 	existing.Labels = desired.Labels
 	existing.Type = desired.Type
-	_, err = cs.CoreV1().Secrets(ns).Update(ctx, existing, metav1.UpdateOptions{})
+	_, err = cs.CoreV1().Secrets(ns).Update(ctx, existing, metav1.UpdateOptions{FieldManager: fieldmanager.Name})
 	return err
 }

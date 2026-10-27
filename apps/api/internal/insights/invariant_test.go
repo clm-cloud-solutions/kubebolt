@@ -262,8 +262,13 @@ func invariantFixtures() map[string]rulePair {
 	livenessEv := []*corev1.Event{livenessEvent("prod", "api", "app", 5, now.Add(-31*time.Minute))}
 
 	notReady := func(transition metav1.Time) *corev1.Pod {
-		p := podWith(running)
-		p.Spec.Containers = []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{}}}
+		unready := running
+		unready.Ready = false
+		p := podWith(unready)
+		// A readiness probe is what makes "not Ready" a readiness failure
+		// (notReadyFromProbe); without one the container is just starting.
+		p.Spec.Containers = []corev1.Container{{Name: "app", ReadinessProbe: &corev1.Probe{
+			ProbeHandler: corev1.ProbeHandler{Exec: &corev1.ExecAction{Command: []string{"true"}}}}}}
 		p.Status.Conditions = []corev1.PodCondition{{
 			Type: corev1.PodReady, Status: corev1.ConditionFalse,
 			Reason: "ContainersNotReady", LastTransitionTime: transition,

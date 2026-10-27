@@ -55,6 +55,39 @@ export function isRequiresEE(err: unknown): boolean {
   return err instanceof ApiError && err.status === 409 && err.payload?.code === 'requires_ee'
 }
 
+/**
+ * isRequiresUpgrade reports whether an error is a plan gate: the org's plan
+ * does not include what it tried to turn on — a 409 (or 402) with
+ * `reason: "requires_upgrade"`. Only the multi-org edition sells plans, so
+ * this edition never answers it; the connector screens both editions share
+ * read it all the same.
+ */
+export function isRequiresUpgrade(err: unknown): boolean {
+  return (
+    err instanceof ApiError &&
+    (err.status === 409 || err.status === 402) &&
+    err.payload?.reason === 'requires_upgrade'
+  )
+}
+
+/**
+ * requiresUpgradePlan names the plan to move to for a plan-gate rejection —
+ * `upgradeTo` when the backend knows one is buyable now, else `requiredPlan`.
+ * Null when err is not a plan gate or names no plan.
+ */
+export function requiresUpgradePlan(err: unknown): string | null {
+  if (!isRequiresUpgrade(err)) return null
+  const p = (err as ApiError).payload as { upgradeTo?: unknown; requiredPlan?: unknown }
+  if (typeof p.upgradeTo === 'string' && p.upgradeTo) return p.upgradeTo
+  if (typeof p.requiredPlan === 'string' && p.requiredPlan) return p.requiredPlan
+  return null
+}
+
+/** planLabel renders a plan id as it is written in the product ("free" → "Free"). */
+export function planLabel(id: string): string {
+  return id ? id.charAt(0).toUpperCase() + id.slice(1) : ''
+}
+
 // --- Token management (in-memory, not localStorage) ---
 
 let accessToken: string | null = null
@@ -473,6 +506,9 @@ export interface ShiftReport {
 
 export interface AccountUsage {
   usage: AccountUsagePoint[]
+  // AI credits are reported by the multi-org edition only; absent here. A
+  // plan-locked connector card reads its contact address from it.
+  credits?: { upgradeUrl?: string }
 }
 
 export const api = {
@@ -1732,6 +1768,36 @@ export const api = {
   configureIntegration: <T = unknown>(id: string, config: T) =>
     putJSON<Integration>(`${API_BASE}/integrations/${encodeURIComponent(id)}/config`, config),
 
+  // --- MCP connectors (admin, org-scoped) ---
+  // Mounted under /admin, never /mcp: that prefix belongs to KubeBolt's own
+  // MCP server and is granted to Autopilot service tokens by prefix match.
+  // The whole surface 404s when an operator turned the feature off.
+  listMcpConnectors: () =>
+    fetchJSON<{ connectors: McpConnector[] | null; comingSoon?: McpComingSoonConnector[] | null }>(
+      `${API_BASE}/admin/mcp-connectors`,
+    ),
+
+  getMcpConnector: (id: string) =>
+    fetchJSON<McpConnector>(`${API_BASE}/admin/mcp-connectors/${encodeURIComponent(id)}`),
+
+  // Secrets: absent or null = keep the stored value, "" = clear it, a value =
+  // replace it. The form never sends "" for a blank field — blank means keep.
+  putMcpConnector: (id: string, body: McpConnectorPut) =>
+    putJSON<McpConnector>(`${API_BASE}/admin/mcp-connectors/${encodeURIComponent(id)}`, body),
+
+  // Without a draft the STORED config is tested, and a pass refreshes the
+  // connector's verifiedAt / verifiedTools. With a draft (unsaved form
+  // values merged over the stored config) nothing is persisted. 429 carries
+  // retryAfterSeconds — the backend allows one test every few seconds.
+  testMcpConnector: (id: string, draft?: McpConnectorDraft) =>
+    postJSON<McpConnectorTestResult>(
+      `${API_BASE}/admin/mcp-connectors/${encodeURIComponent(id)}/test`,
+      draft,
+    ),
+
+  deleteMcpConnector: (id: string) =>
+    deleteRequest<void>(`${API_BASE}/admin/mcp-connectors/${encodeURIComponent(id)}`),
+
   // Agent-specific helpers. The dialog calls these to (1) gate Save
   // when proxy is enabled but auth would mismatch the backend's
   // enforced mode, and (2) generate an ingest token + materialize a
@@ -1907,6 +1973,8 @@ export interface CopilotSettingsResponse {
     actionProgressTimeoutMs?: number
     // Max tool-call rounds in effect.
     maxRounds?: number
+    // Model a conversation moves to once it leaves the cluster; absent = off.
+    escalationModel?: string
   }
   stored: {
     hasPrimaryOverride: boolean
@@ -1937,6 +2005,7 @@ export interface CopilotSettingsResponse {
       destructiveActionsEnabled?: boolean
       actionProgressTimeoutMs?: number
       maxRounds?: number
+      escalationModel?: string
     }
   }
   secretsReadable: boolean
@@ -1972,6 +2041,8 @@ export interface CopilotSettingsPutRequest {
     actionProgressTimeoutMs?: number
     // Max tool-call rounds per Kobi turn. Clamped to [2, 40] server-side.
     maxRounds?: number
+    // Escalation model, on the primary's provider and key. "" turns it off.
+    escalationModel?: string
   }
   plaintextAPIKey?: string
   plaintextFallbackAPIKey?: string
@@ -2570,6 +2641,167 @@ export interface Integration {
   // workload KubeBolt could create or destroy. Drives whether the
   // Manage panel renders the Danger zone + uninstall affordance.
   installable: boolean
+}
+
+// --- MCP connectors ---
+// A curated connector lets Kobi (and Autopilot) read the cloud resources a
+// workload depends on through the provider's MCP server, with the org's own
+// read-only credentials. The catalog is fixed in the binary; an org only
+// chooses whether to turn one on and with which credentials.
+
+export type McpConnectorStatus = 'available' | 'enabled' | 'paused' | 'plan' | 'error'
+
+// One configuration field. The drawer renders its form from these and the
+// backend validates against the same definition.
+export interface McpFieldSchema {
+  name: string
+  label: string
+  help?: string
+  placeholder?: string
+  secret: boolean
+  required: boolean
+  // Rarely changed; rendered behind an "Advanced" disclosure.
+  advanced?: boolean
+  // The value spans lines (a pasted credential JSON): rendered as a textarea.
+  // Only these fields may hold a line break; the backend rejects one anywhere
+  // else.
+  multiline?: boolean
+  options?: { value: string; label: string }[]
+  default?: string
+  // KubeBolt creates the value once per organization and the admin only
+  // copies it (the AWS external ID). Shown read-only, never sent back: the
+  // API refuses a save or a test that carries it.
+  generated?: boolean
+}
+
+// One way of giving KubeBolt access. Modes this install does not allow (the
+// ones that borrow the server's own cloud identity, in multi-tenant installs)
+// are omitted by the backend, so every mode listed here can be chosen.
+export interface McpAuthMode {
+  id: string
+  label: string
+  description: string
+  // Uses the identity of the machine KubeBolt runs on.
+  selfHostedOnly: boolean
+  fields: McpFieldSchema[]
+}
+
+// A plain-language line of what the connector reads, and for whom.
+export interface McpConnectorFamily {
+  label: string
+  detail: string
+  kobi: boolean
+  autopilot: boolean
+}
+
+// A connector that is built but not offered yet (Google Cloud). Listed so it
+// reads as next, not as never; nothing about it can be set up or opened.
+export interface McpComingSoonConnector {
+  id: string
+  name: string
+  category: 'cloud' | 'observability' | string
+  description: string
+  // Labels of what it will read.
+  families: string[] | null
+}
+
+export interface McpSetupStep {
+  title: string
+  // May carry `inline code` spans in backticks.
+  body: string
+  code?: string
+  language?: 'json' | 'shell' | 'text'
+  // Replaces the steps before it instead of following them ("Or use this
+  // machine's credentials"): rendered unnumbered.
+  alternative?: boolean
+}
+
+// The lowest role that may use a connector in Kobi. Autopilot is not bound by
+// it. The backend always reports the effective value ('editor' by default).
+export type McpKobiMinRole = 'viewer' | 'editor' | 'admin'
+
+export interface McpConnector {
+  id: string
+  name: string
+  category: 'cloud' | 'observability' | string
+  description: string
+  tags: string[] | null
+  docsURL: string
+  minPlan: string
+  // False when the org's plan does not include the connector; upgradeTo then
+  // names the plan that does (when one is buyable now).
+  entitled: boolean
+  upgradeTo?: string
+  status: McpConnectorStatus
+  // The stored switches behind status. A paused connector that still carries
+  // a lastError reports 'paused', but Pause/Resume read these, not status.
+  enabled: boolean
+  paused: boolean
+  // Active auth mode id; '' when the connector was never configured.
+  mode: string
+  authModes: McpAuthMode[] | null
+  families: McpConnectorFamily[] | null
+  // How much of the provider each consumer reads, in the provider's own
+  // unit: AWS services, Azure commands, Google Cloud tools. Absent when the
+  // backend cannot say.
+  reach?: { unit: string; kobi: number; autopilot: number } | null
+  // What it never does, in plain language.
+  never: string[] | null
+  // Local tool names per consumer — the raw list behind "Technical details".
+  tools: { kobi: string[] | null; autopilot: string[] | null }
+  config: {
+    // Stored non-secret values. Secrets are never returned — only whether
+    // one is set, and which stored ones can no longer be decrypted (the
+    // encryption key rotated since they were saved).
+    fields: Record<string, string> | null
+    secretsConfigured: Record<string, boolean> | null
+    secretsUnreadable: string[] | null
+  }
+  verifiedAt?: string
+  verifiedTools?: number
+  // From the last passing test of the stored config: who the provider said
+  // KubeBolt was, and what about that setup still needs attention (the AWS
+  // account's root user). Cleared by a config change or a clean pass.
+  verifiedIdentity?: string
+  verifiedWarning?: string
+  // A sentence an admin can act on, set when status is 'error'.
+  lastError?: string
+  kobiMinRole: McpKobiMinRole
+  setupGuide: { steps: McpSetupStep[] | null }
+}
+
+export interface McpConnectorPut {
+  enabled?: boolean
+  paused?: boolean
+  // Not configuration: changing it alone keeps the verification.
+  kobiMinRole?: McpKobiMinRole
+  mode?: string
+  fields?: Record<string, string>
+  // null or absent = keep, "" = clear, value = set.
+  secrets?: Record<string, string | null>
+}
+
+// Unsaved form values to test, merged over the stored config server-side.
+export interface McpConnectorDraft {
+  mode?: string
+  fields?: Record<string, string>
+  secrets?: Record<string, string | null>
+}
+
+export interface McpConnectorTestResult {
+  ok: boolean
+  tools: number
+  latencyMs: number
+  // Who the provider says KubeBolt is (e.g. the assumed-role ARN).
+  identity?: string
+  // One harmless read proving the credentials reach the control plane, not
+  // only the MCP endpoint.
+  canary?: { tool: string; ok: boolean }
+  // A sentence an admin can act on, and what to check.
+  error?: string
+  hint?: string
+  // A passing test whose setup still needs attention (root credentials).
+  warning?: string
 }
 
 // Per-integration install configs. Each one matches the provider's

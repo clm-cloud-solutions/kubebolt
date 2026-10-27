@@ -394,7 +394,7 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [baseURL, setBaseURL] = useState('')
-  const [maxTokens, setMaxTokens] = useState('4096')
+  const [maxTokens, setMaxTokens] = useState('')
   const [showToolCalls, setShowToolCalls] = useState(true)
   const [autoCompact, setAutoCompact] = useState(true)
   const [reveal, setReveal] = useState(false)
@@ -409,7 +409,7 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
     setProvider((eff.provider as ProviderID) || 'anthropic')
     setModel(eff.model || '')
     setBaseURL(eff.baseURL || '')
-    setMaxTokens(String(eff.maxTokens || 4096))
+    setMaxTokens(eff.maxTokens ? String(eff.maxTokens) : '')
     setShowToolCalls(eff.showToolCalls)
     setAutoCompact(eff.autoCompact)
     setSeeded(true)
@@ -534,10 +534,11 @@ function StepCopilot({ onDone, alreadyDone }: { onDone: () => void; alreadyDone:
             />
           </Field>
 
-          <Field label="Max tokens" helper="Cap on output tokens per provider call. Bump if Kobi truncates long answers.">
+          <Field label="Max tokens" helper="Cap on output tokens per provider call, reasoning included. Blank = per model: 16384 where reasoning counts against it (Claude, OpenAI reasoning models), 4096 otherwise. Raise it if Kobi's answers end mid-sentence.">
             <input
               type="number"
               min={1}
+              placeholder="Auto"
               value={maxTokens}
               onChange={(e) => setMaxTokens(e.target.value)}
               className="w-32 px-2 py-1.5 rounded-md bg-kb-bg border border-kb-border text-xs text-kb-text-primary focus:outline-none focus:border-kb-accent"
@@ -620,7 +621,10 @@ function WizardModelPicker({
 }) {
   const groups = groupModels(MODELS_BY_PROVIDER[provider] ?? [])
   const matched = findModelOption(provider, value)
-  const isCustom = value !== '' && !matched
+  // Picking Custom… empties the value, and an empty value alone reads as
+  // "pick one": without this the text input never appeared.
+  const [customPicked, setCustomPicked] = useState(false)
+  const isCustom = !matched && (value !== '' || customPicked)
   const selectValue = isCustom ? CUSTOM_MODEL_VALUE : value
 
   return (
@@ -631,9 +635,11 @@ function WizardModelPicker({
         onChange={(e) => {
           const next = e.target.value
           if (next === CUSTOM_MODEL_VALUE) {
+            setCustomPicked(true)
             if (!isCustom) onChange('')
             return
           }
+          setCustomPicked(false)
           onChange(next)
         }}
       >

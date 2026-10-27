@@ -9,8 +9,9 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
 )
 
-// The seam for typed evidence. No rule emits any yet — these pin the plumbing
-// so instrumenting the 24 rules one at a time stays a mechanical change.
+// The seam for typed evidence. Since 2026-10-11 every rule emits it;
+// these pin the plumbing, and TestEveryInsightConstructorPassesEvidence keeps
+// a new rule from shipping without.
 
 // The whole point of the variadic parameter: 27 existing call sites compile
 // and behave exactly as before. If this ever needs updating, the migration

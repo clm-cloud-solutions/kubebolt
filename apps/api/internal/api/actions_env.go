@@ -15,6 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // Set env — `kubectl set env` ergonomics. Strategic merge patch on
@@ -263,7 +265,7 @@ func (h *handlers) handleSetEnv(w http.ResponseWriter, r *http.Request) {
 	}
 
 	dryRun := dryRunRequested(r)
-	envOpts := metav1.PatchOptions{DryRun: dryRunAll(dryRun)}
+	envOpts := metav1.PatchOptions{FieldManager: fieldmanager.Name, DryRun: dryRunAll(dryRun)}
 	switch resourceType {
 	case "deployments":
 		_, err = clientset.AppsV1().Deployments(namespace).Patch(ctx, name, types.StrategicMergePatchType, patchBytes, envOpts)

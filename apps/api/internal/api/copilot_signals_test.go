@@ -23,7 +23,7 @@ func TestCopilotChat_SessionRecordCarriesHealthSignals(t *testing.T) {
 		}
 		return &copilot.ChatResponse{Text: "I can't help with that.", StopReason: "refusal"}
 	})
-	w := newWiringWithAgents(t, prov.name, newManagerOn(t, map[string]string{}), nil)
+	w := newWiringWithAgents(t, false, prov.name, newManagerOn(t, map[string]string{}), nil)
 
 	body, _ := json.Marshal(map[string]any{"messages": []copilot.Message{{Role: copilot.RoleUser, Content: "why is orders-db down?"}}})
 	rec := w.do(t, w.admin, http.MethodPost, "/api/v1/copilot/chat", string(body))

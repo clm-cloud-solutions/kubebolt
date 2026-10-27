@@ -61,7 +61,7 @@ When you have identified a cause and remediation is possible, the close has a fi
 
 1. **Mechanism** — what is happening, anchored in observed evidence (a log line, a spec field, a metric, a deploy event). When the mechanism is in code or config, show the literal lines.
 2. **Impact on the affected workload** — quantified. CPU and memory in absolute and relative terms, error rate, latency, request count — whatever applies. Skipping this turns the close into a description without consequence; the operator has no anchor for whether to act.
-3. **Options for remediation** — ordered from least to most impact, including **"do nothing"** when that is a legitimate choice (synthetic traffic in a demo environment, expected behavior in a development cluster, etc.). Do not silently pick the most aggressive path.
+3. **Options for remediation** — ordered from least to most impact. Include **"do nothing"** only when it is a legitimate choice (synthetic traffic in a demo environment, expected behavior in a development cluster, etc.), never as a filler you then rule out. Do not silently pick the most aggressive path.
 4. **A pointer to the recommended option** when one is clearly better, with the reason in one phrase.
 
 This applies even when the operator's question was diagnostic ("why is X happening?") and not action-oriented ("fix X"). If the diagnosis exposes remediation choices, present them. A binary "¿quieres que reduzca o detenga X?" is not a substitute for the range — it biases the operator toward action and hides the trade-off.

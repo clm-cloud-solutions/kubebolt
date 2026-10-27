@@ -13,6 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // Server-side dry-run support for Kobi action proposals. The proposal card
@@ -266,7 +268,7 @@ func dryRunCreatePod(ctx context.Context, clientset kubernetes.Interface, namesp
 		},
 		Spec: tmpl.Spec,
 	}
-	_, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{DryRun: []string{"All"}})
+	_, err := clientset.CoreV1().Pods(namespace).Create(ctx, pod, metav1.CreateOptions{FieldManager: fieldmanager.Name, DryRun: []string{"All"}})
 	// A pods:create RBAC denial is a limitation of THIS preview mechanism, not a
 	// rejection of the action — the SA may well be able to scale/patch the
 	// workload without being able to create pods directly. Treat it as

@@ -1,3 +1,7 @@
+// A workload asked to run nothing (a Deployment scaled to 0) is neither
+// healthy nor failing: neutral, never the green of "Running".
+const IDLE_STATUSES = ['scaled to 0']
+
 export function getStatusColor(status: string): string {
   const s = status.toLowerCase()
   if (['running', 'ready', 'active', 'healthy', 'available', 'bound', 'succeeded', 'complete', 'pass'].includes(s)) {
@@ -9,6 +13,7 @@ export function getStatusColor(status: string): string {
   if (['failed', 'error', 'crashloopbackoff', 'critical', 'imagepullbackoff', 'fail', 'evicted', 'oomkilled'].includes(s)) {
     return 'text-status-error'
   }
+  if (IDLE_STATUSES.includes(s)) return 'text-kb-text-tertiary'
   return 'text-status-info'
 }
 
@@ -23,6 +28,7 @@ export function getStatusBgColor(status: string): string {
   if (['failed', 'error', 'crashloopbackoff', 'critical', 'imagepullbackoff', 'fail', 'evicted', 'oomkilled'].includes(s)) {
     return 'bg-status-error-dim text-status-error'
   }
+  if (IDLE_STATUSES.includes(s)) return 'bg-kb-elevated text-kb-text-tertiary'
   return 'bg-status-info-dim text-status-info'
 }
 

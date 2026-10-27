@@ -5,7 +5,23 @@ import { api } from '@/services/api'
 import { compactCopilotSession, sendCopilotChat, serializeMessages } from '@/services/copilot/chat'
 import { useCopilotLayout } from '@/hooks/useCopilotLayout'
 import { useAuth } from '@/contexts/AuthContext'
-import type { CopilotMessage, CopilotConfig, CopilotUsage, ConversationDetail } from '@/services/copilot/types'
+import type {
+  CopilotMessage,
+  CopilotConfig,
+  CopilotUsage,
+  ConversationDetail,
+  CopilotToolCall,
+  CopilotToolResult,
+} from '@/services/copilot/types'
+import {
+  applyLiveText,
+  applyLiveToolCall,
+  applyLiveToolResult,
+  keepIds,
+  liveId,
+  markLiveCancelled,
+  markLiveFailed,
+} from '@/services/copilot/liveTurn'
 
 /** localStorage key holding the id of the conversation currently open, so a
  * browser refresh re-fetches and resumes it instead of starting blank. */
@@ -44,6 +60,9 @@ interface CopilotContextValue {
   messages: CopilotMessage[]
   pendingToolCalls: string[]
   usedFallback: boolean
+  /** The escalation model the conversation runs on once it left the cluster
+   *  (announced by the server's meta event); null until then. */
+  escalatedModel: string | null
   sessionUsage: CopilotUsage | null
   sessionRounds: number
   compactNotices: CompactNotice[]
@@ -236,6 +255,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   const [messages, setMessages] = useState<CopilotMessage[]>([])
   const [pendingToolCalls, setPendingToolCalls] = useState<string[]>([])
   const [usedFallback, setUsedFallback] = useState(false)
+  const [escalatedModel, setEscalatedModel] = useState<string | null>(null)
   const [sessionUsage, setSessionUsage] = useState<CopilotUsage | null>(null)
   const [sessionRounds, setSessionRounds] = useState(0)
   const [compactNotices, setCompactNotices] = useState<CompactNotice[]>([])
@@ -300,6 +320,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     setError(null)
     setPendingToolCalls([])
     setUsedFallback(false)
+    setEscalatedModel(null)
     setSessionUsage(null)
     setSessionRounds(0)
     setCompactNotices([])
@@ -323,6 +344,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         toolCalls: m.toolCalls,
         toolResults: m.toolResults,
         timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+        trigger: m.trigger,
+        view: m.view,
         turnId: m.turnId,
       }))
       setMessages(rebuilt)
@@ -332,6 +355,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
       setError(null)
       setPendingToolCalls([])
       setUsedFallback(false)
+      // The next turn announces it again if this conversation left the cluster.
+      setEscalatedModel(null)
       setSessionUsage(null)
       setSessionRounds(0)
       setCompactNotices([])
@@ -462,6 +487,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         role: 'user',
         content: trimmed,
         timestamp: new Date(),
+        trigger: options?.trigger,
       }
 
       // Fresh AbortController for this turn so the user can stop it.
@@ -487,16 +513,27 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         setConversationTitle(trimmed.length > 60 ? `${trimmed.slice(0, 60).trim()}…` : trimmed)
       }
 
-      // Pre-create the assistant message that will accumulate streamed text
-      const assistantId = generateId()
-      let assistantText = ''
+      // The turn is built live in the shape `done` returns (liveTurn.ts): one
+      // assistant message per round with its text and tool calls, then one
+      // with its results. Round 0's exists from the start, so the panel shows
+      // Thinking until its first text or tool call lands.
+      const turnKey = generateId()
+      let round = 0
+      let unnamedCalls = 0
       // Set when the server signals the turn hit the tool-step limit (meta
       // event). Read in the `done` handler to append a deterministic
       // "reached step limit" notice — independent of the model's closing text.
       let maxRoundsHit: number | null = null
+      // Set by an `error` event: the turn ends there, and its last row says
+      // what failed (markLiveFailed) instead of a banner under the chat.
+      let turnError: string | null = null
+      const failTurn = (message: string) =>
+        setMessages((prev) =>
+          markLiveFailed(prev, turnKey, round, { message, afterMs: Date.now() - userMsg.timestamp.getTime() }),
+        )
       setMessages((prev) => [
         ...prev,
-        { id: assistantId, role: 'assistant', content: '', timestamp: new Date() },
+        { id: liveId(turnKey, 0, 'a'), role: 'assistant', content: '', timestamp: new Date() },
       ])
 
       // Snapshot the last round's provider-reported usage BEFORE we clear
@@ -522,6 +559,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           setLastActivityAt(Date.now())
           if (event.type === 'meta') {
             if (event.fallback) setUsedFallback(true)
+            if (typeof event.escalated === 'string' && event.escalated) setEscalatedModel(event.escalated)
             if (typeof event.maxRoundsReached === 'number') {
               maxRoundsHit = event.maxRoundsReached
             }
@@ -532,12 +570,35 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
               persistActivePointer(event.conversationId)
             }
           } else if (event.type === 'tool_call' && event.toolName) {
-            setPendingToolCalls((prev) => [...prev, event.toolName as string])
+            const toolName = event.toolName
+            // The transient indicator (tool cards off) still reads names.
+            setPendingToolCalls((prev) => [...prev, toolName])
+            if (typeof event.round === 'number') round = event.round
+            const call: CopilotToolCall = {
+              id: event.id ?? `${turnKey}-call-${unnamedCalls++}`,
+              name: toolName,
+              input: event.input,
+            }
+            const r = round
+            setMessages((prev) => applyLiveToolCall(prev, turnKey, r, call))
+          } else if (event.type === 'tool_result' && event.id) {
+            if (typeof event.round === 'number') round = event.round
+            const result: CopilotToolResult = {
+              toolCallId: event.id,
+              content: event.content ?? '',
+              isError: event.isError || undefined,
+              status: event.status,
+              durationMs: event.durationMs,
+              digest: event.digest || undefined,
+              reason: event.reason || undefined,
+            }
+            const r = round
+            setMessages((prev) => applyLiveToolResult(prev, turnKey, r, result))
           } else if (event.type === 'text' && event.text) {
-            assistantText += event.text
-            setMessages((prev) =>
-              prev.map((m) => (m.id === assistantId ? { ...m, content: assistantText } : m)),
-            )
+            if (typeof event.round === 'number') round = event.round
+            const text = event.text
+            const r = round
+            setMessages((prev) => applyLiveText(prev, turnKey, r, text))
           } else if (event.type === 'usage' && event.session) {
             setSessionUsage(event.session)
             if (typeof event.round === 'number') {
@@ -568,7 +629,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
               },
             ])
           } else if (event.type === 'error') {
-            setError(event.error || 'Unknown error from copilot')
+            turnError = event.error || 'Unknown error from copilot'
           } else if (event.type === 'done') {
             // Replace the frontend transcript with the server's full
             // messages array so tool_calls and tool_results from this
@@ -586,15 +647,21 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
                 // below. Preserving them stacked a new banner — each with its
                 // own Continue button — on every resumed turn.
                 const notices = prev.filter((m) => m.kind === 'compact-notice')
-                const rebuilt: CopilotMessage[] = event.messages!.map((m, idx) => ({
+                // The live turn already has this shape: keep the ids on screen
+                // so no card remounts (liveTurn.ts keepIds).
+                const onScreen = prev.filter((m) => !m.kind)
+                const fromServer: CopilotMessage[] = event.messages!.map((m, idx) => ({
                   id: `srv-${Date.now()}-${idx}`,
                   role: m.role,
                   content: m.content ?? '',
                   toolCalls: m.toolCalls,
                   toolResults: m.toolResults,
                   timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+                  trigger: m.trigger,
+                  view: m.view,
                   turnId: m.turnId,
                 }))
+                const rebuilt = keepIds(onScreen, fromServer)
                 // Carry client-only proposal annotations (execution outcome +
                 // progress/stall lifecycle) from the pre-rebuild transcript so
                 // the server echo doesn't wipe them — see carryProposalAnnotations.
@@ -622,6 +689,9 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
             break
           }
         }
+        // A turn that paused at the step limit and then failed to write its
+        // close already says so in the step-limit notice.
+        if (turnError && maxRoundsHit == null) failTurn(turnError)
       } catch (err) {
         // User-initiated cancel (cancelMessage → ac.abort()) surfaces as an
         // AbortError. That's not a failure: keep whatever streamed so far
@@ -629,11 +699,9 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         // assistant turn so the UI renders a "Stopped by you" marker (a partial
         // or empty answer must not read as completed or hung).
         if (ac.signal.aborted) {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantId ? { ...m, cancelled: true } : m)),
-          )
+          setMessages((prev) => markLiveCancelled(prev, turnKey, round))
         } else {
-          setError(err instanceof Error ? err.message : 'Failed to reach copilot backend')
+          failTurn(err instanceof Error ? err.message : 'Failed to reach copilot backend')
         }
       } finally {
         setIsLoading(false)
@@ -668,6 +736,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     setError(null)
     setPendingToolCalls([])
     setUsedFallback(false)
+    setEscalatedModel(null)
     setSessionUsage(null)
     setSessionRounds(0)
     setCompactNotices([])
@@ -775,6 +844,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
           toolCalls: m.toolCalls,
           toolResults: m.toolResults,
           timestamp: m.timestamp ? new Date(m.timestamp) : new Date(),
+          trigger: m.trigger,
+          view: m.view,
           turnId: m.turnId,
         }))
         rebuilt.push({
@@ -975,6 +1046,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         messages,
         pendingToolCalls,
         usedFallback,
+        escalatedModel,
         sessionUsage,
         sessionRounds,
         compactNotices,

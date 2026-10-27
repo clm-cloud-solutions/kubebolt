@@ -35,6 +35,7 @@ const ADMIN_BASE = {
   sessionBudgetTokens: '',
   autoCompactThreshold: '',
   compactModel: '',
+  escalationModel: '',
   compactPreserveTurns: '',
 } as const
 

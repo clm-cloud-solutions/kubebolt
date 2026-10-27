@@ -73,9 +73,9 @@ var modelPricing = map[string]ModelPricing{
 	// "claude-sonnet-5" and bills every cache read at twice its price.
 	"claude-sonnet-5-5": {Input: 2, CachedInput: 0.10, CacheCreation: 2.50, Output: 10},
 	"claude-sonnet-5":   {Input: 2, CachedInput: 0.20, CacheCreation: 2.50, Output: 10},
-	"claude-opus-4-7": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
-	"claude-opus-4-6": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
-	"claude-opus-4-5": {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
+	"claude-opus-4-7":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
+	"claude-opus-4-6":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
+	"claude-opus-4-5":   {Input: 5, CachedInput: 0.50, CacheCreation: 6.25, Output: 25},
 	// Older Opus 4 / 4.1 keep the legacy higher price (deprecated tier).
 	"claude-opus-4-1":   {Input: 15, CachedInput: 1.50, CacheCreation: 18.75, Output: 75},
 	"claude-opus-4":     {Input: 15, CachedInput: 1.50, CacheCreation: 18.75, Output: 75},

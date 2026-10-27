@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
@@ -16,6 +17,7 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/models"
+	"github.com/kubebolt/kubebolt/apps/api/internal/skills"
 )
 
 // Limits applied to tool results to prevent context window blow-ups.
@@ -187,6 +189,14 @@ type Executor struct {
 	// fleet answers across clusters. nil means no persisted insight store, and
 	// the tool says so rather than reporting a healthy fleet.
 	fleet FleetSource
+	// mcp runs the org's external connector tools (mcp__<connector>__<tool>).
+	// nil means this executor offers none, and such a call is refused with a
+	// sentence rather than an unknown-tool error.
+	mcp MCPRouter
+	// external answers get_external_connections. nil means this server cannot
+	// see flows or workload configuration, and the tool says so rather than
+	// reporting a workload with no dependencies.
+	external ExternalConnectionsSource
 	// clusterList answers list_clusters and offer_cluster_switch with the
 	// caller's clusters. nil means none was wired: single-tenant keeps the
 	// manager's list (one org, no teams); multi-tenant lists and offers
@@ -244,6 +254,20 @@ func (e *Executor) WithFleet(src FleetSource) *Executor {
 	return e
 }
 
+// WithMCP wires the org's external connector tools. Chainable; nil is
+// accepted and means this executor offers none.
+func (e *Executor) WithMCP(r MCPRouter) *Executor {
+	e.mcp = r
+	return e
+}
+
+// WithExternalConnections wires the source behind get_external_connections.
+// Chainable; nil is accepted and means the install cannot answer.
+func (e *Executor) WithExternalConnections(src ExternalConnectionsSource) *Executor {
+	e.external = src
+	return e
+}
+
 // WithClusterList wires the caller's clusters behind list_clusters and
 // offer_cluster_switch. Chainable; nil is accepted (see Executor.clusterList).
 func (e *Executor) WithClusterList(src ClusterListSource) *Executor {
@@ -273,6 +297,22 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 	return e.ExecuteCtx(context.Background(), call)
 }
 
+// NoClusterTools are the built-in tools that answer for an organization with
+// no cluster at all: they read its records (the cluster list, the persisted
+// insight history and findings, the docs), not a cluster. The no-cluster
+// session note names exactly these, and ExecuteCtx's connector gate lets each
+// of them through; TestNoClusterToolsPassTheConnectorGate keeps the two in
+// step. get_external_connections passes the gate too, for a metrics-only
+// cluster, and is left out: with no cluster there is no traffic to map.
+func NoClusterTools() []string {
+	return []string{
+		"list_clusters", "offer_cluster_switch", "get_fleet_summary", "get_findings",
+		"get_finding_workloads", "get_finding_detail", "get_runtime_events",
+		"get_insight_episodes", "get_insight_episode", "get_operational_episodes",
+		"get_coverage", "query_metrics", "get_kubebolt_docs", "load_skill",
+	}
+}
+
 // ExecuteCtx runs a single tool call and returns its result as a JSON string,
 // resolving the connector/engine for the (tenant, cluster) carried by ctx via
 // cluster.RuntimeKeyFromContext. When ctx has no RuntimeKey (the zero value),
@@ -281,7 +321,7 @@ func (e *Executor) Execute(call ToolCall) ToolResult {
 // ToolResult with IsError=true so the caller (LLM or MCP host) can react
 // gracefully.
 func (e *Executor) ExecuteCtx(ctx context.Context, call ToolCall) ToolResult {
-	return redactToolResult(call.Name, e.executeCtx(ctx, call))
+	return explainAgentOffline(redactToolResult(call.Name, e.executeCtx(ctx, call)))
 }
 
 // redactedJSONTools return Kubernetes objects whose env, args, annotations or
@@ -313,6 +353,12 @@ func redactToolResult(name string, res ToolResult) ToolResult {
 }
 
 func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
+	// External connector tools first, before anything below can resolve (or
+	// require) a cluster: see executeMCP.
+	if IsMCPToolName(call.Name) {
+		return e.executeMCP(ctx, call)
+	}
+
 	res := ToolResult{ToolCallID: call.ID}
 
 	// A nil manager is a legitimate Executor — one wired for the tools that
@@ -330,14 +376,16 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 	// connector's workload→pod resolution — that's the Phase-2 KSM-resource path.)
 	if conn == nil {
 		switch call.Name {
-		case "get_kubebolt_docs":
-			// knowledge-base lookup — no connector needed; fall through.
+		case "get_kubebolt_docs", "load_skill":
+			// KubeBolt's own documentation and procedures — no connector needed;
+			// fall through.
 		case "offer_cluster_switch", "list_clusters":
-			// Reads the cluster LIST, not any cluster. Gating it on a live
-			// connector would withhold the switch exactly when the selected
-			// cluster is the broken one — and list_clusters is how an MCP
-			// client with no cluster selected finds out which ones exist; it
-			// used to answer "enable the agent-proxy" to that question.
+			// Read the caller's cluster LIST, not any cluster. Gating them on
+			// a live connector would withhold the list and the switch exactly
+			// when the selected cluster is the broken one — and list_clusters
+			// is how an MCP client with no cluster selected finds out which
+			// ones exist; it used to answer "enable the agent-proxy" to that
+			// question.
 		case "get_fleet_summary":
 			// Cross-cluster and read from the persisted store. Requiring a
 			// live connector would make "which cluster is worst" unanswerable
@@ -370,6 +418,11 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			// that stops Kobi from blaming the workload that died with them.
 			// GET /insights/operational-episodes is mounted outside
 			// requireConnector for the same reason — keep the two in step.
+		case "get_external_connections":
+			// Flows live in the metrics store, keyed by the cluster UID, which
+			// a metrics-only cluster still has. The source answers from them
+			// and says that, without a connector, it cannot tell pod and node
+			// addresses from external ones.
 		default:
 			res.Content = `{"error":"This needs live cluster access. Enable the KubeBolt agent-proxy (rbac.mode=reader or operator) or connect the cluster's API directly — the metrics dashboards still work.","needsProxy":true}`
 			res.IsError = true
@@ -399,6 +452,15 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		}
 		node := stringArg(args, "node")
 		list := conn.GetResources(t, ns, search, status, node, sort, order, page, limit)
+		if list.NotInstalled {
+			// Said as a permission problem, an absent Cilium CRD on an EKS
+			// cluster became «no puedo descartar un deny de Cilium».
+			res.Content = jsonString(map[string]any{
+				"kind": t, "items": []any{}, "total": 0, "notInstalled": true,
+				"note": "This cluster does not have " + t + " installed (its CRD is not registered): there are none, and none can act on its traffic or objects.",
+			})
+			return res
+		}
 		if list.Forbidden {
 			// An optional CRD that is simply not installed reads as CanList=false
 			// too. Saying "forbidden" there sent the operator after an RBAC grant
@@ -432,7 +494,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		res.Content = jsonString(detail)
+		res.Content = HideCredentialEnv("get_resource_detail", jsonString(detail))
 
 	case "get_resource_yaml":
 		t, ns, name := nsResourceArgs(args)
@@ -441,13 +503,18 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		yamlBytes, err := conn.GetResourceYAML(t, ns, name)
+		yamlBytes, writes, err := conn.GetResourceYAMLWithWrites(t, ns, name)
 		if err != nil {
 			res.Content = errJSON(err)
 			res.IsError = true
 			return res
 		}
-		res.Content = jsonString(map[string]string{"yaml": string(cluster.RedactYAML(yamlBytes))})
+		out := map[string]any{"yaml": string(cluster.RedactYAML(yamlBytes))}
+		if len(writes) > 0 {
+			out["lastWrites"] = writes
+			out["lastWritesNote"] = lastWritesNote
+		}
+		res.Content = jsonString(out)
 
 	case "get_resource_describe":
 		t, ns, name := nsResourceArgs(args)
@@ -462,7 +529,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		res.Content = jsonString(map[string]string{"describe": cluster.RedactText(describeOutput)})
+		res.Content = HideCredentialEnv("get_resource_describe", jsonString(map[string]string{"describe": cluster.RedactText(describeOutput)}))
 
 	case "get_pod_logs":
 		ns := stringArg(args, "namespace")
@@ -516,6 +583,11 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			}
 			q.EndTime = t
 		}
+		if msg := logWindowError(q); msg != "" {
+			res.Content = jsonString(map[string]string{"error": msg})
+			res.IsError = true
+			return res
+		}
 
 		if ns == "" || name == "" {
 			res.Content = `{"error":"namespace and name are required"}`
@@ -541,7 +613,9 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		// transparently auto-resolved (no extra round-trip there
 		// because there's no choice to make).
 		extraMeta := map[string]any{}
-		if detail, dErr := conn.GetResourceDetail("pods", ns, name); dErr == nil {
+		var detail map[string]interface{}
+		if d, dErr := conn.GetResourceDetail("pods", ns, name); dErr == nil {
+			detail = d
 			containerNames := extractPodContainerNames(detail)
 
 			if container == "" {
@@ -603,7 +677,19 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		// fall through with whatever container the caller passed.
 		// GetPodLogs will surface the underlying error if any.
 
-		logs, err := conn.GetPodLogs(ns, name, q)
+		windowed := since != "" || sinceTimeStr != "" || endTimeStr != ""
+		q.TailLines = logReadTail(q.TailLines, windowed, grep)
+		// With grep, every matched line carries the kubelet's UTC stamp: one
+		// clock for the timeline, and the span of the matches (matchSpan).
+		// Only matches go back, so it costs a stamp per returned line. A read
+		// over a time window is a question about time too — when did it
+		// start, how long did it last — so it gets the stamps as well, and
+		// with them the bursts (log_bursts.go). A plain tail does not.
+		if grep != "" || windowed {
+			q.Timestamps = true
+		}
+
+		logs, win, err := conn.GetPodLogsWindow(ns, name, q)
 		if err != nil {
 			// Attach the meta we collected so the LLM still knows
 			// what containers are available even when the read
@@ -615,6 +701,25 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.Content = jsonString(payload)
 			res.IsError = true
 			return res
+		}
+		// The current container's start says whether part of the period asked
+		// for is in the previous instance's log; with previous=true it is not
+		// that instance's start, so it is left out.
+		var started time.Time
+		if !q.Previous {
+			started = containerStartedAt(detail, q.Container)
+		}
+		from := logPeriodStart(q, time.Now())
+		for k, v := range logWindowMeta(win, from, started) {
+			extraMeta[k] = v
+		}
+		// Where the period read begins: a burst that opens there was already
+		// under way (log_bursts.go, cutAtStart).
+		if !from.IsZero() {
+			extraMeta["readFrom"] = from.UTC().Format(time.RFC3339)
+		}
+		if note := logTailNote(logs, q.TailLines, win.Bounded, windowed, grep); note != "" {
+			extraMeta["tailNote"] = note
 		}
 		res.Content = formatPodLogs(cluster.RedactText(logs), grep, extraMeta)
 
@@ -653,13 +758,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		var history []map[string]interface{}
-		if t == "deployments" {
-			history = conn.GetDeploymentHistory(ns, name)
-		} else {
-			history = conn.GetWorkloadHistory(t, ns, name)
-		}
-		res.Content = jsonString(map[string]interface{}{"history": history})
+		res.Content = workloadHistoryContent(conn, t, ns, name)
 
 	case "get_cronjob_jobs":
 		ns := stringArg(args, "namespace")
@@ -705,7 +804,14 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		content, failed := buildSwitchOffer(clusters, args)
+		// The cluster this turn runs on, so a switch to it is refused rather
+		// than offered: a conversation opened by a switch once bounced
+		// straight back to its own cluster without a single read.
+		current := ""
+		if e.manager != nil {
+			current = e.manager.ActiveContextFor(ctx)
+		}
+		content, failed := buildSwitchOffer(clusters, current, args)
 		res.Content, res.IsError = content, failed
 
 	case "get_fleet_summary":
@@ -974,12 +1080,13 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		for _, ep := range eps {
 			rows = append(rows, episodeRow(ep))
 		}
-		res.Content = jsonString(map[string]interface{}{
+		out := map[string]interface{}{
 			"episodes":   rows,
 			"total":      len(rows),
 			"windowFrom": q.Since.Format(time.RFC3339),
 			"windowTo":   q.Until.Format(time.RFC3339),
-		})
+		}
+		res.Content = AnnotateEpisodes(jsonString(out))
 
 	case "get_insight_episode":
 		if e.episodes == nil {
@@ -1034,7 +1141,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			detail["recurrence"] = prior
 			detail["recurrenceCount"] = len(prior)
 		}
-		res.Content = jsonString(detail)
+		res.Content = AnnotateEpisodes(jsonString(detail))
 
 	case "get_operational_episodes":
 		if e.operationalEpisodes == nil {
@@ -1123,7 +1230,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		involvedName := stringArg(args, "involvedName")
 		limit := intArg(args, "limit", 100)
 		events := conn.GetEvents(eventType, ns, involvedKind, involvedName, limit)
-		res.Content = jsonString(events)
+		res.Content = jsonString(eventsWithSpans(events))
 
 	case "search_resources":
 		query := strings.ToLower(strings.TrimSpace(stringArg(args, "q")))
@@ -1132,6 +1239,12 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			return res
 		}
 		results := searchAllResources(conn, query, 50)
+		if len(results) == 0 {
+			// Not here: where it is among the caller's other clusters
+			// (search_elsewhere.go).
+			res.Content = jsonString(e.searchElsewhere(ctx, query))
+			return res
+		}
 		res.Content = jsonString(map[string]interface{}{"results": results})
 
 	case "get_permissions":
@@ -1147,7 +1260,7 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 			res.IsError = true
 			return res
 		}
-		res.Content = jsonString(clusters)
+		res.Content = clusterListForKobi(clusters)
 
 	case "propose_restart_workload":
 		t := stringArg(args, "type")
@@ -1746,6 +1859,26 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		}
 		res.Content = out
 
+	case "get_external_connections":
+		out, failed := e.execExternalConnections(ctx, args)
+		res.Content, res.IsError = out, failed
+		if failed {
+			return res
+		}
+
+	case "load_skill":
+		name := stringArg(args, "name")
+		sk, ok := skills.Get(name)
+		if !ok {
+			res.Content = jsonString(map[string]interface{}{
+				"error":     fmt.Sprintf("no skill named %q", name),
+				"available": skills.Names(),
+			})
+			res.IsError = true
+			return res
+		}
+		res.Content = jsonString(map[string]string{"skill": sk.Name, "content": sk.Body})
+
 	case "get_kubebolt_docs":
 		topic := stringArg(args, "topic")
 		res.Content = jsonString(map[string]string{
@@ -1758,6 +1891,12 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 		res.IsError = true
 	}
 
+	// The card's digest reads the whole result, before the cap below cuts it
+	// (digest.go).
+	if !res.IsError {
+		res.Digest = digestToolResult(call.Name, args, res.Content)
+	}
+
 	// Truncate oversized results to prevent context window blow-up.
 	// Some tools (topology, describe, yaml) can return huge payloads that
 	// quickly exhaust the LLM's context if multiple are made in sequence.
@@ -1768,6 +1907,11 @@ func (e *Executor) executeCtx(ctx context.Context, call ToolCall) ToolResult {
 
 	return res
 }
+
+// lastWritesNote goes with get_resource_yaml's lastWrites.
+const lastWritesNote = "Each field manager's latest write to this object, newest first, as Kubernetes records it: the client's manager name (not a person), the operation, when, and the fields it owns. " +
+	"A write to the status subresource is a controller reporting state, not a change to the spec. " +
+	"Fields written only at creation have not changed since; a value held outside Kubernetes (a Key Vault, a database password) can change without any write here."
 
 // truncateToolResult caps the size of tool result content. If truncated, it
 // appends a clear notice so the LLM knows the data was cut.
@@ -1818,18 +1962,39 @@ func formatPodLogs(raw, grep string, extra map[string]any) string {
 			})
 		}
 		kept := make([]string, 0, 128)
+		var first, last time.Time
 		for _, line := range strings.Split(raw, "\n") {
 			if line == "" {
 				continue
 			}
-			if re.MatchString(line) {
-				kept = append(kept, line)
+			// Match what the container wrote, not the kubelet's stamp.
+			ts, msg, stamped := cluster.SplitLogTimestamp(line)
+			if !re.MatchString(msg) {
+				continue
+			}
+			kept = append(kept, line)
+			if stamped {
+				if first.IsZero() {
+					first = ts
+				}
+				last = ts
 			}
 		}
 		filterApplied = grep
 		filteredOutLines = originalLines - len(kept)
 		body = strings.Join(kept, "\n")
+		if span := logMatchSpan(first, last, len(kept)); span != "" {
+			extra = withMeta(extra, "matchSpan", span)
+		}
 	}
+
+	// The bursts are built from every line kept so far: the cap below cuts
+	// the oldest, and a burst built from what is left starts where the cut
+	// fell.
+	all := body
+	// Repeated lines fold before the cap, so a count and a first copy
+	// describe the whole read and the cap cuts less (log_repeats.go).
+	body, folded := foldRepeatedLines(body, nil)
 
 	// Byte cap: preserve the TAIL (newest lines), not the head.
 	truncated := false
@@ -1867,6 +2032,7 @@ func formatPodLogs(raw, grep string, extra map[string]any) string {
 		payload["bytesDropped"] = bytesDropped
 		payload["hint"] = "logs truncated to preserve context; use 'since' for a narrower window or 'grep' to filter"
 	}
+	setRepeats(payload, folded)
 	// Merge caller meta last. If the caller also set "hint" (e.g.
 	// container auto-selected note), the truncation hint takes
 	// precedence because it's more actionable — operators care more
@@ -1876,7 +2042,202 @@ func formatPodLogs(raw, grep string, extra map[string]any) string {
 			payload[k] = v
 		}
 	}
-	return jsonString(payload)
+	return podLogsWithBursts(payload, all)
+}
+
+// logMatchSpan says when the grep's matches start and end, on the kubelet's
+// clock. It is how long the symptom lasted in this log: Kobi, with its own
+// table of 503s from 03:06:01 to 03:06:09, gave the Azure restart's 61 s as
+// the outage, three times and with two models (three-tier-shop lab,
+// 2026-10-10). "" when no matched line carried a stamp.
+// LogMatchSpan is logMatchSpan for the eval replay, which rebuilds it for
+// reads recorded before get_pod_logs reported it.
+func LogMatchSpan(first, last time.Time, lines int) string { return logMatchSpan(first, last, lines) }
+
+func logMatchSpan(first, last time.Time, lines int) string {
+	if first.IsZero() {
+		return ""
+	}
+	if lines == 1 {
+		return fmt.Sprintf("one matching line, at %s", first.UTC().Format(time.RFC3339))
+	}
+	if last.Equal(first) {
+		return fmt.Sprintf("%d matching lines, all at %s", lines, first.UTC().Format(time.RFC3339))
+	}
+	d := last.Sub(first)
+	if d >= time.Second {
+		d = d.Round(time.Second)
+	} else {
+		d = d.Round(time.Millisecond)
+	}
+	return fmt.Sprintf("first match %s, last %s: %s across %d lines", first.UTC().Format(time.RFC3339), last.UTC().Format(time.RFC3339), d, lines)
+}
+
+// withMeta sets one key on a caller's meta map, creating it when nil.
+func withMeta(extra map[string]any, k string, v any) map[string]any {
+	if extra == nil {
+		extra = map[string]any{}
+	}
+	extra[k] = v
+	return extra
+}
+
+// logReadTail is the tail sent with a read. With a time window (since,
+// sinceTime or endTime) and a grep it is 0: the whole window is read and
+// filtered, because a tail taken first would grep only its newest lines — Kobi
+// answered "no errors in the last hour" from the last 200 lines, about six
+// minutes of it (three-tier-shop lab, 2026-10-10). maxLogBytes still bounds
+// what goes back. Without a window the tail stays: the kubelet would stream
+// from the container's start, oldest first.
+func logReadTail(tail int64, windowed bool, grep string) int64 {
+	if windowed && grep != "" {
+		return 0
+	}
+	return tail
+}
+
+// logTailNote warns when an open read filled its tail: the lines are the
+// newest ones and may not reach back to the start of what was asked.
+func logTailNote(logs string, tail int64, bounded, windowed bool, grep string) string {
+	if bounded || tail <= 0 {
+		return ""
+	}
+	lines := strings.Count(logs, "\n")
+	if logs != "" && !strings.HasSuffix(logs, "\n") {
+		lines++
+	}
+	if int64(lines) < tail {
+		return ""
+	}
+	if windowed {
+		// since/sinceTime without grep: the tail is the newest lines of it.
+		return fmt.Sprintf("these are only the newest %d lines of the period asked for; it holds more. Do not read them as the whole period: add grep to search all of it.", tail)
+	}
+	what := "these are"
+	if grep != "" {
+		what = "grep ran over"
+	}
+	return fmt.Sprintf("%s only the newest %d lines; the log goes further back. Do not read them as the whole period: add a time window (since, or sinceTime/endTime) with grep to search all of it.", what, tail)
+}
+
+// logWindowError refuses a window the read cannot honour: an endTime with no
+// start (the kubelet would stream from the container's first line, and a
+// long-lived pod fills the byte cap before endTime), or a start that is not
+// before endTime.
+func logWindowError(q cluster.LogQuery) string {
+	if q.EndTime.IsZero() {
+		return ""
+	}
+	if q.SinceTime.IsZero() && q.SinceSeconds <= 0 {
+		return "endTime needs sinceTime or since: without a start the read begins at the container's first line"
+	}
+	if !q.SinceTime.IsZero() && !q.SinceTime.Before(q.EndTime) {
+		return fmt.Sprintf("sinceTime %s is not before endTime %s", q.SinceTime.UTC().Format(time.RFC3339), q.EndTime.UTC().Format(time.RFC3339))
+	}
+	return ""
+}
+
+// logPeriodStart is when the period a read asked for starts: sinceTime, or
+// now minus since; zero when it asked for a plain tail.
+func logPeriodStart(q cluster.LogQuery, now time.Time) time.Time {
+	switch {
+	case !q.SinceTime.IsZero():
+		return q.SinceTime
+	case q.SinceSeconds > 0:
+		return now.Add(-time.Duration(q.SinceSeconds) * time.Second)
+	}
+	return time.Time{}
+}
+
+// containerStartedAt is when the named container's current instance started,
+// from the pod detail; zero when the detail does not say (not running, no
+// detail, unknown container).
+func containerStartedAt(detail map[string]interface{}, container string) time.Time {
+	cs, _ := detail["containers"].([]map[string]interface{})
+	for _, c := range cs {
+		if n, _ := c["name"].(string); n != container {
+			continue
+		}
+		state, _ := c["state"].(map[string]interface{})
+		at, _ := state["startedAt"].(string)
+		t, err := time.Parse(time.RFC3339, at)
+		if err != nil {
+			return time.Time{}
+		}
+		return t
+	}
+	return time.Time{}
+}
+
+// logWindowMeta says what a read held, so an empty or short answer is read
+// for what it is: nothing logged, a window cut by tailLines, a log that
+// starts later (a restart: the rest is in the previous instance), or a read
+// that stopped before the end of what was asked (the byte cap, or the stream
+// cut). Without it Kobi took a cut window for "the pod logged nothing"
+// (three-tier-shop lab, 2026-10-09). from is the start of the period asked
+// for and started the current container's start; either may be zero.
+func logWindowMeta(win cluster.LogWindow, from, started time.Time) map[string]any {
+	meta := map[string]any{}
+	if win.Capped {
+		meta["readCapped"] = true
+	}
+	if win.Interrupted != "" {
+		meta["readInterrupted"] = win.Interrupted
+	}
+	// The current container started after the period began: the part before
+	// its start is in the previous instance's log.
+	restartedInside := !started.IsZero() && !from.IsZero() && started.After(from)
+	startedAt := started.UTC().Format(time.RFC3339)
+
+	switch {
+	case !win.Bounded:
+		switch {
+		case win.Capped:
+			meta["readNote"] = "more than 10 MiB of log in the period asked for: the kubelet sends the oldest lines first, so only its start was read and its newest part is missing. Narrow since, or read it in sinceTime/endTime windows."
+		case win.Interrupted != "":
+			meta["readNote"] = "the read was cut part-way: only the start of what was asked came back. Narrow since, or read it in sinceTime/endTime windows."
+		}
+	case win.Capped || win.Interrupted != "":
+		meta["windowLines"] = win.Lines
+		why, at, next := "the read was cut", "part-way", "Narrow the window."
+		if win.Capped {
+			why = "the window holds more than 10 MiB of log"
+		}
+		if !win.ReadUntil.IsZero() {
+			until := win.ReadUntil.UTC().Format(time.RFC3339)
+			meta["readStoppedAt"] = until
+			at = "at " + until
+			next = fmt.Sprintf("Read on with sinceTime=%s, or narrow the window.", until)
+		}
+		kept := ""
+		if win.Dropped > 0 {
+			meta["windowLinesDropped"] = win.Dropped
+			kept = fmt.Sprintf("; of what was read, only the newest %d lines are returned", win.Lines-win.Dropped)
+		}
+		meta["windowNote"] = fmt.Sprintf("%s: the read stopped %s, before endTime, so the rest of the window was not read%s. %s", why, at, kept, next)
+	default:
+		meta["windowLines"] = win.Lines
+		switch {
+		case win.Dropped > 0:
+			meta["windowLinesDropped"] = win.Dropped
+			meta["windowNote"] = fmt.Sprintf("the window held %d lines; only the newest %d are returned. Narrow sinceTime/endTime, raise tailLines, or add grep to read the rest of it.", win.Lines, win.Lines-win.Dropped)
+		case win.Lines == 0 && restartedInside:
+			meta["windowNote"] = fmt.Sprintf("the current container started at %s, after this window began, and logged nothing inside it: the window is in the previous instance's log. Read it with previous=true (the kubelet keeps only one previous instance).", startedAt)
+			restartedInside = false // said here; no second note
+		case win.Lines == 0 && win.PastEnd:
+			meta["windowNote"] = "nothing was logged between sinceTime and endTime; the log goes on after endTime."
+		case win.Lines == 0:
+			meta["windowNote"] = "no lines between sinceTime and endTime and none after: the container logged nothing since sinceTime, or its log no longer reaches back this far (rotated, or a restart — previous=true reads the instance before)."
+		}
+	}
+
+	if restartedInside {
+		meta["containerNote"] = fmt.Sprintf("the current container started at %s, after the start of the period asked for: lines before then are in the previous instance's log (previous=true).", startedAt)
+	}
+	if len(meta) == 0 {
+		return nil
+	}
+	return meta
 }
 
 // extractPodContainerNames returns the names of the regular containers
@@ -1941,6 +2302,96 @@ func nsResourceArgs(args map[string]interface{}) (string, string, string) {
 		ns = ""
 	}
 	return t, ns, name
+}
+
+// revisionCountsNote travels with every history of two or more revisions. A
+// replaced revision's 0 / 0 was read as "that revision was NotReady", and the
+// one rollback that fixed the incident was advised against.
+const revisionCountsNote = "replicas / readyReplicas / active are each revision's CURRENT counts: a replaced revision shows 0 (active false), which says nothing about how it ran while it served — use events, logs and metrics from its time for that."
+
+// historyBudget keeps get_workload_history's result under the executor's
+// generic cut (maxToolResultBytes), which would slice the JSON mid-row and
+// hand the model an unparseable string: whole rows are kept, newest first,
+// and the older revisions left out are counted.
+const historyBudget = 24 * 1024
+
+// historyReader is the connector read behind get_workload_history — an
+// interface so a test pins the tool's output without an apiserver.
+type historyReader interface {
+	GetWorkloadHistoryWithChanges(resourceType, namespace, name string) []map[string]interface{}
+}
+
+// AnnotateWorkloadHistory adds to a get_workload_history result recorded
+// before them what workloadHistoryContent writes today — the skill pointer
+// and the rollout state, worked out from the recorded rows. The stage-eval
+// replay serves recordings through it, so a replayed history reads like a
+// live one.
+func AnnotateWorkloadHistory(raw, resourceType string) string {
+	var out map[string]interface{}
+	if json.Unmarshal([]byte(raw), &out) != nil {
+		return raw
+	}
+	h, ok := out["history"].([]interface{})
+	if !ok || len(h) == 0 {
+		return raw
+	}
+	out["skill"] = WorkloadRevisionsSkill
+	rows := make([]map[string]interface{}, 0, len(h))
+	for _, r := range h {
+		if m, ok := r.(map[string]interface{}); ok {
+			rows = append(rows, m)
+		}
+	}
+	if st := summarizeRollout(resourceType, rows); st != nil {
+		out["rollout"] = st
+	}
+	return jsonString(out)
+}
+
+// WorkloadRevisionsSkill points a reader of get_workload_history at the
+// procedure for it: loading the skill should not depend on the model
+// remembering that it exists.
+const WorkloadRevisionsSkill = "load_skill workload-revisions: what these revisions say, when a rollback fixes the incident and when there is nothing to roll back to"
+
+// workloadHistoryResult is get_workload_history's shape. Everything but the
+// rows comes first, so no cut of the result can lose it.
+type workloadHistoryResult struct {
+	Skill                 string                   `json:"skill,omitempty"`
+	Rollout               *rolloutState            `json:"rollout,omitempty"`
+	Note                  string                   `json:"note,omitempty"`
+	History               []map[string]interface{} `json:"history"`
+	OmittedOlderRevisions int                      `json:"omittedOlderRevisions,omitempty"`
+}
+
+// workloadHistoryContent is get_workload_history's result: the revisions,
+// newest first, each with what it changed (changes), when the rollout to the
+// next one started (supersededAt) and its change-cause; plus the note on the
+// counts. The REST history endpoints keep their plain rows.
+func workloadHistoryContent(r historyReader, resourceType, namespace, name string) string {
+	history := r.GetWorkloadHistoryWithChanges(resourceType, namespace, name)
+	out := workloadHistoryResult{History: history}
+	if len(history) > 0 {
+		out.Skill = WorkloadRevisionsSkill
+	}
+	if len(history) >= 2 {
+		out.Note = revisionCountsNote
+	}
+	// From the whole history, before any cut: the rollback target and the
+	// serving revisions are among the newest, but the answer must not depend
+	// on how many rows fit.
+	out.Rollout = summarizeRollout(resourceType, history)
+	rolloutBytes, _ := json.Marshal(out.Rollout)
+	used := len(out.Skill) + len(out.Note) + len(rolloutBytes) + 64 // the keys and the omitted count
+	for i, row := range history {
+		b, _ := json.Marshal(row)
+		if i > 0 && used+len(b)+1 > historyBudget {
+			out.History = history[:i]
+			out.OmittedOlderRevisions = len(history) - i
+			break
+		}
+		used += len(b) + 1
+	}
+	return jsonString(out)
 }
 
 func jsonString(v interface{}) string {
@@ -2289,6 +2740,69 @@ func episodeRow(ep insights.Episode) map[string]interface{} {
 		row["prevEpisodeId"] = ep.PrevEpisodeID
 	}
 	return row
+}
+
+// autoRecoveredNote says what auto_recovered does and does not mean. The name
+// reads as "it recovered by itself", and Haiku told operators that nobody
+// had intervened in an OOM an operator fixed by hand (history-oom-earlier,
+// ~4 runs in 18) although the prompt says not to. What the store knows is
+// only that the rule stopped seeing the condition and that KubeBolt executed
+// no remediation of its own — a kubectl, GitOps or console change records
+// nothing here, and neither does a fix outside the cluster.
+//
+// A note next to the label was not enough: with the label still saying
+// auto_recovered, both models kept writing «se resolvió/recuperó solo» (3 of 10
+// runs that read the episode, before and after rewording the note; the
+// operator had restarted the database by hand). So the
+// model is shown the label for what the store knows, cleared_no_action_recorded,
+// and the note names the UI's word for it.
+const (
+	clearedNoActionRecorded = "cleared_no_action_recorded"
+	autoRecoveredNote       = "resolutionKind " + clearedNoActionRecorded + " (the UI shows it as auto_recovered): " +
+		"the rule stopped seeing the condition and KubeBolt executed no remediation of its own. " +
+		"It does not say whether someone fixed it: a kubectl, GitOps or console change records nothing here, " +
+		"and neither does a fix outside the cluster, such as a database or cloud service someone restarted. " +
+		"Check the workload's history (get_workload_history) around resolvedAt, then say what you saw: " +
+		"it cleared, or the dependency came back, at that time, with no change recorded in the cluster. " +
+		"Never say it recovered by itself or that nobody acted."
+)
+
+// AnnotateEpisodes shows an episode result (list or detail) to the model with
+// auto_recovered relabelled cleared_no_action_recorded — on the episodes, their
+// recurrences and the timeline — and autoRecoveredNote once at the top.
+// Exported so the eval harness applies it to reads recorded before it existed;
+// a result recorded by an older build gets the current label and note.
+func AnnotateEpisodes(content string) string {
+	if !strings.Contains(content, `"resolutionKind":"`+insights.ResolutionAutoRecovered+`"`) {
+		return content
+	}
+	var obj map[string]interface{}
+	if json.Unmarshal([]byte(content), &obj) != nil || obj == nil {
+		return content
+	}
+	relabelAutoRecovered(obj)
+	obj["resolutionNote"] = autoRecoveredNote
+	return jsonString(obj)
+}
+
+// relabelAutoRecovered rewrites auto_recovered where an episode states how it
+// ended: resolutionKind on an episode, reason on a timeline transition.
+func relabelAutoRecovered(v interface{}) {
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for _, k := range []string{"resolutionKind", "reason"} {
+			if t[k] == insights.ResolutionAutoRecovered {
+				t[k] = clearedNoActionRecorded
+			}
+		}
+		for _, child := range t {
+			relabelAutoRecovered(child)
+		}
+	case []interface{}:
+		for _, child := range t {
+			relabelAutoRecovered(child)
+		}
+	}
 }
 
 // canonicalCluster maps a context name to the kube-system UID episodes key on.
@@ -3086,14 +3600,32 @@ func summarizeFleet(ctx context.Context, recs []insights.InsightRecord, name fun
 // findSwitchTarget matches what the model asked for against the real cluster
 // list. Models name clusters however the operator did — display name, context,
 // or the uid from a fleet row — so all three are accepted, case-insensitively.
-func findSwitchTarget(clusters []cluster.ClusterInfo, want string) (cluster.ClusterInfo, bool) {
+func findSwitchTarget(clusters []cluster.ClusterInfo, want, current string) (cluster.ClusterInfo, bool) {
 	w := strings.ToLower(strings.TrimSpace(want))
+	var matches []cluster.ClusterInfo
 	for _, c := range clusters {
 		for _, candidate := range []string{c.DisplayName, c.Name, c.Context, c.ClusterID} {
 			if candidate != "" && strings.ToLower(candidate) == w {
-				return c, true
+				matches = append(matches, c)
+				break
 			}
 		}
+	}
+	// A display name can repeat (a cluster registered again keeps its old
+	// row), so several may match. The one this turn runs on wins — it is
+	// refused as "already here" — then a connected one, then the first.
+	for _, c := range matches {
+		if current != "" && c.Context == current {
+			return c, true
+		}
+	}
+	for _, c := range matches {
+		if c.Status == "connected" {
+			return c, true
+		}
+	}
+	if len(matches) > 0 {
+		return matches[0], true
 	}
 	return cluster.ClusterInfo{}, false
 }
@@ -3122,17 +3654,59 @@ func switchCandidates(clusters []cluster.ClusterInfo) []map[string]interface{} {
 // buildSwitchOffer is the whole decision, pure so it can be tested against a
 // cluster list rather than a live manager. Returns the tool content and
 // whether it is an error.
-func buildSwitchOffer(clusters []cluster.ClusterInfo, args map[string]interface{}) (string, bool) {
+// OfferClusterSwitch is offer_cluster_switch's answer, from a cluster list and
+// the cluster the turn runs on, without an executor: Kobi's eval harness
+// (cmd/kobi-eval) answers the switch from a recorded list with the same code.
+func OfferClusterSwitch(clusters []cluster.ClusterInfo, current string, args map[string]interface{}) (string, bool) {
+	return buildSwitchOffer(clusters, current, args)
+}
+
+// switchAnswerMinRunes is how long the text next to a switch card must be for
+// the card to end the turn: an answer, not a one-line "I'll switch there".
+const switchAnswerMinRunes = 500
+
+// SwitchEndsTurn reports whether a round that offered a cluster switch is the
+// end of the turn: the model wrote its answer in the same message, the switch
+// was its only call, and the card went out. Asked for another round there,
+// Haiku 5.5 wrote the whole answer a second time and narrated the card even
+// with switchOfferNext telling it not to (three-tier-shop lab, 2026-10-10);
+// the loop ends instead. A short lead-in still gets its round, so the model
+// can give the answer it has not written yet.
+func SwitchEndsTurn(text string, calls []ToolCall, results []ToolResult) bool {
+	if utf8.RuneCountInString(strings.TrimSpace(text)) < switchAnswerMinRunes {
+		return false
+	}
+	if len(calls) != 1 || calls[0].Name != "offer_cluster_switch" {
+		return false
+	}
+	return len(results) == 1 && !results[0].IsError
+}
+
+// switchOfferNext is what the model reads once the switch card is on screen.
+const switchOfferNext = "The card is on screen with the cluster and the question. If this message already gives your answer, end the turn and add nothing; if not, give it now. Do not mention the card or the button, and do not ask whether to switch."
+
+func buildSwitchOffer(clusters []cluster.ClusterInfo, current string, args map[string]interface{}) (string, bool) {
 	target := stringArg(args, "cluster")
 	question := stringArg(args, "question")
 	if target == "" || question == "" {
 		return `{"error":"cluster and question are both required — the question is what the new conversation opens with"}`, true
 	}
-	match, found := findSwitchTarget(clusters, target)
+	match, found := findSwitchTarget(clusters, target, current)
 	if !found {
 		return jsonString(map[string]interface{}{
 			"error":     fmt.Sprintf("no cluster matches %q", target),
 			"available": switchCandidates(clusters),
+		}), true
+	}
+	// current is the context this turn runs on. Offering a switch to it would
+	// re-open the same question on the same cluster — the question is answered
+	// here, with the cluster tools.
+	if current != "" && match.Context == current {
+		return jsonString(map[string]interface{}{
+			"error":     fmt.Sprintf("you are already on %s: this conversation runs on that cluster, so there is nothing to switch to — investigate it here with the cluster tools", switchLabel(match)),
+			"cluster":   switchLabel(match),
+			"current":   true,
+			"offerable": false,
 		}), true
 	}
 	// Connectivity is checked BEFORE offering, not after clicking. The card is
@@ -3152,6 +3726,16 @@ func buildSwitchOffer(clusters []cluster.ClusterInfo, args map[string]interface{
 			"offerable": false,
 		}), true
 	}
+	// What was found here travels with the question. Without it the other
+	// cluster starts cold: from the backend cluster Kobi had the whole cause
+	// (the PG restart, orders-api's 503s) and offered the switch to the
+	// frontend with none of it; the frontend traced the 503s back to
+	// orders-api and offered the switch back, and the backend redid the same
+	// investigation (three-tier-shop lab, 2026-10-10).
+	established := strings.TrimSpace(stringArg(args, "established"))
+	if established == "" {
+		return `{"error":"established is required: what you found here, briefly (what the fleet view reports, or what you measured and the cause if you have it, with verbatim any config a fix may edit), so the conversation there neither starts cold nor redoes it"}`, true
+	}
 	prop := newProposal("switch_cluster")
 	prop.Target = ProposalTarget{Type: "clusters", Name: match.Context}
 	// The CONTEXT is what /clusters/switch takes — not the display name the
@@ -3159,11 +3743,12 @@ func buildSwitchOffer(clusters []cluster.ClusterInfo, args map[string]interface{
 	prop.Params["cluster"] = match.Context
 	prop.Params["clusterLabel"] = switchLabel(match)
 	prop.Params["question"] = question
-	if established := stringArg(args, "established"); established != "" {
-		// Carried so the new conversation does not start cold — and attributed
-		// on the other side, because it was learned somewhere else.
-		prop.Params["established"] = established
-	}
+	// Carried so the new conversation does not start cold — and attributed
+	// on the other side, because it was learned somewhere else.
+	prop.Params["established"] = established
+	// After the card, Kobi wrote its whole answer a second time, and told the
+	// operator to press the button the prompt says not to narrate (same lab).
+	prop.Next = switchOfferNext
 	prop.Summary = "Switch to " + switchLabel(match) + " and ask there"
 	prop.Rationale = stringArg(args, "rationale")
 	if prop.Rationale == "" {

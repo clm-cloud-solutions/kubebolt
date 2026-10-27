@@ -25,6 +25,8 @@ export function serializeMessages(messages: CopilotMessage[]) {
       // Round-trip the per-message timestamp so the backend preserves it
       // (only backend-appended turns get a fresh server stamp).
       timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : undefined,
+      trigger: m.trigger,
+      view: m.view,
       // The answered turn's id: without it the server's echo — and the
       // persisted transcript — would lose it, and the answer its 👍/👎.
       turnId: m.turnId,
@@ -37,6 +39,11 @@ export function serializeMessages(messages: CopilotMessage[]) {
         toolCallId: tr.toolCallId,
         content: tr.content,
         isError: tr.isError,
+        // Stored with the conversation; the server never sends them to the model.
+        status: tr.status,
+        durationMs: tr.durationMs,
+        digest: tr.digest,
+        reason: tr.reason,
       })),
     }))
 }

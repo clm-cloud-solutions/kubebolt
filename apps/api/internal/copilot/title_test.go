@@ -68,6 +68,45 @@ func TestGenerateTitle_SuccessSanitizes(t *testing.T) {
 	}
 }
 
+// The replies Haiku gave on 2026-10-12: a second title under the first, on a
+// chart question stopped before Kobi wrote anything, and a long title cut by
+// the 32-token cap.
+func TestTitleFromReply(t *testing.T) {
+	cases := []struct {
+		in   string
+		cut  bool
+		want string
+	}{
+		{"cilium-envoy CPU chart review\n\nTitle: cilium-envoy pod CPU flat at", true, "cilium-envoy CPU chart review"},
+		{"cilium-envoy CPU chart review\n\nCilium-envoy CPU chart", false, "cilium-envoy CPU chart review"},
+		{"Title: payments pod OOMKilled", false, "payments pod OOMKilled"},
+		{"Título: tienda 503 por orders-api", false, "tienda 503 por orders-api"},
+		{"Diagnóstico de la tienda caída: frontend sano, backend sano, causa probable en P", true,
+			"Diagnóstico de la tienda caída: frontend sano, backend sano, causa probable en"},
+		{"orders-api 500 por statement_timeout, causa", true, "orders-api 500 por statement_timeout"},
+		{"tienda 503 por orders-api caído", false, "tienda 503 por orders-api caído"},
+		{"\n  node   pressure\n", false, "node pressure"},
+		{"payments", true, "payments"},
+	}
+	for _, c := range cases {
+		if got := titleFromReply(c.in, c.cut); got != c.want {
+			t.Errorf("titleFromReply(%q, %v) = %q, want %q", c.in, c.cut, got, c.want)
+		}
+	}
+}
+
+func TestGenerateTitle_CutReplyLosesItsLastWord(t *testing.T) {
+	fp := &fakeProvider{name: "title-fake-cut", reply: "Diagnóstico de la tienda caída, causa probable en P", stop: "max_tokens"}
+	RegisterProvider(fp)
+	res, err := GenerateTitle(context.Background(), config.ProviderConfig{Provider: "title-fake-cut"}, "q", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Title != "Diagnóstico de la tienda caída, causa probable en" {
+		t.Fatalf("title = %q", res.Title)
+	}
+}
+
 func TestGenerateTitle_UnknownProviderErrors(t *testing.T) {
 	if _, err := GenerateTitle(
 		context.Background(),

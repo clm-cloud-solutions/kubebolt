@@ -16,6 +16,7 @@ import (
 
 	"github.com/kubebolt/kubebolt/apps/api/internal/auth"
 	"github.com/kubebolt/kubebolt/apps/api/internal/cluster"
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // CronJob ergonomics — three actions that kubectl exposes but
@@ -116,7 +117,7 @@ func (h *handlers) handleSetCronJobSuspend(w http.ResponseWriter, r *http.Reques
 		respondError(w, http.StatusInternalServerError, "failed to build patch")
 		return
 	}
-	if _, err := clientset.BatchV1().CronJobs(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+	if _, err := clientset.BatchV1().CronJobs(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.Name}); err != nil {
 		auditMutation(r, action, resourceType, namespace, name, params, err)
 		log.Printf("%s failed for cronjob/%s/%s: %v", action, namespace, name, err)
 		respondMutationError(w, err)
@@ -251,7 +252,7 @@ func (h *handlers) handleCronJobTrigger(w http.ResponseWriter, r *http.Request) 
 
 	job := buildManualJobFromCronJob(cj, jobName, username)
 
-	created, err := clientset.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{})
+	created, err := clientset.BatchV1().Jobs(namespace).Create(ctx, job, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 	if err != nil {
 		auditMutation(r, "trigger", resourceType, namespace, name, map[string]any{"jobName": jobName}, err)
 		// Name conflict deserves a clearer status code than the
@@ -285,7 +286,7 @@ func (h *handlers) handleCronJobTrigger(w http.ResponseWriter, r *http.Request) 
 	// created so a failed suspend doesn't undo the manual trigger.
 	if body.SuspendAfterTrigger {
 		patch, _ := buildCronJobSuspendPatch(true)
-		if _, err := clientset.BatchV1().CronJobs(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{}); err != nil {
+		if _, err := clientset.BatchV1().CronJobs(namespace).Patch(ctx, name, types.MergePatchType, patch, metav1.PatchOptions{FieldManager: fieldmanager.Name}); err != nil {
 			log.Printf("post-trigger suspend failed for cronjob/%s/%s: %v", namespace, name, err)
 			// Don't fail the whole request — the trigger worked, the
 			// suspend is bonus. Surface the partial success in the

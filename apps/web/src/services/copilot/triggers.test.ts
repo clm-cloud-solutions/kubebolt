@@ -137,3 +137,44 @@ describe('buildTriggerPrompt — ends with actionable CTA', () => {
     }
   })
 })
+
+describe('buildTriggerPrompt — action_stalled', () => {
+  const base = {
+    verb: 'scale_workload',
+    kind: 'deployments',
+    namespace: 'autopilot-demo',
+    name: 'oomy-app',
+    timeoutSeconds: 30,
+  }
+
+  it('points a scale-down at shutdown, not at scheduling', () => {
+    const out = buildTriggerPrompt({
+      type: 'action_stalled',
+      action: { ...base, detail: 'Scale to 0: 1 pod(s) draining', draining: 1, notReady: 0 },
+    })
+    expect(out).toContain('1 pod(s) were still shutting down')
+    expect(out).toContain('terminationGracePeriodSeconds')
+    expect(out).toContain('read the workload\'s current state first')
+    expect(out).not.toContain('ResourceQuota')
+  })
+
+  it('points a scale-up at pods that will not start', () => {
+    const out = buildTriggerPrompt({
+      type: 'action_stalled',
+      action: { ...base, detail: 'Scale to 4: 2/4 ready', draining: 0, notReady: 2 },
+    })
+    expect(out).toContain('2 pod(s) were not ready yet')
+    expect(out).toContain('ResourceQuota')
+    expect(out).not.toContain('terminationGracePeriodSeconds')
+  })
+
+  it('covers both when the card could not tell', () => {
+    const out = buildTriggerPrompt({
+      type: 'action_stalled',
+      action: { ...base, detail: 'did not converge' },
+    })
+    expect(out).toContain('If pods were still shutting down')
+    expect(out).toContain('If new pods were not ready')
+    expect(out).toContain('Answer in the language this conversation has been in')
+  })
+})

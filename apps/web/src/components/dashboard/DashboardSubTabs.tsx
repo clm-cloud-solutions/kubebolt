@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { LayoutDashboard, Gauge, Activity, DollarSign } from 'lucide-react'
 import { useHubbleAvailable } from '@/hooks/useHubbleAvailable'
 import { useCostAvailable } from '@/hooks/useCostAvailable'
+import { useDashboardRange } from '@/hooks/useDashboardRange'
 
 // DashboardSubTabs is the sub-navigation bar shown at the top of the
 // dashboard surfaces (Overview, Capacity, Reliability). Sits BELOW
@@ -35,7 +36,10 @@ import { useCostAvailable } from '@/hooks/useCostAvailable'
 // -mb-px so the active tab's underline merges into the nav's
 // bottom edge instead of stacking awkwardly.
 export function DashboardSubTabs() {
-  const { available: hubbleAvailable } = useHubbleAvailable()
+  // Same range as the page below: the tab shows while the range on
+  // screen holds Hubble flows, even if the feed has paused since.
+  const [rangeMinutes] = useDashboardRange()
+  const { available: hubbleAvailable } = useHubbleAvailable(rangeMinutes)
   const { available: costAvailable } = useCostAvailable()
   return (
     <nav className="flex items-center gap-1 border-b border-kb-border -mt-1 mb-4">

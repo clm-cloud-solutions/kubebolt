@@ -20,7 +20,7 @@ func TestMetricsEndpoint_NotServedMultiTenant(t *testing.T) {
 	}{{false, http.StatusOK}, {true, http.StatusNotFound}} {
 		withMultiTenant(t, tc.multiTenant)
 		router := NewRouter(newManagerOn(t, map[string]string{}), nil, nil, config.CopilotConfig{}, nil, nil, nil, nil, nil, nil, "",
-			nil, nil, "", nil, nil, nil, NewPromWriteMetrics(prometheus.NewRegistry()), nil, nil, nil, nil, nil, nil, nil, nil, nil)
+			nil, nil, "", nil, nil, nil, NewPromWriteMetrics(prometheus.NewRegistry()), nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 		rec := httptest.NewRecorder()
 		router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 		if rec.Code != tc.want {

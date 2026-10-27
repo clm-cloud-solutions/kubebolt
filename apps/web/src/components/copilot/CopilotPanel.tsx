@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import {
   X,
   Send,
@@ -20,6 +20,7 @@ import {
   Clock,
   Hourglass,
   ArrowRight,
+  ShieldCheck,
 } from 'lucide-react'
 import { ConversationList } from './ConversationList'
 import { useCopilot } from '@/contexts/CopilotContext'
@@ -32,13 +33,42 @@ import { ActionProposalCard } from './ActionProposalCard'
 import { ToolCallCard } from './ToolCallCard'
 import { KobiMetricChartCard } from './KobiMetricChartCard'
 import { AnswerFeedback } from './AnswerFeedback'
-import { computeMetricChartAttachments } from './metricChartAttachment'
+import { computeMetricChartAttachments, type MetricChartCard } from './metricChartAttachment'
+import { computeExternalSources, externalSourcesLabel } from './externalSources'
+import { externalTool } from '@/utils/toolName'
+import { CloudProviderIcon } from '@/components/shared/CloudProviderIcon'
+import { useAuth } from '@/contexts/AuthContext'
 import {
   parseActionProposal,
   type CopilotMessage,
   type CopilotToolCall,
+  type CopilotToolResult,
   type CopilotUsage,
 } from '@/services/copilot/types'
+import { livePhase } from '@/services/copilot/liveTurn'
+import { useClusterLabel } from '@/hooks/useClusterLabel'
+import {
+  cloudBoundaries,
+  formatClock,
+  investigationRuns,
+  isGuide,
+  liveInvestigation,
+  turnEndings,
+} from './investigationRun'
+import { CloudBoundary, GuideLine, InvestigationStrip, InvestigationSummary, TurnFailure } from './InvestigationMarks'
+
+// modelLabel is how the header names a model: Claude ids by family and
+// version ("claude-haiku-5-5" → "haiku 5.5", shown in caps), anything else as
+// given.
+export function modelLabel(id?: string): string {
+  if (!id) return 'default'
+  const m = /^claude-([a-z]+)-(\d+)-(\d+)/.exec(id)
+  return m ? `${m[1]} ${m[2]}.${m[3]}` : id
+}
+
+// Past this share of the auto-compact trigger, the next question is likely to
+// summarize the earlier turns.
+const COMPACT_SOON_PCT = 90
 
 // Compact number formatter: 1234 → "1.2k", 15000000 → "15M"
 function formatTokens(n: number): string {
@@ -106,6 +136,7 @@ function exportConversationMarkdown(messages: CopilotMessage[], title: string | 
       }
       lines.push('')
     }
+    if (m.failure) lines.push(`> _(Kobi couldn't finish: ${m.failure.message})_`, '')
   }
   const blob = new Blob([lines.join('\n')], { type: 'text/markdown;charset=utf-8' })
   const url = URL.createObjectURL(blob)
@@ -149,6 +180,7 @@ export function CopilotPanel() {
     messages,
     pendingToolCalls,
     usedFallback,
+    escalatedModel,
     sessionUsage,
     sessionRounds,
     closePanel,
@@ -166,9 +198,17 @@ export function CopilotPanel() {
     dismissStaleResume,
   } = useCopilot()
   const { layout, toggleMode, setDockedWidth, setFloatingSize } = layoutState
+  // Connector settings live in the admin-only AI hub; only admins get links there.
+  const { hasRole } = useAuth()
+  const canManageConnectors = hasRole('admin')
 
   const [input, setInput] = useState('')
   const [showHistory, setShowHistory] = useState(false)
+  // The stale banner names the cluster, not its context id (agent:<uid>).
+  const clusterLabel = useClusterLabel()
+  // Finished investigations fold their steps under a summary; these are the
+  // ones the operator opened (by the answer's id).
+  const [openRuns, setOpenRuns] = useState<Set<string>>(() => new Set())
   const messagesContainerRef = useRef<HTMLDivElement>(null)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -429,8 +469,14 @@ export function CopilotPanel() {
             <span className="font-display text-[15px] font-semibold tracking-tight text-kobi-text leading-tight truncate">
               Kobi
             </span>
-            <span className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate">
-              {config.provider} · {config.model || 'default'}
+            <span
+              className="text-[10px] font-mono text-kobi-text-tertiary uppercase tracking-[0.08em] truncate"
+              title={[config.model, escalatedModel].filter(Boolean).join(' → ')}
+            >
+              {config.provider} · {modelLabel(config.model)}
+              {/* Once the conversation left the cluster it runs on the
+                  escalation model: the header says which. */}
+              {escalatedModel && <span className="text-kobi-text-secondary"> → {modelLabel(escalatedModel)}</span>}
             </span>
           </div>
         </div>
@@ -510,7 +556,7 @@ export function CopilotPanel() {
           <Clock className="w-3.5 h-3.5 text-amber-500 shrink-0 mt-0.5" />
           <p className="text-xs text-amber-700 dark:text-amber-300 leading-snug flex-1">
             This conversation is from {relativeTimeShort(staleResume.updatedAt)}
-            {staleResume.clusterId ? ` · it ran against ${staleResume.clusterId}` : ''}. The cluster
+            {clusterLabel(staleResume.clusterId ?? '') ? ` · it ran against ${clusterLabel(staleResume.clusterId ?? '')}` : ''}. The cluster
             state may have changed — Kobi will re-check the live state when you continue.
           </p>
           <button
@@ -540,11 +586,11 @@ export function CopilotPanel() {
           // Index tool results by their tool_call_id so the inline card
           // for an assistant tool_use can pull in its matching result
           // from the next user turn without an O(n²) lookup per render.
-          const resultByCallId = new Map<string, { content: string; isError?: boolean }>()
+          const resultByCallId = new Map<string, CopilotToolResult>()
           for (const m of messages) {
             if (m.role === 'user' && m.toolResults) {
               for (const tr of m.toolResults) {
-                resultByCallId.set(tr.toolCallId, { content: tr.content, isError: tr.isError })
+                resultByCallId.set(tr.toolCallId, tr)
               }
             }
           }
@@ -556,8 +602,48 @@ export function CopilotPanel() {
           // typically ships with the tool_call in the same Claude message.
           // See `metricChartAttachment.ts` for the attachment rule details.
           const metricChartAttachments = computeMetricChartAttachments(messages)
+          // Which cloud connectors each answer read from — derived from the
+          // tool names, so it holds with tool cards hidden and after a reload.
+          const externalSources = computeExternalSources(messages)
+          // The first read of each cloud in a question gets a boundary mark;
+          // a finished investigation folds its steps under a summary that
+          // sits right after the question, above the answer.
+          const boundaries = cloudBoundaries(messages)
+          const runs = investigationRuns(messages)
+          const endings = turnEndings(messages)
+          const summaryBefore = new Map<string, string>()
+          const folded = new Set<string>()
+          // A finished investigation shows its charts right above the answer
+          // and its proposals below it, outside the steps: folded or open,
+          // they stay.
+          const answerCharts = new Map<string, MetricChartCard[]>()
+          const chartsMoved = new Set<string>()
+          const proposalsAfter = new Map<string, string[]>()
+          const proposalsMoved = new Set<string>()
+          for (const run of runs.values()) {
+            summaryBefore.set(run.stepIds[0] ?? run.answerId, run.answerId)
+            if (!openRuns.has(run.answerId)) run.stepIds.forEach((id) => folded.add(id))
+            const ids = [...run.stepIds, run.answerId]
+            const cards = ids.flatMap((id) => metricChartAttachments.get(id) ?? [])
+            if (cards.length > 0) {
+              answerCharts.set(run.answerId, cards)
+              ids.forEach((id) => chartsMoved.add(id))
+            }
+            if (run.proposalIds.length > 0) {
+              proposalsAfter.set(run.answerId, run.proposalIds)
+              run.proposalIds.forEach((id) => proposalsMoved.add(id))
+            }
+          }
+          const toggleRun = (answerId: string) =>
+            setOpenRuns((prev) => {
+              const next = new Set(prev)
+              if (next.has(answerId)) next.delete(answerId)
+              else next.add(answerId)
+              return next
+            })
 
-          return messages.map((m) => {
+          const renderMessage = (m: CopilotMessage) => {
+            if (folded.has(m.id)) return null
             // User turns whose tool results include proposals → interactive
             // ActionProposalCard (the LLM never executes; the operator clicks
             // Execute). This path is independent of showToolCalls.
@@ -602,12 +688,20 @@ export function CopilotPanel() {
               // itself). Reading order: question → "I'll check this" →
               // tool chip → chart (evidence) → analysis text. This keeps
               // the chart visually next to the prose that interprets it.
-              const metricCards = hasText ? (metricChartAttachments.get(m.id) ?? []) : []
-              if (!hasText && visibleCalls.length === 0 && metricCards.length === 0 && !m.cancelled) {
+              const metricCards = !hasText
+                ? []
+                : (answerCharts.get(m.id) ?? (chartsMoved.has(m.id) ? [] : (metricChartAttachments.get(m.id) ?? [])))
+              if (
+                !hasText &&
+                visibleCalls.length === 0 &&
+                metricCards.length === 0 &&
+                !m.cancelled &&
+                !m.failure
+              ) {
                 // Pre-2026-05-15 behavior — assistant-only-toolCalls turns
                 // don't render at all; the bottom indicator covers them.
-                // Exception: a cancelled turn renders even when empty so the
-                // "Stopped by you" marker shows (the user stopped before any token).
+                // Exception: a cancelled or failed turn renders even when
+                // empty so its marker shows (it ended before any token).
                 return null
               }
               return (
@@ -628,21 +722,60 @@ export function CopilotPanel() {
                       </div>
                     </div>
                   ))}
-                  {hasText && <MessageBubble message={m} />}
+                  {hasText &&
+                    // A round that goes on to call tools says what Kobi is
+                    // about to check: a phrase, not an answer. The answer
+                    // (the turn's last message) keeps the bubble.
+                    ((m.toolCalls?.length ?? 0) > 0 && !m.turnId ? (
+                      <RoundPhrase message={m} />
+                    ) : (
+                      <MessageBubble message={m} />
+                    ))}
                   {visibleCalls.length > 0 && (
                     <ToolCardLane>
                       {visibleCalls.map((tc) => {
                         const tr = resultByCallId.get(tc.id)
+                        const boundary = boundaries.get(tc.id)
+                        // A skill or an Azure command list is a guide, not a
+                        // read: one line, no card.
+                        if (isGuide(tc)) {
+                          return <GuideLine key={tc.id} call={tc} result={tr} running={!tr && isLoading} />
+                        }
                         return (
-                          <ToolCallCard
-                            key={tc.id}
-                            name={tc.name}
-                            input={tc.input}
-                            result={tr?.content}
-                            isError={tr?.isError}
-                          />
+                          <Fragment key={tc.id}>
+                            {boundary && (
+                              <CloudBoundary
+                                connectorId={boundary}
+                                input={tc.input}
+                                canManageConnectors={canManageConnectors}
+                              />
+                            )}
+                            <ToolCallCard
+                              name={tc.name}
+                              input={tc.input}
+                              result={tr?.content}
+                              isError={tr?.isError}
+                              status={tr?.status}
+                              durationMs={tr?.durationMs}
+                              digest={tr?.digest}
+                              reason={tr?.reason}
+                              // No result and the turn is over: it was stopped
+                              // or failed before this call came back.
+                              stopped={!tr && !isLoading}
+                              stoppedByYou={endings.get(m.id) === 'stopped'}
+                              canManageConnectors={canManageConnectors}
+                            />
+                          </Fragment>
                         )
                       })}
+                    </ToolCardLane>
+                  )}
+                  {hasText && externalSources.has(m.id) && (
+                    <ExternalSourcesNote connectorIds={externalSources.get(m.id)!} />
+                  )}
+                  {m.failure && (
+                    <ToolCardLane>
+                      <TurnFailure message={m.failure.message} afterMs={m.failure.afterMs} />
                     </ToolCardLane>
                   )}
                   {m.cancelled && (
@@ -669,10 +802,40 @@ export function CopilotPanel() {
               )
             }
             return <MessageBubble key={m.id} message={m} />
+          }
+
+          // Proposals of a finished investigation move under its answer. The
+          // list stays flat, so a moved card keeps its state (keyed reorder).
+          const byId = new Map(messages.map((m) => [m.id, m]))
+          const order: CopilotMessage[] = []
+          for (const m of messages) {
+            if (proposalsMoved.has(m.id)) continue
+            order.push(m)
+            for (const id of proposalsAfter.get(m.id) ?? []) order.push(byId.get(id)!)
+          }
+
+          return order.map((m) => {
+            const answerId = summaryBefore.get(m.id)
+            if (!answerId) return renderMessage(m)
+            return (
+              <Fragment key={m.id}>
+                <ToolCardLane>
+                  <InvestigationSummary
+                    run={runs.get(answerId)!}
+                    open={openRuns.has(answerId)}
+                    onToggle={() => toggleRun(answerId)}
+                  />
+                </ToolCardLane>
+                {renderMessage(m)}
+              </Fragment>
+            )
           })
         })()}
 
-        {pendingToolCalls.length > 0 && (
+        {/* With tool cards on, the turn in flight draws its cards from the
+            live messages above, completing as each call returns. With them
+            off, the transient indicator names the calls instead. */}
+        {pendingToolCalls.length > 0 && config?.showToolCalls === false && (
           (() => {
             const visible = pendingToolCalls
               // Proposal tools are no-ops on the backend (they just build a
@@ -680,29 +843,12 @@ export function CopilotPanel() {
               // is misleading and slow-feeling, so hide them from the indicator.
               .filter((toolName) => !toolName.startsWith('propose_'))
             if (visible.length === 0) return null
-            const showCards = config?.showToolCalls !== false
-            // Cards inherit the same indented lane as the assistant bubble
-            // they belong to; the legacy ToolCallIndicator stays full-width
-            // since that's its existing visual contract.
-            if (!showCards) {
-              return (
-                <div className="flex flex-col gap-1">
-                  {visible.map((toolName, i) => (
-                    <ToolCallIndicator key={i} toolName={toolName} />
-                  ))}
-                </div>
-              )
-            }
             return (
-              <ToolCardLane>
+              <div className="flex flex-col gap-1">
                 {visible.map((toolName, i) => (
-                  // ToolCallCard with no result = loading state. Same visual
-                  // surface as the persistent post-completion card; once the
-                  // round resolves, this row is replaced by the inline card
-                  // rendered from the assistant message above.
-                  <ToolCallCard key={i} name={toolName} />
+                  <ToolCallIndicator key={i} toolName={toolName} />
                 ))}
-              </ToolCardLane>
+              </div>
             )
           })()
         )}
@@ -731,6 +877,8 @@ export function CopilotPanel() {
 
       {/* Input */}
       <div className="border-t border-kobi-border p-3 shrink-0">
+        {/* While a question runs, the strip says how it goes and holds Stop. */}
+        {isLoading && <InvestigationStrip live={liveInvestigation(messages)} onStop={cancelMessage} />}
         <div className="flex gap-2 items-end">
           {/* AI bezel — gradient border that rotates around the box
               (accent → blue → violet → back), paired with a slow
@@ -750,24 +898,15 @@ export function CopilotPanel() {
               style={{ minHeight: '36px' }}
             />
           </div>
-          {isLoading ? (
-            <button
-              onClick={cancelMessage}
-              title="Stop generating"
-              aria-label="Stop generating"
-              className="w-9 h-9 rounded-lg bg-kobi-elevated hover:bg-kobi-elevated text-kobi-text-secondary hover:text-kobi-text border border-kobi-border flex items-center justify-center transition-colors shrink-0"
-            >
-              <Square className="w-3.5 h-3.5 fill-current" />
-            </button>
-          ) : (
-            <button
-              onClick={handleSend}
-              disabled={!input.trim()}
-              className="w-9 h-9 rounded-lg bg-kobi-accent-fill hover:bg-kobi-accent-fill/90 text-kobi-ink disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
-            >
-              <Send className="w-4 h-4" />
-            </button>
-          )}
+          {/* Stop lives in the strip above while a question runs. */}
+          <button
+            onClick={handleSend}
+            disabled={isLoading || !input.trim()}
+            aria-label="Send"
+            className="w-9 h-9 rounded-lg bg-kobi-accent-fill hover:bg-kobi-accent-fill/90 text-kobi-ink disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center transition-colors shrink-0"
+          >
+            <Send className="w-4 h-4" />
+          </button>
         </div>
         <div className="text-[10.5px] font-mono text-kobi-text-tertiary mt-1.5 text-center leading-relaxed">
           AI can make mistakes. Verify important information before acting on it.
@@ -793,13 +932,20 @@ export function CopilotPanel() {
               <br />
               <span
                 className={`${contextPct >= 80 ? 'text-kobi-st-warn' : 'text-kobi-text-secondary'}`}
-                title={`Cumulative conversation size vs auto-compact trigger${
-                  config.sessionBudget ? ` (budget ${config.sessionBudget.toLocaleString()})` : ''
-                }`}
+                title={`Session: ${formatTokens(contextTokens)}${
+                  config.compactTrigger ? ` / ${formatTokens(config.compactTrigger)} (auto-compact trigger)` : ''
+                }${config.sessionBudget ? ` · budget ${config.sessionBudget.toLocaleString()}` : ''}`}
               >
-                Session: {formatTokens(contextTokens)}
-                {config.compactTrigger ? ` / ${formatTokens(config.compactTrigger)}` : ''}
-                {config.compactTrigger ? ` · ${contextPct}%` : ''}
+                {/* Said as how full the conversation is; the numbers stay in
+                    the tooltip. Near the trigger, what happens next. */}
+                {config.compactTrigger ? (
+                  <>
+                    Conversation {contextPct}% full
+                    {contextPct >= COMPACT_SOON_PCT && ' · earlier turns get summarized on the next question'}
+                  </>
+                ) : (
+                  <>Conversation: {formatTokens(contextTokens)}</>
+                )}
               </span>
             </>
           )}
@@ -851,6 +997,20 @@ function EmptyState() {
 }
 
 // ─── Message rendering ──────────────────────────────────────────
+
+// RoundPhrase is the text of a round that calls tools — "Checking the pods and
+// the logs." — small and grey, without a bubble, in the lane the round's
+// cards follow.
+function RoundPhrase({ message }: { message: CopilotMessage }) {
+  return (
+    <div className="flex justify-start gap-2 max-w-[95%] min-w-0">
+      <div className="w-6 shrink-0" aria-hidden />
+      <div className="flex-1 min-w-0 max-w-[min(65ch,100%)] text-[12.5px] leading-snug text-kobi-text-secondary break-words">
+        <MarkdownRenderer content={message.content} />
+      </div>
+    </div>
+  )
+}
 
 function MessageBubble({ message }: { message: CopilotMessage }) {
   const [copied, setCopied] = useState(false)
@@ -965,26 +1125,63 @@ function ToolCardLane({ children }: { children: React.ReactNode }) {
 }
 
 function ToolCallIndicator({ toolName }: { toolName: string }) {
-  const label = toolName.replace(/_/g, ' ')
+  // Same labelling as ToolCallCard: a cloud connector read says whose cloud.
+  const ext = externalTool(toolName)
+  const label = ext ? ext.label : toolName.replace(/_/g, ' ')
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-kobi-bg border border-kobi-border text-[10px] font-mono text-kobi-text-tertiary">
-      <Wrench className="w-3 h-3 text-kobi-accent" />
+      {ext ? (
+        <span className="w-3 h-3 shrink-0 inline-flex items-center justify-center">
+          <CloudProviderIcon provider={ext.connectorId} className="w-3 h-3" />
+        </span>
+      ) : (
+        <Wrench className="w-3 h-3 text-kobi-accent" />
+      )}
       <span>{label}</span>
       <Loader2 className="w-3 h-3 animate-spin ml-auto" />
     </div>
   )
 }
 
-// StreamStatusHint — adaptive in-flight indicator. While the turn streams it
-// distinguishes three states off lastActivityAt (bumped on every stream event):
-//   • awaiting first token       → the "Thinking" dots
-//   • streaming, recent activity → nothing (the text itself is the progress)
-//   • stalled (no event for a while) → a subtle "Waiting…" / "Taking longer
-//     than usual…" line, so a slow network or a hung upstream doesn't read as
-//     a frozen response. Cancelling is always one click away via the input's
-//     Stop button. Ticks once a second so the thresholds advance on their own.
+// ExternalSourcesNote — the per-answer line that says Kobi left the cluster
+// to reach this answer, and on what terms. Quiet by design (tertiary, mono,
+// no border): it qualifies the answer, it is not part of it.
+function ExternalSourcesNote({ connectorIds }: { connectorIds: string[] }) {
+  return (
+    <div className="flex justify-start gap-2 max-w-[95%] min-w-0">
+      <div className="w-6 shrink-0" aria-hidden />
+      <div className="flex items-center gap-1.5 min-w-0 text-[10px] font-mono text-kobi-text-tertiary">
+        <ShieldCheck className="w-3 h-3 shrink-0" aria-hidden />
+        <span className="flex items-center gap-1 shrink-0" aria-hidden>
+          {connectorIds.map((id) => (
+            <CloudProviderIcon key={id} provider={id} mono className="w-3 h-3" />
+          ))}
+        </span>
+        <span className="min-w-0">
+          Read from {externalSourcesLabel(connectorIds)} · read-only · credentials never shared with the model
+        </span>
+      </div>
+    </div>
+  )
+}
+
+// StreamStatusHint — adaptive in-flight indicator. It follows what the turn is
+// waiting on (livePhase) and lastActivityAt (bumped on every stream event):
+//   • the model writing a round → the "Thinking" dots before the first one,
+//     "Analyzing N results" with its clock after a round's results: a round
+//     that reads many results and writes the final answer takes tens of
+//     seconds, and is not a stall
+//   • a tool call running → nothing: its card spins and, past a few seconds,
+//     counts its own time (ToolCallCard), so a slow read shows where it is
+//   • anything else, recent activity → nothing (the text itself is the progress)
+//   • quiet past those → a subtle "Waiting…" / "Taking longer than usual…"
+//     line, so a slow network or a hung upstream doesn't read as a frozen
+//     response. Cancelling is always one click away via the input's Stop
+//     button. Ticks once a second so the thresholds advance on their own.
 const IDLE_HINT_MS = 4000
 const LONG_WAIT_MS = 15000
+// A model round past this is unusual even for the final answer.
+const MODEL_LONG_WAIT_MS = 60000
 
 function StreamStatusHint() {
   const { isLoading, lastActivityAt, messages } = useCopilot()
@@ -996,15 +1193,20 @@ function StreamStatusHint() {
   }, [isLoading])
 
   if (!isLoading) return null
-  const last = messages[messages.length - 1]
-  const awaitingFirstToken = last?.role === 'assistant' && last?.content === ''
+  const phase = livePhase(messages)
   const idleMs = lastActivityAt ? Date.now() - lastActivityAt : 0
 
-  // First token can legitimately take a few seconds (tool calls, cold model) —
-  // keep the dots until it's clearly unusual.
-  if (awaitingFirstToken && idleMs < LONG_WAIT_MS) return <ThinkingIndicator />
+  if (phase === 'model' && idleMs < MODEL_LONG_WAIT_MS) {
+    // After a round's results, the model is reading them: say how many, and
+    // for how long (since the last of them came back).
+    const last = messages[messages.length - 1]
+    const read = last?.role === 'user' ? (last.toolResults?.length ?? 0) : 0
+    if (read === 0) return <ThinkingIndicator />
+    return <ThinkingIndicator label={`Analyzing ${read} result${read === 1 ? '' : 's'}`} elapsedMs={idleMs} />
+  }
+  if (phase === 'tools') return null
   // Mid-stream and still flowing — the text is the signal, no extra chrome.
-  if (!awaitingFirstToken && idleMs < IDLE_HINT_MS) return null
+  if (phase === 'idle' && idleMs < IDLE_HINT_MS) return null
 
   const longWait = idleMs >= LONG_WAIT_MS
   return (
@@ -1023,7 +1225,7 @@ function StreamStatusHint() {
 // spinner version it replaces read as "loading something" rather
 // than "actively reasoning"; the dots + color flow communicate
 // activity without overpromising progress.
-function ThinkingIndicator() {
+function ThinkingIndicator({ label = 'Thinking', elapsedMs }: { label?: string; elapsedMs?: number }) {
   return (
     <div className="flex items-center gap-2.5 px-3 py-2 rounded-lg bg-kobi-bg border border-kobi-border w-fit">
       <div className="flex items-center gap-1">
@@ -1040,7 +1242,10 @@ function ThinkingIndicator() {
           style={{ animationDelay: '0.36s' }}
         />
       </div>
-      <span className="kb-ai-shimmer-text text-[11px] font-mono">Thinking</span>
+      <span className="kb-ai-shimmer-text text-[11px] font-mono">{label}</span>
+      {elapsedMs !== undefined && (
+        <span className="text-[11px] font-mono tabular-nums text-kobi-text-tertiary">{formatClock(elapsedMs)}</span>
+      )}
     </div>
   )
 }

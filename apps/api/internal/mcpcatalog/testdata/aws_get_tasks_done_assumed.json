@@ -1,0 +1,1 @@
+{"tasks":[{"task_id":"4f9c2d1e-0000-4000-8000-000000000001","status":"success","result":{"status":"success","return_value":{"DBInstances":[{"DBInstanceIdentifier":"orders-db","DBInstanceStatus":"rebooting"}]},"api_calls":[{"service":"rds","operation":"DescribeDBInstances","status":"success","n_items":{"DBInstances":1}}],"stdout":"","stderr":null,"warning":null}}]}

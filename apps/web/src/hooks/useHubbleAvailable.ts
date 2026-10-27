@@ -23,16 +23,22 @@ import { api } from '@/services/api'
 // on this cluster — actionable copy that prevents the
 // "is-Hubble-broken?" false positive.
 //
-// Detection probes:
-//   - L4 (this hook): `count(pod_flow_events_total{source="hubble"})`.
+// Both probes look at the dashboard's SELECTED RANGE, not at the
+// last few minutes. An instant `count(...)` answered "now" only, so
+// a gap in the feed (the backend down for a night, the agent's
+// buffer dropping samples) read as "this cluster has no L7" while
+// the range on screen held days of HTTP data — and the page blamed
+// the Cilium config. Each probe returns the newest sample in the
+// range instead (`tlast_over_time`, MetricsQL), so the page can tell
+// "never seen in this range" from "not seen since <time>":
+//   - L4 (this hook): `pod_flow_events_total{source="hubble"}`.
 //     Emitted by every Hubble connection — drops, allowed flows,
-//     forwards, the lot. If this is zero, Hubble isn't shipping
-//     anything at all.
-//   - L7 (companion): `count(pod_flow_http_requests_total{source="hubble"})`.
+//     forwards, the lot.
+//   - L7 (companion): `pod_flow_http_requests_total{source="hubble"}`.
 //     Emitted only when Cilium's L7 proxy is enabled and seeing
-//     traffic. Zero on managed DPv2 (Cilium running but L7 off),
-//     zero on a fresh cluster with no HTTP traffic yet, and zero
-//     when Hubble itself is absent.
+//     traffic. Absent on managed DPv2 (Cilium running but L7 off),
+//     on a fresh cluster with no HTTP traffic yet, and when Hubble
+//     itself is absent.
 //
 // Both cached 60s with `retry: false`. Hubble install state is a
 // deliberate ops action so minute-resolution is plenty, and a
@@ -40,46 +46,57 @@ import { api } from '@/services/api'
 
 interface HubbleDetectionResult {
   available: boolean
+  // When the newest sample in the range was taken (unix seconds), or
+  // null when the range holds none.
+  lastSeen: number | null
   isLoading: boolean
 }
 
-// promScalarPresent reads a `count(...)` response and returns true
-// iff the result vector has at least one row with a positive value.
-// Empty vector → metric doesn't exist (count returns no rows).
-// Zero scalar → metric exists but no series — treat both as
-// "not available" to avoid false positives on stale series-without-samples.
-function promScalarPresent(data: unknown): boolean {
+// The agent ships Hubble series every 30s. Past this, the newest
+// sample is no longer "now": the page says since when there is none.
+export const HUBBLE_STALE_AFTER_S = 5 * 60
+
+export function isHubbleStale(lastSeen: number | null, nowS = Date.now() / 1000): boolean {
+  return lastSeen !== null && nowS - lastSeen > HUBBLE_STALE_AFTER_S
+}
+
+// lastSampleTime reads a `max(tlast_over_time(...))` response: the
+// timestamp of the newest sample, or null when the result is empty.
+export function lastSampleTime(data: unknown): number | null {
   const result = (
     data as { data?: { result?: { value?: [number, string] }[] } } | undefined
   )?.data?.result
-  if (!result || result.length === 0) return false
+  if (!result || result.length === 0) return null
   const raw = result[0]?.value?.[1]
-  if (raw === undefined || raw === null) return false
-  return parseFloat(raw) > 0
+  if (raw === undefined || raw === null) return null
+  const t = parseFloat(raw)
+  return Number.isFinite(t) && t > 0 ? t : null
 }
 
-export function useHubbleAvailable(): HubbleDetectionResult {
+function useLastHubbleSample(
+  level: 'l4' | 'l7',
+  metric: string,
+  rangeMinutes: number,
+): HubbleDetectionResult {
   const { data, isLoading } = useQuery({
-    queryKey: ['hubble-available', 'l4'],
+    queryKey: ['hubble-available', level, rangeMinutes],
     queryFn: () =>
-      api.queryMetrics({ query: `count(pod_flow_events_total{source="hubble"})` }),
+      api.queryMetrics({
+        query: `max(tlast_over_time(${metric}{source="hubble"}[${rangeMinutes}m]))`,
+      }),
     staleTime: 60_000,
     refetchInterval: 60_000,
     retry: false,
   })
 
-  return { available: promScalarPresent(data), isLoading }
+  const lastSeen = lastSampleTime(data)
+  return { available: lastSeen !== null, lastSeen, isLoading }
 }
 
-export function useHubbleL7Available(): HubbleDetectionResult {
-  const { data, isLoading } = useQuery({
-    queryKey: ['hubble-available', 'l7'],
-    queryFn: () =>
-      api.queryMetrics({ query: `count(pod_flow_http_requests_total{source="hubble"})` }),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-    retry: false,
-  })
+export function useHubbleAvailable(rangeMinutes: number): HubbleDetectionResult {
+  return useLastHubbleSample('l4', 'pod_flow_events_total', rangeMinutes)
+}
 
-  return { available: promScalarPresent(data), isLoading }
+export function useHubbleL7Available(rangeMinutes: number): HubbleDetectionResult {
+  return useLastHubbleSample('l7', 'pod_flow_http_requests_total', rangeMinutes)
 }

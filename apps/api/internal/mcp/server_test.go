@@ -11,6 +11,7 @@ import (
 // tests — no cluster involved.
 type fakeToolProvider struct {
 	tools     []Tool
+	listCtx   context.Context
 	lastName  string
 	lastArgs  json.RawMessage
 	lastCtxOK bool
@@ -18,7 +19,10 @@ type fakeToolProvider struct {
 	err       error
 }
 
-func (f *fakeToolProvider) ListTools() []Tool { return f.tools }
+func (f *fakeToolProvider) ListTools(ctx context.Context) []Tool {
+	f.listCtx = ctx
+	return f.tools
+}
 
 func (f *fakeToolProvider) CallTool(ctx context.Context, name string, args json.RawMessage) (CallToolResult, error) {
 	f.lastName = name
@@ -127,6 +131,22 @@ func TestToolsList(t *testing.T) {
 	tools, _ := result["tools"].([]any)
 	if len(tools) != 2 {
 		t.Fatalf("got %d tools, want 2: %s", len(tools), resp)
+	}
+}
+
+// tools/list must hand the provider the request's ctx: an Autopilot profile's
+// cloud tools depend on the org it carries, and a provider that received a
+// detached context would list another org's tools, or none.
+func TestToolsListPassesTheRequestContext(t *testing.T) {
+	type ctxKey struct{}
+	tp := &fakeToolProvider{}
+	s := newTestServer(tp)
+	ctx := context.WithValue(context.Background(), ctxKey{}, "org-a")
+	if _, err := s.HandleMessage(ctx, []byte(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)); err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if tp.listCtx == nil || tp.listCtx.Value(ctxKey{}) != "org-a" {
+		t.Fatalf("ListTools did not receive the request context")
 	}
 }
 

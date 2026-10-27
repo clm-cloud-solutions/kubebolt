@@ -145,9 +145,9 @@ the key if that happens.
 |---|---|---|
 | `KUBEBOLT_AI_PROVIDER` | `anthropic` | `anthropic` or `openai` (`openai` covers every OpenAI-compatible API) |
 | `KUBEBOLT_AI_API_KEY` | — | Your provider API key. **Kobi is disabled when no key is configured** (here or in the UI). |
-| `KUBEBOLT_AI_MODEL` | `claude-sonnet-5` (anthropic) / `gpt-4o` (openai) | Model ID sent to the provider |
+| `KUBEBOLT_AI_MODEL` | `claude-haiku-5-5` (anthropic) / `gpt-4o` (openai) | Model ID sent to the provider |
 | `KUBEBOLT_AI_BASE_URL` | provider default | Full endpoint URL, used as-is (e.g. `.../v1/chat/completions`) |
-| `KUBEBOLT_AI_MAX_TOKENS` | `4096` | Cap on output tokens per provider call |
+| `KUBEBOLT_AI_MAX_TOKENS` | per model: `16384` where reasoning counts against the cap (Claude, OpenAI reasoning models), `4096` otherwise | Cap on output tokens per provider call, the model's reasoning included |
 
 ### Fallback provider (optional)
 
@@ -226,6 +226,33 @@ Admins can turn proposals off entirely (`KUBEBOLT_AI_ACTIONS_ENABLED=false`) or 
 destructive ones (`KUBEBOLT_AI_DESTRUCTIVE_ACTIONS_ENABLED=false`), from the environment or
 from the Configuration page. When a proposal is blocked by that policy, Kobi says so instead
 of blaming your role, and offers the equivalent `kubectl` command.
+
+### Escalation model
+
+Kobi can run on a small model and move to a stronger one, for the rest of the
+conversation, the first time it leaves the selected cluster: a cloud connector call,
+`get_external_connections`, the `external-dependencies` procedure, a cluster switch offer,
+or a conversation opened from a cluster switch. Questions inside one cluster stay on the
+small model.
+
+| Variable | Required | Description |
+|---|---|---|
+| `KUBEBOLT_AI_ESCALATION_MODEL` | No | **Setting this enables escalation** (e.g. `claude-sonnet-5-5` with `claude-haiku-5-5` as the primary) |
+| `KUBEBOLT_AI_ESCALATION_PROVIDER` | No | Defaults to the primary provider |
+| `KUBEBOLT_AI_ESCALATION_API_KEY` | No | Defaults to the primary key when the provider is the same |
+| `KUBEBOLT_AI_ESCALATION_BASE_URL` | No | Defaults to the primary endpoint when the provider is the same |
+
+The model can also be set from the UI, under **Escalation model** in the primary provider's
+card (Administration → AI (Kobi) → Configuration). It runs on the primary's provider and key;
+**Off** turns escalation off, including one set by environment variable. The change applies
+on the next message.
+
+Measured on KubeBolt's eval cases (Haiku 5.5 → Sonnet 5.5): inside one cluster it costs what
+Haiku costs (escalated 1 conversation in 57) with the same results; when the investigation
+leaves the cluster it costs what Sonnet costs and reads the cloud as Sonnet does, but the
+first steps, before it leaves, are Haiku's. Each session records whether it escalated, why
+and what the escalation model consumed, and Administration → AI (Kobi) → Usage prices each
+model's share.
 
 ## Recipes
 

@@ -12,6 +12,8 @@ import (
 	authv1 "k8s.io/api/authentication/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
+
+	"github.com/kubebolt/kubebolt/apps/api/internal/fieldmanager"
 )
 
 // TokenReviewer is the slice of the K8s authentication API that
@@ -55,7 +57,7 @@ func (r *kubeTokenReviewer) Review(ctx context.Context, token, audience string) 
 			Audiences: []string{audience},
 		},
 	}
-	out, err := r.client.AuthenticationV1().TokenReviews().Create(ctx, review, metav1.CreateOptions{})
+	out, err := r.client.AuthenticationV1().TokenReviews().Create(ctx, review, metav1.CreateOptions{FieldManager: fieldmanager.Name})
 	if err != nil {
 		return nil, fmt.Errorf("tokenreview create: %w", err)
 	}

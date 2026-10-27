@@ -1,0 +1,13 @@
+{
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "Here are the available commands and their input schema for 'redis' tool.\nIf you do not find a suitable \"command\", run again with the \"learn=true\" to get a list of available commands and their parameters.\nNext, identify the command you want to execute and run again with the \"command\" and \"parameters\" arguments, respecting \"required\" parameters if present.\n\n[{\"command\":\"redis_list\",\"description\":\"List/show all Redis resources in a subscription. Returns details of all Azure Managed Redis, Azure Cache for Redis, and Azure Redis Enterprise resources. Use this command to explore and view which Redis resources are available in your subscription.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"subscription\":{\"type\":\"string\",\"description\":\"The Azure subscription GUID identifier or display name. If not specified, the Azure CLI profile default subscription or AZURE_SUBSCRIPTION_ID environment variable will be used.\"},\"tenant\":{\"type\":\"string\",\"description\":\"The Microsoft Entra ID tenant GUID identifier or display name.\"}},\"additionalProperties\":false}}]"
+      }
+    ],
+    "isError": false
+  },
+  "id": 16,
+  "jsonrpc": "2.0"
+}

@@ -402,7 +402,10 @@ copilot:
   baseUrl: ""             # optional — the FULL endpoint, used verbatim (no path is appended):
                           # e.g. https://api.x.ai/v1/chat/completions (openai) or
                           # https://my-proxy.example.com/v1/messages (anthropic)
-  maxTokens: 4096
+  # Response cap per call, the model's reasoning included. "" = per model:
+  # 16384 where reasoning counts against it (Claude, OpenAI reasoning models),
+  # 4096 otherwise. Set a number only to override.
+  maxTokens: ""
   # Prompt-cache TTL for the STATIC prefix (system prompt + tool definitions).
   # Anthropic only. "" uses the built-in default of 1h; set "5m" to return to
   # the API default. Measured: 68-89% of a session's cost was cache WRITE, and
@@ -424,6 +427,61 @@ copilot:
     baseUrl: ""           # optional — full endpoint, same rule as copilot.baseUrl
     apiKey: ""
     existingSecret: ""    # name of Secret containing 'api-key' for fallback
+
+  # Optional escalation model (KUBEBOLT_AI_ESCALATION_MODEL): the conversation
+  # moves to it the first time Kobi leaves the cluster (cloud connector,
+  # another cluster). Same provider and key as the primary.
+  escalation:
+    model: ""             # e.g. claude-sonnet-5-5 with claude-haiku-5-5 as model
+
+# Kobi's cloud connectors: read-only access to the AWS and Azure resources a
+# workload depends on, set up in Administration → AI (Kobi) → Connectors.
+# Guide: docs/guides/kobi-mcp-connectors.md.
+mcpConnectors:
+  # KUBEBOLT_MCP_CONNECTORS. false removes the whole surface: the Connectors
+  # tab, Kobi's cloud tools and their lines in its prompt.
+  enabled: true
+  aws:
+    # KUBEBOLT_MCP_AWS_PRINCIPAL_ARN: the AWS identity the API runs as (the
+    # IRSA or EKS Pod Identity role of serviceAccount), printed as the
+    # principal of the trust policy in the connector's setup guide. Empty
+    # leaves a placeholder there.
+    principalArn: ""
+  azure:
+    # The Azure MCP Server as a second container of the API pod. It holds one
+    # read-only service principal and listens on the pod's loopback with its
+    # own sign-in off, so nothing outside the pod can reach it. Without it the
+    # Azure connector has nothing to call.
+    sidecar:
+      enabled: false
+      # Secret with the service principal from the connector's setup guide:
+      # keys tenant-id, client-id, client-secret. Required.
+      existingSecret: ""
+      image:
+        repository: mcr.microsoft.com/azure-sdk/azure-mcp
+        # The release Kobi's Azure allowlist was reviewed against. Bump it
+        # only with the API: the betas rename commands, and a test fails when
+        # this tag differs from the version the API expects.
+        tag: 3.0.0-beta.46
+        digest: sha256:eaf976c3b537de579d043822e45f47958b8b1647aaf11b6c4e8e9d18ea05c810
+        pullPolicy: IfNotPresent
+      resources:
+        requests:
+          cpu: 20m
+          memory: 128Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+      # The image runs as user `mcp` (uid 1654); runAsNonRoot needs the number.
+      # On OpenShift unset runAsUser (--set ...securityContext.runAsUser=null):
+      # restricted-v2 assigns one from the namespace's range.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1654
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
 
 # Arbitrary env vars injected into the API container. Escape hatch for
 # KUBEBOLT_* knobs that don't (yet) have first-class chart values —

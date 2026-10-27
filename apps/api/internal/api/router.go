@@ -16,6 +16,8 @@ import (
 	"github.com/kubebolt/kubebolt/apps/api/internal/insights"
 	"github.com/kubebolt/kubebolt/apps/api/internal/integrations"
 	"github.com/kubebolt/kubebolt/apps/api/internal/mcp"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpcatalog"
+	"github.com/kubebolt/kubebolt/apps/api/internal/mcpgateway"
 	"github.com/kubebolt/kubebolt/apps/api/internal/notifications"
 	"github.com/kubebolt/kubebolt/apps/api/internal/settings"
 	"github.com/kubebolt/kubebolt/apps/api/internal/updatecheck"
@@ -86,6 +88,14 @@ func NewRouter(
 	// /insights/episodes 503. The same store carries the presence, mute,
 	// operational and shift-stat surfaces, recovered by type assertion below.
 	episodeReader insights.EpisodeReader,
+	// mcpGateway serves the org's external MCP connectors (AWS, Google Cloud,
+	// Azure) to Kobi and backs /admin/mcp-connectors. nil when the feature is
+	// off (KUBEBOLT_MCP_CONNECTORS=false) or there is no settings runtime: the
+	// admin routes are not mounted (404) and Kobi gets no cloud tools.
+	mcpGateway *mcpgateway.Gateway,
+	// mcpCatalog is the connector catalog main.go built and gave the gateway.
+	// Built even with the gateway off; nil lists no connectors.
+	mcpCatalog *mcpcatalog.Catalog,
 ) *chi.Mux {
 	r := chi.NewRouter()
 
@@ -124,6 +134,9 @@ func NewRouter(
 		updateCheck:          updateCheck,
 		insightPolicies:      insightPolicySvc,
 		episodes:             episodeReader,
+		mcpGateway:           mcpGateway,
+		mcpCatalog:           mcpCatalog,
+		fleetAddrs:           newFleetAddressIndex(),
 	}
 	// The episode store also carries the presence + mute + operational +
 	// shift-stat surfaces; recovering them here keeps the NewRouter signature
@@ -141,6 +154,10 @@ func NewRouter(
 	// Kobi MCP server (read-only). Built once — the executor is stateless
 	// (it only wraps the manager) and the read-only tool catalogue is
 	// static. Registered as a route inside the authenticated group below.
+	//
+	// It never gets the connector gateway: an external MCP host is not a
+	// consumer the cloud connectors were reviewed for, so the public
+	// catalogue stays the cluster reads.
 	mcpServer := mcp.NewServer(
 		mcp.ServerInfo{Name: "kubebolt-kobi", Version: "1"},
 		// Same per-org metrics-retention clamp as the chat handler. This door
@@ -249,6 +266,26 @@ func NewRouter(
 			// live from the ingest gate; the Overview's truncation banner reads it.
 			r.Get("/account/capabilities", h.handleAccountCapabilities)
 			r.Get("/account/usage", h.handleAccountUsage)
+			// The org's external MCP connectors: the read-only doors Kobi uses
+			// into the org's own cloud accounts. OUTSIDE requireConnector — a
+			// cloud account is not a cluster, and an install with no cluster yet
+			// is exactly one that wires its cloud first. Admin-only, and audited
+			// route + outcome for every mutation (the test included: it exercises
+			// the credentials); never the body, which carries them. Under /admin,
+			// not /mcp: /mcp is KubeBolt's own MCP server, and a path there would
+			// read as part of that door. Not mounted at all when the feature is
+			// off, so the UI gets a plain 404 and shows its feature-off state.
+			if mcpGateway != nil {
+				r.Route("/admin/mcp-connectors", func(r chi.Router) {
+					r.Use(auth.RequireRole(auth.RoleAdmin))
+					r.Use(h.auditAdminRoutes("mcp-connector", false))
+					r.Get("/", h.handleListMCPConnectors)
+					r.Get("/{id}", h.handleGetMCPConnector)
+					r.Put("/{id}", h.handlePutMCPConnector)
+					r.Post("/{id}/test", h.handleTestMCPConnector)
+					r.Delete("/{id}", h.handleDeleteMCPConnector)
+				})
+			}
 
 			// User management — admin only
 			r.Route("/users", func(r chi.Router) {
@@ -590,6 +627,9 @@ func NewRouter(
 			// data (findings, insight history, metrics) and the executor has no
 			// other way to learn the caller's entitlement. Without it
 			// ClusterScopeFrom returns the zero scope, which does not narrow.
+			// Any role asks, but not every role reads the clouds: each connector
+			// has a minimum role for Kobi (editor unless an admin changes it),
+			// which the gateway reads from this request's claims.
 			r.With(h.WithClusterScope).Post("/copilot/chat", h.HandleCopilotChat)
 			// Sec #9: compact is part of the same Kobi surface — gate it too,
 			// else an unverified org can drive AI spend via /compact. It never
@@ -761,9 +801,13 @@ func NewRouter(
 }
 
 // readToolExecutor is the executor behind every door that serves Kobi's
-// tools: the public /mcp server and Kobi's chat. One constructor so the doors
-// cannot drift apart on which sources they wire: a source forgotten on one
-// door surfaces as a tool that answers "cannot see" there and nowhere else.
+// tools: the public /mcp server and, with a connector router added, Kobi's
+// chat. One constructor so the doors cannot drift apart on which sources they
+// wire: a source forgotten on one door surfaces as a tool that answers "cannot
+// see" there and nowhere else.
+//
+// It carries no connector router on purpose: Kobi's chat adds one
+// (HandleCopilotChat), and the public door must never have one.
 func (h *handlers) readToolExecutor() *copilot.Executor {
 	return copilot.NewExecutor(h.manager).
 		WithMetricsRetention(h.metricsRetentionFor).
@@ -775,5 +819,6 @@ func (h *handlers) readToolExecutor() *copilot.Executor {
 		WithMetricsQuery(h.metricsQuerySourceFor()).
 		WithRightSizing(h.rightSizingSourceFor()).
 		WithFleet(h.fleetSourceFor()).
+		WithExternalConnections(h).
 		WithClusterList(h)
 }

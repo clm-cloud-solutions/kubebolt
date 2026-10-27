@@ -79,10 +79,43 @@ func copilotNotConfigured() string {
 	return "Kobi is not set up yet: no AI provider is connected. " + copilotFixHint()
 }
 
-// withSessionContextPrefix returns a fresh slice with `sessionCtx` prepended
-// to the content of the FIRST user message. The original messages slice is
-// not modified and the messages it shares with the caller's slice remain
-// untouched — only the prefixed first user message is a new struct value.
+// sessionClusterDisplayName is the name the CALLER's org gave the cluster a
+// Kobi turn runs on, for the session block's cluster line; "" when it has
+// none. It is the lookup GET /clusters labels the active cluster with —
+// ListClusters reads display names under the request's org
+// (auth.TenantIDFromContext) and clusterLabel prefers them — so Kobi and the
+// cluster switcher name the cluster alike. Display names are per org: two
+// orgs watching one physical cluster share its agent:<uid> context and each
+// names it its own way, so another org's name never reaches this lookup.
+//
+// Multi-tenant, a request that carries no real org gets no name. That is ""
+// (nothing stamped) and DefaultTenantName: ResolveTenant stamps "default" on a
+// principal with no tenant claim (a token issued before activation), and the
+// code base reads both as "no org". The manager seats such a request on the
+// operator's cluster (canonTenant), so the name it could be given is either
+// the operator's own (the org-less store read falls back to the manager's
+// org) or a shared org-less row, and neither belongs to the caller.
+func (h *handlers) sessionClusterDisplayName(ctx context.Context, contextName string) string {
+	if h.manager == nil || contextName == "" {
+		return ""
+	}
+	org := auth.TenantIDFromContext(ctx)
+	if auth.MultiTenantEnabled && (org == "" || org == auth.DefaultTenantName) {
+		return ""
+	}
+	// ClusterDisplayName answers the context itself when the org has no name.
+	if name := h.manager.ClusterDisplayName(org, contextName); name != contextName {
+		return name
+	}
+	return ""
+}
+
+// withSessionContextPrefix returns a fresh slice with the session notes
+// prepended to the content of the FIRST user message, and each later
+// operator message's own view and time before it (copilot.PrefixSessionNotes).
+// The original messages slice is not modified and the messages it shares
+// with the caller's slice remain untouched — only the prefixed user messages
+// are new struct values.
 //
 // This is the LLM-facing transformation: the model sees cluster + view + Now
 // at the top of the operator's question, while the canonical messages slice
@@ -91,18 +124,21 @@ func copilotNotConfigured() string {
 // the prefix surfaces in the chat bubble AND multi-turn re-sends stack
 // nested Session Context blocks one per turn.
 //
-// When sessionCtx is empty (or there is no user message), the input slice
-// is returned as-is.
-func withSessionContextPrefix(messages []copilotMessageView, sessionCtx string) []copilotMessageView {
-	if sessionCtx == "" || len(messages) == 0 {
-		return messages
-	}
-	out := make([]copilotMessageView, len(messages))
-	copy(out, messages)
-	for i := range out {
-		if out[i].Role == copilot.RoleUser && out[i].Content != "" {
-			out[i].Content = sessionCtx + "\n\n" + out[i].Content
-			break
+// With no messages the input slice is returned as-is.
+func withSessionContextPrefix(messages []copilotMessageView, notes copilot.SessionNotesInput) []copilotMessageView {
+	return copilot.PrefixSessionNotes(messages, notes)
+}
+
+// servedConnectors returns the ids of the connectors that contributed tools,
+// in first-seen order (the gateway's, which is by connector id). The prompt
+// blocks sort and deduplicate again, so their bytes depend only on the set.
+func servedConnectors(defs []copilot.ToolDefinition) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, d := range defs {
+		if id, ok := copilot.MCPConnectorID(d.Name); ok && !seen[id] {
+			seen[id] = true
+			out = append(out, id)
 		}
 	}
 	return out
@@ -152,6 +188,23 @@ type CopilotChatRequest struct {
 	// "Kobi analyzed this" back to resume. Sent only on the first turn of an
 	// insight-triggered conversation; preserved across later turns.
 	OriginatingInsightID string `json:"originatingInsightId,omitempty"`
+}
+
+// stampTrigger puts the request's trigger on the user message it came with,
+// unless the client already did, so the conversation keeps which words were
+// the UI's after this turn (copilot.Message.Trigger).
+func stampTrigger(messages []copilot.Message, trigger string) {
+	if trigger == "" {
+		return
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role == copilot.RoleUser && messages[i].Content != "" {
+			if messages[i].Trigger == "" {
+				messages[i].Trigger = trigger
+			}
+			return
+		}
+	}
 }
 
 // HandleCopilotConfig returns the public copilot configuration (no API keys).
@@ -282,14 +335,19 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	// metrics carry, the team is the owner AT THIS MOMENT.
 	sessClusterID, sessTeamID := h.sessionClusterAndTeam(r.Context(), clusterName, conn == nil)
 
-	executor := h.readToolExecutor()
+	// The same executor the MCP doors use, plus the org's connector router:
+	// the chat is the only place Kobi's model may call mcp__<connector>__…
+	// tools. The router is nil when connectors are off, and the executor then
+	// refuses such a name with a sentence.
+	mcpRouter := h.kobiMCPRouter()
+	executor := h.readToolExecutor().WithMCP(mcpRouter)
 	// Action governance (Sprint 1): withhold propose_* tools when actions
 	// are disabled, and the destructive verbs when the sub-switch is off —
 	// the LLM can't propose what it can't see. Defaults are ON (the action
 	// surface already shipped). Resolved config (env baseline + live BoltDB
 	// override from the admin toggle) wins over the raw env baseline.
 	govCfg := h.resolvedCopilotConfig()
-	tools := copilot.GovernedToolDefinitions(
+	tools := copilot.ChatToolDefinitions(
 		govCfg.ActionsEnabled,
 		govCfg.DestructiveActionsEnabled,
 	)
@@ -298,6 +356,8 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	if trigger == "" {
 		trigger = "manual"
 	}
+	stampTrigger(req.Messages, req.Trigger)
+	copilot.AnnotateProposalOutcomes(req.Messages)
 
 	// Resolve the conversation identity for persistence + resume. A brand-new
 	// conversation has no id yet — we mint one and hand it back in the `meta`
@@ -329,10 +389,28 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		slog.String("component", "copilot"),
 		slog.String("user", auth.ContextUserID(r)),
 		slog.String("cluster", clusterName),
-		slog.String("provider", cfg.Primary.Provider),
-		slog.String("model", cfg.Primary.Model),
+		// The configured primary; "copilot round" and "copilot session" name
+		// the model that served, which an escalation or the fallback changes.
+		slog.String("primaryProvider", cfg.Primary.Provider),
+		slog.String("primaryModel", cfg.Primary.Model),
 		slog.String("trigger", trigger),
 	)
+
+	// The org's cloud connector tools go AFTER the built-ins, so the built-in
+	// prefix of the tool list is the same bytes for every org and only the
+	// tail varies with the connector set. The gateway sorts them by
+	// (connector, name) and keeps descriptions stable, which is what lets the
+	// provider's prompt cache hold turn to turn. Fetched after the meta event
+	// on purpose: the first turn after a configuration change waits for the
+	// connectors to bind (bounded by the gateway), and the conversation id
+	// must not wait with it. A connector that cannot be reached is left out
+	// for this turn; the turn itself never fails for it.
+	connectorTools := h.kobiConnectorTools(r.Context())
+	tools = append(tools, connectorTools...)
+	// The prompt blocks name the connectors that actually contributed tools
+	// this turn — not every enabled one: telling the model to use a connector
+	// that failed to bind would only earn it "tool not allowed" answers.
+	connectors := servedConnectors(connectorTools)
 
 	// Multi-step tool calling loop. The round budget is configurable
 	// (KUBEBOLT_AI_MAX_ROUNDS / Administration → AI (Kobi) → Configuration) because a small,
@@ -347,10 +425,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	messages := append([]copilot.Message(nil), req.Messages...)
 
 	// Phase 6: inject per-session context (cluster + current_view + Now block)
-	// as a prefix on the first user message. We compute the prefix string
-	// once per request and apply it ONLY to the LLM-facing slice via
-	// `withSessionContextPrefix` at the chat-request site below — never
-	// mutate `messages` in place. Reasons:
+	// as a prefix on the operator's messages. The notes are built per request
+	// and applied ONLY to the LLM-facing slice via `withSessionContextPrefix`
+	// at the chat-request site below — never mutate `messages` content in
+	// place. Reasons:
 	//   - The frontend replaces its transcript with `finalMessages` on the
 	//     `done` event; if we mutated, the session-context block would
 	//     appear inside the user bubble in the chat UI.
@@ -358,48 +436,117 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 	//     content; mutating again would stack a second prefix, then a
 	//     third, etc. (observed in production: 4 nested Session Context
 	//     blocks after 4 turns).
-	sessionCtx := ""
-	if len(messages) > 0 {
-		sessionName := clusterName
-		if noCluster && sessionName == "" {
-			sessionName = "(none connected)"
-		}
-		sessionCtx = copilot.BuildSessionContext(sessionName, req.CurrentPath, time.Now(), req.ClientTimezone)
-		// No cluster at all: tell Kobi so it answers identity/product/K8s
-		// questions from knowledge (+ the docs tool) and explains the missing
-		// cluster itself instead of surfacing tool errors. Per-session prefix,
-		// same cache rule as the governance block.
-		if noCluster {
-			sessionCtx += "\n\n" + copilot.NoClusterContextBlock()
-		}
-		// Tell Kobi the live governance-toggle state so it explains a blocked
-		// action as policy (not RBAC). Appended to the per-session prefix —
-		// keeps the system prompt's cache prefix byte-identical. Empty when
-		// both toggles are ON (the default), so the common case adds nothing.
-		if gov := copilot.GovernanceContextBlock(govCfg.ActionsEnabled, govCfg.DestructiveActionsEnabled); gov != "" {
-			sessionCtx += "\n\n" + gov
-		}
+	// What IS written into `messages` is the turn's time and page on the
+	// operator's new message (StampTurn): the client sends them back, and
+	// each message's block is rebuilt from them, so the history reads the
+	// same next turn and stays in the provider's cache.
+	now := time.Now()
+	copilot.StampTurn(messages, now, req.CurrentPath)
+	sessionNotes := copilot.SessionNotesInput{
+		ClusterName:        clusterName,
+		ClusterDisplayName: h.sessionClusterDisplayName(r.Context(), clusterName),
+		CurrentPath:        req.CurrentPath,
+		Now:                now,
+		ClientTimezone:     req.ClientTimezone,
+		NoCluster:          noCluster,
+		Connectors:         connectors,
+		ActionsEnabled:     govCfg.ActionsEnabled,
+		DestructiveEnabled: govCfg.DestructiveActionsEnabled,
+		OperatorLanguage:   copilot.OperatorLanguage(req.Messages),
+	}
+	if conn != nil {
+		sessionNotes.Connected = true
+		sessionNotes.Platform, sessionNotes.Provider, sessionNotes.Region = conn.CloudProfile()
 	}
 
 	usedFallback := false
 
+	// Model escalation (copilot.EscalationTrigger): the conversation moves
+	// to the escalation model, for good, the first time it leaves the
+	// selected cluster, or starts there when it opened from a cluster switch
+	// or an earlier turn already left. escalatedUsage is what that model
+	// consumed, billed at its own price.
+	escalation := copilot.EscalationProvider(cfg)
+	escalated, escalationReason, escalationRound := false, "", 0
+	if escalation != nil {
+		escalated, escalationReason = copilot.ConversationEscalated(req.Messages, len(connectorTools) > 0)
+		if escalated {
+			// The chat's header names the model the turn runs on: a
+			// conversation that already left the cluster starts on the
+			// escalation model, and says so before its first round.
+			sse.event("meta", map[string]any{"escalated": escalation.Model})
+		}
+	}
+	var escalatedUsage copilot.Usage
+
 	// effectiveProviderModel returns the provider + resolved model the session
-	// ACTUALLY used — the fallback when it kicked in, else the primary. Shared by
-	// the analytics SessionRecord and the conversation record so both label the
-	// SAME model. Reads usedFallback at call time (every terminal path runs after
-	// the round loop has set it).
+	// ACTUALLY used — the fallback when it kicked in, the escalation model
+	// when the session moved to it, else the primary. Shared by the analytics
+	// SessionRecord and the conversation record so both label the SAME model.
+	// Reads usedFallback at call time (every terminal path runs after the round
+	// loop has set it).
 	effectiveProviderModel := func() (provider, model string) {
 		prov, mdl := cfg.Primary.Provider, cfg.Primary.Model
 		if usedFallback && cfg.Fallback != nil {
 			prov, mdl = cfg.Fallback.Provider, cfg.Fallback.Model
+		} else if escalated && escalation != nil {
+			prov, mdl = escalation.Provider, escalation.Model
 		}
 		return prov, copilot.ResolvedModel(prov, mdl)
 	}
-
 	// Session-level accounting
 	var sessionUsage copilot.Usage
+	// activeProviderFor is the model a call goes to: the fallback once it
+	// took over, the escalation model once the conversation moved, else the
+	// primary.
+	activeProviderFor := func() config.ProviderConfig {
+		switch {
+		case usedFallback && cfg.Fallback != nil:
+			return *cfg.Fallback
+		case escalated && escalation != nil:
+			return *escalation
+		}
+		return cfg.Primary
+	}
+	// onEscalation reports whether the next call goes to the escalation model,
+	// which caches its static prefix for 5 minutes, not an hour
+	// (ChatRequest.ShortCache).
+	onEscalation := func() bool {
+		return escalated && escalation != nil && !(usedFallback && cfg.Fallback != nil)
+	}
+	// addUsage books a call's usage to the session, and to the escalation's
+	// share when that model answered it.
+	addUsage := func(u copilot.Usage) {
+		sessionUsage.Add(u)
+		if escalated && escalation != nil && !usedFallback {
+			escalatedUsage.Add(u)
+		}
+	}
+	// escalationRecord is what the session's escalation consumed, nil when
+	// it stayed on its model.
+	escalationRecord := func() *copilot.EscalationRecord {
+		if !escalated || escalation == nil {
+			return nil
+		}
+		return &copilot.EscalationRecord{
+			Provider: escalation.Provider,
+			Model:    copilot.ResolvedModel(escalation.Provider, escalation.Model),
+			Reason:   escalationReason,
+			Round:    escalationRound,
+			Usage:    escalatedUsage,
+		}
+	}
+
 	var sessionToolBytes int
 	var sessionToolCalls int
+	// sessionMCPCalls counts the connector calls this turn handed to the
+	// gateway — each one reaches, or is refused and audited on the way to, a
+	// customer's cloud account. mcpBudgetUsed, the per-turn budget's
+	// counter, leaves out the ones KubeBolt refused itself (NotSent): they
+	// read nothing, and the model correcting one must still have the call it
+	// meant to make. maxRounds still bounds a model that keeps getting them.
+	var sessionMCPCalls, mcpBudgetUsed int
+	mcpBudgetLogged := false
 	sessionStart := time.Now()
 	roundsUsed := 0
 	// Provider-reported usage of the most recent round. Stored on the
@@ -445,7 +592,10 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		for name, s := range toolBreakdown {
 			breakdown[name] = s
 		}
+		servedProvider, servedModel := effectiveProviderModel()
 		logger.Info("copilot session",
+			slog.String("provider", servedProvider),
+			slog.String("model", servedModel),
 			slog.String("reason", reason),
 			slog.Int("rounds", roundsUsed),
 			slog.Int("inputTokens", sessionUsage.InputTokens),
@@ -454,6 +604,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			slog.Int("cacheCreationTokens", sessionUsage.CacheCreationTokens),
 			slog.Int("totalTokens", sessionUsage.Total()),
 			slog.Int("toolCalls", sessionToolCalls),
+			slog.Int("mcpCalls", sessionMCPCalls),
 			slog.Int("toolResultBytes", sessionToolBytes),
 			slog.Duration("duration", time.Since(sessionStart)),
 			slog.Bool("fallback", usedFallback),
@@ -497,9 +648,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				Rounds:         roundsUsed,
 				Usage:          sessionUsage,
 				ToolCalls:      sessionToolCalls,
+				MCPCalls:       sessionMCPCalls,
 				ToolBytes:      sessionToolBytes,
 				DurationMs:     time.Since(sessionStart).Milliseconds(),
 				Fallback:       usedFallback,
+				Escalation:     escalationRecord(),
 				Tools:          tools,
 				Compacts:       sessionCompacts,
 				ClusterID:      sessClusterID,
@@ -604,10 +757,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// for the rest of the session instead of re-trying a degraded primary
 		// every round. Re-trying surfaced a confusing upstream error (e.g. a
 		// 502) AFTER the fallback had already answered the conversation.
-		activeProvider := cfg.Primary
-		if usedFallback && cfg.Fallback != nil {
-			activeProvider = *cfg.Fallback
-		}
+		activeProvider := activeProviderFor()
 
 		// Auto-compact when the conversation approaches the budget.
 		// Uses a cheap-tier model of the same provider to summarize the
@@ -677,11 +827,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// prefix to a fresh slice so the canonical `messages` (echoed back
 		// to the UI) stays exactly what the operator typed.
 		chatReq := copilot.ChatRequest{
-			System:    systemPrompt,
-			Messages:  withSessionContextPrefix(messages, sessionCtx),
-			Tools:     tools,
-			Provider:  activeProvider,
-			MaxTokens: cfg.MaxTokens,
+			System:     systemPrompt,
+			Messages:   withSessionContextPrefix(messages, sessionNotes),
+			Tools:      tools,
+			Provider:   activeProvider,
+			MaxTokens:  cfg.MaxTokens,
+			ShortCache: onEscalation(),
 		}
 
 		resp, err := callModel(chatReq)
@@ -756,7 +907,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Accumulate token usage for the session
-		sessionUsage.Add(resp.Usage)
+		addUsage(resp.Usage)
 		lastTurnUsage = resp.Usage
 		roundsUsed = round + 1
 
@@ -767,6 +918,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 		logger.Debug("copilot round",
 			slog.Int("round", round),
+			slog.String("model", copilot.ResolvedModel(chatReq.Provider.Provider, chatReq.Provider.Model)),
 			slog.String("stopReason", resp.StopReason),
 			slog.Int("inputTokens", resp.Usage.InputTokens),
 			slog.Int("outputTokens", resp.Usage.OutputTokens),
@@ -783,9 +935,11 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			"session": sessionUsage,
 		})
 
-		// If the model produced text, send it to the user
+		// If the model produced text, send it to the user. The round lets the
+		// chat put each round's text in its own message, the shape `done`
+		// returns, so nothing moves when the turn ends.
 		if resp.Text != "" {
-			sse.event("text", map[string]string{"text": resp.Text})
+			sse.event("text", map[string]any{"text": resp.Text, "round": round})
 		}
 
 		// If no tool calls, we're done. Emit the final messages array
@@ -793,16 +947,9 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// persist the full tool-call history across questions (this
 		// matches the accumulative context-window model documented by
 		// Anthropic and OpenAI — previous turns are preserved completely).
-		if len(resp.ToolCalls) == 0 {
-			finalMessages := messages
-			if resp.Text != "" {
-				finalMessages = append(finalMessages, copilot.Message{
-					Role:      copilot.RoleAssistant,
-					Content:   resp.Text,
-					Timestamp: time.Now(),
-				})
-			}
-
+		// completeTurn ends the turn with finalMessages as the conversation:
+		// here when the model called no tool, below after a switch card.
+		completeTurn := func(finalMessages []copilot.Message) {
 			// Reactive compact: if this final round's provider-reported
 			// input crossed the trigger, compact now so the client's
 			// next prompt starts from a summary instead of resending a
@@ -869,6 +1016,27 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			})
 			persistConversation(finalMessages)
 			finish("done")
+		}
+		if len(resp.ToolCalls) == 0 {
+			text := resp.Text
+			if copilot.CutByTokenLimit(resp.StopReason) {
+				// The answer ends wherever the cap fell: say so.
+				logger.Warn("copilot answer cut by the response token limit",
+					slog.Int("round", round),
+					slog.Int("outputTokens", resp.Usage.OutputTokens),
+				)
+				sse.event("text", map[string]any{"text": copilot.TokenLimitNote, "round": round})
+				text += copilot.TokenLimitNote
+			}
+			finalMessages := messages
+			if text != "" {
+				finalMessages = append(finalMessages, copilot.Message{
+					Role:      copilot.RoleAssistant,
+					Content:   text,
+					Timestamp: time.Now(),
+				})
+			}
+			completeTurn(finalMessages)
 			return
 		}
 
@@ -883,15 +1051,59 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		// Execute each tool and append results
 		var toolResults []copilot.ToolResult
 		for _, call := range resp.ToolCalls {
-			sse.event("tool_call", map[string]string{"toolName": call.Name})
+			// The chat draws the card from this event: its id pairs it with the
+			// tool_result below, the input names the operation while it runs.
+			sse.event("tool_call", map[string]any{
+				"id":       call.ID,
+				"toolName": call.Name,
+				"input":    call.Input,
+				"round":    round,
+			})
 
 			toolStart := time.Now()
-			// Scope tool execution to THIS request: its cluster, its caller and
-			// its entitlement (ClusterScope, an API key's cluster list).
-			// Execute() runs on context.Background(), which carries none of
-			// them — a key limited to one cluster read every cluster through
-			// the chat while /mcp, on the request context, held.
-			result := executor.ExecuteCtx(r.Context(), call)
+			budgetRefused := false
+			// A connector call is one this turn can actually route; without a
+			// router the executor refuses the name without calling anything.
+			connectorCall := mcpRouter != nil && copilot.IsMCPToolName(call.Name)
+			var result copilot.ToolResult
+			if connectorCall && mcpBudgetUsed >= copilot.MaxMCPCallsPerTurn {
+				// Past the per-turn budget the call is NOT made. The model
+				// gets a result that says so and tells it to conclude: a
+				// model looping on cloud reads would otherwise hold the turn
+				// for minutes of provider calls and spend the org's shared
+				// call budget, which Autopilot draws on too.
+				if !mcpBudgetLogged {
+					logger.Warn("copilot external call budget exhausted; refusing further connector calls this turn",
+						slog.Int("limit", copilot.MaxMCPCallsPerTurn),
+						slog.Int("round", round),
+					)
+					mcpBudgetLogged = true
+				}
+				result = copilot.MCPBudgetExhaustedResult(call)
+				budgetRefused = true
+			} else {
+				if connectorCall {
+					sessionMCPCalls++
+				}
+				// Scope tool execution to THIS request: its cluster, its caller and
+				// its entitlement (ClusterScope, an API key's cluster list).
+				// Execute() runs on context.Background(), which carries none of
+				// them — a key limited to one cluster read every cluster through
+				// the chat while /mcp, on the request context, held. The connector
+				// gateway reads the org from it too, and refuses without one.
+				result = executor.ExecuteCtx(r.Context(), call)
+				if connectorCall && !result.NotSent {
+					mcpBudgetUsed++
+				}
+				// Text in the result written as an instruction to an AI gets a
+				// mark Kobi reads with it (copilot.MarkEmbeddedInstructions).
+				result.Content = copilot.MarkEmbeddedInstructions(call.Name, result.Content)
+				if connectorCall {
+					result = copilot.WithConnectorSkill(messages, toolResults, call, result)
+				} else {
+					result = h.withEntryOnRead(r.Context(), call, result)
+				}
+			}
 			toolDur := time.Since(toolStart)
 
 			outBytes := len(result.Content)
@@ -914,6 +1126,22 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 				s.Errors++
 			}
 
+			// The card completes as soon as the call does, with the result it
+			// will keep: the same content `done` carries, plus how the call
+			// ended and how long it took, which are stored with it.
+			result.Status, result.Reason = copilot.CallStatus(result, toolResult, budgetRefused)
+			result.DurationMs = toolDur.Milliseconds()
+			sse.event("tool_result", map[string]any{
+				"id":         call.ID,
+				"round":      round,
+				"status":     result.Status,
+				"durationMs": result.DurationMs,
+				"content":    result.Content,
+				"isError":    result.IsError,
+				"digest":     result.Digest,
+				"reason":     result.Reason,
+			})
+
 			logger.Debug("copilot tool call",
 				slog.Int("round", round),
 				slog.String("tool", call.Name),
@@ -933,6 +1161,33 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 			Timestamp:   time.Now(),
 		})
 
+		// A switch card next to an answer already written ends the turn: the
+		// round after it only repeated the answer and narrated the card.
+		// The conversation ends on the card's tool result; the next question
+		// joins it as one user message (see copilot.SwitchEndsTurn).
+		if copilot.SwitchEndsTurn(resp.Text, resp.ToolCalls, toolResults) {
+			logger.Info("copilot turn ended on the switch card", slog.Int("round", round))
+			completeTurn(messages)
+			return
+		}
+
+		// The first call out of the selected cluster moves the rest of the
+		// conversation to the escalation model.
+		if escalation != nil && !escalated {
+			for _, call := range resp.ToolCalls {
+				if copilot.EscalationTrigger(call, copilot.ResultFor(toolResults, call.ID), len(connectorTools) > 0) {
+					escalated, escalationReason, escalationRound = true, call.Name, round+1
+					logger.Info("copilot escalated",
+						slog.String("model", escalation.Model),
+						slog.String("reason", call.Name),
+						slog.Int("round", round+1),
+					)
+					sse.event("meta", map[string]any{"escalated": escalation.Model})
+					break
+				}
+			}
+		}
+
 		// Continue the loop — model will see tool results and produce its next response
 	}
 
@@ -951,10 +1206,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 
 	// Same provider-selection rule the loop uses: stick with the fallback if an
 	// earlier round already fell over to it.
-	closeProvider := cfg.Primary
-	if usedFallback && cfg.Fallback != nil {
-		closeProvider = *cfg.Fallback
-	}
+	closeProvider := activeProviderFor()
 	// Deliver the close directive as a final USER turn, not a system-prompt
 	// tail. In-vivo (maxRounds=5 on the 3-tier RCA) the system-tail directive
 	// was ignored — the model kept narrating "let me check…" instead of
@@ -967,11 +1219,12 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		Timestamp: time.Now(),
 	})
 	closeReq := copilot.ChatRequest{
-		System:    systemPrompt,
-		Messages:  withSessionContextPrefix(closeMessages, sessionCtx),
-		Tools:     nil, // force a text-only answer — no more tool calls
-		Provider:  closeProvider,
-		MaxTokens: cfg.MaxTokens,
+		System:     systemPrompt,
+		Messages:   withSessionContextPrefix(closeMessages, sessionNotes),
+		Tools:      nil, // force a text-only answer — no more tool calls
+		Provider:   closeProvider,
+		MaxTokens:  cfg.MaxTokens,
+		ShortCache: onEscalation(),
 	}
 	resp, err := callModel(closeReq)
 	if err != nil && copilot.IsRecoverable(err) && !usedFallback && fallbackUsable(&cfg) {
@@ -1007,7 +1260,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionUsage.Add(resp.Usage)
+	addUsage(resp.Usage)
 	lastTurnUsage = resp.Usage
 	sse.event("usage", map[string]any{
 		"round":   maxRounds,
@@ -1015,7 +1268,7 @@ func (h *handlers) HandleCopilotChat(w http.ResponseWriter, r *http.Request) {
 		"session": sessionUsage,
 	})
 	if resp.Text != "" {
-		sse.event("text", map[string]string{"text": resp.Text})
+		sse.event("text", map[string]any{"text": resp.Text, "round": maxRounds})
 		finalMessages = append(finalMessages, copilot.Message{
 			Role:      copilot.RoleAssistant,
 			Content:   resp.Text,
@@ -1109,6 +1362,8 @@ func (h *handlers) callProvider(r *http.Request, req copilot.ChatRequest) (*copi
 		}
 		return nil, fmt.Errorf("unknown provider: %s", req.Provider.Provider)
 	}
+	// Per call, so a fallback to another provider gets its own default cap.
+	req.MaxTokens = copilot.MaxTokensFor(req.MaxTokens, req.Provider)
 	return provider.Chat(r.Context(), req)
 }
 

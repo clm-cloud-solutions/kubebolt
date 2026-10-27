@@ -81,11 +81,34 @@ func GenerateTitle(ctx context.Context, provider config.ProviderConfig, firstUse
 	if err != nil {
 		return nil, err
 	}
-	title := SanitizeTitle(resp.Text)
+	title := titleFromReply(resp.Text, resp.StopReason == "max_tokens")
 	if title == "" {
 		// Still report the usage — the call DID consume tokens even though the
 		// reply was unusable — so the caller can account for the spend.
 		return &TitleResult{Title: "", Usage: resp.Usage, Model: ResolvedModel(p.Provider, p.Model)}, fmt.Errorf("title generation returned empty")
 	}
 	return &TitleResult{Title: title, Usage: resp.Usage, Model: ResolvedModel(p.Provider, p.Model)}, nil
+}
+
+// titleFromReply turns the model's reply into one title. Haiku sometimes adds
+// a second title below the first ("Title: …"): it did on a metric-chart
+// question stopped before Kobi wrote anything (2026-10-12), when the call had
+// only the operator's prompt, itself an instruction, to go by. Only the first
+// line counts. A reply cut by the token cap ends mid-word ("…causa probable
+// en P"), so the cut word goes.
+func titleFromReply(text string, cut bool) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	title := strings.TrimSpace(lines[0])
+	for _, label := range []string{"title:", "título:"} {
+		if len(title) >= len(label) && strings.EqualFold(title[:len(label)], label) {
+			title = strings.TrimSpace(title[len(label):])
+			break
+		}
+	}
+	if cut && len(lines) == 1 {
+		if i := strings.LastIndexAny(title, " \t"); i > 0 {
+			title = strings.TrimRight(title[:i], " ,;:-–—")
+		}
+	}
+	return SanitizeTitle(title)
 }

@@ -139,6 +139,12 @@ const (
 	ToolResultError    = "error"
 )
 
+// ToolResultNotSent is the status the chat shows for a call KubeBolt refused
+// before it reached anything: a connector command off its allowlist, or one
+// past the per-turn connector budget. Display only; the metrics keep
+// classifying those results from their shape.
+const ToolResultNotSent = "not_sent"
+
 // ClassifyToolResult names the kind of a tool result from its shape. The
 // executor has no structured status: errors are `{"error": "..."}` with
 // IsError set, an empty list is `{"items": [], "total": 0}`, an integration

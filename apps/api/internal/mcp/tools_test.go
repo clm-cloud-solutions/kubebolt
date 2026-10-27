@@ -13,7 +13,7 @@ import (
 // mutating propose_* tools.
 func TestReadOnlyCatalogueExcludesMutations(t *testing.T) {
 	p := NewExecutorToolProvider(copilot.NewExecutor(nil))
-	tools := p.ListTools()
+	tools := p.ListTools(t.Context())
 	if len(tools) == 0 {
 		t.Fatal("read-only catalogue is empty")
 	}
@@ -36,6 +36,23 @@ func TestReadOnlyCatalogueExcludesMutations(t *testing.T) {
 	} {
 		if !names[want] {
 			t.Errorf("expected read tool %q missing from catalogue", want)
+		}
+	}
+}
+
+// The public /mcp serves KubeBolt's own reads to any MCP host and nothing
+// else: external connector tools reach only Kobi (mcp__<id>__<tool>) and the
+// Autopilot profiles (cloud_<id>_<tool>), never an arbitrary host. Neither form may appear in its list, and neither may be called.
+func TestPublicCatalogueNeverServesExternalTools(t *testing.T) {
+	p := NewExecutorToolProvider(copilot.NewExecutor(nil))
+	for _, tl := range p.ListTools(t.Context()) {
+		if strings.HasPrefix(tl.Name, "cloud_") || strings.HasPrefix(tl.Name, "mcp__") {
+			t.Errorf("the public catalogue serves the external tool %q", tl.Name)
+		}
+	}
+	for _, name := range []string{"cloud_aws_call", "mcp__aws__call"} {
+		if _, err := p.CallTool(t.Context(), name, nil); err != ErrUnknownTool {
+			t.Errorf("CallTool(%q) err = %v, want ErrUnknownTool", name, err)
 		}
 	}
 }
@@ -118,14 +135,14 @@ func TestToolsFromDefinitionsDefaultsSchema(t *testing.T) {
 // draws a card only Kobi's panel renders.
 func TestExecutorToolProvider_WithholdsUIOnlyTools(t *testing.T) {
 	p := NewExecutorToolProvider(nil)
-	for _, tl := range p.ListTools() {
+	for _, tl := range p.ListTools(context.Background()) {
 		if _, bad := uiOnlyTools[tl.Name]; bad {
 			t.Errorf("public catalogue serves the UI-only tool %q", tl.Name)
 		}
 	}
 	for _, want := range []string{"get_coverage", "query_metrics"} {
 		found := false
-		for _, tl := range p.ListTools() {
+		for _, tl := range p.ListTools(context.Background()) {
 			found = found || tl.Name == want
 		}
 		if !found {
@@ -138,7 +155,7 @@ func TestExecutorToolProvider_WithholdsUIOnlyTools(t *testing.T) {
 // callable through /mcp.
 func TestExecutorToolProvider_OmitsUIOnlyTools(t *testing.T) {
 	p := NewExecutorToolProvider(copilot.NewExecutor(nil))
-	for _, tool := range p.ListTools() {
+	for _, tool := range p.ListTools(context.Background()) {
 		if _, uiOnly := uiOnlyTools[tool.Name]; uiOnly {
 			t.Errorf("%s is listed on /mcp", tool.Name)
 		}

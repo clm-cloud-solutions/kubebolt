@@ -16,7 +16,7 @@ import (
 // latency among everything else nobody classified.
 func TestRouteGroups_EveryRouteIsClassified(t *testing.T) {
 	r := NewRouter(nil, nil, nil, config.CopilotConfig{}, nil, nil, nil, nil, nil, nil, "",
-		nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
+		nil, nil, "", nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	n := 0
 	_ = chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		n++

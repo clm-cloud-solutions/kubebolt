@@ -18,9 +18,12 @@ var ErrUnknownPrompt = errors.New("unknown prompt")
 // only coupling between the MCP transport layer and KubeBolt's cluster
 // connector; the concrete implementation lives in tools.go.
 type ToolProvider interface {
-	// ListTools returns the tools advertised to the host. Must be stable
-	// for the life of a session.
-	ListTools() []Tool
+	// ListTools returns the tools advertised to the host. ctx is the
+	// request's, so it carries the org: a provider whose catalogue depends
+	// on what the org has turned on (an Autopilot profile's cloud tools)
+	// resolves it here. The list must be stable for a given org and
+	// configuration; it may change when the org's configuration does.
+	ListTools(ctx context.Context) []Tool
 	// CallTool executes the named tool with the given raw JSON arguments,
 	// resolving cluster access from ctx. Returning ErrUnknownTool signals a
 	// protocol-level InvalidParams; any other returned error becomes an
@@ -81,7 +84,7 @@ func (s *Server) HandleMessage(ctx context.Context, raw []byte) (out []byte, out
 
 	// Notifications get handled for side effects (none today) and produce no
 	// response.
-	if req.isNotification() {
+	if req.IsNotification() {
 		return nil, nil
 	}
 
@@ -102,7 +105,7 @@ func (s *Server) dispatch(ctx context.Context, req *request) (interface{}, *rpcE
 		// Liveness check — empty result object.
 		return struct{}{}, nil
 	case "tools/list":
-		return listToolsResult{Tools: s.tools.ListTools()}, nil
+		return listToolsResult{Tools: s.tools.ListTools(ctx)}, nil
 	case "tools/call":
 		return s.handleCallTool(ctx, req.Params)
 	case "prompts/list":
