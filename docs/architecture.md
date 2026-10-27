@@ -56,7 +56,14 @@ immediately and connects to clusters in the background, so the UI can report
   the same caches the UI uses; action tools only *propose* a change, which is
   dry-run on the server and runs after a person approves it, with that
   person's role. The same read tools are exposed over MCP at `/api/v1/mcp`
-  and through the `kubebolt-mcp` stdio binary.
+  and through the `kubebolt-mcp` stdio binary. When the cause sits outside
+  the cluster, Kobi reads the cloud resources a workload depends on through
+  **cloud connectors**: curated MCP servers (AWS's, signed with a read-only
+  role KubeBolt assumes or the identity it runs with; the Azure MCP Server,
+  a sidecar on loopback) behind an allowlist of read operations, with
+  redaction, size caps and an access audit record per call. Procedures (**skills**) are embedded in the binary
+  and loaded on demand, and an optional **escalation model** takes over the
+  conversation once an investigation leaves the cluster.
 - **Auth and governance** — local users with viewer / editor / admin roles,
   JWT sessions, API tokens for automation, an audit trail of mutations and
   access sessions (exec, port-forward, file reads), and Slack / Discord /

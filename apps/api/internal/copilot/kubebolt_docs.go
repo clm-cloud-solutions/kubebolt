@@ -43,6 +43,11 @@ var kubeboltDocsAliases = map[string]string{
 	"admin-access":    "admin-users",
 	"editions":        "distribution",
 	"enterprise":      "distribution",
+	"connectors":      "cloud-connectors",
+	"mcp-connectors":  "cloud-connectors",
+	"aws-connector":   "cloud-connectors",
+	"azure-connector": "cloud-connectors",
+	"escalation":      "ai-config",
 }
 
 // KubebolDocsTopics returns the list of known topic keys for the tool
