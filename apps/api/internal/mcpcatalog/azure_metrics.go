@@ -164,7 +164,7 @@ func (b *azureBinding) callMetrics(ctx context.Context, t *azureTool, prepared m
 	var failures []map[string]string
 	adjusted, splitDropped := false, false
 	for _, pl := range plans {
-		p := make(map[string]json.RawMessage, len(prepared)+2)
+		p := make(map[string]json.RawMessage, len(prepared))
 		for k, v := range prepared {
 			p[k] = v
 		}

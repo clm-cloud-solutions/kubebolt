@@ -99,7 +99,7 @@ func decodeUnicodeEscape(b []byte) (rune, int) {
 	if len(b) < 6 {
 		return 0, 0
 	}
-	v, err := strconv.ParseUint(string(b[2:6]), 16, 32)
+	v, err := strconv.ParseUint(string(b[2:6]), 16, 16)
 	if err != nil {
 		return utf8.RuneError, 6
 	}
@@ -109,7 +109,7 @@ func decodeUnicodeEscape(b []byte) (rune, int) {
 			return 0, 0
 		}
 		if b[6] == '\\' && b[7] == 'u' {
-			if lo, err := strconv.ParseUint(string(b[8:12]), 16, 32); err == nil {
+			if lo, err := strconv.ParseUint(string(b[8:12]), 16, 16); err == nil {
 				if dec := utf16.DecodeRune(r, rune(lo)); dec != utf8.RuneError {
 					return dec, 12
 				}
