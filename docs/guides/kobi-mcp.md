@@ -140,16 +140,28 @@ stdout.
 
 ## Tools exposed
 
-`get_cluster_overview`, `list_resources`, `get_resource_detail`,
-`get_resource_yaml`, `get_resource_describe`, `get_pod_logs`,
-`get_workload_pods`, `get_workload_history`, `get_cronjob_jobs`,
-`get_topology`, `get_insights`, `get_events`, `search_resources`,
-`get_permissions`, `list_clusters`, `get_workload_metrics`,
-`get_kubebolt_docs`.
+31 read tools:
+
+- Cluster: `get_cluster_overview`, `list_resources`, `get_resource_detail`,
+  `get_resource_yaml`, `get_resource_describe`, `get_pod_logs`,
+  `get_workload_pods`, `get_workload_history`, `get_cronjob_jobs`,
+  `get_topology`, `get_events`, `search_resources`, `get_permissions`,
+  `get_external_connections`.
+- Metrics and cost: `get_workload_metrics`, `query_metrics`,
+  `get_right_sizing`, `get_recent_deploys`.
+- Insights and their history: `get_insights`, `get_insight_episodes`,
+  `get_insight_episode`, `get_operational_episodes`.
+- Security: `get_findings`, `get_finding_workloads`, `get_finding_detail`,
+  `get_runtime_events`.
+- Fleet and coverage: `list_clusters`, `get_fleet_summary`, `get_coverage`.
+- Procedures and docs: `load_skill`, `get_kubebolt_docs`.
 
 These are the same tool definitions Kobi uses inside KubeBolt, filtered to
 the read-only set (`GovernedToolDefinitions(false, false)`) — the 9
-`propose_*` action tools are neither listed nor callable.
+`propose_*` action tools are neither listed nor callable. Two kinds of Kobi
+tool stay inside KubeBolt: `offer_cluster_switch`, which draws a card only
+Kobi's panel can render, and the cloud connectors' tools
+([kobi-mcp-connectors.md](kobi-mcp-connectors.md)).
 
 ## Prompts
 
@@ -170,7 +182,7 @@ against a fake tool provider.
 
 Both transports have also been verified **end-to-end against a live cluster**:
 stdio against a real MCP host (Claude Code) and HTTP with a real `kbs_` service
-token via raw requests — `initialize` (`2025-06-18`), `tools/list` (17 tools, 0
+token via raw requests — `initialize` (`2025-06-18`), `tools/list` (17 tools at the time, 0
 `propose_`), real `tools/call` reads, **Secret YAML redaction** (`data` → `REDACTED`),
 the **read-only guard** (`propose_*` rejected `-32602 unknown tool`), `401` with
 no token, and `405` on `GET`. Re-run the checklist below when bringing the
@@ -193,7 +205,7 @@ printf '%s\n%s\n%s\n' \
 ```
 
 Expect: an `initialize` result, **no** line for the notification, then a
-`tools/list` result with 17 tools.
+`tools/list` result with 31 tools.
 
 #### B. Raw JSON-RPC over HTTP with curl (needs a live server + token)
 
@@ -209,7 +221,7 @@ auth=(-H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json')
 curl -sS -X POST "$BASE" "${auth[@]}" \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}' | jq
 
-# 2. tools/list — confirm 17 tools and NO propose_* leaked
+# 2. tools/list — confirm 31 tools and NO propose_* leaked
 curl -sS -X POST "$BASE" "${auth[@]}" \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | jq '.result.tools | length, (map(.name) | map(select(startswith("propose_"))))'
@@ -250,7 +262,7 @@ answers from live data.
 | # | Check | How | Expected |
 |---|-------|-----|----------|
 | 1 | Handshake | `initialize` | `result.protocolVersion` echoes yours; `serverInfo.name = kubebolt-kobi`; `capabilities` has `tools` + `prompts` |
-| 2 | Catalogue | `tools/list` | exactly the 17 read tools; **zero** `propose_*` |
+| 2 | Catalogue | `tools/list` | exactly the 31 read tools; **zero** `propose_*` |
 | 3 | Read works | `tools/call get_cluster_overview` on a connected cluster | `result.content[0].text` is the overview JSON; **no** `isError` |
 | 4 | Args plumb through | `tools/call list_resources {type:pods,namespace:…}` | filtered list in the result |
 | 5 | **Read-only guard** | `tools/call` with `name:"propose_delete_resource"` | JSON-RPC **error**, code `-32602`, message `unknown tool: …` — the mutation is rejected even by name |
